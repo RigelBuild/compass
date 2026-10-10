@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -56,6 +57,13 @@ func GenerateRunnerToken() (string, error) {
 func StoreRunnerTokenHash(ctx context.Context, st TokenPutter, token, runnerID string) error {
 	if runnerID == "" {
 		return errors.New("runner id is required to store a token")
+	}
+	if err := CheckMintedRunnerID(runnerID); err != nil {
+		return err
+	}
+	// A token with "." is routed to the projected-token verifier and would never resolve.
+	if strings.Contains(token, ".") {
+		return fmt.Errorf("%w: runner token must not contain %q", store.ErrInvalidArgument, ".")
 	}
 	hash := sha256.Sum256([]byte(token))
 	if err := st.PutTokenHash(ctx, hash, store.Subject{Kind: store.SubjectRunner, ID: runnerID}); err != nil {
@@ -113,6 +121,9 @@ func MintRunnerToken(ctx context.Context, st TokenPutter, runnerID string) (stri
 	if runnerID == "" {
 		return "", errors.New("runner id is required to mint a token")
 	}
+	if err := CheckMintedRunnerID(runnerID); err != nil {
+		return "", err
+	}
 	token, err := GenerateRunnerToken()
 	if err != nil {
 		return "", err
@@ -121,4 +132,13 @@ func MintRunnerToken(ctx context.Context, st TokenPutter, runnerID string) (stri
 		return "", err
 	}
 	return token, nil
+}
+
+// CheckMintedRunnerID rejects "/", which is reserved for projected-token Runner
+// IDs ("<cluster>/<node>") so a minted ID can never shadow one.
+func CheckMintedRunnerID(runnerID string) error {
+	if strings.Contains(runnerID, "/") {
+		return fmt.Errorf("%w: runner id %q must not contain %q", store.ErrInvalidArgument, runnerID, "/")
+	}
+	return nil
 }

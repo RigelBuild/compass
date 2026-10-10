@@ -278,6 +278,7 @@ func buildNetworkServer(
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearWebhookHandler http.Handler,
 	linearSessionLinkHandler http.Handler,
+	runnerVerifier *auth.RunnerVerifier,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -333,9 +334,14 @@ func buildNetworkServer(
 	// only here on the authenticated network door (a Runner is remote, over TLS).
 	// Its bearer interceptor Kind-gates to a Runner-subject token (cross-door
 	// rejection, OQ7); the admin gate is not applied, the Kind gate is the authz.
-	runnerResolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
-		return auth.ResolveToken(ctx, st, presented, want)
+	// Converted only when set: a nil pointer in the interface would not compare nil.
+	var verifier runnerTokenVerifier
+	if runnerVerifier != nil {
+		verifier = runnerVerifier
 	}
+	runnerResolve := newRunnerResolve(func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
+		return auth.ResolveToken(ctx, st, presented, want)
+	}, verifier)
 	// Wire the store of record as the runner door's fleet config-bundle surface:
 	// *store.Store satisfies AgentConfigStore, so FetchAgentConfig streams whatever
 	// PutAgentConfig last wrote (nil would leave every agent unconfigured). otelIC
@@ -384,6 +390,29 @@ func buildNetworkServer(
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}, nil
+}
+
+// runnerTokenVerifier authenticates a projected ServiceAccount token to a Runner
+// subject. *auth.RunnerVerifier satisfies it; nil means no clusters registered.
+type runnerTokenVerifier interface {
+	Verify(ctx context.Context, token string) (store.Subject, error)
+}
+
+// newRunnerResolve splits the Runner door by token shape. A compact JWS never
+// reaches the hash lookup: it is a projected token or nothing.
+func newRunnerResolve(lookup runnerhub.TokenResolver, verifier runnerTokenVerifier) runnerhub.TokenResolver {
+	return func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
+		if !auth.LooksLikeJWT(presented) {
+			return lookup(ctx, presented, want)
+		}
+		if want != store.SubjectRunner {
+			return store.Subject{}, auth.ErrWrongKind
+		}
+		if verifier == nil {
+			return store.Subject{}, auth.ErrTokenNotFound
+		}
+		return verifier.Verify(ctx, presented)
+	}
 }
 
 // issueAndWriteAdminToken ensures stateDir holds a 0600 bearer token for the

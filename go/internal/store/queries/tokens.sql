@@ -15,3 +15,6 @@ UPDATE tokens SET revoked_at = now() WHERE hash = $1 AND revoked_at IS NULL;
 
 -- name: TokenHashExists :one
 SELECT EXISTS (SELECT 1 FROM tokens WHERE hash = $1);
+
+-- name: CountRunnerTokenIDsWithSlash :one
+SELECT count(*) FROM tokens WHERE subject_kind = 1 AND revoked_at IS NULL AND strpos(subject_id, '/') > 0;

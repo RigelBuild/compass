@@ -55,6 +55,10 @@ var errUnauthenticated = connect.NewError(connect.CodeUnauthenticated, errors.Ne
 // errLookupUnavailable is the fixed store-fault response; the cause can name DB hosts, so it stays server-side.
 var errLookupUnavailable = connect.NewError(connect.CodeUnavailable, errors.New("credential check unavailable"))
 
+// errKeysUnavailable is the fixed response when a projected token names a
+// registered cluster whose keys are unusable; retryable, unlike a bad token.
+var errKeysUnavailable = connect.NewError(connect.CodeUnavailable, errors.New("runner cluster keys unavailable"))
+
 // authenticate extracts the bearer token from the request header, resolves it as
 // a SubjectRunner token, and returns a context carrying the subject. Any
 // credential failure — missing/malformed header, not-found, revoked, wrong kind —
@@ -76,6 +80,10 @@ func (b *bearerAuth) authenticate(ctx context.Context, header interface{ Get(key
 		if errors.Is(err, auth.ErrTokenLookupFailed) {
 			slog.WarnContext(ctx, "runner credential check unavailable", "error", err)
 			return nil, errLookupUnavailable
+		}
+		if errors.Is(err, auth.ErrKeysUnavailable) {
+			slog.WarnContext(ctx, "runner cluster keys unavailable", "error", err)
+			return nil, errKeysUnavailable
 		}
 		return nil, errUnauthenticated
 	}

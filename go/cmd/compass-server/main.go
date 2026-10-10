@@ -272,6 +272,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		OtelEndpoint:                  os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		TranscriptSafetyValveCapBytes: positiveCap(*f.transcriptSafetyValveCapBytes, os.Getenv("COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES")),
 		UsageEventRetention:           usageRetention,
+		RunnerClustersPath:            firstNonEmpty(*f.runnerClusters, os.Getenv("COMPASS_RUNNER_CLUSTERS")),
 	}
 	keepListenListener = true
 	return config, false, nil
@@ -318,6 +319,7 @@ type serveFlags struct {
 	corsAllowedOrigin             *string
 	publicURL                     *string
 	usageRetention                *string
+	runnerClusters                *string
 }
 
 // registerServeFlags declares the core compass-server flags on the given FlagSet
@@ -394,6 +396,10 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 				"deletes them, as a Go duration (e.g. 720h). The hourly and daily "+
 				"usage totals are kept. Falls back to $COMPASS_USAGE_EVENT_RETENTION, "+
 				"then 2160h (90 days). 0 disables the prune."),
+		runnerClusters: fs.String("runner-clusters", "",
+			"YAML file registering the Kubernetes clusters whose projected ServiceAccount "+
+				"tokens the Runner door accepts. Empty = minted Runner tokens only. "+
+				"Defaults to $COMPASS_RUNNER_CLUSTERS."),
 	}
 }
 

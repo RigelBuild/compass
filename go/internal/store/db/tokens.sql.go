@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const countRunnerTokenIDsWithSlash = `-- name: CountRunnerTokenIDsWithSlash :one
+SELECT count(*) FROM tokens WHERE subject_kind = 1 AND revoked_at IS NULL AND strpos(subject_id, '/') > 0
+`
+
+func (q *Queries) CountRunnerTokenIDsWithSlash(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countRunnerTokenIDsWithSlash)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertTokenHash = `-- name: InsertTokenHash :exec
 
 INSERT INTO tokens (hash, subject_kind, subject_id, tenant_id) VALUES ($1, $2, $3, $4)

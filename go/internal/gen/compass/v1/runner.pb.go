@@ -123,12 +123,16 @@ func (RunnerErrorCode) EnumDescriptor() ([]byte, []int) {
 	return file_compass_v1_runner_proto_rawDescGZIP(), []int{0}
 }
 
-// Enroll request: the Runner announces its stable identity at connect. The id
-// is cross-checked against the authenticated token subject (store.Subject.ID for
-// a SubjectRunner token) — a mismatch is a spoofing attempt and is rejected
-// CodeUnauthenticated, so the field is a defense-in-depth cross-check, not a
-// trusted input. The credential itself rides the transport as a bearer token,
-// never a field here (mirroring IssueTokenRequest, compass.proto:237-242).
+// Enroll request: the Runner announces its stable identity at connect. A
+// non-empty id is cross-checked against the authenticated token subject
+// (store.Subject.ID for a SubjectRunner token) — a mismatch is a spoofing
+// attempt and is rejected CodeUnauthenticated, so the field is a
+// defense-in-depth cross-check, not a trusted input. A Runner authenticating
+// with a projected ServiceAccount token cannot compute its id (it does not know
+// its cluster's registered name), so it leaves the id empty and takes the
+// Server-assigned one from EnrollResponse.runner_id. The credential itself
+// rides the transport as a bearer token, never a field here (mirroring
+// IssueTokenRequest, compass.proto:237-242).
 //
 // runtime_tier and egress_posture are declared once here, not per session:
 // they are Runner-wide facts of the one backend this Runner drives, so the hub
@@ -200,10 +204,12 @@ func (x *EnrollRequest) GetEgressPosture() v1.EgressPosture {
 // Enroll response: the handshake ack. `reattached` distinguishes a fresh
 // enrollment from a re-attach of an already-registered Runner (OQ6 duplicate
 // enrollment) — the wire-level evidence a
-// reattach test asserts on.
+// reattach test asserts on. `runner_id` is the authenticated subject's id, the
+// identity the Runner uses for its ownership label and stale-container sweep.
 type EnrollResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Reattached    bool                   `protobuf:"varint,1,opt,name=reattached,proto3" json:"reattached,omitempty"`
+	RunnerId      string                 `protobuf:"bytes,2,opt,name=runner_id,json=runnerId,proto3" json:"runner_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -243,6 +249,13 @@ func (x *EnrollResponse) GetReattached() bool {
 		return x.Reattached
 	}
 	return false
+}
+
+func (x *EnrollResponse) GetRunnerId() string {
+	if x != nil {
+		return x.RunnerId
+	}
+	return ""
 }
 
 // A session command result, sent Runner->Server on the Sessions request stream
@@ -2468,11 +2481,12 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\rEnrollRequest\x12\x1b\n" +
 	"\trunner_id\x18\x01 \x01(\tR\brunnerId\x12:\n" +
 	"\fruntime_tier\x18\x02 \x01(\x0e2\x17.compass.v1.RuntimeTierR\vruntimeTier\x12@\n" +
-	"\x0eegress_posture\x18\x03 \x01(\x0e2\x19.compass.v1.EgressPostureR\regressPosture\"0\n" +
+	"\x0eegress_posture\x18\x03 \x01(\x0e2\x19.compass.v1.EgressPostureR\regressPosture\"M\n" +
 	"\x0eEnrollResponse\x12\x1e\n" +
 	"\n" +
 	"reattached\x18\x01 \x01(\bR\n" +
-	"reattached\"\xf7\x03\n" +
+	"reattached\x12\x1b\n" +
+	"\trunner_id\x18\x02 \x01(\tR\brunnerId\"\xf7\x03\n" +
 	"\x0fSessionsRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12=\n" +

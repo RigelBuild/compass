@@ -199,7 +199,7 @@ func TestUsageSeriesNetworkDoor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
-	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()}, svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil)
+	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()}, svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}

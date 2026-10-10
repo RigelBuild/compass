@@ -151,6 +151,9 @@ type ServeConfig struct {
 	// bound, with each bound address (nil for a door that is off). It lets a
 	// caller bind port 0 and learn the real port with no release-and-rebind gap.
 	OnBound func(dev, network net.Addr)
+	// RunnerClustersPath is the Runner cluster file (--runner-clusters). When
+	// set, the RunnerService door also accepts projected ServiceAccount tokens.
+	RunnerClustersPath string
 }
 
 // ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
@@ -894,11 +897,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return err
 	}
 
-	// Run every door under one scoped group. errgroup.WithContext gives scoped
-	// lifecycle, first-error-wins, and sibling cancellation: gctx cancels on
-	// parent shutdown or a server self-terminating with an error. The UDS door is
-	// primary; its error — recorded first — wins over the drain result below.
-	g, gctx := errgroup.WithContext(ctx)
+	// Run every door under one scoped group: scoped lifecycle, first-error-wins,
+	// and sibling cancellation. gctx cancels on parent shutdown or a door's own
+	// error and always ends by Wait, so the verifier's key refresh never outlives
+	// Serve. The UDS door is primary; its error wins over the drain result below.
+	g, gctx := newServeGroup(ctx, doors.runnerVerifier)
 	g.Go(func() error { return classifyServe(doors.uds.Serve(udsListener), "compass.v1 UDS server") })
 	if doors.dev != nil {
 		g.Go(func() error { return classifyServe(doors.dev.Serve(devListener), "dev gRPC-Web server") })
@@ -964,6 +967,9 @@ type serveDoors struct {
 	linearNotify *forgeNotifyLane
 	// linearResponder drains verified Linear session events; nil when Linear is off.
 	linearResponder *linearagent.Dispatcher
+	// runnerVerifier refreshes the RunnerService door's cluster keys; nil
+	// without --runner-clusters. Serve starts it once startup cannot fail.
+	runnerVerifier keyRefresher
 }
 
 // buildDoors assembles the three compass.v1 doors off the already-built service
@@ -996,6 +1002,12 @@ func buildDoors(
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearTokens *linearagent.TokenSource,
 ) (serveDoors, error) {
+	// Built even without a network door, so a bad cluster file or a reserved-ID
+	// clash refuses start the same way on every topology.
+	runnerVerifier, err := buildRunnerVerifier(ctx, cfg, st)
+	if err != nil {
+		return serveDoors{}, err
+	}
 	usageSvc := newUsageService(usage.NewPostgres(st), st)
 	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
@@ -1078,7 +1090,7 @@ func buildDoors(
 	}
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier)
 		if err != nil {
 			return serveDoors{}, err
 		}
@@ -1088,10 +1100,30 @@ func buildDoors(
 	// netResolver records WHICH instance reached the container delivery path; a
 	// swap here is silent and severe: runnerhub's FetchSecrets would serve
 	// `server_secrets`, handing every deployment secret to every agent container.
-	return serveDoors{
+	doors := serveDoors{
 		uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
 		linearNotify: linear.notify, linearResponder: linear.responder,
-	}, nil
+	}
+	// Only when set: a nil pointer stored in the interface would not compare nil.
+	if runnerVerifier != nil {
+		doors.runnerVerifier = runnerVerifier
+	}
+	return doors, nil
+}
+
+// keyRefresher is the verifier's background half; *auth.RunnerVerifier satisfies it.
+type keyRefresher interface {
+	Start(ctx context.Context)
+}
+
+// newServeGroup returns Serve's scoped errgroup and starts v's key refresh under
+// its ctx, which is cancelled when Wait returns. A nil v starts nothing.
+func newServeGroup(ctx context.Context, v keyRefresher) (*errgroup.Group, context.Context) {
+	g, gctx := errgroup.WithContext(ctx)
+	if v != nil {
+		v.Start(gctx)
+	}
+	return g, gctx
 }
 
 // drainSet is the shutdown-side view of what Serve built: the two buses whose
