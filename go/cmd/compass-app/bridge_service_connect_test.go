@@ -941,7 +941,8 @@ func TestConnectServerChoiceConfigCreatedAfterChooser(t *testing.T) {
 
 func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
 	srv, certPEM := setupTLSStub(t, nil)
-	store := tokenstore.New(t.TempDir())
+	// A host keyring probe can stall past the collector deadline under load.
+	store := &memoryTokenStore{}
 	frames := &fakeEmitter{ch: make(chan emitted, 512)}
 	events := &setupDecisionEmitter{frames: frames}
 	saving := make(chan struct{})
@@ -1012,11 +1013,9 @@ func startConcurrentRPCWorkers(svc *bridgeService, count int) (<-chan concurrent
 				case <-stop:
 					return
 				}
-				select {
-				case <-task.ready:
-				case <-stop:
-					return
-				}
+				// The collector closes ready on every issued task. Once it does, the
+				// RPC must run even if stop closed too, or its frames never arrive.
+				<-task.ready
 				callCompassRPC(svc, task.requestID)
 				select {
 				case <-task.done:
