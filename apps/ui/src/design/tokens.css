@@ -1,5 +1,47 @@
 /* Rigel brand primitive tier — mirrored verbatim from the Rigel brand source (frozen brand token set), 2026-08-06. Brand co-reviews any change to this block. The ONLY file where --rigel-* and raw hex may appear. */
 
+/* Brand faces, bundled by Vite from ./fonts so no host install is assumed.
+   Byte copies of the faces CI pins; the italics keep emphasis slanted, since
+   a bundled family hides the installed one and font-synthesis is off. */
+@font-face {
+	font-family: "Departure Mono";
+	src: url("./fonts/DepartureMono-Regular.otf") format("opentype");
+	font-weight: 400;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("./fonts/SpaceMono-Regular.ttf") format("truetype");
+	font-weight: 400;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("./fonts/SpaceMono-Bold.ttf") format("truetype");
+	font-weight: 700;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("./fonts/SpaceMono-Italic.ttf") format("truetype");
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("./fonts/SpaceMono-BoldItalic.ttf") format("truetype");
+	font-weight: 700;
+	font-style: italic;
+	font-display: swap;
+}
+@font-face {
+	font-family: "IBM Plex Mono";
+	src: url("./fonts/IBMPlexMono-Regular.ttf") format("truetype");
+	font-weight: 400;
+	font-display: swap;
+}
+
 /* ==========================================================================
    BLOCK 1 — Primitive tier (--rigel-*), brand-owned, mirrored VERBATIM.
    Compass consumes this tier read-only; no additions, no renames.
@@ -46,7 +88,7 @@
 	   purple is reserved for the brand mark only (the /design one-accent rule). */
 	--cx-focus-ring: 2px solid var(--rigel-blue);
 
-	/* fonts (installed on this box).
+	/* fonts (loaded by the @font-face rules above).
      Departure Mono is a bitmap pixel face with UPM 550 (= 11 × 50), so one
      font-pixel = size/11 CSS px. It is razor-crisp only when (size/11) ×
      devicePixelRatio is a whole number — so EVEN multiples of 11px
