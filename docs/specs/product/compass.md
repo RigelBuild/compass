@@ -55,6 +55,8 @@ accounts, channels, messages, and their event stream), described in turn below.
   `GetAgentStatus`** — the agent-session lifecycle surface (see
   [Agent sessions](#agent-sessions)): bring the first-party in-container agent
   online, stop it, reload it in place, and query status.
+- **`SkipBatchWindow`** — asks the owning Runner to start the agent's pending
+  idle batch immediately (see [Agent sessions](#agent-sessions)).
 - **`IssueToken`** — an admin-only RPC minting a bearer token for an existing
   account (the sole public-contract path to a non-bootstrap account's
   credential). Its admin-gated enforcement and token semantics are served by the
@@ -528,6 +530,34 @@ the point it joined.
 - **When** it subscribes and the session emits a frame
 - **Then** the server streams that frame to the caller, and ends the stream
   cleanly when the client disconnects.
+
+### Requirement: Only an owner or admin may skip a session's batch window
+
+The server SHALL expose `SkipBatchWindow`, a unary RPC taking a session id and
+relaying a `start_now` control to the owning Runner. The control fires the
+agent's pending idle batch immediately; if no batch window is open, it does
+nothing. A server with no Runner seam SHALL fail with `Unavailable`. A call with
+no authenticated caller SHALL fail with `Unauthenticated`; an empty session id
+SHALL fail with `InvalidArgument`. Only the session owner or an admin SHALL be
+admitted; channel membership alone SHALL NOT authorize the call. An unknown
+session and a session the caller may not control SHALL both fail with the
+identical `NotFound`. A control dispatch failure SHALL fail with `Unavailable`.
+
+#### Scenario: The owner skips the open batch window
+
+- **Given** an authenticated owner of a live agent session with an open batch
+  window
+- **When** the owner calls `SkipBatchWindow` for that session
+- **Then** the server relays `start_now` to the owning Runner and the pending
+  batch fires immediately.
+
+#### Scenario: A non-owner member cannot distinguish a missing session
+
+- **Given** a caller who is a member of the session's home channel but is
+  neither its owner nor an admin
+- **When** the caller calls `SkipBatchWindow` for that session and for a session
+  id that does not exist
+- **Then** both calls fail with the identical `NotFound`.
 
 ## The communication layer
 
