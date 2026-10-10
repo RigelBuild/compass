@@ -78,6 +78,9 @@ const (
 	// CompassServiceStopAgentSessionProcedure is the fully-qualified name of the CompassService's
 	// StopAgentSession RPC.
 	CompassServiceStopAgentSessionProcedure = "/compass.v1.CompassService/StopAgentSession"
+	// CompassServiceSkipBatchWindowProcedure is the fully-qualified name of the CompassService's
+	// SkipBatchWindow RPC.
+	CompassServiceSkipBatchWindowProcedure = "/compass.v1.CompassService/SkipBatchWindow"
 	// CompassServiceRemoveAgentWorkspaceProcedure is the fully-qualified name of the CompassService's
 	// RemoveAgentWorkspace RPC.
 	CompassServiceRemoveAgentWorkspaceProcedure = "/compass.v1.CompassService/RemoveAgentWorkspace"
@@ -195,6 +198,8 @@ type CompassServiceClient interface {
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
 	StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error)
+	// End the agent's idle batching window now; with no window open it is a no-op.
+	SkipBatchWindow(context.Context, *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error)
 	// Remove a per-agent container and release its durable placement: the
 	// teardown counterpart to ProvisionAgentWorkspace, keyed by the same
 	// container_name. Admin-gated on this public door (like IssueToken); the
@@ -365,6 +370,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("StopAgentSession")),
 			connect.WithClientOptions(opts...),
 		),
+		skipBatchWindow: connect.NewClient[v1.SkipBatchWindowRequest, v1.SkipBatchWindowResponse](
+			httpClient,
+			baseURL+CompassServiceSkipBatchWindowProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("SkipBatchWindow")),
+			connect.WithClientOptions(opts...),
+		),
 		removeAgentWorkspace: connect.NewClient[v1.RemoveAgentWorkspaceRequest, v1.RemoveAgentWorkspaceResponse](
 			httpClient,
 			baseURL+CompassServiceRemoveAgentWorkspaceProcedure,
@@ -454,6 +465,7 @@ type compassServiceClient struct {
 	startAgentSession       *connect.Client[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse]
 	spawnAgent              *connect.Client[v1.SpawnAgentRequest, v1.SpawnAgentResponse]
 	stopAgentSession        *connect.Client[v1.StopAgentSessionRequest, v1.StopAgentSessionResponse]
+	skipBatchWindow         *connect.Client[v1.SkipBatchWindowRequest, v1.SkipBatchWindowResponse]
 	removeAgentWorkspace    *connect.Client[v1.RemoveAgentWorkspaceRequest, v1.RemoveAgentWorkspaceResponse]
 	reloadAgentSession      *connect.Client[v1.ReloadAgentSessionRequest, v1.ReloadAgentSessionResponse]
 	getAgentStatus          *connect.Client[v1.GetAgentStatusRequest, v1.GetAgentStatusResponse]
@@ -526,6 +538,11 @@ func (c *compassServiceClient) SpawnAgent(ctx context.Context, req *connect.Requ
 // StopAgentSession calls compass.v1.CompassService.StopAgentSession.
 func (c *compassServiceClient) StopAgentSession(ctx context.Context, req *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error) {
 	return c.stopAgentSession.CallUnary(ctx, req)
+}
+
+// SkipBatchWindow calls compass.v1.CompassService.SkipBatchWindow.
+func (c *compassServiceClient) SkipBatchWindow(ctx context.Context, req *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error) {
+	return c.skipBatchWindow.CallUnary(ctx, req)
 }
 
 // RemoveAgentWorkspace calls compass.v1.CompassService.RemoveAgentWorkspace.
@@ -655,6 +672,8 @@ type CompassServiceHandler interface {
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
 	StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error)
+	// End the agent's idle batching window now; with no window open it is a no-op.
+	SkipBatchWindow(context.Context, *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error)
 	// Remove a per-agent container and release its durable placement: the
 	// teardown counterpart to ProvisionAgentWorkspace, keyed by the same
 	// container_name. Admin-gated on this public door (like IssueToken); the
@@ -821,6 +840,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("StopAgentSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceSkipBatchWindowHandler := connect.NewUnaryHandler(
+		CompassServiceSkipBatchWindowProcedure,
+		svc.SkipBatchWindow,
+		connect.WithSchema(compassServiceMethods.ByName("SkipBatchWindow")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceRemoveAgentWorkspaceHandler := connect.NewUnaryHandler(
 		CompassServiceRemoveAgentWorkspaceProcedure,
 		svc.RemoveAgentWorkspace,
@@ -919,6 +944,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceSpawnAgentHandler.ServeHTTP(w, r)
 		case CompassServiceStopAgentSessionProcedure:
 			compassServiceStopAgentSessionHandler.ServeHTTP(w, r)
+		case CompassServiceSkipBatchWindowProcedure:
+			compassServiceSkipBatchWindowHandler.ServeHTTP(w, r)
 		case CompassServiceRemoveAgentWorkspaceProcedure:
 			compassServiceRemoveAgentWorkspaceHandler.ServeHTTP(w, r)
 		case CompassServiceReloadAgentSessionProcedure:
@@ -998,6 +1025,10 @@ func (UnimplementedCompassServiceHandler) SpawnAgent(context.Context, *connect.R
 
 func (UnimplementedCompassServiceHandler) StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.StopAgentSession is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) SkipBatchWindow(context.Context, *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SkipBatchWindow is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) RemoveAgentWorkspace(context.Context, *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error) {

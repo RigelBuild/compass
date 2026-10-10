@@ -176,6 +176,7 @@ message AgentControl {
     // type lives in the forge.proto leaf to avoid the agent_gateway.proto import
     // cycle (see the import comment).
     ForgeNotification forge_notification = 9;
+    StartNowControl start_now = 10;
   }
 }
 
@@ -184,6 +185,10 @@ message PromptControl {
   // The live user prompt text.
   string input = 1;
 }
+
+// Ends the agent's idle batching window now. Empty: it names no message. It
+// starts a turn on whatever is queued, or does nothing.
+message StartNowControl {}
 // A bare barrier signal: replay is complete, live ops may now flow. No payload.
 message ReplayComplete {}
 

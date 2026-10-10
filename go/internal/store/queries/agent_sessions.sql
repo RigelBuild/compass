@@ -24,3 +24,13 @@ SELECT EXISTS (
            JOIN channel_members cm ON cm.channel_id = ag.home_channel_id
                                   AND cm.account_id = $2
           WHERE se.session_id = $1);
+
+-- name: RequireAgentSessionOwner :one
+SELECT EXISTS (
+         SELECT 1
+           FROM agent_sessions se
+           JOIN agent_accounts ag ON ag.account_id = se.agent_account_id
+          WHERE se.session_id = $1
+            AND (ag.owner_user_id = $2
+                 OR EXISTS (SELECT 1 FROM user_accounts u
+                             WHERE u.account_id = $2 AND u.role = 1)));
