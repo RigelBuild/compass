@@ -27,6 +27,7 @@ import {
 	DeliverControlSchema,
 	PromptControlSchema,
 	ReplayCompleteSchema,
+	StartNowControlSchema,
 	SteerControlSchema,
 	type AgentControl as WireAgentControl,
 } from "../gen/compass/v1/agent_pb";
@@ -121,6 +122,7 @@ function recordingImmediate(): {
 		steer(m: unknown, fromHandle: string, traceparent: string): void;
 		deliver(m: unknown, fromHandle: string, traceparent: string): void;
 		forgeNotification(n: ForgeNotification, ackRail: () => void): void;
+		startNow(): void;
 	};
 	steers: unknown[];
 	delivers: unknown[];
@@ -130,6 +132,7 @@ function recordingImmediate(): {
 	deliverTraceparents: string[];
 	forgeNotifications: ForgeNotification[];
 	forgeAckRails: (() => void)[];
+	startNowCalls: number;
 } {
 	const steers: unknown[] = [];
 	const delivers: unknown[] = [];
@@ -139,6 +142,7 @@ function recordingImmediate(): {
 	const deliverTraceparents: string[] = [];
 	const forgeNotifications: ForgeNotification[] = [];
 	const forgeAckRails: (() => void)[] = [];
+	let startNowCalls = 0;
 	return {
 		immediate: {
 			steer: (m, fromHandle, traceparent) => {
@@ -155,6 +159,9 @@ function recordingImmediate(): {
 				forgeNotifications.push(n);
 				forgeAckRails.push(ackRail);
 			},
+			startNow: () => {
+				startNowCalls += 1;
+			},
 		},
 		steers,
 		delivers,
@@ -164,6 +171,9 @@ function recordingImmediate(): {
 		deliverTraceparents,
 		forgeNotifications,
 		forgeAckRails,
+		get startNowCalls() {
+			return startNowCalls;
+		},
 	};
 }
 
@@ -236,6 +246,16 @@ function replayCompleteOp(seq: bigint): WireAgentControl {
 		control: {
 			case: "replayComplete",
 			value: create(ReplayCompleteSchema, {}),
+		},
+	});
+}
+
+function startNowOp(seq: bigint): WireAgentControl {
+	return create(AgentControlSchema, {
+		controlSeq: seq,
+		control: {
+			case: "startNow",
+			value: create(StartNowControlSchema, {}),
 		},
 	});
 }
@@ -520,6 +540,75 @@ test("a populated steer decodes its Message and dispatches it through immediate.
 		(u) => u.eventType === "control:steer" && u.reason.includes("staged"),
 	);
 	expect(staged).toBeUndefined();
+});
+
+test("start_now dispatches after ReplayComplete and acks at decode", async () => {
+	const rec = emptyRecorder();
+	const acked = deferred();
+	const holdStream = deferred();
+	const socketPath = await serve(rec, {
+		control: async function* () {
+			yield replayCompleteOp(1n);
+			yield startNowOp(2n);
+			await holdStream.promise;
+		},
+		onPublish: (frame) => {
+			const ack = ackOf(frame);
+			if (
+				ack?.kind === "controlAck" &&
+				ack.value.appliedAboveRanges.some(
+					(_, i, ranges) =>
+						i % 2 === 0 && ranges[i] <= 2n && 2n <= (ranges[i + 1] ?? -1n),
+				)
+			)
+				acked.resolve();
+		},
+	});
+	const recorded = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		recorded.immediate,
+	);
+	const it = source[Symbol.asyncIterator]();
+	const replayComplete = await it.next();
+	expect(replayComplete.value?.kind).toBe("replayComplete");
+	await acked.promise;
+	expect(recorded.startNowCalls).toBe(1);
+	expect(controlAckSeqs(rec)).toContain(0n);
+	await it.return?.();
+	holdStream.resolve();
+});
+
+test("a pre-ReplayComplete start_now is refused with the exact reason and acked", async () => {
+	const rec = emptyRecorder();
+	const acked = deferred();
+	const socketPath = await serve(rec, {
+		control: async function* () {
+			yield startNowOp(1n);
+		},
+		onPublish: (frame) => {
+			const ack = ackOf(frame);
+			if (ack?.kind === "controlAck" && ack.value.ackedSeq >= 1n)
+				acked.resolve();
+		},
+	});
+	const unmapped: UnmappedEvent[] = [];
+	const recorded = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		recorded.immediate,
+		{ onUnmapped: (u) => unmapped.push(u) },
+	);
+	const drained = collect(source);
+	await acked.promise;
+	await drained;
+	expect(recorded.startNowCalls).toBe(0);
+	expect(controlAckSeqs(rec)).toContain(1n);
+	expect(unmapped).toContainEqual({
+		kind: "unmapped",
+		eventType: "control:startNow",
+		reason: "live start-now before ReplayComplete — refused by replay barrier",
+	});
 });
 
 test("a pre-ReplayComplete immediate op is refused by the barrier and counted (invariant 1)", async () => {

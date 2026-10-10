@@ -272,6 +272,13 @@ export class CompassAgent {
 		}
 	}
 
+	// End an open idle batching window now; without one the control is a no-op.
+	startNow(): void {
+		if (this.#batchCancel === undefined) return;
+		this.#cancelBatch();
+		this.#fireBatch();
+	}
+
 	// RIG-2644 — flush the deliver queue once an UNTRACKED stream (a startup probe
 	// holding `#session.isStreaming` with no turn edge) settles. Idempotent via the
 	// `#strandRecoveryArmed` latch. On resolve: no-op if closed / a tracked turn started
@@ -691,9 +698,10 @@ export class CompassAgent {
 	// turn needs nothing — its `agent_end` flushes the queue.
 	#fireBatch(): void {
 		if (this.#closed) return;
+		const wasOpen = this.#batchCancel !== undefined;
 		this.#batchCancel = undefined;
 		this.#batchFirstAt = undefined;
-		this.#emitBatchPending(0, 0);
+		if (wasOpen) this.#emitBatchPending(0, 0);
 		if (!this.#turnActive && !this.#session.isStreaming) {
 			this.#flushTurnEnd();
 		} else if (!this.#turnActive) {
