@@ -89,8 +89,8 @@ between them is a host change, not a data migration.
 **The tier is chosen at bring-up by the `COMPASS_RUNTIME_BACKEND` environment
 variable, not by the host's capabilities.** A KVM-capable host still runs the
 entry tier's containers unless you ask for microVMs. The microVM tier also
-needs guest images and a run root; see
-[Bringing the stack up](#bringing-the-stack-up).
+needs guest images and a run root; see the
+[guest image guide](./self-host-guest-image.md).
 
 ## What to run it on
 

@@ -84,6 +84,7 @@ root as described in the [guest image guide](self-host-guest-image.md).
 $ compass-stack up \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex> \
     --listen 0.0.0.0:50052
 ```
 
@@ -101,7 +102,8 @@ live on the same box, and the server binds the loopback TLS door.
 ```console
 $ compass-stack up \
     --state-dir /var/lib/compass \
-    --image ghcr.io/rigelbuild/compass-agent:latest
+    --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex>
 ```
 
 No `--listen` flag is needed; the default `127.0.0.1:50052` is the one-box door.
@@ -315,6 +317,7 @@ RemainAfterExit=yes
 ExecStart=/usr/local/bin/compass-stack up \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex> \
     --listen 0.0.0.0:50052 \
     --linger
 ExecStop=/usr/local/bin/compass-stack down \
@@ -322,8 +325,8 @@ ExecStop=/usr/local/bin/compass-stack down \
     --image ghcr.io/rigelbuild/compass-agent:latest
 Restart=on-failure
 RestartSec=5
-# The stack needs KVM and rootless podman; run it as a dedicated,
-# non-root user that is a member of the kvm group.
+# The microVM tier needs KVM and a dedicated user in the kvm group.
+# For the entry tier, rootless podman is enough.
 User=compass
 
 [Install]
@@ -342,7 +345,9 @@ Check readiness with the stack's own status command:
 ```console
 compass-stack status \
     --state-dir /var/lib/compass \
-    --image ghcr.io/rigelbuild/compass-agent:latest
+    --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex> \
+    --listen 0.0.0.0:50052
 ```
 
 This reports the server, not Runner health. It is not a read-only probe: if the
