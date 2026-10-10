@@ -986,7 +986,7 @@ func TestServeWithListenNeverLogsAdminToken(t *testing.T) {
 
 	sb := &syncBuffer{}
 	// Set the capturing default BEFORE serveInBackground so the startup log line
-	// (buildNetworkServer's "bootstrap admin token written") is captured.
+	// (buildNetworkServer's "bootstrap admin token ready") is captured.
 	slog.SetDefault(slog.New(slog.NewTextHandler(sb, nil)))
 
 	dir := t.TempDir()
