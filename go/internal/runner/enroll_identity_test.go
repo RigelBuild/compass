@@ -9,8 +9,9 @@ package runner
 // UNENFORCED) — the two facts the hub stamps onto every session status.
 
 import (
-	"connectrpc.com/connect"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -175,5 +178,62 @@ func TestFileTokenChangesBetweenRPCs(t *testing.T) {
 	want := []string{"Bearer first", "Bearer second"}
 	if got := rec.authRequests(); !slices.Equal(got, want) {
 		t.Fatalf("RPC authorization headers = %v, want %v", got, want)
+	}
+}
+
+type errorAfterEnrollToken struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *errorAfterEnrollToken) Token() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.calls == 1 {
+		return "enroll-token", nil
+	}
+	return "", errors.New("projected token unavailable")
+}
+
+type sessionsHeaderRecorder struct {
+	recordingEnroll
+	authorization chan string
+}
+
+func (h *sessionsHeaderRecorder) Sessions(_ context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+	h.authorization <- stream.RequestHeader().Get("Authorization")
+	_, err := stream.Receive()
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
+func TestSessionsOmitsAuthorizationWhenTokenSourceErrors(t *testing.T) {
+	handler := &sessionsHeaderRecorder{authorization: make(chan string, 1)}
+	path, service := compassv1internalconnect.NewRunnerServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, service)
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = cleartextHTTP2()
+	server.Start()
+	t.Cleanup(server.Close)
+
+	link, err := Dial(context.Background(), RunnerConfig{
+		RunnerID:   "runner-1",
+		ServerAddr: server.URL,
+		Token:      &errorAfterEnrollToken{},
+		Engine:     runtime.NewHostRuntime(t.TempDir()),
+		HTTPClient: h2cHTTPClient(t),
+	})
+	if err != nil {
+		t.Fatalf("Dial = %v, want successful enrollment", err)
+	}
+	if err := link.RunSessions(context.Background(), nil, discardLoggerRunner()); err != nil {
+		t.Fatalf("RunSessions = %v, want clean end", err)
+	}
+	if got := <-handler.authorization; got != "" {
+		t.Fatalf("Sessions Authorization = %q, want absent after Token error", got)
 	}
 }

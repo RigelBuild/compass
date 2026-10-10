@@ -72,6 +72,27 @@ func TestCheckMountsAgainstTokenFileResolvesSymlinks(t *testing.T) {
 	}
 }
 
+func TestCheckMountsAgainstTokenFileResolvesSymlinkBeforeParentTraversal(t *testing.T) {
+	root := t.TempDir()
+	tokenDir := filepath.Join(root, "projected")
+	nested := filepath.Join(tokenDir, "nested")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("create nested token directory: %v", err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(nested, alias); err != nil {
+		t.Fatalf("symlink nested token directory: %v", err)
+	}
+	mountPath := alias + string(filepath.Separator) + ".." + string(filepath.Separator) + "token"
+	err := checkMountsAgainstTokenFile(
+		[]runtime.Mount{{HostPath: mountPath}},
+		filepath.Join(tokenDir, "token"),
+	)
+	if err == nil {
+		t.Fatal("mount through symlink and parent traversal into token directory was accepted")
+	}
+}
+
 func TestResolveTokenFileFlagWinsOverEnvironment(t *testing.T) {
 	t.Setenv("COMPASS_RUNNER_TOKEN", "")
 	source, err := resolveTokenSource("", "/flag/token", nil)

@@ -185,20 +185,16 @@ func checkMountsAgainstTokenFile(mounts []runtime.Mount, tokenPath string) error
 	if tokenPath == "" {
 		return nil
 	}
-	tokenDir, err := filepath.Abs(filepath.Dir(tokenPath))
+	absoluteTokenPath, err := absolutePathPreservingTraversal(tokenPath)
 	if err != nil {
 		return fmt.Errorf("resolving runner token directory: %w", err)
 	}
-	tokenDir, err = resolveExistingPath(tokenDir)
+	tokenDir, err := canonicalizePath(rawPathParent(absoluteTokenPath))
 	if err != nil {
 		return fmt.Errorf("resolving runner token directory: %w", err)
 	}
 	for _, mount := range mounts {
-		hostPath, err := filepath.Abs(mount.HostPath)
-		if err != nil {
-			return fmt.Errorf("resolving --mount host path %q: %w", mount.HostPath, err)
-		}
-		hostPath, err = resolveExistingPath(hostPath)
+		hostPath, err := canonicalizePath(mount.HostPath)
 		if err != nil {
 			return fmt.Errorf("resolving --mount host path %q: %w", mount.HostPath, err)
 		}
@@ -209,23 +205,58 @@ func checkMountsAgainstTokenFile(mounts []runtime.Mount, tokenPath string) error
 	return nil
 }
 
-func resolveExistingPath(path string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return filepath.Clean(resolved), nil
+func absolutePathPreservingTraversal(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	parent := filepath.Dir(path)
-	if parent == path {
-		return filepath.Clean(path), nil
-	}
-	resolvedParent, err := resolveExistingPath(parent)
+	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(resolvedParent, filepath.Base(path)), nil
+	return cwd + string(filepath.Separator) + path, nil
+}
+
+func rawPathParent(path string) string {
+	trimmed := strings.TrimRight(path, string(filepath.Separator))
+	if trimmed == "" {
+		return string(filepath.Separator)
+	}
+	separator := strings.LastIndexByte(trimmed, filepath.Separator)
+	if separator <= 0 {
+		return string(filepath.Separator)
+	}
+	return trimmed[:separator]
+}
+
+func canonicalizePath(path string) (string, error) {
+	absolute, err := absolutePathPreservingTraversal(path)
+	if err != nil {
+		return "", err
+	}
+	root := string(filepath.Separator)
+	parts := strings.Split(strings.TrimPrefix(absolute, root), root)
+	resolved := root
+	for index, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		candidate := filepath.Join(resolved, part)
+		canonical, err := filepath.EvalSymlinks(candidate)
+		if err == nil {
+			resolved = filepath.Clean(canonical)
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		tail := append([]string{part}, parts[index+1:]...)
+		return filepath.Clean(filepath.Join(append([]string{resolved}, tail...)...)), nil
+	}
+	return filepath.Clean(resolved), nil
 }
 
 func pathContains(parent, child string) bool {
