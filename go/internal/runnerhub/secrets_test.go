@@ -420,9 +420,108 @@ func TestSignalSecretsVersionPushesMonotonicToken(t *testing.T) {
 	}
 }
 
-// TestSignalSecretsVersionNoLiveSessionsIsNoop: a signal with no live sessions
-// (nothing bound) pushes nothing and is a clean success — a bump with no one to
-// notify is not an error.
+// TestSignalSecretsVersionForTargetsAccount pins that only the account's live
+// session receives its SecretsVersion command.
+func TestSignalSecretsVersionForTargetsAccount(t *testing.T) {
+	hub := newHubOnly()
+	if _, err := hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	for _, binding := range []struct {
+		container string
+		session   string
+		account   store.AccountID
+	}{
+		{container: "cont-a", session: "sess-a", account: "acct-a"},
+		{container: "cont-b", session: "sess-b", account: "acct-b"},
+	} {
+		hub.bindContainer(binding.container, binding.account, "runner-1")
+		hub.promoteSession(t.Context(), binding.container, binding.session)
+	}
+	router, _, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	rec := newRecordingSend()
+	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
+
+	if err := hub.SignalSecretsVersionFor(t.Context(), "acct-a"); err != nil {
+		t.Fatalf("SignalSecretsVersionFor(acct-a) = %v, want nil", err)
+	}
+	waitRecorded(t, rec, 1)
+	got := secretsVersionsPushed(t, rec)
+	if len(got) != 1 || got[0].GetSessionId() != "sess-a" {
+		t.Fatalf("targeted signals = %+v, want only sess-a", got)
+	}
+}
+
+func TestSignalSecretsVersionForNoSessionOrRunnerIsNoop(t *testing.T) {
+	tests := []struct {
+		name   string
+		enroll bool
+	}{
+		{name: "no session", enroll: true},
+		{name: "no runner"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := newHubOnly()
+			if tc.enroll {
+				if _, err := hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+					t.Fatalf("enroll: %v", err)
+				}
+			}
+			router, _, err := hub.routerFor("any")
+			if tc.enroll && err != nil {
+				t.Fatalf("routerFor after enroll = %v, want a router", err)
+			}
+			rec := newRecordingSend()
+			if router != nil {
+				router.attach(rec.send)
+				defer router.detach(errStreamClosed)
+			}
+			if err := hub.SignalSecretsVersionFor(t.Context(), "acct-missing"); err != nil {
+				t.Fatalf("SignalSecretsVersionFor without a live session = %v, want nil", err)
+			}
+			if got := len(secretsVersionsPushed(t, rec)); got != 0 {
+				t.Fatalf("pushed %d frames without a live session, want 0", got)
+			}
+		})
+	}
+}
+
+func TestSignalSecretsVersionForMonotonic(t *testing.T) {
+	hub := newHubOnly()
+	if _, err := hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	hub.bindContainer("cont-a", "acct-a", "runner-1")
+	hub.promoteSession(t.Context(), "cont-a", "sess-a")
+	router, _, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	rec := newRecordingSend()
+	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
+
+	if err := hub.SignalSecretsVersion(); err != nil {
+		t.Fatalf("SignalSecretsVersion = %v, want nil", err)
+	}
+	waitRecorded(t, rec, 1)
+	first := secretsVersionsPushed(t, rec)[0].GetVersion()
+	if err := hub.SignalSecretsVersionFor(t.Context(), "acct-a"); err != nil {
+		t.Fatalf("SignalSecretsVersionFor(acct-a) = %v, want nil", err)
+	}
+	waitRecorded(t, rec, 2)
+	all := secretsVersionsPushed(t, rec)
+	second := all[len(all)-1].GetVersion()
+	if !tokenGreater(t, second, first) {
+		t.Fatalf("targeted version %q is not greater than prior version %q", second, first)
+	}
+}
+
 func TestSignalSecretsVersionNoLiveSessionsIsNoop(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
