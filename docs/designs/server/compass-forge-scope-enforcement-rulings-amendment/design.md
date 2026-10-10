@@ -21,7 +21,8 @@ and it bypasses repository scope.
 
 Matt ruled on RIG-4436 (2026-10-10): "No PATs. Only App. All else lgtm." Every
 recommendation in the frozen record stands except OQ-6, where the Dogfood PAT
-carve-out is rejected.
+carve-out is rejected. On OQ-10 he added: "Yes agents need to be able to open
+PRs."
 
 ### Rulings
 
@@ -33,7 +34,7 @@ carve-out is rejected.
 | OQ-6 | The GitHub App is the only GitHub credential, in every tier and on every host. No PAT path exists for Beta or Dogfood. See below. |
 | OQ-7 | The git credential covers the workstream repository plus the account's write grants. Ungranted read-only dependencies are not reachable. |
 | OQ-8 | The workstream repository is a server-side spawn-target record. No provision proto field is added. |
-| OQ-10 | The token narrows permissions as well as repositories, to `contents: write` plus `metadata: read`. See Open Questions for the shipped `pull_requests: write`. |
+| OQ-10 | The token narrows permissions as well as repositories, to `contents: write`, `pull_requests: write` and `metadata: read`. Agents must be able to open pull requests, so `pull_requests: write` stays, as the broker shipped in #2008 already requests (`gitCredentialPermissions` in `go/server/git_credential.go`). |
 
 ### OQ-6: no PAT path
 
@@ -99,17 +100,6 @@ filed as a follow-up record. The frozen record's T4/T5 build on it.
 - [ ] A1: no user `SecretGH` delivered or declarable, with tests.
 - [ ] A2: opt-out enforcement setting through the CLI and `ServeConfig`, with tests.
 - [ ] A3: follow-up design record for the workstream repository source.
-
-## Open Questions
-
-- **OQ-10 permission set (load-bearing):** Matt accepted `contents: write`
-  plus `metadata: read`. The broker shipped in #2008 also requests
-  `pull_requests: write`, which lets an agent open a pull request with its
-  git token. Either drop `pull_requests: write` from
-  `gitCredentialPermissions`, so agents open pull requests only through the
-  server's forge tool, or amend the ruling to keep it. Recommendation: keep
-  it; agents open their own pull requests from their workspace today. Asked on
-  RIG-4436.
 
 ## Ledger delta
 
