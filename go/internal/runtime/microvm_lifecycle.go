@@ -373,7 +373,7 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id WorkloadID) error {
 		if booted {
 			// Best-effort teardown of a partial boot; the returned start error
 			// is what the caller acts on, so a Shutdown error is not surfaced.
-			_ = vm.Shutdown(context.WithoutCancel(ctx))
+			_ = vm.Shutdown(ctx)
 		}
 	}()
 
@@ -619,9 +619,9 @@ func (m *MicroVMRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.D
 	// before this elapses, observed via the reaper); past it, kill the VMM
 	// outright.
 	if vm.WaitVMMExit(timeout) {
-		return vm.Shutdown(context.WithoutCancel(ctx)) // reap daemons + remove sockets
+		return vm.Shutdown(ctx) // reap daemons + remove sockets
 	}
-	if err := vm.Shutdown(context.WithoutCancel(ctx)); err != nil {
+	if err := vm.Shutdown(ctx); err != nil {
 		return errors.Join(fmt.Errorf("microvm: stopping session %s: %w", id, err), signalErr)
 	}
 	return nil
@@ -660,7 +660,7 @@ func (m *MicroVMRuntime) Remove(ctx context.Context, id WorkloadID) error {
 
 	var errs []error
 	if vm != nil {
-		if err := vm.Shutdown(context.WithoutCancel(ctx)); err != nil {
+		if err := vm.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("microvm: shutting down session %s: %w", id, err))
 		}
 	}

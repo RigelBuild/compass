@@ -330,13 +330,57 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 		t.Fatalf("startChild(live fake): %v", err)
 	}
 	t.Cleanup(func() {
-		if err := reap(c); err != nil {
+		if err := reap(context.WithoutCancel(t.Context()), c); err != nil {
 			t.Errorf("reaping the live fake: %v", err)
 		}
 	})
 
 	if err := waitForSockets(t.Context(), []string{socket}, []*child{c}, socketReadyTimeout); err != nil {
 		t.Fatalf("waitForSockets over a LIVE daemon that bound its socket = %v, want nil", err)
+	}
+}
+
+// A done ctx must cut reap's SIGTERM grace short, not be ignored: a daemon that
+// ignores SIGTERM is SIGKILLed at once and Shutdown returns well inside reapGrace.
+func TestShutdownHonorsDoneContextOverReapGrace(t *testing.T) {
+	dir := t.TempDir()
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("resolving sleep on PATH: %v", err)
+	}
+	// The fake reports through a FIFO once its trap is set, so SIGTERM cannot
+	// land before the trap does. An ignored signal stays ignored across exec.
+	ready := filepath.Join(dir, "ready")
+	if err := syscall.Mkfifo(ready, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	c := &child{
+		name:    "virtiofsd",
+		logPath: filepath.Join(dir, "virtiofsd.log"),
+		cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c",
+			longLivedStayAlive("trap '' TERM; echo > "+ready, sleepBin, "300")),
+	}
+	if err := startChild(c); err != nil {
+		t.Fatalf("startChild: %v", err)
+	}
+	if _, err := os.ReadFile(ready); err != nil {
+		t.Fatalf("awaiting the fake's trap: %v", err)
+	}
+	vm := &VM{virtiofsd: c}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	start := time.Now()
+	if err := vm.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown under a done ctx = %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed >= reapGrace {
+		t.Fatalf("Shutdown under a done ctx took %v (>= reapGrace %v): it ignored ctx", elapsed, reapGrace)
+	}
+	select {
+	case <-c.exited:
+	default:
+		t.Fatal("Shutdown returned before the daemon was reaped")
 	}
 }
 
@@ -358,7 +402,7 @@ func TestReapToleratesACancelledLaunchContext(t *testing.T) {
 	}
 	cancel()
 	<-c.exited
-	if err := reap(c); err != nil {
+	if err := reap(t.Context(), c); err != nil {
 		t.Fatalf("reap after the launch ctx was cancelled = %v, want nil", err)
 	}
 }

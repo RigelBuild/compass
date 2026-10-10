@@ -331,10 +331,8 @@ const canaryDeadline = 90 * time.Second
 // canaryTeardownGrace is the fresh short grace the severed teardown ctx carries:
 // the canary's own bounded ctx may already have expired (a mid-boot timeout), so
 // teardown runs under a WithoutCancel copy of it so the VM is torn down cleanly
-// instead of against an already-dead ctx (record §(f)). NB: this bounds Remove
-// only if/when Remove honors its ctx deadline — today Remove is deadline-agnostic
-// (vm.Shutdown re-strips cancellation and bounds itself with its own reapGrace
-// timer, os.RemoveAll ignores ctx), so the grace is not yet an enforced ceiling.
+// instead of against an already-dead ctx (record §(f)). It caps the daemons'
+// SIGTERM grace in vm.Shutdown; os.RemoveAll still ignores ctx.
 const canaryTeardownGrace = 30 * time.Second
 
 // canaryNamePrefix is the reserved name prefix every canary session carries. It
