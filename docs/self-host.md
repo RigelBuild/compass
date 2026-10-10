@@ -6,25 +6,20 @@ how the bundled database works (and how to bring your own), and how to run the
 stack under systemd.
 
 The stack is `compass-stack up`: one command that supervises the server, a
-database, and the agent runner as child processes on a KVM-capable Linux host.
-The per-agent sandboxes are microVMs, so the host must expose hardware
-virtualization — `compass-stack preflight` checks that before you commit to a
-bring-up.
+database, and the agent runner as child processes on a Linux host. Agent
+sessions run in containers by default or in microVMs when selected. The
+[prerequisites](#prerequisites) describe shared and microVM-only requirements.
 
 ## Prerequisites
 
-The stack runs the agent runner's sessions in microVMs and the database in a
-rootless container, so the host needs:
+Both tiers need Linux and rootless podman for the bundled database. They also
+need the `secretspec` CLI, at or above 0.20.0.
 
-- **A KVM-capable Linux machine.** `/dev/kvm` must be present and openable by
-  the user running the stack. On a cloud VM this means a bare-metal or
-  nested-virt-enabled instance type; on a workstation it means the invoking user
-  is in the `kvm` group.
 - **Rootless podman.** The bundled database runs as a rootless container.
-- **The microVM userspace trio** at or above the pinned floors:
-  cloud-hypervisor, virtiofsd, and passt. The nix flake channel provides these
-  at the sanctioned pin; the release tarball assumes you supply them (they are
-  packaged in most distributions).
+- **MicroVM tier only:** `/dev/kvm` must be present and openable by the stack
+  user, and the host needs the microVM userspace trio at or above its pinned
+  floors: cloud-hypervisor, virtiofsd, and passt. The nix flake supplies the
+  trio; the release tarball expects you to install it from your distribution.
 - **The `secretspec` CLI**, at or above 0.20.0. The server spawns it by name to
   read its secrets at boot, the master key included, so the server will not
   start without it. The nix flake's `compass-server` and `compass-stack-env`
@@ -53,7 +48,12 @@ $ compass-stack preflight
 ```
 
 A failing check prints a `[FAIL]` line naming the missing or below-floor
-dependency and exits non-zero, so it is safe to gate an install script on.
+dependency and exits non-zero. On the microVM tier, this is a useful install
+gate before `up`.
+
+The check includes microVM-specific probes even on the container tier. Missing
+`/dev/kvm` or microVM userspace is expected there; rootless podman and
+`secretspec` are still required for either tier.
 
 > **Note:** `compass-stack preflight` ships its own minimal checks. Once the
 > runtime lane's microVM support gate lands, these host-level checks defer to it;
@@ -67,13 +67,18 @@ The recommended shape for a shared or production install: a dedicated
 KVM-capable Linux host runs `compass-stack up`, the server binds a TLS door, and
 clients connect from other machines over that door.
 
-- The host exposes `/dev/kvm` and runs the full stack.
+- The microVM tier needs `/dev/kvm`; entry-tier containers do not.
 - The server listens on a routable address with a TLS certificate.
 - Clients elsewhere connect over TLS and run agent sessions in the host's
-  microVMs.
+  container or microVM, depending on the selected tier.
 
 Point the listen address at the host's routable interface when bringing the
-stack up:
+stack up. The LLM gateway has no default image, so supply
+`--gateway-image <image>@sha256:<hex>` or `--gateway-external`.
+
+The example below selects the entry tier's default containers. To use microVMs
+instead, pass `--runtime-backend microvm` and configure guest assets and a run
+root as described in the [guest image guide](self-host-guest-image.md).
 
 ```console
 $ compass-stack up \
@@ -87,7 +92,7 @@ $ compass-stack up \
 The single-machine shape for evaluation or solo use: the stack and the client
 live on the same box, and the server binds the loopback TLS door.
 
-- Everything runs on one KVM-capable machine.
+- The microVM tier needs KVM-capable hardware; the entry tier does not.
 - The server binds `127.0.0.1:50052` (the default listen address), reachable
   only from the same host.
 - TLS still applies on loopback, so the client's transport is identical to the
@@ -100,6 +105,8 @@ $ compass-stack up \
 ```
 
 No `--listen` flag is needed; the default `127.0.0.1:50052` is the one-box door.
+The LLM gateway has no default image, so supply `--gateway-image` or
+`--gateway-external` for either deployment shape.
 
 ## Installing the binaries
 
@@ -152,10 +159,11 @@ sources, the air-gapped runbook, and the agent-image bump flow are in
 ## Runner enrollment
 
 The Runner makes up to five enrollment attempts with 1s, 2s, 4s, and 8s backoffs,
-then exits non-zero. Under devenv, `restart.on = "on_failure"` restarts the
-Runner. `compass-stack` does not watch the Runner after `up` returns, and `up`
-attaches to a live server without starting one, so run `compass-stack down` and
-then the same `compass-stack up` command to restart it.
+then exits non-zero. `compass-stack` does not watch the Runner after `up` returns
+or confirm its startup preflight succeeded, so `up` may report ready while a
+Runner error is printed. Check the `up` output for `compass-runner:` errors.
+Under devenv, `restart.on = "on_failure"` restarts the Runner. To restart it
+manually, run `compass-stack down` and then the same `compass-stack up` command.
 
 ## Database
 
@@ -336,6 +344,10 @@ compass-stack status \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest
 ```
+
+This reports the server, not Runner health. It is not a read-only probe: if the
+stack is not running, `status` starts it instead of reporting it down. See
+[Runner enrollment](#runner-enrollment) for Runner startup and recovery.
 
 ## Model registry
 
