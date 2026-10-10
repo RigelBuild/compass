@@ -99,7 +99,7 @@ func podmanUsable() bool {
 // into binDir and returns it. The ProcessSupervisor resolves each Component to a
 // bare binary name via exec.LookPath (adapters/process.go:33-60), so the stack
 // only stands up if compass-postgres/-server/-runner are found on PATH; the
-// caller prepends binDir to PATH. Built from the module root (../.. of this
+// caller prepends binDir to PATH. Built from the module root (../.. of this directory).
 func buildBinariesFromModuleRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -232,21 +232,22 @@ func shortRoot(t *testing.T, suffix string) string {
 // downGuard registers a best-effort Down so a t.Fatal before the explicit Down
 // still drains the stack's children (Down is safe to call twice: drainChildren
 // nils its handles and the lock release is idempotent, lockfile.go:137-147).
-func downGuard(t *testing.T, s *stack.Stack) {
+func downGuard(t *testing.T, ctx context.Context, s *stack.Stack) {
 	t.Helper()
 	t.Cleanup(func() {
-		// Best-effort: the happy path asserts Down's error explicitly; this only
-		// covers a failed/panicked subtest so no child process leaks.
-		_ = s.Down(context.Background())
+		downCtx := context.WithoutCancel(ctx)
+		if err := s.Down(downCtx); err != nil {
+			t.Errorf("cleanup guard: Down: %v", err)
+		}
 	})
 }
 
 // assertServerGone probes the server socket and requires it to NOT answer —
 // proof the compass-server child is gone after Down. A short timeout keeps a
 // failed assertion fast.
-func assertServerGone(t *testing.T, deps stack.Deps, socketPath string) {
+func assertServerGone(t *testing.T, ctx context.Context, deps stack.Deps, socketPath string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	if _, err := deps.Prober.Probe(ctx, socketPath); err == nil {
 		t.Fatal("server still answering GetServerInfo after Down; the compass-server child was not stopped")
@@ -274,173 +275,165 @@ func TestStackIntegration(t *testing.T) {
 	binDir := buildBinariesFromModuleRoot(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 
-	ctx := context.Background() // test root context (rule://go-thread-context exemption)
+	t.Run("up_ready_down", integrationUpReadyDown)
+	t.Run("second_up_attaches", integrationSecondUpAttaches)
+	t.Run("concurrent_ups_one_spawns", integrationConcurrentUpsOneSpawns)
+}
 
-	// 1. up -> Ready -> down. A cold up reaches Health=Ready (server answering,
-	// and — since a spawned Ready stack means spawnChain ran to completion — the
-	// runner spawned with the image pulled), then Down drains the children.
-	t.Run("up_ready_down", func(t *testing.T) {
-		fx, deps := newFixture(t, shortRoot(t, "-a"))
+func integrationUpReadyDown(t *testing.T) {
+	ctx := t.Context()
+	fx, deps := newFixture(t, shortRoot(t, "-a"))
 
-		s, err := stack.Up(ctx, fx.cfg, deps)
-		if err != nil {
-			t.Fatalf("Up: %v", err)
-		}
-		downGuard(t, s)
+	s, err := stack.Up(ctx, fx.cfg, deps)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	downGuard(t, t.Context(), s)
 
-		st, err := s.Health(ctx)
-		if err != nil {
-			t.Fatalf("Health: %v", err)
-		}
-		if st.State != stack.StatusReady {
-			t.Fatalf("Health state = %s (%q), want ready", st.State, st.Detail)
-		}
-		if st.Detail == "" {
-			t.Fatal("Ready status carried an empty detail; want the server version")
-		}
-		if _, err := os.Stat(fx.socket); err != nil {
-			t.Fatalf("server socket %q missing while Ready: %v", fx.socket, err)
-		}
+	st, err := s.Health(ctx)
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if st.State != stack.StatusReady {
+		t.Fatalf("Health state = %s (%q), want ready", st.State, st.Detail)
+	}
+	if st.Detail == "" {
+		t.Fatal("Ready status carried an empty detail; want the server version")
+	}
+	if _, err := os.Stat(fx.socket); err != nil {
+		t.Fatalf("server socket %q missing while Ready: %v", fx.socket, err)
+	}
 
-		if err := s.Down(ctx); err != nil {
-			t.Fatalf("Down: %v", err)
-		}
-		assertServerGone(t, deps, fx.socket)
-		assertPostgresGone(t, fx.pgSock)
-	})
+	if err := s.Down(ctx); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	assertServerGone(t, t.Context(), deps, fx.socket)
+	assertPostgresGone(t, fx.pgSock)
+}
 
-	// 2. A second, independent up ATTACHES to the live stack rather than
-	// spawning a second one: the winner holds the O_EXCL lock, so the second Up
-	// finds it held, probes the answering server, and attaches (owns no
-	// children). Down on the attached stack is a no-op; Down on the spawner
-	// tears the real stack down.
-	t.Run("second_up_attaches", func(t *testing.T) {
-		fx, deps1 := newFixture(t, shortRoot(t, "-b"))
+func integrationSecondUpAttaches(t *testing.T) {
+	ctx := t.Context()
+	fx, deps1 := newFixture(t, shortRoot(t, "-b"))
 
-		s1, err := stack.Up(ctx, fx.cfg, deps1)
-		if err != nil {
-			t.Fatalf("first Up: %v", err)
-		}
-		downGuard(t, s1)
-		if st, err := s1.Health(ctx); err != nil || st.State != stack.StatusReady {
-			t.Fatalf("first Up Health = %s (err %v), want ready", st.State, err)
-		}
+	s1, err := stack.Up(ctx, fx.cfg, deps1)
+	if err != nil {
+		t.Fatalf("first Up: %v", err)
+	}
+	downGuard(t, t.Context(), s1)
+	if st, err := s1.Health(ctx); err != nil || st.State != stack.StatusReady {
+		t.Fatalf("first Up Health = %s (err %v), want ready", st.State, err)
+	}
 
-		// Fresh deps, same Config: a genuinely independent second up.
-		deps2, err := buildDeps(fx.cfg)
-		if err != nil {
-			t.Fatalf("buildDeps (second): %v", err)
-		}
-		s2, err := stack.Up(ctx, fx.cfg, deps2)
-		if err != nil {
-			t.Fatalf("second Up: %v", err)
-		}
-		downGuard(t, s2)
-		st2, err := s2.Health(ctx)
-		if err != nil {
-			t.Fatalf("second Up Health: %v", err)
-		}
-		if st2.State != stack.StatusAttached {
-			t.Fatalf("second Up state = %s, want attached (it must NOT have spawned a second stack)", st2.State)
-		}
+	// Fresh deps, same Config: a genuinely independent second up.
+	deps2, err := buildDeps(fx.cfg)
+	if err != nil {
+		t.Fatalf("buildDeps (second): %v", err)
+	}
+	s2, err := stack.Up(ctx, fx.cfg, deps2)
+	if err != nil {
+		t.Fatalf("second Up: %v", err)
+	}
+	downGuard(t, t.Context(), s2)
+	st2, err := s2.Health(ctx)
+	if err != nil {
+		t.Fatalf("second Up Health: %v", err)
+	}
+	if st2.State != stack.StatusAttached {
+		t.Fatalf("second Up state = %s, want attached (it must NOT have spawned a second stack)", st2.State)
+	}
 
-		// The attached stack owns nothing: Down releases (a no-op) and must not
-		// stop the still-live children.
-		if err := s2.Down(ctx); err != nil {
-			t.Fatalf("attached Down: %v", err)
-		}
-		if st, err := s1.Health(ctx); err != nil || st.State != stack.StatusReady {
-			t.Fatalf("after attached Down, spawner Health = %s (err %v), want still ready", st.State, err)
-		}
+	// The attached stack owns nothing: Down releases (a no-op) and must not
+	// stop the still-live children.
+	if err := s2.Down(ctx); err != nil {
+		t.Fatalf("attached Down: %v", err)
+	}
+	if st, err := s1.Health(ctx); err != nil || st.State != stack.StatusReady {
+		t.Fatalf("after attached Down, spawner Health = %s (err %v), want still ready", st.State, err)
+	}
 
-		// The spawner's Down performs the real teardown.
-		if err := s1.Down(ctx); err != nil {
-			t.Fatalf("spawner Down: %v", err)
-		}
-		assertServerGone(t, deps1, fx.socket)
-		assertPostgresGone(t, fx.pgSock)
-	})
+	// The spawner's Down performs the real teardown.
+	if err := s1.Down(ctx); err != nil {
+		t.Fatalf("spawner Down: %v", err)
+	}
+	assertServerGone(t, t.Context(), deps1, fx.socket)
+	assertPostgresGone(t, fx.pgSock)
+}
 
-	// 3. Two concurrent ups -> exactly one spawns. The O_EXCL lockfile closes the
-	// probe->spawn TOCTOU: one goroutine wins the lock and spawns the chain; the
-	// other, finding the lock held, either attaches (server already answering) or
-	// returns a contended error (server not yet answering) — either outcome is
-	// "did not double-spawn". Exactly one Up comes back a spawned Ready stack.
-	t.Run("concurrent_ups_one_spawns", func(t *testing.T) {
-		fx, _ := newFixture(t, shortRoot(t, "-c"))
+func integrationConcurrentUpsOneSpawns(t *testing.T) {
+	ctx := t.Context()
+	fx, _ := newFixture(t, shortRoot(t, "-c"))
 
-		type result struct {
-			s   *stack.Stack
-			err error
-		}
-		results := make(chan result, 2)
-		for range 2 {
-			go func() {
-				// Each goroutine gets its own real deps; the shared Config points
-				// them at the same state dir / socket, so the lock arbitrates.
-				deps, derr := buildDeps(fx.cfg)
-				if derr != nil {
-					results <- result{nil, derr}
-					return
-				}
-				s, err := stack.Up(ctx, fx.cfg, deps)
-				results <- result{s, err}
-			}()
-		}
-		r1, r2 := <-results, <-results
-
-		// Classify each outcome by its PUBLIC Health state: a spawner reads
-		// Ready (it spawned the chain), an attacher reads Attached (it found the
-		// lock held and attached to the live server), and a contended loser
-		// returns an error and no stack. Exactly one may be a spawner.
-		var spawners, others int
-		var spawner *stack.Stack
-		for _, r := range []result{r1, r2} {
-			if r.err != nil {
-				// A contended loser: server not yet answering when it found the
-				// lock held. Legitimate "did not double-spawn" — but it must not
-				// also hand back a stack.
-				if r.s != nil {
-					t.Fatalf("contended Up returned an error AND a stack: %v / %+v", r.err, r.s)
-				}
-				others++
-				continue
+	type result struct {
+		s   *stack.Stack
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			// Each goroutine gets its own real deps; the shared Config points
+			// them at the same state dir / socket, so the lock arbitrates.
+			deps, derr := buildDeps(fx.cfg)
+			if derr != nil {
+				results <- result{nil, derr}
+				return
 			}
-			if r.s == nil {
-				t.Fatalf("Up returned nil stack and nil error")
-			}
-			downGuard(t, r.s)
-			st, err := r.s.Health(ctx)
-			if err != nil {
-				t.Fatalf("classifying Up Health: %v", err)
-			}
-			switch st.State {
-			case stack.StatusReady:
-				spawners++
-				spawner = r.s
-			case stack.StatusAttached:
-				others++
-			default:
-				t.Fatalf("Up produced state %s, want ready (spawned) or attached", st.State)
-			}
-		}
-		if spawners != 1 {
-			t.Fatalf("exactly one Up must spawn; got %d spawners, %d others", spawners, others)
-		}
+			s, err := stack.Up(ctx, fx.cfg, deps)
+			results <- result{s, err}
+		}()
+	}
+	r1, r2 := <-results, <-results
 
-		// The single spawner is Ready and its server answers — exactly one stack.
-		if st, err := spawner.Health(ctx); err != nil || st.State != stack.StatusReady {
-			t.Fatalf("spawner Health = %s (err %v), want ready", st.State, err)
+	// Classify each outcome by its PUBLIC Health state: a spawner reads
+	// Ready (it spawned the chain), an attacher reads Attached (it found the
+	// lock held and attached to the live server), and a contended loser
+	// returns an error and no stack. Exactly one may be a spawner.
+	var spawners, others int
+	var spawner *stack.Stack
+	for _, r := range []result{r1, r2} {
+		if r.err != nil {
+			// A contended loser: server not yet answering when it found the
+			// lock held. Legitimate "did not double-spawn" — but it must not
+			// also hand back a stack.
+			if r.s != nil {
+				t.Fatalf("contended Up returned an error AND a stack: %v / %+v", r.err, r.s)
+			}
+			others++
+			continue
 		}
-
-		if err := spawner.Down(ctx); err != nil {
-			t.Fatalf("spawner Down: %v", err)
+		if r.s == nil {
+			t.Fatalf("Up returned nil stack and nil error")
 		}
-		goneDeps, err := buildDeps(fx.cfg)
+		downGuard(t, t.Context(), r.s)
+		st, err := r.s.Health(ctx)
 		if err != nil {
-			t.Fatalf("buildDeps (gone probe): %v", err)
+			t.Fatalf("classifying Up Health: %v", err)
 		}
-		assertServerGone(t, goneDeps, fx.socket)
-		assertPostgresGone(t, fx.pgSock)
-	})
+		switch st.State {
+		case stack.StatusReady:
+			spawners++
+			spawner = r.s
+		case stack.StatusAttached:
+			others++
+		default:
+			t.Fatalf("Up produced state %s, want ready (spawned) or attached", st.State)
+		}
+	}
+	if spawners != 1 {
+		t.Fatalf("exactly one Up must spawn; got %d spawners, %d others", spawners, others)
+	}
+
+	// The single spawner is Ready and its server answers — exactly one stack.
+	if st, err := spawner.Health(ctx); err != nil || st.State != stack.StatusReady {
+		t.Fatalf("spawner Health = %s (err %v), want ready", st.State, err)
+	}
+
+	if err := spawner.Down(ctx); err != nil {
+		t.Fatalf("spawner Down: %v", err)
+	}
+	goneDeps, err := buildDeps(fx.cfg)
+	if err != nil {
+		t.Fatalf("buildDeps (gone probe): %v", err)
+	}
+	assertServerGone(t, t.Context(), goneDeps, fx.socket)
+	assertPostgresGone(t, fx.pgSock)
 }
