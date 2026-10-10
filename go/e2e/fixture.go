@@ -64,7 +64,7 @@ func configureForgeStub(tb testing.TB, secretsPath string) *forgeStub {
 	tb.Helper()
 	stub := newForgeStub(tb)
 	primary, reviewer := forgePEM(tb), forgePEM(tb)
-	file, err := os.OpenFile(secretsPath, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: secretsPath is the fixture's own state-dir secrets file
+	file, err := os.OpenFile(secretsPath, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: secretsPath is the fixture-owned temporary secrets file
 	if err != nil {
 		tb.Fatalf("open forge secrets: %v", err)
 	}
@@ -306,35 +306,8 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// exported on PATH there (see main_test.go); the ProcessSupervisor resolves
 	// each Component to a bare binary name via exec.LookPath against that entry.
 
-	// Acquire the root/stateDir/ports either fresh (the default ephemeral
-	// fixture) or from a persistent site (WithSite — the H6 cross-restart
-	// substrate). The site path reuses one root/stateDir/ports across two Ups so
-	// the second re-attaches the persisted postgres cluster; the ephemeral path
-	// mints per-call state exactly as before. Only the acquisition differs — the
-	// downstream cfg build is shared.
-	var root, stateDir string
-	var pgPort int
-	if fc.site != nil {
-		root = fc.site.root
-		stateDir = fc.site.stateDir
-		pgPort = fc.site.pgPort
-	} else {
-		// shortRoot registers its own RemoveAll on tb.Cleanup; the site path must
-		// NOT (else run1's cleanup would delete the persisted DB before run2), so
-		// newPersistentSite owns the site's single end-of-test RemoveAll instead.
-		root = shortRoot(tb, "h1")
-		stateDir = tb.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
-		pgPort = freePorts(tb, 1)[0]
-	}
-	pgSockDir := filepath.Join(root, "pg")
-	runtimeDir := filepath.Join(root, "rt")
-	serverSock := filepath.Join(root, "s.sock")
-	if err := os.MkdirAll(pgSockDir, 0o700); err != nil {
-		tb.Fatalf("mkdir pg sock dir: %v", err)
-	}
-	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
-		tb.Fatalf("mkdir runtime dir: %v", err)
-	}
+	root, stateDir, pgPort := acquireFixtureRoot(tb, fc)
+	pgSockDir, runtimeDir, serverSock := makeFixtureDirs(tb, root)
 
 	// The DSN host is the socket DIRECTORY postgres -k listens on (libpq unix
 	// convention); the postgres wrapper creates it and binds
@@ -347,11 +320,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// the forge names declareServerSecretNames declares — configureForgeStub
 	// appends those three below when WithForgeStub is set, and a declared name
 	// with no line here fails the Load wholesale.
-	// tb.TempDir, not root: root is shared per-PID across ephemeral legs.
-	secretsPath := filepath.Join(tb.TempDir(), "secrets.env")
-	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+fixtureMasterKey+"\n"), 0o600); err != nil {
-		tb.Fatalf("write secrets file: %v", err)
-	}
+	secretsPath := writeFixtureSecrets(tb)
 
 	var forgeStub *forgeStub
 	if fc.forge {
@@ -507,6 +476,52 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	}
 
 	return f
+}
+
+func acquireFixtureRoot(tb testing.TB, fc fixtureConfig) (root, stateDir string, pgPort int) {
+	tb.Helper()
+	// Acquire the root/stateDir/ports either fresh (the default ephemeral
+	// fixture) or from a persistent site (WithSite — the H6 cross-restart
+	// substrate). The site path reuses one root/stateDir/ports across two Ups so
+	// the second re-attaches the persisted postgres cluster; the ephemeral path
+	// mints per-call state exactly as before. Only the acquisition differs — the
+	// downstream cfg build is shared.
+	if fc.site != nil {
+		root = fc.site.root
+		stateDir = fc.site.stateDir
+		pgPort = fc.site.pgPort
+	} else {
+		// shortRoot registers its own RemoveAll on tb.Cleanup; the site path must
+		// NOT (else run1's cleanup would delete the persisted DB before run2), so
+		// newPersistentSite owns the site's single end-of-test RemoveAll instead.
+		root = shortRoot(tb, "h1")
+		stateDir = tb.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
+		pgPort = freePorts(tb, 1)[0]
+	}
+	return root, stateDir, pgPort
+}
+
+func makeFixtureDirs(tb testing.TB, root string) (pgSockDir, runtimeDir, serverSock string) {
+	tb.Helper()
+	pgSockDir = filepath.Join(root, "pg")
+	runtimeDir = filepath.Join(root, "rt")
+	serverSock = filepath.Join(root, "s.sock")
+	if err := os.MkdirAll(pgSockDir, 0o700); err != nil {
+		tb.Fatalf("mkdir pg sock dir: %v", err)
+	}
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		tb.Fatalf("mkdir runtime dir: %v", err)
+	}
+	return pgSockDir, runtimeDir, serverSock
+}
+
+func writeFixtureSecrets(tb testing.TB) string {
+	tb.Helper()
+	secretsPath := filepath.Join(tb.TempDir(), "secrets.env")
+	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+fixtureMasterKey+"\n"), 0o600); err != nil {
+		tb.Fatalf("write secrets file: %v", err)
+	}
+	return secretsPath
 }
 
 // Compass is the authenticated CompassService client dialed at the loopback TLS

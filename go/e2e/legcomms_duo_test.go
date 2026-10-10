@@ -127,40 +127,7 @@ func TestCommsTwoAgentConversation(t *testing.T) {
 
 	f := sharedFixture(t)
 
-	// Each container's reap is registered BEFORE its StartSession: the reparented
-	// rootless conmon outlives stack Down, so RemoveWorkspace is the only
-	// reliable reap, and registering early survives a later t.Fatal.
-	agentAID, err := f.CreateAgent(ctx, duoAgentAHandle, "Duo Agent A")
-	if err != nil {
-		t.Fatalf("CreateAgent (A): %v", err)
-	}
-	containerA, err := f.Provision(ctx, agentAID, "duo-agent-a-provision")
-	if err != nil {
-		t.Fatalf("Provision (A): %v", err)
-	}
-	t.Cleanup(func() {
-		_ = f.RemoveWorkspace(ctx, containerA, "duo-agent-a-teardown") // best-effort reap
-	})
-	sessionA, err := f.StartSession(ctx, containerA)
-	if err != nil {
-		t.Fatalf("StartSession (A): %v", err)
-	}
-
-	agentBID, err := f.CreateAgent(ctx, duoAgentBHandle, "Duo Agent B")
-	if err != nil {
-		t.Fatalf("CreateAgent (B): %v", err)
-	}
-	containerB, err := f.Provision(ctx, agentBID, "duo-agent-b-provision")
-	if err != nil {
-		t.Fatalf("Provision (B): %v", err)
-	}
-	t.Cleanup(func() {
-		_ = f.RemoveWorkspace(ctx, containerB, "duo-agent-b-teardown") // best-effort reap
-	})
-	sessionB, err := f.StartSession(ctx, containerB)
-	if err != nil {
-		t.Fatalf("StartSession (B): %v", err)
-	}
+	agentAID, sessionA, agentBID, sessionB := duoStartAgents(t, ctx, f)
 
 	st, err := store.Open(ctx, f.DSN())
 	if err != nil {
@@ -324,4 +291,44 @@ func assertDuoDMChannel(ctx context.Context, t *testing.T, st *store.Store, topi
 		!slices.Contains(dmChannel.MemberAccountIDs, store.AccountID(agentBID)) {
 		t.Fatalf("dm channel members = %v, want both agents %q and %q", dmChannel.MemberAccountIDs, agentAID, agentBID)
 	}
+}
+
+func duoStartAgents(t *testing.T, ctx context.Context, f *Fixture) (string, string, string, string) {
+	t.Helper()
+
+	// Each container's reap is registered BEFORE its StartSession: the reparented
+	// rootless conmon outlives stack Down, so RemoveWorkspace is the only
+	// reliable reap, and registering early survives a later t.Fatal.
+	agentAID, err := f.CreateAgent(ctx, duoAgentAHandle, "Duo Agent A")
+	if err != nil {
+		t.Fatalf("CreateAgent (A): %v", err)
+	}
+	containerA, err := f.Provision(ctx, agentAID, "duo-agent-a-provision")
+	if err != nil {
+		t.Fatalf("Provision (A): %v", err)
+	}
+	t.Cleanup(func() {
+		_ = f.RemoveWorkspace(ctx, containerA, "duo-agent-a-teardown") // best-effort reap
+	})
+	sessionA, err := f.StartSession(ctx, containerA)
+	if err != nil {
+		t.Fatalf("StartSession (A): %v", err)
+	}
+
+	agentBID, err := f.CreateAgent(ctx, duoAgentBHandle, "Duo Agent B")
+	if err != nil {
+		t.Fatalf("CreateAgent (B): %v", err)
+	}
+	containerB, err := f.Provision(ctx, agentBID, "duo-agent-b-provision")
+	if err != nil {
+		t.Fatalf("Provision (B): %v", err)
+	}
+	t.Cleanup(func() {
+		_ = f.RemoveWorkspace(ctx, containerB, "duo-agent-b-teardown") // best-effort reap
+	})
+	sessionB, err := f.StartSession(ctx, containerB)
+	if err != nil {
+		t.Fatalf("StartSession (B): %v", err)
+	}
+	return agentAID, sessionA, agentBID, sessionB
 }
