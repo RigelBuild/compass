@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentPlanEntryStatus,
 	AgentSessionState,
@@ -19,6 +20,7 @@ import {
 	type SessionEvent,
 } from "./compassv1";
 import { EventMapper, type MapOutput } from "./mapping";
+import { TurnSequence } from "./turn-sequence";
 
 // The injected wall-clock value: every trace SessionEvent must stamp exactly
 // this on `at_unix_ms` (as a bigint). A picked-out constant, distinct from any
@@ -207,6 +209,77 @@ describe("EventMapper — session lifecycle state derivation", () => {
 		});
 	}
 });
+
+describe("EventMapper turn sequence", () => {
+	test("matches each agent end to its start when events are delayed", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		for (const expected of [1n, 2n, 3n]) {
+			mapper.captureTurnStart();
+			mapper.map({ type: "agent_start" });
+			mapper.map({ type: "turn_start" });
+			mapper.map({ type: "turn_start" });
+			const frame = mapper.map({ type: "agent_end", messages: [] })[0];
+			if (frame?.kind !== "session")
+				throw new Error("expected lifecycle session frame");
+			expect(frame.value.turnSequence).toBe(expected);
+		}
+	});
+
+	test("a terminal end settles every started run after a superseded end", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		for (let i = 0; i < 2; i++) {
+			mapper.captureTurnStart();
+			mapper.map({ type: "agent_start" });
+		}
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(2n);
+		mapper.captureTurnStart();
+		mapper.map({ type: "agent_start" });
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(3n);
+	});
+
+	test("a terminal end drops a core start whose session start never arrived", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		mapper.captureTurnStart();
+		mapper.map({ type: "agent_start" });
+		// A detached session swallows run 2's session agent_start.
+		mapper.captureTurnStart();
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(2n);
+		mapper.captureTurnStart();
+		mapper.map({ type: "agent_start" });
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(3n);
+	});
+
+	test("a terminal end with no seen start settles a resumed sequence", () => {
+		const manager = SessionManager.inMemory();
+		new TurnSequence(manager).start();
+		const mapper = new EventMapper(() => FIXED_NOW, new TurnSequence(manager));
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(1n);
+	});
+
+	test("a non-terminal end keeps later starts open", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		for (let i = 0; i < 2; i++) {
+			mapper.captureTurnStart();
+			mapper.map({ type: "agent_start" });
+		}
+		expect(settledTurn(mapper, { isTerminal: false })).toBe(1n);
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(2n);
+	});
+});
+
+function settledTurn(
+	mapper: EventMapper,
+	end: { readonly isTerminal: boolean },
+): bigint {
+	const frame = mapper.map({ type: "agent_end", messages: [], ...end })[0];
+	if (frame?.kind !== "session")
+		throw new Error("expected lifecycle session frame");
+	return frame.value.turnSequence;
+}
 
 describe("EventMapper — injected clock stamps at_unix_ms (as bigint)", () => {
 	// The mapper takes an injectable clock; every trace SessionEvent stamps its

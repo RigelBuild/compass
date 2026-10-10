@@ -57,7 +57,7 @@ func TestScanSkipsHeldMessage(t *testing.T) {
 
 	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
-	c.hold(context.Background(), "author-sess", "m1", 0) // registered in c.held under its author session
+	c.hold(context.Background(), "author-sess", "m1", 0, 0) // registered in c.held under its author session
 
 	c.scanMissedMentions(context.Background())
 
@@ -246,7 +246,7 @@ func TestScanSkipsMarkWhenHeldAtMarkTime(t *testing.T) {
 	reads.beforeMessageByID = func(id string) {
 		if id == "m1" && !injected {
 			injected = true
-			c.hold(context.Background(), "sess-author", "m1", 0)
+			c.hold(context.Background(), "sess-author", "m1", 0, 0)
 		}
 	}
 	c.scanMissedMentions(context.Background())

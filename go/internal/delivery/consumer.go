@@ -131,8 +131,10 @@ type settleEvent struct {
 	state        compassv1.AgentSessionState
 	turnSequence uint64
 	// upTo bounds the commit times this edge fires. A real settle fires all; a
-	// late hold's replay fires only its settled turn, not a still-streaming one.
+	// late hold's replay is bounded when no turn sequence is available.
 	upTo int64
+	// generation is the author's identity generation when the edge was queued.
+	generation uint64
 }
 
 // startEvent is one queued session-start edge handed from the hub's Start (or
@@ -177,15 +179,15 @@ const instrumentationScope = "github.com/RigelBuild/compass/go/internal/delivery
 // while NATS stayed up waits before a recovery pass delivers it.
 const recoveryFloorInterval = 5 * time.Minute
 
-// heldEntry is one pending-deliver registry element: the held message id plus
-// the W3C traceparent and tenant captured at hold time, so the deliver fired when
-// the author settles re-links to the publisher's trace and re-reads under the
-// message's own tenant. Empty traceparent ⇒ empty on the wire.
+// heldEntry records a post's turn sequence and the trace, tenant, and commit metadata.
 type heldEntry struct {
-	messageID   string
-	traceparent string
-	tenant      store.TenantID
-	atUnixMs    int64 // commit time, matched against settleEvent.upTo
+	messageID    string
+	traceparent  string
+	tenant       store.TenantID
+	atUnixMs     int64
+	turnSequence uint64
+	// generation is the author's identity generation at hold time.
+	generation uint64
 }
 
 // Consumer consumes message_posted refs and fans posted messages out to
@@ -218,10 +220,18 @@ type Consumer struct {
 	// only messages held for a LIVE author, so the cursor sweep still delivers a
 	// stranded entry.
 	held map[string][]heldEntry
-	// lastSettle maps an author session id to the unix ms of its latest settle
-	// edge, so a message whose hold lost the race with that settle fires at once.
-	// The recovery pass drops entries of dead sessions; the reap drops them too.
-	lastSettle map[string]int64
+	// lastSettle records the latest settle timestamp and reported sequence for
+	// late holds. A sequence comparison takes precedence over wall time.
+	lastSettle         map[string]int64
+	lastSettleSequence map[string]uint64
+	lastSettleLegacy   map[string]bool
+	// generation counts each session's STARTING edges; turn sequences compare
+	// only within one generation because a fresh identity restarts at 1.
+	generation map[string]uint64
+	// generationStart is when each session's current generation began (ms).
+	generationStart map[string]int64
+	// fallbackLogged records sessions warned about legacy settles until teardown.
+	fallbackLogged map[string]struct{}
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
 	// (coalescing wakeups): the hook appends and signals without blocking Deliver.
@@ -260,7 +270,7 @@ type Consumer struct {
 	// it drives.
 	newFloorTicker func() (<-chan time.Time, func())
 
-	// now stamps and prunes lastSettle; a test swaps in a fixed clock.
+	// now supplies wall-clock bounds for legacy late holds and tests.
 	now func() time.Time
 
 	// erroredWakes holds per-account ERRORED wake backoff, under mu.
@@ -298,16 +308,21 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 		dispatched = nil
 	}
 	return &Consumer{
-		fab:        fab,
-		st:         st,
-		dispatch:   dispatch,
-		resolver:   resolver,
-		log:        log,
-		held:       make(map[string][]heldEntry),
-		lastSettle: make(map[string]int64),
-		notify:     make(chan struct{}, 1),
-		gates:      make(map[string]*sync.Mutex),
-		dispatched: dispatched,
+		fab:                fab,
+		st:                 st,
+		dispatch:           dispatch,
+		resolver:           resolver,
+		log:                log,
+		held:               make(map[string][]heldEntry),
+		lastSettle:         make(map[string]int64),
+		lastSettleSequence: make(map[string]uint64),
+		lastSettleLegacy:   make(map[string]bool),
+		generation:         make(map[string]uint64),
+		generationStart:    make(map[string]int64),
+		fallbackLogged:     make(map[string]struct{}),
+		notify:             make(chan struct{}, 1),
+		gates:              make(map[string]*sync.Mutex),
+		dispatched:         dispatched,
 		newFloorTicker: func() (<-chan time.Time, func()) {
 			t := time.NewTicker(recoveryFloorInterval)
 			return t.C, t.Stop
@@ -442,6 +457,18 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 	for sid := range c.lastSettle {
 		if _, ok := live[sid]; !ok {
 			delete(c.lastSettle, sid)
+			delete(c.lastSettleSequence, sid)
+			delete(c.lastSettleLegacy, sid)
+			delete(c.generation, sid)
+			delete(c.generationStart, sid)
+			delete(c.fallbackLogged, sid)
+		}
+	}
+	// A session restarted but never settled has no lastSettle entry.
+	for sid := range c.generation {
+		if _, ok := live[sid]; !ok {
+			delete(c.generation, sid)
+			delete(c.generationStart, sid)
 		}
 	}
 	c.pruneErroredWakes()
