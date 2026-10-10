@@ -63,9 +63,13 @@ const ownerOnlySnapshot = (ownerId: string) => {
 };
 
 const composerInput = (c: HTMLElement) =>
-	c.querySelector<HTMLInputElement>(".conv-main .conv-composer input.field");
+	c.querySelector<HTMLTextAreaElement>(
+		".conv-main .conv-composer textarea.cx-composer",
+	);
 const composerSend = (c: HTMLElement) =>
-	c.querySelector<HTMLButtonElement>(".conv-main .conv-composer .send");
+	c.querySelector<HTMLButtonElement>(
+		'.conv-main .conv-composer .cx-btn[data-variant="primary"]',
+	);
 
 // Mount TopicView over the live fake store (CALLER identity), drain the snapshot
 // round-trip, then open the primary topic so the composer is bound.

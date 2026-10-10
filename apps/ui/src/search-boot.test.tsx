@@ -104,7 +104,7 @@ test("a booted shell routes message search to the topbar and the palette", async
 		liveClients(() => calls++),
 		async (store, root) => {
 			const topbar = root.querySelector<HTMLInputElement>(
-				".topbar-search-input",
+				".topbar-search .cx-search",
 			);
 			if (!topbar) throw new Error("topbar search input missing");
 			await search(root, topbar, ".topbar-search-group");
@@ -135,7 +135,9 @@ test("a booted shell routes message search to the topbar and the palette", async
 test("a shell booted without clients shows no message group and makes no RPC", async () => {
 	setSearchDebounceMsForTest(0);
 	await withShell(undefined, async (store, root) => {
-		const topbar = root.querySelector<HTMLInputElement>(".topbar-search-input");
+		const topbar = root.querySelector<HTMLInputElement>(
+			".topbar-search .cx-search",
+		);
 		if (!topbar) throw new Error("topbar search input missing");
 		expect(await search(root, topbar, ".topbar-search-group")).not.toContain(
 			"Messages",

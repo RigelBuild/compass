@@ -18,6 +18,7 @@ import {
 	Show,
 } from "solid-js";
 import { useStore } from "../context";
+import "../design/components/input.css";
 import { detectPlatform } from "../keyboard/dispatch";
 import { DEFAULT_KEYMAP } from "../keyboard/keymap";
 import { buildShortcutGroups } from "../keyboard/shortcuts-model";

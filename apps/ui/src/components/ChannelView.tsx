@@ -24,6 +24,8 @@ import {
 } from "../comms-stub";
 import { avatarInitial } from "../constants";
 import { useStore } from "../context";
+import "../design/components/button.css";
+import "../design/components/input.css";
 import { useView } from "../view-scope";
 import { MarkdownText } from "./MarkdownText";
 
@@ -352,6 +354,7 @@ export const Composer: Component<{
 	const store = useStore();
 	const [draft, setDraft] = createSignal("");
 	const [error, setError] = createSignal<string | null>(null);
+	let field: HTMLTextAreaElement | undefined;
 	// The post-policy gate (comms substrate §A2): an `owner_only` channel admits
 	// only its owner. Separate from the membership gate — the composer is
 	// disabled if EITHER fails. This is the honest-disabled pattern (mirroring
@@ -370,6 +373,8 @@ export const Composer: Component<{
 		if (!text || blocked()) return;
 		setError(null);
 		setDraft("");
+		// Clearing the value fires no input event, so drop the grown height here.
+		if (field) field.style.height = "";
 		store
 			.postMessage(props.channel.id, props.topic, text)
 			.catch((e: unknown) => {
@@ -382,14 +387,22 @@ export const Composer: Component<{
 	};
 	return (
 		<div class="conv-composer">
-			<input
-				class="field"
+			<textarea
+				ref={field}
+				class="cx-composer"
+				rows={1}
 				placeholder={hint()}
 				value={draft()}
 				disabled={blocked()}
-				onInput={(e) => setDraft(e.currentTarget.value)}
+				onInput={(e) => {
+					setDraft(e.currentTarget.value);
+					// A textarea does not grow by itself; reset first so it can shrink.
+					e.currentTarget.style.height = "auto";
+					e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
+				}}
 				onKeyDown={(e) => {
-					if (e.key === "Enter" && !e.shiftKey) {
+					// Enter during IME composition commits the candidate, not the message.
+					if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
 						e.preventDefault();
 						send();
 					}
@@ -397,7 +410,8 @@ export const Composer: Component<{
 			/>
 			<button
 				type="button"
-				class="send"
+				class="cx-btn"
+				data-variant="primary"
 				disabled={blocked() || draft().trim().length === 0}
 				onClick={send}
 			>
@@ -511,7 +525,7 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 	return (
 		<div class="new-topic">
 			<input
-				class="new-topic-name field"
+				class="new-topic-name cx-input"
 				placeholder={
 					!policyOk() && props.channel.membership !== "none"
 						? "Owner-only channel…"
@@ -522,7 +536,7 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 				onInput={(e) => setName(e.currentTarget.value)}
 			/>
 			<input
-				class="new-topic-message field"
+				class="new-topic-message cx-input"
 				placeholder="First message…"
 				value={message()}
 				disabled={blocked()}
@@ -536,7 +550,7 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 			/>
 			<button
 				type="button"
-				class="new-topic-start"
+				class="new-topic-start cx-btn"
 				disabled={!canStart()}
 				onClick={start}
 			>

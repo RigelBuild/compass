@@ -8,6 +8,7 @@ import {
 	Show,
 } from "solid-js";
 import { useStore } from "../context";
+import "../design/components/input.css";
 import type {
 	CommandId,
 	Destination,
@@ -210,7 +211,7 @@ export const TopBarSearch: Component<{
 		>
 			<input
 				ref={inputRef}
-				class="topbar-search-input"
+				class="cx-search"
 				type="text"
 				role="combobox"
 				aria-label="Global search"

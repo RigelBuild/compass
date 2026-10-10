@@ -70,9 +70,13 @@ const twoTopicSnapshot = () => ({
 // Re-queried after every topic switch: the composer is a FRESH instance per
 // topic, so a reference captured before the switch is a detached node.
 const composerInput = (c: HTMLElement) =>
-	c.querySelector<HTMLInputElement>(".conv-main .conv-composer input.field");
+	c.querySelector<HTMLTextAreaElement>(
+		".conv-main .conv-composer textarea.cx-composer",
+	);
 const composerSend = (c: HTMLElement) =>
-	c.querySelector<HTMLButtonElement>(".conv-main .conv-composer .send");
+	c.querySelector<HTMLButtonElement>(
+		'.conv-main .conv-composer .cx-btn[data-variant="primary"]',
+	);
 
 /** Mount TopicView over a live store, wait out the driver's snapshot round-trip,
  *  then open the primary topic so the composer is bound before the body runs.
@@ -80,7 +84,7 @@ const composerSend = (c: HTMLElement) =>
  *  deterministic — no timers. */
 async function mountComposer(fake: FakeComms): Promise<{
 	store: AppStore;
-	input: HTMLInputElement;
+	input: HTMLTextAreaElement;
 	send: HTMLButtonElement;
 	container: HTMLElement;
 	settled: () => Promise<void>;
@@ -138,9 +142,8 @@ describe("topic composer (live PostMessage)", () => {
 		}
 	});
 
-	// Enter sends too — the affordance a human actually uses. Shift+Enter does
-	// NOT (it is the newline escape), so a multi-line draft is still possible.
-	test("Enter sends; Shift+Enter does not", async () => {
+	// Enter sends too — the affordance a human actually uses.
+	test("Enter sends", async () => {
 		const fake = createFakeComms(snapshot());
 		const { input, settled } = await mountComposer(fake);
 		try {
@@ -151,15 +154,70 @@ describe("topic composer (live PostMessage)", () => {
 			flush();
 
 			expect(fake.posts.map((p) => p.text)).toEqual(["sent with enter"]);
+			expect(input.value).toBe("");
+		} finally {
+			fake.close();
+		}
+	});
 
-			fireEvent.input(input, { target: { value: "not sent" } });
+	// Shift+Enter is the newline escape: the key is left to the textarea's
+	// default action, so a multi-line draft is kept whole and nothing posts.
+	test("Shift+Enter inserts a newline and does not send", async () => {
+		const fake = createFakeComms(snapshot());
+		const { input, settled } = await mountComposer(fake);
+		try {
+			fireEvent.input(input, { target: { value: "line one" } });
 			flush();
-			fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+			const notCancelled = fireEvent.keyDown(input, {
+				key: "Enter",
+				shiftKey: true,
+			});
+			// The browser's default action for that key is the newline itself.
+			fireEvent.input(input, { target: { value: "line one\nline two" } });
 			await settled();
 			flush();
 
-			expect(fake.posts.map((p) => p.text)).toEqual(["sent with enter"]);
-			expect(input.value).toBe("not sent");
+			expect(notCancelled).toBe(true);
+			expect(fake.posts).toEqual([]);
+			expect(input.value).toBe("line one\nline two");
+		} finally {
+			fake.close();
+		}
+	});
+
+	// Enter that commits an IME composition picks the candidate; sending then
+	// would post a half-composed word.
+	test("Enter during IME composition does not send", async () => {
+		const fake = createFakeComms(snapshot());
+		const { input, settled } = await mountComposer(fake);
+		try {
+			fireEvent.input(input, { target: { value: "にほん" } });
+			flush();
+			fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+			await settled();
+			flush();
+
+			expect(fake.posts).toEqual([]);
+			expect(input.value).toBe("にほん");
+		} finally {
+			fake.close();
+		}
+	});
+
+	// A textarea does not grow by itself: each input resets the height and
+	// then sizes it to the content (the primitive's max-height caps it).
+	test("input grows the composer to its scrollHeight", async () => {
+		const fake = createFakeComms(snapshot());
+		const { input } = await mountComposer(fake);
+		try {
+			Object.defineProperty(input, "scrollHeight", {
+				configurable: true,
+				get: () => 120,
+			});
+			fireEvent.input(input, { target: { value: "a\nb\nc\nd" } });
+			flush();
+
+			expect(input.style.height).toBe("120px");
 		} finally {
 			fake.close();
 		}

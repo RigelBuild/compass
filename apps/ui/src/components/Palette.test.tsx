@@ -64,7 +64,7 @@ describe("Palette (RIG-2483)", () => {
 		await flush();
 		await Promise.resolve();
 		expect(document.activeElement).toBe(
-			container.querySelector(".topbar-search-input"),
+			container.querySelector(".topbar-search .cx-search"),
 		);
 	});
 	test("palette close does not steal focus moved by a command", async () => {
@@ -72,7 +72,7 @@ describe("Palette (RIG-2483)", () => {
 		store.openPalette();
 		await flush();
 		const search = container.querySelector<HTMLInputElement>(
-			".topbar-search-input",
+			".topbar-search .cx-search",
 		);
 		search?.focus();
 		store.closePalette();

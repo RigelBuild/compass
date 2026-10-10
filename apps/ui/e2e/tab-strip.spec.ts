@@ -11,7 +11,7 @@ test("channel and agent tabs keep a draft across a switch and survive reload", a
 }) => {
 	await page.goto(`/#${TOPIC_PATH}`);
 	const tabs = page.locator('.cx-tab-strip [role="tab"]');
-	const composer = page.locator(".conv-composer input.field");
+	const composer = page.locator(".conv-composer textarea.cx-composer");
 	await expect(composer).toBeVisible();
 	await composer.fill("half-typed reply");
 
@@ -39,7 +39,7 @@ test("composer keeps W text; W N opens a tab and W X closes it", async ({
 }) => {
 	await page.goto(`/#${TOPIC_PATH}`);
 	const tabs = page.locator('.cx-tab-strip [role="tab"]');
-	const composer = page.locator(".conv-composer input.field");
+	const composer = page.locator(".conv-composer textarea.cx-composer");
 	await expect(composer).toBeVisible();
 	await expect(tabs).toHaveCount(1);
 	await composer.focus();

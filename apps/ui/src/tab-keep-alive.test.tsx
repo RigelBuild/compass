@@ -11,8 +11,10 @@ import { focusedPane, MAX_TABS } from "./window-layout";
 const AGENT_ID = "acc-compass-ui";
 const TOPIC_PATH = "/channel/ch-svc-compass/topic/top-compass-acp";
 
-const composer = (c: HTMLElement): HTMLInputElement => {
-	const input = c.querySelector<HTMLInputElement>(".conv-composer input.field");
+const composer = (c: HTMLElement): HTMLTextAreaElement => {
+	const input = c.querySelector<HTMLTextAreaElement>(
+		".conv-composer textarea.cx-composer",
+	);
 	if (!input) throw new Error("no topic composer");
 	return input;
 };
@@ -171,7 +173,7 @@ describe("pane focus follows DOM focus", () => {
 		const { store, container } = mountApp(TOPIC_PATH);
 		await flush();
 		const [first, second] = await splitPanels(store, container);
-		const input = first.querySelector<HTMLElement>(".conv-composer input");
+		const input = first.querySelector<HTMLElement>(".conv-composer textarea");
 		if (!input) throw new Error("no composer in the first pane");
 		input.focus();
 		await flush();

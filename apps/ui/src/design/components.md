@@ -44,11 +44,12 @@ Primary is an accent fill; ghost is borderless with a hover wash; danger uses
 ## Input / Search / Select / Composer
 
 - **Classes:** `.cx-input`, `.cx-search`, `.cx-select`, `.cx-composer`.
-- **States:** rest / hover / active (select) / selected (`data-selected`) /
-  disabled (45%) / focus. Focus swaps the border to `--cx-border-focus` and
-  renders `--cx-focus-ring`.
+- **States:** rest (`--cx-border-field` edge, the site's input border) /
+  hover / active (select) / selected (`data-selected`) / disabled (45%) /
+  focus. Focus swaps the border to `--cx-border-focus` and renders
+  `--cx-focus-ring`.
 - **Tokens:** `--cx-bg-panel`, `--cx-bg-hover`, `--cx-bg-active`,
-  `--cx-border`, `--cx-border-focus`, `--cx-accent`, `--cx-text`,
+  `--cx-border-field`, `--cx-border-focus`, `--cx-accent`, `--cx-text`,
   `--cx-text-bright`, `--cx-text-faint`, `--cx-font-ui`, `--cx-text-sm`,
   `--cx-space-2/-3/-6/-8`, `--cx-motion-fast`,
   `--cx-ease-out`, `--cx-focus-ring`.

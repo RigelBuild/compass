@@ -35,7 +35,7 @@ async function settleSearch(): Promise<void> {
 }
 
 const input = (container: HTMLElement) =>
-	container.querySelector<HTMLInputElement>(".topbar-search-input");
+	container.querySelector<HTMLInputElement>(".topbar-search .cx-search");
 
 describe("TopBarSearch", () => {
 	test("exposes combobox and listbox semantics as results open and close", async () => {
