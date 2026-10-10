@@ -3,19 +3,20 @@
 // ListBoardIssues re-snapshot with the live tail in one id-keyed map (re-sent id REPLACES);
 // `resync_required`/fresh instance_epoch cold-starts. I/O here, wire→domain in ./adapt.
 
-import type {
+import {
 	AgentSessionState,
-	CompassClient,
-	SubscribeEventsResponse,
+	type CompassClient,
+	type SubscribeEventsResponse,
 } from "@compass/client";
 import type { Issue as DomainIssue, RuntimeMarker } from "../stub-data";
 import { adaptIssue, adaptRuntimeMarker } from "./adapt";
 import { createReconnectBackoff } from "./backoff";
 
-/** An agent account's current session, as last reported on the status stream. */
+/** An agent's session status and most recent WORKING-to-READY event time. */
 export interface AccountSession {
 	readonly sessionId: string;
 	readonly state: AgentSessionState;
+	readonly turnEndedAtUnixMs?: number;
 }
 
 /** What the driver needs to run: the compass client, the sink for each new
@@ -31,8 +32,7 @@ export interface EventStreamOptions {
 	 *  id. A status whose account binding is no longer resolvable carries no
 	 *  account and is skipped rather than keyed under an empty id. */
 	onRuntime?: (runtime: ReadonlyMap<string, RuntimeMarker>) => void;
-	/** Called with each account's latest session id + state, keyed by account id;
-	 *  skips unbound statuses and clears on resync, like `onRuntime`. */
+	/** Called with account sessions; clears on resync and retains turn-end times. */
 	onSessions?: (sessions: ReadonlyMap<string, AccountSession>) => void;
 	signal?: AbortSignal;
 	onError?: (error: unknown) => void;
@@ -42,6 +42,21 @@ export interface EventStreamOptions {
  *  named wire type so the switch stays exhaustive against the wire cases without
  *  importing every inner event message. */
 type SubscribeEventsPayload = SubscribeEventsResponse["payload"];
+
+function turnEndForStatus(
+	previous: AccountSession | undefined,
+	sessionId: string,
+	state: AgentSessionState,
+	atUnixMs: number,
+): number | undefined {
+	if (!previous || previous.sessionId !== sessionId) return undefined;
+	if (
+		previous.state === AgentSessionState.WORKING &&
+		state === AgentSessionState.READY
+	)
+		return atUnixMs;
+	return previous.turnEndedAtUnixMs;
+}
 
 /** Run the SubscribeEvents stream until `signal` aborts. Maintains the board as
  *  a driver-local `Map<id, Issue>` plus the single stream cursor + instance
@@ -70,7 +85,10 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 	const backoff = createReconnectBackoff(signal);
 	const backoffBeforeReconnect = backoff.wait;
 
-	const applyPayload = (payload: SubscribeEventsPayload): void => {
+	const applyPayload = (
+		payload: SubscribeEventsPayload,
+		atUnixMs: number,
+	): void => {
 		if (payload.case === "agentSessionStatus") {
 			// No resolvable account binding means nothing to key the marker by;
 			// keying it under "" would attach one agent's posture to every
@@ -79,9 +97,17 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 			if (account === "") return;
 			runtime.set(account, adaptRuntimeMarker(payload.value));
 			onRuntime?.(new Map(runtime));
+			const previous = sessions.get(account);
+			const turnEndedAtUnixMs = turnEndForStatus(
+				previous,
+				payload.value.sessionId,
+				payload.value.state,
+				atUnixMs,
+			);
 			sessions.set(account, {
 				sessionId: payload.value.sessionId,
 				state: payload.value.state,
+				...(turnEndedAtUnixMs === undefined ? {} : { turnEndedAtUnixMs }),
 			});
 			onSessions?.(new Map(sessions));
 			return;
@@ -165,7 +191,7 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 
 				// Apply an issue upsert for its board side-effect; a non-issue tail payload
 				// is ignored. Progress is accounted on the cursor advance above.
-				applyPayload(resp.payload);
+				applyPayload(resp.payload, Number(resp.atUnixMs));
 			}
 			// A clean close with no forward progress is a spin a tight loop would hammer;
 			// back off (escalating). A close after real events, or a resync, stays immediate.

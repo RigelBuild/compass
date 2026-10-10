@@ -15,6 +15,7 @@ import {
 	type Issue as WireIssue,
 } from "@compass/client";
 import type { Issue as DomainIssue, RuntimeMarker } from "../stub-data";
+import type { AccountSession } from "./events";
 import { runEventStream } from "./events";
 
 // The SubscribeEvents read-driver seam (RIG-1729 read slice). A fake server is a
@@ -138,15 +139,16 @@ function statusResp(
 	});
 }
 
-// A session-status response carrying a lifecycle transition for one session.
 function sessionResp(
 	seq: bigint,
 	account: string,
 	sessionId: string,
 	state: AgentSessionState,
+	atUnixMs = 0n,
 ): SubscribeEventsResponse {
 	return create(SubscribeEventsResponseSchema, {
 		seq,
+		atUnixMs,
 		instanceEpoch: 7n,
 		payload: {
 			case: "agentSessionStatus",
@@ -161,7 +163,7 @@ function sessionResp(
 
 type SessionMap = ReadonlyMap<
 	string,
-	{ sessionId: string; state: AgentSessionState }
+	{ sessionId: string; state: AgentSessionState; turnEndedAtUnixMs?: number }
 >;
 
 describe("runEventStream (RIG-1729 read driver)", () => {
@@ -253,6 +255,82 @@ describe("runEventStream (RIG-1729 read driver)", () => {
 			sessionId: "sess-2",
 			state: AgentSessionState.READY,
 		});
+	});
+	test("records the READY event time on WORKING to READY", async () => {
+		const transport = scriptedTransport([
+			sessionResp(1n, "acc-a", "sess-1", AgentSessionState.WORKING, 10n),
+			sessionResp(2n, "acc-a", "sess-1", AgentSessionState.READY, 1234n),
+		]);
+		const client = createCompassClient(transport);
+		const abort = new AbortController();
+		let sessions: SessionMap = new Map();
+		const run = runEventStream({
+			client,
+			onIssues: () => {},
+			onSessions: (next) => {
+				sessions = next;
+			},
+			signal: abort.signal,
+		});
+		try {
+			await drainUntil(
+				() => sessions.get("acc-a")?.state === AgentSessionState.READY,
+			);
+			expect(sessions.get("acc-a")).toEqual({
+				sessionId: "sess-1",
+				state: AgentSessionState.READY,
+				turnEndedAtUnixMs: 1234,
+			});
+		} finally {
+			abort.abort();
+			await run;
+		}
+	});
+
+	test("READY retains its end time; resync clears and replay restores it", async () => {
+		const transport = scriptedTransport([
+			sessionResp(1n, "acc-a", "sess-1", AgentSessionState.WORKING, 10n),
+			sessionResp(2n, "acc-a", "sess-1", AgentSessionState.READY, 1234n),
+			sessionResp(3n, "acc-a", "sess-1", AgentSessionState.READY, 5678n),
+			resyncResp(),
+			sessionResp(1n, "acc-a", "sess-1", AgentSessionState.WORKING, 10n),
+			sessionResp(2n, "acc-a", "sess-1", AgentSessionState.READY, 1234n),
+		]);
+		const client = createCompassClient(transport);
+		const abort = new AbortController();
+		const snapshots: Array<ReadonlyMap<string, AccountSession>> = [];
+		const run = runEventStream({
+			client,
+			onIssues: () => {},
+			onSessions: (next) => snapshots.push(next),
+			signal: abort.signal,
+		});
+		try {
+			await drainUntil(() => snapshots.length >= 6);
+			expect(snapshots.map((snapshot) => snapshot.get("acc-a"))).toEqual([
+				{ sessionId: "sess-1", state: AgentSessionState.WORKING },
+				{
+					sessionId: "sess-1",
+					state: AgentSessionState.READY,
+					turnEndedAtUnixMs: 1234,
+				},
+				{
+					sessionId: "sess-1",
+					state: AgentSessionState.READY,
+					turnEndedAtUnixMs: 1234,
+				},
+				undefined,
+				{ sessionId: "sess-1", state: AgentSessionState.WORKING },
+				{
+					sessionId: "sess-1",
+					state: AgentSessionState.READY,
+					turnEndedAtUnixMs: 1234,
+				},
+			]);
+		} finally {
+			abort.abort();
+			await run;
+		}
 	});
 
 	test("resyncRequired clears the session map", async () => {
@@ -377,8 +455,12 @@ describe("runEventStream (RIG-1729 read driver)", () => {
 			signal: abort.signal,
 		});
 		try {
-			// Wait until all three ids are present (catch-up "old" + tail "a"/"b").
-			await drainUntil(() => latest.length === 3);
+			await drainUntil(
+				() =>
+					latest.length === 3 &&
+					latest.find((issue) => issue.id === "a")?.title === "a-tail" &&
+					latest.some((issue) => issue.id === "b"),
+			);
 			expect([...latest.map((i) => i.id)].sort()).toEqual(["a", "b", "old"]);
 			// The durable-only issue survives (the ring would have evicted it).
 			expect(latest.find((i) => i.id === "old")?.title).toBe("durable-only");

@@ -59,6 +59,8 @@ export const DEMO_AGENTS: readonly Agent[] = joinAgents(
 	DEMO_ACCOUNTS,
 	DEMO_PRESENCE,
 	new Map(),
+	new Map(),
+	new Map(),
 );
 
 const REPO = "demo/sample-app";

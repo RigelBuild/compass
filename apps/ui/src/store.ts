@@ -231,6 +231,8 @@ export interface TourClient {
  * type rather than coupling to `ReturnType<typeof createAppStore>`.
  */
 export interface AppStore {
+	/** Per-agent most recent focused-view open time, persisted per workspace. */
+	lastOpened: Accessor<ReadonlyMap<string, number>>;
 	// ── View routing ──
 	/** The view the window chrome reads routed selection through: the window
 	 *  layout's focused view. The router mirrors its path (record A2). */
@@ -391,7 +393,7 @@ export interface AppStore {
 	 *  agent-resolution seam (RIG-1645 P5). A REACTIVE read: consumers that call
 	 *  it (`rightTabGroups`, and transitively `activeFleetItem`) re-run when the
 	 *  agent set changes. Resolves through the reactive `agents` memo (offline
-	 *  `STUB_AGENTS`, live `joinAgents(accounts(), presence())`), so a
+	 *  `STUB_AGENTS`, live `joinAgents`), so a
 	 *  presence/account tick flips its answer. */
 	agentById: (accountId: string) => Agent | undefined;
 	/** The activity bar as ordered groups (unreachable-pin amendment RIG-1645):
@@ -614,11 +616,9 @@ export interface AppStoreOptions {
 	 *  The fixture default keeps the offline store on the fixture's owner. */
 	readonly callerId?: string;
 	/** The workspace/connection identity used to namespace per-deployment UI
-	 *  prefs in `localStorage` — the pinned-agent set (Record A §T3). index.tsx
-	 *  derives it from the live `Connection` (baseUrl + caller) so one
-	 *  deployment's account ids never hydrate as pins on another. Absent (offline
-	 *  / tests) → the pin key falls back to `callerId`, so two stores built with
-	 *  distinct caller/workspace identities keep separate pin sets. */
+	 *  prefs in `localStorage` (pins, last-opened agent times). index.tsx derives
+	 *  it from the live `Connection` so one deployment's ids never hydrate on
+	 *  another. Absent (offline / tests) → falls back to `callerId`. */
 	readonly workspaceKey?: string;
 	/** The comms state the store starts from before any stream push. Defaults to
 	 *  EMPTY — tests that need populated comms pass the fixture explicitly. */
@@ -679,6 +679,7 @@ function isRunning(
 /** The live session source: each account's current session from the status
  *  stream, plus each session's tailed trace, kept for the store's lifetime. */
 interface LiveSessions {
+	accountSessions: Accessor<ReadonlyMap<string, AccountSession>>;
 	setAccountSessions: (sessions: ReadonlyMap<string, AccountSession>) => void;
 	sessionFor: (agentId: string) => AgentSession | undefined;
 }
@@ -838,6 +839,7 @@ function createLiveSessions(
 			for (const abort of tails.values()) abort.abort();
 		});
 	return {
+		accountSessions,
 		setAccountSessions: adoptAccountSessions,
 		sessionFor: (agentId) => {
 			const status = accountSessions().get(agentId);
@@ -911,6 +913,42 @@ function loadPinnedAgents(workspace: string): readonly PinnedAgent[] {
 		return pins;
 	} catch {
 		return [];
+	}
+}
+
+function loadLastOpened(workspace: string): ReadonlyMap<string, number> {
+	const store = safeLocalStorage();
+	if (!store) return new Map();
+	try {
+		const raw = store.getItem(`compass.lastOpened.${workspace}`);
+		if (!raw) return new Map();
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+			return new Map();
+		const times = new Map<string, number>();
+		for (const [accountId, timestamp] of Object.entries(parsed)) {
+			if (typeof timestamp === "number" && Number.isFinite(timestamp))
+				times.set(accountId, timestamp);
+		}
+		return times;
+	} catch {
+		return new Map();
+	}
+}
+
+function saveLastOpened(
+	workspace: string,
+	lastOpened: ReadonlyMap<string, number>,
+): void {
+	const store = safeLocalStorage();
+	if (!store) return;
+	try {
+		store.setItem(
+			`compass.lastOpened.${workspace}`,
+			JSON.stringify(Object.fromEntries(lastOpened)),
+		);
+	} catch {
+		// Best-effort: a quota / privacy-locked write failure is non-fatal.
 	}
 }
 
@@ -1199,6 +1237,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// `{ id, handle }` pairs (RIG-1645 P0); a pin resolving to no visible agent is
 	// RETAINED and still emits a marked item. Falls back to `callerId` when no identity.
 	const workspaceKey = options.workspaceKey ?? callerId;
+	const [lastOpened, setLastOpened] = createSignal<ReadonlyMap<string, number>>(
+		loadLastOpened(workspaceKey),
+	);
 	const [pinnedAgents, setPinnedAgents] = createSignal<readonly PinnedAgent[]>(
 		loadPinnedAgents(workspaceKey),
 	);
@@ -1279,7 +1320,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// Live, the demo accounts and presence already ride the merged inputs; the
 	// offline fixture roster has no join, so the demo agents append directly.
 	const agents: Accessor<readonly Agent[]> = options.comms
-		? createMemo(() => joinAgents(accounts(), presence(), runtimeMarkers()))
+		? createMemo(() =>
+				joinAgents(
+					accounts(),
+					presence(),
+					runtimeMarkers(),
+					live?.accountSessions() ?? new Map(),
+					lastOpened(),
+				),
+			)
 		: withDemo(() => STUB_AGENTS, DEMO_AGENTS);
 	// Boot default (Record A §T5): the first hydrated pin resolving to a visible
 	// agent, else the static `status` pane (RIG-1645 P4, OQ-1 ruled kept). An
@@ -1414,6 +1463,33 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		return scope;
 	});
 	const view = createMemo<View>(() => focusedView().route().view);
+	// Status events for other agents must not re-record the focused one.
+	const focusedAgentTurn = createMemo(
+		() => {
+			const route = focusedView().route();
+			if (route.view !== "agent") return undefined;
+			const turnEndedAtUnixMs = live
+				?.accountSessions()
+				.get(route.agentId)?.turnEndedAtUnixMs;
+			return { agentId: route.agentId, turnEndedAtUnixMs };
+		},
+		{
+			equals: (a, b) =>
+				a?.agentId === b?.agentId &&
+				a?.turnEndedAtUnixMs === b?.turnEndedAtUnixMs,
+		},
+	);
+	createEffect(focusedAgentTurn, (focused) => {
+		if (!focused) return;
+		setLastOpened((previous) => {
+			const timestamp = Math.max(Date.now(), focused.turnEndedAtUnixMs ?? 0);
+			if ((previous.get(focused.agentId) ?? 0) >= timestamp) return previous;
+			const next = new Map(previous);
+			next.set(focused.agentId, timestamp);
+			saveLastOpened(workspaceKey, next);
+			return next;
+		});
+	});
 	// Last-visited: an agent or board route keeps the channel the user left, and a
 	// channel the push dropped falls back to the first subscribed one.
 	const selectedChannelId = createMemo<string | null>((prev) => {
@@ -2364,6 +2440,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		holdLayoutNotice,
 		viewScopes: scopes,
 		joinChannel,
+		lastOpened,
 		toggleSubscribe,
 		answerAsk,
 		answerAskText,
