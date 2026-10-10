@@ -29,6 +29,8 @@ type PackageRule = {
 	matchDepNames?: string[];
 	excludeDepNames?: string[];
 	allowedVersions?: string;
+	ignoreUnstable?: boolean;
+	respectLatest?: boolean;
 	groupName?: string | null;
 	schedule?: string[];
 	minimumReleaseAge?: string | null;
@@ -2052,5 +2054,34 @@ describe("tools/renovate guest-rootfs agent-image pin lockstep", () => {
 				updateType: "digest",
 			}),
 		).toBe("compass-agent image (guest rootfs)");
+	});
+});
+
+describe("tools/renovate fork prerelease rules", () => {
+	const dep = (name: string): SyntheticDep => ({
+		manager: "bun",
+		depName: name,
+		packageName: name,
+		fileName: "apps/ui/package.json",
+		depType: "dependencies",
+		updateType: "patch",
+	});
+
+	test("solid-markdown follows its -rc.N prereleases", () => {
+		const md = dep("@rigelbuild/solid-markdown");
+		expect(resolveRuleValue(md, "ignoreUnstable")).toBe(false);
+		expect(resolveRuleValue(md, "respectLatest")).toBeUndefined();
+	});
+
+	test("solid-virtual follows -rigel.N builds past the latest dist-tag", () => {
+		const virt = dep("@rigelbuild/solid-virtual");
+		expect(resolveRuleValue(virt, "ignoreUnstable")).toBe(false);
+		expect(resolveRuleValue(virt, "respectLatest")).toBe(false);
+	});
+
+	test("other npm deps keep the stable-only default", () => {
+		const other = dep("solid-js");
+		expect(resolveRuleValue(other, "ignoreUnstable")).toBeUndefined();
+		expect(resolveRuleValue(other, "respectLatest")).toBeUndefined();
 	});
 });

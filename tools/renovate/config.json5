@@ -583,6 +583,21 @@
       enabled: false,
     },
     {
+      // Fork prereleases: solid-markdown ships owned `X.Y.Z-rc.N` releases, and
+      // renovate ignores unstable versions by default, so the pin would never move.
+      matchManagers: ["bun", "npm"],
+      matchPackageNames: ["@rigelbuild/solid-markdown"],
+      ignoreUnstable: false,
+    },
+    {
+      // solid-virtual publishes `X.Y.Z-rigel.N` tracking builds that are never
+      // npm `latest`, so renovate must also look past the latest dist-tag.
+      matchManagers: ["bun", "npm"],
+      matchPackageNames: ["@rigelbuild/solid-virtual"],
+      ignoreUnstable: false,
+      respectLatest: false,
+    },
+    {
       // ── Go dependency rollup + guestd vendorHash lockstep ──
       // A gomod bump rewrites go/go.mod|go.sum, moving the fetched Go module set —
       // which invalidates the pinned `vendorHash` in guest-image/default.nix
