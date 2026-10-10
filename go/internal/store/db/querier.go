@@ -679,12 +679,14 @@ type Querier interface {
 	// Authorization-probe queries (sqlc adoption T6, RIG-3034). These replace the
 	// inline SQL literals in internal/store/authz.go; the hand-written helpers keep
 	// their signatures and the not-found/forbidden merge, wrapping these EXISTS
-	// probes (each returns a bare bool). requireChannelMember / isChannelMember reuse
-	// ChannelMemberExists (channels.sql) — the statement is textually identical — so
-	// only the three probes without an existing query live here.
-	// Feeds IsTopicChannelMember: membership on the channel that owns the topic.
+	// probes. requireChannelMember / isChannelMember wrap ChannelParticipant
+	// (channels.sql); the topic-keyed and creation probes live here.
+	// Stored-row membership on the topic's channel; IsTopicChannelMember uses TopicChannelParticipant.
 	TopicChannelMemberExists(ctx context.Context, arg TopicChannelMemberExistsParams) (bool, error)
 	TopicChannelNames(ctx context.Context, id string) (TopicChannelNamesRow, error)
+	// Feeds IsTopicChannelMember: ChannelParticipant on the channel that owns the
+	// topic. UNION stops the agent-parent walk on a cycle, as there.
+	TopicChannelParticipant(ctx context.Context, arg TopicChannelParticipantParams) (pgtype.Bool, error)
 	// reach: the author may reach agent aa
 	UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error)
 	UnroutedMentionMessages(ctx context.Context, arg UnroutedMentionMessagesParams) ([]UnroutedMentionMessagesRow, error)

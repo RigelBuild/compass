@@ -7,26 +7,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// requireChannelMember is the D9 write-authorization primitive: it verifies the
-// actor is a member of channelID and returns ErrNotFound if not. This mirrors
-// the read paths' membership gate (ListMessages/SearchMessages/AnswerAsk JOIN
-// channel_members) so a write authorizes against the same visible set a read
-// does — a caller who cannot see a channel cannot mutate it either, and the
-// refusal is the not-found/forbidden merge (a non-member cannot tell an
-// unauthorized channel apart from a nonexistent one, so a probe enumerates
-// nothing).
-//
-// It runs against either the pool or an open transaction (querier), so a
-// mutation can gate inside its own tx before touching state — the D9 discipline
-// the design record requires on every write RPC ("authorized server-side
-// against the authenticated account's visible set", design.md:1101-1102).
+// requireChannelMember is the D9 write gate: the actor must participate in
+// channelID (isChannelMember), else ErrNotFound, so a probe cannot tell a
+// forbidden channel from a missing one. It takes the pool or an open tx so a
+// mutation gates inside its own transaction.
 func requireChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID ChannelID) error {
-	member, err := db.New(q).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
-		ChannelID: string(channelID),
-		AccountID: string(actor),
-	})
+	member, err := isChannelMember(ctx, q, actor, channelID)
 	if err != nil {
-		return fmt.Errorf("store: check channel membership: %w", err)
+		return err
 	}
 	if !member {
 		// The not-found/forbidden merge: a non-member is told the channel does
@@ -36,46 +24,40 @@ func requireChannelMember(ctx context.Context, q db.DBTX, actor AccountID, chann
 	return nil
 }
 
-// IsChannelMember reports whether actor is a member of channelID. It is the
-// exported form used by the SubscribeComms stream edge to filter each
-// fanned-out event by the subscriber's visible set (a non-member never receives
-// an event for a channel it cannot see) without turning a non-visible event
-// into an error — the D9 discipline extended from the read RPCs to the live
-// stream (design.md:446-447: the fan-out is visibility-scoped).
+// IsChannelMember reports whether actor participates in channelID (a member row
+// or TREE derivation). The SubscribeComms edge uses it to drop events the
+// subscriber cannot see instead of returning an error.
 func (s *Store) IsChannelMember(ctx context.Context, actor AccountID, channelID ChannelID) (bool, error) {
 	return isChannelMember(ctx, s.scopedPool(), actor, channelID)
 }
 
-// isChannelMember reports whether actor is a member of channelID (the
-// package-internal form IsChannelMember exports and requireChannelMember wraps).
+// isChannelMember reports whether actor participates in channelID: a member
+// row, or for a TREE channel the anchor's subtree or owner (ChannelParticipant).
+// It is the package-internal form IsChannelMember exports and
+// requireChannelMember wraps.
 func isChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID ChannelID) (bool, error) {
-	member, err := db.New(q).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
+	participant, err := db.New(q).ChannelParticipant(ctx, db.ChannelParticipantParams{
 		ChannelID: string(channelID),
 		AccountID: string(actor),
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: check channel membership: %w", err)
 	}
-	return member, nil
+	return participant.Valid && participant.Bool, nil
 }
 
-// IsTopicChannelMember reports whether actor is a member of the channel that
-// owns topicID. It is the topic-scoped form the SubscribeComms stream edge uses
-// to gate MessagePosted/MessageUpdated now that a wire message carries only a
-// topic, not a channel: the channel is resolved through topics.channel_id (the
-// design record's "a consumer that needs the channel resolves it through the
-// topic"), so the per-event filter stays at read-parity with ListMessages
-// (which JOINs channel_members on the topic's channel). An unknown topic yields
-// false (not visible) — the not-found/forbidden merge extended to the stream.
+// IsTopicChannelMember reports whether actor participates in the channel that
+// owns topicID, resolved through topics.channel_id, for stream events that carry
+// only a topic. An unknown topic yields false.
 func (s *Store) IsTopicChannelMember(ctx context.Context, actor AccountID, topicID string) (bool, error) {
-	member, err := s.q.TopicChannelMemberExists(ctx, db.TopicChannelMemberExistsParams{
+	participant, err := s.q.TopicChannelParticipant(ctx, db.TopicChannelParticipantParams{
 		ID:        topicID,
 		AccountID: string(actor),
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: check topic channel membership: %w", err)
 	}
-	return member, nil
+	return participant.Valid && participant.Bool, nil
 }
 
 // requireGroupCreateAuthz authorizes creating a channel inside groupID. The
