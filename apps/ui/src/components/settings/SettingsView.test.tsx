@@ -15,12 +15,29 @@ describe("SettingsView", () => {
 		expect(general?.getAttribute("aria-current")).toBe("page");
 	});
 
-	test("clicking Models shows the Models section instead of the tracker editor", async () => {
-		const { store, container } = mountApp("/settings/tracker");
+	test("does not link to Tracker", async () => {
+		const { container } = mountApp("/settings/general");
 		await flush();
-		const models = [
-			...container.querySelectorAll<HTMLAnchorElement>("a.cx-tab"),
-		].find((link) => link.textContent?.trim() === "Models");
+
+		expect(
+			[...container.querySelectorAll<HTMLAnchorElement>("a.cx-tab")].map(
+				(link) => link.textContent?.trim(),
+			),
+		).not.toContain("Tracker");
+	});
+
+	test("redirects the retired Tracker route home", async () => {
+		const { store } = mountApp("/settings/tracker");
+		await flush();
+		expect(store.focusedView().path()).toBe("/");
+	});
+
+	test("clicking Models opens its section", async () => {
+		const { store, container } = mountApp("/settings/general");
+		await flush();
+		const models = container.querySelector<HTMLAnchorElement>(
+			'a.cx-tab[href="#/settings/models"]',
+		);
 		if (!models) throw new Error("missing Models section link");
 
 		fireEvent.click(models);
@@ -30,11 +47,10 @@ describe("SettingsView", () => {
 		expect(
 			container.querySelector(".settings-body h2")?.textContent?.trim(),
 		).toBe("Models");
-		expect(container.querySelector('input[placeholder="you@org"]')).toBeNull();
 	});
 
 	test("middle-click and Mod+click on a section open it in a new tab", async () => {
-		const { store, container } = mountApp("/settings/tracker");
+		const { store, container } = mountApp("/settings/general");
 		await flush();
 		const models = container.querySelector<HTMLAnchorElement>(
 			'a.cx-tab[href="#/settings/models"]',
@@ -65,7 +81,7 @@ describe("SettingsView", () => {
 	});
 
 	test("refocusing a Settings tab makes its section the last one shown", async () => {
-		const { store } = mountApp("/settings/tracker");
+		const { store } = mountApp("/settings/general");
 		await flush();
 		const first = store.layout().activeTabId;
 		store.dispatchLayout({ kind: "open", path: "/settings/models" });
@@ -77,15 +93,15 @@ describe("SettingsView", () => {
 
 		store.showSettings();
 		await flush();
-		expect(store.focusedView().path()).toBe("/settings/tracker");
+		expect(store.focusedView().path()).toBe("/settings/general");
 	});
 
 	test("two mounted Settings views do not share element ids", async () => {
-		const { store, container } = mountApp("/settings/tracker");
+		const { store, container } = mountApp("/settings/general");
 		await flush();
 		store.dispatchLayout({
 			kind: "open",
-			path: "/settings/tracker",
+			path: "/settings/general",
 			fresh: true,
 		});
 		await flush();
@@ -98,7 +114,7 @@ describe("SettingsView", () => {
 	});
 
 	test("showSettings returns to the section last shown, in the same tab", async () => {
-		const { store, container } = mountApp("/settings/tracker");
+		const { store, container } = mountApp("/settings/general");
 		await flush();
 		const models = container.querySelector<HTMLAnchorElement>(
 			'a.cx-tab[href="#/settings/models"]',
@@ -118,7 +134,7 @@ describe("SettingsView", () => {
 	test("the selected section stays current after focus leaves and returns", async () => {
 		// A real origin, so the router would claim same-origin links if it could.
 		window.location.href = "http://localhost/";
-		const { store, container } = mountApp("/settings/tracker");
+		const { store, container } = mountApp("/settings/general");
 		await flush();
 		const settingsTab = store.layout().activeTabId;
 		store.dispatchLayout({ kind: "open", path: "/" });
@@ -130,7 +146,7 @@ describe("SettingsView", () => {
 			...container.querySelectorAll<HTMLAnchorElement>("a.cx-tab"),
 		].filter((link) => link.getAttribute("aria-current") === "page");
 		expect(current.map((link) => link.textContent?.trim())).toEqual([
-			"Tracker",
+			"General",
 		]);
 	});
 });

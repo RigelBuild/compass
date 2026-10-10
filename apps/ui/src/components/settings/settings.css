@@ -46,7 +46,6 @@
 }
 
 .settings-description,
-.settings-current,
 .settings-group-help {
 	margin: 0;
 	color: var(--cx-text-dim);
@@ -100,39 +99,9 @@
 	width: 100%;
 }
 
-.settings-map,
-.settings-reverse,
-.settings-registry {
-	list-style: none;
-	margin: 0;
-	padding: 0;
-}
-
 .settings-map-arrow {
 	color: var(--cx-text-faint);
 	font-size: var(--cx-text-xs);
-}
-
-.settings-reverse {
-	display: flex;
-	flex-direction: column;
-	gap: var(--cx-space-1);
-}
-
-.settings-reverse-row {
-	display: grid;
-	grid-template-columns: minmax(16ch, 1fr) auto minmax(0, 2fr);
-	gap: var(--cx-space-2);
-	font-size: var(--cx-text-xs);
-}
-
-.settings-reverse-status {
-	color: var(--cx-text-bright);
-	font-family: var(--cx-font-ui);
-}
-
-.settings-reverse-states {
-	color: var(--cx-text-dim);
 }
 
 .settings-actions {
@@ -141,6 +110,9 @@
 }
 
 .settings-registry {
+	list-style: none;
+	margin: 0;
+	padding: 0;
 	display: flex;
 	flex-direction: column;
 	gap: var(--cx-space-2);

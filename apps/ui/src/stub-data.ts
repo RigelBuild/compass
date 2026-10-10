@@ -282,8 +282,8 @@ export interface TrackerStatusMapping {
 	fromTracker: Record<string, WorkingIssueState>;
 }
 
-/** The user's tracker wiring (design T11): which tracker, the user's identity
- *  on it, and the Compass↔tracker projection. Edited in the Settings screen. */
+/** The fixed fixture wiring: which tracker, the user's identity on it, and
+ *  the Compass↔tracker projection used by the fixture queue. */
 export interface TrackerConfig {
 	kind: TrackerKind;
 	/** The user's tracker handle/identity, for listing their assigned issues. */

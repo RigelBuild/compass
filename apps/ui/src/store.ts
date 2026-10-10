@@ -95,11 +95,7 @@ import {
 	isDemoId,
 } from "./tour/demo";
 import { TOUR_STEPS, type TourStep } from "./tour/state";
-import {
-	createFixtureTrackerSeam,
-	DEFAULT_TRACKER_CONFIG,
-	type TrackerSeam,
-} from "./tracker";
+import { createFixtureTrackerSeam, DEFAULT_TRACKER_CONFIG } from "./tracker";
 import { focusViewPanel, viewPanelId, viewTabId } from "./view-panel";
 import {
 	parseRoute,
@@ -604,9 +600,8 @@ export interface AppStore {
 	assignedIssues: Accessor<Issue[]>;
 
 	// ── Tracker config (T11) ──
-	/** The user's tracker wiring (kind + handle + Compass↔tracker mapping). */
+	/** The fixture queue's fixed tracker wiring. */
 	trackerConfig: Accessor<TrackerConfig>;
-	setTrackerConfig: (cfg: TrackerConfig) => void;
 	/** Read-only fleet model registry state. */
 	modelRegistry: Accessor<ModelRegistryState>;
 }
@@ -1228,21 +1223,13 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			})
 		: () => ({ status: "offline" });
 
-	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the user's
-	// personal queue, read through a query keyed on the tracker handle: a handle change
-	// re-keys and refetches (§A3). The tracker seam is NOT yet a Connect RPC, so this is
-	// a plain solid-query key + queryFn, swappable to connect-query-core when it lands.
-	const [trackerConfig, setTrackerConfigSignal] = createSignal<TrackerConfig>(
-		DEFAULT_TRACKER_CONFIG,
-	);
-	let seam: TrackerSeam = createFixtureTrackerSeam(DEFAULT_TRACKER_CONFIG);
+	// The fixture queue uses the fixed tracker config through its seam.
+	const seam = createFixtureTrackerSeam(DEFAULT_TRACKER_CONFIG);
 	const issuesQuery = useQuery(
 		() => ({
-			// The handle is part of the key, so a `setTrackerConfig` that changes it
-			// re-keys and refetches — the old manual re-load dance is gone.
-			queryKey: ["assignedIssues", trackerConfig().handle] as const,
+			queryKey: ["assignedIssues", DEFAULT_TRACKER_CONFIG.handle] as const,
 			queryFn: (): Promise<Issue[]> =>
-				seam.listAssignedIssues(trackerConfig().handle),
+				seam.listAssignedIssues(DEFAULT_TRACKER_CONFIG.handle),
 		}),
 		// Explicit client — the store's owner has no QueryClientProvider ancestor
 		// (§A3), so this must never resolve from context.
@@ -2329,14 +2316,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		startTour: replayTour,
 	});
 
-	const setTrackerConfig = (cfg: TrackerConfig) => {
-		setTrackerConfigSignal(cfg);
-		// Rebuild the seam against the new config (the queryFn reads it at fetch
-		// time). No manual reload: the handle is part of the query key, so a
-		// changed handle re-keys and refetches automatically (§A3).
-		seam = createFixtureTrackerSeam(cfg);
-	};
-
 	const isAgentCollapsed = (agentId: string) => collapsed().has(agentId);
 	const toggleAgent = (agentId: string) =>
 		setCollapsed((prev) => {
@@ -2526,8 +2505,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		issues,
 		prs,
 		assignedIssues,
-		trackerConfig,
-		setTrackerConfig,
+		trackerConfig: () => DEFAULT_TRACKER_CONFIG,
 		modelRegistry,
 	};
 }

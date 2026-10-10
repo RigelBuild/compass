@@ -88,7 +88,7 @@ describe("tab and pane commands on the real store", () => {
 
 	test("next and previous wrap; go to tab past the end changes nothing", async () => {
 		const { store } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
+		store.dispatchLayout({ kind: "open", path: "/settings/general" });
 		await flush();
 		const [first, second] = [tabIdAt(store, 0), tabIdAt(store, 1)];
 		runCommand(store, "tab.next");
@@ -108,7 +108,7 @@ describe("tab and pane commands on the real store", () => {
 
 	test("move left and right reorder, and stop at the ends", async () => {
 		const { store } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
+		store.dispatchLayout({ kind: "open", path: "/settings/general" });
 		await flush();
 		const [first, second] = [tabIdAt(store, 0), tabIdAt(store, 1)];
 		const atEnd = store.layout();
@@ -309,7 +309,7 @@ describe("inactive tabs stay mounted", () => {
 		const { store, container } = mountApp("/");
 		store.dispatchLayout({
 			kind: "open",
-			path: "/settings/tracker",
+			path: "/settings/general",
 			background: true,
 		});
 		await flush();
@@ -384,7 +384,7 @@ describe("two mounted Bridge views", () => {
 	test("closing one Bridge keeps the board commands for the other", async () => {
 		const { store } = mountApp("/");
 		// The second tab is a Bridge too: opened elsewhere, navigated to `/` in place.
-		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
+		store.dispatchLayout({ kind: "open", path: "/settings/general" });
 		await flush();
 		store.showBridge();
 		await flush();
@@ -400,7 +400,7 @@ describe("two mounted Bridge views", () => {
 
 	test("switching between two Bridges hands the commands over without a duplicate", async () => {
 		const { store, container } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
+		store.dispatchLayout({ kind: "open", path: "/settings/general" });
 		await flush();
 		store.showBridge();
 		await flush();

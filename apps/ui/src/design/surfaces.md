@@ -426,10 +426,10 @@ N` and `Done` segments after Issues and PRs, under the Bridge toolbar (DL-438).
 `.cx-tree-row` where a dense row reads better), `.cx-badge` (`data-status`) and a
 `.cx-pip` priority indicator — the same card/row/badge vocabulary the board
 uses, without the swimlane grid. Settings uses the form contracts: `.cx-input`,
-`.cx-select`, and `.cx-btn`. The General section shows the server URL, shell mode,
-server version, and signed-in account as read-only values, with a button to open
-Keyboard shortcuts. The status-mapping editor renders as a two-column `.cx-tree-row`
-table (source status ↔ mapped lane).
+`.cx-select`, and `.cx-btn`. The General section shows the server URL, shell
+mode, server version, and signed-in account as read-only values, with a button
+to open Keyboard shortcuts. Each Settings row is a label, with optional help
+under it, beside its control; a 1px border separates rows. There are no cards.
 
 **Focus and keyboard.** Each is the main-view focus zone when open. Lists are
 roving-tabindex (arrows / `Enter` / `Home` / `End`). Settings form controls follow
@@ -437,8 +437,7 @@ the standard focus-ring contract; `Ctrl+,` opens Settings.
 
 **Empty states.** An empty Backlog or Done list renders a single centered
 empty-state line on the panel surface. Settings is never empty — it renders its
-sections with current values; an unconfigured mapping row shows a faint
-"unmapped" placeholder rather than a blank cell.
+sections with current values.
 
 **Mark placement.** None. These surfaces carry no brand mark.
 
@@ -446,10 +445,10 @@ sections with current values; an unconfigured mapping row shows a faint
 
 1. Rebuild Backlog and Done from `.cx-card` / `.cx-tree-row` + `.cx-badge` /
    `.cx-pip`; no one-off styling.
-2. Rebuild Settings from `.cx-input` / `.cx-select` / `.cx-btn`; render the
-   status-mapping editor as a two-column `.cx-tree-row` table.
+2. Rebuild Settings from `.cx-input` / `.cx-select` / `.cx-btn` in label and
+   control rows.
 3. Wire list roving tabindex and register the open-Settings command (`Ctrl+,`).
-4. Add the empty-list and unmapped-row states.
+4. Add the empty-list states.
 5. Delete the legacy list/settings selectors in the same diff.
 
 ## Window-scoped views

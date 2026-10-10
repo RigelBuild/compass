@@ -1,14 +1,8 @@
-export const SETTINGS_SECTIONS = [
-	"general",
-	"appearance",
-	"tracker",
-	"models",
-] as const;
+export const SETTINGS_SECTIONS = ["general", "appearance", "models"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {
 	general: "General",
 	appearance: "Appearance",
-	tracker: "Tracker",
 	models: "Models",
 };
 
