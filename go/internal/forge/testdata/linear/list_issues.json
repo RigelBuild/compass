@@ -9,7 +9,7 @@
 		"method": "POST",
 		"path": "/graphql",
 		"body": {
-			"query": "query CompassIssueList($filter: IssueFilter!, $after: String) {\n  issues(filter: $filter, first: 50, after: $after) {\n    nodes { ...CompassIssueFields }\n    pageInfo { hasNextPage endCursor }\n  }\n}\nfragment CompassIssueFields on Issue {\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
+			"query": "query CompassIssueList($filter: IssueFilter!, $after: String) {\n  issues(filter: $filter, first: 50, after: $after) {\n    nodes { ...CompassIssueFields }\n    pageInfo { hasNextPage endCursor }\n  }\n}\nfragment CompassIssueFields on Issue {\n  id\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
 			"variables": {
 				"filter": {
 					"team": { "key": { "eq": "SEA" } },

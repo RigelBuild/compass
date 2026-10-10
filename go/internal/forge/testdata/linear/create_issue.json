@@ -14,7 +14,7 @@
 			"Accept": "application/json"
 		},
 		"body": {
-			"query": "mutation CompassIssueCreate($input: IssueCreateInput!) {\n  issueCreate(input: $input) {\n    issue { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
+			"query": "mutation CompassIssueCreate($input: IssueCreateInput!) {\n  issueCreate(input: $input) {\n    issue { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  id\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
 			"variables": {
 				"input": {
 					"teamId": "team-uuid-1",

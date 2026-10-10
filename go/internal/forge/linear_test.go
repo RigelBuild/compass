@@ -208,6 +208,63 @@ func TestLinearTeamIDResolvedOnceThenCached(t *testing.T) {
 	}
 }
 
+// A create's follow-up on the same client must use the id the create returned:
+// the (team, number) index trails the create, so a lookup right after can 404.
+func TestLinearCreateThenWriteSkipsNumberLookup(t *testing.T) {
+	noNodes := scriptedResponse{status: 200, body: `{"data":{"issues":{"nodes":[]}}}`}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		probeResp(true),
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"id":"issue-uuid-42","number":42,
+			"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
+		statesResp, noNodes, updatedIssueResp,
+		noNodes, {status: 200, body: `{"data":{"commentCreate":{"comment":{"id":"c","body":"hi","user":null}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	ctx := context.Background()
+
+	if _, err := l.CreateIssue(ctx, "SEA", CreateIssue{Title: "t"}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if _, err := l.TransitionIssueState(ctx, "SEA", 42, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("TransitionIssueState: %v", err)
+	}
+	if _, err := l.CommentOnIssue(ctx, "SEA", 42, "hi"); err != nil {
+		t.Fatalf("CommentOnIssue: %v", err)
+	}
+	for i, r := range rt.requests {
+		query, vars := decodeGraphQLReq(t, readReqBody(t, r))
+		if strings.Contains(query, "CompassIssueIDByNumber") {
+			t.Errorf("request %d ran the number lookup; want the cached create id", i)
+		}
+		id := vars["id"]
+		if input, ok := vars["input"].(map[string]any); ok && input["issueId"] != nil {
+			id = input["issueId"]
+		}
+		if id != nil && id != "issue-uuid-42" {
+			t.Errorf("request %d issue id = %v, want issue-uuid-42", i, id)
+		}
+	}
+}
+
+// At the cap the oldest created id is evicted, never the newest: a create past
+// the cap must still serve its own follow-ups without the number lookup.
+func TestLinearCreatedIDCacheEvictsOldestAtCap(t *testing.T) {
+	l := newTestLinear(&scriptedRoundTripper{}, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	for n := range uint64(createdIDCap + 1) {
+		l.rememberCreated(issueKey("SEA", n), fmt.Sprintf("id-%d", n))
+	}
+	if _, ok := l.createdIDs[issueKey("SEA", 0)]; ok {
+		t.Errorf("oldest entry survived the cap")
+	}
+	if id := l.createdIDs[issueKey("SEA", createdIDCap)]; id != fmt.Sprintf("id-%d", createdIDCap) {
+		t.Errorf("newest entry = %q, want id-%d", id, createdIDCap)
+	}
+	if got := len(l.createdIDs); got != createdIDCap {
+		t.Errorf("cache size = %d, want %d", got, createdIDCap)
+	}
+}
+
 // --- item 4: read-query mapping (GetIssue + ListIssues incl. filter state) ---
 
 func TestLinearGetIssueMapping(t *testing.T) {
