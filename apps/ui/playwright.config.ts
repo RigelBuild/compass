@@ -1,4 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 // The repo's first browser harness (RIG-2034 T1). Drives `vite dev` against the in-memory
@@ -50,6 +53,16 @@ async function pickFreePort(): Promise<number> {
 if (process.env.PLAYWRIGHT_DEV_PORT === undefined) {
 	process.env.PLAYWRIGHT_DEV_PORT = String(await pickFreePort());
 }
+
+// One dep-optimizer cache per run. dev-smoke and visual-gate run in parallel; on a
+// shared node_modules/.vite, one server's re-optimize 504s the other's dep chunks
+// ("Outdated Optimize Dep") and the page never mounts. Pinned like the port.
+if (process.env.COMPASS_VITE_CACHE_DIR === undefined) {
+	const cacheDir = mkdtempSync(join(tmpdir(), "compass-e2e-vite-"));
+	process.env.COMPASS_VITE_CACHE_DIR = cacheDir;
+	process.on("exit", () => rmSync(cacheDir, { recursive: true, force: true }));
+}
+
 const devPort = Number(process.env.PLAYWRIGHT_DEV_PORT);
 const baseURL = `http://localhost:${devPort}`;
 
