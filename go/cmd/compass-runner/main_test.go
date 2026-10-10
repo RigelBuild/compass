@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"os"
 	"os/signal"
 	"strings"
@@ -33,6 +34,34 @@ var (
 // input and the host:container[:ro] shape), and a well-formed value must reach
 // SpecDefaults.Mounts intact — the ':ro' suffix is the load-bearing bit that
 // makes a mount read-only, so ReadOnly must be exact.
+func TestAgentBatchingFlagAndEnvironmentFallback(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		env  string
+		want string
+	}{
+		{name: "flag", args: []string{"--agent-batching", "on"}, want: "on"},
+		{name: "flag overrides environment", args: []string{"--agent-batching", "on"}, env: "off", want: "on"},
+		{name: "environment fallback", env: "on", want: "on"},
+		{name: "unset", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("COMPASS_AGENT_BATCHING", tc.env)
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			batching := registerAgentBatchingFlag(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("parse batching flag: %v", err)
+			}
+			cfg := resolveAgentBatchingConfig(*batching)
+			if cfg.AgentBatching != tc.want {
+				t.Fatalf("RunnerConfig.AgentBatching = %q, want %q", cfg.AgentBatching, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseMount(t *testing.T) {
 	okCases := []struct {
 		name string

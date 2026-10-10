@@ -55,6 +55,9 @@ type RunnerConfig struct {
 	// starts (the agent's COMPASS_MODEL). Empty leaves each agent on its own
 	// default rather than exporting a blank value it would have to ignore.
 	AgentModel string
+	// AgentBatching is the inbound batching setting passed to each agent; empty
+	// leaves batching off.
+	AgentBatching string
 	// HTTPClient dials the Server. Nil uses a default HTTP/2 client; tests inject
 	// one wired to an httptest server.
 	HTTPClient connect.HTTPClient
