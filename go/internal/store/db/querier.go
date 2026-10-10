@@ -112,6 +112,8 @@ type Querier interface {
 	ConsumeStateTransition(ctx context.Context, arg ConsumeStateTransitionParams) (string, error)
 	ConvertDMChannel(ctx context.Context, arg ConvertDMChannelParams) error
 	CoordinationReports(ctx context.Context, parentAgentID pgtype.Text) ([]string, error)
+	// A new child starts with its parent agent's own rows; runs under RLS.
+	CopyAgentForgeScopes(ctx context.Context, arg CopyAgentForgeScopesParams) error
 	CountAgentForgeSubscriptionsForArtifact(ctx context.Context, arg CountAgentForgeSubscriptionsForArtifactParams) (int64, error)
 	CountAgentMembers(ctx context.Context, channelID string) (int64, error)
 	CountChannelPins(ctx context.Context, channelID string) (CountChannelPinsRow, error)
@@ -387,6 +389,8 @@ type Querier interface {
 	LatestCheckpointSeq(ctx context.Context, sessionID string) (int64, error)
 	LatestSessionForAccount(ctx context.Context, agentAccountID string) (string, error)
 	LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSessionRow, error)
+	// An account's own rows only; the owner's grants are not included.
+	ListAgentForgeScopeRepos(ctx context.Context, arg ListAgentForgeScopeReposParams) ([]string, error)
 	ListAgentPlacementsForRunner(ctx context.Context, runnerID string) ([]ListAgentPlacementsForRunnerRow, error)
 	ListAuthoredArtifactsByAgent(ctx context.Context, agentAccountID string) ([]ForgeAuthoredArtifact, error)
 	ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error)
@@ -597,6 +601,8 @@ type Querier interface {
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ResumeSessionBlobs(ctx context.Context, arg ResumeSessionBlobsParams) ([]ResumeSessionBlobsRow, error)
 	ReviveTopic(ctx context.Context, id string) error
+	// Agent rows only: a user id deletes nothing, so a user grant is never removed here.
+	RevokeAgentForgeScope(ctx context.Context, arg RevokeAgentForgeScopeParams) (int64, error)
 	RevokeForgeScope(ctx context.Context, arg RevokeForgeScopeParams) error
 	RevokeLiveGatewayToken(ctx context.Context, arg RevokeLiveGatewayTokenParams) (int64, error)
 	RevokeToken(ctx context.Context, hash []byte) (int64, error)
