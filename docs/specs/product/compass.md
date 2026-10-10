@@ -560,9 +560,11 @@ carries a caller identity.
 
 The server SHALL scope every listing, read, and search to the channels, groups,
 and accounts the caller may see, enforced in the store (SQL), not at the RPC
-edge. A message read for a channel the caller is not a member of SHALL return
-nothing rather than the channel's contents — a non-member cannot read a private
-channel's history by naming its id.
+edge. An attached channel is visible to its members and to the anchor agent's
+owner set. That visibility does not grant history access: message reads, search,
+topic reads, and writes require channel participation. TREE participation is the
+anchor agent, its owner, and the agents in the anchor's subtree. A caller who
+does not participate SHALL receive no channel history by naming its id.
 
 #### Scenario: A non-member lists a private channel's messages
 

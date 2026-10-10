@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -55,9 +56,54 @@ func TestChannelTreeCreateUnderAgent(t *testing.T) {
 	if parent != string(anchor.ID) || mode != int16(ChannelMembershipModeTree) || members != 0 {
 		t.Fatalf("tree channel state = (%q, %d, %d), want (%q, 1, 0)", parent, mode, members, anchor.ID)
 	}
-	if tree.MemberAccountIDs != nil {
-		t.Fatalf("tree returned members = %v, want nil before derived reads", tree.MemberAccountIDs)
+	if tree.ParentAgentID != anchor.ID || tree.MembershipMode != ChannelMembershipModeTree {
+		t.Fatalf("tree create returned parent=%q mode=%d, want parent=%q mode=%d", tree.ParentAgentID, tree.MembershipMode, anchor.ID, ChannelMembershipModeTree)
 	}
+	if got, want := memberSet(tree), map[AccountID]bool{owner.ID: true, anchor.ID: true}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("tree returned members = %v, want owner and anchor %v", got, want)
+	}
+	if len(tree.SubscriberAccountIDs) != 0 {
+		t.Fatalf("tree returned subscribers = %v, want none", tree.SubscriberAccountIDs)
+	}
+}
+
+func TestChannelTreeProjectionCarriesAnchorAndMode(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "projection-owner")
+	anchor := mustAgent(t, s, owner.ID, "projection-anchor")
+	created := mustAttachedChannel(t, s, owner.ID, anchor.ID, "projection-tree", ChannelMembershipModeTree)
+
+	assertProjection := func(name string, got Channel) {
+		t.Helper()
+		if got.ID != created.ID || got.ParentAgentID != anchor.ID || got.MembershipMode != ChannelMembershipModeTree {
+			t.Fatalf("%s projection = id %q parent %q mode %d, want id %q parent %q mode %d", name, got.ID, got.ParentAgentID, got.MembershipMode, created.ID, anchor.ID, ChannelMembershipModeTree)
+		}
+	}
+
+	listed, err := s.ListChannels(t.Context(), owner.ID)
+	if err != nil {
+		t.Fatalf("ListChannels: %v", err)
+	}
+	found := false
+	for _, channel := range listed {
+		if channel.ID == created.ID {
+			assertProjection("ListChannels", channel)
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ListChannels omitted attached channel %q", created.ID)
+	}
+	byName, err := s.ChannelByNameForViewer(t.Context(), owner.ID, "projection-tree")
+	if err != nil {
+		t.Fatalf("ChannelByNameForViewer: %v", err)
+	}
+	assertProjection("ChannelByNameForViewer", byName)
+	got, err := s.GetChannel(t.Context(), created.ID)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	assertProjection("GetChannel", got)
 }
 
 func TestChannelTreeCreateAuthorizationAndInputRefusals(t *testing.T) {

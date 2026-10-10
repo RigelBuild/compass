@@ -25,7 +25,7 @@ import (
 // suppresses a duplicate MessagePosted fan-out for a row that did not change. A
 // message with no blocks, a TopicRef that is neither exactly-id nor
 // exactly-name, or a TopicRef.ID naming a topic in another channel (or no
-// topic) is ErrInvalidArgument. The membership check, topic resolution, insert,
+// topic) is ErrInvalidArgument. The participation check, topic resolution, insert,
 // and last_seq denormalization all run in one transaction, so a membership
 // revoked between them cannot slip a message into a channel the author can no
 // longer read, and a get-or-created topic never outlives a rolled-back insert.
@@ -54,10 +54,10 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
-	// D9 write-authz: the author must be a member of the target channel, so a
-	// non-member cannot persist into a private channel it can't see. A
-	// non-member gets ErrNotFound, never a hint the channel exists. Checked in
-	// the insert tx so a concurrent removal cannot race the gate.
+	// D9 write-authz: the author must participate in the target channel (member
+	// row or TREE derivation); a non-participant gets ErrNotFound, never a hint
+	// the channel exists. Checked in the insert tx so a concurrent removal or
+	// tree move cannot race the gate.
 	if err := requireChannelMember(ctx, tx, m.AuthorAccountID, ChannelID(channelID)); err != nil {
 		return Message{}, false, err
 	}
@@ -299,18 +299,18 @@ func updateMessageBlocksExec(ctx context.Context, dbtx db.DBTX, id MessageID, bl
 // frame, RIG-1364 T3).
 //
 // Why it is a fork and not a flag on the shared core. updateMessageBlocksExec
-// addresses the row by a bare MessageID with NO membership and NO authorship
+// addresses the row by a bare MessageID with NO participation and NO authorship
 // check. That is correct where it is used — AnswerAsk has already resolved the
-// target through a membership JOIN and locked it FOR UPDATE, so re-checking
-// would be redundant, and AnswerAsk deliberately permits a MEMBER who is not
+// target through the participant join and locked it FOR UPDATE, so re-checking
+// would be redundant, and AnswerAsk deliberately permits a PARTICIPANT who is not
 // the author to answer. Folding this path onto that core would either strip the
 // authz a relayed id requires or break every ask answered by anyone but the
 // asker. The two predicates genuinely differ, so they are two statements.
 //
-// The predicate is membership AND authorship: the actor must be a member of the
-// message's channel and be its author. Both halves are load-bearing — authorship
+// The predicate is participation AND authorship: the actor must participate in
+// the message's channel and be its author. Both halves are load-bearing — authorship
 // alone would let an account edit its own past message in a channel it has since
-// been removed from, and membership alone would let any member rewrite another
+// been removed from, and participation alone would let anyone rewrite another
 // account's words. A failure of EITHER half, and an id that names no row at all,
 // return the same ErrNotFound: the D9 not-found/forbidden merge, so an actor
 // cannot learn that a message it may not touch exists (the same collapse
@@ -352,9 +352,9 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 	}
 
 	// One statement, so the authz predicate and the write cannot race: a
-	// concurrent membership revocation lands before the UPDATE (matches no row)
-	// or after it, never between. The EXISTS subquery is the membership half and
-	// the author_account_id equality the authorship half; both must hold.
+	// concurrent membership revocation or tree move lands before the UPDATE
+	// (matches no row) or after it, never between. The participating join is the
+	// participation half, author_account_id equality the authorship half.
 	row, err := s.q.UpdateMessageBlocksAsAuthor(ctx, db.UpdateMessageBlocksAsAuthorParams{
 		Blocks:          blocksJSON,
 		TextContent:     textContent(blocks),
@@ -413,8 +413,8 @@ func (s *Store) MessageAskIDs(ctx context.Context, actor AccountID, id MessageID
 //
 // The channel is resolved THROUGH the topic join now that a message carries no
 // channel_id: messages JOIN topics ON topic_id, filtered by topics.channel_id.
-// Visibility is enforced in SQL — the channel must be one the actor is a member
-// of (JOIN channel_members on the topic's channel), so a non-member — or a
+// Visibility is enforced in SQL — the channel must be one the actor participates
+// in (member row or TREE derivation), so a non-participant — or a
 // caller naming a channel it cannot see — reads nothing rather than leaking a
 // private channel's history by id (the D9 not-found/forbidden merge, matching
 // SearchMessages). The visibility gate is the store's, not the RPC edge's.
@@ -426,7 +426,7 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 
 	var beforeSeq int64
 	if q.Page.BeforeMessageID != "" {
-		// Scope the cursor probe to the actor's membership too, so a non-member
+		// Scope the cursor probe to the actor's participation too, so a non-participant
 		// naming a real message in a channel it cannot see gets the same "not in
 		// channel" result as a fake id — no existence oracle across the
 		// visibility boundary. The channel is the cursor message's topic's channel.
@@ -445,14 +445,14 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 	}
 
 	// A zero beforeSeq reads the newest page; a positive one pages strictly
-	// older. The membership JOIN scopes the read to the actor's visible set; a
+	// older. The participant join scopes the read to the actor's channels; a
 	// non-zero SnapshotSeq bounds it to the subscribe-time snapshot on set
 	// MEMBERSHIP, not content.
 
-	// Membership-only is sufficient, not a lost update: the matching
+	// Set-membership-only is sufficient, not a lost update: the matching
 	// MessageUpdated rides the live tail, so an id-deduping client converges
 	// last-write-wins. Freezing content too would need a change-seq and a
-	// schema change; membership-only is the ratified scope.
+	// schema change; set-membership-only is the ratified scope.
 	snap := int64(q.Page.SnapshotSeq) //nolint:gosec // G115: server-issued seq, int64 domain
 	rows, err := s.q.ListMessages(ctx, db.ListMessagesParams{
 		AccountID: string(q.Actor),
@@ -475,7 +475,7 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 // bounds. Visibility is enforced in SQL — the actor sees a message only in a
 // channel it belongs to — so a scope pointing at a channel the actor cannot see
 // yields nothing rather than leaking. Under FORCE RLS messages_search_idx cannot
-// serve the `@@` filter (it is not LEAKPROOF); the membership join may narrow rows.
+// serve the `@@` filter (it is not LEAKPROOF); the participant join narrows rows.
 func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope SearchScope, query string, page Page) ([]Message, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("%w: search query is required", ErrInvalidArgument)
@@ -503,7 +503,7 @@ func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope Searc
 // AnswerAsk records a participant's atomic answer to a pending structured ask
 // (RespondToAsk; see docs/designs/agent/compass-ask-typed-derivation.md). It
 // locates the message whose blocks carry an ask with askID within the actor's
-// visible set — the membership JOIN makes "the message exists" and "the actor
+// visible set — the participant join makes "the message exists" and "the actor
 // participates" one gate — records the per-question answers on that ask block,
 // and persists via the immutable-ask_id update path. It ALSO posts the answer
 // as a new message — authored by actor, in the ask's channel/topic, carrying a

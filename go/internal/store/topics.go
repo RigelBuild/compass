@@ -13,7 +13,7 @@ import (
 // ListTopics returns the topics in channelID, newest-activity-first (last_seq
 // descending, then birth time), scoped to the caller's visible set. Archived
 // topics are omitted unless includeArchived is set. Visibility is the same D9
-// gate the message reads apply: a caller who is not a member of the channel —
+// gate the message reads apply: a caller who does not participate in the channel —
 // or names a channel it cannot see — gets ErrNotFound (the not-found/forbidden
 // merge), never a hint the channel exists or an empty list it could mistake for
 // "no topics".
@@ -26,7 +26,7 @@ func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID strin
 		return nil, err
 	}
 	if !member {
-		// D9 merge: a non-member cannot tell an unauthorized channel from a
+		// D9 merge: a non-participant cannot tell an unauthorized channel from a
 		// nonexistent one, so the refusal enumerates nothing.
 		return nil, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 	}
@@ -45,9 +45,9 @@ func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID strin
 // source's, and the emptied source row is deleted, all in one transaction. The
 // surviving topic is returned.
 //
-// The caller must be a member of the topic's channel; a topic it cannot see —
+// The caller must participate in the topic's channel; a topic it cannot see —
 // or an unknown topicID — is ErrNotFound (the D9 not-found/forbidden merge, so
-// topic existence cannot leak across a membership boundary). name and archived
+// topic existence cannot leak across a participation boundary). name and archived
 // are each optional (nil = leave unchanged); the archived flag is applied to
 // the SURVIVING topic (the target on a merge, the source otherwise).
 //
@@ -64,8 +64,8 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
-	// Resolve the topic + gate visibility in one statement: the caller must be a
-	// member of the topic's channel. Zero rows (unknown topic OR non-member) ->
+	// Resolve the topic + gate visibility in one statement: the caller must
+	// participate in the topic's channel. Zero rows (unknown topic OR non-participant) ->
 	// ErrNotFound. FOR UPDATE OF t locks the source topic row for the tx so a
 	// concurrent rename/merge serializes.
 	q := db.New(tx)

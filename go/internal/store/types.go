@@ -252,6 +252,10 @@ type Channel struct {
 	// owner-scoped to its creating caller (the OWNER default), not global.
 	GroupID ChannelGroupID
 	Kind    ChannelKind
+	// ParentAgentID is the attached agent; empty means the channel is at the tree root.
+	ParentAgentID AccountID
+	// MembershipMode selects stored membership or agent-tree-derived membership.
+	MembershipMode ChannelMembershipMode
 	// MemberAccountIDs are the accounts party to the channel. For DM/GROUP_DM
 	// this set governs visibility directly (design.md:235-243).
 	MemberAccountIDs []AccountID

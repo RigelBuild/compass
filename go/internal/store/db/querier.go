@@ -214,6 +214,10 @@ type Querier interface {
 	// not-found/forbidden error mapping — all hand-written around these generated
 	// calls. Every message read shares the id/topic_id/author_account_id/author_handle/
 	// at_unix_ms/blocks/turn_sequence projection so Go maps each row through messageFromParts.
+	// Participant-channel copies: every `chain` + `participating` CTE in this
+	// file and topics.sql MUST stay identical (bar the actor's parameter number) and
+	// equal to ChannelParticipant (channels.sql). It is participation, not channel
+	// visibility: never widen it to the owner-set predicate. ACL conjuncts go in each.
 	GetChannelPostPolicy(ctx context.Context, id string) (GetChannelPostPolicyRow, error)
 	GetCoordinationChannelByName(ctx context.Context, arg GetCoordinationChannelByNameParams) (GetCoordinationChannelByNameRow, error)
 	// Coordination-store queries (sqlc adoption T3, RIG-3034). These replace the
@@ -405,6 +409,10 @@ type Querier interface {
 	// loop, and the D9 not-found/forbidden error mapping. The topic projection
 	// (id, channel_id, name, created_by_account_id, created_at_unix_ms, archived,
 	// last_seq) matches the former scanTopics order so the Go maps each row to Topic.
+	// Participant-channel copies: every `chain` + `participating` CTE in this
+	// file and messages.sql MUST stay identical (bar the actor's parameter number) and
+	// equal to ChannelParticipant (channels.sql). It is participation, not channel
+	// visibility: never widen it to the owner-set predicate. ACL conjuncts go in each.
 	ListTopics(ctx context.Context, arg ListTopicsParams) ([]Topic, error)
 	ListUserPeerings(ctx context.Context, userID string) ([]ListUserPeeringsRow, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)

@@ -161,8 +161,7 @@ func validateNewChannel(c NewChannel) error {
 //
 // A ParentAgentID attaches the channel under an agent the actor's owner set
 // owns (else ErrNotFound). A TREE channel writes no member rows: its
-// participants derive from the anchor's subtree, which need not include the
-// actor, and it returns no members until reads derive them.
+// participants derive from the anchor's subtree.
 func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel) (Channel, error) {
 	if err := validateNewChannel(c); err != nil {
 		return Channel{}, err
@@ -242,22 +241,13 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		if err := s.writeExplicitMembers(ctx, tx, ChannelID(id), c.Policy, members); err != nil {
 			return Channel{}, err
 		}
-	} else {
-		// No member rows exist, so report none: a later ListChannels reads the same.
-		members = nil
 	}
+	// The post-commit read projects TREE participants instead of stored rows.
 	if err := tx.Commit(ctx); err != nil {
 		return Channel{}, fmt.Errorf("store: commit create channel: %w", err)
 	}
 
-	return Channel{
-		ID:               ChannelID(id),
-		Name:             c.Name,
-		GroupID:          c.GroupID,
-		Kind:             c.Kind,
-		MemberAccountIDs: members,
-		Policy:           c.Policy,
-	}, nil
+	return s.getChannel(ctx, ChannelID(id))
 }
 
 // writeExplicitMembers stores an EXPLICIT channel's member rows inside the
@@ -450,7 +440,7 @@ func (s *Store) ListChannels(ctx context.Context, visibleTo AccountID) ([]Channe
 	}
 	var channels []Channel
 	for _, row := range rows {
-		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
+		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription, row.ParentAgentID, row.MembershipMode))
 	}
 	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return nil, err
@@ -639,7 +629,9 @@ func groupRefHints(groups []ChannelGroup, handles map[AccountID]string, matches 
 //     ErrNotFound, the two indistinguishable so a probe cannot enumerate names it
 //     lacks visibility for (the D9 not-found/forbidden merge);
 //   - exactly one → that channel;
-//   - two or more visible channels sharing the name → ErrInvalidArgument naming
+//   - two or more → narrowed to the ones the viewer participates in, when it
+//     participates in any, so an owner-set sibling's same-named channel does
+//     not shadow the viewer's own; still two or more → ErrInvalidArgument naming
 //     the collision, so the caller disambiguates rather than the server guessing
 //     (there is no ErrAmbiguous sentinel — invalid_argument is the R1 rule).
 //
@@ -655,10 +647,26 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 	}
 	var channels []Channel
 	for _, row := range rows {
-		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
+		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription, row.ParentAgentID, row.MembershipMode))
 	}
 	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return Channel{}, err
+	}
+	if len(channels) > 1 {
+		// The ascent probe is the participation authority, not the materialized list.
+		var participants []Channel
+		for _, channel := range channels {
+			member, err := isChannelMember(ctx, s.scopedPool(), viewer, channel.ID)
+			if err != nil {
+				return Channel{}, fmt.Errorf("store: check channel-name participant: %w", err)
+			}
+			if member {
+				participants = append(participants, channel)
+			}
+		}
+		if len(participants) > 0 {
+			channels = participants
+		}
 	}
 	switch len(channels) {
 	case 0:
@@ -666,7 +674,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 	case 1:
 		return channels[0], nil
 	default:
-		return Channel{}, fmt.Errorf("%w: channel name %q is ambiguous — it names %d visible channels; address it by id", ErrInvalidArgument, name, len(channels))
+		return Channel{}, fmt.Errorf("%w: channel name %q is ambiguous — it names %d channels; address it by id", ErrInvalidArgument, name, len(channels))
 	}
 }
 
@@ -1104,22 +1112,23 @@ func (s *Store) getChannel(ctx context.Context, id ChannelID) (Channel, error) {
 		}
 		return Channel{}, fmt.Errorf("store: get channel: %w", err)
 	}
-	channels := []Channel{channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription)}
+	channels := []Channel{channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription, row.ParentAgentID, row.MembershipMode)}
 	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return Channel{}, err
 	}
 	return channels[0], nil
 }
 
-// channelFromRow builds the base Channel (id, name, group, kind, policy) from
-// the shared seven-column channel projection every channel read selects; the
-// caller populates the member/subscriber sets with loadChannelMembers.
-func channelFromRow(id, name, groupID string, kind, postPolicy int16, ownerAccountID string, mandatorySubscription bool) Channel {
+// channelFromRow builds the base Channel from the shared nine-column channel
+// projection; the caller populates member/subscriber sets with loadChannelMembers.
+func channelFromRow(id, name, groupID string, kind, postPolicy int16, ownerAccountID string, mandatorySubscription bool, parentAgentID string, membershipMode int16) Channel {
 	return Channel{
-		ID:      ChannelID(id),
-		Name:    name,
-		GroupID: ChannelGroupID(groupID),
-		Kind:    ChannelKind(kind),
+		ID:             ChannelID(id),
+		Name:           name,
+		GroupID:        ChannelGroupID(groupID),
+		Kind:           ChannelKind(kind),
+		ParentAgentID:  AccountID(parentAgentID),
+		MembershipMode: ChannelMembershipMode(membershipMode),
 		Policy: ChannelPolicy{
 			PostPolicy:            ChannelPostPolicy(postPolicy),
 			OwnerAccountID:        AccountID(ownerAccountID),
@@ -1128,10 +1137,10 @@ func channelFromRow(id, name, groupID string, kind, postPolicy int16, ownerAccou
 	}
 }
 
-// loadChannelMembers populates each channel's member and subscriber sets with
-// one follow-up query over the whole id set, so member loading is O(1)
-// round-trips rather than one per channel. Runs against the pool or a tx (any
-// db.DBTX), mirroring the former scanChannels member follow-up.
+// loadChannelMembers uses one batch query to load EXPLICIT member rows and
+// derived TREE participants for the whole channel id set. Subscription overrides
+// apply only to derived participants, keeping subscribers a subset of members.
+// The shared read works with the pool or a tx (any db.DBTX).
 func loadChannelMembers(ctx context.Context, q db.DBTX, channels []Channel) error {
 	if len(channels) == 0 {
 		return nil

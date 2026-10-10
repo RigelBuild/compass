@@ -109,3 +109,38 @@ func TestChannelByNameForViewerAmbiguousIsInvalidArgument(t *testing.T) {
 		t.Fatalf("ambiguous resolve returned ErrNotFound, want ErrInvalidArgument only")
 	}
 }
+
+func TestChannelByNameForViewerNarrowsOwnerSetDuplicatesToParticipants(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "standup-owner")
+	anchorA := mustAgent(t, s, owner.ID, "standup-a")
+	anchorB := mustAgent(t, s, owner.ID, "standup-b")
+	channelA, err := s.CreateChannel(t.Context(), owner.ID, NewChannel{
+		Name: "standup", Kind: ChannelKindChannel,
+		ParentAgentID: anchorA.ID, MembershipMode: ChannelMembershipModeTree,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel(A): %v", err)
+	}
+	if _, err := s.CreateChannel(t.Context(), owner.ID, NewChannel{
+		Name: "standup", Kind: ChannelKindChannel,
+		ParentAgentID: anchorB.ID, MembershipMode: ChannelMembershipModeTree,
+	}); err != nil {
+		t.Fatalf("CreateChannel(B): %v", err)
+	}
+
+	got, err := s.ChannelByNameForViewer(t.Context(), anchorA.ID, "standup")
+	if err != nil {
+		t.Fatalf("ChannelByNameForViewer(A1): %v", err)
+	}
+	if got.ID != channelA.ID {
+		t.Fatalf("A1 resolved channel %q, want its own %q", got.ID, channelA.ID)
+	}
+	_, err = s.ChannelByNameForViewer(t.Context(), owner.ID, "standup")
+	sentinelIs(t, err, ErrInvalidArgument, "owner resolves both standup channels")
+	// A sibling that sees both but participates in neither keeps the visible-set
+	// ambiguity rather than a not-found for a name its list shows.
+	sibling := mustAgent(t, s, owner.ID, "standup-c")
+	_, err = s.ChannelByNameForViewer(t.Context(), sibling.ID, "standup")
+	sentinelIs(t, err, ErrInvalidArgument, "non-participant sibling resolves both standup channels")
+}
