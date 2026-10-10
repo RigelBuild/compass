@@ -1533,6 +1533,10 @@ jobs:
           # moon lint task cannot see them; lint them here, before the e2e.
           golangci-lint run --config .golangci.yml --build-tags unix,gtk4 ./cmd/compass-app/...
 
+          # The moon vuln task is untagged, so the Wails tree is scanned here,
+          # where the cgo GTK closure govulncheck needs to load it exists.
+          govulncheck -tags unix,gtk4 ./cmd/compass-app/...
+
           # A shared PASS-line guard: the gate must have PASSED the e2e, not
           # merely started it. Assert the PASS line, not `=== RUN`: `go test -v`
           # prints `=== RUN <name>` BEFORE the body runs, so a `t.Skip` (no

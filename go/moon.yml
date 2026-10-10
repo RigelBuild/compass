@@ -214,9 +214,9 @@ tasks:
   vuln:
     # govulncheck: known-vulnerability scan over the module's actual call graph
     # (reports only vulns in code paths the module reaches). It queries the Go
-    # vuln DB (vuln.go.dev), so it is a network gate. -tags gtk4 pulls in the
-    # native shell's Wails tree; neither tool links cgo, so no GTK is needed.
-    command: 'govulncheck -tags gtk4 ./...'
+    # vuln DB (vuln.go.dev), so it is a network gate. The gtk4-tagged shell
+    # needs the cgo GTK closure to load, so the gtk4 CI job scans it instead.
+    command: 'govulncheck ./...'
     options:
       runFromWorkspaceRoot: false
       # Consults the live vuln DB, so its result isn't a pure function of the
@@ -231,7 +231,7 @@ tasks:
     # CC0-1.0). The first-party module packages carry no LICENSE file (the
     # license lives at the repo root), so --ignore excludes the module's own
     # import path — the fence governs third-party deps, which is its job.
-    # GOFLAGS carries the gtk4 tag (go-licenses has no flag) so Wails is fenced.
+    # GOFLAGS adds the gtk4 tag so Wails is fenced; go-licenses loads no cgo.
     command: 'go-licenses check ./... --allowed_licenses=Apache-2.0,Apache-2.0-WITH-LLVM-exception,MIT,BSD-3-Clause,BSD-2-Clause,ISC,Unicode-3.0,Zlib,MPL-2.0,CC0-1.0 --ignore github.com/RigelBuild/compass/go'
     env:
       GOFLAGS: '-tags=gtk4'
