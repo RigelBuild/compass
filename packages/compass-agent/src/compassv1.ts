@@ -51,6 +51,7 @@ export {
 	ForgeCallRequestSchema,
 	type ForgeCallResult,
 	ForgeCallResultSchema,
+	ForgeSubscriptionScope,
 	GetIssueRequestSchema,
 	GetPullRequestRequestSchema,
 	type LifecycleCallError,
