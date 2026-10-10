@@ -382,6 +382,7 @@ type SessionBinding struct {
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
 	UsageIntervalID string
+	BindingVersion  string
 }
 
 type SystemAccount struct {

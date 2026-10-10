@@ -690,6 +690,9 @@ CREATE TABLE session_bindings (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     usage_interval_id TEXT NOT NULL DEFAULT gen_random_uuid()::TEXT,
+    -- One write of this row: every upsert sets a fresh UUID, so a release keyed on it
+    -- cannot remove a later re-bind of the same session id. Not xmin, which wraps.
+    binding_version   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (tenant_id, agent_account_id)
 );
 

@@ -212,19 +212,23 @@ type SessionBindingStore interface {
 	// returns the session id it DISPLACED (empty when the account held none) —
 	// the prior session the hub must evict from both maps. It runs on the
 	// request ctx (tenant-scoped), so the write lands under the acting tenant.
-	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced string, err error)
+	// version names the written row; a release conditioned on it cannot remove a re-bind.
+	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced, version string, err error)
 	// ResolveSessionBinding resolves the agent account and owning Runner a live
 	// session speaks for — the cache-miss read behind accountForSession.
 	// store.ErrNotFound is the fail-closed miss (mapped to ok=false),
-	// byte-identical to today's CodeNotFound.
-	ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error)
+	// byte-identical to today's CodeNotFound. version names the row read.
+	ResolveSessionBinding(ctx context.Context, sessionID string) (account store.AccountID, runnerID, version string, err error)
 	// SessionForAccount resolves the live session bound to an account — the
 	// cache-miss read behind SessionForAccount (the reverse direction). Same
 	// fail-closed store.ErrNotFound contract. Returns the owning Runner id too.
-	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID string, err error)
+	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID, version string, err error)
 	// DeleteSessionBinding releases one session's binding — the unbind write.
 	// Idempotent: releasing an already-released session is a no-op success.
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
+	// DeleteSessionBindingVersion releases sessionID only while its row is still
+	// the write that returned version; removed reports whether it was.
+	DeleteSessionBindingVersion(ctx context.Context, sessionID, version string) (removed bool, err error)
 	// DeleteSessionBindingsForRunner is the enroll sweep: it releases every
 	// binding attached to runnerID and RETURNS the rows it removed, driving the
 	// enroll reap (offline edges + held-deliver reap) from durable truth
@@ -410,6 +414,8 @@ type Hub struct {
 	reapStale map[string]uint64
 	// bindingEpoch fences read-throughs across reap start and completion.
 	bindingEpoch uint64
+	// lastLifetime numbers sessionAccounts inserts (sessionBinding.lifetime). mu-guarded.
+	lastLifetime uint64
 	// runnerEpoch entries are bounded by the number of distinct Runner ids.
 	runnerEpoch map[string]uint64
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall delegates
@@ -505,9 +511,14 @@ type attachedRunner struct {
 }
 
 // sessionBinding is one live session's principal and the Runner that owns it.
+// version and lifetime name one binding of the session id, so a release from an
+// older lifetime can skip a re-bind: version is the durable write ("" when none
+// was made), lifetime is the cache entry, unique per insert and never zero.
 type sessionBinding struct {
 	account  store.AccountID
 	runnerID string
+	version  string
+	lifetime uint64
 }
 
 // NewHub constructs a hub over the two write-through sinks and the agent-comms
@@ -907,7 +918,7 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	}
 	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
-		h.dropLostSessionDetached(ctx, h.enrollGen, runnerID, sessionID, true)
+		h.dropLostSessionDetached(ctx, h.enrollGen, runnerID, sessionID, &binding, true)
 	}
 }
 
