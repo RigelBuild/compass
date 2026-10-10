@@ -961,6 +961,35 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   `--cx-font-ui`, `--cx-text-sm`, `--cx-space-2/-3`, `--cx-radius-md`,
   `--cx-elev-2`, `--cx-z-toast`.
 
+## Tour
+
+- **Classes:** `.cx-tour-dialog` on `.cx-dialog` (welcome and finale steps),
+  inside `.cx-tour-backdrop` on `.cx-dialog-backdrop`. `.cx-tour-callout` is a
+  Kobalte `Popover` content anchored to a `data-tour="<id>"` element. Both hold
+  `.cx-tour-title`, `.cx-tour-body` and `.cx-tour-footer`, which holds
+  `.cx-tour-step-counter` ("N of M") and `.cx-tour-actions`. The dialog's
+  actions are Back (not on welcome), Skip tour, and Start, Next or Done; the
+  callout's are Back (disabled on the first step), Next and Skip tour.
+  `.cx-tour-demo-badge` marks a demo row ("Demo") in the sidebar and on board
+  cards. `.cx-tour-chase` is the welcome dialog's entrance frame (see
+  `motion.md`).
+- **Spotlight:** `.cx-tour-spotlight` is a fixed, pointer-transparent
+  `--cx-tour-scrim` layer. Its mask is two opaque layers composited with
+  `exclude`, so it shows a hole over the anchor rect, padded 8px on every side. The hole
+  is set by four registered properties, `--cx-tour-cutout-x/-y/-width/-height`;
+  being registered `<length>`s, they transition at `--cx-motion-base` when the
+  anchor changes. The app stays live under it.
+- **States:** a callout is non-modal and keeps open on an outside pointer
+  down. A dialog is modal and traps focus. Escape closes either without a
+  permanent write; Skip tour persists the dismissal. The callout unmounts while
+  the shortcuts overlay is open, so Escape reaches only the overlay.
+- **Tokens:** `--cx-tour-scrim`, `--cx-bg`, `--cx-bg-raised`, `--cx-bg-panel`,
+  `--cx-bg-hover`, `--cx-accent`, `--cx-border`, `--cx-text`, `--cx-text-bright`,
+  `--cx-text-dim`, `--cx-text-faint`, `--cx-pulse-color`, `--cx-pulse-period`,
+  `--cx-font-ui`, `--cx-text-xs/-sm/-lg`, `--cx-space-1/-2/-3/-6`,
+  `--cx-radius-sm/-md`, `--cx-elev-2`, `--cx-z-modal`, `--cx-z-overlay`,
+  `--cx-focus-ring`, `--cx-motion-base`, `--cx-ease-out`.
+
 ## Ask block
 
 - **Class:** `.cx-ask` · `data-answered`, with `.cx-ask-options` and `.cx-btn`
