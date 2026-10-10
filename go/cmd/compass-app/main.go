@@ -5,13 +5,13 @@
 // dist) and exposes the compass_rpc / compass_rpc_cancel IPC bridge to it,
 // backed by the bridge pump.
 //
-// The app runs in one of two modes (appconfig, resolved at launch):
-//   - EMBEDDED: it supervises a private stack in-process via the compass-stack
-//     CLI (embedded.go: preflight → compass-stack up → WhoAmI), then dials the
-//     stack's Unix socket over h2c. This is the zero-config self-host path.
-//   - CLIENT: it dials a headless Compass stack over the authenticated TLS door
-//     (client.go, runClient); the stack is brought up out of band on a dedicated
-//     machine, and app.toml's server_url points the app at it.
+// The app runs in two configured modes (appconfig, resolved at launch):
+//   - EMBEDDED: it supervises a private stack through compass-stack and dials
+//     its Unix socket over h2c.
+//   - CLIENT: it dials a headless Compass stack over the authenticated TLS door.
+//
+// When app.toml and a mode override are both absent, the shell opens its
+// first-run chooser before entering either configured mode.
 //
 // Assets: the dist lives at repo apps/ui/dist, OUTSIDE this Go package's
 // directory subtree, so //go:embed cannot reach it (embed forbids ".." patterns
@@ -35,6 +35,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
+	"github.com/RigelBuild/compass/go/internal/tokenstore"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
@@ -55,11 +56,9 @@ import (
 // sized for cold provisioning plus the same three pulls. Both remain backstops
 // against a wedge, not performance targets.
 //
-// The bring-up runs entirely BEFORE the window opens, so on darwin a genuinely
-// wedged provision is now a silent wait of this length with no UI at all. The
-// provisioning state that would make a long-but-healthy first run legible is
-// not built yet; until it is, this number buys a working first launch at the
-// cost of a worse failure mode for a hung one.
+// The configured embedded bring-up runs before a window opens. First-run setup
+// only runs preflight inside the visible chooser and saves the choice; the next
+// launch takes the configured bring-up path.
 var bringUpTimeout = bringUpTimeoutFor(runtime.GOOS)
 
 // bringUpTimeoutFor returns the bring-up budget for the given host OS. It takes
@@ -99,7 +98,7 @@ func run() error {
 			"$HOME/.compass.")
 	modeFlag := flag.String("mode", "",
 		"Operating mode override (embedded|client). Defaults to $COMPASS_APP_MODE, "+
-			"then app.toml, then embedded.")
+			"then app.toml, else the first-run chooser.")
 	stackBinFlag := flag.String("compass-stack", "",
 		"Path to the compass-stack binary the embedded stack is supervised with. "+
 			"Defaults to $COMPASS_STACK_BIN, then a compass-stack sibling of this "+
@@ -112,32 +111,46 @@ func run() error {
 	socket := resolveSocket(*socketFlag)
 	assetsDir := resolveAssetsDir(*assetsFlag)
 
-	// Keep the prior embedded startup default until the first-run chooser lands.
 	cfg, err := appconfig.Load(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"), resolveMode(*modeFlag))
-	if errors.Is(err, appconfig.ErrNoConfig) {
-		cfg = appconfig.Config{Mode: appconfig.ModeEmbedded}
-		err = nil
-	}
-	if err != nil {
+	setupMode := errors.Is(err, appconfig.ErrNoConfig)
+	if err != nil && !setupMode {
 		return err
 	}
 
 	stateDir := resolveStateDir(*stateDirFlag)
-	svc, quitter, err := launch(cfg, socket, stateDir, resolveImage(*imageFlag), stackBinFlag)
-	if err != nil {
-		return err
+	var (
+		svc     *bridgeService
+		quitter *quitController
+		setup   *setupService
+		dialog  *dialogService
+	)
+	if setupMode {
+		svc, setup, dialog, err = newSetupServices(stateDir, resolveImage(*imageFlag))
+		if err != nil {
+			return err
+		}
+	} else {
+		svc, quitter, err = launch(cfg, socket, stateDir, resolveImage(*imageFlag), stackBinFlag)
+		if err != nil {
+			return err
+		}
 	}
 
+	services := []application.Service{application.NewService(svc)}
+	if setup != nil {
+		services = append(services, application.NewService(setup), application.NewService(dialog))
+	}
 	app := application.New(application.Options{
 		Name:        "compass-app",
 		Description: "Compass native desktop shell",
-		Services: []application.Service{
-			application.NewService(svc),
-		},
+		Services:    services,
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(os.DirFS(assetsDir)),
 		},
 	})
+	if dialog != nil {
+		dialog.app = app
+	}
 	// The bridge service emits response frames through the app's event manager;
 	// wire it now that the app (and its EventManager) exists.
 	svc.events = app.Event
@@ -156,15 +169,8 @@ func run() error {
 		}
 	})
 
-	startupJS, err := shellStartupJS(cfg.Mode.String(), cfg.ServerURL)
-	if err != nil {
-		return err
-	}
-
-	// The menu is installed in both modes; "New Window" is always available. The
-	// embedded-only "Quit and stop stack" item (DL-108) is gated on quitter (client
-	// mode has no stack). Plain quit LINGERS by default — stack children stay
-	// running and relaunch re-attaches, so there is deliberately no stack teardown.
+	// The menu is installed in every mode. The embedded-only quit item is gated
+	// on quitter; setup and client mode have no stack teardown controller.
 	menu := application.NewMenu()
 	if quitter != nil {
 		quitter.quit = app.Quit
@@ -179,54 +185,53 @@ func run() error {
 	windowMenu := menu.AddSubmenu("Window")
 	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
 		name := nextWindowName(app)
-		newAppWindow(app, svc, name, "Compass", startupJS)
+		newAppWindow(app, svc, name, "Compass")
 	})
 	app.Menu.Set(menu)
 
-	// Restore the persisted window set (Compass multi-window M1). First-ever run
-	// (empty/absent/corrupt set) opens exactly one default "bridge" window. Every
-	// window is a Bridge window (URL "/") carrying the SAME startupJS injection
-	// (record §A1/§A3), so the factory forwards the identical script to each.
+	// Restore the persisted window set (Compass multi-window M1). An absent,
+	// empty, or corrupt set opens one default Bridge window. Each window factory
+	// reads the current shell mode when creating its startup script.
 	names := windowNamesOrDefault(loadWindowSet(stateDir))
 	for _, name := range names {
-		newAppWindow(app, svc, name, "Compass", startupJS)
+		newAppWindow(app, svc, name, "Compass")
 	}
 
-	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir, "version", version)
+	mode, _ := svc.shellState()
+	slog.Info("compass-app starting", "mode", mode, "socket", socket, "assets", assetsDir, "version", version)
 	return app.Run()
 }
 
 // windowOptions builds the Wails options for a Compass window. Every window is a
-// Bridge window (URL "/", record §A1) at the fixed 1280x800 size, carrying the
-// caller-resolved startupJS unchanged so the mode/serverURL injection is
-// identical across windows (§A3). Name keys the persisted set and later per-frame
-// routing (M3), so it is always set. Kept a pure forwarder so it is unit-testable
-// without a display.
-func windowOptions(name, title, startupJS string) application.WebviewWindowOptions {
+// Bridge window (URL "/") at the fixed 1280x800 size. Name keys the persisted set
+// and later per-frame routing, so it is always set. The startup globals come from
+// live shell state, so a window opened after setup boots in the decided mode.
+func windowOptions(svc *bridgeService, name, title string) (application.WebviewWindowOptions, error) {
+	mode, serverURL := svc.shellState()
+	startupJS, err := shellStartupJS(mode, serverURL)
+	if err != nil {
+		return application.WebviewWindowOptions{}, err
+	}
 	return application.WebviewWindowOptions{
 		Name:   name,
 		Title:  title,
 		Width:  1280,
 		Height: 800,
 		URL:    "/",
-		// OQ-8: the shell injects the client mode marker and the server URL as
-		// synchronous startup globals the UI reads at entry with no IPC to pick
-		// its boot path. JS runs before the app bundle.
+		// Startup globals run before the app bundle reads its boot mode.
 		JS: startupJS,
-	}
+	}, nil
 }
 
-// newAppWindow creates a Compass Bridge window on app from windowOptions and
-// attaches the per-window WindowClosing close-cancel handler (design §M3b):
-// when the window closes, every in-flight bridge call registered to it is
-// canceled and dropped, driving the same teardown as compass_rpc_cancel so no
-// call's pump goroutine or server-side subscription leaks for the app's
-// lifetime. Attaching here (not per call site) means every window — New Window
-// menu and restore loop alike — gets the leak gate; it cannot be forgotten at a
-// call site. The unsubscribe func the registration returns is ignored: the
-// window and its handler die together.
-func newAppWindow(app *application.App, svc *bridgeService, name, title, startupJS string) {
-	win := app.Window.NewWithOptions(windowOptions(name, title, startupJS))
+// newAppWindow creates a Bridge window and attaches its close-time cancellation
+// handler so every window tears down its own in-flight bridge calls.
+func newAppWindow(app *application.App, svc *bridgeService, name, title string) {
+	opts, err := windowOptions(svc, name, title)
+	if err != nil {
+		slog.Error("compass-app building window startup script", "error", err)
+		return
+	}
+	win := app.Window.NewWithOptions(opts)
 	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) {
 		svc.cancelWindow(wailsWindowDispatcher{win: win})
 	})
@@ -256,6 +261,30 @@ func firstFreeName(base string, exists func(string) bool) string {
 			return name
 		}
 	}
+}
+
+// newSetupServices builds the shared first-run services without resolving or starting a stack.
+func newSetupServices(stateDir, image string) (*bridgeService, *setupService, *dialogService, error) {
+	configPath, err := appconfig.ConfigPath(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	gate := &firstRunGate{}
+	picks := &caPicks{}
+	wiring := &setupWiring{configPath: configPath, gate: gate, picks: picks}
+	svc := newSetupBridgeService(nil, tokenstore.New(stateDir), wiring)
+	preflight := realPreflight(image)
+	setup := &setupService{
+		gate: gate,
+		svc:  svc,
+		preflight: func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(ctx, bringUpTimeout)
+			defer cancel()
+			return preflight(ctx)
+		},
+		save: func() error { return appconfig.SaveEmbedded(configPath) },
+	}
+	return svc, setup, &dialogService{picks: picks}, nil
 }
 
 // launch dispatches the resolved mode into the embedded or client launch arm and
@@ -347,8 +376,8 @@ func resolveAssetsDir(flagValue string) string {
 }
 
 // resolveMode resolves the --mode/$COMPASS_APP_MODE override for appconfig.Load.
-// An empty flag falls back to the environment; an empty result leaves the file
-// authoritative, with the caller mapping ErrNoConfig to the embedded default.
+// An empty flag falls back to the environment; an empty result leaves app.toml
+// authoritative, and an absent file then opens the first-run chooser.
 func resolveMode(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
