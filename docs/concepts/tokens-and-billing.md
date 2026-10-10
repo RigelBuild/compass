@@ -60,10 +60,12 @@ health/quota signal.
   an estimated start. The sweep's ends and backfilled starts carry the
   `estimated` flag. Other events are stamped when the server records the
   binding change; a Runner-reconnect reap records the reap time. The log is
-  auditable and reconstructable. Closed intervals feed derived hourly and daily
-  duration rollups, while open intervals are excluded. The raw compute log
-  follows the configured event retention window; rollups remain available after
-  pruning.
+  auditable and reconstructable outside a rolling deploy. While a server from
+  before the log still writes bindings, an interval it both opens and closes
+  is missing, and one it closes ends up to an hour late, at the next sweep.
+  Closed intervals feed derived hourly and daily duration rollups, while open
+  intervals are excluded. The raw compute log follows the configured event
+  retention window; rollups remain available after pruning.
 - **LLM token usage and spend — recorded for display, not billed day-1.** Every
   model call's tokens-in/out and cost, captured at the gateway. It powers the
   in-product usage/spend charts the user sees, and it is *recorded* even though
