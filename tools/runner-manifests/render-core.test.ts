@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { evaluate } from "@marcbachmann/cel-js";
 import {
 	assertRunnerImageDigest,
 	assertRunnerMaxUnavailable,
@@ -373,8 +374,13 @@ describe("renderRunnerManifests", () => {
 		).not.toThrow();
 	});
 
-	test("lets only break-glass groups exec into the Runner pod", () => {
-		const policyFor = (input: typeof values) => {
+	test("lets only break-glass groups exec into, attach to, or debug the Runner pod", () => {
+		// Evaluate the rendered policy's CEL the way the apiserver does: variables
+		// in order, then every validation must hold.
+		const admits = (
+			input: typeof values,
+			request: { operation: string; subResource: string; groups: string[] },
+		) => {
 			const policy = renderRunnerManifests(input).find(
 				(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
 			);
@@ -383,30 +389,71 @@ describe("renderRunnerManifests", () => {
 			const validations = nested(policy, "spec", "validations");
 			if (!Array.isArray(variables) || !Array.isArray(validations))
 				throw new Error("policy body missing");
-			return {
-				breakGlass: variables
-					.map(object)
-					.find((entry) => entry.name === "breakGlassGroups")?.expression,
-				subresourceRule: validations
-					.map(object)
-					.map((entry) => String(entry.expression))
-					.find((expression) => expression.includes("'exec'")),
-			};
-		};
-		const defaults = policyFor(values);
-		expect(defaults.breakGlass).toBe("['system:masters']");
-		expect(defaults.subresourceRule).toContain(
-			"request.userInfo.groups.exists(g, g in variables.breakGlassGroups)",
-		);
-		expect(
-			policyFor({
-				...values,
-				admission: {
-					...values.admission,
-					breakGlassGroups: ["ops:runner-admins"],
+			const ctx: Record<string, unknown> = {
+				request: {
+					operation: request.operation,
+					subResource: request.subResource,
+					name: "compass-runner-abcde",
+					resource: { resource: "pods" },
+					userInfo: { username: "alice", groups: request.groups },
 				},
-			}).breakGlass,
-		).toBe("['ops:runner-admins']");
+				object: null,
+				oldObject: null,
+				variables: {},
+			};
+			const vars = ctx.variables as Record<string, unknown>;
+			for (const entry of variables.map(object)) {
+				vars[String(entry.name)] = evaluate(String(entry.expression), ctx);
+			}
+			return validations
+				.map(object)
+				.every((entry) => evaluate(String(entry.expression), ctx) === true);
+		};
+		const requests = [
+			{ operation: "CONNECT", subResource: "exec" },
+			{ operation: "CONNECT", subResource: "attach" },
+			{ operation: "UPDATE", subResource: "ephemeralcontainers" },
+		];
+		for (const request of requests) {
+			expect(admits(values, { ...request, groups: ["system:masters"] })).toBe(
+				true,
+			);
+			expect(
+				admits(values, { ...request, groups: ["system:authenticated"] }),
+			).toBe(false);
+		}
+		const custom = {
+			...values,
+			admission: {
+				...values.admission,
+				breakGlassGroups: ["ops:runner-admins"],
+			},
+		};
+		expect(
+			admits(custom, {
+				operation: "CONNECT",
+				subResource: "exec",
+				groups: ["ops:runner-admins"],
+			}),
+		).toBe(true);
+		expect(
+			admits(custom, {
+				operation: "CONNECT",
+				subResource: "exec",
+				groups: ["system:masters"],
+			}),
+		).toBe(false);
+		const policyFor = (input: typeof values) => {
+			const policy = renderRunnerManifests(input).find(
+				(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+			);
+			const variables = nested(policy, "spec", "variables");
+			if (!Array.isArray(variables)) throw new Error("variables missing");
+			return variables
+				.map(object)
+				.find((entry) => entry.name === "breakGlassGroups")?.expression;
+		};
+		expect(policyFor(values)).toBe("['system:masters']");
 		expect(() =>
 			renderRunnerManifests({
 				...values,

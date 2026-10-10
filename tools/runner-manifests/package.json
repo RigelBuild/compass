@@ -8,6 +8,7 @@
 		"runner-manifests-render": "./render.ts"
 	},
 	"devDependencies": {
+		"@marcbachmann/cel-js": "8.0.0",
 		"@types/bun": "catalog:",
 		"typescript": "catalog:"
 	}
