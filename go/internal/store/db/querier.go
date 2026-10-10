@@ -140,6 +140,10 @@ type Querier interface {
 	// Both deletes also write an estimated start for a binding an older server made
 	// without one; ON CONFLICT keeps any real start.
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
+	// DeleteSessionBinding limited to one write of the row: a re-bind since that
+	// write set a new binding_version, so it is left alone. Returns rows removed;
+	// Postgres runs every data-modifying CTE to completion.
+	DeleteSessionBindingVersion(ctx context.Context, arg DeleteSessionBindingVersionParams) (int64, error)
 	// The reconnect sweep, run by Hub.enroll under the system role because a Runner
 	// is shared across tenants. :many with RETURNING: each removed row drives a
 	// presence DISCONNECTED edge, a held-deliver reap, and a tenant-scoped archive.
