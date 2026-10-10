@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { LayoutAction, WindowLayout } from "../window-layout";
 import { singleTabLayout } from "../window-layout";
 import type { CommandId } from "./commands";
+import { DEFAULT_KEYMAP } from "./keymap";
 import type { RovingGroupHandle } from "./roving";
 import { createKeyboardSpine } from "./spine";
 import type { FocusZone } from "./zones";
@@ -31,6 +32,7 @@ function stubDeps(
 		dispatchLayout: (action: LayoutAction) => void;
 		closeTab: (tabId: string) => void;
 		focusPane: (pane: "first" | "second") => void;
+		startTour: () => void;
 	}> = {},
 ) {
 	return {
@@ -46,6 +48,7 @@ function stubDeps(
 		closeTab: () => {},
 		focusPane: () => {},
 		toggleRight: () => {},
+		startTour: () => {},
 		...overrides,
 	};
 }
@@ -138,6 +141,21 @@ describe("createKeyboardSpine", () => {
 
 		cmd?.run();
 		expect(toggled).toBe(1);
+	});
+
+	test("registers tour.start as a palette-only global command that runs startTour", () => {
+		let started = 0;
+		const spine = createKeyboardSpine(stubDeps({ startTour: () => started++ }));
+
+		const cmd = spine.registry.get(id("tour.start"));
+		expect(cmd?.scope).toBe("global");
+		expect(cmd?.keywords).toEqual(["tour", "welcome", "onboarding", "help"]);
+		expect(DEFAULT_KEYMAP.some((e) => e.commandId === id("tour.start"))).toBe(
+			false,
+		);
+
+		cmd?.run();
+		expect(started).toBe(1);
 	});
 
 	test("seeds palette.open + view.settings/backlog/done, all global, none with a shortcut string (D4)", () => {

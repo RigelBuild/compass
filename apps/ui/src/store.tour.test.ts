@@ -1,0 +1,1228 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { TourOutcome } from "@compass/client";
+import type { PostHog } from "posthog-js";
+import { createRoot, createSignal, flush } from "solid-js";
+import { type Analytics, createAnalytics } from "./analytics/analytics";
+import { STUB_COMMS_STATE } from "./comms-stub";
+import type { CommandId } from "./keyboard/commands";
+import {
+	createFakeComms,
+	type FakeComms,
+	type FakeCommsSnapshot,
+	wireAskMessage,
+	wireChannel,
+	wireTextMessage,
+} from "./live/comms-fake";
+import { createFakeCompass, type FakeCompass } from "./live/compass-fake";
+import {
+	type AppStore,
+	type AppStoreOptions,
+	createAppStore,
+	type TourClient,
+} from "./store";
+import { testQueryClient } from "./test-support";
+import {
+	DEMO_ACCOUNTS,
+	DEMO_AGENTS,
+	DEMO_CHANNELS,
+	DEMO_ISSUES,
+	DEMO_MESSAGES,
+	DEMO_TOPICS,
+	isDemoId,
+} from "./tour/demo";
+import { TOUR_STEPS } from "./tour/state";
+import { focusedViewOf, layoutViews } from "./window-layout";
+
+const isDemoPath = (path: string): boolean => path.split("/").some(isDemoId);
+
+// A fake TourClient scripts the boot read and claim and records every write.
+
+interface TourFake {
+	readonly client: TourClient;
+	readonly claims: string[];
+	readonly writes: { outcome: TourOutcome; stepId: string }[];
+}
+
+function tourFake(script: {
+	outcome?: TourOutcome;
+	stepId?: string;
+	claim?: boolean | Error;
+	getError?: Error;
+	setError?: Error;
+	/** Holds the boot read until it resolves. */
+	readGate?: Promise<void>;
+	/** Holds the claim until it resolves. */
+	claimGate?: Promise<void>;
+}): TourFake {
+	const claims: string[] = [];
+	const writes: { outcome: TourOutcome; stepId: string }[] = [];
+	return {
+		claims,
+		writes,
+		client: {
+			getTourState: async () => {
+				await script.readGate;
+				if (script.getError) throw script.getError;
+				return {
+					outcome: script.outcome ?? TourOutcome.UNSPECIFIED,
+					stepId: script.stepId ?? "",
+				};
+			},
+			claimTourStart: async ({ stepId }) => {
+				claims.push(stepId);
+				await script.claimGate;
+				if (script.claim instanceof Error) throw script.claim;
+				return { claimed: script.claim ?? true };
+			},
+			setTourState: async (req) => {
+				writes.push({ outcome: req.outcome, stepId: req.stepId });
+				if (script.setError) throw script.setError;
+				return {};
+			},
+		},
+	};
+}
+
+function gate(): { promise: Promise<void>; open: () => void } {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	return { promise, open: () => resolve() };
+}
+
+// Drain the boot read + claim chain and the serialized write chain.
+async function settle(): Promise<void> {
+	for (let i = 0; i < 50; i++) {
+		await Promise.resolve();
+		flush();
+	}
+}
+
+function withStore(
+	opts: Partial<AppStoreOptions>,
+	body: (store: AppStore) => Promise<void> | void,
+): Promise<void> {
+	let dispose!: () => void;
+	const store = createRoot((d) => {
+		dispose = d;
+		return createAppStore({
+			queryClient: testQueryClient(),
+			initialComms: STUB_COMMS_STATE,
+			...opts,
+		});
+	});
+	return Promise.resolve(body(store)).finally(() => dispose());
+}
+
+interface Nav {
+	readonly path: string;
+	readonly replace: boolean;
+}
+
+// The store bound to a fake router that records push vs. replace.
+function withRouter(
+	initialPath: string,
+	body: (store: AppStore, navs: Nav[]) => Promise<void> | void,
+): Promise<void> {
+	const navs: Nav[] = [];
+	let dispose!: () => void;
+	const store = createRoot((d) => {
+		dispose = d;
+		const [path, setPath] = createSignal(initialPath);
+		const [state, setState] = createSignal<unknown>(undefined);
+		const s = createAppStore({
+			queryClient: testQueryClient(),
+			initialComms: STUB_COMMS_STATE,
+		});
+		s.bindRouter({
+			navigate: (to, opts) => {
+				navs.push({ path: to, replace: opts?.replace ?? false });
+				setState(opts?.state);
+				setPath(to);
+			},
+			currentPath: path,
+			currentState: state,
+		});
+		return s;
+	});
+	flush();
+	// The layout → hash sync runs in a microtask; let the boot entry land.
+	return settle()
+		.then(() => body(store, navs))
+		.finally(() => dispose());
+}
+
+const LAST = TOUR_STEPS.length - 1;
+const stepId = (i: number): string => TOUR_STEPS[i]?.id ?? "";
+const DEMO_AGENT = DEMO_AGENTS[0]?.account.id ?? "";
+const wireText = (id: string) =>
+	wireTextMessage({
+		id,
+		topicId: "top-1",
+		authorAccountId: "acc-matt",
+		atUnixMs: 5000,
+		text: id,
+	});
+
+describe("tour first-run arming", () => {
+	test("without claimFirstRun the boot reads resume state but never claims", async () => {
+		const fake = tourFake({ claim: true, stepId: stepId(2) });
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			expect(fake.claims).toEqual([]);
+			expect(store.tour.shouldAutoStart()).toBe(false);
+			store.tour.start("resume");
+			flush();
+			expect(store.tour.stepIndex()).toBe(2);
+		});
+	});
+
+	test("a claimed first run arms auto-start and start opens the tour", async () => {
+		const fake = tourFake({ claim: true });
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims).toEqual([stepId(0)]);
+				expect(store.tour.shouldAutoStart()).toBe(true);
+				store.tour.start("first-run");
+				flush();
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(0);
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				// The claim already wrote the started row.
+				expect(fake.writes).toEqual([]);
+			},
+		);
+	});
+
+	test("a lost claim arms nothing and first-run start stays closed", async () => {
+		const fake = tourFake({ claim: false });
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims.length).toBe(1);
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				store.tour.start("first-run");
+				flush();
+				expect(store.tour.open()).toBe(false);
+			},
+		);
+	});
+
+	test("a failed claim arms nothing and is reported", async () => {
+		const fake = tourFake({ claim: new Error("claim down") });
+		const errors: unknown[] = [];
+		await withStore(
+			{
+				tour: fake.client,
+				claimFirstRun: true,
+				onCommsError: (e) => errors.push(e),
+			},
+			async (store) => {
+				await settle();
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				store.tour.start("first-run");
+				flush();
+				expect(store.tour.open()).toBe(false);
+				expect(String(errors[0])).toMatch(/claim down/);
+			},
+		);
+	});
+
+	test("a stored outcome is read for resume and never claims", async () => {
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+		});
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims).toEqual([]);
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				store.tour.start("resume");
+				await settle();
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(3);
+				expect(fake.writes).toEqual([
+					{ outcome: TourOutcome.STARTED, stepId: stepId(3) },
+				]);
+			},
+		);
+	});
+
+	test("an offline store never arms", async () => {
+		await withStore({ claimFirstRun: true }, async (store) => {
+			await settle();
+			expect(store.tour.shouldAutoStart()).toBe(false);
+		});
+	});
+
+	test("a manual start while the claim is pending suppresses auto-start", async () => {
+		const claim = gate();
+		const fake = tourFake({ claim: true, claimGate: claim.promise });
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims.length).toBe(1);
+				store.tour.start("replay");
+				flush();
+				store.tour.next();
+				flush();
+				claim.open();
+				await settle();
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				store.tour.start("first-run");
+				flush();
+				expect(store.tour.stepIndex()).toBe(1);
+			},
+		);
+	});
+
+	test("a slow boot read does not overwrite a cursor the user moved", async () => {
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.close();
+			flush();
+			read.open();
+			await settle();
+			store.tour.start("resume");
+			flush();
+			expect(store.tour.stepIndex()).toBe(1);
+		});
+	});
+
+	test("a resume started before the boot read opens at the saved step", async () => {
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			store.tour.start("resume");
+			flush();
+			read.open();
+			await settle();
+			expect(store.tour.open()).toBe(true);
+			expect(store.tour.stepIndex()).toBe(3);
+			expect(fake.writes).toEqual([
+				{ outcome: TourOutcome.STARTED, stepId: stepId(3) },
+			]);
+		});
+	});
+
+	test("a failed boot read releases a held resume at step 0, reported once", async () => {
+		const read = gate();
+		const fake = tourFake({
+			getError: new Error("read down"),
+			readGate: read.promise,
+		});
+		const errors: unknown[] = [];
+		await withStore(
+			{ tour: fake.client, onCommsError: (e) => errors.push(e) },
+			async (store) => {
+				store.tour.start("resume");
+				flush();
+				expect(store.tour.open()).toBe(false);
+				read.open();
+				await settle();
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(0);
+				expect(errors.map(String)).toEqual(["Error: read down"]);
+			},
+		);
+	});
+});
+
+describe("tour.start command", () => {
+	type Trigger = Parameters<AppStore["tour"]["start"]>[0];
+	// Records the trigger the command picks; the real start still runs.
+	function runCommand(store: AppStore): Trigger[] {
+		const triggers: Trigger[] = [];
+		const start = store.tour.start;
+		store.tour.start = (trigger) => {
+			triggers.push(trigger);
+			start(trigger);
+		};
+		store.keyboard.registry.get("tour.start" as CommandId)?.run();
+		flush();
+		store.tour.start = start;
+		return triggers;
+	}
+
+	const cases: [string, TourOutcome, number | null, Trigger, number][] = [
+		["no stored state replays", TourOutcome.UNSPECIFIED, null, "replay", 0],
+		["a skipped tour resumes", TourOutcome.DISMISSED, 3, "resume", 3],
+		["a tour closed mid-way resumes", TourOutcome.STARTED, 2, "resume", 2],
+		["a completed tour replays", TourOutcome.COMPLETED, LAST, "replay", 0],
+	];
+	for (const [name, outcome, step, trigger, index] of cases) {
+		test(name, async () => {
+			const fake = tourFake({
+				outcome,
+				stepId: step === null ? "" : stepId(step),
+			});
+			await withStore({ tour: fake.client }, async (store) => {
+				await settle();
+				expect(runCommand(store)).toEqual([trigger]);
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(index);
+			});
+		});
+	}
+
+	test("a tour closed this session resumes at the reached step", async () => {
+		const fake = tourFake({});
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.close();
+			flush();
+			flush();
+			expect(runCommand(store)).toEqual(["resume"]);
+			expect(store.tour.stepIndex()).toBe(2);
+		});
+	});
+
+	test("a tour completed this session replays from the start", async () => {
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("resume");
+			flush();
+			store.tour.complete();
+			flush();
+			flush();
+			expect(runCommand(store)).toEqual(["replay"]);
+			expect(store.tour.stepIndex()).toBe(0);
+		});
+	});
+
+	test("without a tour client a finished tour replays from the start", async () => {
+		await withStore({}, async (store) => {
+			store.tour.start("replay");
+			flush();
+			for (let i = 0; i < LAST; i++) {
+				store.tour.next();
+				flush();
+			}
+			store.tour.complete();
+			flush();
+			expect(runCommand(store)).toEqual(["replay"]);
+			expect(store.tour.stepIndex()).toBe(0);
+		});
+	});
+
+	test("before the boot read lands the command waits, then resumes", async () => {
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			expect(runCommand(store)).toEqual([]);
+			expect(store.tour.open()).toBe(false);
+			read.open();
+			await settle();
+			expect(store.tour.open()).toBe(true);
+			expect(store.tour.stepIndex()).toBe(3);
+		});
+	});
+
+	test("while the tour is open the command does nothing", async () => {
+		const fake = tourFake({});
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			flush();
+			expect(runCommand(store)).toEqual([]);
+			expect(store.tour.stepIndex()).toBe(1);
+		});
+	});
+});
+
+describe("tour transitions", () => {
+	test("step changes write the step id as STARTED", async () => {
+		const fake = tourFake({ claim: false });
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.back();
+			await settle();
+			expect(store.tour.stepIndex()).toBe(1);
+			expect(fake.writes).toEqual([
+				{ outcome: TourOutcome.STARTED, stepId: stepId(0) },
+				{ outcome: TourOutcome.STARTED, stepId: stepId(1) },
+				{ outcome: TourOutcome.STARTED, stepId: stepId(2) },
+				{ outcome: TourOutcome.STARTED, stepId: stepId(1) },
+			]);
+		});
+	});
+
+	test("dismiss writes DISMISSED with the current step id and closes", async () => {
+		const fake = tourFake({ claim: false });
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.dismiss();
+			await settle();
+			expect(store.tour.open()).toBe(false);
+			expect(store.tour.demoActive()).toBe(false);
+			expect(fake.writes.at(-1)).toEqual({
+				outcome: TourOutcome.DISMISSED,
+				stepId: stepId(1),
+			});
+		});
+	});
+
+	test("complete writes COMPLETED and closes", async () => {
+		const fake = tourFake({ claim: false });
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.complete();
+			await settle();
+			expect(store.tour.open()).toBe(false);
+			expect(store.tour.demoActive()).toBe(false);
+			expect(fake.writes.at(-1)?.outcome).toBe(TourOutcome.COMPLETED);
+		});
+	});
+
+	test("next past the last step completes", async () => {
+		const fake = tourFake({ claim: false });
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			for (let i = 0; i < LAST; i++) {
+				store.tour.next();
+				flush();
+			}
+			expect(store.tour.stepIndex()).toBe(LAST);
+			expect(store.tour.open()).toBe(true);
+			store.tour.next();
+			await settle();
+			expect(store.tour.open()).toBe(false);
+			expect(fake.writes.at(-1)?.outcome).toBe(TourOutcome.COMPLETED);
+		});
+	});
+
+	test("close writes no outcome", async () => {
+		const fake = tourFake({ claim: false });
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			const before = fake.writes.length;
+			store.tour.close();
+			flush();
+			expect(store.tour.open()).toBe(false);
+			expect(store.tour.demoActive()).toBe(false);
+			expect(fake.writes.length).toBe(before);
+		});
+	});
+
+	test("a failed write is reported once, not retried", async () => {
+		const fake = tourFake({ claim: false, setError: new Error("write down") });
+		const errors: unknown[] = [];
+		await withStore(
+			{ tour: fake.client, onCommsError: (e) => errors.push(e) },
+			async (store) => {
+				await settle();
+				store.tour.start("replay");
+				await settle();
+				expect(fake.writes.length).toBe(1);
+				expect(errors.length).toBe(1);
+				expect(store.tour.open()).toBe(true);
+			},
+		);
+	});
+
+	test("a stale STARTED never lands after a later DISMISSED", async () => {
+		// The server applies each write when it arrives; the fake releases the
+		// newest pending write first, so unordered writes would land backwards.
+		let stored: { outcome: TourOutcome; stepId: string } | undefined;
+		const pending: (() => void)[] = [];
+		const client: TourClient = {
+			getTourState: async () => ({
+				outcome: TourOutcome.DISMISSED,
+				stepId: "",
+			}),
+			claimTourStart: async () => ({ claimed: false }),
+			setTourState: (req) => {
+				const { promise, resolve } = Promise.withResolvers<unknown>();
+				pending.push(() => {
+					stored = { outcome: req.outcome, stepId: req.stepId };
+					resolve({});
+				});
+				return promise;
+			},
+		};
+		await withStore({ tour: client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.dismiss();
+			await settle();
+			for (let release = pending.pop(); release; release = pending.pop()) {
+				release();
+				await settle();
+			}
+			expect(stored).toEqual({
+				outcome: TourOutcome.DISMISSED,
+				stepId: stepId(1),
+			});
+		});
+	});
+});
+
+// A recording Analytics stub: the embed as the tour sees it with the flag on.
+function analyticsStub(): {
+	analytics: Analytics;
+	events: { event: string; props?: Record<string, unknown> }[];
+} {
+	const events: { event: string; props?: Record<string, unknown> }[] = [];
+	return {
+		events,
+		analytics: {
+			capture: (event, props) => {
+				events.push(props === undefined ? { event } : { event, props });
+			},
+			identify: () => {},
+			sessionId: () => undefined,
+			shutdown: () => {},
+		},
+	};
+}
+
+describe("tour analytics", () => {
+	test("a replay emits started, one step_viewed per shown step, then completed", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			for (let i = 0; i < LAST; i++) {
+				store.tour.next();
+				flush();
+				store.tour.stepShown();
+			}
+			store.tour.next();
+			flush();
+			expect(store.tour.open()).toBe(false);
+			expect(stub.events).toEqual([
+				{ event: "tour_started", props: { trigger: "replay" } },
+				...TOUR_STEPS.map((step, index) => ({
+					event: "tour_step_viewed",
+					props: { step_id: step.id, index },
+				})),
+				{ event: "tour_completed", props: {} },
+			]);
+		});
+	});
+
+	test("a step change alone reports no view; a step skipped unshown is never counted", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.stepShown();
+			expect(stub.events).toEqual([
+				{ event: "tour_started", props: { trigger: "replay" } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(2), index: 2 } },
+			]);
+		});
+	});
+
+	test("a repeated stepShown reports the step once", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			store.tour.stepShown();
+			flush();
+			store.tour.stepShown();
+			expect(stub.events.filter((e) => e.event === "tour_step_viewed")).toEqual(
+				[
+					{
+						event: "tour_step_viewed",
+						props: { step_id: stepId(0), index: 0 },
+					},
+				],
+			);
+		});
+	});
+
+	test("Back re-reports the earlier step and dismiss reports the current step", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			store.tour.next();
+			flush();
+			store.tour.stepShown();
+			store.tour.back();
+			flush();
+			store.tour.stepShown();
+			store.tour.dismiss();
+			flush();
+			expect(stub.events).toEqual([
+				{ event: "tour_started", props: { trigger: "replay" } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(0), index: 0 } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(1), index: 1 } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(0), index: 0 } },
+				{ event: "tour_dismissed", props: { step_id: stepId(0) } },
+			]);
+		});
+	});
+
+	test("a restart re-reports the welcome step", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			store.tour.close();
+			flush();
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			expect(
+				stub.events.filter((e) => e.event === "tour_step_viewed").length,
+			).toBe(2);
+		});
+	});
+
+	test("a won first-run claim reports the first-run trigger", async () => {
+		const stub = analyticsStub();
+		const fake = tourFake({ claim: true });
+		await withStore(
+			{ analytics: stub.analytics, tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				store.tour.start("first-run");
+				flush();
+				store.tour.stepShown();
+				expect(stub.events.slice(0, 2)).toEqual([
+					{ event: "tour_started", props: { trigger: "first-run" } },
+					{
+						event: "tour_step_viewed",
+						props: { step_id: stepId(0), index: 0 },
+					},
+				]);
+			},
+		);
+	});
+
+	test("a held resume reports one start at the saved step once the read lands", async () => {
+		const stub = analyticsStub();
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore(
+			{ analytics: stub.analytics, tour: fake.client },
+			async (store) => {
+				store.tour.start("resume");
+				flush();
+				expect(stub.events).toEqual([]);
+				read.open();
+				await settle();
+				store.tour.stepShown();
+				expect(stub.events).toEqual([
+					{ event: "tour_started", props: { trigger: "resume" } },
+					{
+						event: "tour_step_viewed",
+						props: { step_id: stepId(3), index: 3 },
+					},
+				]);
+			},
+		);
+	});
+
+	test("refused transitions and close emit nothing", async () => {
+		const stub = analyticsStub();
+		const fake = tourFake({ claim: false });
+		await withStore(
+			{ analytics: stub.analytics, tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				// A lost claim, and every transition while closed, is a no-op.
+				store.tour.start("first-run");
+				store.tour.next();
+				store.tour.back();
+				store.tour.dismiss();
+				store.tour.complete();
+				flush();
+				expect(stub.events).toEqual([]);
+				store.tour.start("replay");
+				flush();
+				const opened = stub.events.length;
+				store.tour.back();
+				store.tour.close();
+				flush();
+				// A closed tour has nothing on screen to report.
+				store.tour.stepShown();
+				expect(stub.events.length).toBe(opened);
+			},
+		);
+	});
+
+	test("with the flag off the tour runs end to end and posthog is never called", async () => {
+		const calls: string[] = [];
+		const record = (method: string) => () => {
+			calls.push(method);
+		};
+		const fakePosthog = {
+			init: record("init"),
+			capture: record("capture"),
+			identify: record("identify"),
+			reset: record("reset"),
+			get_session_id: () => "",
+		};
+		// SAFETY: the disabled embed never dereferences the client; the fake only records.
+		const posthog = fakePosthog as unknown as PostHog;
+		const fake = tourFake({ claim: false });
+		await withStore(
+			{ analytics: createAnalytics(undefined, { posthog }), tour: fake.client },
+			async (store) => {
+				await settle();
+				store.tour.start("replay");
+				flush();
+				store.tour.next();
+				flush();
+				store.tour.dismiss();
+				await settle();
+				expect(store.tour.open()).toBe(false);
+				expect(fake.writes.at(-1)?.outcome).toBe(TourOutcome.DISMISSED);
+				expect(calls).toEqual([]);
+			},
+		);
+	});
+});
+
+describe("tour demo seam", () => {
+	const ids = (rows: readonly { id: string }[]) => rows.map((r) => r.id);
+	const agentIds = (store: AppStore) => store.agents().map((a) => a.account.id);
+
+	test("demo rows appear in every base accessor only while active", async () => {
+		await withStore({}, async (store) => {
+			const has = (all: string[], demo: string[]) =>
+				demo.every((id) => all.includes(id));
+			const check = (expected: boolean) => {
+				expect(has(ids(store.accounts()), ids(DEMO_ACCOUNTS))).toBe(expected);
+				expect(
+					has(
+						agentIds(store),
+						DEMO_AGENTS.map((a) => a.account.id),
+					),
+				).toBe(expected);
+				expect(has(ids(store.issues()), ids(DEMO_ISSUES))).toBe(expected);
+				expect(has(ids(store.channels()), ids(DEMO_CHANNELS))).toBe(expected);
+				expect(has(ids(store.topics()), ids(DEMO_TOPICS))).toBe(expected);
+				expect(has(ids(store.messages()), ids(DEMO_MESSAGES))).toBe(expected);
+			};
+			check(false);
+			store.tour.start("replay");
+			flush();
+			expect(store.tour.demoActive()).toBe(true);
+			check(true);
+			store.tour.close();
+			flush();
+			check(false);
+		});
+	});
+
+	test("real rows stay beside demo rows", async () => {
+		await withStore({}, async (store) => {
+			const realIssues = ids(store.issues());
+			const realAgents = agentIds(store);
+			store.tour.start("replay");
+			flush();
+			expect(ids(store.issues()).slice(0, realIssues.length)).toEqual(
+				realIssues,
+			);
+			expect(agentIds(store).slice(0, realAgents.length)).toEqual(realAgents);
+		});
+	});
+
+	test("the live roster joins demo agents without duplicating them", async () => {
+		const comms = createFakeComms();
+		await withStore({ comms: comms.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			const demo = agentIds(store).filter((id) => id.startsWith("demo:"));
+			expect(demo).toEqual(DEMO_AGENTS.map((a) => a.account.id));
+			expect(
+				store.agents().find((a) => a.account.id === DEMO_AGENT)?.lifecycle,
+			).toBe("working");
+		});
+	});
+
+	test("message-only updates keep the merged slices' identity", async () => {
+		const comms = createFakeComms({
+			channels: [wireChannel("chan-1", "acc-matt")],
+		});
+		await withStore({ comms: comms.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			const before = {
+				agents: store.agents(),
+				accounts: store.accounts(),
+				channels: store.channels(),
+				topics: store.topics(),
+			};
+			await comms.emit(
+				{ case: "messagePosted", value: { message: wireText("m-new") } },
+				1n,
+			);
+			await settle();
+			expect(store.messages().some((m) => m.id === "m-new")).toBe(true);
+			expect(store.agents()).toBe(before.agents);
+			expect(store.accounts()).toBe(before.accounts);
+			expect(store.channels()).toBe(before.channels);
+			expect(store.topics()).toBe(before.topics);
+		});
+	});
+
+	test("a live update keeps a selected demo channel", async () => {
+		const comms = createFakeComms({
+			channels: [wireChannel("chan-1", "acc-matt")],
+		});
+		const demoChannel = DEMO_CHANNELS[0]?.id ?? "";
+		await withStore({ comms: comms.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.openChannel(demoChannel);
+			flush();
+			expect(store.selectedChannelId()).toBe(demoChannel);
+			await comms.emit(
+				{ case: "messagePosted", value: { message: wireText("m-new") } },
+				1n,
+			);
+			await settle();
+			expect(store.selectedChannelId()).toBe(demoChannel);
+			expect(store.view()).toBe("channel");
+		});
+	});
+
+	test("derived memos see demo rows: selectedAgent, prs and agentRepos", async () => {
+		await withStore({}, async (store) => {
+			const demoPr = DEMO_ISSUES.find((i) => i.prs.length > 0);
+			expect(demoPr).toBeDefined();
+			expect(store.prs().some((r) => r.issue.id === demoPr?.id)).toBe(false);
+			store.tour.start("replay");
+			flush();
+			expect(store.prs().some((r) => r.issue.id === demoPr?.id)).toBe(true);
+			store.openAgent(DEMO_AGENT);
+			flush();
+			expect(store.selectedAgent()?.account.id).toBe(DEMO_AGENT);
+			// The workspace anchors on the demo agent's own issue.
+			expect(store.selectedIssue()?.assignee).toBe(DEMO_AGENT);
+			const owned = DEMO_ISSUES.filter((i) => i.assignee === DEMO_AGENT);
+			expect(store.agentRepos()[0]?.branches).toEqual(
+				owned.map((i) => i.branch),
+			);
+		});
+	});
+
+	test("without the tour a demo route redirects to the Bridge", async () => {
+		await withStore({}, async (store) => {
+			store.openAgent(DEMO_AGENT);
+			flush();
+			expect(store.view()).toBe("bridge");
+			expect(store.selectedAgent()).toBeUndefined();
+		});
+	});
+});
+
+describe("tour teardown leaves a demo route", () => {
+	for (const exit of ["close", "dismiss", "complete"] as const) {
+		test(`${exit} on /agent/demo:… lands on the Bridge`, async () => {
+			await withStore({}, async (store) => {
+				store.tour.start("replay");
+				flush();
+				store.openAgent(DEMO_AGENT);
+				flush();
+				expect(store.view()).toBe("agent");
+				store.tour[exit]();
+				flush();
+				expect(store.view()).toBe("bridge");
+				expect(store.tour.demoActive()).toBe(false);
+			});
+		});
+	}
+
+	test("teardown on a real route stays put", async () => {
+		await withStore({}, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.showBacklog();
+			flush();
+			store.tour.close();
+			flush();
+			expect(store.view()).toBe("backlog");
+		});
+	});
+
+	test("teardown off a demo route replaces the history entry", async () => {
+		await withRouter("/", async (store, navs) => {
+			// Drop the boot entry's view stamp; only the tour's moves matter here.
+			navs.length = 0;
+			store.tour.start("replay");
+			flush();
+			store.openAgent(DEMO_AGENT);
+			await settle();
+			store.tour.close();
+			await settle();
+			expect(navs).toEqual([
+				{ path: `/agent/${DEMO_AGENT}`, replace: false },
+				{ path: "/", replace: true },
+			]);
+			expect(store.view()).toBe("bridge");
+		});
+	});
+
+	test("teardown clears demo paths from every view and pushes for none", async () => {
+		await withRouter("/", async (store, navs) => {
+			store.tour.start("replay");
+			flush();
+			store.openAgent(DEMO_AGENT);
+			await settle();
+			// Both panes of the split and a background tab now sit on demo paths.
+			store.dispatchLayout({ kind: "split", direction: "row" });
+			store.dispatchLayout({
+				kind: "open",
+				path: `/channel/${DEMO_CHANNELS[0]?.id ?? ""}`,
+				background: true,
+			});
+			await settle();
+			const focusedId = focusedViewOf(store.layout()).id;
+			expect(
+				layoutViews(store.layout()).map((v) => isDemoPath(v.path)),
+			).toEqual([true, true, true]);
+			navs.length = 0;
+			store.tour.close();
+			await settle();
+			expect(layoutViews(store.layout()).map((v) => v.path)).toEqual([
+				"/",
+				"/",
+				"/",
+			]);
+			// Focus stays put, and only it reaches the hash, as a replace.
+			expect(focusedViewOf(store.layout()).id).toBe(focusedId);
+			expect(navs).toEqual([{ path: "/", replace: true }]);
+		});
+	});
+
+	test("a demo route with the tour off replaces, so Back cannot loop", async () => {
+		await withRouter(`/agent/${DEMO_AGENT}`, async (store, navs) => {
+			expect(navs).toEqual([{ path: "/", replace: true }]);
+			expect(store.view()).toBe("bridge");
+		});
+	});
+});
+
+describe("demo targets never reach the server or storage", () => {
+	const DEMO_CHANNEL = DEMO_CHANNELS[0]?.id ?? "";
+	const DEMO_TOPIC = DEMO_TOPICS[0]?.id ?? "";
+	const PIN_KEY = "compass.pinnedAgents.ws-demo";
+
+	beforeEach(() => globalThis.localStorage.clear());
+	afterEach(() => globalThis.localStorage.clear());
+
+	const withLive = (
+		body: (ctx: {
+			store: AppStore;
+			comms: FakeComms;
+			compass: FakeCompass;
+		}) => Promise<void>,
+		snapshot?: FakeCommsSnapshot,
+	) => {
+		const comms = createFakeComms(snapshot);
+		const compass = createFakeCompass();
+		return withStore(
+			{
+				comms: comms.client,
+				compass: compass.client,
+				workspaceKey: "ws-demo",
+				// A server-sourced session for the demo agent, so only the guard
+				// stands between stopAgent and the wire.
+				sessions: {
+					[DEMO_AGENT]: {
+						sessionId: "sess-1",
+						agentAccountId: DEMO_AGENT,
+						running: true,
+						events: [],
+					},
+				},
+			},
+			async (store) => {
+				await settle();
+				store.tour.start("replay");
+				flush();
+				await body({ store, comms, compass });
+			},
+		);
+	};
+
+	// One demo id per call, so each half of a guard is exercised on its own.
+	test("postMessage to a demo channel with a real topic sends nothing", async () => {
+		await withLive(async ({ store, comms }) => {
+			await store
+				.postMessage(DEMO_CHANNEL, { case: "topicId", value: "top-1" }, "hi")
+				.catch(() => {});
+			expect(comms.posts).toEqual([]);
+		});
+	});
+
+	test("postMessage to a real channel with a demo topic sends nothing", async () => {
+		await withLive(async ({ store, comms }) => {
+			await store
+				.postMessage("chan-real", { case: "topicId", value: DEMO_TOPIC }, "hi")
+				.catch(() => {});
+			expect(comms.posts).toEqual([]);
+		});
+	});
+
+	// Asks served in a real channel, each naming exactly one `demo:` id. The
+	// staged asks arrive with a recorded answer, so a recorder must leave it
+	// as is and only submit's guard stands between it and the wire.
+	const ASKS = [
+		{
+			label: "demo message",
+			blank: { messageId: "demo:msg-a", askId: "ask-a" },
+			staged: { messageId: "demo:msg-c", askId: "ask-c" },
+		},
+		{
+			label: "demo ask",
+			blank: { messageId: "msg-b", askId: "demo:ask-b" },
+			staged: { messageId: "msg-d", askId: "demo:ask-d" },
+		},
+	] as const;
+	const askSnapshot: FakeCommsSnapshot = {
+		channels: [wireChannel("chan-1", "acc-matt")],
+		messagesByChannel: {
+			"chan-1": ASKS.flatMap(({ blank, staged }) => [
+				wireAskMessage({
+					id: blank.messageId,
+					topicId: "top-1",
+					authorAccountId: "acc-matt",
+					askId: blank.askId,
+					questionIds: ["q"],
+				}),
+				wireAskMessage({
+					id: staged.messageId,
+					topicId: "top-1",
+					authorAccountId: "acc-matt",
+					askId: staged.askId,
+					questionIds: ["q"],
+					freeText: ["q"],
+					recordedText: { q: "staged" },
+				}),
+			]),
+		},
+	};
+	const question = (store: AppStore, messageId: string) => {
+		const block = store
+			.messages()
+			.find((m) => m.id === messageId)
+			?.blocks.find((b) => b.kind === "ask");
+		return block?.kind === "ask" ? block.ask.questions[0] : undefined;
+	};
+
+	for (const { label, blank, staged } of ASKS) {
+		test(`answerAsk on a ${label} stages nothing`, async () => {
+			await withLive(async ({ store }) => {
+				expect(question(store, blank.messageId)?.chosenOptionIds).toEqual([]);
+				store.answerAsk(blank.messageId, blank.askId, "q", "q-a");
+				flush();
+				expect(question(store, blank.messageId)?.chosenOptionIds).toEqual([]);
+			}, askSnapshot);
+		});
+
+		test(`answerAskText on a ${label} keeps the staged answer`, async () => {
+			await withLive(async ({ store }) => {
+				expect(question(store, staged.messageId)?.customText).toBe("staged");
+				store.answerAskText(staged.messageId, staged.askId, "q", "changed");
+				flush();
+				expect(question(store, staged.messageId)?.customText).toBe("staged");
+			}, askSnapshot);
+		});
+
+		test(`submitAsk on a staged ${label} sends nothing`, async () => {
+			await withLive(async ({ store, comms }) => {
+				store.submitAsk(staged.messageId, staged.askId);
+				await settle();
+				expect(comms.askResponses).toEqual([]);
+				expect(store.isAskSubmitted(staged.askId)).toBe(false);
+			}, askSnapshot);
+		});
+	}
+
+	test("pin and unpin of a demo agent write nothing", async () => {
+		await withLive(async ({ store }) => {
+			store.pinAgent(DEMO_AGENT);
+			flush();
+			expect(store.isPinned(DEMO_AGENT)).toBe(false);
+			store.unpinAgent(DEMO_AGENT);
+			flush();
+			expect(globalThis.localStorage.getItem(PIN_KEY)).toBeNull();
+		});
+	});
+
+	test("stopAgent with a selected demo agent sends nothing", async () => {
+		await withLive(async ({ store, compass }) => {
+			store.openAgent(DEMO_AGENT);
+			flush();
+			expect(store.selectedAgentId()).toBe(DEMO_AGENT);
+			await store.stopAgent();
+			expect(compass.stops).toEqual([]);
+		});
+	});
+});
