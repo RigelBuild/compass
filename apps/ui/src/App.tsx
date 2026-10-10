@@ -30,7 +30,9 @@ import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { SplitPane } from "./components/SplitPane";
 import { TabStrip } from "./components/TabStrip";
 import { TopBarSearch } from "./components/TopBarSearch";
+import { TourOverlay } from "./components/TourOverlay";
 import { useStore } from "./context";
+import { whenIdle } from "./idle";
 import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
@@ -54,6 +56,15 @@ const App: Component<
 		currentPath: () => location.pathname,
 		currentState: () => location.state,
 	});
+	// Start once when the store has won the per-account first-run claim, after
+	// the first paint settles.
+	createEffect(
+		() => store.tour.shouldAutoStart(),
+		(shouldStart) => {
+			if (!shouldStart) return;
+			return whenIdle(() => store.tour.start("first-run"));
+		},
+	);
 	// Install the single production window keymap listener over the store's
 	// keyboard spine (RIG-2456): registry + focus-gated active-group/zone
 	// accessors. `onCleanup` keeps the harness's repeated render/dispose cycles
@@ -282,6 +293,9 @@ const App: Component<
 
 			<Show when={store.paletteOpen()}>
 				<Palette clients={props.clients} />
+			</Show>
+			<Show when={store.tour.open()}>
+				<TourOverlay />
 			</Show>
 		</div>
 	);

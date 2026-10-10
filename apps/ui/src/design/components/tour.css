@@ -1,0 +1,199 @@
+/* Tour layers keep live controls reachable while callouts ride above the spotlight. */
+.cx-tour-backdrop {
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	padding-top: 12vh;
+}
+
+.cx-tour-dialog {
+	position: relative;
+	width: min(560px, 92vw);
+	gap: var(--cx-space-3);
+	animation: cx-tour-in var(--cx-motion-base) var(--cx-ease-out) both;
+}
+
+.cx-tour-title {
+	margin: 0;
+	color: var(--cx-text-bright);
+	font-size: var(--cx-text-lg);
+}
+
+.cx-tour-body {
+	margin: 0;
+	line-height: 1.6;
+}
+
+.cx-tour-callout {
+	max-width: min(360px, calc(100vw - var(--cx-space-6)));
+	padding: var(--cx-space-3);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-md);
+	background: var(--cx-bg-raised);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	line-height: 1.5;
+	box-shadow: var(--cx-elev-2);
+	z-index: var(--cx-z-modal);
+	animation: cx-tour-in var(--cx-motion-base) var(--cx-ease-out) both;
+}
+
+.cx-tour-callout:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: var(--cx-space-1);
+}
+
+.cx-tour-callout .cx-tour-title {
+	margin-bottom: var(--cx-space-2);
+}
+
+.cx-tour-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--cx-space-3);
+	margin-top: var(--cx-space-2);
+}
+
+.cx-tour-step-counter {
+	flex: none;
+	color: var(--cx-text-faint);
+	font-size: var(--cx-text-xs);
+}
+
+.cx-tour-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--cx-space-2);
+}
+
+.cx-tour-actions button {
+	padding: var(--cx-space-1) var(--cx-space-2);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-sm);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font: inherit;
+	cursor: pointer;
+}
+
+.cx-tour-actions button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.cx-tour-actions button:not(:disabled):hover {
+	background: var(--cx-bg-hover);
+}
+
+.cx-tour-actions .cx-btn {
+	border-color: var(--cx-accent);
+	background: var(--cx-accent);
+	color: var(--cx-bg);
+}
+
+@property --cx-tour-cutout-x {
+	syntax: "<length>";
+	inherits: true;
+	initial-value: 0px;
+}
+
+@property --cx-tour-cutout-y {
+	syntax: "<length>";
+	inherits: true;
+	initial-value: 0px;
+}
+
+@property --cx-tour-cutout-width {
+	syntax: "<length>";
+	inherits: true;
+	initial-value: 0px;
+}
+
+@property --cx-tour-cutout-height {
+	syntax: "<length>";
+	inherits: true;
+	initial-value: 0px;
+}
+
+.cx-tour-spotlight {
+	position: fixed;
+	inset: 0;
+	background: var(--cx-tour-scrim);
+	/* Two opaque layers XOR'd leave a hole exactly the anchor rect plus padding;
+	   only the mask's alpha counts, so the colour is any opaque token. */
+	mask:
+		linear-gradient(var(--cx-text) 0 0),
+		linear-gradient(var(--cx-text) 0 0) var(--cx-tour-cutout-x)
+		var(--cx-tour-cutout-y) / var(--cx-tour-cutout-width)
+		var(--cx-tour-cutout-height) no-repeat;
+	mask-composite: exclude;
+	z-index: var(--cx-z-overlay);
+	transition:
+		--cx-tour-cutout-x var(--cx-motion-base) var(--cx-ease-out),
+		--cx-tour-cutout-y var(--cx-motion-base) var(--cx-ease-out),
+		--cx-tour-cutout-width var(--cx-motion-base) var(--cx-ease-out),
+		--cx-tour-cutout-height var(--cx-motion-base) var(--cx-ease-out);
+}
+
+.cx-tour-demo-badge {
+	display: inline-flex;
+	align-items: center;
+	margin-inline-start: var(--cx-space-2);
+	padding: 0 var(--cx-space-1);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-sm);
+	color: var(--cx-text-dim);
+	font-size: var(--cx-text-xs);
+	line-height: 1.4;
+	white-space: nowrap;
+}
+
+/* The welcome frame's perimeter: 24 cells placed by inline left/top. */
+.cx-tour-chase {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.cx-tour-chase span {
+	position: absolute;
+	background: var(--cx-pulse-color);
+	opacity: 0;
+	animation: cx-tour-chase-in var(--cx-pulse-period) steps(1, start) 1 both;
+	animation-delay: calc(var(--cx-pulse-period) * var(--i) / 24);
+}
+
+@keyframes cx-tour-chase-in {
+	0% {
+		opacity: 0;
+	}
+	100% {
+		opacity: 1;
+	}
+}
+
+@keyframes cx-tour-in {
+	from {
+		opacity: 0;
+		transform: translateY(var(--cx-space-2));
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.cx-tour-chase span {
+		animation: none;
+		opacity: 1;
+	}
+}
+
+:root[data-reduce="on"] .cx-tour-chase span {
+	animation: none;
+	opacity: 1;
+}

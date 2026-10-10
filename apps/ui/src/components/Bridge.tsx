@@ -626,6 +626,7 @@ export const Bridge: Component = () => {
 					<div
 						class="bridge-grid"
 						style={{ "grid-template-columns": gridColumns() }}
+						data-tour="board-grid"
 						role="group"
 						aria-roledescription="kanban board"
 						aria-label="Board grid"
