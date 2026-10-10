@@ -94,7 +94,7 @@ function assertPrivilegeShape(daemonSet: unknown): void {
 	expect(hostPaths).toHaveLength(2);
 	expect(hostPaths.map((hostPath) => hostPath.type).sort()).toEqual([
 		"Directory",
-		"DirectoryOrCreate",
+		"Directory",
 	]);
 	expect(
 		hostPaths.some((hostPath) => String(hostPath.path).startsWith("/dev")),
@@ -179,8 +179,47 @@ describe("renderRunnerManifests", () => {
 		const hostPaths = volumes.map((volume) => object(object(volume).hostPath));
 		expect(hostPaths).toEqual([
 			{ path: values.hostPaths.sessionVolumeRoot, type: "Directory" },
-			{ path: values.hostPaths.runtimeRoot, type: "DirectoryOrCreate" },
+			{ path: values.hostPaths.runtimeRoot, type: "Directory" },
 		]);
+	});
+
+	test("provisions the runtime host path and validates qualified device resources", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		const podSpec = nested(daemonSet, "spec", "template", "spec");
+		const volumes = nested(podSpec, "volumes");
+		if (!Array.isArray(volumes)) throw new Error("expected volume list");
+		const runtime = volumes
+			.map(object)
+			.find((volume) => volume.name === "runner-runtime");
+		if (runtime === undefined) throw new Error("runtime volume missing");
+		expect(runtime.hostPath).toEqual({
+			path: values.hostPaths.runtimeRoot,
+			type: "Directory",
+		});
+		expect(() =>
+			renderRunnerManifests({ ...values, kvmResourceName: "kvm" }),
+		).toThrow();
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				kvmResourceName: "kubernetes.io/kvm",
+			}),
+		).toThrow();
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				kvmResourceName: "devices.example.com/kvm",
+			}),
+		).not.toThrow();
+	});
+
+	test("requires an HTTPS Server address for bearer tokens", () => {
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				serverAddr: "http://compass-server.example.test:7443",
+			}),
+		).toThrow();
 	});
 
 	test("uses fieldRef, secretKeyRef, and runtime settings consumed by compass-runner", () => {

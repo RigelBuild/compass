@@ -93,17 +93,31 @@ function assertNamespace(namespace: string): void {
 
 function assertResourceName(name: string): void {
 	const parts = name.split("/");
-	const resource = parts.at(-1);
-	const prefix = parts.length === 2 ? parts[0] : undefined;
+	const [prefix, resource] = parts;
+	const domain = prefix?.toLowerCase();
 	if (
-		parts.length > 2 ||
+		parts.length !== 2 ||
+		prefix === undefined ||
 		resource === undefined ||
 		!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(resource) ||
-		(prefix !== undefined && !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(prefix))
+		!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(prefix) ||
+		domain === "kubernetes.io" ||
+		domain.endsWith(".kubernetes.io")
 	) {
 		throw new Error(
-			"kvmResourceName must be a Kubernetes extended resource name",
+			"kvmResourceName must be a qualified Kubernetes extended resource name",
 		);
+	}
+	const domainLabels = prefix.split(".");
+	if (
+		domainLabels.some(
+			(label) =>
+				label.length === 0 ||
+				label.length > 63 ||
+				!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label),
+		)
+	) {
+		throw new Error("kvmResourceName must use a DNS-qualified domain");
 	}
 }
 
@@ -131,9 +145,12 @@ function validateValues(values: ValidatedRunnerDeployValues): void {
 	assertPath("hostPaths.sessionVolumeRoot", values.hostPaths.sessionVolumeRoot);
 	assertPath("hostPaths.runtimeRoot", values.hostPaths.runtimeRoot);
 	try {
-		new URL(values.serverAddr);
+		const serverAddr = new URL(values.serverAddr);
+		if (serverAddr.protocol !== "https:") {
+			throw new Error("serverAddr must use HTTPS");
+		}
 	} catch {
-		throw new Error("serverAddr must be an absolute URL");
+		throw new Error("serverAddr must be an absolute HTTPS URL");
 	}
 	assertNonEmpty("runnerTokenSecret.name", values.runnerTokenSecret.name);
 	assertNonEmpty("runnerTokenSecret.key", values.runnerTokenSecret.key);
@@ -396,7 +413,7 @@ export function renderRunnerManifests(
 								name: "runner-runtime",
 								hostPath: {
 									path: values.hostPaths.runtimeRoot,
-									type: "DirectoryOrCreate",
+									type: "Directory",
 								},
 							},
 						],
