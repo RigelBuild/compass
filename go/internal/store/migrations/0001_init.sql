@@ -245,10 +245,20 @@ CREATE TABLE channels (
     post_policy            SMALLINT NOT NULL DEFAULT 0 CHECK (post_policy IN (0, 1)),
     owner_account_id       TEXT REFERENCES accounts (id) ON DELETE RESTRICT,
     mandatory_subscription BOOLEAN NOT NULL DEFAULT FALSE,
-    tenant_id              TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+    tenant_id              TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    -- An agent-attached channel hangs off parent_agent_id instead of a group;
+    -- membership_mode 1 derives members from the agent tree.
+    parent_agent_id        TEXT REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    membership_mode        SMALLINT NOT NULL DEFAULT 0 CHECK (membership_mode IN (0, 1)),
+    CONSTRAINT channels_group_xor_agent CHECK (group_id IS NULL OR parent_agent_id IS NULL),
+    CONSTRAINT channels_tree_mode_needs_agent
+        CHECK (membership_mode = 0 OR parent_agent_id IS NOT NULL)
 );
 
 CREATE INDEX channels_group_idx ON channels (group_id);
+CREATE INDEX channels_parent_agent_idx ON channels (parent_agent_id);
+CREATE UNIQUE INDEX channels_agent_name_key
+    ON channels (parent_agent_id, name) WHERE parent_agent_id IS NOT NULL;
 
 -- A channel name is unique within its group, so name-based navigation inside a
 -- group is unambiguous (the ErrConflict contract in errors.go). Partial on
@@ -270,6 +280,18 @@ CREATE TABLE channel_members (
 );
 
 CREATE INDEX channel_members_account_idx ON channel_members (account_id);
+
+-- Per-account subscription overrides for tree-membered channels, whose members
+-- have no channel_members row. The account-first index serves delivery lookups.
+CREATE TABLE channel_subscriptions (
+    channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE RESTRICT,
+    account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+    subscribed BOOLEAN NOT NULL DEFAULT FALSE,
+    tenant_id  TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (channel_id, account_id)
+);
+
+CREATE INDEX channel_subscriptions_account_idx ON channel_subscriptions (account_id);
 
 -- ── Agent workspaces ────────────────────────────────────────────────────────
 -- The observation pane for one agent (superseded decision 4): no participant
@@ -1577,8 +1599,8 @@ DECLARE
     tenant_tables text[] := ARRAY[
         'accounts',
         'user_accounts', 'user_peers', 'agent_accounts', 'system_accounts', 'account_handles',
-        'channel_groups', 'channels', 'channel_members', 'agent_workspaces',
-        'topics', 'messages', 'channel_pins', 'secrets',
+        'channel_groups', 'channels', 'channel_members', 'channel_subscriptions',
+        'agent_workspaces', 'topics', 'messages', 'channel_pins', 'secrets',
         'agent_sessions', 'agent_placements', 'session_bindings',
         'agent_session_transcript_entries', 'agent_session_archive_segments',
         'agent_session_blobs',

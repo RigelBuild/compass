@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const agentOwnersByIDs = `-- name: AgentOwnersByIDs :many
@@ -119,6 +121,48 @@ func (q *Queries) ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []str
 		return nil, err
 	}
 	return items, nil
+}
+
+const channelParticipant = `-- name: ChannelParticipant :one
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $2
+      AND EXISTS (SELECT 1 FROM channels WHERE id = $1 AND membership_mode = 1)
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
+SELECT EXISTS (
+    SELECT 1 FROM channel_members cm
+    WHERE cm.channel_id = $1 AND cm.account_id = $2
+) OR (
+    EXISTS (SELECT 1 FROM channels WHERE id = $1 AND membership_mode = 1)
+    AND EXISTS (
+        SELECT 1 FROM channels c
+        WHERE c.id = $1 AND (
+            c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+            OR $2 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                     WHERE aa.account_id = c.parent_agent_id)
+        )
+    )
+)
+`
+
+type ChannelParticipantParams struct {
+	ChannelID string
+	AccountID string
+}
+
+// Explicit member row, or (TREE only) the actor is in the anchor's subtree or
+// owns the anchor. UNION, not UNION ALL: agent parent rows are not guaranteed
+// acyclic, and deduplication is what stops the walk on a cycle.
+func (q *Queries) ChannelParticipant(ctx context.Context, arg ChannelParticipantParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, channelParticipant, arg.ChannelID, arg.AccountID)
+	var column_1 pgtype.Bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const channelVisibleTo = `-- name: ChannelVisibleTo :one
@@ -382,8 +426,8 @@ func (q *Queries) InsertAgentWorkspaceIgnore(ctx context.Context, arg InsertAgen
 }
 
 const insertChannel = `-- name: InsertChannel :exec
-INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription)
-VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7)
+INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription, parent_agent_id, membership_mode)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9)
 `
 
 type InsertChannelParams struct {
@@ -394,6 +438,8 @@ type InsertChannelParams struct {
 	PostPolicy            int16
 	Column6               interface{}
 	MandatorySubscription bool
+	Column8               interface{}
+	MembershipMode        int16
 }
 
 func (q *Queries) InsertChannel(ctx context.Context, arg InsertChannelParams) error {
@@ -405,6 +451,8 @@ func (q *Queries) InsertChannel(ctx context.Context, arg InsertChannelParams) er
 		arg.PostPolicy,
 		arg.Column6,
 		arg.MandatorySubscription,
+		arg.Column8,
+		arg.MembershipMode,
 	)
 	return err
 }
@@ -583,6 +631,31 @@ func (q *Queries) ListChannels(ctx context.Context, accountID string) ([]ListCha
 	return items, nil
 }
 
+const lockChannelForReparent = `-- name: LockChannelForReparent :one
+SELECT channels.group_id, channels.kind, channels.membership_mode,
+       EXISTS (SELECT 1 FROM agent_accounts WHERE home_channel_id = channels.id) AS is_home
+FROM channels WHERE channels.id = $1 FOR UPDATE OF channels
+`
+
+type LockChannelForReparentRow struct {
+	GroupID        pgtype.Text
+	Kind           int16
+	MembershipMode int16
+	IsHome         bool
+}
+
+func (q *Queries) LockChannelForReparent(ctx context.Context, id string) (LockChannelForReparentRow, error) {
+	row := q.db.QueryRow(ctx, lockChannelForReparent, id)
+	var i LockChannelForReparentRow
+	err := row.Scan(
+		&i.GroupID,
+		&i.Kind,
+		&i.MembershipMode,
+		&i.IsHome,
+	)
+	return i, err
+}
+
 const lockChannelMandatoryKind = `-- name: LockChannelMandatoryKind :one
 SELECT mandatory_subscription, kind FROM channels WHERE id = $1 FOR UPDATE
 `
@@ -643,6 +716,20 @@ FROM agent_accounts aa WHERE aa.account_id = cm.account_id AND cm.channel_id = $
 
 func (q *Queries) SubscribeConvertedDMParties(ctx context.Context, channelID string) error {
 	_, err := q.db.Exec(ctx, subscribeConvertedDMParties, channelID)
+	return err
+}
+
+const updateChannelParent = `-- name: UpdateChannelParent :exec
+UPDATE channels SET parent_agent_id = NULLIF($2, '') WHERE id = $1
+`
+
+type UpdateChannelParentParams struct {
+	ID      string
+	Column2 interface{}
+}
+
+func (q *Queries) UpdateChannelParent(ctx context.Context, arg UpdateChannelParentParams) error {
+	_, err := q.db.Exec(ctx, updateChannelParent, arg.ID, arg.Column2)
 	return err
 }
 

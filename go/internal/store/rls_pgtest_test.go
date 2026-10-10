@@ -597,7 +597,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	tenantOwned := []string{
 		"accounts",
 		"user_accounts", "agent_accounts", "system_accounts", "account_handles", "user_peers",
-		"channel_groups", "channels", "channel_members", "agent_workspaces",
+		"channel_groups", "channels", "channel_members", "channel_subscriptions", "agent_workspaces",
 		"topics", "messages", "channel_pins", "secrets",
 		"agent_sessions", "agent_placements", "session_bindings",
 		"agent_session_transcript_entries", "agent_session_archive_segments",

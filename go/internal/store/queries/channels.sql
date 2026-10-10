@@ -26,8 +26,45 @@ WHERE owner_user_id IS NULL AND account_id = ANY($1::text[]);
 SELECT visibility FROM channel_groups WHERE id = $1;
 
 -- name: InsertChannel :exec
-INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription)
-VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7);
+INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription, parent_agent_id, membership_mode)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9);
+
+-- name: ChannelParticipant :one
+-- Explicit member row, or (TREE only) the actor is in the anchor's subtree or
+-- owns the anchor. UNION, not UNION ALL: agent parent rows are not guaranteed
+-- acyclic, and deduplication is what stops the walk on a cycle.
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $2
+      AND EXISTS (SELECT 1 FROM channels WHERE id = $1 AND membership_mode = 1)
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
+SELECT EXISTS (
+    SELECT 1 FROM channel_members cm
+    WHERE cm.channel_id = $1 AND cm.account_id = $2
+) OR (
+    EXISTS (SELECT 1 FROM channels WHERE id = $1 AND membership_mode = 1)
+    AND EXISTS (
+        SELECT 1 FROM channels c
+        WHERE c.id = $1 AND (
+            c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+            OR $2 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                     WHERE aa.account_id = c.parent_agent_id)
+        )
+    )
+);
+
+-- name: LockChannelForReparent :one
+SELECT channels.group_id, channels.kind, channels.membership_mode,
+       EXISTS (SELECT 1 FROM agent_accounts WHERE home_channel_id = channels.id) AS is_home
+FROM channels WHERE channels.id = $1 FOR UPDATE OF channels;
+
+-- name: UpdateChannelParent :exec
+UPDATE channels SET parent_agent_id = NULLIF($2, '') WHERE id = $1;
 
 -- name: UpsertChannelMember :exec
 INSERT INTO channel_members (channel_id, account_id, subscribed)
