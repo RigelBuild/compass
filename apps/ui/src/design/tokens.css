@@ -146,8 +146,8 @@
 	--cx-text-accent: var(--rigel-blue);
 
 	/* --- Lines --- */
-	--cx-border: color-mix(in srgb, var(--rigel-panel) 70%, transparent);
-	--cx-border-strong: var(--rigel-panel);
+	--cx-border: var(--rigel-night-2);
+	--cx-border-strong: var(--rigel-selection);
 	--cx-border-focus: var(--rigel-blue);
 	/* The site's input edge: text fields read as fields, not as chrome lines. */
 	--cx-border-field: var(--rigel-mute);

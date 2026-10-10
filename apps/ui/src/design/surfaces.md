@@ -38,11 +38,17 @@ view, and right sidebar. Its shape is inherited (the `.app`
 `grid-template-areas` rule, `app.css:112-115`; region markup `App.tsx:40-120`);
 this system re-clothes it, it does not re-lay it.
 
-**Composition.** The region surfaces carry depth by color, not shadow: topbar on
-`--cx-bg`, sidebars on `--cx-bg-raised`, main on `--cx-bg`,
-separated by 1px `--cx-border` rules. No box-shadow between docked regions —
-shadows are reserved for genuinely floating layers (menu, dialog, palette,
-toast). The topbar carries the needle mark (see Mark placement), the
+**Composition.** The region surfaces follow rigel.build: shell chrome (topbar,
+both sidebars, the Session Log) and main sit on night (`--cx-bg`), and pane
+heads (the conversation head, the agent-view pane heads) sit on
+`--cx-bg-panel`. Cards and menus render on `--cx-bg-panel`; `--cx-bg-raised` is
+kept for the human message, the root agent card, tooltips and the tour, and
+in-pane bands (Bridge column heads, Backlog section heads, the pinned board,
+the composer, diff paths). Each shell region edge (topbar, both sidebars, the
+Session Log) is a 1px `--cx-border-strong` rule; lines inside a pane, and the
+splitters between split panes, use `--cx-border`. No box-shadow between docked
+regions — shadows are reserved for genuinely floating layers (menu, dialog,
+palette, toast). The topbar carries the needle mark (see Mark placement), the
 view-tabs as a horizontal `.cx-tabs` (`data-orientation="h"`, accent-underline
 selection), a daemon status pip built from `.cx-pip`, and pane-toggle controls as
 `.cx-btn` `data-variant="ghost"`.
@@ -72,8 +78,9 @@ chrome.
 
 1. Land the type system on the shell chrome: topbar and sidebars move to the
    mono body face and the `--cx-*` surface tokens.
-2. Replace the region background/border rules with `--cx-bg` / `--cx-bg-raised` /
-   `--cx-border`; remove any inter-region box-shadow.
+2. Put the region backgrounds on `--cx-bg`, the pane heads on `--cx-bg-panel`,
+   and the region edges on `--cx-border-strong`; remove any inter-region
+   box-shadow.
 3. Re-clothe the view-tabs as `.cx-tabs[data-orientation="h"]`, the daemon pip as
    `.cx-pip`, and the pane toggles as `.cx-btn[data-variant="ghost"]`.
 4. Place the needle mark alone in the topbar; confirm it renders at or above

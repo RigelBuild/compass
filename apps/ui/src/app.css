@@ -30,8 +30,8 @@
 	align-items: center;
 	gap: 14px;
 	padding: 0 12px;
-	background: var(--cx-bg-raised);
-	border-bottom: 1px solid var(--cx-border);
+	background: var(--cx-bg);
+	border-bottom: 1px solid var(--cx-border-strong);
 }
 
 .brand {
@@ -158,8 +158,8 @@
 .left {
 	grid-area: left;
 	width: 244px;
-	background: var(--cx-bg-raised);
-	border-right: 1px solid var(--cx-border);
+	background: var(--cx-bg);
+	border-right: 1px solid var(--cx-border-strong);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -1307,7 +1307,7 @@
 .right {
 	grid-area: right;
 	width: var(--right-w);
-	background: var(--cx-bg-raised);
+	background: var(--cx-bg);
 	border-left: 1px solid var(--cx-border-strong);
 	display: flex;
 	flex-direction: column;
@@ -2126,8 +2126,9 @@
 .r-files-search {
 	margin: 8px 10px;
 	padding: 5px 8px;
-	background: var(--cx-bg);
-	border: 1px solid var(--cx-border);
+	/* The input contract: on a night sidebar a night fill no longer marks the field. */
+	background: var(--cx-bg-panel);
+	border: 1px solid var(--cx-border-field);
 	color: var(--cx-text);
 	font-size: 12px;
 }
@@ -2542,7 +2543,7 @@
 	flex: none;
 	padding: 3px 6px;
 	border-bottom: 1px solid var(--cx-border);
-	background: var(--cx-bg-raised);
+	background: var(--cx-bg-panel);
 }
 
 .av-pane-title {
@@ -2887,7 +2888,7 @@
 	gap: 8px;
 	padding: 0 16px;
 	border-bottom: 1px solid var(--cx-border);
-	background: var(--cx-bg-raised);
+	background: var(--cx-bg-panel);
 }
 
 .conv-glyph {
@@ -3288,7 +3289,7 @@
 	min-height: 0;
 	width: 340px;
 	border-left: 1px solid var(--cx-border-strong);
-	background: var(--cx-bg-raised);
+	background: var(--cx-bg);
 	grid-area: log;
 }
 
