@@ -6,6 +6,11 @@
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import {
+	type BatchTimer,
+	type BatchWindow,
+	realBatchTimer,
+} from "./batch-window";
+import {
 	AgentSessionState,
 	type Ask,
 	create,
@@ -45,6 +50,17 @@ export interface CompassAgentOptions {
 	// optional chaining, so frames stay bit-identical.
 	readonly tracer?: TurnTracer;
 	readonly turnSequence?: TurnSequence;
+	// The idle batching window. Absent means an idle deliver or forge item starts
+	// a turn at once.
+	readonly batchWindow?: BatchWindow;
+}
+
+// An idle steer that drains the queued items into its own prompt, rendered last.
+interface SteerTail {
+	readonly msg: Message;
+	readonly content: string; // formatDeliversForPrompt([msg], …)
+	readonly fromHandle: string;
+	readonly traceparent: string;
 }
 
 export class CompassAgent {
@@ -106,6 +122,12 @@ export class CompassAgent {
 	// strand-recovery `waitForIdle` can resolve AFTER termination; the re-check
 	// no-ops when closed, so it never starts a turn past the terminal frame.
 	#closed = false;
+	readonly #batchWindow: BatchWindow | undefined;
+	readonly #batchTimer: BatchTimer;
+	// When the open window first armed; the hard cap counts from here.
+	#batchFirstAt: number | undefined;
+	// The armed timer's cancel thunk. Set exactly while a window is open.
+	#batchCancel: (() => void) | undefined;
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -115,6 +137,8 @@ export class CompassAgent {
 		this.#sink = opts.sink;
 		this.#control = opts.control;
 		this.#tracer = opts.tracer;
+		this.#batchWindow = opts.batchWindow;
+		this.#batchTimer = opts.batchWindow?.timer ?? realBatchTimer;
 		this.#mapper = new EventMapper(Date.now, opts.turnSequence);
 		this.#onUnmapped =
 			opts.onUnmapped ??
@@ -161,8 +185,10 @@ export class CompassAgent {
 			this.#emitStatus(AgentSessionState.ERRORED);
 			throw err;
 		} finally {
-			// Terminal edge: no strand-recovery re-check may start a turn past here.
+			// Terminal edge: no strand-recovery re-check or window fire may start a turn
+			// past here.
 			this.#closed = true;
+			this.#cancelBatch();
 			unsubscribeAgent();
 			unsubscribe();
 		}
@@ -233,12 +259,13 @@ export class CompassAgent {
 		this.#deliverFromHandles.set(msg.id, fromHandle);
 		this.#deliverTraceparents.set(msg.id, traceparent);
 		this.#deliverSourceNames.set(msg.id, sourceNames);
-		// Idle deliver starts a turn immediately (record :799/:810); a mid-turn deliver
-		// waits for the `agent_end` flush. "Idle" consults BOTH `#turnActive` AND
-		// `#session.isStreaming` — a control prompt sets streaming SYNCHRONOUSLY but flips
-		// `#turnActive` later, so gating on `isStreaming` avoids an AgentBusyError inject.
+		// An idle deliver arms the batching window (or starts a turn at once with no
+		// window); a mid-turn deliver waits for the `agent_end` flush. "Idle" consults BOTH
+		// `#turnActive` AND `#session.isStreaming` — a control prompt sets streaming
+		// SYNCHRONOUSLY but flips `#turnActive` later, so gating on `isStreaming` avoids an
+		// AgentBusyError inject.
 		if (!this.#turnActive && !this.#session.isStreaming) {
-			this.#flushTurnEnd();
+			this.#armBatch();
 		} else if (!this.#turnActive) {
 			// Queued because streaming with NO tracked turn — the strand shape (RIG-2644):
 			// an untracked in-flight holds `isStreaming` and no `agent_end` will arrive.
@@ -360,6 +387,13 @@ export class CompassAgent {
 			});
 			return;
 		}
+		// Idle with queued items: drain them into this steer's turn, steer last, so the
+		// burst keeps its order and costs one turn. The flush closes any open window.
+		if (this.#deliverQueue.length > 0 || this.#forgeQueue.length > 0) {
+			this.#flushTurnEnd({ msg, content, fromHandle, traceparent });
+			return;
+		}
+		this.#cancelBatch();
 		// Idle: START A NEW TURN with the mention as content via `prompt()`. `prompt()`
 		// runs on ANY history including a fresh peer's EMPTY history, whereas `continue()`
 		// rejects on a zero-history session (RIG-2488). No pre-enqueue onto the steering
@@ -428,11 +462,11 @@ export class CompassAgent {
 		ackRail: () => void,
 	): void {
 		this.#forgeQueue.push({ notification, ackRail });
-		// Idle notification starts a turn immediately; a mid-turn one waits for the
-		// `agent_end` flush. "Idle" consults BOTH `#turnActive` AND `#session.isStreaming`,
-		// exactly as deliver does.
+		// An idle notification arms the batching window, as deliver does; a mid-turn one
+		// waits for the `agent_end` flush. "Idle" consults BOTH `#turnActive` AND
+		// `#session.isStreaming`, exactly as deliver does.
 		if (!this.#turnActive && !this.#session.isStreaming) {
-			this.#flushTurnEnd();
+			this.#armBatch();
 		} else if (!this.#turnActive) {
 			// Queued while streaming with NO tracked turn — the strand shape (RIG-2644):
 			// an untracked in-flight holds `isStreaming` and no `agent_end` will arrive.
@@ -468,12 +502,17 @@ export class CompassAgent {
 	// keeps the receipt. A settled REJECTION means NEITHER batch injected (a real mid-turn
 	// failure resolves instead) — fail closed for both: un-dedup delivers for redelivery;
 	// for forge do NOT re-enqueue or fire ackRail (the Runner is the redelivery authority).
-	#flushTurnEnd(): void {
+	// A `tail` is an idle steer draining the queue: it renders last, is un-deduped on
+	// rejection with the delivers, and counts as one more message in the trace topology.
+	#flushTurnEnd(tail?: SteerTail): void {
+		// A started turn's `agent_end` owns whatever queues next, so the window closes.
+		this.#cancelBatch();
 		const delivers = this.#deliverQueue;
 		const forges = this.#forgeQueue;
 		this.#deliverQueue = [];
 		this.#forgeQueue = [];
-		if (delivers.length === 0 && forges.length === 0) return;
+		if (delivers.length === 0 && forges.length === 0 && tail === undefined)
+			return;
 		const sections: string[] = [];
 		if (delivers.length > 0)
 			sections.push(
@@ -483,7 +522,15 @@ export class CompassAgent {
 			sections.push(
 				formatForgeNotifications(forges.map((e) => e.notification)),
 			);
+		if (tail !== undefined) sections.push(tail.content);
 		const input = sections.join("\n\n");
+		// Every channel message feeding this turn, in prompt order, with its traceparent.
+		const fed = delivers.map((msg) => ({
+			id: msg.id,
+			traceparent: this.#deliverTraceparents.get(msg.id) ?? "",
+		}));
+		if (tail !== undefined)
+			fed.push({ id: tail.msg.id, traceparent: tail.traceparent });
 		// Optimistically mark a turn active — an idle flush starts one; the rejection
 		// path below clears it, since a refused prompt starts no turn.
 		this.#turnActive = true;
@@ -491,27 +538,23 @@ export class CompassAgent {
 		let acked = false;
 		// Reset the per-turn message-id accumulator at this turn-start (design record §T2):
 		// a flush STARTS a new turn, so the accumulator carries only THIS turn's messages.
-		// Deliver ids append in the ack microtask; a later mid-turn steer appends too.
+		// Message ids append in the ack microtask; a later mid-turn steer appends too.
 		// Reset here (not `agent_end`) keeps it self-contained on a rejected turn-start.
 		this.#turnMessageIds.length = 0;
-		// Trace-continuity topology (design record §T2): a single-message deliver batch
-		// PARENTS the turn on that traceparent (N=1); a multi-message batch runs bare and
-		// LINKS each context (N>1); a forge-only flush runs bare. SET the trigger only for
-		// the N=1 true 1:1 parent; every other shape CLEARS it (else a prior trigger leaks).
-		if (delivers.length === 1) {
-			this.#tracer?.setTurnTrigger(
-				this.#deliverTraceparents.get(delivers[0].id) ?? "",
-			);
+		// Trace-continuity topology (design record §T2): a single-message batch PARENTS
+		// the turn on that traceparent (N=1); a multi-message batch runs bare and LINKS
+		// each context (N>1); a forge-only flush runs bare. SET the trigger only for the
+		// N=1 true 1:1 parent; every other shape CLEARS it (else a prior trigger leaks).
+		const parent = fed.length === 1 ? fed[0].traceparent : undefined;
+		if (parent !== undefined) {
+			this.#tracer?.setTurnTrigger(parent);
 		} else {
 			this.#tracer?.clearTurnTrigger();
 		}
 		const startPrompt = (): Promise<void> => this.#session.agent.prompt(input);
 		const started =
-			this.#tracer !== undefined && delivers.length === 1
-				? this.#tracer.runWithParent(
-						this.#deliverTraceparents.get(delivers[0].id) ?? "",
-						startPrompt,
-					)
+			this.#tracer !== undefined && parent !== undefined
+				? this.#tracer.runWithParent(parent, startPrompt)
 				: startPrompt();
 		started.catch((err) => {
 			// Reached ONLY on a settled-rejected prompt, i.e. neither batch injected. If
@@ -547,25 +590,31 @@ export class CompassAgent {
 					reason: `forge notification flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
 				});
 			}
+			// STEER tail: un-dedup it too, exactly as a rejected idle steer does.
+			if (tail !== undefined) {
+				this.#processedMessageIds.delete(tail.msg.id);
+				this.#onUnmapped({
+					kind: "unmapped",
+					eventType: "steer:prompt",
+					reason: `steer prompt rejected — not injected, un-acked for redelivery: ${String(err)}`,
+				});
+			}
 		});
 		queueMicrotask(() => {
 			if (rejected) return;
 			acked = true;
 			// Trace continuity (design record §T2): the captured turn span is live now.
 			// A multi-message batch LINKS each message's stashed context onto it; every
-			// non-empty deliver batch stamps the comma-joined ids as the query key.
-			if (delivers.length > 1) {
-				for (const msg of delivers) {
-					this.#tracer?.linkActiveTurn(
-						this.#deliverTraceparents.get(msg.id) ?? "",
-						msg.id,
-					);
+			// batch carrying a message stamps the comma-joined ids as the query key.
+			if (fed.length > 1) {
+				for (const entry of fed) {
+					this.#tracer?.linkActiveTurn(entry.traceparent, entry.id);
 				}
 			}
-			for (const msg of delivers) {
-				this.#turnMessageIds.push(msg.id);
+			for (const entry of fed) {
+				this.#turnMessageIds.push(entry.id);
 			}
-			if (delivers.length > 0) {
+			if (fed.length > 0) {
 				this.#tracer?.stampActiveTurn(this.#turnMessageIds.join(","));
 			}
 			// DELIVER acks: one DeliveryAck + one DELIVER injection per message.
@@ -597,7 +646,72 @@ export class CompassAgent {
 				this.#sink.emit({ kind: "forgeNotificationAck", value });
 				entry.ackRail();
 			}
+			// STEER tail ack, last, as its content was.
+			if (tail !== undefined) {
+				const value: DeliveryAck = create(DeliveryAckSchema, {
+					messageId: tail.msg.id,
+				});
+				this.#sink.emit({ kind: "deliveryAck", value });
+				this.#emitInjection(
+					SessionInjectionKind.STEER,
+					tail.msg.id,
+					tail.fromHandle,
+					tail.traceparent,
+				);
+			}
 		});
+	}
+
+	// Open or extend the idle batching window: a quiet-period debounce with a hard cap
+	// counted from the window's first arm. With no window configured, flush at once.
+	#armBatch(): void {
+		const window = this.#batchWindow;
+		if (window === undefined) {
+			this.#flushTurnEnd();
+			return;
+		}
+		const now = this.#batchTimer.now();
+		if (this.#batchCancel === undefined) this.#batchFirstAt = now;
+		this.#batchCancel?.();
+		const firstAt = this.#batchFirstAt ?? now;
+		const delay = Math.max(
+			0,
+			Math.min(window.quietMs, firstAt + window.maxMs - now),
+		);
+		this.#batchCancel = this.#batchTimer.set(delay, () => this.#fireBatch());
+		this.#emitBatchPending(
+			this.#deliverQueue.length + this.#forgeQueue.length,
+			now + delay,
+		);
+	}
+
+	// The window elapsed: close it, then re-run the idle test a deliver would. A tracked
+	// turn needs nothing — its `agent_end` flushes the queue.
+	#fireBatch(): void {
+		if (this.#closed) return;
+		this.#batchCancel = undefined;
+		this.#batchFirstAt = undefined;
+		this.#emitBatchPending(0, 0);
+		if (!this.#turnActive && !this.#session.isStreaming) {
+			this.#flushTurnEnd();
+		} else if (!this.#turnActive) {
+			this.#armStrandRecovery();
+		}
+	}
+
+	// Close an open window without flushing; a no-op when none is open.
+	#cancelBatch(): void {
+		const cancel = this.#batchCancel;
+		if (cancel === undefined) return;
+		cancel();
+		this.#batchCancel = undefined;
+		this.#batchFirstAt = undefined;
+		// Past the terminal status nothing more is emitted; the session tail has ended.
+		if (!this.#closed) this.#emitBatchPending(0, 0);
+	}
+
+	#emitBatchPending(count: number, firesAtUnixMs: number): void {
+		this.#sink.emit(this.#mapper.batchPending(count, firesAtUnixMs));
 	}
 
 	// Apply one decoded control frame, discriminated on the AgentControl oneof:
@@ -643,6 +757,8 @@ export class CompassAgent {
 				// channel-message parent (a raw wire-driven injection). Clear the trigger
 				// like every other non-1:1 turn-start, else a prior trigger leaks.
 				this.#tracer?.clearTurnTrigger();
+				// The control prompt starts a turn now; its `agent_end` flushes the queue.
+				this.#cancelBatch();
 				await this.#session.agent.prompt(control.input);
 				return;
 			case "steer":

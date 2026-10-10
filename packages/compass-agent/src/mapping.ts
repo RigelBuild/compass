@@ -23,6 +23,7 @@ import {
 	AgentToolCallStatus,
 	create,
 	SessionAssistantTextSchema,
+	SessionBatchPendingSchema,
 	SessionErrorKind,
 	SessionErrorSchema,
 	type SessionEvent,
@@ -283,6 +284,18 @@ export class EventMapper {
 				messageId,
 				fromHandle,
 				traceparent,
+			}),
+		});
+	}
+
+	// Build one SessionBatchPending trace frame for the agent's idle batching window.
+	// Public for the same reason as `sessionInjection`: the agent emits it, not `map()`.
+	batchPending(count: number, firesAtUnixMs: number): OutboundFrame {
+		return this.#sessionEvent({
+			case: "batchPending",
+			value: create(SessionBatchPendingSchema, {
+				count,
+				firesAtUnixMs: BigInt(firesAtUnixMs),
 			}),
 		});
 	}

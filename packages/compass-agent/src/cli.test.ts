@@ -2489,18 +2489,21 @@ describe("main activates loop OpenTelemetry", () => {
 
 			await main(
 				{ HOME: scratch() },
-				telemetryDeps(
-					session,
-					fakeCarrier(emptyLog(), {
-						control: async function* () {
-							// The barrier first — a pre-ReplayComplete immediate op is
-							// refused by the source and never reaches the closures.
-							yield replayCompleteOp(1n);
-							for (const op of ops) yield op;
-						},
-					}),
-					spy,
-				),
+				{
+					...telemetryDeps(
+						session,
+						fakeCarrier(emptyLog(), {
+							control: async function* () {
+								// The barrier first — a pre-ReplayComplete immediate op is
+								// refused by the source and never reaches the closures.
+								yield replayCompleteOp(1n);
+								for (const op of ops) yield op;
+							},
+						}),
+						spy,
+					),
+					batchWindow: "off",
+				},
 			);
 			// End the modeled turn span so the processor exports it.
 			turnSpan?.end();
@@ -2546,6 +2549,66 @@ describe("main activates loop OpenTelemetry", () => {
 			expect(span?.links).toHaveLength(0);
 			expect(span?.attributes["compass.message.ids"]).toBe("m2");
 		});
+	});
+});
+
+// COMPASS_AGENT_BATCHING selects the idle batching window when MainDeps.batchWindow is absent.
+// Each run feeds one idle deliver, then closes the control stream: with batching on the window
+// is still open at close (run() cancels it), so no prompt starts; with it off the deliver
+// prompts at once.
+describe("main reads COMPASS_AGENT_BATCHING", () => {
+	async function runIdleDeliver(batching: string | undefined) {
+		const log = emptyLog();
+		const session = fakeSession();
+		const prompts: string[] = [];
+		Object.assign(session.agent, {
+			prompt: (input: string): Promise<void> => {
+				prompts.push(input);
+				return Promise.resolve();
+			},
+		});
+		await main(
+			{
+				HOME: scratch(),
+				...(batching === undefined ? {} : { COMPASS_AGENT_BATCHING: batching }),
+			},
+			deps(
+				session,
+				fakeCarrier(log, {
+					control: async function* () {
+						yield replayCompleteOp(1n);
+						yield deliverOp(2n, "m1", "hi");
+					},
+				}),
+			),
+		);
+		const pendingCounts = log.publishFrames.flatMap((f) => {
+			const inner = f.frame?.frame;
+			if (inner?.case !== "session") return [];
+			const event = inner.value.typedEvent?.event;
+			return event?.case === "batchPending" ? [event.value.count] : [];
+		});
+		return { prompts, pendingCounts };
+	}
+
+	test('"on" batches: the idle deliver arms the window and prompts nothing before it fires', async () => {
+		const { prompts, pendingCounts } = await runIdleDeliver("on");
+		expect(prompts).toEqual([]);
+		// The window armed with the one deliver, then run() closed it at the terminal edge.
+		expect(pendingCounts[0]).toBe(1);
+	});
+
+	test("unset is off: the idle deliver prompts at once", async () => {
+		const { prompts, pendingCounts } = await runIdleDeliver(undefined);
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("hi");
+		expect(pendingCounts).toEqual([]);
+	});
+
+	test('"1" is off: only the exact value "on" enables batching', async () => {
+		const { prompts, pendingCounts } = await runIdleDeliver("1");
+		expect(prompts).toHaveLength(1);
+		expect(pendingCounts).toEqual([]);
 	});
 });
 

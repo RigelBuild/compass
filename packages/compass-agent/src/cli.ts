@@ -44,6 +44,7 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking
 import { getBlobsDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
+import { type BatchWindow, DEFAULT_BATCH_WINDOW } from "./batch-window";
 import { BoardBroker, createBoardTools } from "./board";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
@@ -825,6 +826,8 @@ export interface MainDeps {
 	 * run in the shared test process.
 	 */
 	telemetry?: TelemetryHooks;
+	/** Absent → COMPASS_AGENT_BATCHING ("on" only); "off" → none. Resolve with === "off". */
+	readonly batchWindow?: BatchWindow | "off";
 }
 
 /**
@@ -1136,6 +1139,17 @@ export async function main(
 	const sdkGetApiKey = session.agent.getApiKey?.bind(session.agent);
 	session.agent.getApiKey = createSeedApiKeyResolver(home, sdkGetApiKey);
 
+	// Batching is off unless the deployment opts in: only an exact "on" selects the
+	// window, so a typo or "1" never changes turn timing.
+	const batchWindow =
+		deps.batchWindow === "off"
+			? undefined
+			: deps.batchWindow !== undefined
+				? deps.batchWindow
+				: env.COMPASS_AGENT_BATCHING === "on"
+					? DEFAULT_BATCH_WINDOW
+					: undefined;
+
 	// Construction cycle (RIG-1310 §8): createSocketControlSource needs the control
 	// handle at construction, but the handle forwards into CompassAgent, built AFTER.
 	// A mutable holder resolves it — the source's pump only dispatches after run()
@@ -1163,6 +1177,7 @@ export async function main(
 			control,
 			tracer: traceBridge,
 			turnSequence,
+			batchWindow,
 		});
 		await agent.run();
 	} finally {
