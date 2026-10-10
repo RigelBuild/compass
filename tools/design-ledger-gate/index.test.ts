@@ -1,27 +1,14 @@
-// Unit tests for the design-ledger gate's pure core + I/O wiring (index.ts).
-//
-// This gate is a CI oracle: its correctness defines whether the ledger (T1)
-// and per-record `Status:` headers (T2) are accepted, so this suite defends the
-// machine-readable contract exhaustively.
-//
-// Conventions (mirroring tools/spec-impact-gate/gate.test.ts and
-// tools/no-bash-gate/index.test.ts):
-// - Literal paths (`docs/designs/<bucket>/...`), NOT values derived from the
-//   module constants (DESIGNS_ROOT / GOVERNED_ROOTS / DECISIONS_PATH /
-//   HISTORICAL_CHAIN / LARGE_RECORD_BYTES): those constants ARE the thing under
-//   test, so deriving inputs from them would let a drifted constant pass silently.
-// - `row()` / `header()` yield valid baselines so each test perturbs one axis.
-// - `.message` is human prose, asserted only by its identifying substring.
-
 import { describe, expect, test } from "bun:test";
 import {
+	buildDecisionCorpus,
 	type Changed,
+	classifyDesignPath,
 	conflictMarkerViolations,
+	type DecisionCorpus,
 	type Deps,
 	evaluate,
 	HISTORICAL_CHAIN,
-	type LedgerRow,
-	parseLedger,
+	KEY_LINE,
 	parseRecordHeader,
 	parseStatusValue,
 	prContextFrom,
@@ -31,1194 +18,815 @@ import {
 	resolveRecordRelative,
 	runOnce,
 	slugify,
-	splitLink,
 	touchesRecord,
 } from "./index.ts";
 
-const LEDGER = "docs/designs/DECISIONS.md";
-const smallRecord = (): RecordContent => ({ headings: [], sizeBytes: 100 });
+interface DecisionInput {
+	id?: string;
+	area?: string;
+	record?: string;
+	status?: string;
+	decision?: string;
+	path?: string;
+}
+
+const DECISION_DIR = "docs/designs/decisions";
 const noChange: Changed = { files: [], body: null, headBranch: "" };
-
-/**
- * A PR-event `Changed` for touch-coupling tests. `headBranch` defaults to a
- * plain feature branch (non-exempt); pass an automation prefix to exercise the
- * exemption.
- */
-const changed = (
-	files: string[],
-	body: string | null,
-	headBranch = "flinders-feature",
-): Changed => ({ files, body, headBranch });
-
-// ---------------------------------------------------------------------------
-// Pure helpers.
-// ---------------------------------------------------------------------------
-
-describe("slugify", () => {
-	// GitHub slug: lowercase, strip punctuation, each whitespace CHAR → one
-	// hyphen (no run-collapse), so " / " and " — " each yield "--".
-	test("punctuation stripped, each space → a hyphen (no collapse)", () => {
-		expect(slugify("Problem / Intent")).toBe("problem--intent");
-	});
-	test("plain heading", () => {
-		expect(slugify("Approach")).toBe("approach");
-	});
-	test("em-dash stripped, surrounding spaces each become a hyphen", () => {
-		expect(slugify("T3 — the gate")).toBe("t3--the-gate");
-	});
+const smallRecord = (): RecordContent => ({
+	headings: ["present"],
+	sizeBytes: 100,
 });
 
-describe("parseStatusValue", () => {
-	test("Historical and Superseded map to their kinds", () => {
-		expect(parseStatusValue("Status: Historical")).toEqual({
-			kind: "Historical",
+function decisionText(options: DecisionInput = {}): string {
+	const id = options.id ?? "DL-001";
+	const area = options.area ?? "ui";
+	const record = options.record ?? `../../${area}/record/design.md`;
+	const status = options.status ?? "Active (Matt, 2026-07-22)";
+	const decision = options.decision ?? "Use the stable design.";
+	return [
+		"---",
+		`id: ${id}`,
+		`decision: ${JSON.stringify(decision)}`,
+		`status: ${JSON.stringify(status)}`,
+		`record: ${record}`,
+		"---",
+	].join("\n");
+}
+
+function decisionFile(options: DecisionInput = {}) {
+	const id = options.id ?? "DL-001";
+	const area = options.area ?? "ui";
+	return {
+		path: options.path ?? `${DECISION_DIR}/${area}/${id}.md`,
+		text: decisionText(options),
+	};
+}
+
+function corpus(...files: DecisionInput[]): DecisionCorpus {
+	const inputs = files.length === 0 ? [{}] : files;
+	return buildDecisionCorpus(inputs.map((file) => decisionFile(file)));
+}
+
+function record(
+	path = "docs/designs/ui/record/design.md",
+	text = "# Title\n",
+): RecordHeader {
+	return parseRecordHeader(path, text);
+}
+
+function evaluateCorpus(
+	decisions: DecisionCorpus,
+	records: RecordHeader[] = [],
+	changed: Changed = noChange,
+	read: (path: string) => RecordContent | null = smallRecord,
+) {
+	return evaluate(decisions, records, changed, read);
+}
+
+test("slugify matches GitHub punctuation and whitespace rules", () => {
+	expect(slugify("Hello, world!")).toBe("hello-world");
+	expect(slugify("Problem / Intent")).toBe("problem--intent");
+	expect(slugify("Approach — part 1")).toBe("approach--part-1");
+});
+
+test.each([
+	["blockquoted Historical", "> Status: Historical", { kind: "Historical" }],
+	["bold Historical", "**Status: Historical**", { kind: "Historical" }],
+	[
+		"quoted bold Historical",
+		"> **Status: Historical**",
+		{ kind: "Historical" },
+	],
+	[
+		"bold supersession",
+		"**Status: Superseded by ../next/design.md**",
+		{ kind: "Superseded", path: "../next/design.md" },
+	],
+] as const)("parseStatusValue accepts %s", (_label, line, result) => {
+	expect(parseStatusValue(line)).toEqual(result);
+});
+
+test.each(["Status: Draft", "Status: Active", "**Status: Active**"])(
+	"parseStatusValue rejects %s",
+	(line) => expect(parseStatusValue(line)).toBeNull(),
+);
+test("record-relative supersession resolves nested and cross-bucket paths only", () => {
+	expect(
+		resolveRecordRelative("ui/nested/record/design.md", "../sibling/design.md"),
+	).toBe("ui/nested/sibling/design.md");
+	expect(
+		resolveRecordRelative("ui/record/design.md", "../../server/next/design.md"),
+	).toBe("server/next/design.md");
+	expect(resolveRecordRelative("ui/record.md", "other.md")).toBe("ui/other.md");
+	expect(
+		resolveRecordRelative("ui/record/design.md", "../../../escape.md"),
+	).toBeNull();
+});
+
+describe("parseRecordHeader", () => {
+	test("finds the Status slot and ignores preamble, missing H1, and fenced H1", () => {
+		expect(
+			parseRecordHeader(
+				"record.md",
+				"Preamble\n# Title\n\nStatus: Historical\n",
+			),
+		).toEqual({
+			path: "record.md",
+			statusLine: "Status: Historical",
+			line: 4,
+		});
+		expect(parseRecordHeader("record.md", "Preamble only\n")).toEqual({
+			path: "record.md",
+			statusLine: null,
+			line: 1,
 		});
 		expect(
-			parseStatusValue("Status: Superseded by ../compass-0.8/design.md"),
+			parseRecordHeader("record.md", "```md\n# Example\n```\nPreamble\n"),
 		).toEqual({
-			kind: "Superseded",
-			path: "../compass-0.8/design.md",
+			path: "record.md",
+			statusLine: null,
+			line: 1,
+		});
+		expect(parseRecordHeader("record.md", "# Title\n\nBody\n")).toEqual({
+			path: "record.md",
+			statusLine: null,
+			line: 2,
 		});
 	});
-	test("lifecycle and unknown values are rejected", () => {
-		expect(parseStatusValue("Status: Draft")).toBeNull();
-		expect(parseStatusValue("Status: Active")).toBeNull();
-		expect(parseStatusValue("Status: approved")).toBeNull();
-	});
-	test("blockquote and emphasis prefixes are tolerated", () => {
-		expect(parseStatusValue("> **Status: Historical**")).toEqual({
-			kind: "Historical",
-		});
+
+	test.each([
+		"> Status: Historical",
+		"**Status: Historical**",
+		"> **Status: Historical**",
+	])("finds blockquoted or emphasized header %s", (line) => {
+		expect(
+			parseRecordHeader("record.md", `# Title\n\n${line}\n`).statusLine,
+		).toBe(line);
 	});
 });
 
-describe("splitLink", () => {
-	test("link with no anchor", () => {
-		expect(splitLink("[x](a/b.md)")).toEqual({ path: "a/b.md", anchor: null });
+describe("design path discovery", () => {
+	test("classifies decision files, the readme, legacy files, and misplaced files", () => {
+		expect(classifyDesignPath(`${DECISION_DIR}/README.md`)).toBe(
+			"decisions-readme",
+		);
+		expect(classifyDesignPath(`${DECISION_DIR}/ui/DL-001.md`)).toBe("decision");
+		expect(classifyDesignPath(`${DECISION_DIR}/ui/nested/DL-001.md`)).toBe(
+			"misplaced",
+		);
+		expect(classifyDesignPath(`${DECISION_DIR}/ui/notes.txt`)).toBe(
+			"misplaced",
+		);
+		expect(classifyDesignPath(`${DECISION_DIR}/DL-001.md`)).toBe("misplaced");
+		expect(classifyDesignPath(`${DECISION_DIR}/foo.md`)).toBe("misplaced");
+		expect(classifyDesignPath(`${DECISION_DIR}/ui/DECISIONS.md`)).toBe(
+			"legacy-ledger",
+		);
+		expect(classifyDesignPath("docs/designs/DECISIONS.md")).toBe(
+			"legacy-ledger",
+		);
+		expect(classifyDesignPath("docs/designs/server/DECISIONS.md")).toBe(
+			"legacy-ledger",
+		);
+		expect(classifyDesignPath("docs/designs/ui/DL-009.md")).toBe("misplaced");
+		expect(classifyDesignPath("docs/designs/ui/record/design.md")).toBe(
+			"other",
+		);
 	});
-	test("link with #anchor", () => {
-		expect(splitLink("[x](a/b.md#foo-bar)")).toEqual({
-			path: "a/b.md",
-			anchor: "foo-bar",
-		});
-	});
-	test("non-link cell → null", () => {
-		expect(splitLink("no link")).toBeNull();
+
+	test("decision tree is not a governed record", () => {
+		expect(touchesRecord(`${DECISION_DIR}/ui/DL-001.md`)).toBe(false);
+		expect(touchesRecord("docs/designs/DECISIONS.md")).toBe(false);
 	});
 });
 
 describe("touchesRecord", () => {
-	test("a <name>/design.md record is a record", () => {
-		expect(touchesRecord("docs/designs/ui/compass-0.6/design.md")).toBe(true);
+	test.each([
+		["docs/designs/ui/compass.md", true],
+		["docs/designs/ui/compass/design.md", true],
+		["docs/designs/ui/compass/other.md", true],
+		["docs/designs/infra/runtime/compass-x/microvm-v3.md", true],
+		["docs/designs/platform/x/design.md", true],
+		["docs/designs/CONTRIBUTING.md", false],
+		["docs/designs/nope/compass.md", false],
+		["docs/designs/ui/subgroup/flat.md", true],
+		["docs/designs/not-governed/record/design.md", false],
+		["docs/designs/ui/", false],
+		["docs/not-designs/ui/record/design.md", false],
+		["docs/designs/ui/record/image.png", false],
+	])("%s -> %s", (path, expected) => {
+		expect(touchesRecord(path)).toBe(expected);
 	});
-	test("a top-level <name>.md record is a record", () => {
-		expect(touchesRecord("docs/designs/ui/compass-tauri-shell.md")).toBe(true);
-	});
-	test("a record under a second governed root (agent) is a record", () => {
-		expect(touchesRecord("docs/designs/agent/compass-x/design.md")).toBe(true);
-	});
-	test("a record under the observability governed root is a record", () => {
+});
+
+describe("decision parsing and invariants", () => {
+	test("Retired decisions pass and never require a successor", () => {
 		expect(
-			touchesRecord("docs/designs/observability/compass-x/design.md"),
+			evaluateCorpus(corpus({ status: "Retired (Matt, 2026-08-23)" })),
+		).toEqual([]);
+		expect(
+			evaluateCorpus(
+				corpus(
+					{ id: "DL-001", status: "Retired (Matt, 2026-08-23)" },
+					{ id: "DL-002", status: "Retired (Matt, 2026-08-23)" },
+				),
+			),
+		).toEqual([]);
+	});
+
+	test("decision status grammar is enforced by the parser at line 4", () => {
+		const malformed = buildDecisionCorpus([
+			{ ...decisionFile(), text: decisionText({ status: "Draft" }) },
+		]);
+		expect(malformed.rows).toHaveLength(0);
+		expect(malformed.malformed[0]).toMatchObject({
+			path: `${DECISION_DIR}/ui/DL-001.md`,
+			line: KEY_LINE.status,
+		});
+	});
+
+	test("duplicate ids across areas point to the second id key", () => {
+		const got = evaluateCorpus(
+			corpus(
+				{ id: "DL-001", area: "ui" },
+				{
+					id: "DL-001",
+					area: "server",
+					record: "../../server/other/design.md",
+				},
+			),
+		);
+		expect(got).toContainEqual({
+			file: `${DECISION_DIR}/server/DL-001.md`,
+			line: KEY_LINE.id,
+			message: expect.stringContaining("duplicate decision id"),
+		});
+	});
+
+	test("valid supersession target passes; missing target and self-supersession fail", () => {
+		expect(
+			evaluateCorpus(
+				corpus(
+					{ id: "DL-001", status: "Superseded by DL-002 (Matt, 2026-07-22)" },
+					{ id: "DL-002" },
+				),
+			),
+		).toEqual([]);
+		const missing = evaluateCorpus(
+			corpus({
+				id: "DL-001",
+				status: "Superseded by DL-999 (Matt, 2026-07-22)",
+			}),
+		);
+		expect(missing).toContainEqual({
+			file: `${DECISION_DIR}/ui/DL-001.md`,
+			line: KEY_LINE.status,
+			message: expect.stringContaining("not a decision file"),
+		});
+		const self = evaluateCorpus(
+			corpus({
+				id: "DL-001",
+				status: "Superseded by DL-001 (Matt, 2026-07-22)",
+			}),
+		);
+		expect(self).toHaveLength(1);
+		expect(self[0]?.message).toContain("superseded by itself");
+	});
+
+	test("reports cycles once at their stable lowest-id decision locus", () => {
+		const twoCycle = evaluateCorpus(
+			corpus(
+				{ id: "DL-002", status: "Superseded by DL-001 (Matt, 2026-07-22)" },
+				{ id: "DL-001", status: "Superseded by DL-002 (Matt, 2026-07-22)" },
+			),
+		);
+		const cycleViolations = twoCycle.filter((item) =>
+			item.message.includes("supersession cycle"),
+		);
+		expect(cycleViolations).toHaveLength(1);
+		expect(cycleViolations[0]).toMatchObject({
+			file: `${DECISION_DIR}/ui/DL-001.md`,
+			line: KEY_LINE.status,
+		});
+		const threeCycle = evaluateCorpus(
+			corpus(
+				{ id: "DL-001", status: "Superseded by DL-002 (Matt, 2026-07-22)" },
+				{ id: "DL-002", status: "Superseded by DL-003 (Matt, 2026-07-22)" },
+				{ id: "DL-003", status: "Superseded by DL-001 (Matt, 2026-07-22)" },
+			),
+		);
+		expect(
+			threeCycle.filter((item) => item.message.includes("supersession cycle")),
+		).toHaveLength(1);
+		const feedIn = evaluateCorpus(
+			corpus(
+				{ id: "DL-001", status: "Superseded by DL-002 (Matt, 2026-07-22)" },
+				{ id: "DL-002", status: "Superseded by DL-003 (Matt, 2026-07-22)" },
+				{ id: "DL-003", status: "Superseded by DL-004 (Matt, 2026-07-22)" },
+				{ id: "DL-004", status: "Superseded by DL-003 (Matt, 2026-07-22)" },
+			),
+		);
+		const loop = feedIn.filter((item) =>
+			item.message.includes("supersession cycle"),
+		);
+		expect(loop).toHaveLength(1);
+		expect(loop[0]?.message).toContain("DL-003");
+		expect(loop[0]?.message).toContain("DL-004");
+		expect(loop[0]?.message).not.toContain("DL-001");
+		const independent = evaluateCorpus(
+			corpus(
+				{ id: "DL-001", status: "Superseded by DL-002 (Matt, 2026-07-22)" },
+				{ id: "DL-002", status: "Superseded by DL-001 (Matt, 2026-07-22)" },
+				{ id: "DL-003", status: "Superseded by DL-004 (Matt, 2026-07-22)" },
+				{ id: "DL-004", status: "Superseded by DL-003 (Matt, 2026-07-22)" },
+			),
+		);
+		expect(
+			independent.filter((item) => item.message.includes("supersession cycle")),
+		).toHaveLength(2);
+		const healthy = evaluateCorpus(
+			corpus(
+				{ id: "DL-001", status: "Superseded by DL-002 (Matt, 2026-07-22)" },
+				{ id: "DL-002", status: "Superseded by DL-003 (Matt, 2026-07-22)" },
+				{ id: "DL-003", status: "Active (Matt, 2026-07-22)" },
+			),
+		);
+		expect(healthy).toEqual([]);
+		const self = evaluateCorpus(
+			corpus({
+				id: "DL-001",
+				status: "Superseded by DL-001 (Matt, 2026-07-22)",
+			}),
+		);
+		expect(self).toHaveLength(1);
+		expect(self[0]?.message).toContain("superseded by itself");
+		expect(
+			self.some((item) => item.message.includes("supersession cycle")),
+		).toBe(false);
+	});
+
+	test("checks Record resolution, anchors, and large records", () => {
+		const anchored = buildDecisionCorpus([
+			{
+				path: `${DECISION_DIR}/ui/DL-001.md`,
+				text: decisionText({ record: "../../ui/record/design.md#present" }),
+			},
+		]);
+		expect(
+			evaluateCorpus(anchored, [], noChange, () => ({
+				headings: ["present"],
+				sizeBytes: 60_000,
+			})),
+		).toEqual([]);
+		expect(
+			evaluateCorpus(corpus(), [], noChange, () => ({
+				headings: [],
+				sizeBytes: 100,
+			})),
+		).toEqual([]);
+		for (const fence of ["```", "~~~"]) {
+			const fenced = recordContentFromText(`${fence}md\n# pseudo\n${fence}\n`);
+			const deadAnchor = evaluateCorpus(
+				corpus({ record: "../../ui/record/design.md#pseudo" }),
+				[],
+				noChange,
+				() => fenced,
+			);
+			expect(
+				deadAnchor.some((item) => item.message.includes("anchor not found")),
+			).toBe(true);
+		}
+		const missingPath = evaluateCorpus(corpus(), [], noChange, () => null);
+		expect(
+			missingPath.some(
+				(item) =>
+					item.message.includes("does not resolve") &&
+					item.line === KEY_LINE.record,
+			),
 		).toBe(true);
-	});
-	test("a flat <name>.md at a second governed root is a record", () => {
-		expect(touchesRecord("docs/designs/repo/compass-drop-proto.md")).toBe(true);
-	});
-	test("the ledger DECISIONS.md is NOT a record", () => {
-		expect(touchesRecord("docs/designs/DECISIONS.md")).toBe(false);
-	});
-	test("a nested record below <bucket>/<name>/ is a record", () => {
-		expect(
-			touchesRecord("docs/designs/infra/runtime/compass-x/microvm-v3.md"),
-		).toBe(true);
-	});
-	test("a flat .md inside a subgroup is a record", () => {
-		expect(touchesRecord("docs/designs/infra/ci/foo.md")).toBe(true);
-	});
-	test("a record under the platform bucket is a record", () => {
-		expect(touchesRecord("docs/designs/platform/x/design.md")).toBe(true);
-	});
-	test("CONTRIBUTING.md at the designs root is not a record", () => {
-		expect(touchesRecord("docs/designs/CONTRIBUTING.md")).toBe(false);
-	});
-	test("a file under a non-bucket path is not a record", () => {
-		expect(touchesRecord("docs/designs/notabucket/x.md")).toBe(false);
-	});
-	test("a non-markdown file is not a record", () => {
-		expect(touchesRecord("docs/designs/ui/notes.txt")).toBe(false);
-	});
-});
-
-describe("resolveRecordRelative", () => {
-	test("a nested record's `../sibling` pointer → designs-root-relative sibling", () => {
-		expect(
-			resolveRecordRelative(
-				"ui/compass-0.6/design.md",
-				"../compass-0.8/design.md",
-			),
-		).toBe("ui/compass-0.8/design.md");
-	});
-	test("a cross-bucket pointer resolves inside DESIGNS_ROOT", () => {
-		// A ui/ record superseded by an agent/ record: `../../agent/...` from
-		// `ui/<name>/design.md` climbs to the designs root then into agent/.
-		expect(
-			resolveRecordRelative(
-				"ui/compass-tauri-shell/design.md",
-				"../../agent/compass-native-app/design.md",
-			),
-		).toBe("agent/compass-native-app/design.md");
-	});
-	test("a top-level record's bare pointer → that designs-root-relative path", () => {
-		expect(resolveRecordRelative("a.md", "b.md")).toBe("b.md");
-	});
-	test("a pointer that climbs out of DESIGNS_ROOT → null", () => {
-		expect(resolveRecordRelative("a.md", "../../escape.md")).toBeNull();
-	});
-});
-
-describe("parseLedger", () => {
-	const text = [
-		"# Ledger", // 1
-		"", // 2
-		"| ID | Decision | Status | Record |", // 3 header — first cell not DL-\d
-		"| --- | --- | --- | --- |", // 4 separator — first cell not DL-\d
-		"| DL-001 | use X | Active (Matt, 2026-07-22) | [r](a.md) |", // 5
-		"| DL-002 | use Y | Historical | [r](b.md) |", // 6
-		"| DL-x | a | b |", // 7 — only 3 cells, skipped
-		"just prose", // 8
-	].join("\n");
-
-	test("only DL-\\d+ rows with 4 cells are parsed, with 1-based lines", () => {
-		const rows = parseLedger(text);
-		expect(rows.length).toBe(2);
-		expect(rows[0]).toEqual({
-			id: "DL-001",
-			decision: "use X",
-			status: "Active (Matt, 2026-07-22)",
-			recordCell: "[r](a.md)",
-			line: 5,
-		});
-		expect(rows[1]).toEqual({
-			id: "DL-002",
-			decision: "use Y",
-			status: "Historical",
-			recordCell: "[r](b.md)",
-			line: 6,
-		});
-	});
-
-	test("a valid row with a GFM-escaped pipe (\\|) in a cell is parsed, not dropped", () => {
-		// `.split("|")` would treat `\|` as a delimiter, inflating the cell count
-		// so the 4-cell check silently discards the row — bypassing validation of
-		// its id/status/supersession/record. The escaped pipe is one literal `|`.
-		const rows = parseLedger(
-			"| DL-003 | use A \\| B | Active (Matt, 2026-07-22) | [r](c.md) |",
-		);
-		expect(rows.length).toBe(1);
-		expect(rows[0]).toEqual({
-			id: "DL-003",
-			decision: "use A | B",
-			status: "Active (Matt, 2026-07-22)",
-			recordCell: "[r](c.md)",
-			line: 1,
-		});
-	});
-	test("rejects unterminated fences and comments", () => {
-		expect(() =>
-			parseLedger(
-				"```\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-001 | hidden | x | y |",
-			),
-		).toThrow("unterminated fenced block");
-		expect(() => parseLedger("<!--\n| DL-001 | hidden | x | y |")).toThrow(
-			"unterminated HTML comment",
-		);
-	});
-	test("rejects ledgers with no decision rows", () => {
-		expect(() =>
-			parseLedger(
-				"| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\njust prose",
-			),
-		).toThrow("no decision rows");
-	});
-});
-
-describe("parseRecordHeader", () => {
-	test("status slot is the first non-blank line after the H1", () => {
-		const h = parseRecordHeader("r.md", "# Title\n\nStatus: Active\n");
-		expect(h.statusLine).toBe("Status: Active");
-		expect(h.line).toBe(3);
-	});
-	test("a prose preamble in the slot → statusLine null at that line", () => {
-		const h = parseRecordHeader("r.md", "# Title\n> prose preamble\n");
-		expect(h.statusLine).toBeNull();
-		expect(h.line).toBe(2);
-	});
-	test("no H1 at all → statusLine null, line 1", () => {
-		const h = parseRecordHeader("r.md", "just prose\nmore prose\n");
-		expect(h.statusLine).toBeNull();
-		expect(h.line).toBe(1);
-	});
-	test("a `#`-shaped line inside a pre-H1 fence is not mistaken for the H1", () => {
-		const h = parseRecordHeader(
-			"r.md",
-			"```\n# fenced not-a-title\n```\n\n# Real Title\n\nStatus: Active\n",
-		);
-		expect(h.statusLine).toBe("Status: Active");
-		expect(h.line).toBe(7);
-	});
-});
-
-describe("recordContentFromText", () => {
-	test("headings are slugified; sizeBytes is the utf8 byte length", () => {
-		const text = "# Problem / Intent\n## Approach\nbody text\n";
-		const rc = recordContentFromText(text);
-		expect(rc.headings).toEqual(["problem--intent", "approach"]);
-		expect(rc.sizeBytes).toBe(Buffer.byteLength(text, "utf8"));
-	});
-	test("a `#`-prefixed line inside a fenced code block is NOT a heading", () => {
-		const text =
-			"# Real Title\n\n```bash\n# not a heading\n```\n\n## Approach\n";
-		const rc = recordContentFromText(text);
-		expect(rc.headings).toEqual(["real-title", "approach"]);
-		expect(rc.headings).not.toContain("not-a-heading");
-	});
-	test("a tilde fence also suppresses heading extraction", () => {
-		const text = "# T\n\n~~~\n# fenced\n~~~\n";
-		expect(recordContentFromText(text).headings).toEqual(["t"]);
-	});
-});
-describe("parseRecordHeader reach", () => {
-	test("finds bare Status below a preamble and blockquoted Status", () => {
-		expect(
-			parseRecordHeader(
-				"docs/designs/ui/x.md",
-				"# X\nBanner\n\nStatus: Historical\n",
-			).statusLine,
-		).toBe("Status: Historical");
-		expect(
-			parseRecordHeader(
-				"docs/designs/ui/x.md",
-				"# X\n> **Status: Historical**\n",
-			).statusLine,
-		).toBe("> **Status: Historical**");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// The pure core: evaluate.
-// ---------------------------------------------------------------------------
-
-function row(overrides: Partial<LedgerRow> = {}): LedgerRow {
-	return {
-		id: "DL-001",
-		decision: "use X",
-		status: "Active (Matt, 2026-07-22)",
-		recordCell: "[r](compass-0.6/design.md)",
-		line: 5,
-		...overrides,
-	};
-}
-
-function header(overrides: Partial<RecordHeader> = {}): RecordHeader {
-	return {
-		path: "docs/designs/ui/compass-tauri-shell.md",
-		statusLine: null,
-		line: 3,
-		...overrides,
-	};
-}
-
-describe("evaluate — duplicate DL id", () => {
-	test("two rows same id → one 'duplicate' on the second row's line", () => {
-		const vs = evaluate(
-			[row({ line: 5 }), row({ line: 6 })],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("duplicate");
-		expect(vs[0]?.file).toBe(LEDGER);
-		expect(vs[0]?.line).toBe(6);
-	});
-});
-
-describe("evaluate — row status-cell grammar", () => {
-	test("both valid forms pass", () => {
-		expect(
-			evaluate(
-				[row({ status: "Active (Matt, 2026-07-22)" })],
-				[],
-				noChange,
-				smallRecord,
-			),
-		).toEqual([]);
-		expect(
-			evaluate(
-				[
-					row({
-						id: "DL-001",
-						status: "Superseded by DL-002 (Matt, 2026-07-22)",
-						line: 5,
-					}),
-					row({ id: "DL-002", line: 6 }),
-				],
-				[],
-				noChange,
-				smallRecord,
-			),
-		).toEqual([]);
-	});
-	test("Retired form passes and needs no successor row", () => {
-		// A decision scrapped with no replacement: valid, and — unlike
-		// `Superseded by DL-<n>` — it must NOT require a target row to resolve.
-		expect(
-			evaluate(
-				[row({ status: "Retired (Matt, 2026-08-23)" })],
-				[],
-				noChange,
-				smallRecord,
-			),
-		).toEqual([]);
-	});
-	test("Retired does not enter a supersession chain (no dangling-target check)", () => {
-		// Two independent Retired rows: neither points anywhere, so neither can
-		// dangle or cycle.
-		expect(
-			evaluate(
-				[
-					row({ id: "DL-001", status: "Retired (Matt, 2026-08-23)", line: 5 }),
-					row({ id: "DL-002", status: "Retired (Matt, 2026-08-23)", line: 6 }),
-				],
-				[],
-				noChange,
-				smallRecord,
-			),
-		).toEqual([]);
-	});
-	test("neither form → 'malformed'", () => {
-		const vs = evaluate(
-			[row({ status: "sometime later" })],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("malformed");
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("Retired-shaped but dateless → 'malformed' (pins ROW_RETIRED_RE strictness)", () => {
-		// A cell that begins `Retired ` but omits the required date must be
-		// rejected — otherwise a future loosening of ROW_RETIRED_RE to a bare
-		// prefix would silently pass. Same strictness the Active/Superseded
-		// forms enforce.
-		const vs = evaluate(
-			[row({ status: "Retired (Matt)" })],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("malformed");
-		expect(vs[0]?.line).toBe(5);
-	});
-});
-
-describe("evaluate — supersession integrity", () => {
-	test("dangling target → 'not a ledger row'", () => {
-		const vs = evaluate(
-			[row({ status: "Superseded by DL-999 (Matt, 2026-07-22)" })],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("not a ledger row");
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("self-supersession → 'self'", () => {
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-001 (Matt, 2026-07-22)",
-				}),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("self");
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("a 2-cycle is reported exactly once (per unordered pair)", () => {
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-002 (Matt, 2026-07-22)",
-					line: 5,
-				}),
-				row({
-					id: "DL-002",
-					status: "Superseded by DL-001 (Matt, 2026-07-22)",
-					line: 6,
-				}),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(
-			vs.filter((x) => x.message.includes("supersession cycle")).length,
-		).toBe(1);
-		expect(vs[0]?.message).toContain("DL-001");
-		expect(vs[0]?.message).toContain("DL-002");
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.file).toBe(LEDGER);
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("a ≥3-cycle is reported once naming all members (walk, not one-hop)", () => {
-		// DL-001→DL-002→DL-003→DL-001. No row is self- or back-superseded, so a
-		// one-hop 2-cycle back-check saw zero violations; only a walk-to-terminus
-		// detector catches this loop. THE case OQ1b widened the gate to cover.
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-002 (Matt, 2026-07-22)",
-					line: 5,
-				}),
-				row({
-					id: "DL-002",
-					status: "Superseded by DL-003 (Matt, 2026-07-22)",
-					line: 6,
-				}),
-				row({
-					id: "DL-003",
-					status: "Superseded by DL-001 (Matt, 2026-07-22)",
-					line: 7,
-				}),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(
-			vs.filter((x) => x.message.includes("supersession cycle")).length,
-		).toBe(1);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("DL-001");
-		expect(vs[0]?.message).toContain("DL-002");
-		expect(vs[0]?.message).toContain("DL-003");
-		expect(vs[0]?.file).toBe(LEDGER);
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("a chain feeding into a cycle reports only the loop members, once", () => {
-		// DL-001 (tail) → DL-002 ⇄ DL-003 (the cycle). The walk from DL-001 enters
-		// the loop and closes it on DL-002, so the reported cycle is {DL-002,
-		// DL-003} only; DL-001 is not a member and produces no cycle of its own.
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-002 (Matt, 2026-07-22)",
-					line: 5,
-				}),
-				row({
-					id: "DL-002",
-					status: "Superseded by DL-003 (Matt, 2026-07-22)",
-					line: 6,
-				}),
-				row({
-					id: "DL-003",
-					status: "Superseded by DL-002 (Matt, 2026-07-22)",
-					line: 7,
-				}),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(
-			vs.filter((x) => x.message.includes("supersession cycle")).length,
-		).toBe(1);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("DL-002");
-		expect(vs[0]?.message).toContain("DL-003");
-		expect(vs[0]?.message).not.toContain("DL-001");
-		expect(vs[0]?.line).toBe(6);
-	});
-	test("cycle report line is the lowest member line, not ledger array order", () => {
-		// DL-002 (line 8) ⇄ DL-001 (line 3), with the higher-line row FIRST in the
-		// array. The walk starts at DL-002 and closes the loop on it (line 8), but
-		// the report anchors to min(line) = 3 — stable regardless of array order.
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-002",
-					status: "Superseded by DL-001 (Matt, 2026-07-22)",
-					line: 8,
-				}),
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-002 (Matt, 2026-07-22)",
-					line: 3,
-				}),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(
-			vs.filter((x) => x.message.includes("supersession cycle")).length,
-		).toBe(1);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.line).toBe(3);
-	});
-	test("a healthy chain terminating at Active is not a cycle", () => {
-		// DL-001 → DL-002 → DL-003 (Active). The walk reaches a live terminus, so
-		// no loop — guards against over-reporting a legitimate supersession chain.
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-002 (Matt, 2026-07-22)",
-					line: 5,
-				}),
-				row({
-					id: "DL-002",
-					status: "Superseded by DL-003 (Matt, 2026-07-22)",
-					line: 6,
-				}),
-				row({ id: "DL-003", status: "Active (Matt, 2026-07-22)", line: 7 }),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(
-			vs.filter((x) => x.message.includes("supersession cycle")).length,
-		).toBe(0);
-		expect(vs).toEqual([]);
-	});
-	test("a self-loop yields only the per-edge message, never a cycle", () => {
-		// DL-001 superseded by itself: the per-edge `superseded by itself` fires,
-		// but the walk's `cycle.length > 1` guard skips the degenerate 1-cycle, so
-		// there is exactly one violation and NO `supersession cycle`.
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-001 (Matt, 2026-07-22)",
-					line: 5,
-				}),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("superseded by itself");
-		expect(
-			vs.filter((x) => x.message.includes("supersession cycle")).length,
-		).toBe(0);
-	});
-	test("two independent cycles are each reported once (not four)", () => {
-		// {DL-001 ⇄ DL-002} and {DL-003 ⇄ DL-004} are disjoint loops. Each is keyed
-		// by its own member set, so exactly two cycle violations — not one per row.
-		const vs = evaluate(
-			[
-				row({
-					id: "DL-001",
-					status: "Superseded by DL-002 (Matt, 2026-07-22)",
-					line: 5,
-				}),
-				row({
-					id: "DL-002",
-					status: "Superseded by DL-001 (Matt, 2026-07-22)",
-					line: 6,
-				}),
-				row({
-					id: "DL-003",
-					status: "Superseded by DL-004 (Matt, 2026-07-22)",
-					line: 7,
-				}),
-				row({
-					id: "DL-004",
-					status: "Superseded by DL-003 (Matt, 2026-07-22)",
-					line: 8,
-				}),
-			],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(
-			vs.filter((x) => x.message.includes("supersession cycle")).length,
-		).toBe(2);
-		expect(vs.length).toBe(2);
-	});
-});
-
-describe("evaluate — Record link resolution", () => {
-	test("path missing (readRecord null) → 'does not resolve'", () => {
-		const vs = evaluate([row()], [], noChange, () => null);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("does not resolve");
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("dead #anchor → 'anchor not found'", () => {
-		const vs = evaluate(
-			[row({ recordCell: "[r](compass-0.6/design.md#missing)" })],
+		const missingAnchor = evaluateCorpus(
+			corpus({ record: "../../ui/record/design.md#missing" }),
 			[],
 			noChange,
 			() => ({ headings: ["present"], sizeBytes: 100 }),
 		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("anchor not found");
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("#anchor matching only a FENCED pseudo-heading → 'anchor not found'", () => {
-		// The target's only `# not-a-heading` line is inside a code fence, so it
-		// must not become a resolvable slug (else a dead pointer false-passes).
-		const target = recordContentFromText(
-			"# Real\n\n```bash\n# not-a-heading\n```\n",
-		);
-		const vs = evaluate(
-			[row({ recordCell: "[r](compass-0.6/design.md#not-a-heading)" })],
-			[],
-			noChange,
-			() => target,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("anchor not found");
-	});
-	test("live #anchor resolves even for a >50KB record → no violation", () => {
-		const vs = evaluate(
-			[row({ recordCell: "[r](compass-0.6/design.md#present)" })],
-			[],
-			noChange,
-			() => ({ headings: ["present"], sizeBytes: 60 * 1024 }),
-		);
-		expect(vs).toEqual([]);
-	});
-	test("large record without an anchor → 'large record'", () => {
-		const vs = evaluate(
-			[row({ recordCell: "[r](compass-0.6/design.md)" })],
-			[],
-			noChange,
-			() => ({ headings: [], sizeBytes: 50 * 1024 + 1 }),
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("large record");
-		expect(vs[0]?.line).toBe(5);
-	});
-	test("small record without an anchor → no violation", () => {
-		const vs = evaluate(
-			[row({ recordCell: "[r](compass-0.6/design.md)" })],
-			[],
-			noChange,
-			() => ({ headings: [], sizeBytes: 100 }),
-		);
-		expect(vs).toEqual([]);
-	});
-});
-describe("evaluate — record Status: header presence & grammar", () => {
-	test("absent Status is conformant", () => {
 		expect(
-			evaluate([row()], [header({ statusLine: null })], noChange, smallRecord),
-		).toEqual([]);
+			missingAnchor.some((item) => item.message.includes("anchor not found")),
+		).toBe(true);
+		const largeWithoutAnchor = evaluateCorpus(corpus(), [], noChange, () => ({
+			headings: [],
+			sizeBytes: 50 * 1024 + 1,
+		}));
+		expect(
+			largeWithoutAnchor.some((item) => item.message.includes("large record")),
+		).toBe(true);
 	});
-	test("Draft and Active are prohibited", () => {
-		for (const statusLine of ["Status: Draft", "Status: Active"]) {
-			const vs = evaluate([], [header({ statusLine })], noChange, smallRecord);
-			expect(vs.some((v) => v.message.includes("prohibited"))).toBe(true);
-		}
-	});
-	test("malformed status header is rejected", () => {
-		const vs = evaluate(
+
+	test("decision area must match a Record path under docs/designs", () => {
+		const mismatch = evaluateCorpus(
+			corpus({ record: "../../server/record/design.md" }),
 			[],
-			[header({ statusLine: "Status: Draft (freezes on merge)." })],
 			noChange,
 			smallRecord,
 		);
-		expect(vs.some((v) => v.message.includes("malformed"))).toBe(true);
+		expect(mismatch).toContainEqual({
+			file: `${DECISION_DIR}/ui/DL-001.md`,
+			line: KEY_LINE.record,
+			message: expect.stringContaining("decision area must match"),
+		});
+		const outside = evaluateCorpus(
+			corpus({ record: "../../../elsewhere/design.md" }),
+			[],
+			noChange,
+			smallRecord,
+		);
+		expect(
+			outside.some((item) => item.message.includes("decision area must match")),
+		).toBe(true);
 	});
 });
 
-describe("evaluate — Historical-set membership", () => {
-	// The version-narrative chain is EMPTY (RIG-2453 retired the v0.3–v0.8
-	// milestone records that made it up). So today EVERY record marked
-	// `Status: Historical` is out-of-chain → a violation, and the
-	// "legitimately in-chain" branch of the iff has no member to exercise with
-	// a literal path. This drift guard pins the empty set; if a future
-	// version-narrative record re-populates HISTORICAL_CHAIN, restore the
-	// in-chain positive/negative cases (an in-chain record marked `Historical`
-	// passes; marked `Active` must be `Historical`).
-	test("HISTORICAL_CHAIN is empty (no version-narrative record today)", () => {
+describe("record Status headers", () => {
+	test("rejects prohibited Status and Historical outside the historical chain", () => {
 		expect(Object.keys(HISTORICAL_CHAIN)).toHaveLength(0);
+		expect(
+			evaluateCorpus(corpus(), [
+				record(undefined, "# Title\n\nStatus: Draft\n"),
+			]).some((item) => item.message.includes("malformed or prohibited")),
+		).toBe(true);
+		expect(
+			evaluateCorpus(corpus(), [
+				record(undefined, "# Title\n\nStatus: Historical\n"),
+			]).some((item) => item.message.includes("version-narrative chain")),
+		).toBe(true);
 	});
-	test("any record marked Historical → 'version-narrative chain' (chain empty)", () => {
-		const vs = evaluate(
-			[],
-			[
-				header({
-					path: "docs/designs/ui/compass-tauri-shell.md",
-					statusLine: "Status: Historical",
-				}),
-			],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("not in the version-narrative chain");
-	});
-	test("an out-of-chain record marked Active is rejected", () => {
-		const vs = evaluate(
-			[],
-			[header({ statusLine: "Status: Active" })],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.some((v) => v.message.includes("prohibited"))).toBe(true);
-	});
-});
 
-describe("evaluate — record-level Superseded pointer", () => {
-	// The Status pointer is RECORD-relative; readRecord receives a
-	// designs-root-relative (bucket-qualified) path. This path-aware resolver
-	// (unlike smallRecord, which ignores its arg) returns a record only for the
-	// exact designs-root-relative path that exists, so it locks down the
-	// resolution base.
-	const onlyExists =
-		(existing: string) =>
-		(p: string): RecordContent | null =>
-			p === existing ? { headings: [], sizeBytes: 100 } : null;
-
-	test("pointer target missing → 'does not resolve'", () => {
-		const vs = evaluate(
-			[],
-			[
-				header({
-					path: "docs/designs/ui/compass-tauri-shell.md",
-					statusLine: "Status: Superseded by ../other/design.md",
-				}),
-			],
+	test("checks record-level Superseded pointer and decision status agreement", () => {
+		const statusHeader = record(
+			"docs/designs/ui/record/design.md",
+			"# Title\n\nStatus: Superseded by ../next/design.md\n",
+		);
+		expect(
+			evaluateCorpus(corpus(), [statusHeader]).some((item) =>
+				item.message.includes("disagrees with its decision status"),
+			),
+		).toBe(true);
+		const matching = evaluateCorpus(
+			corpus(
+				{ id: "DL-001", status: "Superseded by DL-002 (Matt, 2026-07-22)" },
+				{ id: "DL-002", record: "../../ui/next/design.md" },
+			),
+			[statusHeader],
+		);
+		expect(matching.some((item) => item.message.includes("disagrees"))).toBe(
+			false,
+		);
+		const missing = evaluateCorpus(
+			corpus(),
+			[statusHeader],
 			noChange,
 			() => null,
 		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("does not resolve");
-		expect(vs[0]?.line).toBe(3);
-	});
-	test("record-relative pointer resolves to a sibling under a nested record", () => {
-		// A nested non-chain record + `../sibling/design.md` → designs-root-relative
-		// `ui/sibling/design.md`. The resolver only knows that path, so a
-		// correct base is the only way this passes.
 		expect(
-			evaluate(
-				[],
-				[
-					header({
-						path: "docs/designs/ui/compass-ade-shell/design.md",
-						statusLine:
-							"Status: Superseded by ../compass-dock-in-sidebar/design.md",
-					}),
-				],
-				noChange,
-				onlyExists("ui/compass-dock-in-sidebar/design.md"),
+			missing.some((item) =>
+				item.message.includes("Status supersession does not resolve"),
 			),
-		).toEqual([]);
-	});
-	test("a cross-bucket record-relative pointer resolves inside DESIGNS_ROOT", () => {
-		// A ui/ record superseded by an agent/ record: `../../agent/...` climbs to
-		// the designs root, then into agent/. Resolves as long as it stays inside
-		// DESIGNS_ROOT.
-		expect(
-			evaluate(
-				[],
-				[
-					header({
-						path: "docs/designs/ui/compass-tauri-shell/design.md",
-						statusLine:
-							"Status: Superseded by ../../agent/compass-native-app/design.md",
-					}),
-				],
-				noChange,
-				onlyExists("agent/compass-native-app/design.md"),
-			),
-		).toEqual([]);
-	});
-	test("a designs-root-relative form does NOT resolve from a nested record (base is locked)", () => {
-		// Writing the pointer bucket-qualified (`compass-dock-in-sidebar/design.md`)
-		// from inside a nested record is wrong: it resolves record-relative to
-		// `ui/compass-ade-shell/compass-dock-in-sidebar/design.md`, which the
-		// resolver rejects.
-		const vs = evaluate(
-			[],
-			[
-				header({
-					path: "docs/designs/ui/compass-ade-shell/design.md",
-					statusLine: "Status: Superseded by compass-dock-in-sidebar/design.md",
-				}),
-			],
-			noChange,
-			onlyExists("ui/compass-dock-in-sidebar/design.md"),
+		).toBe(true);
+		const nestedPointer = record(
+			"docs/designs/ui/nested/record/design.md",
+			"# Title\n\nStatus: Superseded by ui/next/design.md\n",
 		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("does not resolve");
-	});
-	test("a top-level record's record-relative pointer resolves to a sibling", () => {
+		const nestedWrongBase = evaluateCorpus(
+			corpus(),
+			[nestedPointer],
+			noChange,
+			(path) =>
+				path === "docs/designs/ui/ui/next/design.md" ? smallRecord() : null,
+		);
 		expect(
-			evaluate(
-				[],
-				[
-					header({
-						path: "docs/designs/ui/compass-tauri-shell.md",
-						statusLine: "Status: Superseded by other-record.md",
-					}),
-				],
-				noChange,
-				onlyExists("ui/other-record.md"),
+			nestedWrongBase.some((item) =>
+				item.message.includes("Status supersession does not resolve"),
 			),
-		).toEqual([]);
+		).toBe(true);
 	});
 });
 
-describe("evaluate — touch-coupling (DL-Q1)", () => {
-	const rec = "docs/designs/ui/compass-0.6/design.md";
+test("branch exemptions do not skip record Status validation", () => {
+	const got = evaluateCorpus(
+		corpus(),
+		[record(undefined, "# Title\n\nStatus: Draft\n")],
+		{ files: [], body: null, headBranch: "renovate/update" },
+	);
+	expect(
+		got.some((item) => item.message.includes("malformed or prohibited")),
+	).toBe(true);
+});
 
-	test("touches a record, not the ledger, no declaration → one violation", () => {
-		const vs = evaluate(
-			[],
-			[],
-			changed([rec], "some unrelated body"),
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.file).toBe("(pull request)");
-		expect(vs[0]?.line).toBe(0);
-		expect(vs[0]?.message).toContain("Ledger-impact");
-	});
-	test("also touches DECISIONS.md → no violation", () => {
+describe("decision completeness", () => {
+	test("every governed root with records needs a valid decision in that area", () => {
+		const got = evaluateCorpus(corpus(), [
+			record("docs/designs/server/record/design.md"),
+		]);
 		expect(
-			evaluate(
-				[],
-				[],
-				changed([rec, "docs/designs/DECISIONS.md"], null),
-				smallRecord,
+			got.some(
+				(item) =>
+					item.message.includes("docs/designs/server/") &&
+					item.message.includes("no valid decision file"),
 			),
-		).toEqual([]);
+		).toBe(true);
 	});
-	test("declares Ledger-impact: none → no violation", () => {
+});
+
+describe("touch coupling", () => {
+	const changedRecord = "docs/designs/ui/record/design.md";
+	test("record change requires a changed decision or Ledger-impact declaration", () => {
+		const missing = evaluateCorpus(corpus(), [], {
+			files: [changedRecord],
+			body: "unrelated text",
+			headBranch: "feature/change",
+		});
 		expect(
-			evaluate([], [], changed([rec], "Ledger-impact: none"), smallRecord),
-		).toEqual([]);
+			missing.some((item) =>
+				item.message.includes("changed decision file or Ledger-impact"),
+			),
+		).toBe(true);
 	});
-	test("empty changed set (non-PR event) → no violation", () => {
-		expect(evaluate([], [], noChange, smallRecord)).toEqual([]);
-	});
-	test("a quoted declaration is tolerated → no violation", () => {
-		expect(
-			evaluate([], [], changed([rec], "> Ledger-impact: none"), smallRecord),
-		).toEqual([]);
-	});
-	test("the declaration keyword is case-insensitive → no violation", () => {
-		expect(
-			evaluate([], [], changed([rec], "LEDGER-IMPACT: none"), smallRecord),
-		).toEqual([]);
-	});
+
 	test("a nested supporting record or a platform record also couples", () => {
 		for (const file of [
 			"docs/designs/infra/runtime/compass-x/microvm-v3.md",
 			"docs/designs/platform/x/design.md",
 		]) {
-			const vs = evaluate(
-				[],
-				[],
-				changed([file], "no declaration"),
-				smallRecord,
-			);
-			expect(vs.map((v) => v.file)).toEqual(["(pull request)"]);
+			const missing = evaluateCorpus(corpus(), [], {
+				files: [file],
+				body: "no declaration",
+				headBranch: "feature/change",
+			});
+			expect(
+				missing.some((item) =>
+					item.message.includes("changed decision file or Ledger-impact"),
+				),
+			).toBe(true);
 		}
 	});
-	// Automation-exempt head branches (renovate/, trunk-merge/) skip
-	// touch-coupling. Mirrors spec-impact-gate's branch exemption.
-	test("renovate/ branch touching a record, no ledger, no decl → no violation", () => {
+
+	test("any changed decision path or non-empty Ledger-impact satisfies coupling", () => {
 		expect(
-			evaluate(
-				[],
-				[],
-				changed([rec], null, "renovate/npm-lodash-4.x"),
-				smallRecord,
-			),
+			evaluateCorpus(corpus(), [], {
+				files: [changedRecord, `${DECISION_DIR}/server/DL-002.md`],
+				body: null,
+				headBranch: "feature/change",
+			}),
+		).toEqual([]);
+		expect(
+			evaluateCorpus(corpus(), [], {
+				files: [changedRecord],
+				body: "Ledger-impact: none",
+				headBranch: "feature/change",
+			}),
 		).toEqual([]);
 	});
-	test("trunk-merge/ queue PR touching a record, no ledger, no decl → no violation", () => {
-		expect(
-			evaluate(
-				[],
-				[],
-				changed(
-					[rec],
-					"This pull request was created and is being managed by Trunk Merge.",
-					"trunk-merge/pr-1750/78abf0eb-bisection",
-				),
-				smallRecord,
-			),
-		).toEqual([]);
-	});
-	test("an exempt prefix mid-branch does NOT exempt (startsWith, not includes)", () => {
-		const vs = evaluate(
-			[],
-			[],
-			changed([rec], null, "feature/renovate_thing"),
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("Ledger-impact");
-	});
-});
 
-// ---------------------------------------------------------------------------
-// The I/O wiring: runOnce.
-// ---------------------------------------------------------------------------
-
-test("renovate exemption does not skip Status validation", () => {
-	const vs = evaluate(
-		[],
-		[header({ statusLine: "Status: Draft" })],
-		changed([], "Ledger-impact: none", "renovate/update"),
-		smallRecord,
+	test.each(["> Ledger-impact: none", "LEDGER-IMPACT: x"])(
+		"accepts declaration variant %s",
+		(body) => {
+			expect(
+				evaluateCorpus(corpus(), [], {
+					files: [changedRecord],
+					body,
+					headBranch: "feature/change",
+				}),
+			).toEqual([]);
+		},
 	);
-	expect(vs.some((v) => v.message.includes("prohibited"))).toBe(true);
+	test("middle-of-name exempt prefix does not exempt coupling", () => {
+		const violations = evaluateCorpus(corpus(), [], {
+			files: [changedRecord],
+			body: null,
+			headBranch: "feature/renovate/x",
+		});
+		expect(
+			violations.some((item) => item.message.includes("changed decision file")),
+		).toBe(true);
+	});
+	test("empty changed set passes", () => {
+		expect(evaluateCorpus(corpus(), [], noChange)).toEqual([]);
+	});
+	test.each(["renovate/update", "trunk-merge/pr-1/test"])(
+		"branch exemption %s still skips coupling",
+		(headBranch) => {
+			expect(
+				evaluateCorpus(corpus(), [], {
+					files: [changedRecord],
+					body: null,
+					headBranch,
+				}),
+			).toEqual([]);
+		},
+	);
 });
-describe("runOnce", () => {
-	const validLedger = [
-		"| ID | Decision | Status | Record |",
-		"| --- | --- | --- | --- |",
-		"| DL-001 | use X | Active (Matt, 2026-07-22) | [r](compass-0.6/design.md) |",
-	].join("\n");
-	const oneRecord = "docs/designs/ui/compass-tauri-shell.md";
 
-	function deps(overrides: Partial<Deps>): {
-		d: Deps;
-		out: string[];
-		errs: string[];
-	} {
+describe("runOnce", () => {
+	const decisionPath = `${DECISION_DIR}/ui/DL-001.md`;
+	const recordPath = "docs/designs/ui/record/design.md";
+
+	function fixture(
+		options: {
+			paths?: string[];
+			files?: Map<string, string>;
+			changed?: Changed;
+			list?: Deps["listDesignFiles"];
+		} = {},
+	) {
+		const paths = options.paths ?? [decisionPath, recordPath];
+		const files =
+			options.files ??
+			new Map([
+				[decisionPath, decisionText()],
+				[recordPath, "# Record\n\nBody\n"],
+			]);
 		const out: string[] = [];
 		const errs: string[] = [];
-		const d: Deps = {
+		const deps: Deps = {
 			root: "/fake",
-			readText: async (_root, rel) =>
-				rel === "docs/designs/DECISIONS.md" ? validLedger : "# Title\n\nBody\n",
-			listRecordFiles: async () => [oneRecord],
-			readRecord: () => ({ headings: [], sizeBytes: 100 }),
-			changed: { files: [], body: null, headBranch: "" },
-			log: (m) => out.push(m),
-			err: (m) => errs.push(m),
-			...overrides,
+			readText: async (_root, path) => files.get(path) ?? null,
+			listDesignFiles: options.list ?? (async () => paths),
+			readRecord: () => smallRecord(),
+			changed: options.changed ?? noChange,
+			log: (message) => out.push(message),
+			err: (message) => errs.push(message),
 		};
-		return { d, out, errs };
+		return { deps, out, errs };
 	}
 
-	test("all-valid tree → exit 0 and logs OK", async () => {
-		const { d, out } = deps({});
-		expect(await runOnce(d)).toBe(0);
-		expect(out.some((l) => l.includes("OK"))).toBe(true);
+	test("valid fixture lists once and logs decision and record counts", async () => {
+		let listingCalls = 0;
+		const { deps, out } = fixture({
+			list: async () => {
+				listingCalls++;
+				return [decisionPath, recordPath, `${DECISION_DIR}/README.md`];
+			},
+		});
+		expect(await runOnce(deps)).toBe(0);
+		expect(listingCalls).toBe(1);
+		expect(out).toEqual([
+			"design-ledger-gate: OK — 1 decision file(s), 1 record(s) status-checked.",
+		]);
 	});
 
-	test("missing ledger → exit 1 and an error about not found", async () => {
-		const { d, errs } = deps({
-			readText: async () => null,
-			listRecordFiles: async () => [],
+	test("rejects a reintroduced DECISIONS.md", async () => {
+		const { deps, errs } = fixture({
+			paths: [decisionPath, recordPath, "docs/designs/DECISIONS.md"],
 		});
-		expect(await runOnce(d)).toBe(1);
-		expect(errs.some((l) => l.includes("not found"))).toBe(true);
+		expect(await runOnce(deps)).toBe(1);
+		expect(errs.join("\n")).toContain(
+			"DECISIONS.md is retired: record each decision as docs/designs/decisions/<area>/DL-NNN.md",
+		);
 	});
 
-	test("a violation present → exit 1 and prints it", async () => {
-		const { d, errs } = deps({
-			readText: async (_root, rel) =>
-				rel === "docs/designs/DECISIONS.md"
-					? validLedger
-					: "# Title\n\nStatus: bogus value\n",
+	test("reports misplaced decision-tree paths and DL files outside it", async () => {
+		const { deps, errs } = fixture({
+			paths: [
+				decisionPath,
+				recordPath,
+				`${DECISION_DIR}/ui/extra.txt`,
+				"docs/designs/server/DL-009.md",
+			],
 		});
-		expect(await runOnce(d)).toBe(1);
-		expect(errs.some((l) => l.includes(oneRecord))).toBe(true);
-		expect(errs.some((l) => l.includes("malformed"))).toBe(true);
-	});
-
-	test("an unterminated fence fails the gate", async () => {
-		const { d, errs } = deps({
-			readText: async (_root, rel) =>
-				rel === LEDGER ? "```\n| DL-001 | hidden | x | y |" : "# Title\n",
-		});
-		expect(await runOnce(d)).toBe(1);
+		expect(await runOnce(deps)).toBe(1);
 		expect(
-			errs.some((line) => line.includes("unterminated fenced block")),
-		).toBe(true);
+			errs.filter((line) => line.includes("misplaced design file")),
+		).toHaveLength(2);
 	});
-	test("an unterminated comment fails the gate", async () => {
-		const { d, errs } = deps({
-			readText: async (_root, rel) =>
-				rel === LEDGER ? "<!--\n| DL-001 | hidden | x | y |" : "# Title\n",
+
+	test("zero valid decision files is a violation", async () => {
+		const { deps, errs } = fixture({
+			paths: [recordPath],
+			files: new Map([[recordPath, "# Record\n"]]),
 		});
-		expect(await runOnce(d)).toBe(1);
+		expect(await runOnce(deps)).toBe(1);
+		expect(errs.join("\n")).toContain("no valid decision files were found");
+	});
+
+	test("malformed decision is reported at the parser line", async () => {
+		const { deps, errs } = fixture({
+			files: new Map([
+				[decisionPath, decisionText({ status: "Draft" })],
+				[recordPath, "# Record\n"],
+			]),
+		});
+		expect(await runOnce(deps)).toBe(1);
+		expect(errs.join("\n")).toContain(
+			`${decisionPath}:4: malformed decision file`,
+		);
+	});
+
+	test("checks decision conflict markers", async () => {
+		const { deps, errs } = fixture({
+			files: new Map([
+				[
+					decisionPath,
+					`${decisionText()}\n<<<<<<< HEAD\n=======\n>>>>>>> theirs`,
+				],
+				[recordPath, "# Record\n"],
+			]),
+		});
+		expect(await runOnce(deps)).toBe(1);
 		expect(
-			errs.some((line) => line.includes("unterminated HTML comment")),
-		).toBe(true);
+			errs.filter((line) => line.includes("unresolved merge conflict marker")),
+		).toHaveLength(3);
 	});
-	test("a zero-row ledger fails the gate", async () => {
-		const { d, errs } = deps({
-			readText: async (_root, rel) =>
-				rel === LEDGER ? "# no rows" : "# Title\n",
+
+	test("record Status checks still run and listing errors fail closed", async () => {
+		const status = fixture({
+			files: new Map([
+				[decisionPath, decisionText()],
+				[recordPath, "# Record\n\nStatus: Draft\n"],
+			]),
 		});
-		expect(await runOnce(d)).toBe(1);
-		expect(errs.some((line) => line.includes("no decision rows"))).toBe(true);
-	});
-	test("a throwing dep → exit 2", async () => {
-		const { d } = deps({
-			listRecordFiles: async () => {
+		expect(await runOnce(status.deps)).toBe(1);
+		expect(status.errs.join("\n")).toContain("malformed or prohibited");
+		const failed = fixture({
+			list: async () => {
 				throw new Error("boom");
 			},
 		});
-		expect(await runOnce(d)).toBe(2);
+		expect(await runOnce(failed.deps)).toBe(2);
+		expect(failed.errs.join("\n")).toContain("boom");
 	});
 });
 
 describe("conflictMarkerViolations", () => {
-	test("flags git-style markers that leave every DL- row valid", () => {
-		// The dangerous shape: markers sit between rows, so id uniqueness, status
-		// grammar, and link resolution all still pass.
-		const text = [
-			"| DL-001 | a | Active (m, 2026-01-01) | [r](r.md) |",
-			"<<<<<<< HEAD",
-			"=======",
-			">>>>>>> theirs",
-		].join("\n");
-		const got = conflictMarkerViolations(LEDGER, text);
-		expect(got.map((v) => v.line)).toEqual([2, 3, 4]);
-		expect(got[0]?.message).toContain("unresolved merge conflict marker");
-	});
-
-	test("flags jj-style markers too", () => {
-		const text = [
-			"<<<<<<< conflict 1 of 1",
-			"%%%%%%% diff",
-			"+++++++ side",
-			">>>>>>> ends",
-		].join("\n");
-		expect(conflictMarkerViolations(LEDGER, text)).toHaveLength(4);
-	});
-
-	test("stays silent on ordinary prose", () => {
-		// Guards the false-positive edge: a table separator and a fenced diff both
-		// carry runs of = and +, but neither opens a conflict.
-		const text = ["| --- | --- |", "```diff", "+++ b/x", "```", "a === b"].join(
-			"\n",
+	test("flags git and jj markers, including lengthened runs", () => {
+		const got = conflictMarkerViolations(
+			"decision.md",
+			[
+				"<<<<<<< HEAD",
+				"=======",
+				">>>>>>> theirs",
+				"%%%%%%%%%%% diff",
+				"+++++++++++ side",
+			].join("\n"),
 		);
-		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
-	});
-	test("flags lengthened markers — both tools widen past 7", () => {
-		// A conflict whose hunk holds a marker-like run makes git and jj emit
-		// wider markers; an exact-7 match misses the conflict entirely.
-		const text = [
-			"<<<<<<<<<<< conflict 1 of 1",
-			"%%%%%%%%%%% diff",
-			"+++++++++++ side",
-			">>>>>>>>>>> ends",
-		].join("\n");
-		const got = conflictMarkerViolations(LEDGER, text);
-		expect(got).toHaveLength(4);
-		expect(got[0]?.message).toContain("<<<<<<<<<<<");
+		expect(got.map((item) => item.line)).toEqual([1, 2, 3, 4, 5]);
 	});
 
-	test("stays silent on a long setext underline", () => {
-		// Governed records carry 14-char `=` underlines, so `=` must stay exact.
-		const text = ["A heading", "==============", "", "body"].join("\n");
-		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
-	});
-
-	test("stays silent on a marker shown as fenced example text", () => {
-		const text = ["```text", "<<<<<<< HEAD", ">>>>>>> theirs", "```"].join(
-			"\n",
-		);
-		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
+	test("ignores fenced examples and setext headings", () => {
+		expect(
+			conflictMarkerViolations(
+				"record.md",
+				["Heading", "==============", "```text", "<<<<<<< example", "```"].join(
+					"\n",
+				),
+			),
+		).toEqual([]);
 	});
 });
 
-// The touch-coupling leg is PR-event-only. On a pull_request event it must get
-// its PR coordinates, so a workflow that stops passing them reds instead of
-// silently muting the leg.
+test("record content excludes fenced pseudo-headings from anchors", () => {
+	const text = "# Real\n\n```text\n# Not real\n```\n";
+	expect(recordContentFromText(text)).toEqual({
+		headings: ["real"],
+		sizeBytes: Buffer.byteLength(text, "utf8"),
+	});
+});
+
 describe("prContextFrom", () => {
-	test("pull_request with REPO and PR_NUMBER → run the leg", () => {
+	test("valid PR coordinates enable the leg", () => {
 		expect(
-			prContextFrom({
-				GITHUB_EVENT_NAME: "pull_request",
-				REPO: "RigelBuild/compass",
-				PR_NUMBER: "1315",
-			}),
-		).toEqual({ kind: "pr", repo: "RigelBuild/compass", prNumber: "1315" });
+			prContextFrom({ REPO: "RigelBuild/compass", PR_NUMBER: "1315" }),
+		).toEqual({
+			kind: "pr",
+			repo: "RigelBuild/compass",
+			prNumber: "1315",
+		});
 	});
 
 	test.each([
-		["REPO unset", { PR_NUMBER: "1315" }],
-		["PR_NUMBER unset", { REPO: "RigelBuild/compass" }],
-		["both unset", {}],
-		["PR_NUMBER empty", { REPO: "RigelBuild/compass", PR_NUMBER: "" }],
-		["REPO empty", { REPO: "", PR_NUMBER: "1315" }],
-	])("pull_request with %s → error naming both vars", (_label, env) => {
-		const ctx = prContextFrom({ GITHUB_EVENT_NAME: "pull_request", ...env });
-		expect(ctx.kind).toBe("error");
-		if (ctx.kind === "error") {
-			expect(ctx.message).toContain("REPO");
-			expect(ctx.message).toContain("PR_NUMBER");
-		}
-	});
-
-	test("pull_request with a non-numeric PR_NUMBER → error", () => {
-		expect(
-			prContextFrom({
-				GITHUB_EVENT_NAME: "pull_request",
-				REPO: "RigelBuild/compass",
-				PR_NUMBER: "abc",
-			}).kind,
-		).toBe("error");
-	});
-
-	// ci.yml sets REPO on every event and PR_NUMBER empty off a PR, so that
-	// shape is a push/schedule run, not a muted PR.
-	test.each([
-		["push", { GITHUB_EVENT_NAME: "push" }],
-		["schedule", { GITHUB_EVENT_NAME: "schedule" }],
-		["workflow_dispatch", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
-		["local run (no event)", {}],
 		[
-			"push with REPO set and PR_NUMBER empty",
+			"missing coordinates on pull_request",
+			{ GITHUB_EVENT_NAME: "pull_request" },
+		],
+		["missing repo", { PR_NUMBER: "1315" }],
+		["invalid number", { REPO: "RigelBuild/compass", PR_NUMBER: "abc" }],
+		["zero", { REPO: "RigelBuild/compass", PR_NUMBER: "0" }],
+	])("%s fails closed", (_label, env) => {
+		expect(prContextFrom(env).kind).toBe("error");
+	});
+
+	test.each([
+		[
+			"push with REPO and empty number",
 			{ GITHUB_EVENT_NAME: "push", REPO: "RigelBuild/compass", PR_NUMBER: "" },
 		],
-	])("%s without PR coordinates → skip the leg", (_label, env) => {
+		["schedule", { GITHUB_EVENT_NAME: "schedule" }],
+		["workflow dispatch", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
+		["local", {}],
+	])("%s without PR coordinates skips", (_label, env) => {
 		expect(prContextFrom(env)).toEqual({ kind: "skip" });
 	});
 
-	// A PR_NUMBER that is present but unusable means a PR was intended (the
-	// base-re-point dispatch), so it must red rather than skip.
-	test.each([
-		["non-numeric", { REPO: "RigelBuild/compass", PR_NUMBER: "abc" }],
-		["zero", { REPO: "RigelBuild/compass", PR_NUMBER: "0" }],
-		["leading zero", { REPO: "RigelBuild/compass", PR_NUMBER: "01" }],
-		["REPO missing", { PR_NUMBER: "1315" }],
-	])("workflow_dispatch with a %s PR_NUMBER pair → error", (_label, env) => {
-		expect(
-			prContextFrom({ GITHUB_EVENT_NAME: "workflow_dispatch", ...env }).kind,
-		).toBe("error");
-	});
-
-	test("non-PR event that still carries PR coordinates → run the leg", () => {
+	test("non-PR dispatch with valid PR coordinates runs the leg", () => {
 		expect(
 			prContextFrom({
 				GITHUB_EVENT_NAME: "workflow_dispatch",

@@ -20,6 +20,11 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Glob } from "bun";
 import { slug as githubSlug } from "github-slugger";
+import {
+	type DecisionRow,
+	parseDecisionFile,
+	renderDecisionIndex,
+} from "../../../tools/design-ledger-gate/decision-files.ts";
 
 /** The GitHub repo the docsite renders — for edit links + code-file link rewrites. */
 const REPO_SLUG = "RigelBuild/compass";
@@ -277,21 +282,82 @@ function normalizeRepoPath(p: string): string {
 	return out.join("/");
 }
 
+/** The decisions mirrored under the shared generated index. */
+const DECISION_PATH_RE = /^docs\/designs\/decisions\/([^/]+)\/DL-\d+\.md$/;
+
+function parseDecisionRow(source: string, sourcePath: string): DecisionRow {
+	const parsed = parseDecisionFile(sourcePath, source);
+	if (!parsed.ok) {
+		throw new Error(
+			`${parsed.error.path}:${parsed.error.line}: ${parsed.error.reason}`,
+		);
+	}
+	return parsed.row;
+}
+
+/** Render a decision page with its parsed fields shown as readable prose. */
+function renderDecisionPage(
+	source: string,
+	sourcePath: string,
+	gathered: ReadonlySet<string>,
+	row: DecisionRow,
+): string {
+	const body = source.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+	const page = `${row.decision}\n\n**Status:** ${row.status}\n\n**Record:** [${row.recordRaw}](${row.recordRaw})${body.trim() === "" ? "" : `\n${body}`}`;
+	return (
+		buildFrontmatter(row.id, editUrlFor(sourcePath)) +
+		rewriteLinks(page, sourcePath, gathered)
+	);
+}
+
 /**
  * Whole-file transform: inject the derived title + per-page GitHub `editUrl`,
  * strip the duplicated H1, and rewrite in-repo links to site routes / GitHub
- * blobs. The `editUrl` points at the true canonical source (`sourcePath`), so a
- * gathered file mirrored under a different content-root path still edits the
- * right file.
+ * blobs. A decision file renders from its parsed front matter instead.
  */
 export function transform(
 	source: string,
 	sourcePath: string,
 	gathered: ReadonlySet<string>,
 ): string {
+	if (DECISION_PATH_RE.test(sourcePath)) {
+		return renderDecisionPage(
+			source,
+			sourcePath,
+			gathered,
+			parseDecisionRow(source, sourcePath),
+		);
+	}
 	return (
 		buildFrontmatter(extractTitle(source, sourcePath), editUrlFor(sourcePath)) +
 		rewriteLinks(stripFirstH1(source), sourcePath, gathered)
+	);
+}
+
+/** Render the generated decisions index, grouping shared tables by area. */
+export function buildDecisionIndex(
+	rows: readonly DecisionRow[],
+	gathered: ReadonlySet<string>,
+): string {
+	const byArea = new Map<string, DecisionRow[]>();
+	for (const row of rows) {
+		const area = DECISION_PATH_RE.exec(row.path)?.[1];
+		if (area === undefined) continue;
+		const group = byArea.get(area);
+		if (group === undefined) byArea.set(area, [row]);
+		else group.push(row);
+	}
+	const sections = [...byArea.entries()]
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([area, areaRows]) => {
+			const table = renderDecisionIndex(areaRows);
+			const indexPath = `docs/designs/decisions/${area}/index.md`;
+			return `## ${area}\n\n${rewriteLinks(table, indexPath, gathered)}`;
+		});
+	return (
+		buildFrontmatter("Design decisions") +
+		"\nEvery design decision, by area. Generated from the decision files at build time.\n\n" +
+		`${sections.join("\n")}`
 	);
 }
 
@@ -332,14 +398,20 @@ export function routeSlug(contentRelPath: string): string {
  * each populated section (a route guaranteed to exist); an empty section is
  * omitted so no link 404s.
  */
-export function buildIndex(entries: readonly DomainEntry[]): string {
+export function buildIndex(
+	entries: readonly DomainEntry[],
+	decisionIndexRoute?: string,
+): string {
 	const bySection = new Map(entries.map((e) => [e.domain, e]));
-	const links = SECTIONS.filter((s) => bySection.has(s.key))
+	const sectionLinks = SECTIONS.filter((s) => bySection.has(s.key))
 		.map((s) => {
 			const e = bySection.get(s.key) as DomainEntry;
 			return `- [${s.label}](${e.route}) — ${e.title}`;
 		})
 		.join("\n");
+	const decisionLink = decisionIndexRoute
+		? `\n- [Design decisions](${decisionIndexRoute}) — Every decision, by area.`
+		: "";
 	return (
 		"---\n" +
 		'title: "Compass Engineering Docs"\n' +
@@ -347,7 +419,7 @@ export function buildIndex(entries: readonly DomainEntry[]): string {
 		"template: splash\n" +
 		"---\n\n" +
 		"The compass monorepo's reviewed documentation. Browse by section:\n\n" +
-		`${links}\n`
+		`${sectionLinks}${decisionLink}\n`
 	);
 }
 
@@ -445,12 +517,21 @@ async function main(): Promise<void> {
 	// First gathered page per section anchors that section's landing-page link.
 	const entries: DomainEntry[] = [];
 	const sectionsSeen = new Set<string>();
+	const decisionRows: DecisionRow[] = [];
 	for (const rel of rels) {
 		const source = await Bun.file(join(repoRoot, rel)).text();
 		const { section, destRel } = classify(rel);
 		const dest = join(contentRoot, destRel);
 		await mkdir(dirname(dest), { recursive: true });
-		await writeFile(dest, transform(source, rel, gathered));
+		let rendered: string;
+		if (DECISION_PATH_RE.test(rel)) {
+			const row = parseDecisionRow(source, rel);
+			decisionRows.push(row);
+			rendered = renderDecisionPage(source, rel, gathered, row);
+		} else {
+			rendered = transform(source, rel, gathered);
+		}
+		await writeFile(dest, rendered);
 		if (!sectionsSeen.has(section)) {
 			sectionsSeen.add(section);
 			entries.push({
@@ -461,17 +542,25 @@ async function main(): Promise<void> {
 		}
 		count++;
 	}
+	const decisionIndexRoute = routeSlug("designs/decisions/index.md");
+	await writeFile(
+		join(contentRoot, "designs", "decisions", "index.md"),
+		buildDecisionIndex(decisionRows, gathered),
+	);
 
 	// Root landing page: Starlight has no route for `/` or the group dirs, so
 	// without this the preview comment's root URL 404s.
-	await writeFile(join(contentRoot, "index.md"), buildIndex(entries));
+	await writeFile(
+		join(contentRoot, "index.md"),
+		buildIndex(entries, decisionIndexRoute),
+	);
 	// Generated sidebar for astro.config.mjs (one group per populated section).
 	await writeFile(
 		join(appDir, "src", "sidebar.generated.ts"),
 		buildSidebar([...sectionsSeen]),
 	);
 	console.log(
-		`gather: wrote ${count} docs + index + sidebar into ${contentRoot}`,
+		`gather: wrote ${count} docs + decision index + index + sidebar into ${contentRoot}`,
 	);
 }
 

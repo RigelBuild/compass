@@ -31,7 +31,7 @@ rest of this package is shaped around:
   request oneof cannot express `RespondToAsk`.
 
 The agent role delta already tells the model this ("async comms / no `ask`",
-DECISIONS.md DL-139); this file is the package-code contract behind it, not a
+DL-139); this file is the package-code contract behind it, not a
 restatement of the role prompt.
 
 ## The comms toolset

@@ -1,10 +1,12 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# Posts the landed design-ledger frontier to the DL counter, which must
+# Posts the landed decision-file frontier to the DL counter, which must
 # hydrate before any claim.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
+# Imports the shared decision parser; this edge puts it in the affected set.
+dependsOn: ['design-ledger-gate']
 
 tasks:
   typecheck:
@@ -19,7 +21,7 @@ tasks:
     options:
       runFromWorkspaceRoot: true
       cache: false
-    inputs: ['/docs/designs/DECISIONS.md', 'index.ts']
+    inputs: ['/docs/designs/decisions/**/*.md', 'index.ts', '/tools/design-ledger-gate/decision-files.ts']
   ci:
     deps: ['typecheck', 'test', 'check']
     options:

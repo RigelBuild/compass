@@ -3,8 +3,8 @@
 Living source of truth for **Compass** behavior and build. Historical rationale
 — the ADE vision (the Dispatcher, the Bridge, per-agent containers, the
 three-tier Client→Server→Runner architecture) — lives in the design corpus,
-indexed by the decision ledger
-([`../../designs/DECISIONS.md`](../../designs/DECISIONS.md)) and
+indexed by its decision files
+([`../../designs/decisions/`](../../designs/decisions/README.md)) and
 [architecture lineage](../../designs/meta/compass-architecture-lineage/design.md);
 this spec describes only what the code exposes today.
 

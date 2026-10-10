@@ -530,7 +530,7 @@ describe("always-run injection — the ledger gate runs on every PR", () => {
 	// edge, which `--downstream direct` does not traverse. A docs/designs/**-only
 	// PR therefore marks `root` (markdownlint globs every .md) and `flake-gate`
 	// affected — the bun leg ran, but it ran `root:ci`, never the gate guarding
-	// DECISIONS.md, on exactly the PRs most likely to violate it (duplicate
+	// decision files, on exactly the PRs most likely to violate it (duplicate
 	// DL-327..330 reached main).
 	//
 	// The target-vs-flag distinction is load-bearing: the fix injects a TARGET
@@ -551,7 +551,7 @@ describe("always-run injection — the ledger gate runs on every PR", () => {
 			prInput({
 				projects: withGate(),
 				affectedIds: [],
-				changedPaths: ["docs/designs/DECISIONS.md"],
+				changedPaths: ["docs/designs/decisions/meta/DL-021.md"],
 			}),
 		);
 		const bun = out.matrix.find((e) => e.group === "bun");
@@ -580,7 +580,7 @@ describe("always-run injection — the ledger gate runs on every PR", () => {
 			prInput({
 				projects,
 				affectedIds: ["root", "flake-gate"],
-				changedPaths: ["docs/designs/DECISIONS.md"],
+				changedPaths: ["docs/designs/decisions/meta/DL-021.md"],
 			}),
 		);
 		const bun = out.matrix.find((e) => e.group === "bun");
@@ -601,7 +601,7 @@ describe("always-run injection — the ledger gate runs on every PR", () => {
 			prInput({
 				projects,
 				affectedIds: [],
-				changedPaths: ["docs/designs/DECISIONS.md"],
+				changedPaths: ["docs/designs/decisions/meta/DL-021.md"],
 			}),
 		);
 		expect(out.matrix.find((e) => e.group === "bun")).toEqual({
@@ -633,7 +633,7 @@ describe("always-run injection — the ledger gate runs on every PR", () => {
 			prInput({
 				projects: [...workspace(), proj(GATE, "go")],
 				affectedIds: [],
-				changedPaths: ["docs/designs/DECISIONS.md"],
+				changedPaths: ["docs/designs/decisions/meta/DL-021.md"],
 			}),
 		);
 		expect(out.matrix.find((e) => e.group === "go")).toEqual({
@@ -699,7 +699,10 @@ describe("always-run injection — the ledger gate runs on every PR", () => {
 		// The stock workspace() fixture has no gate project. The pure core must
 		// not invent a target for a project that does not exist.
 		const out = generate(
-			prInput({ affectedIds: [], changedPaths: ["docs/designs/DECISIONS.md"] }),
+			prInput({
+				affectedIds: [],
+				changedPaths: ["docs/designs/decisions/meta/DL-021.md"],
+			}),
 		);
 		expect(out.matrix).toEqual([
 			{ group: "bun", run: "false", targets: [] },

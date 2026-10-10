@@ -1,8 +1,8 @@
 # dl-reconcile
 
-Reconciles the landed design-ledger IDs with the shared counter at
-`https://dl.rigel.build`. The workflow posts the ledger frontier so claimed IDs
-are marked as landed.
+Reconciles the decision-file frontier with the shared counter at
+`https://dl.rigel.build`. The workflow posts one claim for each validated
+decision file so claimed IDs are marked as landed.
 
 ## Run
 
@@ -11,8 +11,8 @@ moon run dl-reconcile:check
 bun run tools/dl-reconcile/index.ts
 ```
 
-The `check` task validates the ledger without contacting the counter. The
-reconcile command runs in the `reconcile` job of
+The `check` task validates every file under `docs/designs/decisions/` without
+contacting the counter. The reconcile command runs in the `reconcile` job of
 `.github/workflows/dl-reconcile.yml`, using the `main` environment.
 
 ## Credentials

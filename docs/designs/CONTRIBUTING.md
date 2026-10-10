@@ -60,7 +60,7 @@ record's links to *other* records: a link whose target no longer exists is rot,
 not content. So when a record is deleted or superseded, re-point or de-link its
 inbound references **from surviving records in the same PR** — even from a frozen
 `Active`/`Historical` record — pointing them at the successor record, the new
-home for the carried-over rationale, or the decision ledger, or dropping the link
+home for the carried-over rationale, or the decision files, or dropping the link
 wrapper to prose (rule 3) when nothing replaces the target. A dead `](path)`
 link degrades on the docsite to a bare GitHub blob URL into a deleted path, which
 is exactly the "published record cites something that no longer exists" artifact
@@ -68,11 +68,11 @@ rule 1 forbids for tracker IDs. This is a link-integrity edit, not a
 decision-content rewrite, so it is not a freeze violation; leave the record's
 decisions, prose, and security sections (rule 4) untouched.
 
-The same link-integrity requirement covers the ledger's own `Record` cell: the
-gate resolves every row's `Record` link regardless of the row's status, so a
-`Retired` or `Superseded by` row whose record is deleted still gets its `Record`
-cell re-pointed (to the successor, the new home for the rationale, or the
-ledger's own record) in the same PR — a retracted decision's link is held to the
+The same link-integrity requirement covers each decision file's `record` link:
+the gate resolves every decision's `record` regardless of its status, so a
+`Retired` or `Superseded by` decision whose record is deleted still gets its
+`record` re-pointed (to the successor, the new home for the rationale, or the
+design-ledger record) in the same PR. A retracted decision's link is held to the
 same standard as a live one's.
 
 ## 6. The bucket taxonomy
@@ -111,18 +111,19 @@ outgrows flat scanning; until then records sit directly under their bucket.
 
 `tools/design-ledger-gate` scans every governed bucket (the taxonomy buckets
 above) and every `.md` beneath one, at any depth, supporting files included: a
-record `Status:` header, when present, must have valid grammar, and a PR that touches a governed
-record must either touch the ledger (`docs/designs/DECISIONS.md`) or declare a
-`Ledger-impact:` line in its description. The `DECISIONS.md` ledger rows stay
-scoped to **product decisions** — the gate governing a record is independent of
-whether that record carries a ledger row.
+record `Status:` header, when present, must have valid grammar, and a PR that
+touches a governed record must either add or change a decision file
+(`docs/designs/decisions/<area>/DL-NNN.md`) or declare a `Ledger-impact:` line
+in its description. Decision files stay scoped to **product decisions**; the
+gate governing a record is independent of whether that record has a decision
+file. File layout and keys are in [`decisions/README.md`](decisions/README.md).
 
 ### Moving a record is not a freeze violation
 
 A move changes a record's path and its link graph, not one word of its
 decisions — so it is a link-integrity edit under rule 5, not a decision-content
 rewrite, and the freeze does not forbid it. When a record moves, re-point every
-inbound reference to it (other records' links, the ledger's `Record` cell, and
+inbound reference to it (other records' links, decision files' `record` links, and
 code/config/doc citations) **in the same PR**, exactly as rule 5 requires on
 deletion — a move leaves the same dangling-link rot a deletion would. Two narrow
 metadata edits ride the same standard and are likewise not freeze violations:
@@ -131,7 +132,7 @@ a one-line correction of a record's stale self-described location.
 
 ## 7. Claim design-ledger IDs
 
-New `DECISIONS.md` rows MUST get IDs from the shared counter, not from a guessed
+New decision files MUST get IDs from the shared counter, not from a guessed
 next number. Concurrent PRs can otherwise claim the same ID. The reconcile
 workflow marks claimed IDs as landed after merge. Set `DL_CLAIM_TOKEN` before
 running:
@@ -140,7 +141,8 @@ running:
 bun tools/dl-claim --ref RIG-1234 --lane feature/design-record
 ```
 
-Use `--count N` to claim more than one ID. Put each printed ID in its new row's
-`ID` cell, in the same PR as the record.
+Use `--count N` to claim more than one ID. Name each new decision file after its
+printed ID, `docs/designs/decisions/<area>/DL-NNN.md`, in the same PR as the
+record.
 
 Failure handling, the token, and rotation are in `tools/dl-claim/README.md`.

@@ -81,7 +81,7 @@ const GUEST_IMAGE_PROJECT = "compass-guest-image";
  * general class: a project whose only edge is `scope: 'root'` is invisible to
  * the affected closure. So the bun leg DID run, but it ran `root:ci` (deps
  * exactly `root:lint` + `root:markdownlint`), never the gate guarding
- * docs/designs/DECISIONS.md. Duplicate DL ids (DL-327..330) reached main and
+ * the docs/designs decisions. Duplicate DL ids (DL-327..330) reached main and
  * were attributable only post-merge.
  *
  * Unconditional inclusion, NOT a path predicate: the injected target is

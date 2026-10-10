@@ -55,15 +55,12 @@ style = "fenced"
 # relative links; the per-file exemptions below are its only carve-outs.
 #
 # Every current finding (28 across 11 records) is the same house convention: a
-# design record's `## Ledger delta` section quotes its paste-ready
-# `DECISIONS.md` row, whose link is written relative to the ledger's directory
-# (`docs/designs/`) — e.g. `[board view §Approach](ui/compass-board-view/…)`.
-# That link resolves correctly from `DECISIONS.md` (which lives in
-# `docs/designs/` and passes MD057), but rumdl resolves a relative link from the
-# RECORD's own directory, where the ledger-relative path does not exist. The
-# domain-prefixed and bare forms both misfire this way — it is the resolution
-# root, not a missing segment. So these are false positives from the record's
-# vantage, not broken links: the authored ledger copies resolve.
+# design record's `## Ledger delta` section quotes its paste-ready row for the
+# former single-file ledger at `docs/designs/`, whose link is written relative
+# to that directory — e.g. `[board view §Approach](ui/compass-board-view/…)`.
+# rumdl resolves a relative link from the RECORD's own directory, where the
+# ledger-relative path does not exist. These are frozen quotes, not live links;
+# the converted decision files carry the resolving form.
 #
 # `[per-file-ignores]` scopes the MD057 exemption to exactly those records,
 # leaving MD057 live on every other file (and every OTHER rule live on these).
