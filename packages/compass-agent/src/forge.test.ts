@@ -939,6 +939,38 @@ describe("forge_create_pull_request", () => {
 			"PR #8 in octo/repo already created by an earlier attempt",
 		);
 	});
+
+	test("maps issue to the link coordinate; omitted issue leaves it unset", async () => {
+		const transport = new FakeTransport(
+			pullRequestResult({ number: 8, repo: "octo/repo", url: "u" }),
+		);
+		const t = tool(new ForgeBroker(transport), "forge_create_pull_request");
+		await exec(t, "tc-1", {
+			repo: "octo/repo",
+			title: "Feature",
+			head_ref: "feature",
+			issue: { forge_provider: "linear", repo: "ENG", number: 12 },
+		});
+		await exec(t, "tc-2", {
+			repo: "octo/repo",
+			title: "Feature",
+			head_ref: "feature",
+			issue: { number: 3 },
+		});
+		await exec(t, "tc-3", { repo: "octo/repo", title: "F", head_ref: "f" });
+		const links = transport.requests.map((r) =>
+			r.call.case === "createPullRequest" ? r.call.value.issue : "wrong arm",
+		);
+		expect(links[0]).toMatchObject({ repo: "ENG", number: 12n });
+		expect(
+			links[0] && typeof links[0] === "object" && links[0].forge?.provider,
+		).toBe(ForgeProvider.LINEAR);
+		expect(links[1]).toMatchObject({ repo: "", number: 3n });
+		expect(
+			links[1] && typeof links[1] === "object" && links[1].forge,
+		).toBeUndefined();
+		expect(links[2]).toBeUndefined();
+	});
 });
 
 describe("forge_subscribe / forge_unsubscribe", () => {
@@ -1233,6 +1265,19 @@ describe("forge parameter schemas", () => {
 				pr_number: 1,
 				verdict: "approve",
 			}),
+		).toBe(false);
+	});
+
+	test("create_pull_request issue needs a number of at least 1", () => {
+		const pr = { repo: "o/r", title: "t", head_ref: "f" };
+		expect(rejects(createPullRequestParameters, { ...pr, issue: {} })).toBe(
+			true,
+		);
+		expect(
+			rejects(createPullRequestParameters, { ...pr, issue: { number: 0 } }),
+		).toBe(true);
+		expect(
+			rejects(createPullRequestParameters, { ...pr, issue: { number: 4 } }),
 		).toBe(false);
 	});
 

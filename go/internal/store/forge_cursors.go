@@ -202,3 +202,47 @@ func (s *Store) SetForgeRepoSubscriptionEnabled(ctx context.Context, provider Fo
 	}
 	return nil
 }
+
+// PRsBackfilledAt reads when the repo's bounded PR backfill last ran. ok is
+// false when it never ran or the repo has no subscription row.
+func (s *Store) PRsBackfilledAt(ctx context.Context, provider ForgeProvider, host, repo string) (time.Time, bool, error) {
+	if err := validCoordinate(provider, host, repo); err != nil {
+		return time.Time{}, false, err
+	}
+	at, err := s.q.LoadPRsBackfilledAt(ctx, db.LoadPRsBackfilledAtParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+		Repo:          repo,
+	})
+	if noRows(err) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: load prs backfilled at: %w", err)
+	}
+	return at.Time, at.Valid, nil
+}
+
+// MarkPRsBackfilled records that the repo's PR backfill ran at at. An unknown
+// repo is ErrNotFound.
+func (s *Store) MarkPRsBackfilled(ctx context.Context, provider ForgeProvider, host, repo string, at time.Time) error {
+	if err := validCoordinate(provider, host, repo); err != nil {
+		return err
+	}
+	if at.IsZero() {
+		return fmt.Errorf("%w: backfill time is required", ErrInvalidArgument)
+	}
+	affected, err := s.q.MarkPRsBackfilled(ctx, db.MarkPRsBackfilledParams{
+		ForgeProvider:   int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:       host,
+		Repo:            repo,
+		PrsBackfilledAt: pgtype.Timestamptz{Time: at, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("store: mark prs backfilled: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: forge repo subscription (%d, %q, %q)", ErrNotFound, provider, host, repo)
+	}
+	return nil
+}

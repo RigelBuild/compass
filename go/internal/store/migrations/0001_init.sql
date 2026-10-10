@@ -957,6 +957,11 @@ CREATE TABLE issues (
 CREATE UNIQUE INDEX issues_coordinate_key
     ON issues (tenant_id, forge_provider, forge_host, repo, number);
 
+-- The board join matches GitHub issue repos case-insensitively.
+CREATE INDEX issues_board_coordinate_idx ON issues
+    (tenant_id, forge_provider, forge_host,
+     (CASE WHEN forge_provider = 1 THEN lower(repo) ELSE repo END), number);
+
 CREATE INDEX issues_search_idx ON issues USING gin (search_tsv);
 
 -- ── Forge subscriptions & reconcile watermarks ───────────────────────────────
@@ -982,11 +987,49 @@ CREATE TABLE forge_repo_subscriptions (
     enabled        BOOLEAN  NOT NULL DEFAULT TRUE,
     swept_updated_at TIMESTAMPTZ,              -- last swept forge updated_at watermark; NULL = never swept
     list_etag      TEXT     NOT NULL DEFAULT '', -- conditional-GET etag for the repo LIST walk
+    prs_backfilled_at TIMESTAMPTZ,             -- PR backfill pass done; NULL = not yet run
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id      TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (tenant_id, forge_provider, forge_host, repo)
 );
+
+-- pull_requests holds each ingested PR whole; pull_request_issue_links maps PRs
+-- to the issues they work on (source 1 explicit, 2 closing reference).
+CREATE TABLE pull_requests (
+    forge_provider   SMALLINT    NOT NULL CHECK (forge_provider IN (1, 2, 3)),
+    forge_host       TEXT        NOT NULL,
+    repo             TEXT        NOT NULL CHECK (repo <> ''),
+    number           BIGINT      NOT NULL,
+    forge_state      TEXT        NOT NULL,
+    forge_created_at TIMESTAMPTZ NOT NULL,
+    forge_updated_at TIMESTAMPTZ NOT NULL,
+    pr               JSONB       NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    PRIMARY KEY (tenant_id, forge_provider, forge_host, repo, number)
+);
+
+-- No foreign keys: the issue may live on Linear or not be ingested yet.
+CREATE TABLE pull_request_issue_links (
+    pr_forge_provider    SMALLINT    NOT NULL CHECK (pr_forge_provider IN (1, 2, 3)),
+    pr_forge_host        TEXT        NOT NULL,
+    pr_repo              TEXT        NOT NULL CHECK (pr_repo <> ''),
+    pr_number            BIGINT      NOT NULL,
+    issue_forge_provider SMALLINT    NOT NULL CHECK (issue_forge_provider IN (1, 2, 3, 4)),
+    issue_forge_host     TEXT        NOT NULL,
+    issue_repo           TEXT        NOT NULL CHECK (issue_repo <> ''),
+    issue_number         BIGINT      NOT NULL,
+    source               SMALLINT    NOT NULL CHECK (source IN (1, 2)),
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id            TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    PRIMARY KEY (tenant_id, pr_forge_provider, pr_forge_host, pr_repo, pr_number,
+                 issue_forge_provider, issue_forge_host, issue_repo, issue_number)
+);
+
+CREATE INDEX pull_request_issue_links_issue_idx ON pull_request_issue_links
+    (tenant_id, issue_forge_provider, issue_forge_host, issue_repo, issue_number);
 
 -- Owner-managed allowlist of forge coordinates an account may write.
 CREATE TABLE account_forge_scopes (
@@ -1488,6 +1531,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        compute_usage_prune_horizon
     TO compass_app, compass_system;
 GRANT SELECT, INSERT, DELETE ON account_forge_scopes TO compass_app, compass_system;
+-- A PR row is never deleted; its links are replaced through closing-ref sync.
+REVOKE DELETE ON pull_requests FROM compass_app, compass_system;
 REVOKE UPDATE ON account_forge_scopes FROM compass_app, compass_system;
 -- server_key_state withholds DELETE, revoked here because the schema-wide grant
 -- above hands it out with everything else. The tripwire row is written once at
@@ -1529,6 +1574,7 @@ DECLARE
         'linear_agent_sessions',
         'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
         'forge_state_transitions', 'account_forge_scopes',
+        'pull_requests', 'pull_request_issue_links',
         'token_usage_events', 'token_usage_rollups_hourly', 'token_usage_rollups_daily',
         'compute_usage_events', 'compute_usage_rollups_hourly', 'compute_usage_rollups_daily', 'account_tour_state'
     ];
@@ -1611,6 +1657,7 @@ DECLARE
         'model_registry',
         'forge_repo_subscriptions',
         'forge_state_transitions',
+        'pull_requests',
         'server_secrets',
         'server_key_state',
         'compute_usage_rollups_hourly',

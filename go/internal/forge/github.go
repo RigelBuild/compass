@@ -309,13 +309,15 @@ func (r ghComment) toComment() Comment {
 // the fields forge.PullRequest needs at create time are decoded; the read-side
 // roll-ups (Changed/Checks/Reviews/Threads) are GetPullRequest's (ghPullDetail).
 type ghPull struct {
-	Number  uint64 `json:"number"`
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	State   string `json:"state"`
-	HTMLURL string `json:"html_url"`
-	Draft   bool   `json:"draft"`
-	Head    struct {
+	Number    uint64 `json:"number"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	State     string `json:"state"`
+	HTMLURL   string `json:"html_url"`
+	Draft     bool   `json:"draft"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Head      struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
 	Base struct {
@@ -339,7 +341,18 @@ func (r ghPull) toPullRequest() PullRequest {
 		BaseRef:      r.Base.Ref,
 		ForgeAccount: r.User.Login,
 		Draft:        r.Draft,
+		CreatedAt:    parseGHTime(r.CreatedAt),
+		UpdatedAt:    parseGHTime(r.UpdatedAt),
 	}
+}
+
+// parseGHTime parses a GitHub RFC-3339 timestamp; empty or malformed is the zero time.
+func parseGHTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // CreateIssue creates an issue on repo. in.Body is PRE-stamped by the Service
@@ -564,6 +577,8 @@ type ghPullDetail struct {
 	Deletions    uint32 `json:"deletions"`
 	ChangedFiles uint32 `json:"changed_files"`
 	Merged       bool   `json:"merged"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 	Head         struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
@@ -600,6 +615,8 @@ func (r ghPullDetail) toPullRequest() PullRequest {
 			Additions: r.Additions,
 			Deletions: r.Deletions,
 		},
+		CreatedAt: parseGHTime(r.CreatedAt),
+		UpdatedAt: parseGHTime(r.UpdatedAt),
 	}
 }
 
@@ -646,12 +663,13 @@ func (g *GitHub) GetPullRequest(ctx context.Context, repo string, number uint64)
 		})
 	}
 
-	checks, threads, err := g.checksForPull(ctx, coord, detail.Head.SHA, true)
+	checks, gql, err := g.checksForPull(ctx, coord, detail.Head.SHA, true)
 	if err != nil {
 		return PullRequest{}, fmt.Errorf("forge: github get pull request %q#%d: %w", repo, number, err)
 	}
 	pr.Checks = checks
-	pr.Threads = threads
+	pr.Threads = gql.threads
+	pr.ClosingRefs = gql.closingRefs
 
 	return pr, nil
 }
@@ -1021,12 +1039,6 @@ func (r ghIssue) toIssue() Issue {
 	for _, l := range r.Labels {
 		labels = append(labels, l.Name)
 	}
-	var updated time.Time
-	if r.UpdatedAt != "" {
-		if t, err := time.Parse(time.RFC3339, r.UpdatedAt); err == nil {
-			updated = t
-		}
-	}
 	return Issue{
 		Number:       r.Number,
 		Title:        r.Title,
@@ -1035,7 +1047,7 @@ func (r ghIssue) toIssue() Issue {
 		URL:          r.HTMLURL,
 		ForgeAccount: r.User.Login,
 		Labels:       labels,
-		UpdatedAt:    updated,
+		UpdatedAt:    parseGHTime(r.UpdatedAt),
 	}
 }
 

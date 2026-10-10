@@ -394,10 +394,23 @@ func ghWalkNewArtifacts[R any](ctx context.Context, g *GitHub, base string, sinc
 	return ConditionalResult[[]Issue]{V: out, ETag: pageETag}, nil
 }
 
+// UpdatedRows is one updated-order walk, split by kind.
+type UpdatedRows struct {
+	Issues []Issue
+	Pulls  []UpdatedPull
+}
+
+// UpdatedPull is a PR row from the issues list: enough to decide whether to hydrate it.
+type UpdatedPull struct {
+	Number    uint64
+	State     string
+	UpdatedAt time.Time
+}
+
 // ListUpdatedIssues walks /repos/{repo}/issues?state=all&sort=updated&
 // direction=desc newest-updated-first (page 1 conditioned on etag; a 304 =>
-// NotModified), collecting issue rows (PR rows dropped by the pull_request
-// marker, mirroring ListNewArtifacts) until a page's oldest updated_at is
+// NotModified), collecting issue rows and, separately, the PR rows GitHub
+// interleaves (told apart by the pull_request marker) until a page's oldest updated_at is
 // strictly < since, or no rel="next" remains. Rows with updated_at == since are
 // RE-included: GitHub's updated_at is second-granularity, so a <= stop would
 // permanently exclude an issue updated in the same second as the stored
@@ -406,9 +419,9 @@ func ghWalkNewArtifacts[R any](ctx context.Context, g *GitHub, base string, sinc
 // ETag to re-store. This is the updated-order sibling of ListNewArtifacts
 // (created-order, number-keyed): the reconcile/backfill read cannot see updates
 // to existing issues via the created-order walk.
-func (g *GitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.Time, etag string) (ConditionalResult[[]Issue], error) {
+func (g *GitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.Time, etag string) (ConditionalResult[UpdatedRows], error) {
 	base := g.apiBase() + "/repos/" + repo + "/issues?state=all&sort=updated&direction=desc"
-	var out []Issue
+	var out UpdatedRows
 	pageETag := ""
 	for page := 1; ; page++ {
 		u := base + "&per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
@@ -419,11 +432,11 @@ func (g *GitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.
 		var rows []ghIssue
 		notMod, e, hasNext, err := g.getJSONCond(ctx, u, sendETag, &rows)
 		if err != nil {
-			return ConditionalResult[[]Issue]{}, fmt.Errorf("forge: github list updated issues %q: %w", repo, err)
+			return ConditionalResult[UpdatedRows]{}, fmt.Errorf("forge: github list updated issues %q: %w", repo, err)
 		}
 		if page == 1 {
 			if notMod {
-				return ConditionalResult[[]Issue]{NotModified: true}, nil
+				return ConditionalResult[UpdatedRows]{NotModified: true}, nil
 			}
 			pageETag = e
 		}
@@ -441,18 +454,38 @@ func (g *GitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.
 			if iss.UpdatedAt.IsZero() {
 				continue
 			}
-			// Drop the PR rows GitHub interleaves into /issues (mirroring
-			// ListNewArtifacts / ListIssuesPage's pull_request-marker guard).
 			if raw := r.PullRequest; raw != nil && len(*raw) > 0 && string(*raw) != jsonNull {
+				out.Pulls = append(out.Pulls, UpdatedPull{Number: iss.Number, State: iss.State, UpdatedAt: iss.UpdatedAt})
 				continue
 			}
-			out = append(out, iss)
+			out.Issues = append(out.Issues, iss)
 		}
 		if reachedOld || !hasNext {
 			break
 		}
 	}
-	return ConditionalResult[[]Issue]{V: out, ETag: pageETag}, nil
+	return ConditionalResult[UpdatedRows]{V: out, ETag: pageETag}, nil
+}
+
+// ghOpenPull is one row of the open pulls list.
+type ghOpenPull struct {
+	Number    uint64 `json:"number"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListOpenPullRequests lists every open PR on repo, for the backfill pass.
+func (g *GitHub) ListOpenPullRequests(ctx context.Context, repo string) ([]UpdatedPull, error) {
+	rows, err := getAllPages(ctx, g, g.apiBase()+"/repos/"+repo+"/pulls?state=open",
+		func(e []ghOpenPull) []ghOpenPull { return e })
+	if err != nil {
+		return nil, fmt.Errorf("forge: github list open pull requests %q: %w", repo, err)
+	}
+	out := make([]UpdatedPull, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, UpdatedPull{Number: r.Number, State: r.State, UpdatedAt: parseGHTime(r.UpdatedAt)})
+	}
+	return out, nil
 }
 
 // --- Linear arm --------------------------------------------------------------

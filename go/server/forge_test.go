@@ -43,6 +43,8 @@ type fakeForgeStore struct {
 	getErr   error // if set, GetAccount returns it verbatim
 	recErr   error // if set, RecordAuthoredArtifact returns it verbatim
 
+	prCreates []prCreate
+
 	// The state-transition actor memo: transitions records every
 	// RecordStateTransition in call order (so a test can prove it follows the
 	// provider call), and transErr forces a memo-write fault.
@@ -168,6 +170,22 @@ func (f *fakeForgeStore) RecordAuthoredArtifact(_ context.Context, a store.Autho
 	if a.ClientRequestID != "" {
 		f.memo[string(a.AgentAccountID)+"|"+a.ClientRequestID] = a
 	}
+	return nil
+}
+
+// prCreate is one CreatePullRequestWithLink call the fake saw.
+type prCreate struct {
+	row  store.PullRequestRow
+	link *store.ForgeCoord
+}
+
+// CreatePullRequestWithLink records the DL-055 row like RecordAuthoredArtifact
+// and keeps the PR row and link for assertions.
+func (f *fakeForgeStore) CreatePullRequestWithLink(ctx context.Context, a store.AuthoredArtifact, pr store.PullRequestRow, issue *store.ForgeCoord) error {
+	if err := f.RecordAuthoredArtifact(ctx, a); err != nil {
+		return err
+	}
+	f.prCreates = append(f.prCreates, prCreate{row: pr, link: issue})
 	return nil
 }
 
@@ -1350,5 +1368,131 @@ func TestForgeProviderRegistryRejectsEmptyHost(t *testing.T) {
 	hostless := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB}
 	if got, ok := reg.resolve(hostless); !ok || got.host != testHost {
 		t.Fatalf("resolve(github, no host) = %+v, %v; want host %q", got, ok, testHost)
+	}
+}
+
+// --- tests: create_pull_request issue link -----------------------------------
+
+func createPRWithIssue(clientReqID string, issue *compassv1internal.PullRequestIssueLink) *compassv1internal.ForgeCallRequest {
+	call := createPRCall("body", clientReqID)
+	call.GetCreatePullRequest().Issue = issue
+	return call
+}
+
+// TestForgeCreatePullRequestStoresIssueLink pins the link coordinate the store
+// receives: an empty repo means the PR's repo, and another forge keeps its own.
+func TestForgeCreatePullRequestStoresIssueLink(t *testing.T) {
+	linearRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}
+	gheRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "ghe.example"}
+	cases := []struct {
+		name    string
+		prForge *compassv1.ForgeRef
+		issue   *compassv1internal.PullRequestIssueLink
+		want    *store.ForgeCoord
+	}{
+		{"no link", nil, nil, nil},
+		{"same forge, empty repo", nil, &compassv1internal.PullRequestIssueLink{Number: 7},
+			&store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: testHost, Repo: testRepo, Number: 7}},
+		{"same forge, other repo", nil, &compassv1internal.PullRequestIssueLink{Repo: "o/other", Number: 8},
+			&store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: testHost, Repo: "o/other", Number: 8}},
+		{"blank repo and unset provider mean this PR", gheRef, &compassv1internal.PullRequestIssueLink{Forge: &compassv1.ForgeRef{}, Repo: " ", Number: 6},
+			&store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "ghe.example", Repo: testRepo, Number: 6}},
+		{"linear issue", nil, &compassv1internal.PullRequestIssueLink{Forge: linearRef, Repo: "ENG", Number: 9},
+			&store.ForgeCoord{Provider: store.ForgeProviderLinear, Host: forge.LinearHost, Repo: "ENG", Number: 9}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+			if err := registerLinearForgeCoordinate(svc.providers, forge.NewFakeProvider("linear")); err != nil {
+				t.Fatalf("register linear: %v", err)
+			}
+			ghe := forge.NewFakeProvider("ghe")
+			if err := svc.providers.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: "ghe.example"}, ghe, ghe, false); err != nil {
+				t.Fatalf("register ghe: %v", err)
+			}
+			created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+			author.CreatePRResult = forge.PullRequest{Number: 55, State: "open", CreatedAt: created}
+			ghe.CreatePRResult = author.CreatePRResult
+
+			call := createPRWithIssue("", tc.issue)
+			call.Forge = tc.prForge
+			res := svc.ExecuteForgeCallAsAccountMust(t, call)
+			if res.GetError() != nil {
+				t.Fatalf("create_pull_request errored: %v", res.GetError())
+			}
+			if len(st.prCreates) != 1 {
+				t.Fatalf("PR creates = %d, want 1", len(st.prCreates))
+			}
+			got := st.prCreates[0]
+			if (got.link == nil) != (tc.want == nil) || (got.link != nil && *got.link != *tc.want) {
+				t.Fatalf("link = %+v, want %+v", got.link, tc.want)
+			}
+			if !got.row.CreatedAt.Equal(created) || !got.row.UpdatedAt.Equal(time.Unix(0, 0)) {
+				t.Fatalf("row times created=%v updated=%v, want %v and the epoch", got.row.CreatedAt, got.row.UpdatedAt, created)
+			}
+		})
+	}
+}
+
+// TestForgeCreatePullRequestRejectsBadIssueLink pins each shape error and that a
+// rejected link reaches neither the provider nor the store.
+func TestForgeCreatePullRequestRejectsBadIssueLink(t *testing.T) {
+	cases := []struct {
+		name  string
+		issue *compassv1internal.PullRequestIssueLink
+		code  string
+	}{
+		{"zero number", &compassv1internal.PullRequestIssueLink{Repo: "o/r"}, "invalid_argument"},
+		{"unknown forge", &compassv1internal.PullRequestIssueLink{
+			Forge: &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "nowhere.example"}, Repo: "o/r", Number: 1,
+		}, "not_found"},
+		{"empty repo on another forge", &compassv1internal.PullRequestIssueLink{
+			Forge: &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}, Number: 1,
+		}, "invalid_argument"},
+		{"blank repo on another host", &compassv1internal.PullRequestIssueLink{
+			Forge: &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "ghe.example"}, Repo: "  ", Number: 1,
+		}, "invalid_argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+			if err := registerLinearForgeCoordinate(svc.providers, forge.NewFakeProvider("linear")); err != nil {
+				t.Fatalf("register linear: %v", err)
+			}
+			ghe := forge.NewFakeProvider("ghe")
+			if err := svc.providers.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: "ghe.example"}, ghe, ghe, false); err != nil {
+				t.Fatalf("register ghe: %v", err)
+			}
+			res := svc.ExecuteForgeCallAsAccountMust(t, createPRWithIssue("", tc.issue))
+			if fe := res.GetError(); fe == nil || fe.GetCode() != tc.code {
+				t.Fatalf("error = %v, want code %q", fe, tc.code)
+			}
+			if len(author.Calls()) != 0 || len(st.recorded) != 0 {
+				t.Fatalf("provider calls=%d recorded=%d, want 0 and 0", len(author.Calls()), len(st.recorded))
+			}
+		})
+	}
+}
+
+// TestForgeCreatePullRequestMemoHitWritesNothing pins that a retried create with
+// a link returns the memo and writes no second PR row or link.
+func TestForgeCreatePullRequestMemoHitWritesNothing(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	author.CreatePRResult = forge.PullRequest{Number: 55}
+	link := &compassv1internal.PullRequestIssueLink{Number: 7}
+
+	first := svc.ExecuteForgeCallAsAccountMust(t, createPRWithIssue("req-1", link))
+	again := svc.ExecuteForgeCallAsAccountMust(t, createPRWithIssue("req-1", link))
+	if first.GetError() != nil || again.GetError() != nil {
+		t.Fatalf("errors: first=%v again=%v", first.GetError(), again.GetError())
+	}
+	if again.GetPullRequest().GetNumber() != 55 {
+		t.Fatalf("retry number = %d, want 55", again.GetPullRequest().GetNumber())
+	}
+	if len(author.Calls()) != 1 || len(st.prCreates) != 1 {
+		t.Fatalf("provider calls=%d PR creates=%d, want 1 and 1", len(author.Calls()), len(st.prCreates))
 	}
 }

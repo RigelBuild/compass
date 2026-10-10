@@ -242,15 +242,16 @@ type ForgeAuthoredArtifact struct {
 }
 
 type ForgeRepoSubscription struct {
-	ForgeProvider  int16
-	ForgeHost      string
-	Repo           string
-	Enabled        bool
-	SweptUpdatedAt pgtype.Timestamptz
-	ListEtag       string
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	TenantID       string
+	ForgeProvider   int16
+	ForgeHost       string
+	Repo            string
+	Enabled         bool
+	SweptUpdatedAt  pgtype.Timestamptz
+	ListEtag        string
+	PrsBackfilledAt pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	TenantID        string
 }
 
 type ForgeStateTransition struct {
@@ -340,6 +341,34 @@ type OwedMention struct {
 	ChannelID        string
 	RecordedAtUnixMs int64
 	TenantID         string
+}
+
+type PullRequest struct {
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Number         int64
+	ForgeState     string
+	ForgeCreatedAt pgtype.Timestamptz
+	ForgeUpdatedAt pgtype.Timestamptz
+	Pr             []byte
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	TenantID       string
+}
+
+type PullRequestIssueLink struct {
+	PrForgeProvider    int16
+	PrForgeHost        string
+	PrRepo             string
+	PrNumber           int64
+	IssueForgeProvider int16
+	IssueForgeHost     string
+	IssueRepo          string
+	IssueNumber        int64
+	Source             int16
+	CreatedAt          pgtype.Timestamptz
+	TenantID           string
 }
 
 type Secret struct {
