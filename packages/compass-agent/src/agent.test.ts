@@ -155,6 +155,10 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 		setTools(t: AgentTool[]): void {
 			agent.toolSets.push(t);
 		},
+		// Core events are not modelled: the mapper falls back to counting at session agent_start.
+		subscribe(): () => void {
+			return () => {};
+		},
 	};
 	Object.assign(agent, agentImpl);
 	// Resolvers for waitForIdle calls parked while streaming (RIG-2644).
@@ -343,6 +347,49 @@ describe("CompassAgent — barrier lifts on ReplayComplete", () => {
 		]);
 		expect(agent.prompts).toEqual(["late"]);
 		expect(unmapped.map((u) => u.eventType)).toEqual(["control:prompt"]);
+	});
+});
+
+describe("CompassAgent — a control prompt waits for the session to go idle", () => {
+	// The core loop clears isStreaming before the session emits its terminal
+	// agent_end. A prompt in that gap would start a run the pending end settles.
+	const openTurn = async () => {
+		const h = startControlAgent();
+		await h.feed({ kind: "replayComplete" });
+		h.session.agent.state.isStreaming = true;
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		await h.feed({ kind: "prompt", input: "next" });
+		return h;
+	};
+
+	test("a prompt during a turn starts only once the session is idle", async () => {
+		const h = await openTurn();
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		h.session.settleIdle();
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["next"]);
+		await h.close();
+	});
+
+	test("a prompt waits out a continuation scheduled at the end", async () => {
+		const h = await openTurn();
+		h.session.settleIdle({ keepStreaming: true });
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		h.session.settleIdle();
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["next"]);
+		await h.close();
+	});
+
+	test("a prompt still starts when the session agent_end never arrives", async () => {
+		const h = await openTurn();
+		h.session.settleIdle();
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["next"]);
+		await h.close();
 	});
 });
 
@@ -2301,6 +2348,9 @@ function startTracedAgent() {
 		appendMessage(): void {},
 		setSystemPrompt(): void {},
 		setTools(): void {},
+		subscribe(): () => void {
+			return () => {};
+		},
 		state,
 	};
 	// A feedable control source (mirrors startControlAgent): parks awaiting

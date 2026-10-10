@@ -25,6 +25,7 @@ import type { FrameSink } from "./frame";
 import { EventMapper, type UnmappedEvent } from "./mapping";
 import { flat } from "./render-guard";
 import type { TurnTracer } from "./trace-bridge";
+import type { TurnSequence } from "./turn-sequence";
 
 export interface CompassAgentOptions {
 	// The session to drive, constructed by the caller (container entrypoint) via
@@ -43,6 +44,7 @@ export interface CompassAgentOptions {
 	// fence-clean. `undefined` (telemetry off) ⇒ every trace call no-ops via
 	// optional chaining, so frames stay bit-identical.
 	readonly tracer?: TurnTracer;
+	readonly turnSequence?: TurnSequence;
 }
 
 export class CompassAgent {
@@ -113,7 +115,7 @@ export class CompassAgent {
 		this.#sink = opts.sink;
 		this.#control = opts.control;
 		this.#tracer = opts.tracer;
-		this.#mapper = new EventMapper();
+		this.#mapper = new EventMapper(Date.now, opts.turnSequence);
 		this.#onUnmapped =
 			opts.onUnmapped ??
 			((u) =>
@@ -127,6 +129,9 @@ export class CompassAgent {
 	// until stdin closes. Emits a terminal status — STOPPED on a clean close,
 	// ERRORED on an exception — then resolves (clean) or re-throws (error).
 	async run(): Promise<void> {
+		const unsubscribeAgent = this.#session.agent.subscribe((event) => {
+			if (event.type === "agent_start") this.#mapper.captureTurnStart();
+		});
 		const unsubscribe = this.#session.subscribe((event) => {
 			// Turn-tracking (RIG-1310 §8): an ADDITIONAL read of the same event,
 			// beside the mapper fan-out. A turn-start edge marks the session active;
@@ -158,6 +163,7 @@ export class CompassAgent {
 		} finally {
 			// Terminal edge: no strand-recovery re-check may start a turn past here.
 			this.#closed = true;
+			unsubscribeAgent();
 			unsubscribe();
 		}
 	}
@@ -625,6 +631,10 @@ export class CompassAgent {
 					});
 					return;
 				}
+				// The session's terminal end trails core idle and settles every run started
+				// by then; waitForIdle covers that end and any scheduled continue.
+				do await this.#session.waitForIdle();
+				while (this.#session.isStreaming);
 				// A control prompt STARTS a fresh turn, so reset the accumulator like every
 				// other turn-start site — else a prior deliver-flush's ids would leak into
 				// this turn's query key via a later mid-turn steer. No-op without a tracer.

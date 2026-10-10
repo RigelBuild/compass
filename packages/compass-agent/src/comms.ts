@@ -71,6 +71,7 @@ import {
 	UpdateChannelMembersRequestSchema,
 } from "./compassv1";
 import { attr, flat } from "./render-guard";
+import type { TurnSequence } from "./turn-sequence";
 
 /**
  * The one transport method the comms tools consume — a structural subset of
@@ -528,7 +529,10 @@ function renderAgentTree(entries: RosterEntry[]): string {
  * are merged into the session's `customTools` and so register as `#withNatives`
  * natives. This package's tests also exercise the end-to-end contract directly.
  */
-export function createCommsTools(broker: CommsBroker): AgentTool[] {
+export function createCommsTools(
+	broker: CommsBroker,
+	turnSequence?: TurnSequence,
+): AgentTool[] {
 	const postMessage: AgentTool<typeof postParameters> = {
 		name: "comms_post_message",
 		label: "Post channel message",
@@ -552,6 +556,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
+							turnSequence: turnSequence?.current() ?? 0n,
 							container: { case: "channelId", value: params.channel },
 							blocks: [
 								create(MessageBlockSchema, {
@@ -641,6 +646,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
+							turnSequence: turnSequence?.current() ?? 0n,
 							container: { case: "channelId", value: params.channel },
 							blocks: [askBlock],
 							topic: { case: "topicName", value: topic },
@@ -1057,6 +1063,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
+							turnSequence: turnSequence?.current() ?? 0n,
 							container: { case: "channelId", value: channel.name },
 							blocks: [
 								create(MessageBlockSchema, {
