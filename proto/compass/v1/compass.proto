@@ -607,6 +607,7 @@ message SessionEvent {
     SessionNotice notice = 8;
     SessionInjection session_injection = 9;
     SessionError session_error = 10;
+    SessionBatchPending batch_pending = 11;
   }
 }
 
@@ -719,6 +720,13 @@ enum SessionErrorKind {
   SESSION_ERROR_KIND_UNSPECIFIED = 0;
   SESSION_ERROR_KIND_ERROR = 1;
   SESSION_ERROR_KIND_ABORTED = 2;
+}
+
+// The agent's idle batching window: items wait so a burst lands in one turn.
+// Emitted when the window arms, re-arms, or closes. count 0 means it closed.
+message SessionBatchPending {
+  uint32 count = 1;           // items queued in the window
+  int64 fires_at_unix_ms = 2; // when the window fires; 0 when count is 0
 }
 
 // SubscribeAgentSession: the session whose typed observation trace to tail.

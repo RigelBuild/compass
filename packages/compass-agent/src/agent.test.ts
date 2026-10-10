@@ -29,6 +29,7 @@ import {
 	formatDeliversForPrompt,
 	formatForgeNotifications,
 } from "./agent";
+import type { BatchTimer } from "./batch-window";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AgentSessionState,
@@ -59,7 +60,11 @@ import {
 import type { AgentControl, ControlSource } from "./control";
 import type { OutboundFrame } from "./frame";
 import type { UnmappedEvent } from "./mapping";
-import { createTraceBridge, type TraceBridge } from "./trace-bridge";
+import {
+	createTraceBridge,
+	type TraceBridge,
+	type TurnTracer,
+} from "./trace-bridge";
 
 // A recording fake for the SDK Agent — the control surface CompassAgent drives (reached
 // through session.agent). It records the calls the class makes so tests assert on observable
@@ -2775,6 +2780,422 @@ describe("CompassAgent — RIG-2894 turn-trigger re-attach (predicate on the wir
 		const req = await drivePostDuringTurn(h.bridge);
 		expect(triggerOf(req)).toBe("");
 		h.endTurn();
+		await h.close();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The idle batching window. A hand-driven fake BatchTimer: `advance` moves the clock and fires
+// every live timer that falls due, in due order; a cancelled timer stays recorded so a test can
+// fire its stale callback on purpose.
+function fakeBatchTimer() {
+	let now = 0;
+	const entries: { at: number; fire: () => void; live: boolean }[] = [];
+	const delays: number[] = [];
+	const timer: BatchTimer = {
+		now: () => now,
+		set(ms, fire) {
+			delays.push(ms);
+			const entry = { at: now + ms, fire, live: true };
+			entries.push(entry);
+			return () => {
+				entry.live = false;
+			};
+		},
+	};
+	const advance = (ms: number): void => {
+		const until = now + ms;
+		for (;;) {
+			const due = entries
+				.filter((e) => e.live && e.at <= until)
+				.sort((a, b) => a.at - b.at)[0];
+			if (due === undefined) break;
+			now = due.at;
+			due.live = false;
+			due.fire();
+		}
+		now = until;
+	};
+	const liveCount = (): number => entries.filter((e) => e.live).length;
+	return { timer, delays, entries, advance, liveCount };
+}
+
+const QUIET_MS = 10_000;
+const MAX_MS = 60_000;
+
+// A recording TurnTracer: what the agent asked of the trace layer, with no OTel underneath.
+function recordingTracer() {
+	const rec = {
+		parents: [] as string[],
+		links: [] as { traceparent: string; messageId: string }[],
+		stamps: [] as string[],
+		trigger: "",
+	};
+	const tracer: TurnTracer = {
+		runWithParent(traceparent, fn) {
+			rec.parents.push(traceparent);
+			return fn();
+		},
+		linkActiveTurn(traceparent, messageId) {
+			rec.links.push({ traceparent, messageId });
+		},
+		stampActiveTurn(messageIds) {
+			rec.stamps.push(messageIds);
+		},
+		setTurnTrigger(traceparent) {
+			rec.trigger = traceparent;
+		},
+		clearTurnTrigger() {
+			rec.trigger = "";
+		},
+		currentTurnTrigger() {
+			return rec.trigger;
+		},
+	};
+	return { tracer, rec };
+}
+
+// A CompassAgent with a batching window over the fake timer and a feedable control source
+// (mirrors startControlAgent), plus a forge push that records rail acks (mirrors startForgeAgent).
+function startBatchAgent(tracer?: TurnTracer) {
+	const session = recordingSession();
+	const frames: OutboundFrame[] = [];
+	const unmapped: UnmappedEvent[] = [];
+	const railAcks: string[] = [];
+	const clock = fakeBatchTimer();
+	const queue: AgentControl[] = [];
+	let notify: (() => void) | undefined;
+	let closed = false;
+	const control: ControlSource = {
+		async *[Symbol.asyncIterator]() {
+			while (true) {
+				while (queue.length > 0) {
+					const next = queue.shift();
+					if (next !== undefined) yield next;
+				}
+				if (closed) return;
+				await new Promise<void>((resolve) => {
+					notify = resolve;
+				});
+			}
+		},
+	};
+	const agent = new CompassAgent({
+		session: session as unknown as AgentSession,
+		sink: {
+			emit: (f) => {
+				frames.push(f);
+			},
+			emitDurable: (f) => {
+				frames.push(f);
+				return Promise.resolve();
+			},
+		},
+		control,
+		onUnmapped: (u) => unmapped.push(u),
+		batchWindow: { quietMs: QUIET_MS, maxMs: MAX_MS, timer: clock.timer },
+		...(tracer ? { tracer } : {}),
+	});
+	const done = agent.run();
+	const feed = async (c: AgentControl): Promise<void> => {
+		queue.push(c);
+		notify?.();
+		notify = undefined;
+		await tick();
+		await tick();
+	};
+	const push = (n: ForgeNotification): void => {
+		agent.forgeNotification(n, () => railAcks.push(n.revision));
+	};
+	const drive = (event: AgentSessionEvent): void => {
+		if (event.type === "agent_end") session.agent.state.isStreaming = false;
+		session.listener?.(event);
+	};
+	const close = async (): Promise<void> => {
+		closed = true;
+		notify?.();
+		await done;
+	};
+	return {
+		agent,
+		session,
+		frames,
+		unmapped,
+		railAcks,
+		clock,
+		feed,
+		push,
+		drive,
+		close,
+	};
+}
+
+// The SessionBatchPending events emitted, in order.
+function batchPendings(
+	frames: OutboundFrame[],
+): { count: number; firesAt: bigint }[] {
+	return frames.flatMap((f) => {
+		if (f.kind !== "session") return [];
+		const event = f.value.typedEvent?.event;
+		if (event?.case !== "batchPending") return [];
+		return [{ count: event.value.count, firesAt: event.value.firesAtUnixMs }];
+	});
+}
+
+describe("CompassAgent — idle batching window", () => {
+	test("two idle delivers inside quietMs → no prompt until it elapses, then one prompt with both, then the acks", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "hello one"));
+		h.clock.advance(QUIET_MS - 1);
+		h.agent.deliver(deliverMsg("m2", "hello two"));
+		h.clock.advance(QUIET_MS - 1);
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		h.clock.advance(1);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("hello one");
+		expect(h.session.agent.prompts[0]).toContain("hello two");
+		// Acks ride the injection microtask, after the prompt.
+		expect(ackIds(h.frames)).toEqual([]);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["m1", "m2"]);
+		await h.close();
+	});
+
+	test("arrivals every quietMs - 1 → the window flushes at maxMs", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m0", "zero"));
+		for (let i = 1; i <= 6; i++) {
+			h.clock.advance(QUIET_MS - 1);
+			h.agent.deliver(deliverMsg(`m${i}`, `msg ${i}`));
+		}
+		// The 7th arrival lands at 59994: only 6 ms of the cap remain.
+		expect(h.clock.delays.at(-1)).toBe(6);
+		h.clock.advance(5);
+		expect(h.session.agent.prompts).toEqual([]);
+		h.clock.advance(1);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(ackIds(h.frames)).toEqual([
+			"m0",
+			"m1",
+			"m2",
+			"m3",
+			"m4",
+			"m5",
+			"m6",
+		]);
+		await h.close();
+	});
+
+	test("an idle deliver plus a forge item in one window → one prompt with both sections", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "a channel reply"));
+		h.push(forgeNote("sub-1", "rev-1", { number: 7n }));
+		expect(h.session.agent.prompts).toEqual([]);
+		h.clock.advance(QUIET_MS);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		const prompt = h.session.agent.prompts[0];
+		expect(prompt).toContain("a channel reply");
+		expect(prompt).toContain("o/r#7");
+		// Delivers render before forge items.
+		expect(prompt.indexOf("a channel reply")).toBeLessThan(
+			prompt.indexOf("o/r#7"),
+		);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		expect(h.railAcks).toEqual(["rev-1"]);
+		await h.close();
+	});
+
+	test("a forge item alone, idle → no prompt, no ForgeNotificationAck, no ackRail before the timer fires", async () => {
+		const h = startBatchAgent();
+		h.push(forgeNote("sub-1", "rev-1"));
+		h.clock.advance(QUIET_MS - 1);
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(forgeAcks(h.frames)).toEqual([]);
+		expect(h.railAcks).toEqual([]);
+		h.clock.advance(1);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(forgeAcks(h.frames)).toEqual([
+			{ subscriptionId: "sub-1", revision: "rev-1" },
+		]);
+		expect(h.railAcks).toEqual(["rev-1"]);
+		await h.close();
+	});
+
+	test("deliver D, then idle steer S → one prompt with D before S; timer cancelled; each acked once", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("d1", "the deliver"), "alice");
+		expect(h.clock.liveCount()).toBe(1);
+		h.agent.steer(deliverMsg("s1", "the mention"), "bob");
+		expect(h.clock.liveCount()).toBe(0);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		const prompt = h.session.agent.prompts[0];
+		expect(prompt.indexOf("the deliver")).toBeGreaterThanOrEqual(0);
+		expect(prompt.indexOf("the deliver")).toBeLessThan(
+			prompt.indexOf("the mention"),
+		);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["d1", "s1"]);
+		expect(
+			injections(h.frames).map((i) => [i.opKind, i.messageId, i.fromHandle]),
+		).toEqual([
+			[SessionInjectionKind.DELIVER, "d1", "alice"],
+			[SessionInjectionKind.STEER, "s1", "bob"],
+		]);
+		// The cancelled window prompts nothing more.
+		h.clock.advance(QUIET_MS);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["d1", "s1"]);
+		await h.close();
+	});
+
+	test("deliver D, then idle steer S with the prompt rejected → D and S are un-deduped and neither is acked", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("d1", "the deliver"));
+		h.session.agent.promptRejectsNoModel = true;
+		h.agent.steer(deliverMsg("s1", "the mention"));
+		await tick();
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		expect(injections(h.frames)).toEqual([]);
+		// Un-deduped: a redelivery of each is accepted, not dropped as a duplicate.
+		h.session.agent.promptRejectsNoModel = false;
+		h.agent.deliver(deliverMsg("d1", "the deliver"));
+		h.agent.steer(deliverMsg("s1", "the mention"));
+		expect(h.unmapped.filter((u) => u.reason.startsWith("duplicate"))).toEqual(
+			[],
+		);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["d1", "s1"]);
+		await h.close();
+	});
+
+	test("traced: a draining steer counts toward N>1 — no parent, both linked, ids D,S, trigger cleared", async () => {
+		const { tracer, rec } = recordingTracer();
+		const h = startBatchAgent(tracer);
+		// A prior single-deliver turn parents on its message and sets the trigger.
+		h.agent.deliver(deliverMsg("m0", "first"), "", TP_HEADER);
+		h.clock.advance(QUIET_MS);
+		await tick();
+		expect(rec.parents).toEqual([TP_HEADER]);
+		expect(rec.trigger).toBe(TP_HEADER);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// D and S with distinct traceparents start one turn together.
+		h.agent.deliver(deliverMsg("d1", "the deliver"), "", TP_HEADER);
+		h.agent.steer(deliverMsg("s1", "the mention"), "", TP_HEADER_2);
+		await tick();
+		expect(rec.parents).toEqual([TP_HEADER]);
+		expect(rec.links).toEqual([
+			{ traceparent: TP_HEADER, messageId: "d1" },
+			{ traceparent: TP_HEADER_2, messageId: "s1" },
+		]);
+		expect(rec.stamps.at(-1)).toBe("d1,s1");
+		expect(rec.trigger).toBe("");
+		await h.close();
+	});
+
+	test("a deliver, then a control prompt → no injection when the timer would have fired; one flush and one ack at agent_end", async () => {
+		const h = startBatchAgent();
+		await h.feed({ kind: "replayComplete" });
+		h.agent.deliver(deliverMsg("m1", "queued reply"));
+		await h.feed({ kind: "prompt", input: "go" });
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["go"]);
+		h.clock.advance(QUIET_MS);
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["go"]);
+		expect(ackIds(h.frames)).toEqual([]);
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(2);
+		expect(h.session.agent.prompts[1]).toContain("queued reply");
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	test("the window fires during an untracked stream → strand recovery flushes after waitForIdle", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		// An untracked probe starts streaming inside the window.
+		h.session.agent.state.isStreaming = true;
+		h.clock.advance(QUIET_MS);
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		h.session.settleIdle();
+		await tick();
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("channel msg");
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	test("strand interleave: a deliver between the stream ending and waitForIdle resolving re-arms, and one prompt carries both", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "first msg"));
+		h.session.agent.state.isStreaming = true;
+		h.clock.advance(QUIET_MS);
+		expect(h.session.agent.prompts).toEqual([]);
+		// The stream ends; the recovery's waitForIdle continuation is still queued.
+		h.session.settleIdle();
+		h.agent.deliver(deliverMsg("m2", "second msg"));
+		// A fresh window: the cap restarts, so the delay is the full quiet period.
+		expect(h.clock.delays.at(-1)).toBe(QUIET_MS);
+		await tick();
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("first msg");
+		expect(h.session.agent.prompts[0]).toContain("second msg");
+		h.clock.advance(QUIET_MS);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m1", "m2"]);
+		await h.close();
+	});
+
+	test("a window open when run() returns is cancelled, and its stale callback prompts nothing", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "late msg"));
+		expect(h.clock.liveCount()).toBe(1);
+		await h.close();
+		expect(h.clock.liveCount()).toBe(0);
+		for (const entry of h.clock.entries) entry.fire();
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+	});
+
+	test("a duplicate deliver of a queued id during the window → no ack", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "once"));
+		h.agent.deliver(deliverMsg("m1", "once"));
+		await tick();
+		expect(ackIds(h.frames)).toEqual([]);
+		expect(h.unmapped.map((u) => u.reason)).toContain(
+			"duplicate deliver — message_id already processed",
+		);
+		await h.close();
+	});
+
+	test("arm, re-arm, and fire each emit one SessionBatchPending: counts 1, 2, 0 with fires_at following the timer", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "one"));
+		h.clock.advance(3_000);
+		h.agent.deliver(deliverMsg("m2", "two"));
+		h.clock.advance(QUIET_MS);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(batchPendings(h.frames)).toEqual([
+			{ count: 1, firesAt: BigInt(QUIET_MS) },
+			{ count: 2, firesAt: BigInt(3_000 + QUIET_MS) },
+			{ count: 0, firesAt: 0n },
+		]);
 		await h.close();
 	});
 });
