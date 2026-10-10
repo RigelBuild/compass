@@ -55,7 +55,7 @@ export type GenOutput = {
 	microvmAffected: boolean;
 	/** push/schedule OR changedPaths matches forge trigger */
 	forgeAffected: boolean;
-	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/ or a shared GTK closure input */
+	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/, a shared GTK closure input, or go/go.mod / go/go.sum */
 	gtk4Affected: boolean;
 	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell), the macos-bundle tool, or the sidecar surface (four sidecars plus shared go/internal/) */
 	darwinAffected: boolean;
@@ -108,8 +108,8 @@ export const ALWAYS_RUN_ON_PR = "design-ledger-gate";
  */
 const FORGE_PATH_RE = /^go\/internal\/forge\//;
 /**
- * gtk4 trigger: any changed path under go/cmd/compass-app/, OR one of the
- * shared GTK closure inputs. The e2e lane is the ONLY CI lane that compiles the
+ * gtk4 trigger: any changed path under go/cmd/compass-app/, one of the shared
+ * GTK closure inputs, OR a Go module manifest. The e2e lane is the ONLY CI lane that compiles the
  * native shell, so a closure-only change (e.g. the T2 atk/gdk-pixbuf trim) must
  * still trigger it — keying on the app path prefix alone would skip it (F2).
  */
