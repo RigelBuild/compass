@@ -59,7 +59,8 @@ export interface KeyboardSpine {
 
 /**
  * Create the keyboard spine. Registers `view.bridge → deps.showBridge()`,
- * `view.shortcuts → deps.toggleShortcuts()` (RIG-2482), and the RIG-2483 seed
+ * `view.shortcuts → deps.toggleShortcuts()` (RIG-2482), `tour.start →
+ * deps.startTour()`, and the RIG-2483 seed
  * commands — `palette.open → deps.togglePalette()` plus the view seeds
  * `view.settings`/`view.backlog`/`view.done` (→ the matching `show*`) — as its
  * commands before returning (record A4 §182-186 / A3/D6: the registration lives
@@ -81,6 +82,7 @@ export function createKeyboardSpine(deps: {
 	dispatchLayout: (action: LayoutAction) => void;
 	closeTab: (tabId: string) => void;
 	focusPane: (pane: "first" | "second") => void;
+	startTour: () => void;
 }): KeyboardSpine {
 	const registry = createCommandRegistry();
 	const viewBridge: Command = {
@@ -99,6 +101,15 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.toggleShortcuts(),
 	};
 	registry.register(viewShortcuts);
+	// The tour's replay entry: palette-only, so it has no keymap row.
+	const tourStart: Command = {
+		id: "tour.start" as CommandId,
+		title: "Take the Compass tour",
+		keywords: ["tour", "welcome", "onboarding", "help"],
+		scope: "global",
+		run: () => deps.startTour(),
+	};
+	registry.register(tourStart);
 	const paletteOpen: Command = {
 		id: "palette.open" as CommandId,
 		title: "Open command palette",

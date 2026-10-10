@@ -94,6 +94,7 @@
 
 	/* --- Scrim (modal/palette backdrop, ~60%) --- */
 	--cx-scrim: color-mix(in srgb, var(--rigel-night) 60%, transparent);
+	--cx-tour-scrim: color-mix(in srgb, var(--rigel-night) 16%, transparent);
 
 	/* --- Text --- */
 	--cx-text: var(--rigel-fog);

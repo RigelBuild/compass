@@ -18,6 +18,7 @@ import { detectPlatform } from "../keyboard/dispatch";
 import { shortcutForAria } from "../keyboard/keymap";
 import { openLink } from "../open-link";
 import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
+import { DEMO_AGENTS, isDemoId } from "../tour/demo";
 import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
 import { Glyph } from "./Glyph";
 import { RuntimeMarker } from "./RuntimeMarker";
@@ -37,6 +38,11 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 	return (
 		<div class="tree-agent-row">
 			<button
+				data-tour={
+					a().account.id === DEMO_AGENTS[0]?.account.id
+						? "demo-agent"
+						: undefined
+				}
 				type="button"
 				class={[
 					"tree-agent",
@@ -54,6 +60,9 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 			>
 				<StateDot state={a().lifecycle ?? "idle"} />
 				<Show when={a().runtime}>{(m) => <RuntimeMarker marker={m()} />}</Show>
+				<Show when={isDemoId(a().account.id)}>
+					<span class="cx-tour-demo-badge">Demo</span>
+				</Show>
 				<span class="name">{a().account.handle}</span>
 				<Show when={a().role !== undefined && a().role !== "worker"}>
 					<span class="role-pip" data-role={a().role} title={a().role}>
@@ -206,6 +215,9 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 					<span class="ch-glyph" aria-hidden="true">
 						{channelGlyph(channel().kind)}
 					</span>
+					<Show when={isDemoId(channel().id)}>
+						<span class="cx-tour-demo-badge">Demo</span>
+					</Show>
 					<span class="ch-name">{label()}</span>
 
 					<Show when={(channel().unread ?? 0) > 0}>
@@ -375,7 +387,7 @@ const ChannelsSection: Component = () => {
 			</button>
 			<Show when={!collapsed()}>
 				<div class="ws-section-body">
-					<div class="tree">
+					<div class="tree" data-tour="agent-tree">
 						<Show
 							when={store.firstSnapshotArrived() && tree().length === 0}
 							fallback={

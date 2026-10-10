@@ -57,7 +57,7 @@ const runCommand = (store: AppStore, id: string): void => {
 
 async function mountSplit(direction: "row" | "column") {
 	const storage = memoryStorage();
-	const mounted = mountApp(TOPIC_PATH, storage);
+	const mounted = mountApp(TOPIC_PATH, { layoutStorage: storage });
 	await flush();
 	mounted.store.dispatchLayout({ kind: "split", direction });
 	await flush();
