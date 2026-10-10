@@ -18,6 +18,9 @@
   // is the cadence. GitHub now starts that cron hours late, and a late start
   // outside a window opens zero PRs.
   dependencyDashboard: true,
+  // One run a day: the default hourly cap of 2 would leave every other update
+  // on the dashboard. prConcurrentLimit (default 10) still bounds open PRs.
+  prHourlyLimit: 0,
 
   // Rebase every open branch that falls behind main, not only conflicted ones.
   // Without this, `rebaseWhen` defaults to `"auto"`, which — because this repo has
