@@ -546,17 +546,19 @@ test opening with `microvmtest.Require(t)`.
      dial target swapped to the suffixed path.
   2. **The vsock leg, in-guest:** exec (agent uid, via the gate-opened exec
      surface) a probe that connects to `/run/compass/agent.sock` inside the
-     guest and drives one Comms round-trip + one Publish frame + a Control
-     subscribe against the host's real Gateway (fake Server relay behind
-     it), mirroring the leg set of `e2e_transport_test.go`. The probe is a
-     small script over the guest toolchain's own runtime (the rootfs
-     carries the agent toolchain closure,
-     microvm-ci-dev-enablement.md:252-267); its exact vehicle is OQ-5.
-  3. **Fail-closed windows:** a guest dial before the host serves the
-     suffixed listener fails the connection (no wedge, no phantom success);
-     a Comms call before Start binds the session is refused
-     `CodePermissionDenied` (the `gateway.go:33-37` contract, now proven
-     over vsock).
+     guest and drives one Comms round-trip against the host's real Gateway
+     (fake Server relay behind it). The probe is a bun `fetch` (OQ-5: the
+     rootfs ships bun as its only Connect-capable runtime,
+     microvm-ci-dev-enablement.md:252-267). A `fetch` drives only Connect
+     unary, so Publish (client-streaming) and Control (server-streaming)
+     stay covered hermetically at the gateway; one unary already crosses
+     the whole vsock hop, which is this leg's only unique coverage.
+  3. **Fail-closed window:** a Comms call before Start binds the session is
+     refused `CodePermissionDenied` with the relay untouched (the
+     `gateway.go:33-37` contract), proven host-side over the real suffixed
+     serve path. A guest dial before the host serves the listener is not
+     checked: that window is internal to `Provision` (between Launch and
+     its own `gateway.Serve`), so a black-box test cannot pause there.
   4. **Non-goal: vsock is not IP.** From inside the armed guest netns
      (default-deny per V3), assert no IP destination reaches the gateway —
      and that check 2 still passes — proving the vsock path is orthogonal
@@ -579,8 +581,8 @@ test opening with `microvmtest.Require(t)`.
       `RefreshConfig` probe-gated (no config-churn restarts); pre-boot
       sun_path guard in `Create`; serve-path slog anchor; podman path
       byte-identical
-- [ ] W3 — KVM-gated e2e: suffixed-socket serving, in-guest
-      Comms/Publish/Control round-trip over vsock, fail-closed windows,
+- [ ] W3 — KVM-gated e2e: suffixed-socket serving, in-guest Comms
+      round-trip over vsock, Comms-before-Start fail-closed,
       vsock-is-not-IP non-goal check, teardown symmetry
 
 ## Open Questions
