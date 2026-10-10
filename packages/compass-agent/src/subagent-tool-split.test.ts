@@ -48,6 +48,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	AgentRegistry,
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	type ToolDefinition,
@@ -154,6 +155,9 @@ async function activeToolNames(
 	options: CreateAgentSessionOptions,
 ): Promise<string[]> {
 	const { session } = await createAgentSession({
+		// A private registry: the global one keys every top-level session as
+		// "Main", so concurrent boots in one bun process replace each other.
+		agentRegistry: new AgentRegistry(),
 		skills: [],
 		additionalExtensionPaths: [],
 		disableExtensionDiscovery: true,
@@ -237,8 +241,14 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 	// biome-ignore lint/plugin: 30s bounds two real session boots (~1.2-1.6s warm each); the awaits gate on the sessions being ready, so the ceiling only bounds a genuine hang.
 	test("the Manager carries Compass tools that the subagent drops — the split is real", async () => {
 		const cwd = scratch();
-		const managerActive = new Set(await managerActiveToolNames(cwd));
-		const subagentActive = new Set(await subagentActiveToolNames(cwd));
+		// Booted concurrently: each session registers in its own AgentRegistry, so
+		// two boots in one process no longer contend for the global "Main" id.
+		const [managerNames, subagentNames] = await Promise.all([
+			managerActiveToolNames(cwd),
+			subagentActiveToolNames(cwd),
+		]);
+		const managerActive = new Set(managerNames);
+		const subagentActive = new Set(subagentNames);
 		const compass = compassNativeToolNames();
 
 		// The set of Compass tools present on the Manager but absent on the
