@@ -293,7 +293,7 @@ describe("renderRunnerManifests", () => {
 				{
 					apiGroups: [""],
 					apiVersions: ["v1"],
-					operations: ["CREATE"],
+					operations: ["CONNECT"],
 					resources: ["pods/exec", "pods/attach"],
 				},
 				{
@@ -466,6 +466,12 @@ describe("renderRunnerManifests", () => {
 			renderRunnerManifests({
 				...values,
 				admission: { controllers: ["bad\nusername"], deployers: ["ok"] },
+			}),
+		).toThrow();
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { controllers: ["ok"], deployers: ["bad\rusername"] },
 			}),
 		).toThrow();
 	});

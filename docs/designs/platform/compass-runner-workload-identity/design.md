@@ -275,7 +275,7 @@ spec:
         resources: [pods, serviceaccounts/token]
       - apiGroups: [""]
         apiVersions: [v1]
-        operations: [CREATE]
+        operations: [CONNECT]                 # exec/attach are CONNECT requests
         resources: [pods/exec, pods/attach]
       - apiGroups: [""]
         apiVersions: [v1]

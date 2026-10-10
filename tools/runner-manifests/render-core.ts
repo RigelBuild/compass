@@ -559,7 +559,8 @@ export function renderRunnerManifests(
 						{
 							apiGroups: [""],
 							apiVersions: ["v1"],
-							operations: ["CREATE"],
+							// exec and attach reach admission as CONNECT, not CREATE.
+							operations: ["CONNECT"],
 							resources: ["pods/exec", "pods/attach"],
 						},
 						{

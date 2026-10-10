@@ -7,8 +7,8 @@ bun run render.ts values.example.json
 ```
 
 The image must be a `repo@sha256:<digest>` reference. Configure node selectors,
-taints, host paths, the Server address, token lifetimes, and admission identities
-before applying.
+taints, host paths, the Server address (an absolute `https://` URL), token
+lifetimes, and admission identities before applying.
 
 The DaemonSet uses a projected `compass-runner` ServiceAccount token at
 `/var/run/secrets/compass/runner/token`. Set `tokenExpirationSeconds` between
