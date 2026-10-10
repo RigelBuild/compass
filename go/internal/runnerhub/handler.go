@@ -437,6 +437,28 @@ func (h *Handler) FetchAgentConfig(ctx context.Context, req *connect.Request[com
 	return nil
 }
 
+// RelaySessionBlob authenticates the Runner context before delegating to the hub.
+func (h *Handler) RelaySessionBlob(ctx context.Context, req *connect.Request[compassv1internal.RelaySessionBlobRequest]) (*connect.Response[compassv1internal.RelaySessionBlobResponse], error) {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok || subj.Kind != store.SubjectRunner {
+		return nil, errUnauthenticated
+	}
+	resp, err := h.hub.RelaySessionBlob(ctx, subj.ID, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// FetchSessionBlobs authenticates the Runner context before streaming blob frames.
+func (h *Handler) FetchSessionBlobs(ctx context.Context, req *connect.Request[compassv1internal.FetchSessionBlobsRequest], stream *connect.ServerStream[compassv1internal.FetchSessionBlobsResponse]) error {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok || subj.Kind != store.SubjectRunner {
+		return errUnauthenticated
+	}
+	return h.hub.FetchSessionBlobs(ctx, subj.ID, req.Msg, stream.Send)
+}
+
 // resolvedSecretToProto maps a secrets.ResolvedSecret to the wire ResolvedSecret,
 // translating the resolve-surface delivery/kind enums to the public proto enums
 // at this edge (the same store↔proto enum discipline the secrets package uses at

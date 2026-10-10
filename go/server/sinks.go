@@ -57,6 +57,7 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 		log,
 	)
 	hub.SetTranscriptStore(st)
+	hub.SetSessionBlobStore(st)
 	// The Runner binds a resumed lifetime's rebase base through the same store.
 	hub.SetLifetimeBinder(st)
 	// RIG-3108 T4: the same store is the durable session-binding surface the hub's
