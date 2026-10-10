@@ -31,6 +31,7 @@ func TestMain(m *testing.M) {
 	registerDuoFixtureOptions()
 	registerFanoutFixtureOptions()
 	registerListMessagesFixtureOptions()
+	registerPeeringFixtureOptions()
 	registerRedeliverFixtureOptions()
 	registerCommsToolFixtureOptions()
 	registerToolsFixtureOptions()
