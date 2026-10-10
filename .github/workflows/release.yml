@@ -848,8 +848,9 @@ jobs:
 
           ldflags="-X main.version=$version"
 
-          # Three linux-amd64 binaries (the deployable daemons + the CLI).
-          for name in compass compass-server compass-runner; do
+          # Four linux-amd64 binaries: the deployable daemons, the stack
+          # supervisor, and the CLI.
+          for name in compass compass-server compass-runner compass-stack; do
             CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
               go -C go build -trimpath -ldflags "$ldflags" \
               -o "../${name}_${tag}_linux-amd64" "./cmd/${name}"
@@ -897,6 +898,7 @@ jobs:
             "compass_${TAG}_linux-amd64" \
             "compass-server_${TAG}_linux-amd64" \
             "compass-runner_${TAG}_linux-amd64" \
+            "compass-stack_${TAG}_linux-amd64" \
             "compass_${TAG}_darwin-arm64" \
             "compass-app_${TAG}_darwin-arm64.dmg" \
             "compass-app_${TAG}_linux-amd64.tar.gz" \
@@ -926,6 +928,7 @@ jobs:
             --asset "compass_${TAG}_linux-amd64" \
             --asset "compass-server_${TAG}_linux-amd64" \
             --asset "compass-runner_${TAG}_linux-amd64" \
+            --asset "compass-stack_${TAG}_linux-amd64" \
             --asset "compass_${TAG}_darwin-arm64" \
             --asset "compass-app_${TAG}_linux-amd64.tar.gz" \
             --asset "compass-app_${TAG}_darwin-arm64.dmg" \
@@ -961,6 +964,7 @@ jobs:
             "compass_${TAG}_linux-amd64"
             "compass-server_${TAG}_linux-amd64"
             "compass-runner_${TAG}_linux-amd64"
+            "compass-stack_${TAG}_linux-amd64"
             "compass_${TAG}_darwin-arm64"
             "compass-app_${TAG}_linux-amd64.tar.gz"
             "compass-app_${TAG}_darwin-arm64.dmg"
