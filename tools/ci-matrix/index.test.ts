@@ -327,6 +327,17 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(false);
 	});
 
+	test("gtk4Affected on a Go module manifest change", () => {
+		// A dependency-only bump can change the Wails tree, which only the gtk4
+		// lane vuln-scans.
+		for (const path of ["go/go.mod", "go/go.sum"]) {
+			expect(
+				generate(prInput({ affectedIds: [], changedPaths: [path] }))
+					.gtk4Affected,
+			).toBe(true);
+		}
+	});
+
 	test("darwinAffected on any go/cmd/compass-app/ path (same shell as gtk4)", () => {
 		expect(
 			generate(
