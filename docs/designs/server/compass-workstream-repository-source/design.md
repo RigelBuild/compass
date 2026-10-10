@@ -32,8 +32,8 @@ credential.
 
 ## Approach
 
-This body is written against the recommended answer to each fork in
-**Open Questions** (F1–F3).
+This body records Matt's rulings on RIG-4997: F1 A, F2 durable rows, and F3
+no deployment seed. See **Rulings**.
 
 ### A workstream repository is a per-agent write grant
 
@@ -73,28 +73,23 @@ mapping as a source for an empty `repo`.
 
 ### Producers
 
-The rows are durable (F2). Two server-side writers exist, and neither is a
-proto field (F3):
+The rows are durable (F2). Matt rejected a deployment seed (F3): "you don't
+know which agents will be spawned before you start the server. We can't land
+this until we can dynamically configure it on the agents." So no boot-time
+producer exists, and this record adds no spawn-time write. Whether a child
+copies its parent's rows is a writer decision, deferred to RIG-5015.
 
-1. **A deployment seed.** `--forge-workstream-repos` /
-   `$COMPASS_FORGE_WORKSTREAM_REPOS` takes `owner/agent:org/name` entries.
-   The agent is a qualified handle, parsed by `store.ParseQualifiedHandle`,
-   because account ids are random (`newID` in `go/internal/store/ids.go`)
-   and cannot be known before first boot. Entries carry no host. Rows use the
-   App host the broker binds (`rc.Host` in `buildGitCredentialBroker`).
-2. **Inheritance from the stored parent.** At each spawn, an agent copies
-   the agent rows of its stored `ParentAgentID`, never those of the calling
-   account. That matters because `resumeOrReject` in `go/server/lifecycle.go`
-   re-provisions an existing agent for any same-owner caller.
-   `SpawnPeerRequest` stays repo-free: its comment in
-   `proto/compass/v1/agent_gateway.proto` says "never a repo/ref (spawn
-   carries no repo, Matt 2026-07-29)".
+The producer is a runtime per-agent write, designed in RIG-5015. It writes
+through `GrantAgentForgeScope` (T2) and removes through `RevokeForgeScope`.
+Spawn stays repo-free. `SpawnPeerRequest`'s comment in
+`proto/compass/v1/agent_gateway.proto` says "never a repo/ref (spawn carries
+no repo, Matt 2026-07-29)".
 
 Card capture (`issues.repo` with `assignee`) has no producer yet.
 `go/internal/store/issues.go` says of `assignee`: "No setter for them in
-THIS slice — a setter lands with its producer". `SpawnAgentRequest` carries
-only `agent_handle` and `client_request_id`. When a Dispatcher assigns
-issues, it becomes one more caller of the same store method.
+THIS slice — a setter lands with its producer". A Dispatcher writer is
+deferred until its grant lifetime is decided: rows carry no producer, so a
+revoke on unassignment could remove a row another writer still needs.
 
 A `workstream_repo` column on `agent_accounts` is rejected. One column
 encodes the one-repo model the ownership layer rejected.
@@ -164,22 +159,19 @@ A `*` grant dominates, as it does today.
 
 | Event | Behaviour |
 | -- | -- |
-| Set | Every spawn writes the rows before Provision, so the first `FetchSecretsByContainer` in `Host.Start` (`go/internal/runner/host.go`) sees them. A write error fails the spawn before any compute exists. Boot reconcile adds seed rows for agents that already exist. It sends no signal: no session is bound before Runners reconnect, and a Runner re-fetches on reconnect. |
-| Change | Additions come from the seed (applied on restart) and from inheritance. The seed is insert-only, like `ScopeGrants` ("removing a row here does not revoke it"). After a `ReparentAgent`, the next spawn copies from the new parent, and rows from the old parent stay. |
-| Removal | `RevokeForgeScope` deletes an agent row in the same way it deletes a grant. Every fetch re-reads the store. A refresh that changes a token already calls `SignalSecretsVersion`, so sessions re-fetch within one refresh cycle. Immediate revocation of the old token is the parent's T5 grant-removal path ("re-mints at once, delivers the new token, then revokes the old one"), and it covers agent rows unchanged. While the parent agent still holds a repo, the child's next spawn copies it back, so revoke at the parent. |
+| Set | The runtime writer (RIG-5015) adds a row. Every fetch re-reads the store, and a refresh that changes the token calls `SignalSecretsVersion`, so a live session picks the repo up within one refresh cycle. A row written before spawn is seen by the first `FetchSecretsByContainer` in `Host.Start` (`go/internal/runner/host.go`). |
+| Removal | `RevokeForgeScope` deletes an agent row in the same way it deletes a grant. Immediate revocation of the old token is the parent's T5 grant-removal path ("re-mints at once, delivers the new token, then revokes the old one"), and it covers agent rows unchanged. |
 | Despawn | Rows survive. Despawn tears down compute, not identity, and agents are never deleted. Without a placement there is no fetch, so a surviving row mints nothing. A respawn gets the same set back. |
 | Owner grant revocation | Independent: the agent's rows stay. |
 | Re-mint | The cache key is the sorted full set, so agents with equal sets share one token. |
 
 ## Plan
 
-**Assumption:** this plan is executable once Matt confirms these rulings:
+**Rulings** (RIG-4997): F1 A, F2 durable rows, F3 no deployment seed.
 
-- F1-A: workstream repositories are per-agent rows in `account_forge_scopes`.
-- F2: the rows are durable.
-- F3: the producers are the seed plus inheritance from the stored parent.
-
-Each fork names the tasks that a different ruling changes.
+**Landing gate.** T1–T4 change nothing until a writer adds agent rows, so
+they land in one stack with RIG-5015's writer, never before it
+(`no-inert-gating`). T5 is that writer's call into T2.
 
 ### Global Constraints
 
@@ -239,10 +231,10 @@ because it selects `FROM user_accounts`. Test: the existing
 `TestForgeScopeRejectsAgentGrantAndSeparatesTenants` still passes, which
 shows an agent id is still rejected by the user writer.
 
-### T2 — Agent writer and parent copy
+### T2 — Agent writer
 
-Add both queries to `go/internal/store/queries/forge_scopes.sql` and
-regenerate with sqlc:
+Add the query to `go/internal/store/queries/forge_scopes.sql` and regenerate
+with sqlc:
 
 ```sql
 -- name: GrantAgentForgeScope :execrows
@@ -252,16 +244,6 @@ SELECT a.account_id, sqlc.arg(forge_provider), sqlc.arg(forge_host), sqlc.arg(re
 FROM agent_accounts AS a
 WHERE a.account_id = sqlc.arg(account_id)
 ON CONFLICT DO NOTHING;
-
--- name: CopyAgentForgeScopes :execrows
-INSERT INTO account_forge_scopes (account_id, forge_provider, forge_host, repo)
-SELECT child.account_id, scope.forge_provider, scope.forge_host, scope.repo
-FROM account_forge_scopes AS scope
-JOIN agent_accounts AS parent ON parent.account_id = scope.account_id
-JOIN agent_accounts AS child ON child.account_id = sqlc.arg(child_id)
-    AND child.owner_user_id = parent.owner_user_id
-WHERE scope.account_id = sqlc.arg(parent_id)
-ON CONFLICT DO NOTHING;
 ```
 
 In `go/internal/store/forge_scopes.go`:
@@ -269,9 +251,6 @@ In `go/internal/store/forge_scopes.go`:
 ```go
 // GrantAgentForgeScope adds a server-written exact-repo row for an agent.
 func (s *Store) GrantAgentForgeScope(ctx context.Context, scope ForgeScope) (added bool, err error)
-
-// CopyAgentForgeScopes copies parent's own rows to child when both share an owner.
-func (s *Store) CopyAgentForgeScopes(ctx context.Context, parent, child AccountID) (int64, error)
 ```
 
 `GrantAgentForgeScope` runs `normalized()`, rejects `*`, and requires one
@@ -279,12 +258,11 @@ func (s *Store) CopyAgentForgeScopes(ctx context.Context, parent, child AccountI
 `AgentAccountVisible` query to tell "already present" (`false, nil`) from
 `ErrInvalidArgument` ("scope account %q is not an agent in this tenant").
 
-Interfaces: produces both methods for T5. Pgtests:
+Interfaces: produces the method for T5. Pgtests:
 
 - An agent row appears in `ListForgeScopeRepos` and `HasForgeScope` for that
   agent, but not for its owner or a sibling.
 - `*` and a user id are rejected.
-- A copy across owners copies nothing.
 - `RevokeForgeScope` removes an agent row.
 - Tenant B gets `ErrInvalidArgument` and sees no rows.
 
@@ -358,130 +336,44 @@ Interfaces: consumes `LifetimeBinder.AccountTenant`. Tests:
 - A pgtest shows a tenant-B agent's declared secret resolves through
   `FetchSecrets`.
 
-### T5 — Seed and spawn-time writes
+### T5 — Runtime writer
 
-In `go/cmd/compass-server/main.go`, add `--forge-workstream-repos` /
-`$COMPASS_FORGE_WORKSTREAM_REPOS`, parsed by:
-
-```go
-// parseForgeWorkstreamTargets parses owner/agent:org/name entries.
-func parseForgeWorkstreamTargets(v string) ([]server.WorkstreamTarget, error)
-```
-
-Errors follow the `invalid --forge-scope-grants entry %q` style. In
-`go/server/serve.go`:
-
-```go
-// WorkstreamTarget is one deployment-declared workstream repository.
-type WorkstreamTarget struct {
-	Agent store.QualifiedHandle // Owner and Handle both set
-	Repo  string                // org/name, never "*"
-}
-
-// ForgeConfig gains: WorkstreamRepos []WorkstreamTarget
-
-// workstreamTargets writes seed and inherited rows. A nil receiver is a no-op.
-type workstreamTargets struct {
-	st      *store.Store
-	host    string
-	targets []WorkstreamTarget
-}
-
-func newWorkstreamTargets(st *store.Store, broker *gitCredentialBroker, targets []WorkstreamTarget, log *slog.Logger) *workstreamTargets
-func (w *workstreamTargets) reconcileBoot(ctx context.Context) error
-func (w *workstreamTargets) recordSpawn(ctx context.Context, agent store.AccountID) error
-```
-
-- **Construction.** `newWorkstreamTargets` returns nil when the broker is
-  nil and warns if targets were declared. It is built right after
-  `buildGitCredentialBroker`, which is gated on `boardIngestionEnabled`, not
-  on the write-service path. `host` is `broker.host`.
-- **`reconcileBoot`.** Runs there under the bootstrap ctx. For each target it
-  resolves `UserByHandle`, then `AgentByHandle`, skips `ErrNotFound`, and
-  calls `GrantAgentForgeScope`.
-- **`recordSpawn`.** Loads the agent with `GetAccount`. If its stored
-  `ParentAgentID` is set, it calls `CopyAgentForgeScopes`. It then grants
-  each target whose handle and resolved owner match.
-
-Call sites: `recordSpawn` runs before `provisionAgent` in `runSpawn`
-(`go/server/spawn.go`) and before Provision in `provisionAndStart`
-(`go/server/lifecycle.go`). An error fails the spawn. Add a
-`workstream *workstreamTargets` field to `service` and to
-`lifecycleService`, assigned in `serve.go` once the broker exists. Add the
-flag row to `docs/self-host.md`.
-
-Interfaces: consumes T2. Tests:
-
-- The parser accepts a valid entry and rejects a missing owner, `*`, a bad
-  repo and a missing colon.
-- Boot reconcile writes rows for an existing agent and skips a missing one.
-- A nil broker builds nothing and warns.
-- Pgtests: rows land before the placement exists; a peer inherits from its
-  stored parent and not from a resuming caller; a write failure leaves no
-  placement; a respawn keeps the rows.
+RIG-5015 designs the surface, its authorization and its caller. It writes
+through `GrantAgentForgeScope` and revokes through `RevokeForgeScope`. Its
+pgtests show that a row written to a running agent reaches the next
+`FetchSecrets`, and that a respawn keeps the rows. This record adds no seed
+flag and no spawn-time write.
 
 ## Tasks
 
 - [ ] T1: `account_forge_scopes.account_id` references `accounts`, in place in 0001 during the collapse window or in `0002_agent_forge_scopes.sql` after.
-- [ ] T2: `GrantAgentForgeScope` and `CopyAgentForgeScopes`, with tenant-B pgtests.
+- [ ] T2: `GrantAgentForgeScope`, with tenant-B pgtests.
 - [ ] T3: broker owner-grants fallback, typed mint status and negative cache, with unit tests.
 - [ ] T4: `FetchSecrets` scoped to the agent's tenant.
-- [ ] T5: `--forge-workstream-repos` seed, boot reconcile and `recordSpawn` on both spawn paths, plus the self-host doc row.
+- [ ] T5: the runtime writer from RIG-5015. T1–T4 land in its stack.
+
+## Rulings
+
+Matt ruled on RIG-4997:
+
+- **F1: A.** Workstream repositories are agent rows in
+  `account_forge_scopes`. The token and the API gate agree by construction,
+  and agents open PRs through Compass's attributed write path (OQ-10).
+  Rejected: a separate table only the broker reads, under which the token
+  could push where Compass forge writes return `not_found`.
+- **F2: durable rows.** The gate reads the same table, rows live under RLS,
+  and a runtime writer has a store target. Rejected: config read at mint
+  time with a `ParentAgentID` walk.
+- **F3: no deployment seed.** The agents a server will run are not known at
+  boot, so a seed is the wrong producer. Rows come only from a runtime
+  per-agent write (RIG-5015).
 
 ## Open Questions
 
-Each fork needs Matt's ruling. The body above assumes the recommendation.
+Deferred to RIG-5015. Neither changes T1–T4.
 
-- **F1 — Is a workstream repository a per-agent git write grant?** The token
-  already writes to it either way.
-  - **A: agent rows in `account_forge_scopes`.** The token and the API gate
-    agree by construction. Agents open PRs through Compass's attributed write
-    path, which OQ-10 needs. There is no new table, and the parent's revoke
-    path covers removal. Cost: the DL-443 write allowlist grows per agent,
-    the FK is relaxed, and the broker still needs the widen-only fallback.
-  - **B: a separate `agent_workstream_repos` table that only the broker
-    reads.** The API allowlist stays owner-level. Cost: the token can push
-    and open PRs on a repo where Compass forge writes return `not_found`, so
-    an agent bypasses the attributed path. It also adds a second table, union
-    code and its own revoke trigger. If B, T1 creates the table with
-    `account_forge_scopes`' columns keyed by `agent_account_id`: no `*`, and
-    `SELECT, INSERT, DELETE` only. During the collapse window it folds into
-    0001: forge block, `tenant_tables` entry, explicit grant and
-    `REVOKE UPDATE`. After the window it ships as
-    `0002_agent_workstream_repos.sql` with its policy. T2 targets that table,
-    and T3 lists it separately and unions it.
-  - **Recommendation: A.** Decision needed: A or B.
-- **F2 — Does OQ-8's "server-side spawn-target record" require durable
-  rows?**
-  - **Durable rows.** The gate reads the same table, per-tenant data lives
-    under RLS, and a future Dispatcher writer has a store target. Cost:
-    removing a seed entry does not revoke the row; removal is
-    `RevokeForgeScope`.
-  - **Config read at mint time plus a `ParentAgentID` ancestor walk** (the
-    walk in `OwningManager`, `go/server/linear_responder.go`). There are no
-    rows, no spawn writes and no migration. A config edit plus restart is a
-    real revocation, and subtree inheritance is live. Cost: config is
-    bootstrap-tenant only, `requireForgeScope` needs the same walk or the
-    gate and the token disagree, and a future writer has no target. If
-    chosen, T1, T2 and the T5 spawn writes go away, and T3 and the gate gain
-    the walk.
-  - **Recommendation: durable rows.** Under F1-A the migration is only a
-    constraint change.
-- **F3 — Who produces the rows?** Nothing in this repository declares
-  targets. A deployment that does not set `--forge-workstream-repos` stays
-  grants-only. A deployment with neither grants nor targets mints no brokered
-  credential, because `credential` returns early on `len(repos) == 0`.
-  - **(a) Seed plus inheritance now.** Each deployment that runs the App
-    declares its targets in its own deployment configuration, which is a
-    change outside this repository.
-  - **(b) Defer to the Dispatcher.** When it sets `issues.assignee`, it calls
-    `GrantAgentForgeScope` with the issue's repo. Nothing ships now.
-  - **(c) Both.** Ship (a) now and add (b) as another writer when it lands.
-  - **Inheritance sub-choice.** Without inheritance, only seed-named agents
-    get a workstream repo, and a manager-built tree runs on grants alone.
-    With it, a seeded root supervisor reaches its whole tree: close to an
-    owner grant, but limited to that subtree and revocable at the root. If
-    no inheritance, drop `CopyAgentForgeScopes` from T2 and T5.
-  - **Recommendation: (c), with inheritance from the stored parent.**
-    Decision needed: confirm a deployment will declare targets, and confirm
-    inheritance.
+- **Inheritance.** Whether a spawned child copies its parent's agent rows.
+  Copying limits reach to the subtree but makes revoke at a child lose to the
+  parent's next spawn.
+- **Dispatcher lifetime.** Whether an assignment-driven row ends with the
+  assignment, and how its revoke spares a row another writer added.
