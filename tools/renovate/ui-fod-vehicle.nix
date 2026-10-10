@@ -1,5 +1,5 @@
 # Refresh vehicle for apps/ui/dist.nix's pinned node_modules FOD.
-# flake.lock supplies pkgs.bun, matching the compass-ui production derivation.
+# flake.lock supplies pkgs, matching the compass-ui production derivation.
 { ... }:
 let
   lock = builtins.fromJSON (builtins.readFile ../../flake.lock);

@@ -98,8 +98,8 @@
   //   4. the FOD-hash refresh, which recomputes the pinned Nix fixed-output-
   //      derivation hashes a dep bump invalidates — the Go `vendorHash`
   //      (guest-image/default.nix) on a gomod bump, the bun `outputHash`
-  //      (agent-image/entrypoint.nix) on a bun/catalog bump OR a devenv-nixpkgs
-  //      channel bump (which moves pkgs.bun, the FOD's builder). Left stale the
+  //      (agent-image/entrypoint.nix) on a bun/catalog or bun-pin bump; a
+  //      devenv-nixpkgs channel bump stays a fail-safe trigger. Left stale the
   //      image build fails `hash mismatch in fixed-output derivation` (PR #579).
   //      Wired at the top-level (branch mode), catalog-rule (update mode),
   //      devenv-nixpkgs channel rule (branch mode), devenv fork (root) rule
@@ -123,9 +123,9 @@
   //   7. the agent-image devenv-nixpkgs CHANNEL relock, the fourth devenv pin:
   //      on that lock's channel digest bump it runs `devenv update nixpkgs` in
   //      agent-image/ under that lock's own devenv, then refreshes
-  //      agent-image/entrypoint.nix's bun `outputHash` — the channel rev
-  //      resolves the bun that FOD's builder uses, so an advance can invalidate
-  //      the pin with no manifest change. SEPARATE from (3) because the root
+  //      agent-image/entrypoint.nix's bun `outputHash` as a fail-safe — the
+  //      FOD builds in this rev's pkgs, though with the repo-pinned bun.
+  //      SEPARATE from (3) because the root
   //      channel script's flake lockstep has no counterpart in this scope:
   //      agent-image bakes no dev shell (`packages = [ ]`) and has no flake.
   //   8. the guest-rootfs agent-image relock: on the moving `:latest` digest it
