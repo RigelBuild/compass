@@ -118,8 +118,9 @@ type agentHost struct {
 	// backend's Provision leg serves in each handle's state dir, keyed by container
 	// name. Empty for podman/microVM (fixed mount paths). Set at Provision, removed
 	// at teardown (closeSocket).
-	hostTransports map[string]hostAgentTransport
-	retireWG       sync.WaitGroup
+	hostTransports    map[string]hostAgentTransport
+	startedContainers map[string]struct{}
+	retireWG          sync.WaitGroup
 	// closing ends retireOnExit waits at Close, so a reaper stuck on an unclosed
 	// pipe cannot hold shutdown open.
 	closing   chan struct{}
@@ -165,22 +166,23 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		log = slog.Default()
 	}
 	return &agentHost{
-		link:           link,
-		runtime:        rt,
-		registry:       registry,
-		engine:         engine,
-		specs:          specs,
-		log:            log,
-		runtimeDir:     cfg.RuntimeDir,
-		model:          cfg.AgentModel,
-		runnerID:       cfg.RunnerID,
-		sessions:       map[string]*liveSession{},
-		closing:        make(chan struct{}),
-		sockets:        map[string]*gateway.SocketListener{},
-		materializer:   runtime.NewSecretMaterializer(engine, log),
-		configVersions: map[string]string{},
-		containerLocks: map[string]*sync.Mutex{},
-		hostTransports: map[string]hostAgentTransport{},
+		link:              link,
+		runtime:           rt,
+		registry:          registry,
+		engine:            engine,
+		specs:             specs,
+		log:               log,
+		runtimeDir:        cfg.RuntimeDir,
+		model:             cfg.AgentModel,
+		runnerID:          cfg.RunnerID,
+		sessions:          map[string]*liveSession{},
+		closing:           make(chan struct{}),
+		sockets:           map[string]*gateway.SocketListener{},
+		materializer:      runtime.NewSecretMaterializer(engine, log),
+		configVersions:    map[string]string{},
+		containerLocks:    map[string]*sync.Mutex{},
+		hostTransports:    map[string]hostAgentTransport{},
+		startedContainers: map[string]struct{}{},
 	}
 }
 
@@ -361,6 +363,8 @@ func (h *agentHost) Close(ctx context.Context) {
 // Fresh starts require a non-empty server-minted freshSessionID; resumes use
 // resume_session_id and ignore freshSessionID. An ERRORED session may be
 // recovered by Reload or by resume Start under the same session id.
+
+//nolint:gocognit,gocyclo,cyclop // Preserve Start's inline guards and resume flow.
 func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody, freshSessionID string) (string, error) {
 	name := req.GetContainerName()
 	// Serialize transitions on this container across the whole Start: the
@@ -430,6 +434,11 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// it (RIG-1570 T8). Exported as COMPASS_RESUME_SESSION_FILE. A fresh start does
 	// nothing here; the discriminator is a non-empty resume_session_id.
 	env := h.agentEnv(handle)
+	resumeFiles, markedBody, err := h.prepareResume(ctx, name, req.GetResumeSessionId(), resumeBody)
+	if err != nil {
+		return "", err
+	}
+	resumeBody = markedBody
 	if id := req.GetResumeSessionId(); id != "" {
 		// The resume_session_id becomes a filename component below. The Server
 		// authz-gates it and never sends a locator, but the Runner is a distinct
@@ -457,6 +466,9 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		h.log.Info("materializing resume session file", "container", name, "resume_session_id", id)
 		if err := h.runtime.WriteAgentFile(ctx, handle.ID(), handle.WorkspaceUID(), handle.HomeDir(), relPath, resumeBody); err != nil {
 			return "", fmt.Errorf("materializing resume session file for container %q: %w", name, err)
+		}
+		if err := h.writeResumeBlobs(ctx, name, handle, resumeFiles); err != nil {
+			h.log.Warn("session blob materialization failed; starting with local references", "container", name, "session_id", id, "error", err)
 		}
 		env.ResumeSessionFile = filepath.Join(handle.HomeDir(), relPath)
 	} else if resumeBody != "" {
@@ -824,6 +836,7 @@ func (h *agentHost) retireContainer(containerName string) {
 	}
 	// A later re-Provision of the name re-records from a fresh materialize.
 	delete(h.configVersions, containerName)
+	delete(h.startedContainers, containerName)
 	h.mu.Unlock()
 
 	// Outside the lock: stopping terminates a child and joins its drains. Logged,
@@ -1157,6 +1170,26 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// bindAndStartAgent launches Start's agent, first binding a resumed lifetime's
+// transcript base. It runs under the container lock after the live-session
+// checks, so a refused resume never moves a live base and no frame of the new
+// lifetime precedes the bind. A fresh Start has no session row yet; base stays 0.
+func (h *agentHost) bindAndStartAgent(ctx context.Context, req *compassv1.StartAgentSessionRequest, sessionID string, id runtime.WorkloadID, env AgentEnv) (*AgentStream, error) {
+	if resumeID := req.GetResumeSessionId(); resumeID != "" {
+		if err := h.link.BindLifetime(ctx, req.GetContainerName(), resumeID); err != nil {
+			return nil, err
+		}
+	}
+	stream, err := h.link.StartAgent(ctx, sessionID, id, h.engine, env, h.log)
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	h.startedContainers[req.GetContainerName()] = struct{}{}
+	h.mu.Unlock()
+	return stream, nil
+}
+
 // bindReload rebinds a reloaded session's transcript base. A denial on this
 // Runner's own container means no session row yet (a Reload before the Server
 // records a fresh Start), so base 0 holds. Single-Server only: a multi-Server
@@ -1169,19 +1202,6 @@ func (h *agentHost) bindReload(ctx context.Context, containerName, sessionID str
 		return nil
 	}
 	return err
-}
-
-// bindAndStartAgent launches Start's agent, first binding a resumed lifetime's
-// transcript base. It runs under the container lock after the live-session
-// checks, so a refused resume never moves a live base and no frame of the new
-// lifetime precedes the bind. A fresh Start has no session row yet; base stays 0.
-func (h *agentHost) bindAndStartAgent(ctx context.Context, req *compassv1.StartAgentSessionRequest, sessionID string, id runtime.WorkloadID, env AgentEnv) (*AgentStream, error) {
-	if resumeID := req.GetResumeSessionId(); resumeID != "" {
-		if err := h.link.BindLifetime(ctx, req.GetContainerName(), resumeID); err != nil {
-			return nil, err
-		}
-	}
-	return h.link.StartAgent(ctx, sessionID, id, h.engine, env, h.log)
 }
 
 // requireContainer fails fast when a registered container was removed outside
@@ -1291,4 +1311,29 @@ func (h *agentHost) sweepExecSessions(ctx context.Context, s *liveSession) error
 		return nil
 	}
 	return sweeper.SweepExecSessions(ctx, s.containerID, strconv.FormatUint(uint64(s.agentUID), 10))
+}
+
+func (h *agentHost) writeResumeBlobs(ctx context.Context, containerName string, handle *runtime.AgentHandle, files []runtime.AgentFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	if err := h.runtime.WriteAgentFiles(ctx, handle.ID(), handle.WorkspaceUID(), handle.HomeDir(), filepath.Join(".omp", "agent", "blobs"), files); err != nil {
+		return fmt.Errorf("materializing session blobs for container %q: %w", containerName, err)
+	}
+	return nil
+}
+
+// prepareResume fetches and rewrites only server-confirmed missing image refs.
+func (h *agentHost) prepareResume(ctx context.Context, containerName, sessionID, body string) ([]runtime.AgentFile, string, error) {
+	if sessionID == "" {
+		return nil, body, nil
+	}
+	h.mu.Lock()
+	_, alreadyStarted := h.startedContainers[containerName]
+	h.mu.Unlock()
+	marked, files, err := h.resumeBlobs(ctx, containerName, sessionID, body, alreadyStarted)
+	if err != nil {
+		return nil, "", err
+	}
+	return files, marked, nil
 }

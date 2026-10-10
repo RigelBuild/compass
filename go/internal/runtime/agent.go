@@ -10,10 +10,12 @@
 package runtime
 
 import (
+	"archive/tar"
 	"context"
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -250,11 +252,75 @@ func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id WorkloadID, uid ui
 	return requireSuccess("write agent file", out)
 }
 
+// AgentFile is a file materialized beneath the agent's private blob directory.
+type AgentFile struct {
+	Name string
+	Data []byte
+}
+
+// WriteAgentFiles writes verified blobs in as few private execs as the exec
+// size limit allows, under one deadline that bounds resume latency.
+func (r *AgentRuntime) WriteAgentFiles(ctx context.Context, id WorkloadID, uid uint32, homeDir, relDir string, files []AgentFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for start := 0; start < len(files); {
+		end := start + 1
+		size := len(files[start].Data)
+		for end < len(files) && size+len(files[end].Data) <= maxAgentFilesArchiveBytes {
+			size += len(files[end].Data)
+			end++
+		}
+		if err := r.writeAgentFilesArchive(ctx, id, uid, homeDir, relDir, files[start:end]); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
 // EgressPosture reports how this runtime constrains agent egress, so a caller
 // can surface it per session instead of inferring containment from a green
 // launch.
 func (r *AgentRuntime) EgressPosture() EgressPosture {
 	return PostureOf(r.runtime)
+}
+
+// maxAgentFilesArchiveBytes keeps each archive exec under guestd's 16 MiB
+// request read cap; one file up to the session-blob cap still fits alone.
+const maxAgentFilesArchiveBytes = 15 << 20
+
+func (r *AgentRuntime) writeAgentFilesArchive(ctx context.Context, id WorkloadID, uid uint32, homeDir, relDir string, files []AgentFile) error {
+	var archive strings.Builder
+	writer := tar.NewWriter(&archive)
+	for i := range files {
+		file := &files[i]
+		header := &tar.Header{Name: file.Name, Mode: 0o600, Size: int64(len(file.Data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}
+		if err := writer.WriteHeader(header); err != nil {
+			return fmt.Errorf("building agent blob archive: %w", err)
+		}
+		if _, err := writer.Write(file.Data); err != nil {
+			return fmt.Errorf("building agent blob archive: %w", err)
+		}
+		file.Data = nil
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("building agent blob archive: %w", err)
+	}
+
+	archiveString := archive.String()
+	script := `set -eu; umask 077; mkdir -p "$1"; tar -x -f - -C "$1"`
+	spec := NewExecSpec("sh", "-c", script, "sh", filepath.Join(homeDir, relDir)).
+		AsUser(strconv.FormatUint(uint64(uid), 10)).
+		InDir(homeDir).
+		WithStdin(archiveString)
+	out, err := r.runtime.Exec(ctx, id, spec)
+	if err != nil {
+		return atStage("write agent files", err)
+	}
+	return requireSuccess("write agent files", out)
 }
 
 // createAndStart creates then starts the container, cleaning up a created but

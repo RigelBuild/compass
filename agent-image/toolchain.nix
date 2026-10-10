@@ -118,6 +118,9 @@ pkgs.buildEnv {
     pkgs.getent
     pkgs.gawk
 
+
+    # The resume path expands a streamed archive into the private blob directory.
+    pkgs.gnutar
     # A usable base environment.
     pkgs.bashInteractive
     pkgs.coreutils-full

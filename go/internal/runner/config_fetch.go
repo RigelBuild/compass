@@ -8,9 +8,12 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -94,4 +97,106 @@ func (l *ServerLink) FetchAgentConfig(ctx context.Context, ifVersion string) (Ag
 		return AgentConfigBundle{}, errConfigStreamNoVersion
 	}
 	return bundle, nil
+}
+
+const (
+	maxResumeBlobBytes     = 128 << 20
+	maxResumeBlobCount     = 256
+	resumeBlobFetchTimeout = 30 * time.Second
+)
+
+// SessionBlob is one content-addressed blob verified against SHA256 before return.
+type SessionBlob struct {
+	SHA256 string
+	Data   []byte
+}
+
+// SessionBlobFetch separates available files from Server-confirmed absences.
+type SessionBlobFetch struct {
+	Blobs  []SessionBlob
+	Absent map[string]struct{}
+}
+
+// FetchSessionBlobs streams blobs for a resumed session under the fixed budget.
+func (l *ServerLink) FetchSessionBlobs(ctx context.Context, containerName, sessionID string, sha256s []string) (result SessionBlobFetch, err error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, resumeBlobFetchTimeout)
+	defer cancel()
+	stream, err := l.client.FetchSessionBlobs(fetchCtx, connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{
+		ContainerName: containerName,
+		SessionId:     sessionID,
+		Sha256:        sha256s,
+	}))
+	if err != nil {
+		return SessionBlobFetch{}, fmt.Errorf("fetching session blobs: %w", err)
+	}
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("closing session blobs stream: %w", closeErr))
+		}
+	}()
+
+	result = SessionBlobFetch{Absent: make(map[string]struct{})}
+	var (
+		current *compassv1internal.SessionBlobHeader
+		data    []byte
+		budget  uint64
+		count   int
+		drop    bool
+	)
+	finish := func() {
+		if current == nil || drop || current.GetAbsent() || uint64(len(data)) != current.GetSizeBytes() {
+			return
+		}
+		digest := sha256.Sum256(data)
+		got := hex.EncodeToString(digest[:])
+		if got != current.GetSha256() {
+			return
+		}
+		result.Blobs = append(result.Blobs, SessionBlob{SHA256: got, Data: data})
+	}
+	for stream.Receive() {
+		frameVariant := stream.Msg().GetFrame()
+		if frameVariant == nil {
+			return SessionBlobFetch{}, errors.New("FetchSessionBlobs stream sent an unrecognized frame variant")
+		}
+		switch frame := frameVariant.(type) {
+		case *compassv1internal.FetchSessionBlobsResponse_Header:
+			finish()
+			current = frame.Header
+			if current == nil {
+				return SessionBlobFetch{}, errors.New("FetchSessionBlobs stream sent a nil header")
+			}
+			data = nil
+			drop = false
+			if current.GetAbsent() {
+				result.Absent[current.GetSha256()] = struct{}{}
+				continue
+			}
+			if count >= maxResumeBlobCount || current.GetSizeBytes() > uint64(maxResumeBlobBytes)-budget {
+				drop = true
+				continue
+			}
+			budget += current.GetSizeBytes()
+			count++
+			data = nil
+		case *compassv1internal.FetchSessionBlobsResponse_Chunk:
+			if current == nil {
+				return SessionBlobFetch{}, errors.New("FetchSessionBlobs stream sent a chunk before a header")
+			}
+			if !drop && !current.GetAbsent() {
+				data = append(data, frame.Chunk...)
+				if uint64(len(data)) > current.GetSizeBytes() {
+					drop = true
+					data = nil
+				}
+			}
+		default:
+			return SessionBlobFetch{}, errors.New("FetchSessionBlobs stream sent an unrecognized frame variant")
+		}
+	}
+	finish()
+	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return SessionBlobFetch{}, fmt.Errorf("receiving session blobs stream: %w", err)
+	}
+	return result, nil
 }

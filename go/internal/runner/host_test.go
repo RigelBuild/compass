@@ -15,8 +15,13 @@ package runner
 // RunnerService wire for the link's client.
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -2045,6 +2050,157 @@ func TestStartResumeWriteFailureFailsStart(t *testing.T) {
 	}
 	if execs := engine.streamingSpecs(); len(execs) != 0 {
 		t.Fatalf("ExecStreaming ran %d times after a failed resume-write, want 0 (write precedes StartAgent)", len(execs))
+	}
+}
+
+func TestStartResumeFetchesAndWritesSessionBlobsBeforeAgent(t *testing.T) {
+	data := []byte{0, 1, 2, 0xfe, 0xff}
+	digest := sha256.Sum256(data)
+	sha := hex.EncodeToString(digest[:])
+	pub := newCapturePublish()
+	pub.blobFrames = []*compassv1internal.FetchSessionBlobsResponse{
+		blobHeaderFrame(sha, uint64(len(data)), false),
+		blobChunkFrame(data[:2]),
+		blobChunkFrame(data[2:]),
+	}
+	engine := newRecordingExecRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, pub))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
+	ctx := context.Background()
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + sha + `"}]}}` + "\n"
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: "sess-1"}, body, ""); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	if len(pub.blobReqs) != 1 || strings.Join(pub.blobReqs[0].GetSha256(), ",") != sha {
+		t.Fatalf("FetchSessionBlobs requests = %+v, want requested digest %s", pub.blobReqs, sha)
+	}
+	var resumeWrite, blobWrite *runtime.ExecSpec
+	for _, spec := range engine.execSnapshot() {
+		if spec.Stdin == nil {
+			continue
+		}
+		if *spec.Stdin == body {
+			copy := spec
+			resumeWrite = &copy
+		} else if strings.Contains(strings.Join(spec.Command, " "), "tar -x -f -") {
+			copy := spec
+			blobWrite = &copy
+		}
+	}
+	if resumeWrite == nil || blobWrite == nil {
+		t.Fatalf("resume/blob execs missing: resume=%v blob=%v", resumeWrite, blobWrite)
+	}
+	if blobWrite.User == nil || *blobWrite.User != "1000" || blobWrite.Workdir == nil || *blobWrite.Workdir != "/home/agent" {
+		t.Fatalf("blob exec user/workdir = %v/%v, want agent uid and home", blobWrite.User, blobWrite.Workdir)
+	}
+	if !strings.Contains(strings.Join(blobWrite.Command, " "), ".omp/agent/blobs") || len(*blobWrite.Stdin) == 0 {
+		t.Fatal("blob exec did not target the private blob directory or carry archive data")
+	}
+	archiveReader := tar.NewReader(strings.NewReader(*blobWrite.Stdin))
+	header, err := archiveReader.Next()
+	if err != nil || header.Name != sha {
+		t.Fatalf("blob archive first header = %v, %v; want digest %s", header, err, sha)
+	}
+	gotData, err := io.ReadAll(archiveReader)
+	if err != nil || !bytes.Equal(gotData, data) {
+		t.Fatalf("blob archive bytes = %v, %v; want %v", gotData, err, data)
+	}
+	execs := engine.execSnapshot()
+	resumeIndex := slices.IndexFunc(execs, func(spec runtime.ExecSpec) bool { return spec.Stdin != nil && *spec.Stdin == body })
+	blobIndex := slices.IndexFunc(execs, func(spec runtime.ExecSpec) bool {
+		return spec.Stdin != nil && strings.Contains(strings.Join(spec.Command, " "), "tar -x -f -")
+	})
+	if resumeIndex < 0 || blobIndex <= resumeIndex {
+		t.Fatalf("resume/blob exec order = %d/%d, want resume write before one blob archive exec", resumeIndex, blobIndex)
+	}
+	if len(engine.streamingSpecs()) != 1 {
+		t.Fatalf("streaming agent execs = %d, want one", len(engine.streamingSpecs()))
+	}
+}
+
+func TestStartFreshNeverFetchesSessionBlobs(t *testing.T) {
+	pub := newCapturePublish()
+	engine := newRecordingExecRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, pub))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
+	ctx := context.Background()
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "fresh-1"); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	if len(pub.blobReqs) != 0 {
+		t.Fatalf("fresh Start made %d session blob fetch calls, want none", len(pub.blobReqs))
+	}
+}
+
+func TestStartContinuesWhenSessionBlobFetchIsUnavailable(t *testing.T) {
+	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	pub := newCapturePublish()
+	pub.blobErr = connect.NewError(connect.CodeUnavailable, errors.New("blob fetch unavailable"))
+	engine := newRecordingExecRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, pub))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
+	ctx := context.Background()
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + hash + `"}]}}` + "\n"
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: "resume-1"}, body, ""); err != nil {
+		t.Fatalf("Start after blob fetch error = %v, want success", err)
+	}
+	if !slices.ContainsFunc(engine.execSnapshot(), func(spec runtime.ExecSpec) bool { return spec.Stdin != nil && *spec.Stdin == body }) {
+		t.Fatal("resume file was not written after transient blob fetch error")
+	}
+	if len(engine.streamingSpecs()) != 1 {
+		t.Fatalf("agent streaming exec count = %d, want 1", len(engine.streamingSpecs()))
+	}
+}
+
+func TestStartResumeSkipsMarkerForPreviouslyStartedContainer(t *testing.T) {
+	const absent = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	pub := newCapturePublish()
+	pub.blobFrames = []*compassv1internal.FetchSessionBlobsResponse{blobHeaderFrame(absent, 0, true)}
+	engine := newRecordingExecRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, pub))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
+	ctx := context.Background()
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "fresh-1"); err != nil {
+		t.Fatalf("fresh Start = %v", err)
+	}
+	hostImpl := host.(*agentHost)
+	hostImpl.mu.Lock()
+	_, alreadyStarted := hostImpl.startedContainers["cont-1"]
+	hostImpl.mu.Unlock()
+	if !alreadyStarted {
+		t.Fatal("Start did not record the successfully launched agent")
+	}
+	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + absent + `"}]}}` + "\n"
+	marked, files, err := hostImpl.resumeBlobs(ctx, "cont-1", "resume-1", body, alreadyStarted)
+	if err != nil {
+		t.Fatalf("resumeBlobs = %v", err)
+	}
+	if marked != body || len(files) != 0 {
+		t.Fatalf("reused-container resume blobs = %q, %v; want unchanged body and no writes", marked, files)
 	}
 }
 
