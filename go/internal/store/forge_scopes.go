@@ -105,6 +105,46 @@ func validForgeRepository(repo string) bool {
 	return ok && org != "" && name != "" && !strings.Contains(org, "*") && !strings.Contains(name, "*") && !strings.Contains(name, "/")
 }
 
+// RevokeAgentForgeScope removes one agent row; removed is false when none existed.
+func (s *Store) RevokeAgentForgeScope(ctx context.Context, scope ForgeScope) (removed bool, err error) {
+	scope, err = scope.normalized()
+	if err != nil {
+		return false, err
+	}
+	n, err := s.q.RevokeAgentForgeScope(ctx, db.RevokeAgentForgeScopeParams{
+		AccountID:     string(scope.AccountID),
+		ForgeProvider: int16(scope.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16.
+		ForgeHost:     scope.Host,
+		Repo:          scope.Repo,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: revoke agent forge scope: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ListAgentForgeScopeRepos returns an account's own rows, not its owner's grants.
+func (s *Store) ListAgentForgeScopeRepos(ctx context.Context, accountID AccountID, provider ForgeProvider, host string) ([]string, error) {
+	if accountID == "" {
+		return nil, fmt.Errorf("%w: scope account id is required", ErrInvalidArgument)
+	}
+	if provider == ForgeProviderUnspecified {
+		return nil, fmt.Errorf("%w: forge provider is required", ErrInvalidArgument)
+	}
+	if host == "" {
+		return nil, fmt.Errorf("%w: forge host is required", ErrInvalidArgument)
+	}
+	repos, err := s.q.ListAgentForgeScopeRepos(ctx, db.ListAgentForgeScopeReposParams{
+		AccountID:     string(accountID),
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16.
+		ForgeHost:     host,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list agent forge scope repos: %w", err)
+	}
+	return repos, nil
+}
+
 // RevokeForgeScope removes one user grant; a missing grant is a no-op.
 func (s *Store) RevokeForgeScope(ctx context.Context, scope ForgeScope) error {
 	scope, err := scope.normalized()

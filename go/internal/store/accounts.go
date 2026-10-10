@@ -352,6 +352,14 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		}
 		return Account{}, fmt.Errorf("store: insert agent_account: %w", err)
 	}
+	if a.ParentAgentID != "" {
+		if err := qtx.CopyAgentForgeScopes(ctx, db.CopyAgentForgeScopesParams{
+			ChildID:  accountID,
+			ParentID: string(a.ParentAgentID),
+		}); err != nil {
+			return Account{}, fmt.Errorf("store: copy parent agent forge scopes: %w", err)
+		}
+	}
 
 	// Record the agent handle in the resolution index, scoped to its owner
 	// (owner_user_id = ownerUserID), so it is unique only within that owner's
