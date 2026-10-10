@@ -5,8 +5,9 @@ Tracker: RIG-4127. Freezes on merge.
 Builds on: [settle turn order](../../infra/runtime/compass-managed-settle-turn-order/design.md)
 (DL-382), [notification delivery](../../server/compass-notification-delivery/design.md).
 
-Ledger-impact: appends DL-401..DL-405 for idle batching, steer handling, the
-agent-owned queue, batch rendering, and the per-agent start-now control.
+Ledger-impact: adds `docs/designs/decisions/agent/DL-401.md` to `DL-405.md` for
+idle batching, steer handling, the agent-owned queue, batch rendering, and the
+per-agent start-now control.
 
 ## Problem / Intent
 
@@ -87,7 +88,10 @@ defaults to the five-minute cache entry (`getCacheControl`,
 const retention = resolveCacheRetention(cacheRetention, "short");
 ```
 
-A 60 s window uses at most a fifth of that entry, so the cache stays warm.
+A 60 s window uses at most a fifth of that entry, so the cache stays warm. The
+cap may grow toward five minutes once use shows the tradeoff: one turn over many
+items costs less than items trickling in, but a moving agent keeps its cache
+warm.
 
 ### Q2: which sources batch
 
@@ -539,16 +543,8 @@ name and its exact `"on"` value.
 | Tell the UI a window is open | Yes: a `SessionBatchPending` event shows the count on the button. The event is live-only, so the button stays enabled. | Q6, T1, T5 |
 | Measure the saving | Ship behind `COMPASS_AGENT_BATCHING`, default off, and compare both modes. | The change, T1, T3 |
 | Keep forge items immediate | No. CI bursts are the main saving, so the forge lane batches. | Q2 |
+| Mid-turn arrivals | Wait for `agent_end`, as today. Only a steer is injected into a running turn. | The change |
 
 ## Open Questions
 
-- **OQ-1: while a turn is running, should a new message wait for the turn to
-  end, or be pushed into the running turn?** Not load-bearing; the plan assumes
-  (A).
-  - (A) Wait. A message that arrives mid-turn waits until the turn ends, then
-    goes in with everything else that arrived. This is how the agent works
-    today, and the window above only changes the idle case.
-  - (B) Push in. Each new message is injected into the running turn, the way an
-    @-mention is. The agent sees it sooner, but every message would interrupt
-    whatever the agent is doing.
-  - Recommendation: (A). Use an @-mention when a message must interrupt.
+None.
