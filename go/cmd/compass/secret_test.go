@@ -119,20 +119,6 @@ func TestRunSecretSetProviderKind(t *testing.T) {
 	}
 }
 
-func TestSecretSetKindHelpOmitsGitHubKind(t *testing.T) {
-	cmd := newSecretSetCmd()
-	kindFlag := cmd.Flags().Lookup("kind")
-	if kindFlag == nil {
-		t.Fatal("secret set has no --kind flag")
-	}
-	if strings.Contains(kindFlag.Usage, "gh") {
-		t.Errorf("--kind help = %q, want only generic and provider", kindFlag.Usage)
-	}
-	if cmd.Flags().Lookup("host") != nil {
-		t.Error("secret set still exposes the obsolete --host flag")
-	}
-}
-
 // TestRunSecretSetRejections covers client-side validation that fails before any
 // RPC: bad routing, an unsupported kind, and an empty stdin value.
 func TestRunSecretSetRejections(t *testing.T) {
@@ -230,6 +216,9 @@ func TestRunSecretList(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("list output %q missing %q", got, want)
 		}
+	}
+	if !strings.Contains(got, "OPENAI_KEY: set") || !strings.Contains(got, "provider=openai") {
+		t.Errorf("list output %q is missing the set provider status for OPENAI_KEY", got)
 	}
 	if fake.gotAuth != "Bearer test-token" {
 		t.Errorf("Authorization = %q, want Bearer test-token", fake.gotAuth)

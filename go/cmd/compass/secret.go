@@ -49,7 +49,7 @@ func newSecretCmd() *cobra.Command {
 	return cmd
 }
 
-// newSecretSetCmd builds `secret set <NAME> [--delivery] [--kind] [--provider]`:
+// newSecretSetCmd builds `secret set <NAME> [--delivery] [--kind] [--provider] [--scope]`:
 // declare a secret's registry row and write its value. The value is read from
 // stdin, never a flag or positional, so it cannot leak into the process table.
 func newSecretSetCmd() *cobra.Command {

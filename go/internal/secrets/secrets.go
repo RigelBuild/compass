@@ -95,6 +95,15 @@ func ValidateName(name string) error {
 	return nil
 }
 
+// ReservedGitHubEnvNames are GitHub CLI credential environment keys. User
+// secrets with these names cannot replace the brokered App credential.
+var ReservedGitHubEnvNames = map[string]struct{}{
+	"GH_TOKEN":                {},
+	"GITHUB_TOKEN":            {},
+	"GH_ENTERPRISE_TOKEN":     {},
+	"GITHUB_ENTERPRISE_TOKEN": {},
+}
+
 // profileGrammar is the grammar a SecretSpec profile name must match to be a
 // safe TOML bare key. A profile is operator-configured (WithProfile), but it is
 // interpolated into the manifest's [profiles.<profile>] table header, so a value

@@ -255,6 +255,24 @@ func TestSetSecretRejectsGitHubKind(t *testing.T) {
 	}
 }
 
+func TestSetSecretRejectsReservedGitHubEnvNames(t *testing.T) {
+	f := newSecretsFixture(t)
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := f.client.SetSecret(context.Background(), setReq(f.userToken, name, "user-token"))
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("SetSecret(%q) code = %v, want InvalidArgument", name, got)
+			}
+		})
+	}
+	if got := resolvedValues(t, context.Background(), f, f.agentID); len(got) != 0 {
+		t.Fatalf("rejected reserved names wrote rows: %v, want none", got)
+	}
+	if f.signaler.calls != 0 {
+		t.Fatalf("secrets version bumped %d times for rejected writes, want 0", f.signaler.calls)
+	}
+}
+
 // TestSetSecretBumpsSecretsVersion: a successful Set bumps the secrets version
 // (signals live sessions to re-fetch), a rejected one does not.
 func TestSetSecretBumpsSecretsVersion(t *testing.T) {

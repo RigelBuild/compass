@@ -406,6 +406,10 @@ func (m *SecretMaterializer) Install(ctx context.Context, id WorkloadID, homeDir
 		if err := m.runScript(ctx, id, homeDir, uid, "install gh credentials", script); err != nil {
 			return err
 		}
+	} else {
+		if err := m.runScript(ctx, id, homeDir, uid, "remove stale gh credentials", removeGHHostsScript(homeDir)); err != nil {
+			return err
+		}
 	}
 	if len(files) > 0 {
 		script, err := SecretSetupScript(homeDir, files)
@@ -426,6 +430,11 @@ func (m *SecretMaterializer) Install(ctx context.Context, id WorkloadID, homeDir
 		return err
 	}
 	return nil
+}
+
+// removeGHHostsScript removes hosts.yml, the credential file managed by this materializer.
+func removeGHHostsScript(homeDir string) string {
+	return "set -eu\nrm -f " + shellSingleQuote(filepath.Join(homeDir, ".config", "gh", "hosts.yml")) + "\n"
 }
 
 // runScript feeds one setup script to `sh -s` over stdin as the agent uid in the

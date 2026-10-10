@@ -112,6 +112,9 @@ func (s *secretsService) SetSecret(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	if _, reserved := secrets.ReservedGitHubEnvNames[msg.GetName()]; reserved {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("GitHub credential environment names are reserved for the GitHub App"))
+	}
 	if strings.TrimSpace(msg.GetValue()) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("secret value is empty"))
 	}

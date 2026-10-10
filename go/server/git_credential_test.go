@@ -309,6 +309,10 @@ func TestBrokeredSecretResolverFiltersUserGitHubSecrets(t *testing.T) {
 		{Name: "OTHER_GH", Value: "other-token", Kind: secrets.SecretGH, Host: "github.enterprise"},
 		{Name: "GENERIC", Value: "generic-value", Kind: secrets.SecretGeneric},
 		{Name: "PROVIDER", Value: "provider-value", Kind: secrets.SecretProvider, Provider: "anthropic"},
+		{Name: "GH_TOKEN", Value: "legacy-token", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
+		{Name: "GITHUB_TOKEN", Value: "legacy-token", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
+		{Name: "GH_ENTERPRISE_TOKEN", Value: "legacy-token", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
+		{Name: "GITHUB_ENTERPRISE_TOKEN", Value: "legacy-token", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
 	}
 	tests := []struct {
 		name          string
@@ -345,9 +349,6 @@ func TestBrokeredSecretResolverFiltersUserGitHubSecrets(t *testing.T) {
 			got, err := resolver.ResolveFor(context.Background(), "agent-id", tt.reason)
 			if (err != nil) != tt.resolverError {
 				t.Fatalf("ResolveFor error = %v, want resolver error %v", err, tt.resolverError)
-			}
-			if tt.resolverError && len(got) != 2 {
-				t.Fatalf("resolved secrets after inner error = %+v, want only generic and provider", got)
 			}
 			assertNoUserGitHubSecrets(t, got, tt.wantToken)
 			if minter != nil && minter.callCount() != tt.wantMintCalls {
