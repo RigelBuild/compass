@@ -91,7 +91,10 @@ func (r *brokeredSecretResolver) ResolveFor(ctx context.Context, agent store.Acc
 		return nil, nil
 	}
 	resolved, err := r.inner.ResolveFor(ctx, agent, reason)
-	if err != nil || r.broker == nil || reason != gitCredentialReason || hasGitHubSecret(resolved, r.broker.host) {
+	resolved = slices.DeleteFunc(resolved, func(secret secrets.ResolvedSecret) bool {
+		return secret.Kind == secrets.SecretGH || secrets.IsReservedGitHubEnvName(secret.Name)
+	})
+	if err != nil || r.broker == nil || reason != gitCredentialReason {
 		return resolved, err
 	}
 	tok, ok := r.broker.credential(ctx, agent)
@@ -106,15 +109,6 @@ func (r *brokeredSecretResolver) ResolveFor(ctx context.Context, agent store.Acc
 		Kind:     secrets.SecretGH,
 		Host:     r.broker.host,
 	}), nil
-}
-
-func hasGitHubSecret(resolved []secrets.ResolvedSecret, host string) bool {
-	for _, secret := range resolved {
-		if secret.Kind == secrets.SecretGH && secret.Host == host {
-			return true
-		}
-	}
-	return false
 }
 
 func (b *gitCredentialBroker) credential(ctx context.Context, agent store.AccountID) (string, bool) {

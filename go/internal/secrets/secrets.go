@@ -33,6 +33,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -93,6 +94,28 @@ func ValidateName(name string) error {
 		return fmt.Errorf("secrets: invalid name %q: must match %s", name, nameGrammar.String())
 	}
 	return nil
+}
+
+// reservedGitHubEnvNames are env keys that supply or redirect a gh or git
+// credential, so a user secret with one could replace the brokered App token.
+var reservedGitHubEnvNames = map[string]struct{}{
+	"GH_TOKEN":                {},
+	"GITHUB_TOKEN":            {},
+	"GH_ENTERPRISE_TOKEN":     {},
+	"GITHUB_ENTERPRISE_TOKEN": {},
+	"GH_CONFIG_DIR":           {},
+	"XDG_CONFIG_HOME":         {},
+	"HOME":                    {},
+	"GIT_ASKPASS":             {},
+	"SSH_ASKPASS":             {},
+}
+
+// IsReservedGitHubEnvName reports whether a user secret name is reserved for the
+// GitHub App credential. The GIT_CONFIG prefix covers git's runtime-config env
+// (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, ...), which can set credential.helper.
+func IsReservedGitHubEnvName(name string) bool {
+	_, reserved := reservedGitHubEnvNames[name]
+	return reserved || strings.HasPrefix(name, "GIT_CONFIG")
 }
 
 // profileGrammar is the grammar a SecretSpec profile name must match to be a

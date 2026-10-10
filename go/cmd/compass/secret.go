@@ -16,10 +16,8 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
-// CLI vocabulary tokens for the --delivery and --kind flags. Each is both an
-// accepted flag value (parseDelivery/parseKind) and the operator-facing label
-// rendered back (deliveryLabel/kindLabel), so one constant keeps input and
-// output in sync.
+// CLI vocabulary tokens for supported secret writes and rendered list values.
+// kindGH remains only to display legacy GitHub-kind rows.
 const (
 	deliveryEnv  = "env"
 	deliveryFile = "file"
@@ -51,12 +49,11 @@ func newSecretCmd() *cobra.Command {
 	return cmd
 }
 
-// newSecretSetCmd builds `secret set <NAME> [--delivery] [--kind] [--provider]
-// [--host]`: declare a secret's registry row and write its value. The value is
-// read from stdin, never a flag or positional, so it cannot leak into the
-// process table (the load-bearing convention shared with the bearer token).
+// newSecretSetCmd builds `secret set <NAME> [--delivery] [--kind] [--provider] [--scope]`:
+// declare a secret's registry row and write its value. The value is read from
+// stdin, never a flag or positional, so it cannot leak into the process table.
 func newSecretSetCmd() *cobra.Command {
-	var delivery, kind, provider, host, scope string
+	var delivery, kind, provider, scope string
 	cmd := &cobra.Command{
 		Use:   "set <NAME>",
 		Short: "Declare a secret and write its value (value read from stdin, admin)",
@@ -71,7 +68,6 @@ func newSecretSetCmd() *cobra.Command {
 				delivery: delivery,
 				kind:     kind,
 				provider: provider,
-				host:     host,
 				scope:    scope,
 			}, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
@@ -79,11 +75,9 @@ func newSecretSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&delivery, "delivery", "",
 		"How the secret is delivered to agents: env or file (required).")
 	cmd.Flags().StringVar(&kind, "kind", kindGeneric,
-		"Secret kind: generic, provider, or gh.")
+		"Secret kind: generic or provider.")
 	cmd.Flags().StringVar(&provider, "provider", "",
 		"LLM provider id (required when --kind provider).")
-	cmd.Flags().StringVar(&host, "host", "",
-		"gh host (required when --kind gh).")
 	cmd.Flags().StringVar(&scope, "scope", scopeUser,
 		"Scope the write targets: user (private, default) or tenant (shared, admin-only).")
 	return cmd
@@ -151,14 +145,13 @@ func readSecretValue(in io.Reader) (string, error) {
 	return value, nil
 }
 
-// secretSetArgs is the resolved `secret set` input: the name and the routing
-// flags, parsed and validated before any RPC.
+// secretSetArgs is the resolved `secret set` input: name and routing flags
+// parsed and validated before any RPC.
 type secretSetArgs struct {
 	name     string
 	delivery string
 	kind     string
 	provider string
-	host     string
 	scope    string
 }
 
@@ -177,17 +170,13 @@ func parseDelivery(s string) (compassv1.SecretDelivery, error) {
 }
 
 // parseKind maps the --kind flag to its enum and enforces the routing field each
-// kind requires: provider carries a provider id, gh carries a host.
-func parseKind(kind, provider, host string) (compassv1.SecretKind, error) {
+// supported kind requires: provider carries a provider id.
+func parseKind(kind, provider string) (compassv1.SecretKind, error) {
 	switch kind {
 	case kindGeneric:
 		if provider != "" {
 			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
 				errors.New("--provider is only valid with --kind provider")
-		}
-		if host != "" {
-			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
-				errors.New("--host is only valid with --kind gh")
 		}
 		return compassv1.SecretKind_SECRET_KIND_GENERIC, nil
 	case kindProvider:
@@ -195,24 +184,10 @@ func parseKind(kind, provider, host string) (compassv1.SecretKind, error) {
 			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
 				errors.New("--kind provider requires --provider <id>")
 		}
-		if host != "" {
-			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
-				errors.New("--host is only valid with --kind gh")
-		}
 		return compassv1.SecretKind_SECRET_KIND_PROVIDER, nil
-	case kindGH:
-		if host == "" {
-			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
-				errors.New("--kind gh requires --host <h>")
-		}
-		if provider != "" {
-			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
-				errors.New("--provider is only valid with --kind provider")
-		}
-		return compassv1.SecretKind_SECRET_KIND_GH, nil
 	default:
 		return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
-			fmt.Errorf("unknown kind %q: pass --kind generic, provider, or gh", kind)
+			fmt.Errorf("unknown kind %q: pass --kind generic or --kind provider", kind)
 	}
 }
 
@@ -239,7 +214,7 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 	if err != nil {
 		return err
 	}
-	kind, err := parseKind(args.kind, args.provider, args.host)
+	kind, err := parseKind(args.kind, args.provider)
 	if err != nil {
 		return err
 	}
@@ -260,7 +235,6 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 		Delivery: delivery,
 		Kind:     kind,
 		Provider: args.provider,
-		Host:     args.host,
 		Scope:    scope,
 	})); err != nil {
 		return fmt.Errorf("setting secret %s: %w", args.name, err)

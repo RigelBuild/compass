@@ -237,6 +237,42 @@ func TestSetSecretUserOnly(t *testing.T) {
 	}
 }
 
+func TestSetSecretRejectsGitHubKind(t *testing.T) {
+	f := newSecretsFixture(t)
+	req := setReq(f.userToken, "GH_TOKEN", "user-token")
+	req.Msg.Kind = compassv1.SecretKind_SECRET_KIND_GH
+	req.Msg.Host = "github.com"
+
+	_, err := f.client.SetSecret(context.Background(), req)
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("SetSecret with GH kind code = %v, want InvalidArgument", got)
+	}
+	if got := resolvedValues(t, context.Background(), f, f.agentID); len(got) != 0 {
+		t.Fatalf("rejected GitHub secret wrote rows: %v, want none", got)
+	}
+	if f.signaler.calls != 0 {
+		t.Fatalf("secrets version bumped %d times on rejected GitHub secret, want 0", f.signaler.calls)
+	}
+}
+
+func TestSetSecretRejectsReservedGitHubEnvNames(t *testing.T) {
+	f := newSecretsFixture(t)
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR", "GIT_ASKPASS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_GLOBAL"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := f.client.SetSecret(context.Background(), setReq(f.userToken, name, "user-token"))
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("SetSecret(%q) code = %v, want InvalidArgument", name, got)
+			}
+		})
+	}
+	if got := resolvedValues(t, context.Background(), f, f.agentID); len(got) != 0 {
+		t.Fatalf("rejected reserved names wrote rows: %v, want none", got)
+	}
+	if f.signaler.calls != 0 {
+		t.Fatalf("secrets version bumped %d times for rejected writes, want 0", f.signaler.calls)
+	}
+}
+
 // TestSetSecretBumpsSecretsVersion: a successful Set bumps the secrets version
 // (signals live sessions to re-fetch), a rejected one does not.
 func TestSetSecretBumpsSecretsVersion(t *testing.T) {

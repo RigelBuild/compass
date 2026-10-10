@@ -119,28 +119,8 @@ func TestRunSecretSetProviderKind(t *testing.T) {
 	}
 }
 
-// TestRunSecretSetGhKind asserts a gh secret carries its host and maps to the GH
-// kind.
-func TestRunSecretSetGhKind(t *testing.T) {
-	fake := &fakeSecrets{}
-	client := startFakeSecretsServer(t, fake)
-
-	var out strings.Builder
-	args := secretSetArgs{name: "GH", delivery: "env", kind: "gh", host: "github.com", scope: "user"}
-	if err := runSecretSet(context.Background(), client, args, strings.NewReader("tok"), &out); err != nil {
-		t.Fatalf("runSecretSet: %v", err)
-	}
-	if fake.gotSet.GetKind() != compassv1.SecretKind_SECRET_KIND_GH {
-		t.Errorf("kind = %v, want GH", fake.gotSet.GetKind())
-	}
-	if fake.gotSet.GetHost() != "github.com" {
-		t.Errorf("host = %q, want github.com", fake.gotSet.GetHost())
-	}
-}
-
-// TestRunSecretSetRejections covers the client-side validation that fails before
-// any RPC: a bad/missing delivery, a provider kind without --provider, a gh kind
-// without --host, and an empty stdin value.
+// TestRunSecretSetRejections covers client-side validation that fails before any
+// RPC: bad routing, an unsupported kind, and an empty stdin value.
 func TestRunSecretSetRejections(t *testing.T) {
 	tests := []struct {
 		name string
@@ -167,10 +147,10 @@ func TestRunSecretSetRejections(t *testing.T) {
 			want: "--provider",
 		},
 		{
-			name: "gh kind without host",
+			name: "gh kind is rejected",
 			args: secretSetArgs{name: "X", delivery: "env", kind: "gh"},
 			in:   "v",
-			want: "--host",
+			want: "unknown kind",
 		},
 		{
 			name: "unknown kind",
@@ -231,12 +211,14 @@ func TestRunSecretList(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"OPENAI_KEY", "set", "provider=openai",
-		"GH_TOKEN", "unset", "host=github.com", "delivery=file",
+		"GH_TOKEN", "unset", "gh", "host=github.com", "delivery=file",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("list output %q missing %q", got, want)
 		}
+	}
+	if !strings.Contains(got, "OPENAI_KEY: set") || !strings.Contains(got, "provider=openai") {
+		t.Errorf("list output %q is missing the set provider status for OPENAI_KEY", got)
 	}
 	if fake.gotAuth != "Bearer test-token" {
 		t.Errorf("Authorization = %q, want Bearer test-token", fake.gotAuth)
@@ -276,27 +258,38 @@ func TestRunSecretDelete(t *testing.T) {
 	}
 }
 
-// TestParseKindRoutingRejections asserts parseKind rejects routing flags that do
-// not belong to the chosen kind, and still accepts each kind's valid routing.
+// TestSecretSetRejectsHostFlag: `--host` only routed a gh secret, so a script
+// still passing it must fail at parse time rather than silently drop it.
+func TestSecretSetRejectsHostFlag(t *testing.T) {
+	cmd := newSecretSetCmd()
+	cmd.SetArgs([]string{"X", "--kind", "generic", "--delivery", "env", "--host", "github.com"})
+	cmd.SetIn(strings.NewReader("v"))
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --host") {
+		t.Fatalf("secret set --host = %v, want unknown flag error", err)
+	}
+}
+
+// TestParseKindRoutingRejections asserts parseKind rejects unknown kinds and
+// routing flags that do not belong to the chosen kind.
 func TestParseKindRoutingRejections(t *testing.T) {
 	reject := []struct {
 		name     string
 		kind     string
 		provider string
-		host     string
 		want     string
 	}{
 		{name: "generic with provider", kind: kindGeneric, provider: "foo", want: "--provider"},
-		{name: "generic with host", kind: kindGeneric, host: "h", want: "--host"},
-		{name: "provider with host", kind: kindProvider, provider: "foo", host: "h", want: "--host"},
-		{name: "gh with provider", kind: kindGH, host: "h", provider: "foo", want: "--provider"},
-		{name: "generic with both", kind: kindGeneric, provider: "foo", host: "h", want: "--provider"},
+		{name: "provider without provider", kind: kindProvider, want: "--provider"},
+		{name: "gh kind is rejected", kind: "gh", want: "unknown kind"},
+		{name: "unknown kind", kind: "totp", want: "unknown kind"},
 	}
 	for _, tt := range reject {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseKind(tt.kind, tt.provider, tt.host)
+			got, err := parseKind(tt.kind, tt.provider)
 			if err == nil {
-				t.Fatalf("parseKind(%q, %q, %q) = nil error, want rejection", tt.kind, tt.provider, tt.host)
+				t.Fatalf("parseKind(%q, %q) = nil error, want rejection", tt.kind, tt.provider)
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error %q does not mention %q", err.Error(), tt.want)
@@ -311,18 +304,16 @@ func TestParseKindRoutingRejections(t *testing.T) {
 		name     string
 		kind     string
 		provider string
-		host     string
 		want     compassv1.SecretKind
 	}{
 		{name: "generic no routing", kind: kindGeneric, want: compassv1.SecretKind_SECRET_KIND_GENERIC},
 		{name: "provider with provider", kind: kindProvider, provider: "anthropic", want: compassv1.SecretKind_SECRET_KIND_PROVIDER},
-		{name: "gh with host", kind: kindGH, host: "github.com", want: compassv1.SecretKind_SECRET_KIND_GH},
 	}
 	for _, tt := range accept {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseKind(tt.kind, tt.provider, tt.host)
+			got, err := parseKind(tt.kind, tt.provider)
 			if err != nil {
-				t.Fatalf("parseKind(%q, %q, %q) = %v, want accept", tt.kind, tt.provider, tt.host, err)
+				t.Fatalf("parseKind(%q, %q) = %v, want accept", tt.kind, tt.provider, err)
 			}
 			if got != tt.want {
 				t.Errorf("kind = %v, want %v", got, tt.want)

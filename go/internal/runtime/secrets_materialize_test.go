@@ -423,6 +423,27 @@ func TestInstallMultipleGHHostsAllLand(t *testing.T) {
 	assert0600(t, filepath.Join(home, ".config", "gh", "hosts.yml"))
 }
 
+// TestInstallRemovesStaleGHHostsAfterLastCredentialDisappears verifies that an
+// empty refresh removes the managed hosts file written by the previous set.
+func TestInstallRemovesStaleGHHostsAfterLastCredentialDisappears(t *testing.T) {
+	home := t.TempDir()
+	rt := &scriptRunner{}
+	m := NewSecretMaterializer(rt, discardLog())
+	path := filepath.Join(home, ".config", "gh", "hosts.yml")
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, []secrets.ResolvedSecret{{Name: "GITHUB_APP_TOKEN", Value: "app-token", Kind: secrets.SecretGH, Host: "github.com", Delivery: secrets.DeliveryFile}}); err != nil {
+		t.Fatalf("Install with GitHub credential: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("hosts.yml after credential install: %v", err)
+	}
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, nil); err != nil {
+		t.Fatalf("Install with no GitHub credentials: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("hosts.yml after empty refresh: stat error = %v, want not exist", err)
+	}
+}
+
 // TestGHHostsScriptSameHostCollapsesToOneBlock: two gh credentials naming the
 // SAME host must collapse to a single host block (last wins). gh loads
 // hosts.yml with yaml.v3, which rejects a duplicate mapping key — so emitting
@@ -534,9 +555,9 @@ func TestInstallEmptySetWritesOnlyTheEmptyEnvFile(t *testing.T) {
 	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, nil); err != nil {
 		t.Fatalf("Install(empty) = %v, want nil", err)
 	}
-	// Exactly one exec: the env-file write.
-	if specs := rt.specsSnapshot(); len(specs) != 1 {
-		t.Fatalf("Install(empty) ran %d execs, want 1 (the env-file only)", len(specs))
+	// The empty env file and stale GitHub credential removal each run once.
+	if specs := rt.specsSnapshot(); len(specs) != 2 {
+		t.Fatalf("Install(empty) ran %d execs, want 2 (env-file write and stale credential removal)", len(specs))
 	}
 	envPath := filepath.Join(home, ".compass", "env")
 	env, err := os.ReadFile(envPath)
