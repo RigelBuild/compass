@@ -82,6 +82,23 @@ const composerSend = (c: HTMLElement) =>
  *  then open the primary topic so the composer is bound before the body runs.
  *  Every hop is a resolved promise, so the bounded microtask drain is
  *  deterministic — no timers. */
+// jsdom does no layout; stand in the three box heights the composer reads.
+function stubBox(
+	el: HTMLElement,
+	box: () => { scroll: number; client: number; offset: number },
+): void {
+	for (const [prop, key] of [
+		["scrollHeight", "scroll"],
+		["clientHeight", "client"],
+		["offsetHeight", "offset"],
+	] as const) {
+		Object.defineProperty(el, prop, {
+			configurable: true,
+			get: () => box()[key],
+		});
+	}
+}
+
 async function mountComposer(fake: FakeComms): Promise<{
 	store: AppStore;
 	input: HTMLTextAreaElement;
@@ -206,18 +223,17 @@ describe("topic composer (live PostMessage)", () => {
 
 	// A textarea does not grow by itself: each input resets the height and
 	// then sizes it to the content (the primitive's max-height caps it).
-	test("input grows the composer to its scrollHeight", async () => {
+	// Under border-box the height must also hold the border, which
+	// scrollHeight leaves out, or every multi-line draft scrolls by it.
+	test("input grows the composer to its content plus its border", async () => {
 		const fake = createFakeComms(snapshot());
 		const { input } = await mountComposer(fake);
 		try {
-			Object.defineProperty(input, "scrollHeight", {
-				configurable: true,
-				get: () => 120,
-			});
+			stubBox(input, () => ({ scroll: 120, client: 118, offset: 120 }));
 			fireEvent.input(input, { target: { value: "a\nb\nc\nd" } });
 			flush();
 
-			expect(input.style.height).toBe("120px");
+			expect(input.style.height).toBe("122px");
 		} finally {
 			fake.close();
 		}
@@ -278,13 +294,21 @@ describe("topic composer (live PostMessage)", () => {
 		try {
 			fake.failNextPost(new Error("door is shut"));
 
-			fireEvent.input(input, { target: { value: "precious words" } });
+			// Two lines measure taller than the empty field, so the height shows
+			// which value it was last fitted to.
+			stubBox(input, () =>
+				input.value.includes("\n")
+					? { scroll: 60, client: 58, offset: 60 }
+					: { scroll: 38, client: 38, offset: 40 },
+			);
+			fireEvent.input(input, { target: { value: "precious\nwords" } });
 			flush();
 			fireEvent.click(send);
 			await settled();
 			flush();
 
-			expect(input.value).toBe("precious words");
+			expect(input.value).toBe("precious\nwords");
+			expect(input.style.height).toBe("62px");
 			expect(
 				container.querySelector(".conv-composer-error")?.textContent,
 			).toContain("door is shut");

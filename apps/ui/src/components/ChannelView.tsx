@@ -1,4 +1,11 @@
-import { type Component, createMemo, createSignal, For, Show } from "solid-js";
+import {
+	type Component,
+	createEffect,
+	createMemo,
+	createSignal,
+	For,
+	Show,
+} from "solid-js";
 import {
 	blockText,
 	canPost,
@@ -355,6 +362,16 @@ export const Composer: Component<{
 	const [draft, setDraft] = createSignal("");
 	const [error, setError] = createSignal<string | null>(null);
 	let field: HTMLTextAreaElement | undefined;
+	// A textarea does not grow by itself: reset so it can shrink, then fit the
+	// content. scrollHeight leaves out the border, which border-box counts.
+	const fit = () => {
+		if (!field) return;
+		field.style.height = "auto";
+		field.style.height = `${field.scrollHeight + field.offsetHeight - field.clientHeight}px`;
+	};
+	// Typing, the clear on send and a restored failed post all change the draft;
+	// the last two fire no input event, so fit on the draft, after it renders.
+	createEffect(draft, fit);
 	// The post-policy gate (comms substrate §A2): an `owner_only` channel admits
 	// only its owner. Separate from the membership gate — the composer is
 	// disabled if EITHER fails. This is the honest-disabled pattern (mirroring
@@ -373,8 +390,6 @@ export const Composer: Component<{
 		if (!text || blocked()) return;
 		setError(null);
 		setDraft("");
-		// Clearing the value fires no input event, so drop the grown height here.
-		if (field) field.style.height = "";
 		store
 			.postMessage(props.channel.id, props.topic, text)
 			.catch((e: unknown) => {
@@ -396,9 +411,6 @@ export const Composer: Component<{
 				disabled={blocked()}
 				onInput={(e) => {
 					setDraft(e.currentTarget.value);
-					// A textarea does not grow by itself; reset first so it can shrink.
-					e.currentTarget.style.height = "auto";
-					e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
 				}}
 				onKeyDown={(e) => {
 					// Enter during IME composition commits the candidate, not the message.

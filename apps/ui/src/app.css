@@ -3263,6 +3263,8 @@
 
 .conv-composer .cx-btn {
 	flex: 0 0 auto;
+	/* Stay one row tall at the bottom while the composer grows. */
+	align-self: flex-end;
 }
 
 /* A failed post: the error sits beside the field on its own row (the composer
