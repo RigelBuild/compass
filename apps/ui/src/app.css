@@ -937,11 +937,19 @@
 	padding: 1px 4px;
 }
 
+/* A message row in the site anatomy: author, kind tag, flags, time right. */
 .msg {
 	display: flex;
 	flex-direction: column;
 	gap: 7px;
 	max-width: 100%;
+}
+
+/* A human post stands out by surface and rule, not by author color. */
+.msg[data-kind="user"] {
+	background: var(--cx-bg-raised);
+	border-left: 2px solid var(--cx-accent);
+	padding: 10px 12px;
 }
 
 .msg-head {
@@ -951,30 +959,56 @@
 	font-size: 11px;
 }
 
-.msg.user .msg-role {
+.msg-author {
+	color: var(--cx-text);
+	font-size: var(--cx-text-sm);
+}
+
+.msg-tag,
+.msg-flag {
+	font-size: var(--cx-text-xs);
+	letter-spacing: 1.5px;
+	padding: 1px 5px;
+	border: 1px solid var(--cx-border);
+	color: var(--cx-text-faint);
+}
+
+.msg-tag[data-kind="user"] {
+	color: var(--cx-text-dim);
+	border-color: var(--cx-text-dim);
+}
+
+.msg-flag[data-flag="ask"] {
 	color: var(--cx-accent);
+	border-color: var(--cx-accent);
 }
-.msg.agent .msg-role {
-	color: var(--cx-ok);
-}
-.msg.system .msg-role {
-	color: var(--cx-author-system);
+
+.msg-flag[data-flag="steer"] {
+	color: var(--cx-msg-steer);
+	border-color: var(--cx-msg-steer);
 }
 
 .msg-at {
+	margin-left: auto;
 	color: var(--cx-text-faint);
 	font-family: var(--cx-font-ui);
+}
+
+.msg-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--cx-text-dim);
+	font-size: var(--cx-text-md);
+	line-height: 1.55;
+}
+
+.msg[data-kind="user"] .msg-text {
+	color: var(--cx-text);
 }
 
 .block-text {
 	font-size: 13px;
 	line-height: 1.55;
-}
-
-.msg.user .block-text {
-	background: var(--cx-bg-panel);
-	border: 1px solid var(--cx-border);
-	padding: 9px 11px;
 }
 
 .block-thinking {
@@ -3091,13 +3125,6 @@
 	flex-basis: 100%;
 	color: var(--cx-text-faint);
 	font-size: 11px;
-}
-
-/* Conversation messages reuse the .msg family from the agent view (role
- * coloring, head layout). Channel-specific bits below. */
-.msg-text {
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
 }
 
 /* @-mention chip: a highlighted run inside message text. */

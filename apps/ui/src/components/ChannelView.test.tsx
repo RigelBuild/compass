@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { flush } from "solid-js";
 import {
+	type Account,
 	type Ask,
+	type Message,
 	STUB_ACCOUNTS,
 	STUB_CHANNELS,
 	STUB_COMMS_STATE,
@@ -13,7 +15,7 @@ import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
-import { ChannelView } from "./ChannelView";
+import { ChannelView, MessageRow } from "./ChannelView";
 import { TopicView } from "./TopicView";
 
 // Acceptance spec for the standalone channel view's asks (design.md §219-256):
@@ -269,6 +271,66 @@ describe("ChannelView (T6)", () => {
 		// Non-triviality: the topic actually has message content to compare, so an
 		// "identical" pass can't be two empty renders agreeing.
 		expect(count(container, ".msg")).toBeGreaterThan(0);
+	});
+});
+
+describe("MessageRow anatomy", () => {
+	// The kind tag names the author's kind in Compass's domain words, so an
+	// agent post and a human post read apart without author colors.
+	const tagOf = (kind: Account["kind"]): string | null | undefined => {
+		const author: Account = {
+			id: "acc-a",
+			handle: "a",
+			displayName: "a",
+			kind,
+		};
+		const msg: Message = {
+			id: "m1",
+			topicId: "t",
+			authorAccountId: author.id,
+			atUnixMs: 0,
+			blocks: [{ kind: "text", text: "hi" }],
+		};
+		const byId = new Map([[author.id, author]]);
+		const { container } = render(() => (
+			<MessageRow msg={msg} byId={byId} byHandle={new Map()} />
+		));
+		return container.querySelector(".msg .msg-tag")?.textContent;
+	};
+
+	test("an agent row shows tag AGENT", () => {
+		expect(tagOf("agent")).toBe("AGENT");
+	});
+	test("a human row shows tag HUMAN", () => {
+		expect(tagOf("user")).toBe("HUMAN");
+	});
+	// Assistive tech reads adjacent spans as one word unless text separates them.
+	test("the head reads author, tag, flag and time as separate words", () => {
+		const author: Account = {
+			id: "acc-a",
+			handle: "cook",
+			displayName: "cook",
+			kind: "agent",
+		};
+		const msg: Message = {
+			id: "m1",
+			topicId: "t",
+			authorAccountId: author.id,
+			atUnixMs: 0,
+			blocks: [{ kind: "text", text: "@cook rebase" }],
+		};
+		const { container } = render(() => (
+			<MessageRow
+				msg={msg}
+				byId={new Map([[author.id, author]])}
+				byHandle={new Map([[author.handle, author]])}
+			/>
+		));
+		const words = container
+			.querySelector(".msg-head")
+			?.textContent?.trim()
+			.split(/\s+/);
+		expect(words?.slice(0, 3)).toEqual(["cook", "AGENT", "STEER"]);
 	});
 });
 

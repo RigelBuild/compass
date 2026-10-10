@@ -303,3 +303,23 @@ export function parseMentions(text: string): Mention[] {
 export function blockText(block: ConvBlock): string {
 	return block.kind === "text" ? block.text : "";
 }
+
+/** A message row's flags: `ask` when it carries an ask block, `steer` when a
+ *  text block @-mentions an agent account (the Composer's steer). `byHandle` is
+ *  keyed lowercase, as `mentionRuns` reads it. */
+export function messageFlags(
+	msg: Message,
+	byHandle: Map<string, Account>,
+): readonly ("ask" | "steer")[] {
+	const ask = msg.blocks.some((b) => b.kind === "ask");
+	const steer = msg.blocks.some((b) =>
+		parseMentions(blockText(b)).some(
+			(m) =>
+				!m.reserved && byHandle.get(m.handle.toLowerCase())?.kind === "agent",
+		),
+	);
+	const flags: ("ask" | "steer")[] = [];
+	if (ask) flags.push("ask");
+	if (steer) flags.push("steer");
+	return flags;
+}
