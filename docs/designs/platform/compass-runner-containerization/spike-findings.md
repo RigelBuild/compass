@@ -269,8 +269,8 @@ the harness used an `emptyDir` runtime dir and is not the Runner binary.
   It has no AppArmor (no LSM listed), so the AppArmor grant is inert and the
   `apparmor_restrict_unprivileged_userns` sysctl does not exist.
 - **Node `/dev/kvm`:** `crw-rw-rw- 0:302`.
-- **Image and harness:** the published runner image, by digest. The boot test
-  binary was built from compass `872dd71`. The pod specs match the first run.
+- **Image and harness:** `ghcr.io/rigelbuild/compass-runner@sha256:e7c7442bc326c26192a2af0e673b1d299d7e8d4ab3645983b0bd0299555a0d1b`.
+  The boot test binary was built from compass `872dd71`. The pod specs match the first run.
   Results were read from pod logs, plus a privileged observer that sampled pod
   memory cgroups and VMM processes every 20 s.
 
