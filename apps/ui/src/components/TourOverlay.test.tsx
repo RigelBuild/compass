@@ -2,7 +2,7 @@ import { afterEach, describe, expect, jest, test } from "bun:test";
 import { TourOutcome } from "@compass/client";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { IDLE_FALLBACK_MS } from "../idle";
-import type { TourClient } from "../store";
+import type { AppStoreOptions, TourClient } from "../store";
 import { flush, mountApp } from "../test-router";
 import { TOUR_STEPS } from "../tour/state";
 import { ANCHOR_WAIT_MS } from "./TourOverlay";
@@ -65,7 +65,10 @@ function tourClient(outcome = TourOutcome.UNSPECIFIED, stepId = "") {
 	return { client, writes };
 }
 
-async function startCallout(path = "/", options: { tour?: TourClient } = {}) {
+async function startCallout(
+	path = "/",
+	options: Pick<Partial<AppStoreOptions>, "tour" | "analytics"> = {},
+) {
 	const mounted = mountApp(path, options);
 	mounted.store.tour.start("replay");
 	await flush();
@@ -251,6 +254,38 @@ describe("TourOverlay", () => {
 		}
 	});
 
+	test("a step skipped for a missing anchor is not reported viewed", async () => {
+		const viewed: unknown[] = [];
+		const { client } = tourClient(TourOutcome.STARTED, "sidebar-tree");
+		const { store } = mountApp("/", {
+			tour: client,
+			analytics: {
+				capture: (event, props) => {
+					if (event === "tour_step_viewed") viewed.push(props);
+				},
+				identify: () => {},
+				sessionId: () => undefined,
+				shutdown: () => {},
+			},
+		});
+		await flush();
+		// Both left-sidebar anchors go missing, so two steps skip in a row.
+		store.toggleLeft();
+		jest.useFakeTimers();
+		try {
+			store.tour.start("resume");
+			await flush();
+			jest.advanceTimersByTime(ANCHOR_WAIT_MS);
+			await flush();
+			jest.advanceTimersByTime(ANCHOR_WAIT_MS);
+			await flush();
+			expect(store.tour.stepIndex()).toBe(4);
+			expect(viewed).toEqual([{ step_id: "keyboard", index: 4 }]);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("Skip tour dismisses and persists DISMISSED", async () => {
 		const fake = tourClient();
 		const { store, container } = mountApp("/", { tour: fake.client });
@@ -377,5 +412,29 @@ describe("TourOverlay", () => {
 				row.querySelector(".cx-tour-demo-badge"),
 			),
 		).toBe(true);
+	});
+
+	test("re-rendering a step reports it viewed once", async () => {
+		const viewed: unknown[] = [];
+		const analytics = {
+			capture: (event: string, props?: Record<string, unknown>) => {
+				if (event === "tour_step_viewed") viewed.push(props);
+			},
+			identify: () => {},
+			sessionId: () => undefined,
+			shutdown: () => {},
+		};
+		const { store, container } = await startCallout("/", { analytics });
+		// The shortcuts overlay unmounts the callout and remounts it on close.
+		store.toggleShortcuts();
+		await flush();
+		store.toggleShortcuts();
+		await flush();
+		await nextFrame();
+		expect(callout(container)).not.toBeNull();
+		expect(viewed).toEqual([
+			{ step_id: TOUR_STEPS[0]?.id, index: 0 },
+			{ step_id: TOUR_STEPS[1]?.id, index: 1 },
+		]);
 	});
 });
