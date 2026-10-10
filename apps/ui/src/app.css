@@ -47,7 +47,6 @@
 }
 
 .brand .title {
-	font-weight: 700;
 	font-size: 14px;
 	letter-spacing: 0.01em;
 }
@@ -195,7 +194,6 @@
 
 .left-head .label {
 	font-size: 10px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.07em;
 	color: var(--cx-text-faint);
@@ -211,7 +209,6 @@
 	background: transparent;
 	border: 1px solid transparent;
 	color: var(--cx-text);
-	font-weight: 600;
 	font-size: 13px;
 	width: calc(100% - 16px);
 	text-align: left;
@@ -234,7 +231,6 @@
 .bridge-link .count {
 	margin-left: auto;
 	font-size: 11px;
-	font-weight: 500;
 	color: var(--cx-text-dim);
 	background: var(--cx-bg-panel);
 	padding: 1px 8px;
@@ -542,7 +538,6 @@
 	border-right: 1px solid var(--cx-border);
 	padding: 8px 12px;
 	font-size: 10px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.06em;
 	color: var(--cx-text-faint);
@@ -562,7 +557,6 @@
 	align-items: center;
 	font-family: var(--cx-font-ui);
 	font-size: 11px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 1px;
 	color: var(--cx-text-dim);
@@ -595,7 +589,6 @@
 
 .bridge-lane .g-name {
 	font-size: 12px;
-	font-weight: 600;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -751,7 +744,6 @@
 .card-issue-link {
 	margin-left: auto;
 	font-size: 11px;
-	font-weight: 600;
 	color: var(--cx-accent);
 	cursor: pointer;
 }
@@ -832,7 +824,6 @@
 
 .av-header .av-name {
 	font-size: 14px;
-	font-weight: 600;
 }
 
 .av-header .av-model {
@@ -858,7 +849,6 @@
 	border: 1px solid var(--cx-border-focus);
 	padding: 5px 12px;
 	font-size: 11px;
-	font-weight: 600;
 	background: transparent;
 	color: var(--cx-accent);
 	cursor: pointer;
@@ -879,7 +869,6 @@
 .av-header .av-shared {
 	flex: none;
 	font-size: 11px;
-	font-weight: 600;
 	color: var(--cx-ok);
 	font-family: var(--cx-font-ui);
 }
@@ -888,7 +877,6 @@
  * tree in the left sidebar of the board-primary shell). */
 .ws-section-label {
 	font-size: 10px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 	color: var(--cx-text-faint);
@@ -914,7 +902,6 @@
 	cursor: pointer;
 	text-align: left;
 	font-size: 10px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 	color: var(--cx-text-faint);
@@ -943,7 +930,6 @@
 .ws-share-pip {
 	flex: none;
 	font-size: 8px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.03em;
 	color: var(--cx-ok);
@@ -963,10 +949,6 @@
 	align-items: center;
 	gap: 7px;
 	font-size: 11px;
-}
-
-.msg-role {
-	font-weight: 600;
 }
 
 .msg.user .msg-role {
@@ -1036,7 +1018,6 @@
 
 .tool-name {
 	color: var(--cx-text-bright);
-	font-weight: 600;
 }
 
 .tool-title {
@@ -1153,7 +1134,8 @@
 
 .ask-header {
 	font-size: 11px;
-	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
 	color: var(--cx-text-dim);
 	border: 1px solid var(--cx-border-strong);
 	padding: 1px 6px;
@@ -1163,7 +1145,6 @@
 .ask-question {
 	font-size: 13px;
 	line-height: 1.5;
-	font-weight: 600;
 }
 
 .ask-hint {
@@ -1186,7 +1167,6 @@
 	border: 1px solid var(--cx-border-strong);
 	padding: 6px 12px;
 	font-size: 12px;
-	font-weight: 600;
 	background: var(--cx-bg-panel);
 	color: var(--cx-text);
 	cursor: pointer;
@@ -1194,7 +1174,6 @@
 
 .ask-option-desc {
 	font-size: 11px;
-	font-weight: 400;
 	color: var(--cx-text-dim);
 }
 
@@ -1202,7 +1181,8 @@
  * accent badge beside the option label. */
 .ask-option-rec {
 	font-size: 10px;
-	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
 	color: var(--cx-accent);
 }
 
@@ -1258,7 +1238,6 @@
 
 .ask-submit {
 	font-size: 11px;
-	font-weight: 600;
 	padding: 3px 10px;
 	border: 1px dashed var(--cx-border-strong);
 	background: transparent;
@@ -1350,7 +1329,6 @@
 
 .file-row .f-status {
 	font-size: 10px;
-	font-weight: 700;
 	font-family: var(--cx-font-ui);
 	width: 12px;
 	text-align: center;
@@ -1414,13 +1392,11 @@
 .pr-num {
 	color: var(--cx-accent);
 	font-family: var(--cx-font-ui);
-	font-weight: 600;
 	font-size: 12px;
 }
 
 .pr-state {
 	font-size: 9px;
-	font-weight: 700;
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 	padding: 1px 6px;
@@ -1506,9 +1482,6 @@
 	color: var(--cx-text-dim);
 }
 
-.review-chip .rv {
-	font-weight: 700;
-}
 .rv[data-v="approved"] {
 	color: var(--cx-review-approved);
 }
@@ -1562,7 +1535,6 @@
 .backlog-view > .heading,
 .done-view > .heading {
 	font-size: 14px;
-	font-weight: 600;
 }
 
 .backlog-section {
@@ -1606,7 +1578,6 @@
 
 .backlog-section-title {
 	font-size: 12px;
-	font-weight: 600;
 }
 
 .backlog-count {
@@ -1733,7 +1704,6 @@
 
 .done-section-head .heading {
 	font-size: 13px;
-	font-weight: 600;
 }
 
 .done-empty {
@@ -1846,7 +1816,6 @@
 
 .settings-head .heading {
 	font-size: 14px;
-	font-weight: 600;
 }
 
 .settings-section {
@@ -1866,7 +1835,6 @@
 
 .settings-section-head .heading {
 	font-size: 12px;
-	font-weight: 600;
 }
 
 .settings-fields {
@@ -2088,7 +2056,6 @@
 
 .r-detail-issue {
 	font-size: 11px;
-	font-weight: 600;
 	color: var(--cx-accent);
 }
 
@@ -2122,7 +2089,6 @@
 	border: 1px solid var(--cx-border-strong);
 	padding: 5px 10px;
 	font-size: 11px;
-	font-weight: 600;
 	color: var(--cx-text);
 	cursor: pointer;
 }
@@ -2316,7 +2282,6 @@
 
 .r-status-metric .m-val {
 	font-size: 15px;
-	font-weight: 700;
 	font-variant-numeric: tabular-nums;
 }
 
@@ -2679,7 +2644,6 @@
 	gap: 6px;
 	padding: 4px 8px;
 	font-size: 11px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 	color: var(--cx-text-faint);
@@ -2687,7 +2651,6 @@
 
 .rail-vis {
 	font-size: 9px;
-	font-weight: 600;
 	color: var(--cx-accent);
 	background: color-mix(in srgb, var(--cx-accent) 14%, transparent);
 	padding: 1px 5px;
@@ -2798,7 +2761,6 @@
 	background: var(--cx-accent);
 	color: var(--cx-bg);
 	font-size: 10px;
-	font-weight: 700;
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -2810,7 +2772,6 @@
 .ch-join {
 	flex: 0 0 auto;
 	font-size: 10px;
-	font-weight: 600;
 	padding: 1px 7px;
 	border: 1px solid var(--cx-border-strong);
 	background: transparent;
@@ -2918,7 +2879,6 @@
 }
 
 .conv-name {
-	font-weight: 600;
 	color: var(--cx-text);
 }
 
@@ -2938,7 +2898,6 @@
 
 .conv-membership {
 	font-size: 10px;
-	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 	padding: 2px 8px;
@@ -2985,7 +2944,6 @@
 .pinned-item-author {
 	flex: 0 0 auto;
 	color: var(--cx-accent);
-	font-weight: 600;
 }
 
 .pinned-item-text {
@@ -3059,10 +3017,6 @@
 	background: color-mix(in srgb, var(--cx-accent) 8%, transparent);
 }
 
-.topic-name {
-	font-weight: 600;
-}
-
 .topic-summary {
 	display: inline-flex;
 	align-items: center;
@@ -3072,7 +3026,7 @@
 }
 
 .topic-summary-count {
-	font-weight: 600;
+	color: var(--cx-text-dim);
 }
 
 .topic-summary-people {
@@ -3090,7 +3044,6 @@
 	background: var(--cx-bg-hover);
 	color: var(--cx-text-dim);
 	font-size: 9px;
-	font-weight: 600;
 	text-transform: uppercase;
 }
 
@@ -3150,7 +3103,6 @@
 	color: var(--cx-accent);
 	background: color-mix(in srgb, var(--cx-accent) 14%, transparent);
 	padding: 0 3px;
-	font-weight: 600;
 }
 
 .mention-chip.reserved {
@@ -3161,7 +3113,6 @@
 .mention-chip.unknown {
 	color: var(--cx-text-dim);
 	background: var(--cx-bg-panel);
-	font-weight: 400;
 }
 
 /* Reset pre-wrap for markdown block flow while preserving inline wrapping. */
@@ -3203,6 +3154,7 @@
 .markdown-content h5,
 .markdown-content h6 {
 	font-size: 14px;
+	/* stylelint-disable-next-line declaration-property-value-allowed-list -- author emphasis in message markdown, not chrome */
 	font-weight: 600;
 	margin: 8px 0 4px;
 }
@@ -3212,6 +3164,7 @@
 .markdown-content em .mention-chip,
 .markdown-content strong .mention-chip {
 	font-style: normal;
+	font-weight: 400;
 }
 
 /* Inline code: a subtle card, distinct from a chip. */
@@ -3314,7 +3267,6 @@
 	background: var(--cx-accent);
 	border: none;
 	color: var(--cx-bg);
-	font-weight: 600;
 	padding: 0 16px;
 }
 
@@ -3373,7 +3325,6 @@
 
 .log-panel .obs-title {
 	font-size: 12px;
-	font-weight: 600;
 	font-family: var(--cx-font-ui);
 }
 
@@ -3406,7 +3357,6 @@
 .obs-stop {
 	flex: 0 0 auto;
 	font-size: 11px;
-	font-weight: 600;
 	padding: 3px 9px;
 	border: 1px solid var(--cx-border-strong);
 	background: transparent;

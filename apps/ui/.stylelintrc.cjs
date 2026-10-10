@@ -63,6 +63,11 @@ module.exports = {
 		// Compass draws square corners only, matching the brand site; a radius in
 		// any form (token or literal) reds CI. boot-styles.ts is outside its reach.
 		"property-disallowed-list": ["/radius/"],
+		// Hierarchy is color, case, and letter-spacing, as on the brand site;
+		// Space Mono ships 400/700 only, so any heavier step renders bold.
+		"declaration-property-value-allowed-list": {
+			"font-weight": ["400", "normal", "inherit"],
+		},
 	},
 	overrides: [
 		{
@@ -72,6 +77,8 @@ module.exports = {
 			rules: {
 				"color-no-hex": null,
 				"declaration-property-value-disallowed-list": null,
+				// @font-face descriptors declare the 700 face.
+				"declaration-property-value-allowed-list": null,
 			},
 		},
 	],

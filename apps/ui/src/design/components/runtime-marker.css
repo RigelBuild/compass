@@ -23,7 +23,3 @@
 .cx-runtime-marker[data-uncontained="1"] {
 	color: var(--cx-warn);
 }
-
-.cx-runtime-uncontained {
-	font-weight: 700;
-}
