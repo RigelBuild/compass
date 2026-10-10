@@ -22,7 +22,7 @@ record names no path in the private repo.
 
 | Tool | Compass path | Private copy | Drift | Verdict |
 | --- | --- | --- | --- | --- |
-| Design-ledger gate | `tools/design-ledger-gate/` | Yes | Large: 6 files, +1,143 / −6,735. The private copy finds per-surface ledgers by glob, reports malformed rows, has citation, errata, and record-link legs, exempts `trunk-merge/`, and parses with micromark. Compass has one ledger and a fixed bucket list. | Move (T4) |
+| Design-ledger gate | `tools/design-ledger-gate/` | Yes | Large: 6 files, +1,143 / −6,735. The private copy finds per-surface ledgers by glob, reports malformed rows, has citation, errata, and record-link legs, matches exempt branches by prefix only, and parses with micromark. Compass has one ledger and a fixed bucket list, and ties each exempt prefix to its bot author and same-repo PRs. | Move (T4) |
 | DL reconcile | `tools/dl-reconcile/` | Yes | Yes: 6 files, +1,088 / −501. Compass reads one ledger, cross-counts raw rows, refuses an empty frontier, and has `--check`. The private copy reads several ledgers and reports stale and duplicate claims. | Move (T5) |
 | DL claim | `tools/dl-claim/` | No | None to measure. Compass-only client; the request type hard-codes `repo: "compass"`. | Move (T5) |
 | SEA reference gate | `tools/sea-ref-gate/` | Yes | Yes: 8 files, +334 / −611. The private copy splits the core into its own module. | Move as `ref-gate` (T3) |
@@ -253,7 +253,7 @@ export interface LedgerEntry {
 export interface LedgerConfig {
   ledgers: readonly LedgerEntry[]; // compass: one entry
   historicalChain?: readonly string[]; // record paths that must be Historical
-  exemptBranchPrefixes?: readonly string[]; // default ["renovate/", "trunk-merge/"]
+  exemptBranches?: readonly { prefix: string; author: string }[]; // same-repo bot PRs only
   legs?: { citations?: boolean; errata?: boolean; recordLinks?: boolean }; // each default false
   counter: { url: string; partition: string };
 }
@@ -304,8 +304,8 @@ codes as today; `classify(probe: ProbeResult): PreflightResult` stays exported.
 Lands in: compass. Add the five packages at exact versions. Add
 `docs/designs/ledger.config.json`: one ledger (`docs/designs/DECISIONS.md`,
 surface `designs`, the seven current buckets `ui`, `agent`, `server`, `meta`,
-`infra`, `observability`, `repo`), an empty historical chain, `renovate/` and
-`trunk-merge/` exempt, all legs off, partition `compass`, url
+`infra`, `observability`, `repo`), an empty historical chain, `renovate/` exempt for `app/rigelbuild-renovate`
+and `trunk-merge/` for `app/trunk-io` (same-repo PRs only), all legs off, partition `compass`, url
 `https://dl.rigel.build`.
 
 Add two code-free moon projects:
@@ -350,8 +350,10 @@ Acceptance:
 - Exempt prefixes apply only to the ledger gate's touch-coupling leg, which
   needs PR context. Seed a record touched with no ledger edit and no
   `Ledger-impact:` line. Drive both ledger gates through `runOnce` with that
-  injected changed set and a `headBranch`. A normal branch exits 1 on both.
-  `renovate/` and `trunk-merge/` exit 0 on both. The tool name in output is
+  injected changed set, a `headBranch`, an `author`, and `crossRepository`. A
+  normal branch exits 1 on both. `renovate/` and `trunk-merge/` from their bot
+  and this repo exit 0 on both; the same prefix from another author or a fork
+  exits 1 on both. The tool name in output is
   the stated intended change.
 - On a docs-only PR, the ci-matrix output still contains the ledger gate target.
 

@@ -31,7 +31,13 @@ interface DecisionInput {
 }
 
 const DECISION_DIR = "docs/designs/decisions";
-const noChange: Changed = { files: [], body: null, headBranch: "" };
+const noChange: Changed = {
+	files: [],
+	body: null,
+	headBranch: "",
+	author: "",
+	crossRepository: false,
+};
 const smallRecord = (): RecordContent => ({
 	headings: ["present"],
 	sizeBytes: 100,
@@ -515,7 +521,13 @@ test("branch exemptions do not skip record Status validation", () => {
 	const got = evaluateCorpus(
 		corpus(),
 		[record(undefined, "# Title\n\nStatus: Draft\n")],
-		{ files: [], body: null, headBranch: "renovate/update" },
+		{
+			files: [],
+			body: null,
+			headBranch: "renovate/update",
+			author: "app/rigelbuild-renovate",
+			crossRepository: false,
+		},
 	);
 	expect(
 		got.some((item) => item.message.includes("malformed or prohibited")),
@@ -544,6 +556,8 @@ describe("touch coupling", () => {
 			files: [changedRecord],
 			body: "unrelated text",
 			headBranch: "feature/change",
+			author: "octocat",
+			crossRepository: false,
 		});
 		expect(
 			missing.some((item) =>
@@ -561,6 +575,8 @@ describe("touch coupling", () => {
 				files: [file],
 				body: "no declaration",
 				headBranch: "feature/change",
+				author: "octocat",
+				crossRepository: false,
 			});
 			expect(
 				missing.some((item) =>
@@ -576,6 +592,8 @@ describe("touch coupling", () => {
 				files: [changedRecord, `${DECISION_DIR}/server/DL-002.md`],
 				body: null,
 				headBranch: "feature/change",
+				author: "octocat",
+				crossRepository: false,
 			}),
 		).toEqual([]);
 		expect(
@@ -583,6 +601,8 @@ describe("touch coupling", () => {
 				files: [changedRecord],
 				body: "Ledger-impact: none",
 				headBranch: "feature/change",
+				author: "octocat",
+				crossRepository: false,
 			}),
 		).toEqual([]);
 	});
@@ -595,6 +615,8 @@ describe("touch coupling", () => {
 					files: [changedRecord],
 					body,
 					headBranch: "feature/change",
+					author: "octocat",
+					crossRepository: false,
 				}),
 			).toEqual([]);
 		},
@@ -604,6 +626,8 @@ describe("touch coupling", () => {
 			files: [changedRecord],
 			body: null,
 			headBranch: "feature/renovate/x",
+			author: "octocat",
+			crossRepository: false,
 		});
 		expect(
 			violations.some((item) => item.message.includes("changed decision file")),
@@ -612,18 +636,70 @@ describe("touch coupling", () => {
 	test("empty changed set passes", () => {
 		expect(evaluateCorpus(corpus(), [], noChange)).toEqual([]);
 	});
-	test.each(["renovate/update", "trunk-merge/pr-1/test"])(
-		"branch exemption %s still skips coupling",
-		(headBranch) => {
+	const bots = [
+		["renovate/update", "app/rigelbuild-renovate"],
+		["trunk-merge/pr-1/test", "app/trunk-io"],
+	] as const;
+	test.each(bots)(
+		"branch %s from its bot %s skips coupling",
+		(headBranch, author) => {
 			expect(
 				evaluateCorpus(corpus(), [], {
 					files: [changedRecord],
 					body: null,
 					headBranch,
+					author,
+					crossRepository: false,
 				}),
 			).toEqual([]);
 		},
 	);
+	test.each(bots)(
+		"branch %s from another author still couples",
+		(headBranch) => {
+			const violations = evaluateCorpus(corpus(), [], {
+				files: [changedRecord],
+				body: null,
+				headBranch,
+				author: "octocat",
+				crossRepository: false,
+			});
+			expect(
+				violations.some((item) =>
+					item.message.includes("changed decision file"),
+				),
+			).toBe(true);
+		},
+	);
+	test.each(bots)(
+		"branch %s from a fork still couples, even with the bot login",
+		(headBranch, author) => {
+			const violations = evaluateCorpus(corpus(), [], {
+				files: [changedRecord],
+				body: null,
+				headBranch,
+				author,
+				crossRepository: true,
+			});
+			expect(
+				violations.some((item) =>
+					item.message.includes("changed decision file"),
+				),
+			).toBe(true);
+		},
+	);
+	test("one bot cannot use the other bot's prefix", () => {
+		const violations = evaluateCorpus(corpus(), [], {
+			files: [changedRecord],
+			body: null,
+			headBranch: "trunk-merge/pr-1/test",
+			author: "app/rigelbuild-renovate",
+			crossRepository: false,
+		});
+		expect(
+			violations.some((item) => item.message.includes("changed decision file")),
+		).toBe(true);
+	});
 });
 
 describe("runOnce", () => {
