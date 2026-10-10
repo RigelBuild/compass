@@ -409,6 +409,7 @@ type Querier interface {
 	// read methods map the generated rows (provider int, nullable swept_updated_at)
 	// back to the domain time.Time / ForgeRepoSubscription.
 	LoadForgeRepoWatermark(ctx context.Context, arg LoadForgeRepoWatermarkParams) (LoadForgeRepoWatermarkRow, error)
+	LoadPRsBackfilledAt(ctx context.Context, arg LoadPRsBackfilledAtParams) (pgtype.Timestamptz, error)
 	// Channel-pins (pinned board) queries (sqlc adoption T3, RIG-3034). These
 	// replace the inline SQL literals in internal/store/channel_pins.go; the
 	// hand-written Store methods and the in-tx FOR UPDATE lock / cap-check control
@@ -484,6 +485,7 @@ type Querier interface {
 	// an append would count the append's events twice or lose them.
 	LockTokenUsage(ctx context.Context) error
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
+	MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledParams) (int64, error)
 	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
 	MessageByID(ctx context.Context, id string) (MessageByIDRow, error)
 	MessageChannel(ctx context.Context, id string) (string, error)
@@ -501,6 +503,7 @@ type Querier interface {
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) error
+	PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error)
 	// Explicit links attach directly; a closing reference attaches only when none
 	// of the PR's explicit targets is an issue on the board.
 	PullRequestsForIssues(ctx context.Context, arg PullRequestsForIssuesParams) ([]PullRequestsForIssuesRow, error)

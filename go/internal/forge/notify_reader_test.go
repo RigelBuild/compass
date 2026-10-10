@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -305,11 +306,11 @@ func TestListUpdatedIssuesStopsStrictlyBelowSince(t *testing.T) {
 	}
 	// 50,49 (page 1) + 48 (== since, re-included) = 3; 40 is strictly below and
 	// stops the walk before any page 3 is requested.
-	if len(res.V) != 3 {
-		t.Fatalf("kept %d (%+v), want 3 (50,49,48; 48 re-included at == since, 40 stops the walk)", len(res.V), res.V)
+	if len(res.V.Issues) != 3 {
+		t.Fatalf("kept %d (%+v), want 3 (50,49,48; 48 re-included at == since, 40 stops the walk)", len(res.V.Issues), res.V.Issues)
 	}
-	if res.V[2].Number != 48 {
-		t.Errorf("V[2].Number = %d, want 48 (the == since row is re-included)", res.V[2].Number)
+	if res.V.Issues[2].Number != 48 {
+		t.Errorf("V[2].Number = %d, want 48 (the == since row is re-included)", res.V.Issues[2].Number)
 	}
 	if rt.calls != 2 {
 		t.Errorf("calls = %d, want 2 (the walk stopped once a page's oldest was strictly < since)", rt.calls)
@@ -342,11 +343,11 @@ func TestListUpdatedIssuesMalformedRowDoesNotTruncate(t *testing.T) {
 		t.Fatalf("ListUpdatedIssues: %v", err)
 	}
 	// 50 and 48 are collected; the malformed 49 is skipped, not a stop signal.
-	if len(res.V) != 2 {
-		t.Fatalf("kept %d (%+v), want 2 (50,48; the malformed 49 is skipped without truncating)", len(res.V), res.V)
+	if len(res.V.Issues) != 2 {
+		t.Fatalf("kept %d (%+v), want 2 (50,48; the malformed 49 is skipped without truncating)", len(res.V.Issues), res.V.Issues)
 	}
-	if res.V[0].Number != 50 || res.V[1].Number != 48 {
-		t.Errorf("kept %d,%d, want 50,48 (the row behind the malformed one still collected)", res.V[0].Number, res.V[1].Number)
+	if res.V.Issues[0].Number != 50 || res.V.Issues[1].Number != 48 {
+		t.Errorf("kept %d,%d, want 50,48 (the row behind the malformed one still collected)", res.V.Issues[0].Number, res.V.Issues[1].Number)
 	}
 }
 
@@ -384,8 +385,8 @@ func TestListUpdatedIssuesZeroSinceWalksAll(t *testing.T) {
 	}
 	// A zero since is never strictly greater than any updated_at, so nothing
 	// stops the walk short — both pages collected, walk ends at no rel="next".
-	if len(res.V) != 2 {
-		t.Fatalf("kept %d (%+v), want 2 (zero since walks to the last page)", len(res.V), res.V)
+	if len(res.V.Issues) != 2 {
+		t.Fatalf("kept %d (%+v), want 2 (zero since walks to the last page)", len(res.V.Issues), res.V.Issues)
 	}
 	if rt.calls != 2 {
 		t.Errorf("calls = %d, want 2 (walk ended only at no rel=\"next\")", rt.calls)
@@ -395,7 +396,7 @@ func TestListUpdatedIssuesZeroSinceWalksAll(t *testing.T) {
 // TestListUpdatedIssuesFiltersPRs: /repos/{repo}/issues interleaves PR rows
 // (pull_request marker); the updated-order walk drops them, keeping only
 // issue-shaped rows, on the updated-order endpoint.
-func TestListUpdatedIssuesFiltersPRs(t *testing.T) {
+func TestListUpdatedIssuesSplitsPRs(t *testing.T) {
 	body := `[
 		{"number":45,"state":"open","html_url":"u45","updated_at":"2026-08-01T12:00:02Z","pull_request":{"url":"pr"}},
 		{"number":44,"state":"open","html_url":"u44","updated_at":"2026-08-01T12:00:01Z"}
@@ -409,8 +410,12 @@ func TestListUpdatedIssuesFiltersPRs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListUpdatedIssues: %v", err)
 	}
-	if len(res.V) != 1 || res.V[0].Number != 44 {
-		t.Fatalf("kept %+v, want only issue #44 (PR #45 filtered)", res.V)
+	if len(res.V.Issues) != 1 || res.V.Issues[0].Number != 44 {
+		t.Fatalf("issues %+v, want only issue #44", res.V.Issues)
+	}
+	want := []UpdatedPull{{Number: 45, State: "open", UpdatedAt: time.Date(2026, 8, 1, 12, 0, 2, 0, time.UTC)}}
+	if !slices.Equal(res.V.Pulls, want) {
+		t.Fatalf("pulls %+v, want %+v (PR rows kept in order beside the issues)", res.V.Pulls, want)
 	}
 	if got := rt.requests[0].URL.Path; got != "/repos/org/repo/issues" {
 		t.Errorf("path = %q, want the issues endpoint", got)

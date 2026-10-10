@@ -32,6 +32,7 @@ func noRollupGraphQL(sha string) string {
 // status-check rollup on the last commit, head sha.
 func emptyPullGraphQL(sha string) string {
 	return `{"data":{"repository":{"pullRequest":{
+	"closingIssuesReferences":{"nodes":[]},
 	"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
 	"commits":{"nodes":[{"commit":{"oid":"` + sha + `","statusCheckRollup":null}}]}}}}}`
 }
@@ -48,9 +49,10 @@ func gqlBody(t *testing.T, data any) string {
 
 // pullPage builds one pullReadQuery page. A nil threads or contexts leaves that
 // connection out, as @include(if: false) does; a nil rollup is a commit with no checks.
+// Closing refs ride every page here; the walk reads them from the first only.
 func pullPage(t *testing.T, threads *ghGQLThreads, commits *ghGQLPullCommits) string {
 	t.Helper()
-	return gqlBody(t, ghGQLPullData{Repository: &ghGQLRepo{PullRequest: &ghGQLPull{ReviewThreads: threads, Commits: commits}}})
+	return gqlBody(t, ghGQLPullData{Repository: &ghGQLRepo{PullRequest: &ghGQLPull{ReviewThreads: threads, Commits: commits, ClosingRefs: &ghGQLClosingRefs{}}}})
 }
 
 // threadsConn is one page of review threads.
@@ -293,6 +295,9 @@ func TestPullGraphQLErrorBranches(t *testing.T) {
 		{"null pull request", []scriptedResponse{ok200(`{"data":{"repository":{"pullRequest":null}}}`)}, "pull request"},
 		{"no threads connection", []scriptedResponse{ok200(pullPage(t, nil, rollup(headSHA, false, "c")))}, "review threads connection"},
 		{"no commits connection", []scriptedResponse{ok200(pullPage(t, threadsConn(false, "t"), nil))}, "commits connection"},
+		{"no closing references connection", []scriptedResponse{ok200(gqlBody(t, ghGQLPullData{Repository: &ghGQLRepo{PullRequest: &ghGQLPull{
+			ReviewThreads: threadsConn(false, "t"), Commits: rollup(headSHA, false, "c"),
+		}}}))}, "closing references connection"},
 		{"next page without a cursor", []scriptedResponse{ok200(pullPage(t, threadsConn(true, ""), rollup(headSHA, false, "c")))}, "without an endCursor"},
 		{"repeated cursor", []scriptedResponse{
 			ok200(pullPage(t, threadsConn(true, "SAME"), rollup(headSHA, false, "c"))),

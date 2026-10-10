@@ -322,3 +322,23 @@ func (s *Store) FallbackIssuesForTarget(ctx context.Context, issue ForgeCoord) (
 	}
 	return out, nil
 }
+
+// PullRequestUpdatedAt reads the stored forge_updated_at of pr; ok is false when
+// the PR was never stored. The sweep hydrates only rows newer than this.
+func (s *Store) PullRequestUpdatedAt(ctx context.Context, pr ForgeCoord) (time.Time, bool, error) {
+	pr = pr.normalized()
+	if err := pr.valid(); err != nil {
+		return time.Time{}, false, err
+	}
+	p := pr.db()
+	at, err := s.q.PullRequestForgeUpdatedAt(ctx, db.PullRequestForgeUpdatedAtParams{
+		ForgeProvider: p.provider, ForgeHost: p.host, Repo: p.repo, Number: p.number,
+	})
+	if noRows(err) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: pull request updated at: %w", err)
+	}
+	return at.Time, true, nil
+}

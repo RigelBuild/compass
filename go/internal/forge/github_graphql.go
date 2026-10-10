@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -172,11 +173,28 @@ type ghGQLCommitNode struct {
 	} `json:"commit"`
 }
 
+// ghGQLClosingRef is one issue the PR closes.
+type ghGQLClosingRef struct {
+	Number     uint64 `json:"number"`
+	Repository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
+}
+
+// ghGQLClosingRefs is the issues the PR closes (closingIssuesReferences).
+type ghGQLClosingRefs struct {
+	Nodes []ghGQLClosingRef `json:"nodes"`
+}
+
 // ghGQLPull is the pull request half; each connection is absent when excluded.
 type ghGQLPull struct {
 	ReviewThreads *ghGQLThreads     `json:"reviewThreads"`
 	Commits       *ghGQLPullCommits `json:"commits"`
+	ClosingRefs   *ghGQLClosingRefs `json:"closingIssuesReferences"`
 }
+
+// closingRefsCap is the closingIssuesReferences page size; a PR closing more is truncated.
+const closingRefsCap = 25
 
 // ghGQLRepo is the repository root of pullReadQuery.
 type ghGQLRepo struct {
@@ -199,9 +217,12 @@ type ghGQLThreadNode struct {
 // @include flags let a later page fetch only the connection still paging. The
 // contexts are read through the pull request (commits(last: 1)), so only Pull
 // requests: read is needed; the commit oid pins each page to the REST head SHA.
-const pullReadQuery = `query($owner: String!, $name: String!, $number: Int!, $threads: Boolean!, $threadsAfter: String, $contexts: Boolean!, $contextsAfter: String) {
+const pullReadQuery = `query($owner: String!, $name: String!, $number: Int!, $threads: Boolean!, $threadsAfter: String, $contexts: Boolean!, $contextsAfter: String, $refs: Boolean!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      closingIssuesReferences(first: 25) @include(if: $refs) {
+        nodes { number repository { nameWithOwner } }
+      }
       reviewThreads(first: 100, after: $threadsAfter) @include(if: $threads) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -256,25 +277,31 @@ func (g *GitHub) graphQLURL() string {
 	return "https://" + g.host + "/api/graphql"
 }
 
+// pullReadExtras is what a full GraphQL read adds beyond checks.
+type pullReadExtras struct {
+	threads     []ReviewThread
+	closingRefs []IssueRef
+}
+
 // checksForPull is the one checks path for a pull request (GetPullRequest and
 // Checks): the REST roll-up from checksForSHA, with Required set from the PR's
-// required contexts. withThreads also returns the review threads from the same
-// GraphQL leg, so GetPullRequest pays one leg, not two.
-func (g *GitHub) checksForPull(ctx context.Context, c pullCoord, sha string, withThreads bool) (Checks, []ReviewThread, error) {
+// required contexts. full also returns the review threads and closing references
+// from the same GraphQL leg, so GetPullRequest pays one leg, not two.
+func (g *GitHub) checksForPull(ctx context.Context, c pullCoord, sha string, full bool) (Checks, pullReadExtras, error) {
 	checks, err := g.checksForSHA(ctx, c.repo, sha)
 	if err != nil {
-		return Checks{}, nil, err
+		return Checks{}, pullReadExtras{}, err
 	}
-	threads, required, err := g.pullGraphQL(ctx, c, sha, withThreads)
+	w, err := g.pullGraphQL(ctx, c, sha, full)
 	if err != nil {
-		return Checks{}, nil, fmt.Errorf("forge: github graphql for %q#%d: %w", c.repo, c.number, err)
+		return Checks{}, pullReadExtras{}, fmt.Errorf("forge: github graphql for %q#%d: %w", c.repo, c.number, err)
 	}
 	for i := range checks.Checks {
-		if _, ok := required[checks.Checks[i].Name]; ok {
+		if _, ok := w.required[checks.Checks[i].Name]; ok {
 			checks.Checks[i].Required = true
 		}
 	}
-	return checks, threads, nil
+	return checks, pullReadExtras{threads: w.threads, closingRefs: w.closingRefs}, nil
 }
 
 // pullGraphQLWalk is the cursor state of one pullGraphQL walk. A connection
@@ -282,48 +309,71 @@ func (g *GitHub) checksForPull(ctx context.Context, c pullCoord, sha string, wit
 type pullGraphQLWalk struct {
 	sha                         string // REST head SHA every contexts page must match
 	threads                     []ReviewThread
+	closingRefs                 []IssueRef
 	required                    map[string]struct{}
 	threadsAfter, contextsAfter any // nil sends JSON null: the first page
 	moreThreads, moreContexts   bool
+	refs                        bool // read closing references; first page only
 }
 
-// pullGraphQL walks pullReadQuery to completion: every review-thread page (when
-// withThreads) and every context page of head commit sha. It returns the threads
-// in forge order and the set of required context names (a CheckRun's name, a
-// StatusContext's context), which match the REST check names.
-func (g *GitHub) pullGraphQL(ctx context.Context, c pullCoord, sha string, withThreads bool) ([]ReviewThread, map[string]struct{}, error) {
-	w := pullGraphQLWalk{sha: sha, required: map[string]struct{}{}, moreThreads: withThreads, moreContexts: true}
+// pullGraphQL walks pullReadQuery to completion: every review-thread page and
+// the closing references (when full) and every context page of head commit sha.
+// The walk holds the threads in forge order and the set of required context
+// names (a CheckRun's name, a StatusContext's context), which match REST's.
+func (g *GitHub) pullGraphQL(ctx context.Context, c pullCoord, sha string, full bool) (*pullGraphQLWalk, error) {
+	w := &pullGraphQLWalk{sha: sha, required: map[string]struct{}{}, moreThreads: full, moreContexts: true, refs: full}
 	for w.moreThreads || w.moreContexts {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		data, err := graphQL[ghGQLPullData](ctx, g, pullReadQuery, map[string]any{
 			"owner": c.owner, "name": c.name, "number": c.number,
 			"threads": w.moreThreads, "threadsAfter": w.threadsAfter,
 			"contexts": w.moreContexts, "contextsAfter": w.contextsAfter,
+			"refs": w.refs,
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if data.Repository == nil {
-			return nil, nil, fmt.Errorf("forge: github graphql: repository %q not found", c.repo)
+			return nil, fmt.Errorf("forge: github graphql: repository %q not found", c.repo)
 		}
 		pr := data.Repository.PullRequest
 		if pr == nil {
-			return nil, nil, fmt.Errorf("forge: github graphql: pull request %q#%d not found", c.repo, c.number)
+			return nil, fmt.Errorf("forge: github graphql: pull request %q#%d not found", c.repo, c.number)
+		}
+		if w.refs {
+			if err := foldClosingRefs(ctx, w, c, pr.ClosingRefs); err != nil {
+				return nil, err
+			}
 		}
 		if w.moreThreads {
-			if err := g.foldThreads(ctx, &w, c, pr.ReviewThreads); err != nil {
-				return nil, nil, err
+			if err := g.foldThreads(ctx, w, c, pr.ReviewThreads); err != nil {
+				return nil, err
 			}
 		}
 		if w.moreContexts {
-			if err := foldContexts(&w, c, pr.Commits); err != nil {
-				return nil, nil, err
+			if err := foldContexts(w, c, pr.Commits); err != nil {
+				return nil, err
 			}
 		}
 	}
-	return w.threads, w.required, nil
+	return w, nil
+}
+
+// foldClosingRefs records the PR's closing references and turns them off for later pages.
+func foldClosingRefs(ctx context.Context, w *pullGraphQLWalk, c pullCoord, conn *ghGQLClosingRefs) error {
+	if conn == nil {
+		return fmt.Errorf("forge: github graphql: pull request %q#%d has no closing references connection", c.repo, c.number)
+	}
+	w.refs = false
+	for _, n := range conn.Nodes {
+		w.closingRefs = append(w.closingRefs, IssueRef{Repo: n.Repository.NameWithOwner, Number: n.Number})
+	}
+	if len(conn.Nodes) >= closingRefsCap {
+		slog.WarnContext(ctx, "forge: github closing references truncated", "repo", c.repo, "number", c.number, "cap", closingRefsCap)
+	}
+	return nil
 }
 
 // foldThreads appends one page of review threads to w and advances its cursor.

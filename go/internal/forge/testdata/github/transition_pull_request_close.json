@@ -47,7 +47,10 @@
 			"Changed": { "Files": 3, "Additions": 10, "Deletions": 2 },
 			"Checks": { "HeadSHA": "", "State": "", "Checks": null },
 			"Reviews": null,
-			"Threads": null
+			"Threads": null,
+			"CreatedAt": "0001-01-01T00:00:00Z",
+			"UpdatedAt": "0001-01-01T00:00:00Z",
+			"ClosingRefs": null
 		}
 	}
 }
