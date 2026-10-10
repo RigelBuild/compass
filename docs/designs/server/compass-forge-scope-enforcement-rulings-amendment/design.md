@@ -14,8 +14,8 @@ Tracker: RIG-4436
 The scope-enforcement record could not be executed past T3: OQ-1 blocked the
 enforcement default, and OQ-8 blocked the narrowed-token tasks T4 and T5. The
 brokered App token has since shipped (#2008), and it still lets a
-user-declared GitHub secret win over the brokered token. That path is a PAT,
-and it bypasses repository scope.
+user-declared GitHub secret win over the brokered token. That secret may be a
+PAT or another unscoped GitHub credential, and it bypasses repository scope.
 
 ## Approach
 
@@ -34,7 +34,7 @@ PRs."
 | OQ-6 | The GitHub App is the only GitHub credential, in every tier and on every host. No PAT path exists for Beta or Dogfood. See below. |
 | OQ-7 | The git credential covers the workstream repository plus the account's write grants. Ungranted read-only dependencies are not reachable. |
 | OQ-8 | The workstream repository is a server-side spawn-target record. No provision proto field is added. |
-| OQ-10 | The token narrows permissions as well as repositories, to `contents: write`, `pull_requests: write` and `metadata: read`. Agents must be able to open pull requests, so `pull_requests: write` stays, as the broker shipped in #2008 already requests (`gitCredentialPermissions` in `go/server/git_credential.go`). |
+| OQ-10 | The token narrows permissions as well as repositories, to `contents: write`, `pull_requests: write` and `metadata: read`. Agents must be able to open pull requests, so `pull_requests: write` stays. The broker shipped in #2008 already requests this set (see below). |
 
 ### OQ-6: no PAT path
 
@@ -42,18 +42,37 @@ PRs."
   or not the App is configured and on any host. `SecretGH` does not
   distinguish an App token from a PAT, so the only `SecretGH` an agent
   receives is the brokered App token.
-- Today two paths deliver a user credential. When the broker exists,
-  `brokeredSecretResolver.ResolveFor` in `go/server/git_credential.go`
-  returns a user `SecretGH` for the App host and skips the mint
-  (`hasGitHubSecret`). When no App is configured, `buildGitCredentialBroker`
-  returns a nil broker and `ResolveFor` returns the user secrets unchanged.
+- Today two paths deliver a user credential. `brokeredSecretResolver.ResolveFor`
+  in `go/server/git_credential.go` returns the user secrets unchanged when
+  the broker is nil (no App) or a user `SecretGH` exists for the App host:
+
+  ```go
+  if err != nil || r.broker == nil || reason != gitCredentialReason || hasGitHubSecret(resolved, r.broker.host) {
+  	return resolved, err
+  }
+  ```
+
   Both paths close.
 - Declaring a GitHub-kind secret (`SECRET_KIND_GH`, handled in
   `go/server/secrets_service.go`) is rejected, so a user cannot store a
   credential that would never be delivered.
 - Without the App, an agent has no GitHub credential. Startup does not fail
-  on that alone: today a missing App turns forge writes off with a warning
-  (`wireForgeWriteCaller` in `go/server/serve.go`), and that stays.
+  on that alone: with neither App configured, forge writes stay off silently
+  (`warnPartialForgeWriteSecrets` in `go/server/serve.go` warns only for a
+  partial App configuration), and that stays.
+
+### OQ-10: permission set
+
+`gitCredentialPermissions` in `go/server/git_credential.go` is already the
+ruled set:
+
+```go
+var gitCredentialPermissions = map[string]string{
+	"contents":      "write",
+	"pull_requests": "write",
+	"metadata":      "read",
+}
+```
 
 ## Plan
 
@@ -72,15 +91,19 @@ Test with and without the App, and with and without grants: no user
 ### A2: Fail-closed enforcement default
 
 Interfaces: `ForgeConfig.EnforceScopes` in `go/server/serve.go`; the
-`--forge-enforce-scopes` flag and `resolveForge` in
-`go/cmd/compass-server/main.go`.
+`--forge-enforce-scopes` flag, `$COMPASS_FORGE_ENFORCE_SCOPES` and
+`resolveForge` in `go/cmd/compass-server/main.go`; the forge table in
+`docs/self-host.md`.
 
 A plain `bool` zero value cannot tell "unset" from "opted out", and direct
 `ServeConfig` callers bypass the CLI default. Replace the field with an
 opt-out (`ForgeConfig.ScopeEnforcementDisabled bool`) so the zero value
-enforces, and rename the flag to `--forge-disable-scope-enforcement`.
-Test that an unset config enforces through both the CLI and a direct
-`ServeConfig`, and that the explicit opt-out does not.
+enforces. Replace the flag with `--forge-disable-scope-enforcement` and the
+variable with `$COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT`; remove the old flag
+and variable outright (pre-GA, no alias). Update the `docs/self-host.md` row,
+which documents the old name as "Default off". Test that an unset config
+enforces through both the CLI and a direct `ServeConfig`, and that the
+explicit opt-out does not.
 
 ### A3: Workstream repository record
 
@@ -90,10 +113,18 @@ Agents still self-clone after launch (DL-090); the record only adds the
 workstream repository to the set the broker mints for. It widens the token
 and never narrows it below the account's grants.
 
-No server-side source for that repository exists today: `runSpawn` in
-`go/server/spawn.go` and `SpawnPeerRequest` carry no repository. Choosing
-the source, its storage key and its lifecycle is a design pass of its own,
-filed as a follow-up record. The frozen record's T4/T5 build on it.
+No server-side source for that repository exists today. The provision
+request comment in `proto/compass/v1/compass.proto` says:
+
+```text
+Repo carriage removed (RIG-1527, Matt 2026-07-29): spawn/provision no longer
+clone a repo for the agent.
+```
+
+`runSpawn` in `go/server/spawn.go` provisions with only
+`ProvisionAgentWorkspaceRequest{ClientRequestId: crid}`. Choosing the
+source, its storage key and its lifecycle is a design pass of its own, filed
+as a follow-up record. The frozen record's T4/T5 build on it.
 
 ### Tasks
 
