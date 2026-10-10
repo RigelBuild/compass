@@ -265,62 +265,39 @@ vsock leg, and its delta on the rest is the single-runtime topology.
   connects (the V3 probe mechanism,
   `egress_inguest_microvm_test.go:21-26`) to the passt gateway address
   `10.0.2.2` (`go/internal/runtime/microvm/launch.go:33`) on a host-bound
-  listener port **the test itself opens**, which is what makes the row
-  non-vacuous in its *primary* failure mode: "no listener" is excluded by
-  construction, so a failed connect is a blocked connect. The session is
-  armed with a *permissive-but-not-host* egress policy, so the deny the
-  probe observes **is the in-guest nft default-deny ruleset** — passt's
-  launch argv (`launch.go:187-195`) passes no `--no-map-gw`, and passt maps
-  the host onto the guest-visible gateway address by default.
+  listener port **the test itself opens**, so "no listener" is excluded by
+  construction. passt runs with `--no-map-gw` (OQ-1 ruled (iii), RIG-3428),
+  so the gateway address does not map to the host at all.
 
-  **What this row certifies, stated as what it proves.** The claim is
-  *"the nft default-deny rule is armed and enforcing on the guest's
-  outbound path to `10.0.2.2`"* — **not** "the host is unreachable from the
-  guest". The stronger sentence would need a layer beneath the firewall,
-  and there is none today; OQ-1 (load-bearing, Matt's) asks whether to add
-  `--no-map-gw` as that structural second layer, and only OQ-1 option (i)
-  would deliver host-unreachability. Until it rules, this row certifies one
-  layer, and says which one.
+  **What this row certifies.** Two layers, each proven by its own run:
+  1. **Structural (normal run):** with `10.0.2.2` allowlisted, A's connect
+     must not reach the listener and the host must observe no accept. This
+     is `--no-map-gw`'s property, and its test ships with the flag
+     (`TestInGuestEgressGatewayDoesNotReachHost`).
+  2. **nft (mutation run, flag removed):** with the gateway mapped again and
+     a *permissive-but-not-host* policy, the connect must be blocked. That
+     is the in-guest nft default-deny on the gateway path.
 
-  **Could pass while false — two hazards, the second dominant for the
-  mutation.** (1) The no-listener hazard, closed by construction: the test
-  opens the listener it dials, so a refused connect cannot be
-  want-of-a-listener. (2) The host-mapping hazard, which is *not* closed by
-  construction and which the row must not assume away: whether a guest
-  connect to `10.0.2.2` can reach a host listener at all depends on passt's
-  gateway mapping, and `--no-map-gw` is **implied** — not merely available
-  — under conditions this record cannot assert about a CI runner. The
-  pinned passt (2025_09_19) documents both halves: `--no-map-gw` is
-  "Don't map gateway address to host" (`passt --help`, run this session),
-  and it is "Implied if there is no gateway on the selected default route,
-  or if there is no default route, for any of the enabled address families"
-  (passt(1)). On a runner whose default route differs, the mapping is off
-  without the flag, the negative assertion passes for a reason unrelated to
-  nft, and — worse — the proving mutation below cannot redden either.
+  A normal-run refusal says nothing about nft, because the flag alone
+  refuses it. So the nft claim is only made from the flag-removed run.
 
-  **Proving mutation, made self-verifying so it cannot be recorded as
-  passed when it never discriminated.** Arm the session with an egress
-  policy allowlisting `10.0.2.2`, and — because the accept rule that
-  produces is destination-address-only, not port-scoped
+  **Could pass while false.** passt also implies `--no-map-gw` when "there
+  is no gateway on the selected default route, or if there is no default
+  route" (passt(1), pinned 2025_09_19). On such a runner the flag-removed
+  run cannot map the gateway either, so both layers would pass without
+  discriminating. Each run therefore first checks that the host's selected
+  IPv4 default route has a gateway, and skips with that reason when it
+  does not.
+
+  **Proving mutation for the structural layer.** Remove `--no-map-gw` and
+  keep `10.0.2.2` allowlisted: the connect MUST reach the listener (the host
+  observes the accept) and the row MUST go red. This ran on a KVM host in
+  the flag's PR. The nft run's own mutation is the allowlist widening: add
+  `10.0.2.2` to the flag-removed run's policy, and the connect MUST then
+  reach the listener. The accept rule is destination-address-only
   (`nft add rule inet compass_egress output ip daddr @allow4 accept`,
-  `internal/runtime/egress.go:130`, fed by an arm-time in-guest
-  `getent ahostsv4 %s | awk '{print $1}'` resolution, `egress.go:88-103`) —
-  keep the dialed port the single test-opened one so the observation stays
-  scoped to it. The mutation run then asserts **two** things, in order:
-  1. the allowlisted connect **reaches the test's listener** (the harness
-     observes the accepted connection on the host side, not merely a
-     non-error in the guest) — this is the mutation's own positive control,
-     and it is what proves host-mapping is in effect on this box;
-  2. the row's assertion goes red.
-
-  If (1) fails the mutation is recorded as **"could not discriminate on
-  this host — passt host-mapping not in effect"**, never as a passed
-  mutation and never as a green row: an implied-`--no-map-gw` runner
-  surfaces as a declared gap, the same posture the metadata row takes for
-  its precondition. Recording the mutation as passed without observing (1)
-  is exactly the failure this clause exists to prevent — the connect can
-  fail for a reason that has nothing to do with the allowlist. Observation
-  (1) is also the datum OQ-1's answer depends on.
+  `internal/runtime/egress.go:130`), so the dialed port stays the single
+  test-opened one.
 - **Host network — the metadata endpoint.** The `169.254.169.254:80` probe
   needs its own vacuity analysis, because it fails the test the row above
   passes. A guest connect to the metadata IP rides passt's ordinary
@@ -859,8 +836,9 @@ are specified here, thresholds are not.
   dry run must **verify, not assume** (`podmanUsable()` merely runs a
   container). Where the baseline genuinely cannot run, the report carries an
   explicit `baseline: absent:<reason>` marker rather than a silent
-  microVM-only report — and OQ-3 (regraded load-bearing, precisely because
-  presence is now achievable) rules on whether that reds the lane.
+  microVM-only report. Per OQ-3's ruling (i), once the W7 dry run shows
+  podman usable an absent baseline reds the lane; if podman is unusable
+  there, the fallback is (iii), a one-off out-of-lane baseline.
   Mechanical consequence: `writeBenchReport` and the report types must be
   visible to both tag universes, so they live in an untagged `_test.go` in
   that same package (W6 Interfaces notes the unused-in-default-tags wrinkle).
@@ -1049,7 +1027,7 @@ net-new content is the host-network leg and the vsock leg (OQ-8).
   | A cannot read/write B's volume (delta over PR #912's leg: one runtime, symlink shape) | probe script never ran (exit 127) or probed a wrong path | run both guests' virtiofsd rooted at the volumes' common parent — MUST go red |
   | A's guest-side vsock dial is bound to A's own session — **pending OQ-8**, do not implement until it rules | as drafted the row was unimplementable, not merely vacuous: nothing binds host `vsock.sock_1024`, so the required "dial succeeds" can never hold, and the drafted mutation reddens main's host-side nonce check during setup instead of this row's property | supplied by OQ-8's ruling: under option (a) (dial CID 2:1025, assert A observes A's own gateway's per-session discriminator) the mutation is to swap A's and B's gateway listeners in the harness — A then observes B's discriminator and this row MUST go red |
   | host fs unreachable from A | write "succeeded" only inside the guest overlay and no host check ran | same virtiofsd-root widening; host snapshot MUST change and go red |
-  | the in-guest nft default-deny rule is armed and enforcing on A's outbound path to the gateway address `10.0.2.2` — **the claim is the firewall's enforcement, NOT "the host is unreachable"** (only OQ-1 (i) would deliver that; there is no layer beneath the firewall today) | (a) the connect failed for want of any listener rather than being blocked; (b) **the no-listener hazard's twin, and not closed by construction:** the connect failed because passt never mapped the host onto `10.0.2.2` at all — `--no-map-gw` is "Implied if there is no gateway on the selected default route, or if there is no default route" (passt(1), pinned 2025_09_19), so on a runner with a different default route the row passes for a reason unrelated to nft, and the mutation below cannot redden either | (a) is excluded by construction: the test itself opens the host-bound listener it dials. For (b) the mutation is **self-verifying** — arm the session's egress policy allowlisting `10.0.2.2` (the accept rule is destination-only, `egress.go:130`, resolved at arm time in-guest, `egress.go:88-103`, so keep the dial on the single test-opened port), then assert IN ORDER: (1) the allowlisted connect is **observed accepted at the test's host listener** — the mutation's own positive control, and the proof host-mapping is in effect on this box; (2) the row's assertion MUST go red. If (1) fails, record **"could not discriminate on this host — passt host-mapping not in effect"**, never a passed mutation and never a green row |
+  | the host is unreachable through the gateway `10.0.2.2` even when it is allowlisted (`--no-map-gw`, OQ-1 (iii)); on a flag-removed run, the in-guest nft default-deny blocks the same connect under a policy that does not allowlist it | (a) the connect failed for want of any listener rather than being blocked; (b) passt never mapped the gateway because the runner's selected default route has no gateway, so neither run could fail. (a) is closed by the test-opened listener and (b) by the default-route check that skips the row | structural: remove `--no-map-gw` with `10.0.2.2` allowlisted; the host MUST observe the accept and the row MUST go red. nft: on the flag-removed run, add `10.0.2.2` to the policy; the connect MUST then reach the listener |
   | the metadata endpoint `169.254.169.254:80` is unreachable from A — **runs only when the host-side precondition holds** | this is the row's dominant failure mode, not an edge case: a guest connect to the metadata IP rides passt's ordinary outbound path as a host-originated connect, so on any box with no metadata service (every dev box) "must fail" passes for want of a listener **even with the entire nft ruleset deleted** | the test first probes the endpoint host-side; if it does not answer the leg SKIPS with that reason recorded (a vacuous pass is worse than a declared gap). Where it does answer, mutation: the same `169.254.169.254` allowlist-widening as the gateway row — the connect MUST succeed and the row MUST go red |
 
   Positive controls in every test: A reads its own canary, and an
@@ -1458,8 +1436,8 @@ KVM-gated, since its subject is the KVM-less path.
   Interfaces above is that same refusal in permanent positive form); run the
   bench invocation with `-tags microvm` alone — `Baseline` MUST come back
   `absent:*` AND the both-backends assertion MUST go red, which together is
-  what would have caught the structurally-absent baseline (whether that reds
-  the lane is OQ-3); **stamp the baseline iteration with the microVM's
+  what would have caught the structurally-absent baseline (and, per OQ-3
+  (i), reds the lane once podman is verified usable); **stamp the baseline iteration with the microVM's
   `pss_sum_kb` basis** (the mislabel, not a blank — a blank is caught by any
   presence check, while a plausible wrong label is what actually corrupts a
   cross-backend comparison) — the basis assertion MUST go red on the
@@ -1917,6 +1895,9 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
 
 ## Open Questions
 
+OQ-1, OQ-2 and OQ-3 are ruled (Matt, 2026-10-08, RIG-3428: all
+recommendations); OQ-8 and OQ-9 are still open (RIG-3415).
+
 Batched per the pre-freeze rule; each is graded **load-bearing** (an executor
 hits real ambiguity; blocks freeze, goes to Matt) or **non-load-bearing**
 (deferred with a rationale, resolved in implementation). Five are
@@ -1945,7 +1926,7 @@ inline rather than pretending a decision was made.
   firewall-only and assert it in W1 as-is; the boundary then depends on
   every future egress policy never allowlisting the gateway IP. (iii) Add
   the flag in a one-line V8-adjacent PR with its own review, keeping this
-  record docs-only. **Recommendation: (iii)** — the flag is right (the
+  record docs-only. **Ruling (Matt, 2026-10-08, RIG-3428): (iii).** **Recommendation: (iii)** — the flag is right (the
   parent's defense-in-depth posture — an optional host-side egress layer is
   named future-acceptable, microvm-runner.md:748-750) but should land as its
   own reviewed change, and W1's probe then asserts the structural layer too.
@@ -1969,7 +1950,7 @@ inline rather than pretending a decision was made.
   into the guest image — faster per-run but grows the image's shipped
   surface with a test-only tool, against the image's minimal-toolbox
   posture. (iii) Have guestd itself expose a self-probe — worst: the SUT
-  would be probing itself. **Recommendation: (i)**, with its guest-image
+  would be probing itself. **Ruling (Matt, 2026-10-08, RIG-3428): (i).** **Recommendation: (i)**, with its guest-image
   cost read off OQ-9's ruling rather than assumed zero.
 - **OQ-3 (load-bearing — regraded) — can the container baseline actually be
   present in the KVM lane, and does an absent baseline red it?** Drafted
@@ -2011,7 +1992,7 @@ inline rather than pretending a decision was made.
   let a permanently-absent baseline hide. (iii) Drop the in-lane comparison
   and set the Q-budget from the microVM numbers alone, recording the
   container baseline as an out-of-lane one-off measurement.
-  **Recommendation: (i)**, gated on W7's dry run actually demonstrating
+  **Ruling (Matt, 2026-10-08, RIG-3428): (i), with the dry-run condition below.** **Recommendation: (i)**, gated on W7's dry run actually demonstrating
   `podmanUsable()` true on the KVM runner — that helper merely runs a
   container (`lifecycle_test.go:56-60`), so verify, do not assume. If the
   dry run shows podman unusable there, (iii) is the honest fallback; (ii) is
