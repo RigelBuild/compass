@@ -26,7 +26,7 @@ import App from "./App";
 import { STUB_COMMS_STATE } from "./comms-stub";
 import { StoreContext } from "./context";
 import { appRoutes } from "./routes";
-import { type AppStore, createAppStore } from "./store";
+import { type AppStore, type AppStoreOptions, createAppStore } from "./store";
 import { testQueryClient } from "./test-support";
 
 /** Drain the microtask queue so the route-sync effect runs before a read.
@@ -40,7 +40,7 @@ export const flush = async (): Promise<void> => {
  *  store (to drive actions), container (to query the DOM) and history (Back). */
 export function mountApp(
 	initialPath = "/",
-	layoutStorage?: Storage,
+	options: Partial<AppStoreOptions> = {},
 ): {
 	store: AppStore;
 	container: HTMLElement;
@@ -53,7 +53,7 @@ export function mountApp(
 		store = createAppStore({
 			initialComms: STUB_COMMS_STATE,
 			queryClient: testQueryClient(),
-			...(layoutStorage ? { layoutStorage } : {}),
+			...options,
 		});
 		return (
 			<StoreContext value={store}>

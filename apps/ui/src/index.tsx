@@ -83,9 +83,10 @@ async function main(
 			comms: clients.comms,
 			compass: clients.compass,
 			transport: clients.transport,
-			// Read after WhoAmI so the resume read keys on the right account. No
-			// claimFirstRun yet: nothing in the app opens the tour on a won claim.
+			// Read after WhoAmI so the resume read keys on the right account. App
+			// opens the tour when the claim is won.
 			tour: clients.compass,
+			claimFirstRun: true,
 			queryClient,
 			callerId,
 			// Namespace persisted UI prefs (the pinned-agent set) to this

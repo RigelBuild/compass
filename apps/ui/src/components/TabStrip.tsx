@@ -108,6 +108,7 @@ export const TabStrip: Component = () => {
 			data-orientation="h"
 			role="tablist"
 			aria-label="View tabs"
+			data-tour="view-tabs"
 		>
 			<For each={tabs()} keyed={(tab) => tab.id}>
 				{(tab) => <TabItem tab={tab()} />}
