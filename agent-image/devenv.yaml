@@ -49,8 +49,8 @@ inputs:
         follows: nixpkgs
   # jj-vine (the RigelBuild fork) is a plain Cargo tree, not a flake, so
   # toolchain.nix builds it from this lock-pinned source. This fork pin carries
-  # github.tokenCommand and origin remote detection, so the image can use gh's
-  # installation token without a literal token or an explicit project.
+  # a host-scoped github.tokenCommand and origin remote detection, so the image
+  # asks gh for the remote host's token, never a literal token or another host's.
   jj-vine-src:
-    url: github:RigelBuild/jj-vine/c76832becbec6a7af49c7355937f10f292d17eab
+    url: github:RigelBuild/jj-vine/479de114171dc583164efccd6081f88b97ddb664
     flake: false

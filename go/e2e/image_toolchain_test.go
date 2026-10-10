@@ -34,14 +34,15 @@ func TestAgentImageVCSTools(t *testing.T) {
 
 // TestAgentImageGHTokenAuth installs fixture tokens with the production
 // GHHostsScript, then checks Git and jj-vine's tokenCommand return only the
-// github.com token, never another host's.
+// token for the host jj-vine resolves, never another host's.
 func TestAgentImageGHTokenAuth(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the image toolchain check")
 	}
 	const tok = "ghs_fixture"
 	// tokenCommand is a TOML string array; $argv is unquoted so it splits into argv.
-	const tokenCommand = `argv=$(jj config get jj-vine.github.tokenCommand | tr -d '[],"')
+	// $host stands in for jj-vine's {host} substitution.
+	const tokenCommand = `argv=$(jj config get jj-vine.github.tokenCommand | tr -d '[],"' | sed "s/{host}/$host/")
 got=$($argv 2>/dev/null || true)
 `
 	for _, tc := range []struct {
@@ -51,16 +52,27 @@ got=$($argv 2>/dev/null || true)
 	}{
 		{
 			name:  "github token",
-			creds: []runtime.GHCredentials{{Host: "ghe.example.com", Token: "ghs_other"}, {Host: "github.com", Token: tok}},
+			creds: []runtime.GHCredentials{{Host: "github.example.com", Token: "ghs_other"}, {Host: "github.com", Token: tok}},
 			check: `credential=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
 case "$credential" in *"password=` + tok + `"*) ;; *) echo "git credential: $credential"; exit 1 ;; esac
+host=github.com
 ` + tokenCommand + `test "$got" = "` + tok + `" || { echo "tokenCommand returned $got"; exit 1; }
 `,
 		},
 		{
 			name:  "other host only",
-			creds: []runtime.GHCredentials{{Host: "ghe.example.com", Token: "ghs_other"}},
-			check: tokenCommand + `test -z "$got" || { echo "tokenCommand returned $got"; exit 1; }
+			creds: []runtime.GHCredentials{{Host: "github.example.com", Token: "ghs_other"}},
+			check: `host=github.com
+` + tokenCommand + `test -z "$got" || { echo "tokenCommand returned $got"; exit 1; }
+`,
+		},
+		{
+			// jj-vine derives the GHE host from origin; the github.com token must not reach it.
+			name:  "ghe remote with only a github token",
+			creds: []runtime.GHCredentials{{Host: "github.com", Token: tok}},
+			check: `cd "$(mktemp -d)" && jj git init . >/dev/null 2>&1 && jj git remote add origin https://github.example.com/owner/repo.git
+out=$(jj-vine status 2>&1) && { echo "jj-vine status succeeded: $out"; exit 1; }
+case "$out" in *"tokenCommand failed"*) ;; *) echo "jj-vine status: $out"; exit 1 ;; esac
 `,
 		},
 	} {

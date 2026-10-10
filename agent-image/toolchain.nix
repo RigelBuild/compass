@@ -128,14 +128,14 @@ pkgs.buildEnv {
     pkgs.cacert
 
     nixConf
-    # jj-vine reads its GitHub installation token from gh at runtime.
+    # jj-vine asks gh for the resolved host's token; a host gh lacks fails closed.
     (pkgs.writeTextDir "etc/jj/conf.d/compass-agent.toml" ''
       [jj-vine]
       forge = "github"
       openAsDraft = true
       [jj-vine.github]
       host = "https://api.github.com"
-      tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "github.com"]
+      tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "{host}"]
     '')
     # Git delegates GitHub credential lookup to gh's materialized host token.
     (pkgs.writeTextDir "etc/gitconfig" ''

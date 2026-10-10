@@ -161,17 +161,17 @@
     "jj-vine-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1791077584,
-        "narHash": "sha256-Dbb8DpbHaiTFjyY0Z+0Alf6dnaWKg2pvJx9asswD4+w=",
+        "lastModified": 1791668400,
+        "narHash": "sha256-t9OdshZ3i/183UYAi5pfWAkWOf2O8kh7Ak6sUq2MMmg=",
         "owner": "RigelBuild",
         "repo": "jj-vine",
-        "rev": "c76832becbec6a7af49c7355937f10f292d17eab",
+        "rev": "479de114171dc583164efccd6081f88b97ddb664",
         "type": "github"
       },
       "original": {
         "owner": "RigelBuild",
         "repo": "jj-vine",
-        "rev": "c76832becbec6a7af49c7355937f10f292d17eab",
+        "rev": "479de114171dc583164efccd6081f88b97ddb664",
         "type": "github"
       }
     },
