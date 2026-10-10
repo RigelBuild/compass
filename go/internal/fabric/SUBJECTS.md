@@ -227,9 +227,12 @@ consumer is shared. The server reaps a consumer through `InactiveThreshold`:
 - **Restart or rolling deploy:** the threshold is hours above any restart
   window, so a restarted Server resumes the same durable from its ack floor.
 - **Reaped under a live subscription** (a partition longer than the
-  threshold): nats.go's `Consume` stops on the terminal consumer-deleted error.
-  The subscription recreates the durable and resumes, retrying every `AckWait`
-  until it succeeds or the subscription ends.
+  threshold): the server's consumer-deleted error reaches only a pull already
+  waiting at the delete. A pull sent after it sees no-responders or a missed
+  heartbeat instead, so those errors trigger a consumer-info probe. A delete in
+  either form makes the subscription recreate the durable and resume. Recreation
+  retries from 100 ms, doubling up to `AckWait`, until it succeeds or the
+  subscription ends.
 - **Abandoned consumer** (a deleted tenant, a kind no Server subscribes to any
   more): the server deletes it after the threshold, so the consumer count tracks
   live subscriptions instead of every subject ever subscribed.

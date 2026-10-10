@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
@@ -18,6 +20,10 @@ import (
 // traceparentHeader is the W3C key, lowercase because nats-server 2.11/2.12
 // lowercase it in place and NATS headers are case-sensitive.
 const traceparentHeader = "traceparent"
+
+// reapProbeBudget caps the consumer-existence check a pull error triggers; a
+// probe that times out is retried on the next missed heartbeat.
+const reapProbeBudget = 2 * time.Second
 
 // Publish sends ref to subject on JetStream, returning only once the server has
 // acked it into the stream — so a Publish that returns nil means the event is
@@ -155,22 +161,21 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// Consume dispatches serially today; the lock makes the promised serial
 	// callback a fabric guarantee rather than a nats.go internal.
 	var callbackMu sync.Mutex
-	// ErrConsumerDeleted is terminal for a Consume: the server reaped the
-	// durable (InactiveThreshold) while this client could not pull, e.g. a
-	// long partition. The supervisor below recreates it rather than go silent.
-	reaped := make(chan struct{}, 1)
+	// The server reaps the durable (InactiveThreshold) when this client could
+	// not pull, e.g. a long partition. reapDetector reports it and the
+	// supervisor below recreates the durable rather than go silent.
+	// Each signal carries its consume generation, so a probe that outlives a
+	// recreate cannot trigger another one.
+	reaped := make(chan uint64, 1)
+	var gen atomic.Uint64
 	consume := func(cons jetstream.Consumer) (jetstream.ConsumeContext, error) {
+		detect := reapDetector(ctx, cons, gen.Add(1), reaped)
 		return cons.Consume(func(msg jetstream.Msg) {
 			callbackMu.Lock()
 			defer callbackMu.Unlock()
 			f.handleEvent(ctx, msg, fn)
 		}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			if errors.Is(err, jetstream.ErrConsumerDeleted) {
-				select {
-				case reaped <- struct{}{}:
-				default:
-				}
-			}
+			detect(err)
 			// Transient pull errors are the library's to retry; surfacing them is
 			// the only thing this side can do, and swallowing them would hide a
 			// consumer wedged for good.
@@ -195,7 +200,8 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// claimed-not-acked events only return after AckWait (a silent stall). Drain runs
 	// them through fn and acks first, as the durability contract requires.
 	var ccMu sync.Mutex
-	var stopped bool // under ccMu; a recreate racing stop must not install a new cc
+	var stopped bool                       // under ccMu; a recreate racing stop must not install a new cc
+	var drained []jetstream.ConsumeContext // under ccMu; replaced ccs stop must also await
 	var once sync.Once
 	done := make(chan struct{})
 	stop := func() {
@@ -203,10 +209,14 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 			ccMu.Lock()
 			stopped = true
 			cur := cc
+			prev := drained
 			ccMu.Unlock()
 			cur.Drain()
 			if hook := f.consumerClosed; hook != nil {
 				go func() {
+					for _, old := range prev {
+						<-old.Closed()
+					}
 					<-cur.Closed()
 					hook()
 				}()
@@ -235,6 +245,10 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 			nextCC.Stop()
 			return false, nil
 		}
+		// A probe-detected reap leaves the old Consume running against the
+		// recreated durable; drain it so only cc pulls and stop() reaches all.
+		cc.Drain()
+		drained = append(pruneClosed(drained), cc)
 		cc = nextCC
 		f.untrackConsumer(durable)
 		f.trackConsumer(durable, next)
@@ -246,7 +260,10 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	go func() {
 		for {
 			select {
-			case <-reaped:
+			case g := <-reaped:
+				if g != gen.Load() {
+					continue // from a consume a recreate already replaced
+				}
 				if recreate() {
 					continue
 				}
@@ -267,11 +284,14 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	return stop, nil
 }
 
-// retryUntil runs attempt every AckWait until it succeeds or the subscription
-// ends; it reports whether the reaped consumer was replaced.
+// recreateRetryFloor is the first retry delay; it doubles up to AckWait so a
+// transient failure right after the reap does not cost a full AckWait.
+const recreateRetryFloor = 100 * time.Millisecond
+
+// retryUntil runs attempt with a doubling delay, capped at AckWait, until it
+// succeeds or the subscription ends; it reports whether the consumer was replaced.
 func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject string, attempt func() (bool, error)) bool {
-	retry := time.NewTicker(f.cfg.ackWait())
-	defer retry.Stop()
+	delay := min(recreateRetryFloor, f.cfg.ackWait())
 	for {
 		ok, err := attempt()
 		if ok {
@@ -282,8 +302,10 @@ func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject s
 			return false
 		}
 		f.log.ErrorContext(ctx, "fabric: recreating a reaped consumer failed; retrying", "subject", subject, "error", err)
+		wait := delay
+		delay = min(2*delay, f.cfg.ackWait())
 		select {
-		case <-retry.C:
+		case <-time.After(wait):
 		case <-ctx.Done():
 			return false
 		case <-f.teardown:
@@ -292,6 +314,50 @@ func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject s
 			return false
 		}
 	}
+}
+
+// reapDetector returns a consume-error hook that signals reaped once cons is
+// gone. The server's 409 reaches only a pull waiting at the delete; a pull to
+// an already-deleted durable sees no-responders or a missed heartbeat instead,
+// so those trigger one bounded Info probe off the handler goroutine.
+func reapDetector(ctx context.Context, cons jetstream.Consumer, gen uint64, reaped chan<- uint64) func(error) {
+	signal := func() {
+		select {
+		case reaped <- gen:
+		default:
+		}
+	}
+	var probing atomic.Bool
+	return func(err error) {
+		switch {
+		case errors.Is(err, jetstream.ErrConsumerDeleted):
+			signal()
+		case errors.Is(err, nats.ErrNoResponders), errors.Is(err, jetstream.ErrNoHeartbeat):
+			if !probing.CompareAndSwap(false, true) {
+				return
+			}
+			go func() {
+				defer probing.Store(false)
+				probeCtx, cancel := context.WithTimeout(ctx, reapProbeBudget)
+				defer cancel()
+				if _, err := cons.Info(probeCtx); errors.Is(err, jetstream.ErrConsumerNotFound) {
+					signal()
+				}
+			}()
+		}
+	}
+}
+
+// pruneClosed drops consume contexts that have fully closed.
+func pruneClosed(ccs []jetstream.ConsumeContext) []jetstream.ConsumeContext {
+	return slices.DeleteFunc(ccs, func(c jetstream.ConsumeContext) bool {
+		select {
+		case <-c.Closed():
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // handleEvent runs one delivery: decode, invoke fn under a panic guard, then ack
