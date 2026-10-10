@@ -358,8 +358,9 @@ func TestShutdownHonorsDoneContextOverReapGrace(t *testing.T) {
 		name:    "virtiofsd",
 		logPath: filepath.Join(dir, "virtiofsd.log"),
 		cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c",
-			longLivedStayAlive("trap '' TERM; echo > "+ready, sleepBin, "300")),
+			longLivedStayAlive(`trap '' TERM; echo > "$READY"`, sleepBin, "300")),
 	}
+	c.cmd.Env = append(os.Environ(), "READY="+ready)
 	if err := startChild(c); err != nil {
 		t.Fatalf("startChild: %v", err)
 	}
