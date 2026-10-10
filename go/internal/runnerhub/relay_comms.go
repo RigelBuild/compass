@@ -914,12 +914,24 @@ func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string, e
 
 // dropLostSessionDetached runs dropLostSession off the caller's receive loop: it
 // does store work, and the stream ctx dies with the stream.
-func (h *Hub) dropLostSessionDetached(ctx context.Context, runnerID, sessionID string, errored bool) {
+// gen is the enrollment the loss was observed under.
+func (h *Hub) dropLostSessionDetached(ctx context.Context, gen uint64, runnerID, sessionID string, errored bool) {
 	go func() {
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lostSessionTimeout)
 		defer cancel()
-		h.dropLostSession(dctx, runnerID, sessionID, errored)
+		h.dropLostSessionIfCurrent(dctx, gen, runnerID, sessionID, errored)
 	}()
+}
+
+// dropLostSessionIfCurrent runs dropLostSession only while enrollment gen is
+// current: a re-enroll since the loss may have re-bound sessionID.
+func (h *Hub) dropLostSessionIfCurrent(ctx context.Context, gen uint64, runnerID, sessionID string, errored bool) {
+	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
+	if h.enrollGen != gen {
+		return
+	}
+	h.dropLostSession(ctx, runnerID, sessionID, errored)
 }
 
 // runnerSessionCtx scopes a Runner-originated ctx to the tenant that binds
