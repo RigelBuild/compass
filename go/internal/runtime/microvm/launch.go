@@ -483,6 +483,8 @@ func (vm *VM) Health(ctx context.Context) (*compassv1.HealthResponse, error) {
 // bounded wait, then SIGKILL), each Wait'd to avoid zombies, and finally the
 // AF_UNIX sockets and the three pidfiles are removed. It runs at most once
 // (guarded by sync.Once) so it is safe to call explicitly AND from t.Cleanup.
+// ctx bounds only the SIGTERM grace: once it is done the daemons are SIGKILLed
+// at once, but every child is still reaped, so teardown never returns early.
 // The serial console log is deliberately NOT removed — the test reads it after
 // teardown.
 func (vm *VM) Shutdown(ctx context.Context) error {
@@ -514,7 +516,7 @@ func (vm *VM) Shutdown(ctx context.Context) error {
 			if c == nil || c.cmd.Process == nil {
 				continue
 			}
-			if reapErr := reap(c); reapErr != nil {
+			if reapErr := reap(ctx, c); reapErr != nil {
 				errs = append(errs, reapErr)
 			}
 		}
@@ -535,23 +537,26 @@ func (vm *VM) Shutdown(ctx context.Context) error {
 }
 
 // reap terminates an auxiliary daemon gracefully then forcibly: SIGTERM, wait up
-// to reapGrace, SIGKILL if it is still alive. It does NOT Wait — startChild's
-// sole reaper owns this child's single cmd.Wait, and reap observes the exit
-// through c.exited, so no second Wait can race it.
-func reap(c *child) error {
+// to reapGrace or until ctx is done, then SIGKILL if it is still alive. It does
+// NOT Wait — startChild's sole reaper owns this child's single cmd.Wait, and
+// reap observes the exit through c.exited, so no second Wait can race it.
+func reap(ctx context.Context, c *child) error {
 	if termErr := c.cmd.Process.Signal(syscall.SIGTERM); termErr != nil && !errors.Is(termErr, os.ErrProcessDone) {
 		return fmt.Errorf("SIGTERM %s: %w", c.name, termErr)
 	}
+	grace := time.NewTimer(reapGrace)
+	defer grace.Stop()
 	select {
 	case <-c.exited:
 		return waitResult(c.name, c.waitErr)
-	case <-time.After(reapGrace):
-		if killErr := c.cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-			return fmt.Errorf("SIGKILL %s: %w", c.name, killErr)
-		}
-		<-c.exited
-		return waitResult(c.name, c.waitErr)
+	case <-ctx.Done():
+	case <-grace.C:
 	}
+	if killErr := c.cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+		return fmt.Errorf("SIGKILL %s: %w", c.name, killErr)
+	}
+	<-c.exited
+	return waitResult(c.name, c.waitErr)
 }
 
 // WaitVMMExit reports whether the VMM process exited within timeout, observed
