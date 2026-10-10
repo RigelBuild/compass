@@ -1,9 +1,7 @@
 package vfs
 
-// The P2 VolumeManager backend: one directory subtree per session on local
-// storage. It is the whole volume lifecycle at P2 — create, resolve, attach,
-// stamp, reconcile, expire — with snapshot/archive/restore reserved behind honest
-// sentinels (vfs.go).
+// The local VolumeManager backend keeps one subtree per session and an
+// immutable, account-scoped snapshot store under the configured base dir.
 
 // The load-bearing part is the close-stamp: a small JSON marker written by
 // teardown (Stamp) and read by the reaper (Expire), which bounds the storage leak
@@ -35,6 +33,8 @@ import (
 )
 
 const (
+	// storeDirName keeps snapshots outside volume reaper scans.
+	storeDirName = ".compass-vfs.snapshots"
 	// metaDirSuffix names the per-volume metadata dir, a sibling of the root:
 	// <baseDir>/<sessionID><metaDirSuffix>. It holds the close-stamp and is the
 	// volume-identity token scanBaseDir keys on. It sits outside the root because
@@ -80,13 +80,9 @@ type closeStamp struct {
 	StampedAt time.Time `json:"stampedAt"`
 }
 
-// LocalManager is the P2 VolumeManager backend: a local-directory volume store.
-// Every session's volume is the subtree <baseDir>/<sessionID>, so a volume's
-// host path is a pure function of the base dir and the session id — which is
-// what makes the mount path stable across every launch, resume, and burst of
-// that session (P2-GC-d). It holds no per-session state: a fresh LocalManager
-// on the same base dir after a Runner restart resolves and re-attaches exactly
-// the same volumes.
+// LocalManager is the local-directory volume store and snapshot backend.
+// Every volume is the subtree <baseDir>/<sessionID>, so its host path is
+// stable across launches and Runner restarts.
 //
 // keep-id ownership invariant (load-bearing): the base dir and every
 // per-session subtree are created by the Runner as its OWN invoking host user.
@@ -101,11 +97,12 @@ type closeStamp struct {
 // remap is the container runtime's.
 type LocalManager struct {
 	baseDir string
+	cloner  cloner
 }
 
-// LocalManager is the P2 backend behind the VolumeManager seam; the assertion keeps the
-// two in lockstep at compile time.
+// LocalManager implements the volume lifecycle and immutable snapshot backend.
 var _ VolumeManager = (*LocalManager)(nil)
+var _ SnapshotStore = (*LocalManager)(nil)
 
 // NewLocalManager establishes the operator-configured base dir under which one
 // subtree per session lives, keyed by session id, and returns the backend bound
@@ -119,17 +116,21 @@ func NewLocalManager(baseDir string) (*LocalManager, error) {
 	if baseDir == "" {
 		return nil, errors.New("vfs: base dir must not be empty")
 	}
-	if err := os.MkdirAll(baseDir, volumeDirMode); err != nil {
+	if err := os.MkdirAll(baseDir, volumeDirMode); err != nil { //nolint:gosec // baseDir is operator-configured as the volume root, not a caller path
 		return nil, fmt.Errorf("vfs: creating volume base dir %q: %w", baseDir, err)
 	}
-	info, err := os.Stat(baseDir)
+	info, err := os.Stat(baseDir) //nolint:gosec // baseDir is operator-configured as the volume root, not a caller path
 	if err != nil {
 		return nil, fmt.Errorf("vfs: inspecting volume base dir %q: %w", baseDir, err)
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("vfs: volume base dir %q is not a directory", baseDir)
 	}
-	return &LocalManager{baseDir: baseDir}, nil
+	clone, err := probeCloner(filepath.Join(baseDir, storeDirName))
+	if err != nil {
+		return nil, err
+	}
+	return &LocalManager{baseDir: baseDir, cloner: clone}, nil
 }
 
 // BaseDir is the base dir this manager places volumes under. Exposed so an
@@ -170,8 +171,6 @@ func (m *LocalManager) CreateVolume(ctx context.Context, sessionID string) (Volu
 	return Volume{SessionID: sessionID, HostRoot: root}, nil
 }
 
-// createLocked makes the metadata dir before the root, so a crash between the
-// two leaves a metadata dir Expire can reclaim, never a root it cannot see.
 func createLocked(root string) error {
 	rootExists, err := pathExists(root)
 	if err != nil {
@@ -182,10 +181,10 @@ func createLocked(root string) error {
 			return err
 		}
 	}
-	if err := os.MkdirAll(metaDir(root), volumeDirMode); err != nil {
+	if err := os.MkdirAll(metaDir(root), volumeDirMode); err != nil { //nolint:gosec // G703: sidecar path uses a traversal-checked session ID under the configured base
 		return fmt.Errorf("vfs: creating volume metadata dir %q: %w", metaDir(root), err)
 	}
-	if err := os.MkdirAll(root, volumeDirMode); err != nil {
+	if err := os.MkdirAll(root, volumeDirMode); err != nil { //nolint:gosec // G703: root path uses a traversal-checked session ID under the configured base
 		return fmt.Errorf("vfs: creating volume root %q: %w", root, err)
 	}
 	return nil
@@ -205,7 +204,7 @@ func (m *LocalManager) Lookup(ctx context.Context, sessionID string) (Volume, er
 	if err := ctx.Err(); err != nil {
 		return Volume{}, err
 	}
-	info, err := os.Stat(root)
+	info, err := os.Stat(root) //nolint:gosec // root is joined only after volumeRoot validates the session ID
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return Volume{}, fmt.Errorf("vfs: session %q: %w", sessionID, ErrVolumeNotFound)
@@ -458,7 +457,7 @@ func stampOrphanLocked(root string, discoveredAt time.Time) error {
 // Expire also sweeps reaping leftovers and reclaims orphan lock files.
 func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) error {
 	now := time.Now()
-	return m.scanBaseDir(ctx, func(kind entryKind, root string) error {
+	return errors.Join(m.scanBaseDir(ctx, func(kind entryKind, root string) error {
 		switch kind {
 		case entryVolume:
 			lock, err := tryLockVolume(ctx, root)
@@ -500,7 +499,7 @@ func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) erro
 		default:
 			return nil
 		}
-	})
+	}), m.sweepSnapshots(ctx, olderThan))
 }
 
 // reapLocked checks eligibility under the held lock, then renames the root.
@@ -554,7 +553,7 @@ func reclaimLockLocked(root string) error {
 }
 
 func pathExists(path string) (bool, error) {
-	_, err := os.Stat(path)
+	_, err := os.Stat(path) //nolint:gosec // G703: pathExists only receives roots and fixed siblings under the configured base
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -573,12 +572,6 @@ func eligible(stamp *closeStamp, now time.Time, olderThan time.Duration) bool {
 	return now.Sub(stamp.StampedAt) > olderThan
 }
 
-// Snapshot returns the reserved verb's sentinel; an empty ID is not a stored
-// snapshot.
-func (m *LocalManager) Snapshot(ctx context.Context, v Volume) (VolumeSnapshotID, error) {
-	return "", ErrSnapshotNotImplemented
-}
-
 // Archive returns the reserved verb's sentinel; the object-store implementation
 // is not part of this backend.
 func (m *LocalManager) Archive(ctx context.Context, v Volume) (ArchiveRef, error) {
@@ -593,6 +586,9 @@ func (m *LocalManager) Restore(ctx context.Context, ref ArchiveRef) (Volume, err
 // volumeRoot rejects IDs that escape the base dir or collide with a sibling
 // lock-file, metadata, or reaping path; callers already provide sanitized internal IDs.
 func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
+	if sessionID == storeDirName {
+		return "", fmt.Errorf("%w: %q is reserved for snapshots", ErrInvalidSessionID, sessionID)
+	}
 	if sessionID == "" {
 		return "", fmt.Errorf("%w: empty", ErrInvalidSessionID)
 	}
@@ -936,7 +932,7 @@ func lockAttemptOnFile(ctx context.Context, path string, f *os.File) (*volumeLoc
 	if err != nil {
 		return nil, false, errors.Join(fmt.Errorf("vfs: verifying volume lock %q: %w", path, err), closeLockFile(path, f))
 	}
-	pathInfo, err := os.Stat(path)
+	pathInfo, err := os.Stat(path) //nolint:gosec // path is the lock filename derived from a validated session root
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, true, nil
 	}

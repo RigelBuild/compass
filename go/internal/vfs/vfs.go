@@ -1,49 +1,5 @@
-// Package vfs is the per-session persistent-volume seam: where a session's
-// working tree and derived state (`target/`, `node_modules`, build caches) live
-// so they survive suspend / resume / eviction and mount at a stable absolute
-// path on every launch. Today the tree dies with the container because it
-// exists only inside it (the agent self-clones post-launch into a
-// container-local dir, go/internal/runtime/agent.go:354-358); this package owns
-// the volume lifecycle Runner-side, beside the container lifecycle
-// (docs/designs/infra/runtime/compass-elastic-session-runtime/p2-persistent-session-volume.md,
-// the volume under §Approach and the lifecycle API under W1).
-//
-// The layering mirrors the elastic-compute seam in internal/compute:
-//   - vfs.go — the VolumeManager interface plus the value types that cross it
-//     (Volume, VolumeSnapshotID, ArchiveRef, CloseIntent) and the package's
-//     typed errors. Every consumer depends on the interface, so a
-//     network-volume backend can replace the local-directory one without
-//     touching a caller.
-//   - localvolume.go — the P2 backend: a directory subtree on the box's fast
-//     local storage, one per session under an operator-configured base dir.
-//     Vendor-neutral (Global Constraint 1), no storage fabric; the accepted
-//     tradeoff — a burst cannot land on a different box until a network-volume
-//     backend exists — is the parent record's OQ 2 and is not re-opened here.
-//
-// Two load-bearing constraints shape the surface. Volume destruction is
-// **only** via Expire (P2-GC-c): Release, Teardown, eviction, crash, and failed
-// launches never delete volume contents, so the sole reclaim path is the policy
-// reaper. And the in-container mount path of a session's volume is identical
-// across every launch, resume, and burst environment of that session
-// (P2-GC-d) — a path change invalidates `target/` and sccache and is a breaking
-// bug, which is why Attach returns a path derived solely from the session id
-// and the base dir, never from anything per-launch.
-//
-// Reserved-not-implemented surface: Snapshot, Archive, and Restore are declared
-// in the interface now so their consumers land no interface change, but the P2
-// backend returns honest not-implemented sentinels rather than silent no-ops
-// (the ErrExecStreamingNotImplemented discipline,
-// go/internal/compute/compute.go:26-29; the Resize precedent,
-// go/internal/runtime/podman.go:387-396). Snapshot's real body — the snapshot
-// store, the reflink/rsync copy primitive, and the (account, repo) index — is
-// W2's; Archive/Restore's consumer is D4's cold-idle (OQ-2).
-//
-// This package imports nothing outside the standard library: the volume
-// lifecycle is deliberately independent of the container runtime and of the
-// Server. In particular the crash-reconciliation pass needs no session query
-// and by design cannot want one — the Runner, not the Server, is authoritative
-// for live-session truth, and RunnerService exposes no session-query verb (see
-// LocalManager.ReconcileOrphans).
+// Package vfs manages persistent session volumes and immutable snapshots.
+// It owns the local volume lifecycle and account-scoped snapshot index.
 package vfs
 
 import (
@@ -66,26 +22,22 @@ var ErrVolumeNotFound = errors.New("vfs: volume not found")
 // package is ever allowed to create or reap.
 var ErrInvalidSessionID = errors.New("vfs: invalid session id")
 
-// ErrSnapshotNotImplemented is the honest sentinel the P2 backend returns from
-// the reserved Snapshot method: the verb is declared in VolumeManager now, but
-// the snapshot store, the reflink/rsync copy primitive, and the
-// (AgentAccountID, repo) index the provision path reads are W2's to fill in
-// behind this signature. W2 replaces the sentinel body; no interface change
-// lands with it.
-var ErrSnapshotNotImplemented = errors.New("vfs: Snapshot store is implemented in W2")
+// ErrSnapshotNotFound reports a missing current snapshot or unknown ID so callers can distinguish absent state.
+var ErrSnapshotNotFound = errors.New("vfs: snapshot not found")
 
-// ErrArchiveNotImplemented is the honest sentinel the P2 backend returns from
-// the reserved Archive method: the verb's consumer is D4's cold-idle (OQ-2), so
-// the signature is reserved here and the object-store implementation deferred.
+// ErrVolumeNotEmpty prevents overwriting unmarked volume contents during restore.
+var ErrVolumeNotEmpty = errors.New("vfs: volume not empty")
+
+// ErrInvalidSnapshotKey prevents snapshot indexes from mixing account or repo scopes.
+var ErrInvalidSnapshotKey = errors.New("vfs: invalid snapshot key")
+
+// ErrArchiveNotImplemented marks the archive verb reserved for D4.
 var ErrArchiveNotImplemented = errors.New("vfs: Archive is reserved at P2 and implemented in D4")
 
-// ErrRestoreNotImplemented is the honest sentinel the P2 backend returns from
-// the reserved Restore method: like Archive, its consumer is D4's cold-idle
-// (OQ-2).
+// ErrRestoreNotImplemented marks archived-volume restore reserved for D4.
 var ErrRestoreNotImplemented = errors.New("vfs: Restore is reserved at P2 and implemented in D4")
 
-// Volume is a live per-session persistent volume: the session it belongs to and
-// its host-side root. Opaque to callers beyond these fields.
+// Volume is a live per-session persistent volume with a host-side root.
 type Volume struct {
 	SessionID string
 	HostRoot  string
@@ -94,6 +46,12 @@ type Volume struct {
 // VolumeSnapshotID is the opaque key of a stored volume snapshot (opaque per
 // the parent record; never parsed by callers).
 type VolumeSnapshotID string
+
+// SnapshotKey scopes an index to one account and repo, preventing cross-scope snapshot lookup.
+type SnapshotKey struct {
+	AgentAccountID string
+	Repo           string
+}
 
 // ArchiveRef is the opaque reference to an archived volume in the object store
 // (consumed by D4's cold-idle; signature reserved here, implementation deferred —
@@ -162,10 +120,7 @@ type VolumeManager interface {
 	// new life. The returned path depends only on the session id and the base
 	// dir, which is what makes it stable across every launch (P2-GC-d).
 	Attach(ctx context.Context, v Volume) (path string, err error)
-	// Snapshot captures the volume's tree into the snapshot store and returns
-	// its opaque key. Reserved at P2: the backend returns
-	// ErrSnapshotNotImplemented until W2 lands the store, the copy primitive,
-	// and the (account, repo) index.
+	// Snapshot captures a stable tree so commit-complete callers can promote it later.
 	Snapshot(ctx context.Context, v Volume) (VolumeSnapshotID, error)
 	// Archive moves the volume to cold object storage and returns its opaque
 	// reference. Reserved at P2 (OQ-2): the backend returns
@@ -186,4 +141,14 @@ type VolumeManager interface {
 	// ReconcileOrphans stamps every unstamped volume closed at discovery time.
 	// Startup only: it must finish before the backend serves any Attach.
 	ReconcileOrphans(ctx context.Context) error
+}
+
+// SnapshotStore separates snapshot indexing and restore from the volume lifecycle.
+type SnapshotStore interface {
+	// PromoteSnapshot makes a captured tree current for one account and repo.
+	PromoteSnapshot(ctx context.Context, key SnapshotKey, id VolumeSnapshotID) error
+	// CurrentSnapshot returns the snapshot currently promoted for a key.
+	CurrentSnapshot(ctx context.Context, key SnapshotKey) (VolumeSnapshotID, error)
+	// RestoreSnapshot materializes a stored tree into an empty or interrupted volume.
+	RestoreSnapshot(ctx context.Context, id VolumeSnapshotID, v Volume) error
 }
