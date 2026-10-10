@@ -58,7 +58,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 					() => store.openAgent(a().account.id),
 				)}
 			>
-				<StateDot state={a().lifecycle ?? "idle"} />
+				<StateDot state={a().lifecycle ?? "idle"} scale={2} />
 				<Show when={a().runtime}>{(m) => <RuntimeMarker marker={m()} />}</Show>
 				<Show when={isDemoId(a().account.id)}>
 					<span class="cx-tour-demo-badge">Demo</span>

@@ -11,13 +11,13 @@ import { StateDot } from "./StateDot";
 const GRIDS: Record<AgentState, readonly string[]> = {
 	working: [
 		".........",
-		"#...#....",
-		".#...#...",
-		"..#...#..",
-		"...#...#.",
-		"..#...#..",
-		".#...#...",
-		"#...#....",
+		".........",
+		".#..#....",
+		"..#..#...",
+		"...#..#..",
+		"..#..#...",
+		".#..#....",
+		".........",
 		".........",
 	],
 	idle: [
@@ -32,11 +32,11 @@ const GRIDS: Record<AgentState, readonly string[]> = {
 		".........",
 	],
 	waiting: [
-		"..####...",
-		".#....#..",
+		".........",
+		"...###...",
+		"..#...#..",
 		"......#..",
-		".....#...",
-		"....#....",
+		"....##...",
 		"....#....",
 		".........",
 		"....#....",
@@ -45,13 +45,13 @@ const GRIDS: Record<AgentState, readonly string[]> = {
 	done: [
 		".........",
 		".........",
-		".........",
-		"........#",
 		".......#.",
-		"#.....#..",
+		"......#..",
 		".#...#...",
 		"..#.#....",
 		"...#.....",
+		".........",
+		".........",
 	],
 	paused: [
 		".........",
@@ -110,6 +110,14 @@ const STATES: readonly AgentState[] = [
 	"disconnected",
 ];
 
+// The site's rendered cells (design record A4), copied as SVG `x,y` pairs from
+// the rigel.build glyph rects; Compass must draw exactly these.
+const SITE_CELLS: ReadonlyArray<readonly [AgentState, string]> = [
+	["working", "1,2 4,2 2,3 5,3 3,4 6,4 2,5 5,5 1,6 4,6"],
+	["waiting", "3,1 4,1 5,1 2,2 6,2 6,3 4,4 5,4 4,5 4,7"],
+	["done", "1,4 2,5 3,6 4,5 5,4 6,3 7,2"],
+];
+
 // The [x,y] set a grid's `#` cells occupy — the geometry the SVG must draw.
 function litCells(grid: readonly string[]): Set<string> {
 	const cells = new Set<string>();
@@ -130,8 +138,8 @@ function renderedCells(dot: Element): Set<string> {
 	return cells;
 }
 
-function mount(state: AgentState) {
-	const { container } = render(() => <StateDot state={state} />);
+function mount(state: AgentState, scale?: 1 | 2) {
+	const { container } = render(() => <StateDot state={state} scale={scale} />);
 	const dot = container.querySelector(".cx-state-dot");
 	if (!dot) throw new Error("state dot did not render");
 	return dot;
@@ -147,6 +155,19 @@ describe("StateDot", () => {
 			expect([...actual].sort()).toEqual([...expected].sort());
 		});
 	}
+
+	for (const [state, cells] of SITE_CELLS) {
+		test(`${state} draws the site's cells`, () => {
+			const actual = renderedCells(mount(state));
+			expect([...actual].sort()).toEqual(cells.split(" ").sort());
+		});
+	}
+
+	test("scale 2 marks the wrapper for the 18px box; 1× carries no mark", () => {
+		expect(mount("working", 2).getAttribute("data-scale")).toBe("2");
+		expect(mount("working", 1).getAttribute("data-scale")).toBeNull();
+		expect(mount("working").getAttribute("data-scale")).toBeNull();
+	});
 
 	test("working is alive and every other state omits data-alive", () => {
 		expect(mount("working").getAttribute("data-alive")).toBe("1");
