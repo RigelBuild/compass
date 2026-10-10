@@ -1,6 +1,6 @@
 import { dmLabel, isDm } from "./comms";
 import type { AppStore } from "./store";
-import type { RouteMatch } from "./view-route";
+import { type RouteMatch, SETTINGS_SECTION_LABEL } from "./view-route";
 
 /** A view's title: the channel, topic or agent name, or the fixed
  *  view name. An id the store cannot resolve yet titles as the raw id. */
@@ -21,7 +21,7 @@ export function routeTitle(
 		case "done":
 			return "Done";
 		case "settings":
-			return "Settings";
+			return `Settings · ${SETTINGS_SECTION_LABEL[match.section]}`;
 		case "channel": {
 			const channel = store.channels().find((c) => c.id === match.channelId);
 			if (!channel) return match.channelId;

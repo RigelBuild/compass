@@ -34,9 +34,11 @@ function stubDeps(
 		closeTab: (tabId: string) => void;
 		focusPane: (pane: "first" | "second") => void;
 		startTour: () => void;
+		navigateSettings: (section: "tracker" | "models") => void;
 	}> = {},
 ) {
 	return {
+		navigateSettings: () => {},
 		showBridge: () => {},
 		toggleShortcuts: () => {},
 		showAgents: () => {},
@@ -201,6 +203,21 @@ describe("createKeyboardSpine", () => {
 		expect(settings).toBe(1);
 		expect(backlog).toBe(1);
 		expect(done).toBe(1);
+	});
+
+	test("each Settings section has a palette command that opens that section", () => {
+		const opened: string[] = [];
+		const spine = createKeyboardSpine(
+			stubDeps({ navigateSettings: (section) => opened.push(section) }),
+		);
+		const cmd = spine.registry.get(id("view.settings.models"));
+		expect(cmd?.title).toBe("Go to Settings: Models");
+		expect(cmd?.scope).toBe("global");
+		cmd?.run();
+		expect(opened).toEqual(["models"]);
+		expect(spine.registry.get(id("view.settings.tracker"))?.title).toBe(
+			"Go to Settings: Tracker",
+		);
 	});
 
 	test("registers sidebar.toggleLeft/toggleRight as global commands beside their store behavior (RIG-2530 T2/D1)", () => {

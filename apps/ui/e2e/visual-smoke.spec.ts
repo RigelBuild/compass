@@ -122,11 +122,28 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	});
 
 	test("settings", async ({ page }) => {
-		await page.goto("/#/settings");
+		await page.goto("/#/settings/tracker");
 		await page.locator(".settings-view").waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
 		await expect(page).toHaveScreenshot("settings.png", {
 			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
+	// The sidebars keep their width, so this viewport leaves a view panel
+	// under the 560px container breakpoint.
+	test("settings — narrow pane", async ({ page }) => {
+		await page.setViewportSize({ width: 1120, height: 720 });
+		await page.goto("/#/settings/tracker");
+		const panel = page.locator(".view-panel", {
+			has: page.locator(".settings-view"),
+		});
+		await panel.locator(".settings-nav").waitFor({ state: "visible" });
+		await page.evaluate(() => document.fonts.ready);
+		expect((await panel.boundingBox())?.width).toBeLessThan(560);
+		await expect(panel).toHaveScreenshot("settings-narrow.png", {
 			animations: "disabled",
 			scale: "css",
 		});

@@ -510,7 +510,7 @@ export const LeftSidebar: Component = () => {
 					class={["bridge-link", { active: store.view() === "settings" }]}
 					{...openLink(
 						store,
-						() => "/settings",
+						() => store.settingsPath(),
 						() => store.showSettings(),
 					)}
 					aria-keyshortcuts={ariaChord("view.settings")}

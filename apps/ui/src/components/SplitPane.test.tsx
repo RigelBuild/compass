@@ -198,7 +198,7 @@ describe("SplitPane", () => {
 			if (command !== "pane.closeOther") {
 				store.dispatchLayout({
 					kind: "open",
-					path: "/settings",
+					path: "/settings/tracker",
 					background: true,
 				});
 				await flush();
@@ -253,7 +253,7 @@ describe("SplitPane", () => {
 	test("an inactive split tab hides its splitter with its panes", async () => {
 		const { store, container } = await mountSplit("row");
 		const sep = splitter(container);
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		expect(sep.closest("[hidden]")).not.toBeNull();
 	});

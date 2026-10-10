@@ -140,7 +140,7 @@ describe("window layout over one linear history (record A2)", () => {
 
 	test("back onto an entry with no view id applies to the focused view", async () => {
 		const { store, memory } = mountWithHistory([
-			{ value: "/settings" },
+			{ value: "/settings/tracker" },
 			{ value: "/" },
 		]);
 		await flush();
@@ -153,8 +153,22 @@ describe("window layout over one linear history (record A2)", () => {
 		memory.back();
 		await flush();
 		expect(store.layout().activeTabId).toBe(tabB);
-		expect(pathOfTab(store, tabB)).toBe("/settings");
+		expect(pathOfTab(store, tabB)).toBe("/settings/tracker");
 		expect(pathOfTab(store, tabA)).toBe("/");
 		expect(store.view()).toBe("settings");
+	});
+
+	test("a stale path is replaced by its canonical one, so Back skips it", async () => {
+		const { store, memory } = mountWithHistory([
+			{ value: "/" },
+			{ value: "/settings" },
+		]);
+		await flush();
+		expect(store.focusedView().path()).toBe("/settings/tracker");
+		expect(memory.length()).toBe(2);
+
+		memory.back();
+		await flush();
+		expect(store.focusedView().path()).toBe("/");
 	});
 });

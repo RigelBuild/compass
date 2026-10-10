@@ -126,6 +126,20 @@ describe("routing (record A1/A4)", () => {
 		expect(store.selectedChannelId()).toBe(CHANNEL_ID);
 	});
 
+	test("canonicalizes a recognized route with extra segments", async () => {
+		const { store } = mountApp("/backlog/foo");
+		await flush();
+
+		expect(store.focusedView().path()).toBe("/backlog");
+	});
+
+	test("canonicalizes an unknown path to the bridge", async () => {
+		const { store } = mountApp("/no-such-surface");
+		await flush();
+
+		expect(store.focusedView().path()).toBe("/");
+	});
+
 	// An unknown path redirects to "/" (the `*` catch-all → <Navigate href="/">),
 	// landing on the board rather than a blank screen.
 	test("an unknown path redirects to the board", async () => {

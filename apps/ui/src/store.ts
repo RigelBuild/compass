@@ -95,7 +95,11 @@ import {
 	type TrackerSeam,
 } from "./tracker";
 import { focusViewPanel, viewPanelId, viewTabId } from "./view-panel";
-import { parseRoute } from "./view-route";
+import {
+	parseRoute,
+	SETTINGS_SECTIONS,
+	type SettingsSection,
+} from "./view-route";
 import { createViewScope, type ViewScope } from "./view-scope";
 import {
 	focusedViewOf,
@@ -267,8 +271,11 @@ export interface AppStore {
 	showBacklog: () => void;
 	/** Show the Done/archive view (D4). */
 	showDone: () => void;
-	/** Show the Settings view (tracker mapping + handle, T11). */
+	/** Show Settings in the last section used by this window. */
 	showSettings: () => void;
+	settingsSection: () => SettingsSection;
+	setSettingsSection: (section: SettingsSection) => void;
+	settingsPath: () => string;
 	/** Whether the keyboard-shortcuts overlay is open (RIG-2482). */
 	shortcutsOpen: Accessor<boolean>;
 	/** Close the keyboard-shortcuts overlay (Escape/backdrop/navigation). */
@@ -1089,7 +1096,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		anchorAgentEntry(path);
 		dispatchLayout({ kind: "navigateFocused", path });
 	};
-	// Leaving a dead demo path replaces its history entry, so Back cannot loop onto it.
+	// Leaving a dead demo path or a non-canonical one replaces its history entry,
+	// so Back cannot loop onto it.
 	let replaceNextHashSync = false;
 	const isDemoPath = (path: string): boolean => path.split("/").some(isDemoId);
 	const leaveDemoPaths = (): void => {
@@ -1453,7 +1461,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				untrack(instance).path,
 				{
 					path: () => instance().path,
-					navigate: (path) => setLayout((prev) => setViewPath(prev, id, path)),
+					navigate: (path, navOptions) => {
+						if (navOptions?.replace && focusedViewOf(untrack(layout)).id === id)
+							replaceNextHashSync = true;
+						setLayout((prev) => setViewPath(prev, id, path));
+					},
 					shown: () => shownIds().includes(id),
 				},
 			);
@@ -1466,6 +1478,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		if (!scope) throw new Error(`no view scope for ${id}`);
 		return scope;
 	});
+	const [lastSettingsSection, setLastSettingsSection] =
+		createSignal<SettingsSection>(SETTINGS_SECTIONS[0]);
+	const settingsSection = createMemo(() => {
+		const route = focusedView().route();
+		return route.view === "settings" ? route.section : lastSettingsSection();
+	});
+	const setSettingsSection = (section: SettingsSection) =>
+		setLastSettingsSection(section);
+	const settingsPath = createMemo(() => `/settings/${settingsSection()}`);
 	const view = createMemo<View>(() => focusedView().route().view);
 	// Status events for other agents must not re-record the focused one.
 	const focusedAgentTurn = createMemo(
@@ -2067,7 +2088,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	};
 	const showSettings = () => {
 		hideShortcuts();
-		navigateTo("/settings");
+		navigateTo(settingsPath());
 	};
 	// ── First-run tour (A4/A5): open state, step cursor, and server writes ──
 	const [tourOpen, setTourOpen] = createSignal(false);
@@ -2267,6 +2288,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		showAgents,
 		showBacklog,
 		showDone,
+		navigateSettings: (section) => {
+			hideShortcuts();
+			setSettingsSection(section);
+			navigateTo(`/settings/${section}`);
+		},
 		showSettings,
 		togglePalette,
 		toggleLeft,
@@ -2386,6 +2412,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		showBacklog,
 		showDone,
 		showSettings,
+		settingsSection,
+		setSettingsSection,
+		settingsPath,
 		shortcutsOpen,
 		tour,
 		hideShortcuts,
