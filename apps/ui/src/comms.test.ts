@@ -11,6 +11,7 @@ import {
 	dmLabel,
 	handleOf,
 	isDm,
+	messageFlags,
 	parseMentions,
 	pinnedMessages,
 	railChannels,
@@ -485,6 +486,35 @@ describe("blockText", () => {
 	});
 	test("ask block → empty string", () => {
 		expect(blockText(askBlock())).toBe("");
+	});
+});
+
+describe("messageFlags", () => {
+	// The row's ASK/STEER flags: an ask block is an ask; a text @-mention of an
+	// agent account is a steer. A user or a reserved broadcast mention flags
+	// nothing, so a plain human ping never reads as steering.
+	const agent = acc({ id: "acc-cook", handle: "cook", kind: "agent" });
+	const human = acc({ id: "acc-matt", handle: "matt", kind: "user" });
+	const byHandle = new Map([
+		[agent.handle, agent],
+		[human.handle, human],
+	]);
+	const flags = (...blocks: ConvBlock[]) =>
+		messageFlags(msg({ id: "m", topicId: "t", atUnixMs: 0, blocks }), byHandle);
+
+	test("an ask block → ask", () => {
+		expect(flags(textBlock("pick one"), askBlock())).toEqual(["ask"]);
+	});
+	test("an @-mention of an agent → steer", () => {
+		expect(flags(textBlock("@Cook stop and rebase"))).toEqual(["steer"]);
+	});
+	test("an @-mention of a user or a reserved handle → nothing", () => {
+		expect(flags(textBlock("@matt and @agents, fyi"))).toEqual([]);
+	});
+	test("ask and steer together, each once", () => {
+		expect(
+			flags(textBlock("@cook @cook look"), askBlock(), textBlock("@cook")),
+		).toEqual(["ask", "steer"]);
 	});
 });
 

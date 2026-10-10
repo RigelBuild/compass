@@ -6,6 +6,7 @@ import {
 	dmLabel,
 	handleOf,
 	isDm,
+	messageFlags,
 	pinnedMessages,
 	type TopicGroup,
 	topicSummary,
@@ -222,22 +223,39 @@ const Block: Component<{
 	</Show>
 );
 
-/** One message: author handle + time, then its blocks. The author's `kind`
- *  (`user`/`agent`/`system`) is the row's style class, so a system post (the
- *  reserved `@compass` sender) reads distinctly from a human or an agent. */
+/** The author kind's tag. Compass names its own kinds; the site's `MANAGER` is
+ *  an agent here. */
+const KIND_TAG: Record<Account["kind"], string> = {
+	user: "HUMAN",
+	agent: "AGENT",
+	system: "SYSTEM",
+};
+
+/** One message: author handle, kind tag, ASK/STEER flags, and time, then its
+ *  blocks. The author's `kind` is the row's `data-kind`; an unresolved author
+ *  reads as a user, as the row always has. */
 export const MessageRow: Component<{
 	msg: Message;
 	byId: Map<string, Account>;
 	byHandle: Map<string, Account>;
 }> = (props) => {
-	const author = () => props.byId.get(props.msg.authorAccountId);
-	const roleClass = () => author()?.kind ?? "user";
+	const kind = () => props.byId.get(props.msg.authorAccountId)?.kind ?? "user";
 	return (
-		<div class={["msg", { [roleClass()]: true }]}>
+		<div class="msg" data-kind={kind()}>
 			<div class="msg-head">
-				<span class="msg-role">
+				<span class="msg-author">
 					{handleOf(props.byId, props.msg.authorAccountId)}
 				</span>
+				<span class="msg-tag" data-kind={kind()}>
+					{KIND_TAG[kind()]}
+				</span>
+				<For each={messageFlags(props.msg, props.byHandle)}>
+					{(flag) => (
+						<span class="msg-flag" data-flag={flag}>
+							{flag.toUpperCase()}
+						</span>
+					)}
+				</For>
 				<span class="msg-at">{hhmm(props.msg.atUnixMs)}</span>
 			</div>
 			<For each={props.msg.blocks} keyed={false}>
