@@ -32,13 +32,29 @@ func (h *Hub) SetLifetimeBinder(b LifetimeBinder) {
 	h.binder = b
 }
 
-// errLifetimeBinderUnavailable is the fail-closed cause when a hub with no
-// LifetimeBinder wired receives a BindLifetime. It maps to CodeUnavailable.
-var errLifetimeBinderUnavailable = errors.New("runnerhub: no lifetime binder wired to serve BindLifetime")
+// errLifetimeBinderUnavailable is the fail-closed cause when no binder can
+// resolve an account tenant. It maps to CodeUnavailable.
+var errLifetimeBinderUnavailable = errors.New("runnerhub: no lifetime binder wired to resolve account tenant")
 
 // errBindDenied is the one PermissionDenied cause for every refused bind, so a
 // foreign container, a foreign session, and an unknown session are identical.
 var errBindDenied = errors.New("runnerhub: session is not bindable from this container")
+
+// agentTenantCtx scopes ctx to agent's tenant through the wired LifetimeBinder,
+// with the system role cleared. A hub with no binder fails Unavailable.
+func (h *Hub) agentTenantCtx(ctx context.Context, agent store.AccountID) (context.Context, error) {
+	h.mu.Lock()
+	binder := h.binder
+	h.mu.Unlock()
+	if binder == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errLifetimeBinderUnavailable)
+	}
+	tenant, err := binder.AccountTenant(store.WithSystemRole(ctx), agent)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving tenant for agent: %w", err))
+	}
+	return store.WithTenant(store.WithoutSystemRole(ctx), tenant), nil
+}
 
 // BindLifetime binds sessionID's transcript base for a resume or a Reload the
 // Runner has accepted in containerName. The container must be provisioned on
@@ -46,12 +62,6 @@ var errBindDenied = errors.New("runnerhub: session is not bindable from this con
 // account's tenant: the Runner door carries none, so the tenant is read under
 // the system role and the write runs tenant-scoped.
 func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, sessionID string) error {
-	h.mu.Lock()
-	binder := h.binder
-	h.mu.Unlock()
-	if binder == nil {
-		return connect.NewError(connect.CodeUnavailable, errLifetimeBinderUnavailable)
-	}
 	if sessionID == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("BindLifetime requires a session_id"))
 	}
@@ -59,11 +69,13 @@ func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, session
 	if !ok {
 		return connect.NewError(connect.CodePermissionDenied, errBindDenied)
 	}
-	tenant, err := binder.AccountTenant(store.WithSystemRole(ctx), account)
+	tctx, err := h.agentTenantCtx(ctx, account)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("resolving tenant for bind: %w", err))
+		return err
 	}
-	tctx := store.WithTenant(store.WithoutSystemRole(ctx), tenant)
+	h.mu.Lock()
+	binder := h.binder
+	h.mu.Unlock()
 	if _, err := binder.BindLifetime(tctx, sessionID, account); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewError(connect.CodePermissionDenied, errBindDenied)
