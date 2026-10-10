@@ -21,9 +21,9 @@ func TestOnSessionsReapedDropsHeldEntries(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes (dispatcher/resolver/reads) are unused here — the reap is a pure in-memory delete with no dispatch/resolve/read path.
 
 	// Two authors hold pending delivers; a pre-T9 link loss would strand both.
-	c.hold(context.Background(), "sess-dead", "m1", 0)
-	c.hold(context.Background(), "sess-dead", "m2", 0)
-	c.hold(context.Background(), "sess-live", "m3", 0)
+	c.hold(context.Background(), "sess-dead", "m1", 0, 0)
+	c.hold(context.Background(), "sess-dead", "m2", 0, 0)
+	c.hold(context.Background(), "sess-live", "m3", 0, 0)
 
 	if !c.isHeld("sess-dead", "m1") || !c.isHeld("sess-dead", "m2") {
 		t.Fatal("precondition: sess-dead should hold m1 and m2")
@@ -48,7 +48,7 @@ func TestOnSessionsReapedDropsHeldEntries(t *testing.T) {
 // no-op that touches no held entry.
 func TestOnSessionsReapedEmptyIsNoop(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes are unused — an empty-slice reap touches no dispatch/resolve/read path.
-	c.hold(context.Background(), "sess-a", "m1", 0)
+	c.hold(context.Background(), "sess-a", "m1", 0, 0)
 
 	c.OnSessionsReaped(nil)
 
@@ -62,7 +62,7 @@ func TestOnSessionsReapedEmptyIsNoop(t *testing.T) {
 // leaves every unrelated held entry intact — delete of an absent map key.
 func TestOnSessionsReapedAbsentIDIsNoop(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes are unused — reaping an absent id touches no dispatch/resolve/read path.
-	c.hold(context.Background(), "sess-live", "m1", 0)
+	c.hold(context.Background(), "sess-live", "m1", 0, 0)
 
 	c.OnSessionsReaped([]string{"sess-never-held"})
 
@@ -71,19 +71,19 @@ func TestOnSessionsReapedAbsentIDIsNoop(t *testing.T) {
 	}
 }
 
-// A reaped session's settle time goes with it, so the settle map is bounded by
-// enroll too; an unreaped session keeps its entry.
+// Reaping a session clears its settle sequence and legacy warning state.
 func TestOnSessionsReapedDropsSettleTimes(t *testing.T) {
-	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // only the consumer's settle map is exercised.
+	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // only the consumer's settle maps are exercised.
+	c.OnSessionSettled("sess-dead", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.OnSessionSettled("sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
 	c.OnSessionSettled("sess-dead", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
-	c.OnSessionSettled("sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
+	c.drainSettles(t.Context())
 
 	c.OnSessionsReaped([]string{"sess-dead"})
-
-	if c.hasLastSettle("sess-dead") {
-		t.Fatal("sess-dead settle time survived the reap, want dropped")
+	if c.hasLastSettle("sess-dead") || c.hasLastSettleSequence("sess-dead") || c.hasLegacySettle("sess-dead") || c.hasFallbackLog("sess-dead") {
+		t.Fatal("sess-dead settle state survived the reap")
 	}
-	if !c.hasLastSettle("sess-live") {
-		t.Fatal("sess-live settle time was dropped by the reap, want it kept")
+	if !c.hasLastSettle("sess-live") || !c.hasLastSettleSequence("sess-live") || c.hasLegacySettle("sess-live") {
+		t.Fatal("sess-live settle state was dropped or changed by the reap")
 	}
 }

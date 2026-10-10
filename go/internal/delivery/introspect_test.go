@@ -54,6 +54,29 @@ func (c *Consumer) hasLastSettle(authorSession string) bool {
 	return ok
 }
 
+// hasLastSettleSequence reports whether a numbered settle is recorded.
+func (c *Consumer) hasLastSettleSequence(authorSession string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.lastSettleSequence[authorSession]
+	return ok
+}
+
+// hasLegacySettle reports whether the latest edge for a session was legacy.
+func (c *Consumer) hasLegacySettle(authorSession string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastSettleLegacy[authorSession]
+}
+
+// hasFallbackLog reports whether the session's legacy warning was recorded.
+func (c *Consumer) hasFallbackLog(authorSession string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.fallbackLogged[authorSession]
+	return ok
+}
+
 // waitSettleDrained blocks until the settle queue is empty, or fails at the
 // deadline. Paired with an OnSessionSettled for a throwaway session, it is a
 // deterministic barrier that a prior settle edge was fully processed.

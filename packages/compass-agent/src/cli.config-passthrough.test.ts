@@ -152,6 +152,7 @@ function fakeSession(
 		appendMessage: () => {},
 		setSystemPrompt: () => {},
 		setTools: () => {},
+		subscribe: () => () => {},
 		getApiKey: undefined as
 			| ((model: unknown) => Promise<string | undefined>)
 			| undefined,
