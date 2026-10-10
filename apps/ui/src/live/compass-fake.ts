@@ -90,6 +90,7 @@ export interface FakeCompass {
 		accountId: string,
 		sessionId: string,
 		state: AgentSessionState,
+		atUnixMs?: number,
 	) => void;
 	/** Emit a resyncRequired on the SubscribeEvents stream: the store clears its
 	 *  session map and the events driver cold-starts. */
@@ -211,11 +212,12 @@ export function createFakeCompass(): FakeCompass {
 		failNextWhoAmI: (error) => {
 			whoAmIFailure = error;
 		},
-		pushSessionStatus: (accountId, sessionId, state) => {
+		pushSessionStatus: (accountId, sessionId, state, atUnixMs = 0) => {
 			eventSeq++;
 			events.push(
 				create(SubscribeEventsResponseSchema, {
 					seq: eventSeq,
+					atUnixMs: BigInt(atUnixMs),
 					instanceEpoch: 1n,
 					payload: {
 						case: "agentSessionStatus",

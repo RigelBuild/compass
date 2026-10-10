@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { AgentSessionState } from "@compass/client";
 import type { AgentPresenceInfo } from "./live/adapt";
+import type { AccountSession } from "./live/events";
 import { joinAgents } from "./roster";
 import type { Account, RuntimeMarker } from "./stub-data";
 
@@ -20,6 +22,19 @@ function agentAccount(id: string): Account {
 function userAccount(id: string): Account {
 	return { id, handle: id, displayName: id, kind: "user" };
 }
+const emptySessions: ReadonlyMap<string, AccountSession> = new Map();
+const emptyLastOpened: ReadonlyMap<string, number> = new Map();
+
+function session(
+	state: AgentSessionState,
+	turnEndedAtUnixMs?: number,
+): AccountSession {
+	return {
+		sessionId: "sess-agent",
+		state,
+		...(turnEndedAtUnixMs === undefined ? {} : { turnEndedAtUnixMs }),
+	};
+}
 
 describe("joinAgents", () => {
 	test("joins a runtime marker onto its agent by account id", () => {
@@ -33,7 +48,13 @@ describe("joinAgents", () => {
 			["acc-pod", { tier: "podman", posture: "armed" }],
 		]);
 
-		const agents = joinAgents(accounts, presence, runtime);
+		const agents = joinAgents(
+			accounts,
+			presence,
+			runtime,
+			emptySessions,
+			emptyLastOpened,
+		);
 
 		expect(agents[0]?.runtime).toEqual({ tier: "host", posture: "unenforced" });
 		expect(agents[1]?.runtime).toEqual({ tier: "podman", posture: "armed" });
@@ -45,7 +66,13 @@ describe("joinAgents", () => {
 			["acc-new", { lifecycle: "working" }],
 		]);
 
-		const agents = joinAgents(accounts, presence, new Map());
+		const agents = joinAgents(
+			accounts,
+			presence,
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
 
 		// Undefined, never a default: guessing a posture would render an
 		// uncontained agent as contained.
@@ -58,7 +85,13 @@ describe("joinAgents", () => {
 			["acc-cook", { lifecycle: "working", activity: "cooking" }],
 		]);
 
-		const agents = joinAgents(accounts, presence, new Map());
+		const agents = joinAgents(
+			accounts,
+			presence,
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
 
 		expect(agents).toHaveLength(1);
 		expect(agents[0]?.account.id).toBe("acc-cook");
@@ -72,7 +105,13 @@ describe("joinAgents", () => {
 		// An account present in `accounts` but absent from the presence seed — a
 		// snapshot-boundary race or an un-re-seeded accountChanged arrival — is an
 		// at-rest/unstarted agent: the stopped dot, never the false-live idle dot.
-		const agents = joinAgents([agentAccount("acc-new")], new Map(), new Map());
+		const agents = joinAgents(
+			[agentAccount("acc-new")],
+			new Map(),
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
 
 		expect(agents[0]?.lifecycle).toBe("stopped");
 		// The two failure modes the rule exists to forbid.
@@ -91,10 +130,106 @@ describe("joinAgents", () => {
 			["acc-quiet", { lifecycle: undefined, activity: undefined }],
 		]);
 
-		const agents = joinAgents([agentAccount("acc-quiet")], presence, new Map());
+		const agents = joinAgents(
+			[agentAccount("acc-quiet")],
+			presence,
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
 
 		expect(agents[0]?.lifecycle).toBeUndefined();
 		expect(agents[0]?.lifecycle).not.toBe("stopped");
+	});
+	test("session states override presence lifecycle", () => {
+		const accounts = [agentAccount("acc-errored"), agentAccount("acc-lost")];
+		const sessions = new Map<string, AccountSession>([
+			["acc-errored", session(AgentSessionState.ERRORED)],
+			["acc-lost", session(AgentSessionState.DISCONNECTED)],
+		]);
+		// Presence folds both into OFFLINE ("stopped"); the session must win.
+		const presence = new Map<string, AgentPresenceInfo>([
+			["acc-errored", { lifecycle: "stopped" }],
+			["acc-lost", { lifecycle: "working" }],
+		]);
+		const agents = joinAgents(
+			accounts,
+			presence,
+			new Map(),
+			sessions,
+			emptyLastOpened,
+		);
+
+		expect(agents.map((agent) => agent.lifecycle)).toEqual([
+			"error",
+			"disconnected",
+		]);
+	});
+
+	test("READY with waiting presence remains waiting", () => {
+		const presence = new Map<string, AgentPresenceInfo>([
+			["acc-ask", { lifecycle: "waiting" }],
+		]);
+		const sessions = new Map<string, AccountSession>([
+			["acc-ask", session(AgentSessionState.READY)],
+		]);
+		const agents = joinAgents(
+			[agentAccount("acc-ask")],
+			presence,
+			new Map(),
+			sessions,
+			emptyLastOpened,
+		);
+
+		expect(agents[0]?.lifecycle).toBe("waiting");
+	});
+
+	test("a turn newer than last-opened is done; opening it restores idle", () => {
+		const account = agentAccount("acc-finished");
+		const sessions = new Map<string, AccountSession>([
+			[account.id, session(AgentSessionState.READY, 20)],
+		]);
+		const openedAt = new Map([[account.id, 19]]);
+		const idlePresence = new Map<string, AgentPresenceInfo>([
+			[account.id, { lifecycle: "idle" }],
+		]);
+		expect(
+			joinAgents([account], idlePresence, new Map(), sessions, openedAt)[0]
+				?.lifecycle,
+		).toBe("done");
+		expect(
+			joinAgents(
+				[account],
+				new Map(),
+				new Map(),
+				sessions,
+				new Map([[account.id, 20]]),
+			)[0]?.lifecycle,
+		).toBe("idle");
+		expect(
+			joinAgents(
+				[account],
+				new Map(),
+				new Map(),
+				sessions,
+				new Map([[account.id, 21]]),
+			)[0]?.lifecycle,
+		).toBe("idle");
+	});
+
+	test("a sessionless OFFLINE account remains stopped", () => {
+		const presence = new Map<string, AgentPresenceInfo>([
+			["acc-offline", { lifecycle: "stopped" }],
+		]);
+		const agents = joinAgents(
+			[agentAccount("acc-offline")],
+			presence,
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
+
+		expect(agents[0]?.lifecycle).toBe("stopped");
 	});
 
 	test("preserves account order and filters out non-agent accounts", () => {
@@ -111,7 +246,13 @@ describe("joinAgents", () => {
 			["acc-alpha", { lifecycle: "idle" }],
 		]);
 
-		const agents = joinAgents(accounts, presence, new Map());
+		const agents = joinAgents(
+			accounts,
+			presence,
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
 
 		// Only the three agent accounts, in their original input order.
 		expect(agents.map((a) => a.account.id)).toEqual([

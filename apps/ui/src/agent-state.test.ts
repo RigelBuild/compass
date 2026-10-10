@@ -76,14 +76,20 @@ describe("awaitingInput refinement (WORKING → waiting)", () => {
 		).toBe("waiting");
 	});
 
-	// Negative row — the refinement must NOT leak into READY. READY ignores
-	// awaitingInput entirely (its only refinement is turnDoneUnopened), so a
-	// READY agent with an open ask is still idle. A `case READY:` that started
-	// honoring awaitingInput would redden here.
-	test("does NOT change READY (stays idle)", () => {
+	// READY can also carry an open ask; that takes precedence over an unopened turn.
+	test("READY with awaitingInput stays waiting even when the turn is done", () => {
+		expect(
+			agentDotState(AgentSessionState.READY, {
+				awaitingInput: true,
+				turnDoneUnopened: true,
+			}),
+		).toBe("waiting");
+	});
+
+	test("READY with awaitingInput is waiting", () => {
 		expect(
 			agentDotState(AgentSessionState.READY, { awaitingInput: true }),
-		).toBe("idle");
+		).toBe("waiting");
 	});
 
 	// Negative rows — terminal/defensive states are untouched by awaitingInput.

@@ -12,11 +12,9 @@ import type { AgentState } from "./stub-data";
  * set, the projection falls back to the pure enum mapping.
  */
 export interface AgentStreamRefinement {
-	/** An agent permission / `ask` request is open on the stream — the agent has
-	 *  asked for input. Refines `WORKING` → `waiting` (Matt's "ask tool" state). */
+	/** An open ask or permission request refines STARTING, WORKING, and READY to waiting. */
 	awaitingInput?: boolean;
-	/** The agent completed a turn and no human has opened its view yet. Refines
-	 *  `READY` → `done` (emerald check, deliberately not idle grey). */
+	/** A turn ended after the agent view was last opened; refines READY to done. */
 	turnDoneUnopened?: boolean;
 }
 
@@ -29,8 +27,9 @@ export interface AgentStreamRefinement {
  * | ----------------- | --------------------------------------------- |
  * | STARTING          | working (spinner), or `waiting` if awaitingInput |
  * | WORKING           | working, or `waiting` if awaitingInput        |
- * | READY             | idle, or `done` if turnDoneUnopened           |
+ * | READY             | waiting, `done` if unopened, or idle           |
  * | STOPPED           | stopped (terminated; distinct from live idle)  |
+ * | ERRORED           | error                                         |
  * | DISCONNECTED      | disconnected (Runner link dropped; awaiting reattach) |
  * | UNSPECIFIED       | idle (defensive; a well-behaved daemon never   |
  * |                   | sends it as a live state)                     |
@@ -45,7 +44,11 @@ export function agentDotState(
 		case AgentSessionState.WORKING:
 			return refinement.awaitingInput ? "waiting" : "working";
 		case AgentSessionState.READY:
-			return refinement.turnDoneUnopened ? "done" : "idle";
+			return refinement.awaitingInput
+				? "waiting"
+				: refinement.turnDoneUnopened
+					? "done"
+					: "idle";
 		case AgentSessionState.ERRORED:
 			return "error";
 		case AgentSessionState.STOPPED:
