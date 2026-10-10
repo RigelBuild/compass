@@ -170,8 +170,8 @@ describe("topicsOf", () => {
 		);
 	});
 
-	// An ARCHIVED topic is hidden from the channel index (matching the snapshot
-	// loader's listTopics{includeArchived:false}), even though its messages are
+	// An ARCHIVED topic is hidden from the channel index (the snapshot loads it so
+	// a deep link can open it), even though its messages are
 	// retained in the flat message set — a live `topicUpserted` archive event
 	// must not leave the archived topic showing as an index row. Its sibling
 	// active topic still groups, and the archived topic's messages are simply not

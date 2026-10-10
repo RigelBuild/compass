@@ -176,8 +176,20 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		listChannelGroups: async () => ({ groups: snapshot.channelGroups ?? [] }),
 		listChannels: async () => ({ channels: snapshot.channels ?? [] }),
 		getRoster: async () => ({ entries: snapshot.roster ?? [] }),
-		listTopics: async (req: { channelId: string }) => ({
-			topics: snapshot.topicsByChannel?.[req.channelId] ?? [],
+		listTopics: async (req: {
+			channelId: string;
+			includeArchived: boolean;
+		}) => ({
+			topics: (snapshot.topicsByChannel?.[req.channelId] ?? []).filter(
+				(t) =>
+					req.includeArchived ||
+					!(
+						typeof t === "object" &&
+						t !== null &&
+						"archived" in t &&
+						t.archived
+					),
+			),
 		}),
 		listMessages: async (req: {
 			container: { case: "channelId"; value: string };
@@ -376,6 +388,7 @@ export function wireTopic(opts: {
 	name: string;
 	createdAtUnixMs?: number;
 	createdByAccountId?: string;
+	archived?: boolean;
 }): WireTopic {
 	return create(TopicSchema, {
 		id: opts.id,
@@ -383,6 +396,7 @@ export function wireTopic(opts: {
 		name: opts.name,
 		createdAtUnixMs: BigInt(opts.createdAtUnixMs ?? 0),
 		createdByAccountId: opts.createdByAccountId ?? "",
+		archived: opts.archived ?? false,
 	});
 }
 

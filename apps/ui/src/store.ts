@@ -456,9 +456,9 @@ export interface AppStore {
 	/** The resolved selected topic, or undefined. */
 	selectedTopic: Accessor<Topic | undefined>;
 	/** Drill into a topic's message view — navigate to
-	 *  `/channel/<channelId>/topic/<topicId>`. Resolves the topic's channel
-	 *  off the topic set; a no-op on an unknown topic id. */
-	openTopic: (topicId: string) => void;
+	 *  `/channel/<channelId>/topic/<topicId>`. Without `channelId`, resolves the
+	 *  topic's channel off the topic set; a no-op on an unknown topic id. */
+	openTopic: (topicId: string, channelId?: string) => void;
 	/** The path `openTopic` navigates to; undefined for an unknown topic. */
 	topicPath: (topicId: string) => string | undefined;
 	/** NOT WIRED YET — inert. The wire has no join RPC; the rail's join control
@@ -1549,14 +1549,16 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	};
 
 	// Drill into a topic's message view by navigating to `/channel/<id>/topic/<id>`,
-	// so click and deep-link share one home. Resolves the channel off the topic set;
-	// a no-op on an unknown topic id.
+	// so click and deep-link share one home. A caller holding the channel id (a search
+	// hit) passes it; otherwise resolve off the topic set, a no-op on an unknown id.
 	const topicPath = (topicId: string): string | undefined => {
 		const topic = topics().find((t) => t.id === topicId);
 		return topic ? `/channel/${topic.channelId}/topic/${topicId}` : undefined;
 	};
-	const openTopic = (topicId: string) => {
-		const path = topicPath(topicId);
+	const openTopic = (topicId: string, channelId?: string) => {
+		const path = channelId
+			? `/channel/${channelId}/topic/${topicId}`
+			: topicPath(topicId);
 		if (path) navigateTo(path);
 	};
 
