@@ -151,8 +151,9 @@ adds a third:
   pointer), so the released image is byte-identical to the per-push one.
 
 The git-sha tag is pushed before `:latest`, so the immutable pin always exists
-before the moving tag moves. Platform is `linux/amd64` single-arch (the dogfood
-milestone target; macOS/`aarch64` multi-arch is a GA follow-up). The package is
+before the moving tag moves. The image is multi-arch: `publish-image-amd64` and
+`publish-image-arm64` build natively in parallel, and `publish-image-manifest`
+pushes one `linux/amd64` + `linux/arm64` index. The package is
 **public** — compass is open-source, the image payload is public source, and it
 carries no runtime secrets (those are runner-supplied per-exec) — so the
 first-run pull needs no credential anywhere.
@@ -246,6 +247,46 @@ artifact — including the bun pin file, since the image now builds bun from tha
 pinned derivation, so a pin move there changes the output. As a project in the
 one-job gate it is a required check: a build break blocks merge, the same
 posture as every other required build in the gate.
+
+## Release assets and install channels
+
+The frozen record
+`docs/designs/infra/release/compass-distribution/design.md` defines the
+distribution surface. This section lists what is live.
+
+**The Release.** `release-pr` cuts the `vX.Y.Z` tag and creates the GitHub
+Release as a **draft**. `release-assets` builds and attaches every asset, then
+publishes the draft as its last step. Releases are immutable once published,
+so a release published before its assets exist could never get them.
+
+| Asset | Built by | Notes |
+| --- | --- | --- |
+| `compass`, `compass-server`, `compass-runner` (`_linux-amd64`) | `release-assets` | static (`CGO_ENABLED=0`) |
+| `compass_<tag>_darwin-arm64` | `release-assets` | the CLI, cross-built |
+| `compass-app_<tag>_linux-amd64.tar.gz` | `release-assets` | gtk4 shell, the embedded sidecars, UI dist |
+| `compass-app_<tag>_darwin-arm64.dmg` | `release-assets-macos` (`macos-14`) | ad-hoc signed `.app`; handed over as an artifact |
+| `SHA256SUMS`, `nix-outputs.json` | `release-assets` | one checksum file over the binaries |
+
+The macOS app links the system WebKit framework, so it builds only on a mac
+runner and is never cross-compiled. Developer ID signing, notarization and the
+homebrew tap are not live yet. They wait on the Apple Developer Program
+enrollment.
+
+**Nix flake.** `flake.nix` exposes `compass`, `compass-server`,
+`compass-runner`, `compass-stack`, `compass-app`, `compass-ui` and
+`compass-stack-env`. `compass-stack-env` bundles the microVM userspace trio and
+`secretspec`. The `flake-gate` moon project runs `nix flake check`, so a
+package that stops building from a bare checkout fails CI.
+
+**darwin CI.** The `ci.yml` `darwin` job compiles the macOS shell and builds
+the ad-hoc signed `.app`/`.dmg` with `tools/macos-bundle` on `macos-14`. It
+runs the full sweep on every push to main and nightly, and runs on a PR only
+when moon reports a darwin-relevant project affected.
+
+**Postgres image.** The stack's default database is the stock `postgres:18`
+image pinned by digest (`DefaultPostgresImage` in
+`go/internal/stack/postgres_image.go`). There is no postgres build lane;
+bumping it means changing the digest.
 
 ## Caching
 
