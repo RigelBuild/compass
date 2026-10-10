@@ -777,8 +777,6 @@
       matchManagers: ["custom.regex"],
       matchDepNames: ["RigelBuild/meissa"],
       groupName: "meissa lint toolchain",
-      // DAILY, in the same before-4am-ET window as the devenv-nixpkgs rule.
-      schedule: ["before 4am"],
       // A git-refs digest carries no release timestamp, so the repo-wide strict
       // cooldown would hold it `pending` forever (the RIG-1220 shape). The
       // compensating control is the mandatory human review of the PR.
