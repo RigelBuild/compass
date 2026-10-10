@@ -11,11 +11,13 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +38,10 @@ type fakeIssuer struct {
 	status     int
 	jwksHits   int
 	anyRequest int
+	// hold, when set, parks the next JWKS response (served from the key set at
+	// request time) until it is closed; entered reports the request arrived.
+	hold    chan struct{}
+	entered chan struct{}
 }
 
 func newFakeIssuer(t *testing.T, keys ...jose.JSONWebKey) *fakeIssuer {
@@ -59,7 +65,13 @@ func newFakeIssuer(t *testing.T, keys ...jose.JSONWebKey) *fakeIssuer {
 		f.jwksHits++
 		status := f.status
 		set := jose.JSONWebKeySet{Keys: append([]jose.JSONWebKey(nil), f.keys...)}
+		hold, entered := f.hold, f.entered
+		f.hold, f.entered = nil, nil
 		f.mu.Unlock()
+		if hold != nil {
+			close(entered)
+			<-hold
+		}
 		if status != http.StatusOK {
 			w.WriteHeader(status)
 			return
@@ -88,6 +100,16 @@ func (f *fakeIssuer) set(status int, keys ...jose.JSONWebKey) {
 	}
 }
 
+// holdNext parks the next JWKS response; it returns the arrival signal and the
+// release.
+func (f *fakeIssuer) holdNext() (entered <-chan struct{}, release func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	hold, arrived := make(chan struct{}), make(chan struct{})
+	f.hold, f.entered = hold, arrived
+	return arrived, sync.OnceFunc(func() { close(hold) })
+}
+
 func (f *fakeIssuer) hits() (jwks, any int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -100,7 +122,8 @@ func trustingClient(issuers ...*fakeIssuer) *http.Client {
 	for _, f := range issuers {
 		pool.AddCert(f.srv.Certificate())
 	}
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
+	tlsConfig := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}
 }
 
 // fakeClock is a settable now().
@@ -260,7 +283,8 @@ func TestVerifyRejectsBadTokens(t *testing.T) {
 		mut(c)
 		return sign(t, k, c)
 	}
-	hmacSigner, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: []byte("0123456789abcdef0123456789abcdef")},
+	hmacKey := []byte("0123456789abcdef0123456789abcdef")
+	hmacSigner, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hmacKey},
 		(&jose.SignerOptions{}).WithHeader("kid", "k1"))
 	if err != nil {
 		t.Fatalf("HS256 signer: %v", err)
@@ -414,12 +438,14 @@ func TestVerifyStartLoadsKeysInBackground(t *testing.T) {
 	f := newFakeIssuer(t, k.public())
 	v, _ := newTestVerifier(t, f)
 	tok := sign(t, k, goodClaims(f.srv.URL))
+	f.set(http.StatusServiceUnavailable)
 	if _, err := v.Verify(t.Context(), tok); !errors.Is(err, ErrKeysUnavailable) {
-		t.Fatalf("Verify before Start = %v, want ErrKeysUnavailable", err)
+		t.Fatalf("Verify before Start with the issuer down = %v, want ErrKeysUnavailable", err)
 	}
+	f.set(http.StatusOK)
 
 	loaded := make(chan struct{})
-	v.onLoad = func() { close(loaded) }
+	v.onLoad = sync.OnceFunc(func() { close(loaded) })
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	v.Start(ctx)
@@ -451,10 +477,19 @@ func TestVerifySharedKeyFailsEveryHolder(t *testing.T) {
 
 			tokA := sign(t, shared, goodClaims(fa.srv.URL))
 			tokB := sign(t, bOnly, goodClaims(fb.srv.URL))
+			_, aBefore := fa.hits()
+			_, bBefore := fb.hits()
 			for name, tok := range map[string]string{"a": tokA, "b": tokB} {
 				if _, err := v.Verify(t.Context(), tok); !errors.Is(err, ErrKeysUnavailable) {
 					t.Fatalf("Verify for cluster %s = %v, want ErrKeysUnavailable", name, err)
 				}
+			}
+			// Sharing a key is not missing keys: a fail-closed cluster must not fetch.
+			if _, a := fa.hits(); a != aBefore {
+				t.Fatalf("cluster a requests = %d during fail-closed Verify, want %d", a, aBefore)
+			}
+			if _, b := fb.hits(); b != bBefore {
+				t.Fatalf("cluster b requests = %d during fail-closed Verify, want %d", b, bBefore)
 			}
 
 			fb.set(http.StatusOK, bOnly.public())
@@ -526,6 +561,211 @@ func TestVerifyJWKSFileClusterNeverRefetches(t *testing.T) {
 	}
 	if _, requests := f.hits(); requests != 0 {
 		t.Fatalf("issuer requests = %d, want 0 for a jwksFile cluster", requests)
+	}
+}
+
+// A failed startup fetch must not lock Runners out until the hourly refresh.
+func TestVerifyRefetchesWhenNoKeysLoaded(t *testing.T) {
+	k := newRSAKey(t, "k1")
+	f := newFakeIssuer(t, k.public())
+	f.set(http.StatusServiceUnavailable)
+	v, _ := newTestVerifier(t, f)
+	loadAll(t, v)
+
+	f.set(http.StatusOK)
+	if _, err := v.Verify(t.Context(), sign(t, k, goodClaims(f.srv.URL))); err != nil {
+		t.Fatalf("Verify after the issuer recovered, before any refresh: %v", err)
+	}
+}
+
+func TestVerifyTokenSizeLimit(t *testing.T) {
+	k := newECKey(t, "k1")
+	f := newFakeIssuer(t, k.public())
+	v, _ := newTestVerifier(t, f)
+	loadAll(t, v)
+
+	claims := goodClaims(f.srv.URL)
+	claims["pad"] = strings.Repeat("x", 10<<10)
+	if tok := sign(t, k, claims); len(tok) > maxRunnerTokenBytes {
+		t.Fatalf("padded token is %d bytes, over the cap the test means to stay under", len(tok))
+	} else if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatalf("Verify a %d-byte token: %v", len(tok), err)
+	}
+
+	atCap := strings.Repeat("a", maxRunnerTokenBytes-4) + ".b.c"
+	if _, err := v.Verify(t.Context(), atCap); errors.Is(err, errRunnerTokenTooLarge) {
+		t.Fatalf("Verify a token of exactly %d bytes = %v, want no size rejection", maxRunnerTokenBytes, err)
+	}
+	overCap := strings.Repeat("a", maxRunnerTokenBytes-3) + ".b.c"
+	_, err := v.Verify(t.Context(), overCap)
+	if !errors.Is(err, errRunnerTokenTooLarge) || !errors.Is(err, errInvalidToken) {
+		t.Fatalf("Verify a token of %d bytes = %v, want errRunnerTokenTooLarge and errInvalidToken", len(overCap), err)
+	}
+}
+
+// An older fetch response must never overwrite a newer one.
+func TestVerifyFetchesForOneClusterNeverOverlap(t *testing.T) {
+	old := newECKey(t, "k1")
+	rotated := newECKey(t, "k2")
+	f := newFakeIssuer(t, old.public())
+	v, _ := newTestVerifier(t, f)
+
+	entered, release := f.holdNext()
+	defer release()
+	queued := make(chan struct{})
+	v.onFetchQueued = sync.OnceFunc(func() { close(queued) })
+	loaded := make(chan struct{}, 2)
+	v.onLoad = func() { loaded <- struct{}{} }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	v.Start(ctx)
+	<-entered // the scheduled fetch holds the old set
+
+	f.set(http.StatusOK, old.public(), rotated.public())
+	tok := sign(t, rotated, goodClaims(f.srv.URL))
+	verified := make(chan error, 1)
+	go func() {
+		_, err := v.Verify(t.Context(), tok)
+		verified <- err
+	}()
+	<-queued // the re-fetch waits behind the held scheduled fetch
+	release()
+	<-loaded
+	<-loaded
+	if err := <-verified; err != nil {
+		t.Fatalf("Verify with the rotated key during a scheduled fetch: %v", err)
+	}
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatalf("Verify with the rotated key after both fetches applied: %v", err)
+	}
+}
+
+func TestVerifyCancelledWaiterLeavesSharedRefetchRunning(t *testing.T) {
+	old := newECKey(t, "k1")
+	rotated := newECKey(t, "k2")
+	f := newFakeIssuer(t, old.public())
+	v, _ := newTestVerifier(t, f)
+	loadAll(t, v)
+
+	f.set(http.StatusOK, old.public(), rotated.public())
+	entered, release := f.holdNext()
+	defer release()
+	joined := make(chan struct{}, 2)
+	v.onRefetchWait = func() { joined <- struct{}{} }
+	tok := sign(t, rotated, goodClaims(f.srv.URL))
+
+	ctxA, cancelA := context.WithCancel(t.Context())
+	doneA := make(chan error, 1)
+	go func() {
+		_, err := v.Verify(ctxA, tok)
+		doneA <- err
+	}()
+	<-entered
+	<-joined
+	doneB := make(chan error, 1)
+	go func() {
+		_, err := v.Verify(t.Context(), tok)
+		doneB <- err
+	}()
+	<-joined
+
+	cancelA()
+	select {
+	case err := <-doneA:
+		if err == nil {
+			t.Fatal("cancelled Verify succeeded before the re-fetch finished")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled Verify still waiting on the shared re-fetch")
+	}
+	release()
+	if err := <-doneB; err != nil {
+		t.Fatalf("Verify sharing the re-fetch: %v", err)
+	}
+}
+
+func TestParseJWKSSkipsUnsupportedKeys(t *testing.T) {
+	k := newECKey(t, "good")
+	good, err := json.Marshal(k.public())
+	if err != nil {
+		t.Fatalf("marshalling key: %v", err)
+	}
+	unsupported := `{"kty":"OKP","crv":"X448","x":"AAAA","kid":"x448"}`
+	broken := `{"kty":"RSA","n":"!!","e":"AQAB","kid":"broken"}`
+	set, err := parseJWKS([]byte(`{"keys":[` + unsupported + `,` + string(good) + `,` + broken + `]}`))
+	if err != nil {
+		t.Fatalf("parseJWKS with one usable key: %v", err)
+	}
+	if len(set.jwks.Keys) != 1 || set.jwks.Keys[0].KeyID != "good" {
+		t.Fatalf("parseJWKS kept %d keys, want only kid good", len(set.jwks.Keys))
+	}
+	if _, err := parseJWKS([]byte(`{"keys":[` + unsupported + `,` + broken + `]}`)); err == nil {
+		t.Fatal("parseJWKS with no usable key succeeded")
+	}
+}
+
+func TestClusterHTTPClientNilTransportKeepsDefaults(t *testing.T) {
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	f := newFakeIssuer(t)
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.srv.Certificate().Raw})
+	if err := os.WriteFile(ca, pemBytes, 0o600); err != nil {
+		t.Fatalf("writing ca: %v", err)
+	}
+	hc, err := clusterHTTPClient(&http.Client{}, ca)
+	if err != nil {
+		t.Fatalf("clusterHTTPClient: %v", err)
+	}
+	tr, ok := hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", hc.Transport)
+	}
+	def, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		t.Fatalf("http.DefaultTransport is %T", http.DefaultTransport)
+	}
+	if tr.TLSHandshakeTimeout != def.TLSHandshakeTimeout || tr.IdleConnTimeout != def.IdleConnTimeout {
+		t.Fatalf("transport timeouts = %s/%s, want the default transport's %s/%s",
+			tr.TLSHandshakeTimeout, tr.IdleConnTimeout, def.TLSHandshakeTimeout, def.IdleConnTimeout)
+	}
+}
+
+func TestNewRunnerVerifierNilNowUsesWallClock(t *testing.T) {
+	k := newECKey(t, "k1")
+	data, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{k.public()}})
+	if err != nil {
+		t.Fatalf("marshalling jwks: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "jwks.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("writing jwks: %v", err)
+	}
+	c := testCluster("static", "https://static.example.test")
+	c.JWKSFile = path
+	v, err := NewRunnerVerifier([]RunnerCluster{c}, testTenant, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRunnerVerifier: %v", err)
+	}
+	claims := goodClaims(c.Issuer)
+	now := time.Now()
+	claims["iat"], claims["nbf"], claims["exp"] = now.Unix(), now.Unix(), now.Add(10*time.Minute).Unix()
+	if _, err := v.Verify(t.Context(), sign(t, k, claims)); err != nil {
+		t.Fatalf("Verify a token valid now: %v", err)
+	}
+}
+
+func TestFetchErrorOmitsQueryString(t *testing.T) {
+	f := newFakeIssuer(t)
+	f.set(http.StatusServiceUnavailable)
+	_, err := fetchHTTPS(t.Context(), trustingClient(f), f.srv.URL+"/keys?access_token=s3cr3t")
+	if err == nil {
+		t.Fatal("fetchHTTPS against a 503 succeeded")
+	}
+	if strings.Contains(err.Error(), "s3cr3t") || strings.Contains(err.Error(), "access_token") {
+		t.Fatalf("fetch error leaks the query string: %v", err)
+	}
+	_, err = fetchHTTPS(t.Context(), trustingClient(f), "http://example.test/keys?access_token=s3cr3t")
+	if err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Fatalf("non-https fetch error = %v, want a rejection without the query string", err)
 	}
 }
 

@@ -40,6 +40,12 @@ const (
 	staleKeysAfter = 24 * time.Hour
 )
 
+// maxRunnerTokenBytes caps a presented token before any parsing. Projected
+// tokens are about 1-2 KiB, so 16 KiB leaves room without inviting large input.
+const maxRunnerTokenBytes = 16 << 10
+
+var errRunnerTokenTooLarge = errors.New("runner token too large")
+
 var runnerTokenAlgs = []jose.SignatureAlgorithm{jose.RS256, jose.ES256}
 
 // LooksLikeJWT reports whether token has the shape of a compact JWS. Minted
@@ -64,6 +70,11 @@ type RunnerVerifier struct {
 	refetch  singleflight.Group
 	// onLoad, when set, runs after each fetch result is applied; tests gate on it.
 	onLoad func()
+	// onFetchQueued, when set, runs when a fetch waits behind another for the
+	// same cluster; tests gate on it.
+	onFetchQueued func()
+	// onRefetchWait, when set, runs once a caller has joined a kid re-fetch; tests gate on it.
+	onRefetchWait func()
 
 	// mu guards every clusterKeys' mutable fields; the overlap check spans all clusters.
 	mu sync.Mutex
@@ -74,21 +85,30 @@ type RunnerVerifier struct {
 type clusterKeys struct {
 	cluster RunnerCluster
 	client  *http.Client
+	// fetchMu serializes this cluster's fetch-and-apply, so an older response
+	// can never overwrite a newer one.
+	fetchMu sync.Mutex
 
 	keys         *keySet
 	failingSince time.Time // first fetch error since the last good load
 	overlap      bool      // a key here is also in another cluster's set
-	lastRefetch  time.Time // last unknown-kid re-fetch
+	lastRefetch  time.Time // last on-demand re-fetch
 }
 
 // NewRunnerVerifier builds a verifier over clusters. It reads every jwksFile and
-// caFile now, so a bad path refuses start; fetched key sets load on Start.
-func NewRunnerVerifier(clusters []RunnerCluster, tenant store.TenantID, client *http.Client, now func() time.Time) (*RunnerVerifier, error) {
+// caFile now, so a bad path refuses start; fetched key sets load on Start. A
+// nil client or now means http.DefaultClient or time.Now.
+func NewRunnerVerifier(
+	clusters []RunnerCluster, tenant store.TenantID, client *http.Client, now func() time.Time,
+) (*RunnerVerifier, error) {
 	if err := validateRunnerClusters(clusters); err != nil {
 		return nil, err
 	}
 	if client == nil {
 		client = http.DefaultClient
+	}
+	if now == nil {
+		now = time.Now
 	}
 	v := &RunnerVerifier{
 		byIssuer: make(map[string]*clusterKeys, len(clusters)),
@@ -130,7 +150,7 @@ func clusterHTTPClient(base *http.Client, caFile string) (*http.Client, error) {
 	hc := *base
 	hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if req.URL.Scheme != httpsScheme {
-			return fmt.Errorf("refusing non-https redirect to %s", req.URL.Redacted())
+			return fmt.Errorf("refusing non-https redirect to %s", safeURL(req.URL))
 		}
 		if len(via) >= 10 {
 			return errors.New("too many redirects")
@@ -140,7 +160,7 @@ func clusterHTTPClient(base *http.Client, caFile string) (*http.Client, error) {
 	if caFile == "" {
 		return &hc, nil
 	}
-	pem, err := os.ReadFile(caFile) //nolint:gosec // caFile is the operator's cluster file setting, the whole point of caFile
+	pem, err := os.ReadFile(caFile) //nolint:gosec // caFile is the operator's cluster file setting, by design
 	if err != nil {
 		return nil, fmt.Errorf("reading caFile: %w", err)
 	}
@@ -153,7 +173,11 @@ func clusterHTTPClient(base *http.Client, caFile string) (*http.Client, error) {
 	case *http.Transport:
 		tr = t.Clone()
 	case nil:
-		tr = &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
+		def, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf("caFile needs an *http.Transport, http.DefaultTransport is %T", http.DefaultTransport)
+		}
+		tr = def.Clone()
 	default:
 		return nil, fmt.Errorf("caFile needs an *http.Transport, client has %T", base.Transport)
 	}
@@ -205,6 +229,9 @@ type k8sRef struct {
 // subject. Every failure wraps errInvalidToken except an unusable key set for a
 // registered cluster, which wraps ErrKeysUnavailable. The token is never logged.
 func (v *RunnerVerifier) Verify(ctx context.Context, token string) (store.Subject, error) {
+	if len(token) > maxRunnerTokenBytes {
+		return store.Subject{}, fmt.Errorf("%w: %w", errInvalidToken, errRunnerTokenTooLarge)
+	}
 	tok, err := jwt.ParseSigned(token, runnerTokenAlgs)
 	if err != nil {
 		return store.Subject{}, fmt.Errorf("%w: parsing runner token: %w", errInvalidToken, err)
@@ -222,16 +249,14 @@ func (v *RunnerVerifier) Verify(ctx context.Context, token string) (store.Subjec
 	if kid == "" {
 		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: token has no kid", errInvalidToken, c.Name)
 	}
-	keys, err := v.keysFor(ck, kid)
+	keys, fetchMayHelp, err := v.keysFor(ck, kid)
+	// A jwksFile cluster's keys change only on rollout; never fetch for it.
+	if fetchMayHelp && ck.cluster.JWKSFile == "" {
+		v.refetchKeys(ctx, ck)
+		keys, _, err = v.keysFor(ck, kid)
+	}
 	if err != nil {
 		return store.Subject{}, err
-	}
-	// A jwksFile cluster's keys change only on rollout; never fetch for it.
-	if len(keys) == 0 && ck.cluster.JWKSFile == "" {
-		v.refetchForKid(ctx, ck)
-		if keys, err = v.keysFor(ck, kid); err != nil {
-			return store.Subject{}, err
-		}
 	}
 	if len(keys) == 0 {
 		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: unknown kid", errInvalidToken, c.Name)
@@ -258,11 +283,13 @@ func (v *RunnerVerifier) Verify(ctx context.Context, token string) (store.Subjec
 		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: token lacks exp or iat", errInvalidToken, c.Name)
 	}
 	if claims.Expiry.Time().Sub(claims.IssuedAt.Time()) > c.MaxTokenLifetime {
-		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: token lifetime exceeds %s", errInvalidToken, c.Name, c.MaxTokenLifetime)
+		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: token lifetime exceeds %s",
+			errInvalidToken, c.Name, c.MaxTokenLifetime)
 	}
 	wantSub := "system:serviceaccount:" + c.Namespace + ":" + c.ServiceAccount
 	if claims.Subject != wantSub || kc.K8s.Namespace != c.Namespace || kc.K8s.ServiceAccount.Name != c.ServiceAccount {
-		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: token is for another ServiceAccount", errInvalidToken, c.Name)
+		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: token is for another ServiceAccount",
+			errInvalidToken, c.Name)
 	}
 	if kc.K8s.Pod.Name == "" || kc.K8s.Node.Name == "" {
 		return store.Subject{}, fmt.Errorf("%w: runner cluster %q: token lacks pod or node", errInvalidToken, c.Name)
@@ -276,6 +303,13 @@ func (v *RunnerVerifier) Verify(ctx context.Context, token string) (store.Subjec
 
 // refresh fetches ck's key set and applies the result.
 func (v *RunnerVerifier) refresh(ctx context.Context, ck *clusterKeys) {
+	if !ck.fetchMu.TryLock() {
+		if v.onFetchQueued != nil {
+			v.onFetchQueued()
+		}
+		ck.fetchMu.Lock()
+	}
+	defer ck.fetchMu.Unlock()
 	set, err := fetchJWKS(ctx, ck.client, ck.cluster)
 	v.applyFetch(ctx, ck, set, err)
 	if v.onLoad != nil {
@@ -355,23 +389,30 @@ func (v *RunnerVerifier) usableKeysLocked(ck *clusterKeys) *keySet {
 }
 
 // keysFor returns the usable keys matching kid, or ErrKeysUnavailable.
-func (v *RunnerVerifier) keysFor(ck *clusterKeys, kid string) ([]jose.JSONWebKey, error) {
+// fetchMayHelp is false for a key-sharing cluster: its keys are present but
+// untrusted, so a fetch cannot fix it.
+func (v *RunnerVerifier) keysFor(ck *clusterKeys, kid string) (keys []jose.JSONWebKey, fetchMayHelp bool, err error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if ck.overlap {
+		return nil, false, fmt.Errorf("runner cluster %q: shares a key: %w", ck.cluster.Name, ErrKeysUnavailable)
+	}
 	set := v.usableKeysLocked(ck)
 	if set == nil {
-		return nil, fmt.Errorf("runner cluster %q: %w", ck.cluster.Name, ErrKeysUnavailable)
+		return nil, true, fmt.Errorf("runner cluster %q: %w", ck.cluster.Name, ErrKeysUnavailable)
 	}
-	return set.jwks.Key(kid), nil
+	keys = set.jwks.Key(kid)
+	return keys, len(keys) == 0, nil
 }
 
-// refetchForKid re-fetches ck's keys at most once per cooldown; concurrent
-// callers share one fetch.
-func (v *RunnerVerifier) refetchForKid(ctx context.Context, ck *clusterKeys) {
+// refetchKeys re-fetches ck's keys, for an unknown kid or a missing key set, at
+// most once per cooldown. Concurrent callers share one fetch; a caller whose
+// ctx ends stops waiting while the fetch runs on for the others.
+func (v *RunnerVerifier) refetchKeys(ctx context.Context, ck *clusterKeys) {
 	// The shared fetch must not die with whichever caller started it.
 	fetchCtx := context.WithoutCancel(ctx)
 	// Waiting on the channel is the dedupe; refresh logs and records its own failure.
-	<-v.refetch.DoChan(ck.cluster.Name, func() (any, error) {
+	ch := v.refetch.DoChan(ck.cluster.Name, func() (any, error) {
 		v.mu.Lock()
 		now := v.now()
 		if !ck.lastRefetch.IsZero() && now.Sub(ck.lastRefetch) < kidRefetchCooldown {
@@ -383,6 +424,13 @@ func (v *RunnerVerifier) refetchForKid(ctx context.Context, ck *clusterKeys) {
 		v.refresh(fetchCtx, ck)
 		return struct{}{}, nil
 	})
+	if v.onRefetchWait != nil {
+		v.onRefetchWait()
+	}
+	select {
+	case <-ch:
+	case <-ctx.Done():
+	}
 }
 
 // fetchJWKS loads c's key set via OIDC discovery, or from c.JWKSURI when set.
@@ -415,10 +463,12 @@ func fetchJWKS(ctx context.Context, client *http.Client, c RunnerCluster) (*keyS
 func fetchHTTPS(ctx context.Context, client *http.Client, rawURL string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("parsing url: %w", err)
+		// url.Parse errors quote the whole input, query string included.
+		return nil, errors.New("parsing url: malformed")
 	}
+	where := safeURL(u)
 	if u.Scheme != httpsScheme {
-		return nil, fmt.Errorf("refusing non-https url %s", u.Redacted())
+		return nil, fmt.Errorf("refusing non-https url %s", where)
 	}
 	ctx, cancel := context.WithTimeout(ctx, jwksFetchTimeout)
 	defer cancel()
@@ -428,21 +478,31 @@ func fetchHTTPS(ctx context.Context, client *http.Client, rawURL string) ([]byte
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching %s: %w", u.Redacted(), err)
+		// *url.Error repeats the full URL; keep only its cause.
+		if uerr, ok := errors.AsType[*url.Error](err); ok {
+			err = uerr.Err
+		}
+		return nil, fmt.Errorf("fetching %s: %w", where, err)
 	}
 	// A close error on a fully read response body changes nothing we act on.
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching %s: status %d", u.Redacted(), resp.StatusCode)
+		return nil, fmt.Errorf("fetching %s: status %d", where, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, jwksMaxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", u.Redacted(), err)
+		return nil, fmt.Errorf("reading %s: %w", where, err)
 	}
 	if len(body) > jwksMaxBody {
-		return nil, fmt.Errorf("reading %s: body exceeds %d bytes", u.Redacted(), jwksMaxBody)
+		return nil, fmt.Errorf("reading %s: body exceeds %d bytes", where, jwksMaxBody)
 	}
 	return body, nil
+}
+
+// safeURL renders u as scheme, host and path only: queries and userinfo can
+// carry credentials, and these strings reach logs.
+func safeURL(u *url.URL) string {
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
 }
 
 // keySet is a loaded JWKS with each key's RFC 7638 thumbprint, computed once at
@@ -455,21 +515,24 @@ type keySet struct {
 // parseJWKS decodes a JWKS and keeps only valid public keys, so a private or
 // symmetric key published by mistake can never verify a token.
 func parseJWKS(data []byte) (*keySet, error) {
-	var raw jose.JSONWebKeySet
+	var raw struct {
+		Keys []json.RawMessage `json:"keys"`
+	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decoding jwks: %w", err)
 	}
 	set := &keySet{}
-	for i := range raw.Keys {
-		k := &raw.Keys[i]
-		if !k.Valid() || !k.IsPublic() {
+	for _, rk := range raw.Keys {
+		// One unsupported key (a new kty or curve) must not void the whole set.
+		var k jose.JSONWebKey
+		if err := k.UnmarshalJSON(rk); err != nil || !k.Valid() || !k.IsPublic() {
 			continue
 		}
 		tp, err := k.Thumbprint(crypto.SHA256)
 		if err != nil {
 			return nil, fmt.Errorf("thumbprinting key %q: %w", k.KeyID, err)
 		}
-		set.jwks.Keys = append(set.jwks.Keys, *k)
+		set.jwks.Keys = append(set.jwks.Keys, k)
 		set.thumbprints = append(set.thumbprints, string(tp))
 	}
 	if len(set.jwks.Keys) == 0 {

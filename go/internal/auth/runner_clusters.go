@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -62,7 +65,10 @@ type runnerClusterEntry struct {
 // rejects any file the Server must refuse to start with.
 func ParseRunnerClusters(data []byte) ([]RunnerCluster, error) {
 	var file runnerClustersFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	// A misspelt key in the trust root must fail, not silently drop a setting.
+	dec.KnownFields(true)
+	if err := dec.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing runner clusters: %w", err)
 	}
 	clusters := make([]RunnerCluster, 0, len(file.Clusters))
@@ -106,8 +112,7 @@ func validateRunnerClusters(clusters []RunnerCluster) error {
 			return fmt.Errorf("runner cluster %q: duplicate name", c.Name)
 		}
 		names[c.Name] = struct{}{}
-		u, err := url.Parse(c.Issuer)
-		if err != nil || u.Scheme != httpsScheme || u.Host == "" {
+		if !isHTTPSURL(c.Issuer) {
 			return fmt.Errorf("runner cluster %q: issuer must be an https:// URL", c.Name)
 		}
 		key := strings.TrimSuffix(c.Issuer, "/")
@@ -115,8 +120,14 @@ func validateRunnerClusters(clusters []RunnerCluster) error {
 			return fmt.Errorf("runner cluster %q: issuer already used by cluster %q", c.Name, other)
 		}
 		issuers[key] = c.Name
+		if c.Namespace == "" || c.ServiceAccount == "" {
+			return fmt.Errorf("runner cluster %q: namespace and serviceAccount are required", c.Name)
+		}
 		if c.JWKSURI != "" && c.JWKSFile != "" {
 			return fmt.Errorf("runner cluster %q: jwksURI and jwksFile are mutually exclusive", c.Name)
+		}
+		if c.JWKSURI != "" && !isHTTPSURL(c.JWKSURI) {
+			return fmt.Errorf("runner cluster %q: jwksURI must be an https:// URL", c.Name)
 		}
 		if c.MaxTokenLifetime < minRunnerTokenLifetime {
 			return fmt.Errorf("runner cluster %q: maxTokenLifetime %s is below the %s minimum",
@@ -124,4 +135,13 @@ func validateRunnerClusters(clusters []RunnerCluster) error {
 		}
 	}
 	return nil
+}
+
+// isHTTPSURL reports whether raw parses as an https URL with a host.
+func isHTTPSURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == httpsScheme && u.Host != ""
 }

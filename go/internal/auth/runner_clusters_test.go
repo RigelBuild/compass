@@ -26,58 +26,62 @@ clusters:
 	}
 }
 
+// entry renders one cluster with the required fields; extra lines override or add.
+func entry(name, issuer string, extra ...string) string {
+	lines := []string{"  - name: " + name, "    issuer: " + issuer}
+	set := map[string]bool{}
+	for _, e := range extra {
+		set[strings.SplitN(e, ":", 2)[0]] = true
+		lines = append(lines, "    "+e)
+	}
+	if !set["namespace"] {
+		lines = append(lines, "    namespace: compass-runner")
+	}
+	if !set["serviceAccount"] {
+		lines = append(lines, "    serviceAccount: compass-runner")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func file(entries ...string) string {
+	return "clusters:\n" + strings.Join(entries, "\n") + "\n"
+}
+
 func TestParseRunnerClustersRejectsInvalidFiles(t *testing.T) {
-	const second = `
-  - name: b
-    issuer: https://b.example.test`
 	tests := []struct {
 		name    string
 		yaml    string
 		wantErr string // empty: must parse
 	}{
-		{"600s parses", `
-clusters:
-  - name: a
-    issuer: https://a.example.test
-    maxTokenLifetime: 600s`, ""},
-		{"599s is below the TokenRequest minimum", `
-clusters:
-  - name: a
-    issuer: https://a.example.test
-    maxTokenLifetime: 599s`, "maxTokenLifetime"},
-		{"duplicate names", `
-clusters:
-  - name: a
-    issuer: https://a.example.test
-  - name: a
-    issuer: https://other.example.test`, "duplicate name"},
-		{"issuers differing only by a trailing slash", `
-clusters:
-  - name: a
-    issuer: https://a.example.test/id
-  - name: b
-    issuer: https://a.example.test/id/`, "issuer already used"},
-		{"non-https issuer", `
-clusters:
-  - name: a
-    issuer: http://a.example.test`, "https://"},
-		{"both jwksURI and jwksFile", `
-clusters:
-  - name: a
-    issuer: https://a.example.test
-    jwksURI: https://a.example.test/keys
-    jwksFile: /etc/keys.json`, "mutually exclusive"},
-		{"name with an upper-case letter", `
-clusters:
-  - name: Prod
-    issuer: https://a.example.test`, "name must match"},
-		{"name longer than 40", `
-clusters:
-  - name: ` + strings.Repeat("a", 41) + `
-    issuer: https://a.example.test`, "name must match"},
-		{"empty name", `
-clusters:
-  - issuer: https://a.example.test` + second, "name must match"},
+		{"600s parses", file(entry("a", "https://a.example.test", "maxTokenLifetime: 600s")), ""},
+		{"https jwksURI parses", file(entry("a", "https://a.example.test", "jwksURI: https://keys.example.test/jwks")), ""},
+		{
+			"599s is below the TokenRequest minimum",
+			file(entry("a", "https://a.example.test", "maxTokenLifetime: 599s")), "maxTokenLifetime",
+		},
+		{
+			"duplicate names",
+			file(entry("a", "https://a.example.test"), entry("a", "https://other.example.test")), "duplicate name",
+		},
+		{
+			"issuers differing only by a trailing slash",
+			file(entry("a", "https://a.example.test/id"), entry("b", "https://a.example.test/id/")), "issuer already used",
+		},
+		{"non-https issuer", file(entry("a", "http://a.example.test")), "https://"},
+		{
+			"both jwksURI and jwksFile",
+			file(entry("a", "https://a.example.test", "jwksURI: https://a.example.test/keys", "jwksFile: /etc/keys.json")),
+			"mutually exclusive",
+		},
+		{"name with an upper-case letter", file(entry("Prod", "https://a.example.test")), "name must match"},
+		{"name longer than 40", file(entry(strings.Repeat("a", 41), "https://a.example.test")), "name must match"},
+		{"empty name", file(entry(`""`, "https://a.example.test")), "name must match"},
+		{"empty namespace", file(entry("a", "https://a.example.test", `namespace: ""`)), "namespace"},
+		{"empty serviceAccount", file(entry("a", "https://a.example.test", `serviceAccount: ""`)), "serviceAccount"},
+		{"non-https jwksURI", file(entry("a", "https://a.example.test", "jwksURI: http://a.example.test/keys")), "jwksURI"},
+		{"jwksURI without a host", file(entry("a", "https://a.example.test", "jwksURI: https:///keys")), "jwksURI"},
+		{"unknown field", file(entry("a", "https://a.example.test", "audiences: [x]")), "audiences"},
+		{"unknown top-level field", "clusterz: []\n", "clusterz"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
