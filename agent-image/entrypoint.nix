@@ -24,7 +24,7 @@ let
   # optionalDependency, and the addon set differs by arch (x64 two, arm64 one).
   nativeBySystem = {
     "x86_64-linux" = {
-      outputHash = "sha256-JbgM44AwH7/b3Y/2T44+eBXwyvMi8owXToGVspEeCk4=";
+      outputHash = "sha256-GxAf2e7XkExIWZBPQvZeFJNbENPzxvbKKxZ16m38ii4=";
       nativesPkg = "pi-natives-linux-x64";
       addons = [
         "pi_natives.linux-x64-modern.node"
@@ -32,7 +32,7 @@ let
       ];
     };
     "aarch64-linux" = {
-      outputHash = "sha256-asK46RRcPuByIjHMJUYL/UCp4f0UJBvPvZehUiyeW0I=";
+      outputHash = "sha256-AOG/vjhcj1Ww9TQmYs1msUaTgUX4ZTulF/neiNX//HU=";
       nativesPkg = "pi-natives-linux-arm64";
       addons = [ "pi_natives.linux-arm64.node" ];
     };

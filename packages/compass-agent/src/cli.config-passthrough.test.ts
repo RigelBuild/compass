@@ -242,6 +242,7 @@ function fakeCarrier(): RunnerTransport {
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
 		board: () => Promise.reject(new Error("board is not used by main")),
+		putSessionBlob: () => Promise.resolve(),
 		publishSpine: () => spine,
 		postConversationFrame: () =>
 			Promise.resolve(create(PostConversationFrameResponseSchema, {})),

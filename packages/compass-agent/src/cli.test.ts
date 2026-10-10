@@ -333,6 +333,14 @@ describe("parseEnvFile", () => {
 			),
 		).toEqual({ OK: "1" });
 	});
+
+	test("SDK directory and profile controls are reserved from env files", () => {
+		expect(
+			parseEnvFile(
+				"PI_CODING_AGENT_DIR=/changed\nXDG_DATA_HOME=/changed\nOMP_PROFILE=profile\nPI_PROFILE=profile\nPI_CONFIG_DIR=/changed\nKEEP=1",
+			),
+		).toEqual({ KEEP: "1" });
+	});
 });
 
 // getApiKey is called PER LLM CALL ("dynamically for each LLM call. Useful for expiring
@@ -522,6 +530,7 @@ function fakeCarrier(
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
 		board: () => Promise.reject(new Error("board is not used by main")),
+		putSessionBlob: () => Promise.resolve(),
 		publishSpine: () => spine,
 		postConversationFrame: async (req) => {
 			if (hooks.onDurable) await hooks.onDurable(req);

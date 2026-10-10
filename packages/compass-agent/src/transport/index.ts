@@ -22,12 +22,15 @@ import type {
 	LifecycleCallResult,
 	PostConversationFrameRequest,
 	PostConversationFrameResponse,
+	PutSessionBlobRequest,
 } from "../gen/compass/v1/agent_gateway_pb";
 import { AgentGateway } from "../gen/compass/v1/agent_gateway_pb";
 import type { AgentControl } from "../gen/compass/v1/agent_pb";
 import { makeOtelLayer } from "./otel-layer";
 import { createPublishSpine, type PublishSpine } from "./publish-spine";
 import { setTransportRuntime } from "./runtime-channel";
+
+export const SESSION_BLOB_PUT_TIMEOUT_MS = 30_000;
 
 /**
  * The agent's handle on the AgentGateway RPCs over the Runner socket. T4
@@ -63,6 +66,7 @@ export interface RunnerTransport {
 	lifecycle(req: LifecycleCallRequest): Promise<LifecycleCallResult>;
 	forge(req: ForgeCallRequest): Promise<ForgeCallResult>;
 	board(req: BoardCallRequest): Promise<BoardCallResult>;
+	putSessionBlob(req: PutSessionBlobRequest): Promise<void>;
 	publishSpine(): PublishSpine;
 	postConversationFrame(
 		req: PostConversationFrameRequest,
@@ -119,6 +123,11 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 		lifecycle: (req) => client.lifecycle(req),
 		forge: (req) => client.forge(req),
 		board: (req) => client.board(req),
+		putSessionBlob: async (req) => {
+			await client.putSessionBlob(req, {
+				timeoutMs: SESSION_BLOB_PUT_TIMEOUT_MS,
+			});
+		},
 		publishSpine: () => {
 			spine ??= createPublishSpine((stream) => client.publish(stream), runtime);
 			return spine;

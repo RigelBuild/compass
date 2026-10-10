@@ -203,6 +203,7 @@ function headerObserver(
 		lifecycle: (req) => inner.lifecycle(req),
 		forge: (req) => inner.forge(req),
 		board: (req) => inner.board(req),
+		putSessionBlob: (req) => inner.putSessionBlob(req),
 		publishSpine: () => inner.publishSpine(),
 		postConversationFrame: (req, options) =>
 			inner.postConversationFrame(req, options),
@@ -507,6 +508,7 @@ function fakeSpanTransport(opens: SpanOpen[]): RunnerTransport {
 		lifecycle: () => Promise.reject(new Error("lifecycle unused")),
 		forge: () => Promise.reject(new Error("forge unused")),
 		board: () => Promise.reject(new Error("board unused")),
+		putSessionBlob: () => Promise.reject(new Error("putSessionBlob unused")),
 		publishSpine: () => noopSpine,
 		postConversationFrame: () =>
 			Promise.reject(new Error("postConversationFrame unused")),

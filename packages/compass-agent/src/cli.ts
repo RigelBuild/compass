@@ -41,6 +41,7 @@ import {
 	isTelemetryExportEnabled,
 } from "@oh-my-pi/pi-coding-agent/telemetry-export";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
+import { getBlobsDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
 import { BoardBroker, createBoardTools } from "./board";
@@ -55,6 +56,7 @@ import {
 import { createForgeTools, ForgeBroker } from "./forge";
 import type { FrameSink } from "./frame";
 import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
+import { createSessionBlobUploader } from "./session-blobs";
 import {
 	createTeeSessionStorage,
 	type TranscriptTeeBackend,
@@ -105,25 +107,30 @@ export function envFilePath(home: string): string {
 }
 
 /**
- * Keys a file may never set: `HOME` (the agent's Runner-scoped home) and the
- * entire `COMPASS_*` control-var namespace. Only the Runner/agent populate
- * `COMPASS_*` (model/persona/workdir/resume-file, …), so any file-supplied
- * `COMPASS_`-prefixed key is illegitimate and dropped — a prefix rule rather
- * than a list so a control var added later (e.g. `COMPASS_RESUME_SESSION_FILE`)
- * is reserved without editing this filter.
+ * Keys a file may never set: the Runner-scoped `HOME`, SDK directory/profile
+ * controls (`PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, `OMP_PROFILE`, `PI_PROFILE`,
+ * `PI_CONFIG_DIR`), and the entire `COMPASS_*` control-var namespace. Only the
+ * Runner/agent populate those values.
  */
 function isReservedEnvKey(key: string): boolean {
-	return key === "HOME" || key.startsWith("COMPASS_");
+	return (
+		key === "HOME" ||
+		key === "PI_CODING_AGENT_DIR" ||
+		key === "XDG_DATA_HOME" ||
+		key === "OMP_PROFILE" ||
+		key === "PI_PROFILE" ||
+		key === "PI_CONFIG_DIR" ||
+		key.startsWith("COMPASS_")
+	);
 }
 
 /**
  * Parse the materialized env file's `KEY=VALUE` lines. Split on the FIRST `=`
  * (a value may contain `=`); the value is literal to end-of-line, only a
  * trailing `\r` stripped so a CRLF-written file is tolerated. Blank lines,
- * `=`-less lines, and empty-key lines are skipped. Reserved keys (`HOME` and
- * the whole `COMPASS_*` namespace) are excluded so a file KEY can never clobber
- * a Runner-set var — see `isReservedEnvKey`. Pure — the
- * IO + the merge into `process.env` live in `main`.
+ * `=`-less lines, and empty-key lines are skipped. Reserved SDK path controls
+ * and the whole `COMPASS_*` namespace are excluded so the file cannot redirect
+ * Runner-owned state. Pure — the IO + env merge live in `main`.
  */
 export function parseEnvFile(contents: string): Record<string, string> {
 	const out: Record<string, string> = {};
@@ -183,10 +190,15 @@ async function createBootSession(
 	resumeFile: string | undefined,
 	continued: boolean,
 	deps: MainDeps,
+	onCommittedLine: (line: string) => void,
 ): Promise<BootSession> {
+	const options: TranscriptTeeOptions = {
+		...(resumeFile ? { resumeFile } : {}),
+		onCommittedLine,
+	};
 	const { storage } = await (
 		deps.createSessionStorage ?? createTeeSessionStorage
-	)(sink, sessionDir, resumeFile ? { resumeFile } : undefined);
+	)(sink, sessionDir, options);
 	const manager = SessionManager.create(cwd, sessionDir, storage);
 	if (resumeFile) {
 		if (continued) {
@@ -200,7 +212,7 @@ async function createBootSession(
 				continued = false;
 				const freshStorage = await (
 					deps.createSessionStorage ?? createTeeSessionStorage
-				)(sink, sessionDir);
+				)(sink, sessionDir, { onCommittedLine });
 				return {
 					storage: freshStorage.storage,
 					manager: SessionManager.create(cwd, sessionDir, freshStorage.storage),
@@ -880,6 +892,14 @@ export async function main(
 		resolveSocketPath(env),
 	);
 	const sink = createSocketFrameSink(transport);
+	const blobsDir = getBlobsDir();
+	console.error(`[compass-agent] session blob directory: ${blobsDir}`);
+	const sessionBlobUploader = createSessionBlobUploader({
+		blobsDir,
+		put: async (request) => {
+			await transport.putSessionBlob(request);
+		},
+	});
 	const bootSession = await createBootSession(
 		sink,
 		cwd,
@@ -887,6 +907,7 @@ export async function main(
 		resumeFile,
 		continued,
 		deps,
+		(line) => sessionBlobUploader.offer(line),
 	);
 	const { storage, manager } = bootSession;
 	continued = bootSession.continued;
@@ -1160,7 +1181,11 @@ export async function main(
 				try {
 					await sink.drain?.();
 				} finally {
-					transport.close();
+					try {
+						await sessionBlobUploader.close();
+					} finally {
+						transport.close();
+					}
 				}
 			}
 		} finally {

@@ -104,6 +104,8 @@ function fakeDurableTransport(config: FakeConfig): RunnerTransport {
 			Promise.reject(new Error("lifecycle not used by this test")),
 		forge: () => Promise.reject(new Error("forge not used by this test")),
 		board: () => Promise.reject(new Error("board not used by this test")),
+		putSessionBlob: () =>
+			Promise.reject(new Error("putSessionBlob not used by this test")),
 		publishSpine: () => spine,
 		postConversationFrame: () => {
 			const index = calls++;

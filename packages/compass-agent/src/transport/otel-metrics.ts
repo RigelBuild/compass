@@ -155,3 +155,25 @@ export const controlUnmapped = Metric.counter(
 	"compass_agent.transport.control.unmapped",
 	{ incremental: true },
 );
+
+// Best-effort inline-image persistence outcomes.
+export const sessionBlobsUploaded = Metric.counter(
+	"compass_agent.session_blobs.uploaded",
+	{ incremental: true },
+);
+export const sessionBlobsDropped = Metric.counter(
+	"compass_agent.session_blobs.dropped",
+	{ incremental: true },
+);
+export const sessionBlobsOversize = Metric.counter(
+	"compass_agent.session_blobs.oversize",
+	{ incremental: true },
+);
+export const sessionBlobsMissing = Metric.counter(
+	"compass_agent.session_blobs.missing",
+	{ incremental: true },
+);
+export const sessionBlobsFailed = Metric.counter(
+	"compass_agent.session_blobs.failed",
+	{ incremental: true },
+);

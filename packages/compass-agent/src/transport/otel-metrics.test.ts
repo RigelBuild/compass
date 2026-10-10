@@ -95,6 +95,8 @@ function durableTransport(
 		forge: () => Promise.reject(new Error("forge not used by this test")),
 		board: () => Promise.reject(new Error("board not used by this test")),
 		publishSpine: () => noopSpine(),
+		putSessionBlob: () =>
+			Promise.reject(new Error("putSessionBlob not used by this test")),
 		postConversationFrame,
 		control: () => {
 			throw new Error("control not used by this test");
