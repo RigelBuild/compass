@@ -685,22 +685,6 @@ disclosure caret):
 ...........
 ```
 
-`logo` — the Compass diamond mark (replaces `◇`, the brand logo):
-
-```text
-...........
-.....#.....
-....###....
-...##.##...
-..##...##..
-.##.....##.
-..##...##..
-...##.##...
-....###....
-.....#.....
-...........
-```
-
 `panel-left` — a pane frame with the left region filled (replaces `▌`, the
 toggle-left-sidebar control):
 
@@ -767,7 +751,6 @@ character WAS the name and it moved onto the wrapper.
 
 | Site | Was | Glyph |
 | --- | --- | --- |
-| `App` brand mark | `◇` | `logo` |
 | `App` view tab | `▦` | `status` |
 | `App` sidebar toggles | `▌` `▐` | `panel-left` `panel-right` |
 | `LeftSidebar` role pip | `◆` | `role` |

@@ -16,6 +16,7 @@ import "./design/components/menu.css";
 import "./design/components/shortcuts.css";
 import "./design/components/state-dot.css";
 import "./app.css";
+import needle from "./assets/compass-needle.svg";
 import {
 	CoachTip,
 	CoachTipContent,
@@ -200,10 +201,14 @@ const App: Component<
 		<div class="app">
 			<header class="topbar">
 				<div class="brand">
-					<span class="logo" aria-hidden="true">
-						<Glyph name="logo" />
-					</span>
-					<span class="title">Compass</span>
+					<img
+						class="logo"
+						src={needle}
+						alt="Compass"
+						title="Compass"
+						width="24"
+						height="24"
+					/>
 				</div>
 
 				<div class="topbar-sep" />

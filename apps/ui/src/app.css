@@ -40,15 +40,11 @@
 	gap: 7px;
 }
 
+/* 24px gives each of the needle's 12 grid cells exactly 2px, and is the
+   topbar mark floor (surfaces.md § Mark placement). */
 .brand .logo {
-	color: var(--cx-accent);
-	font-size: 16px;
-	align-self: center;
-}
-
-.brand .title {
-	font-size: 14px;
-	letter-spacing: 0.01em;
+	width: 24px;
+	height: 24px;
 }
 
 .topbar-sep {
