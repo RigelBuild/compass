@@ -2862,6 +2862,8 @@ function startBatchAgent(tracer?: TurnTracer) {
 	const frames: OutboundFrame[] = [];
 	const unmapped: UnmappedEvent[] = [];
 	const railAcks: string[] = [];
+	// Every ack, frame or rail, in the one order the agent produced them.
+	const ackLog: string[] = [];
 	const clock = fakeBatchTimer();
 	const queue: AgentControl[] = [];
 	let notify: (() => void) | undefined;
@@ -2885,6 +2887,9 @@ function startBatchAgent(tracer?: TurnTracer) {
 		sink: {
 			emit: (f) => {
 				frames.push(f);
+				if (f.kind === "deliveryAck") ackLog.push(`ack:${f.value.messageId}`);
+				if (f.kind === "forgeNotificationAck")
+					ackLog.push(`forgeAck:${f.value.revision}`);
 			},
 			emitDurable: (f) => {
 				frames.push(f);
@@ -2905,7 +2910,10 @@ function startBatchAgent(tracer?: TurnTracer) {
 		await tick();
 	};
 	const push = (n: ForgeNotification): void => {
-		agent.forgeNotification(n, () => railAcks.push(n.revision));
+		agent.forgeNotification(n, () => {
+			railAcks.push(n.revision);
+			ackLog.push(`rail:${n.revision}`);
+		});
 	};
 	const drive = (event: AgentSessionEvent): void => {
 		if (event.type === "agent_end") session.agent.state.isStreaming = false;
@@ -2922,6 +2930,7 @@ function startBatchAgent(tracer?: TurnTracer) {
 		frames,
 		unmapped,
 		railAcks,
+		ackLog,
 		clock,
 		feed,
 		push,
@@ -3054,6 +3063,52 @@ describe("CompassAgent — idle batching window", () => {
 		await h.close();
 	});
 
+	test("forge F + deliver D queued, then idle steer S → acks in order D, F (ack then rail), S", async () => {
+		const h = startBatchAgent();
+		h.push(forgeNote("sub-1", "rev-1"));
+		h.agent.deliver(deliverMsg("d1", "the deliver"));
+		h.agent.steer(deliverMsg("s1", "the mention"));
+		await tick();
+		expect(h.ackLog).toEqual([
+			"ack:d1",
+			"forgeAck:rev-1",
+			"rail:rev-1",
+			"ack:s1",
+		]);
+		await h.close();
+	});
+
+	test("a steer draining the window closes it live: batchPending counts [1, 0] while the session is open", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("d1", "the deliver"));
+		h.agent.steer(deliverMsg("s1", "the mention"));
+		await tick();
+		expect(batchPendings(h.frames)).toEqual([
+			{ count: 1, firesAt: BigInt(QUIET_MS) },
+			{ count: 0, firesAt: 0n },
+		]);
+		await h.close();
+	});
+
+	test("a superseded timer callback fired by hand is ignored; the live timer still fires", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "one"));
+		h.clock.advance(3_000);
+		h.agent.deliver(deliverMsg("m2", "two"));
+		expect(h.clock.entries).toHaveLength(2);
+		// The first timer was cancelled by the re-arm; a late fire from it must be a no-op.
+		h.clock.entries[0].fire();
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(h.clock.liveCount()).toBe(1);
+		expect(batchPendings(h.frames).map((p) => p.count)).toEqual([1, 2]);
+		h.clock.advance(QUIET_MS);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("one");
+		expect(h.session.agent.prompts[0]).toContain("two");
+		await h.close();
+	});
+
 	test("deliver D, then idle steer S with the prompt rejected → D and S are un-deduped and neither is acked", async () => {
 		const h = startBatchAgent();
 		h.agent.deliver(deliverMsg("d1", "the deliver"));
@@ -3106,6 +3161,9 @@ describe("CompassAgent — idle batching window", () => {
 		await h.feed({ kind: "replayComplete" });
 		h.agent.deliver(deliverMsg("m1", "queued reply"));
 		await h.feed({ kind: "prompt", input: "go" });
+		// The control prompt closed the window itself, before anything fired.
+		expect(h.clock.liveCount()).toBe(0);
+		expect(batchPendings(h.frames).map((p) => p.count)).toEqual([1, 0]);
 		await tick();
 		expect(h.session.agent.prompts).toEqual(["go"]);
 		h.clock.advance(QUIET_MS);

@@ -259,11 +259,9 @@ export class CompassAgent {
 		this.#deliverFromHandles.set(msg.id, fromHandle);
 		this.#deliverTraceparents.set(msg.id, traceparent);
 		this.#deliverSourceNames.set(msg.id, sourceNames);
-		// An idle deliver arms the batching window (or starts a turn at once with no
-		// window); a mid-turn deliver waits for the `agent_end` flush. "Idle" consults BOTH
-		// `#turnActive` AND `#session.isStreaming` — a control prompt sets streaming
-		// SYNCHRONOUSLY but flips `#turnActive` later, so gating on `isStreaming` avoids an
-		// AgentBusyError inject.
+		// An idle deliver arms the batching window; a mid-turn one waits for `agent_end`.
+		// Idle also checks `isStreaming`: a control prompt sets it SYNCHRONOUSLY but flips
+		// `#turnActive` later, so the check avoids an AgentBusyError inject.
 		if (!this.#turnActive && !this.#session.isStreaming) {
 			this.#armBatch();
 		} else if (!this.#turnActive) {
@@ -678,7 +676,11 @@ export class CompassAgent {
 			0,
 			Math.min(window.quietMs, firstAt + window.maxMs - now),
 		);
-		this.#batchCancel = this.#batchTimer.set(delay, () => this.#fireBatch());
+		// Only the latest armed timer may fire: a cancelled one's late callback no-ops.
+		const cancel = this.#batchTimer.set(delay, () => {
+			if (this.#batchCancel === cancel) this.#fireBatch();
+		});
+		this.#batchCancel = cancel;
 		this.#emitBatchPending(
 			this.#deliverQueue.length + this.#forgeQueue.length,
 			now + delay,
