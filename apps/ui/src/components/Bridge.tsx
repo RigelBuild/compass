@@ -586,9 +586,6 @@ export const Bridge: Component = () => {
 		<div class="bridge">
 			<div class="bridge-toolbar">
 				<span class="heading">Bridge</span>
-				<span class="sub">
-					{boardAgents().length} agents · {inFlight()} in-flight issues
-				</span>
 				<div class="seg bridge-tabs" role="toolbar" aria-label="Board view">
 					<button
 						type="button"
@@ -621,6 +618,10 @@ export const Bridge: Component = () => {
 						Done
 					</button>
 				</div>
+				{/* After the tabs, so the subtitle alone gives way to the grouping seg. */}
+				<span class="sub">
+					{boardAgents().length} agents · {inFlight()} in-flight issues
+				</span>
 				<Show when={segment() === "issues"}>
 					<div class="seg" role="toolbar" aria-label="Board grouping">
 						<button

@@ -448,7 +448,6 @@
    first line stays fixed and the tab seg does not move when grouping hides. */
 .bridge-toolbar {
 	display: flex;
-	flex-wrap: wrap;
 	align-items: center;
 	gap: 10px;
 	padding: 9px 14px;
@@ -461,7 +460,13 @@
 	font-size: var(--cx-display-sm);
 }
 
+/* The subtitle gives way first, so four segments and the grouping seg stay
+   on one row and nothing below or beside the tabs moves between segments. */
 .bridge-toolbar .sub {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-size: 11px;
 	color: var(--cx-text-dim);
 }
@@ -470,6 +475,11 @@
    seg would slide it right whenever the PRs tab hides that seg. */
 .bridge-toolbar .bridge-tabs {
 	margin-left: 0;
+	flex: none;
+}
+
+.bridge-toolbar .seg {
+	flex: none;
 }
 
 .seg {

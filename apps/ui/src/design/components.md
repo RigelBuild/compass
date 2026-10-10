@@ -653,22 +653,6 @@ disclosure caret):
 ...........
 ```
 
-`list` — a stacked-rows list (replaces `▤`, the Backlog view):
-
-```text
-...........
-.#########.
-.#.......#.
-.#########.
-.#.......#.
-.#########.
-.#.......#.
-.#########.
-.#.......#.
-.#########.
-...........
-```
-
 `gear` — a settings cog (replaces `⚙`, the Settings view):
 
 ```text
@@ -758,7 +742,7 @@ character WAS the name and it moved onto the wrapper.
 | `LeftSidebar` folder caret | `▼` | `disclosure-open` |
 | `LeftSidebar` browse/ws carets | `▸` | `disclosure` |
 | `LeftSidebar` subscribe toggle | `◉` `○` | `subscribed` `unsubscribed` |
-| `LeftSidebar` views | `▦` `▤` `✓` `⚙` | `status` `list` `check` `gear` |
+| `LeftSidebar` views | `▦` `⚙` | `status` `gear` |
 | `RightSidebar` file row | `▸` | `disclosure` |
 | `RightSidebar` repo/branch | `🗀` `⎇` | `files` `vcs` |
 | `RightSidebar` dropdown carets | `▾` | `disclosure-open` |
