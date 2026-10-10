@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -196,8 +197,9 @@ func TestScopedAppMinterSurfacesGitHubError(t *testing.T) {
 		Clock:      func() time.Time { return now },
 	})
 	_, err := minter.Mint(context.Background(), []string{"repo"}, map[string]string{"contents": "write"})
-	if err == nil || !strings.Contains(err.Error(), "403: scripted failure") {
-		t.Fatalf("Mint error = %v, want GitHub 403 message", err)
+	statusErr, ok := errors.AsType[*StatusError](err)
+	if !ok || statusErr.Status != http.StatusForbidden || statusErr.Message != "scripted failure" {
+		t.Fatalf("Mint error = %v, want typed GitHub 403 message", err)
 	}
 }
 
