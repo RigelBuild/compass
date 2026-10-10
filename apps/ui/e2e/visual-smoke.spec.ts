@@ -144,13 +144,12 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await dot.waitFor({ state: "visible" });
 		// Cropped close-up clip of a single state dot.
 		await page.evaluate(() => document.fonts.ready);
-		// Tiny area: at the 0.001 base this 9x10 = 90 px shot's budget is 0.09 px,
-		// i.e. byte-exact. The per-shot ratio REPLACES the base (it is not a floor
-		// min'd against it), giving a 10 px budget.
+		// The first dot is the 2x sidebar dot, an 18x18 = 324 px shot. The
+		// per-shot ratio replaces the 0.001 base, giving a 10 px budget.
 		await expect(dot).toHaveScreenshot("state-dot.png", {
 			animations: "disabled",
 			scale: "css",
-			maxDiffPixelRatio: 10 / 90,
+			maxDiffPixelRatio: 10 / 324,
 		});
 	});
 
