@@ -23,8 +23,8 @@
 // asserts `:latest` and `:git-<sha12>` share a config digest and fails closed
 // otherwise (.github/workflows/release.yml, publish-image).
 //
-// Needs `skopeo` and network on PATH. Reads are anonymous: the package is
-// public, so no registry credentials are required.
+// Needs `skopeo` and network on PATH. Reads are anonymous (`--no-creds`): the
+// package is public, and the Renovate runner's default auth file is unreadable.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -54,8 +54,8 @@ const DISCOVERY_TAG = "latest";
 
 type Inspected = { digest: string; manifest: unknown };
 
-async function skopeo(args: string[]): Promise<string> {
-	const proc = Bun.spawn(["skopeo", ...args], {
+async function skopeo(command: string, args: string[]): Promise<string> {
+	const proc = Bun.spawn(["skopeo", command, "--no-creds", ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -66,7 +66,7 @@ async function skopeo(args: string[]): Promise<string> {
 	]);
 	if (code !== 0) {
 		throw new PinError(
-			`skopeo ${args.join(" ")} failed (exit ${code}): ${err.trim()}`,
+			`skopeo ${command} ${args.join(" ")} failed (exit ${code}): ${err.trim()}`,
 			EXIT.registryFailed,
 		);
 	}
@@ -81,7 +81,7 @@ async function skopeo(args: string[]): Promise<string> {
  * so a publish landing between them would pair one manifest's body with
  * another's digest — and the lock would describe layers the digest disowns. */
 async function inspect(reference: string): Promise<Inspected> {
-	const raw = await skopeo(["inspect", "--raw", `docker://${reference}`]);
+	const raw = await skopeo("inspect", ["--raw", `docker://${reference}`]);
 
 	let manifest: unknown;
 	try {
@@ -100,8 +100,7 @@ async function inspect(reference: string): Promise<Inspected> {
  * Tag discovery compares only digests, and the agent manifest is ~120 layers,
  * so fetching bodies would download a lot to read one field. */
 async function resolvedDigest(reference: string): Promise<string> {
-	const meta = await skopeo([
-		"inspect",
+	const meta = await skopeo("inspect", [
 		"--format",
 		"{{.Digest}}",
 		`docker://${reference}`,
@@ -126,7 +125,7 @@ async function resolvedDigest(reference: string): Promise<string> {
  * the end. Reversing makes the common case one probe. */
 async function discoverBuildTag(): Promise<string> {
 	const target = await resolvedDigest(`${AGENT_REPO}:${DISCOVERY_TAG}`);
-	const listed = await skopeo(["list-tags", `docker://${AGENT_REPO}`]);
+	const listed = await skopeo("list-tags", [`docker://${AGENT_REPO}`]);
 
 	let tags: unknown;
 	try {
