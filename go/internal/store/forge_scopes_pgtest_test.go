@@ -177,3 +177,94 @@ func TestForgeScopeValidationAndNormalization(t *testing.T) {
 		})
 	}
 }
+func TestGrantAgentForgeScope(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner, err := s.CreateUser(ctx, NewUser{Handle: "agent-scope-owner", DisplayName: "Owner"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "agent-scope-agent", DisplayName: "Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	sibling, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "agent-scope-sibling", DisplayName: "Sibling"})
+	if err != nil {
+		t.Fatalf("CreateAgent sibling: %v", err)
+	}
+	if err := s.GrantForgeScope(ctx, ForgeScope{
+		AccountID: owner.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "Owner/Base",
+	}); err != nil {
+		t.Fatalf("GrantForgeScope owner: %v", err)
+	}
+
+	scope := ForgeScope{
+		AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "Workstream/Repo",
+	}
+	added, err := s.GrantAgentForgeScope(ctx, scope)
+	if err != nil || !added {
+		t.Fatalf("GrantAgentForgeScope first = (%t, %v), want (true, nil)", added, err)
+	}
+	added, err = s.GrantAgentForgeScope(ctx, scope)
+	if err != nil || added {
+		t.Fatalf("GrantAgentForgeScope duplicate = (%t, %v), want (false, nil)", added, err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		account AccountID
+		want    bool
+	}{
+		{name: "agent", account: agent.ID, want: true},
+		{name: "owner", account: owner.ID},
+		{name: "sibling", account: sibling.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.HasForgeScope(ctx, tc.account, ForgeProviderGitHub, "github.com", "workstream/repo")
+			if err != nil || got != tc.want {
+				t.Fatalf("HasForgeScope = (%t, %v), want (%t, nil)", got, err, tc.want)
+			}
+		})
+	}
+	repos, err := s.ListForgeScopeRepos(ctx, agent.ID, ForgeProviderGitHub, "github.com")
+	if err != nil {
+		t.Fatalf("ListForgeScopeRepos(agent): %v", err)
+	}
+	if len(repos) != 2 || repos[0] != "owner/base" || repos[1] != "workstream/repo" {
+		t.Fatalf("ListForgeScopeRepos(agent) = %v, want [owner/base workstream/repo]", repos)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		scope ForgeScope
+	}{
+		{name: "wildcard", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "*"}},
+		{name: "user account", scope: ForgeScope{AccountID: owner.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo"}},
+		{name: "missing slash", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "repo"}},
+		{name: "empty organization", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "/repo"}},
+		{name: "empty repository", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "org/"}},
+		{name: "multiple slashes", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "org/repo/extra"}},
+	} {
+		t.Run("reject "+tc.name, func(t *testing.T) {
+			if _, err := s.GrantAgentForgeScope(ctx, tc.scope); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("GrantAgentForgeScope error = %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
+
+	if err := s.RevokeForgeScope(ctx, scope); err != nil {
+		t.Fatalf("RevokeForgeScope agent row: %v", err)
+	}
+	if got, err := s.HasForgeScope(ctx, agent.ID, ForgeProviderGitHub, "github.com", "workstream/repo"); err != nil || got {
+		t.Fatalf("HasForgeScope after agent-row revoke = (%t, %v), want (false, nil)", got, err)
+	}
+
+	tenantB := seedTenant(t, s, "agent-scope-tenant-b")
+	ctxB := WithTenant(ctx, tenantB)
+	if _, err := s.GrantAgentForgeScope(ctxB, scope); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("GrantAgentForgeScope from tenant B = %v, want ErrInvalidArgument", err)
+	}
+	if repos, err := s.ListForgeScopeRepos(ctxB, agent.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 0 {
+		t.Fatalf("ListForgeScopeRepos from tenant B = (%v, %v), want ([], nil)", repos, err)
+	}
+}
