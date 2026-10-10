@@ -42,7 +42,6 @@ button {
 }
 ::-webkit-scrollbar-thumb {
 	background: var(--cx-border-strong);
-	border-radius: var(--cx-radius-md);
 	border: 2px solid transparent;
 	background-clip: padding-box;
 }
@@ -121,7 +120,6 @@ button {
 	font-family: var(--cx-font-ui);
 	font-size: var(--cx-text-sm);
 	background: var(--cx-bg-raised);
-	border-radius: var(--cx-radius-sm);
 	padding: 0 var(--cx-space-1);
 }
 
@@ -130,7 +128,6 @@ button {
 	padding: var(--cx-space-3);
 	background: var(--cx-bg-raised);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-md);
 	overflow: auto;
 }
 .cx-md pre code {

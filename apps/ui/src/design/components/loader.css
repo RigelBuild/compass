@@ -129,7 +129,6 @@
 	display: block;
 	width: 100%;
 	height: var(--cx-space-1);
-	border-radius: var(--cx-radius-sm);
 	background: var(--cx-border);
 	overflow: hidden;
 }

@@ -60,6 +60,9 @@ module.exports = {
 				"/(?:^|[\\s,])(ease|ease-in|ease-out|ease-in-out|linear)(?:$|[\\s,])/", // raw easing keywords
 			],
 		},
+		// Compass draws square corners only, matching the brand site; a radius in
+		// any form (token or literal) reds CI. boot-styles.ts is outside its reach.
+		"property-disallowed-list": ["/radius/"],
 	},
 	overrides: [
 		{

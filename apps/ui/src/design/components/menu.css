@@ -13,7 +13,6 @@
 	min-width: var(--cx-space-8);
 	padding: var(--cx-space-1);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-md);
 	background: var(--cx-bg-panel);
 	color: var(--cx-text);
 	font-family: var(--cx-font-ui);
@@ -27,7 +26,6 @@
 	align-items: center;
 	gap: var(--cx-space-2);
 	padding: var(--cx-space-1) var(--cx-space-2);
-	border-radius: var(--cx-radius-sm);
 	background: transparent;
 	color: var(--cx-text);
 	cursor: pointer;
@@ -72,7 +70,6 @@
 	gap: var(--cx-space-4);
 	padding: var(--cx-space-5);
 	border: 1px solid var(--cx-border-strong);
-	border-radius: var(--cx-radius-lg);
 	background: var(--cx-bg-panel);
 	color: var(--cx-text);
 	font-family: var(--cx-font-ui);

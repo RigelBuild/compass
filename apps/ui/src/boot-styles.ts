@@ -25,7 +25,6 @@ export const INPUT_STYLE = [
 	"color:#e6e6e6",
 	"background:#111",
 	"border:1px solid #444",
-	"border-radius:4px",
 ].join(";");
 export const BUTTON_STYLE = [
 	"margin-top:1rem",
