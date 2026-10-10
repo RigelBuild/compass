@@ -60,6 +60,7 @@ SELECT EXISTS (
 
 -- name: LockChannelForReparent :one
 SELECT channels.group_id, channels.kind, channels.membership_mode,
+       COALESCE(channels.parent_agent_id, '') AS parent_agent_id,
        EXISTS (SELECT 1 FROM agent_accounts WHERE home_channel_id = channels.id) AS is_home
 FROM channels WHERE channels.id = $1 FOR UPDATE OF channels;
 
@@ -281,6 +282,51 @@ SELECT EXISTS (
 		)
 	)
 );
+
+-- name: OwnerSetLostChannelVisibility :many
+-- The owner user $1 and its agents for which ChannelVisibleTo($2) is false.
+-- The NOT (...) body is ChannelVisibleTo's predicate with the viewer $1
+-- spelled cand.account_id, so it is diffable against the other copies.
+WITH RECURSIVE ancestry AS (
+	SELECT id, parent_group_id, visibility AS min_vis
+	FROM channel_groups
+	UNION ALL
+	SELECT a.id, g.parent_group_id, LEAST(a.min_vis, g.visibility)
+	FROM ancestry a
+	JOIN channel_groups g ON g.id = a.parent_group_id
+),
+effective AS (
+	SELECT id, MIN(min_vis) AS eff_vis
+	FROM ancestry
+	GROUP BY id
+),
+candidates AS (
+	SELECT $1::text AS account_id
+	UNION ALL
+	SELECT account_id FROM agent_accounts WHERE owner_user_id = $1
+)
+SELECT cand.account_id
+FROM candidates cand
+WHERE NOT EXISTS (
+	SELECT 1 FROM channels c
+	WHERE c.id = $2 AND (
+		EXISTS (
+		    SELECT 1 FROM channel_members cm
+		    WHERE cm.channel_id = c.id AND cm.account_id = cand.account_id
+		)
+		OR (
+		    c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
+		        SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
+		    )
+		)
+		OR (
+		    c.parent_agent_id IS NOT NULL
+		    AND (SELECT aa.owner_user_id FROM agent_accounts aa WHERE aa.account_id = c.parent_agent_id)
+		        IN (SELECT owner_user_id AS uid FROM agent_accounts WHERE account_id = cand.account_id UNION ALL SELECT cand.account_id AS uid)
+		)
+	)
+)
+ORDER BY cand.account_id;
 
 -- name: ChannelsByNameForViewer :many
 WITH RECURSIVE ancestry AS (

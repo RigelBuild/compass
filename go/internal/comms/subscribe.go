@@ -126,7 +126,7 @@ func forwardComms(
 		// never a fault. Expressed as ok = (send succeeded) so the client-side
 		// end is not a `return nil` on a non-nil error (which is a real hang-up,
 		// deliberately swallowed, not a fault to surface).
-		return nil, stream.Send(commsToResponse(actor, event)) == nil
+		return nil, stream.Send(trimRemovedToActor(commsToResponse(actor, event), actor)) == nil
 	}
 
 	for _, event := range sub.Replay {
@@ -186,6 +186,24 @@ func commsToResponse(actor store.AccountID, event events.Stamped[*compassv1.Subs
 			Channel:           &compassv1.Channel{Id: cc.GetChannel().GetId()},
 			RemovedAccountIds: cc.GetRemovedAccountIds(),
 		}}
+	}
+	return resp
+}
+
+// trimRemovedToActor keeps only the recipient's own id in removed_account_ids:
+// the list exists to deliver each departed account its final event, and the
+// other ids may name accounts the recipient could never see.
+func trimRemovedToActor(resp *compassv1.SubscribeCommsResponse, actor store.AccountID) *compassv1.SubscribeCommsResponse {
+	cc := resp.GetChannelChanged()
+	if cc == nil || len(cc.GetRemovedAccountIds()) == 0 {
+		return resp
+	}
+	var own []string
+	if slices.Contains(cc.GetRemovedAccountIds(), string(actor)) {
+		own = []string{string(actor)}
+	}
+	resp.Payload = &compassv1.SubscribeCommsResponse_ChannelChanged{
+		ChannelChanged: &compassv1.ChannelChanged{Channel: cc.GetChannel(), RemovedAccountIds: own},
 	}
 	return resp
 }

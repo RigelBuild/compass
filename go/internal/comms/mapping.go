@@ -2,6 +2,7 @@ package comms
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -110,6 +111,20 @@ func channelMembershipModeToWire(m store.ChannelMembershipMode) compassv1.Channe
 	}
 	return compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_EXPLICIT
 }
+
+// channelMembershipModeFromWire rejects an unknown mode instead of silently
+// creating an EXPLICIT channel the caller did not ask for.
+func channelMembershipModeFromWire(m compassv1.ChannelMembershipMode) (store.ChannelMembershipMode, error) {
+	switch m {
+	case compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_EXPLICIT:
+		return store.ChannelMembershipModeExplicit, nil
+	case compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_TREE:
+		return store.ChannelMembershipModeTree, nil
+	default:
+		return 0, fmt.Errorf("%w: unknown membership mode %d", store.ErrInvalidArgument, m)
+	}
+}
+
 func channelKindToWire(k store.ChannelKind) compassv1.ChannelKind {
 	switch k {
 	case store.ChannelKindDM:
