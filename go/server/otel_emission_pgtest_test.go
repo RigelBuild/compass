@@ -74,7 +74,7 @@ func installGlobalSpanExporter(t *testing.T) *tracetest.InMemoryExporter {
 // and the channel id. Serve's own BootstrapAdmin later finds this same admin.
 func seedAdminChannel(t *testing.T, ctx context.Context) (dsn string, channelID string) {
 	t.Helper()
-	dsn = pgtest.RequireDSN(t)
+	dsn = pgtest.RequireDSN(t) //nolint:contextcheck // DSN acquisition roots its own setup context; it takes no ctx
 	st, err := store.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("store Open: %v", err)
