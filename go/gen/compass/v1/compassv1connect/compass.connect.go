@@ -33,6 +33,8 @@ const (
 	CompassServiceName = "compass.v1.CompassService"
 	// SecretsServiceName is the fully-qualified name of the SecretsService service.
 	SecretsServiceName = "compass.v1.SecretsService"
+	// AgentRepositoryServiceName is the fully-qualified name of the AgentRepositoryService service.
+	AgentRepositoryServiceName = "compass.v1.AgentRepositoryService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -126,6 +128,15 @@ const (
 	// SecretsServiceListServerSecretsProcedure is the fully-qualified name of the SecretsService's
 	// ListServerSecrets RPC.
 	SecretsServiceListServerSecretsProcedure = "/compass.v1.SecretsService/ListServerSecrets"
+	// AgentRepositoryServiceGrantAgentRepositoryProcedure is the fully-qualified name of the
+	// AgentRepositoryService's GrantAgentRepository RPC.
+	AgentRepositoryServiceGrantAgentRepositoryProcedure = "/compass.v1.AgentRepositoryService/GrantAgentRepository"
+	// AgentRepositoryServiceRevokeAgentRepositoryProcedure is the fully-qualified name of the
+	// AgentRepositoryService's RevokeAgentRepository RPC.
+	AgentRepositoryServiceRevokeAgentRepositoryProcedure = "/compass.v1.AgentRepositoryService/RevokeAgentRepository"
+	// AgentRepositoryServiceListAgentRepositoriesProcedure is the fully-qualified name of the
+	// AgentRepositoryService's ListAgentRepositories RPC.
+	AgentRepositoryServiceListAgentRepositoriesProcedure = "/compass.v1.AgentRepositoryService/ListAgentRepositories"
 )
 
 // CompassServiceClient is a client for the compass.v1.CompassService service.
@@ -1218,4 +1229,137 @@ func (UnimplementedSecretsServiceHandler) DeleteSecret(context.Context, *connect
 
 func (UnimplementedSecretsServiceHandler) ListServerSecrets(context.Context, *connect.Request[v1.ListServerSecretsRequest]) (*connect.Response[v1.ListServerSecretsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.ListServerSecrets is not implemented"))
+}
+
+// AgentRepositoryServiceClient is a client for the compass.v1.AgentRepositoryService service.
+type AgentRepositoryServiceClient interface {
+	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
+	// or the org differs from the agent's credential org.
+	GrantAgentRepository(context.Context, *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error)
+	// Remove one `org/name`. removed reports whether the row existed.
+	RevokeAgentRepository(context.Context, *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error)
+	// List the agent's own rows, not its owner's grants. An agent caller sends
+	// an empty agent_handle and gets its own rows.
+	ListAgentRepositories(context.Context, *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error)
+}
+
+// NewAgentRepositoryServiceClient constructs a client for the compass.v1.AgentRepositoryService
+// service. By default, it uses the Connect protocol with the binary Protobuf Codec, asks for
+// gzipped responses, and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply
+// the connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewAgentRepositoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) AgentRepositoryServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	agentRepositoryServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("AgentRepositoryService").Methods()
+	return &agentRepositoryServiceClient{
+		grantAgentRepository: connect.NewClient[v1.GrantAgentRepositoryRequest, v1.GrantAgentRepositoryResponse](
+			httpClient,
+			baseURL+AgentRepositoryServiceGrantAgentRepositoryProcedure,
+			connect.WithSchema(agentRepositoryServiceMethods.ByName("GrantAgentRepository")),
+			connect.WithClientOptions(opts...),
+		),
+		revokeAgentRepository: connect.NewClient[v1.RevokeAgentRepositoryRequest, v1.RevokeAgentRepositoryResponse](
+			httpClient,
+			baseURL+AgentRepositoryServiceRevokeAgentRepositoryProcedure,
+			connect.WithSchema(agentRepositoryServiceMethods.ByName("RevokeAgentRepository")),
+			connect.WithClientOptions(opts...),
+		),
+		listAgentRepositories: connect.NewClient[v1.ListAgentRepositoriesRequest, v1.ListAgentRepositoriesResponse](
+			httpClient,
+			baseURL+AgentRepositoryServiceListAgentRepositoriesProcedure,
+			connect.WithSchema(agentRepositoryServiceMethods.ByName("ListAgentRepositories")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// agentRepositoryServiceClient implements AgentRepositoryServiceClient.
+type agentRepositoryServiceClient struct {
+	grantAgentRepository  *connect.Client[v1.GrantAgentRepositoryRequest, v1.GrantAgentRepositoryResponse]
+	revokeAgentRepository *connect.Client[v1.RevokeAgentRepositoryRequest, v1.RevokeAgentRepositoryResponse]
+	listAgentRepositories *connect.Client[v1.ListAgentRepositoriesRequest, v1.ListAgentRepositoriesResponse]
+}
+
+// GrantAgentRepository calls compass.v1.AgentRepositoryService.GrantAgentRepository.
+func (c *agentRepositoryServiceClient) GrantAgentRepository(ctx context.Context, req *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error) {
+	return c.grantAgentRepository.CallUnary(ctx, req)
+}
+
+// RevokeAgentRepository calls compass.v1.AgentRepositoryService.RevokeAgentRepository.
+func (c *agentRepositoryServiceClient) RevokeAgentRepository(ctx context.Context, req *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error) {
+	return c.revokeAgentRepository.CallUnary(ctx, req)
+}
+
+// ListAgentRepositories calls compass.v1.AgentRepositoryService.ListAgentRepositories.
+func (c *agentRepositoryServiceClient) ListAgentRepositories(ctx context.Context, req *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error) {
+	return c.listAgentRepositories.CallUnary(ctx, req)
+}
+
+// AgentRepositoryServiceHandler is an implementation of the compass.v1.AgentRepositoryService
+// service.
+type AgentRepositoryServiceHandler interface {
+	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
+	// or the org differs from the agent's credential org.
+	GrantAgentRepository(context.Context, *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error)
+	// Remove one `org/name`. removed reports whether the row existed.
+	RevokeAgentRepository(context.Context, *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error)
+	// List the agent's own rows, not its owner's grants. An agent caller sends
+	// an empty agent_handle and gets its own rows.
+	ListAgentRepositories(context.Context, *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error)
+}
+
+// NewAgentRepositoryServiceHandler builds an HTTP handler from the service implementation. It
+// returns the path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewAgentRepositoryServiceHandler(svc AgentRepositoryServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	agentRepositoryServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("AgentRepositoryService").Methods()
+	agentRepositoryServiceGrantAgentRepositoryHandler := connect.NewUnaryHandler(
+		AgentRepositoryServiceGrantAgentRepositoryProcedure,
+		svc.GrantAgentRepository,
+		connect.WithSchema(agentRepositoryServiceMethods.ByName("GrantAgentRepository")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRepositoryServiceRevokeAgentRepositoryHandler := connect.NewUnaryHandler(
+		AgentRepositoryServiceRevokeAgentRepositoryProcedure,
+		svc.RevokeAgentRepository,
+		connect.WithSchema(agentRepositoryServiceMethods.ByName("RevokeAgentRepository")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRepositoryServiceListAgentRepositoriesHandler := connect.NewUnaryHandler(
+		AgentRepositoryServiceListAgentRepositoriesProcedure,
+		svc.ListAgentRepositories,
+		connect.WithSchema(agentRepositoryServiceMethods.ByName("ListAgentRepositories")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/compass.v1.AgentRepositoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case AgentRepositoryServiceGrantAgentRepositoryProcedure:
+			agentRepositoryServiceGrantAgentRepositoryHandler.ServeHTTP(w, r)
+		case AgentRepositoryServiceRevokeAgentRepositoryProcedure:
+			agentRepositoryServiceRevokeAgentRepositoryHandler.ServeHTTP(w, r)
+		case AgentRepositoryServiceListAgentRepositoriesProcedure:
+			agentRepositoryServiceListAgentRepositoriesHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedAgentRepositoryServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedAgentRepositoryServiceHandler struct{}
+
+func (UnimplementedAgentRepositoryServiceHandler) GrantAgentRepository(context.Context, *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentRepositoryService.GrantAgentRepository is not implemented"))
+}
+
+func (UnimplementedAgentRepositoryServiceHandler) RevokeAgentRepository(context.Context, *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentRepositoryService.RevokeAgentRepository is not implemented"))
+}
+
+func (UnimplementedAgentRepositoryServiceHandler) ListAgentRepositories(context.Context, *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentRepositoryService.ListAgentRepositories is not implemented"))
 }

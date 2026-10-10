@@ -269,6 +269,7 @@ func buildNetworkServer(
 	commsSvc compassv1connect.CommsServiceHandler,
 	secretsSvc compassv1connect.SecretsServiceHandler,
 	usageSvc compassv1connect.UsageServiceHandler,
+	agentRepositorySvc compassv1connect.AgentRepositoryServiceHandler,
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
@@ -331,6 +332,8 @@ func buildNetworkServer(
 	// UsageService uses the same authenticated chain and applies agent scope in its handler.
 	netUsagePath, netUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netUsagePath, netUsageHandler)
+	netAgentRepositoryPath, netAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	netMux.Handle(netAgentRepositoryPath, netAgentRepositoryHandler)
 
 	// The internal RunnerService door: the surface a Runner dials out to, mounted
 	// only here on the authenticated network door (a Runner is remote, over TLS).

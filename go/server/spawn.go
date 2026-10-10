@@ -75,7 +75,7 @@ func (s *service) SpawnAgent(
 
 	// Resolved before the memo so a retry keys on the account, not the spelling:
 	// a rename between attempts still joins the first spawn.
-	acc, err := s.resolveQualifiedAgent(ctx, req.Msg.GetAgentHandle())
+	acc, err := resolveQualifiedAgent(ctx, s.store, req.Msg.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
