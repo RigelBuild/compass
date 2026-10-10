@@ -22,10 +22,11 @@ import (
 func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Spawn and inspect agent sessions (spawn, status)",
+		Short: "Spawn and inspect agent sessions and repositories (spawn, status, repo)",
 	}
 	cmd.AddCommand(newAgentSpawnCmd())
 	cmd.AddCommand(newAgentStatusCmd())
+	cmd.AddCommand(newAgentRepoCmd())
 	return cmd
 }
 
