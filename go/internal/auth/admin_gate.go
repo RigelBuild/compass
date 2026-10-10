@@ -120,6 +120,12 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.SecretsServiceListSecretsProcedure,
 		compassv1connect.SecretsServiceDeleteSecretProcedure:
 		return authenticatedOpen{}, true
+	// AgentRepositoryService handles per-agent authorization in its body: owning
+	// users write rows, while agents can list only their own rows.
+	case compassv1connect.AgentRepositoryServiceGrantAgentRepositoryProcedure,
+		compassv1connect.AgentRepositoryServiceRevokeAgentRepositoryProcedure,
+		compassv1connect.AgentRepositoryServiceListAgentRepositoriesProcedure:
+		return authenticatedOpen{}, true
 
 	// ListServerSecrets is ADMIN-only: the declared server-secret names are the
 	// deployment's own inventory (forge App PEMs, webhook secrets, the gateway

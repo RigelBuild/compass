@@ -239,6 +239,32 @@ service SecretsService {
   // routinely unset and the two states must be distinguishable.
   rpc ListServerSecrets(ListServerSecretsRequest) returns (ListServerSecretsResponse);
 }
+// Workstream repositories of one agent: exact GitHub repositories added to
+// the agent's credential and forge write grants. Writes require the agent's
+// owning user; an agent may list its own rows.
+service AgentRepositoryService {
+  // Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
+  // or the org differs from the agent's credential org.
+  rpc GrantAgentRepository(GrantAgentRepositoryRequest) returns (GrantAgentRepositoryResponse);
+  // Remove one `org/name`. removed reports whether the row existed.
+  rpc RevokeAgentRepository(RevokeAgentRepositoryRequest) returns (RevokeAgentRepositoryResponse);
+  // List the agent's own rows, not its owner's grants. An agent caller sends
+  // an empty agent_handle and gets its own rows.
+  rpc ListAgentRepositories(ListAgentRepositoriesRequest) returns (ListAgentRepositoriesResponse);
+}
+
+message GrantAgentRepositoryRequest {
+  string agent_handle = 1; // bare (the caller's agent) or `owner/agent`
+  string repository = 2;   // `org/name`; never `*`
+}
+message GrantAgentRepositoryResponse { bool added = 1; }
+message RevokeAgentRepositoryRequest {
+  string agent_handle = 1;
+  string repository = 2;
+}
+message RevokeAgentRepositoryResponse { bool removed = 1; }
+message ListAgentRepositoriesRequest { string agent_handle = 1; }
+message ListAgentRepositoriesResponse { repeated string repositories = 1; }
 
 message SetSecretRequest {
   string name = 1;
