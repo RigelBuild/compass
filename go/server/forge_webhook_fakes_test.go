@@ -297,7 +297,7 @@ type fakeLinearForge struct {
 	nextDelivery int
 }
 
-func newFakeLinearForge(secret []byte, teamKey, project string) *fakeLinearForge {
+func newFakeLinearForge(secret []byte, teamKey, project string) *fakeLinearForge { //nolint:unparam,nolintlint // read-clarity signature: project names the emitted Linear project; every current caller passes a fixed value, which unparam flags only in some tag sets.
 	return &fakeLinearForge{secret: secret, teamKey: teamKey, project: project}
 }
 
@@ -358,7 +358,7 @@ func (f *fakeLinearForge) editIssue(t *testing.T, n uint64, url string) signedLi
 }
 
 // commentOnIssue emits Comment/create on issue #n (COMMENT).
-func (f *fakeLinearForge) commentOnIssue(t *testing.T, n uint64, issueURL, body, author string) signedLinearWebhook {
+func (f *fakeLinearForge) commentOnIssue(t *testing.T, n uint64, issueURL, body, author string) signedLinearWebhook { //nolint:unparam,nolintlint // read-clarity signature: n names the commented issue; every current caller passes a fixed value, which unparam flags only in some tag sets.
 	t.Helper()
 	return f.emit(t, lnDataEvent{
 		Type:   "Comment",

@@ -170,6 +170,6 @@ const (
 	leg2RealTurnReply  = "canned leg-2 turn settled OK"
 )
 
-func init() {
+func registerLegTwoFixtureOptions() {
 	registerSharedFixtureOption(WithCannedMarkerReply(leg2RealTurnMarker, leg2RealTurnReply))
 }

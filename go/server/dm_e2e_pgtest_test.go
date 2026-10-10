@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"log/slog"
+	"slices"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -177,12 +178,7 @@ func textBlock(body string) []*compassv1.MessageBlock {
 // membership check the OpenDMResponse channel invariants read (the store-typed
 // variant containsAccountID lives in lifecycle_pgtest_test.go).
 func containsString(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(xs, want)
 }
 
 // channelHasText reports whether channelID (read as account, a member) contains a

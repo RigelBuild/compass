@@ -236,7 +236,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 
 	// With every recorded group gone, the sockets are deterministically dark and
 	// the full-success teardown has removed its record.
-	assertServerGone(t, deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), deps, cfg.SocketPath)
 	assertPostgresGone(t, fx.pgSock)
 	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
 		t.Fatalf("stack.pgids record %q still present after a full down (full-success teardown removes it): stat err = %v", recordPath, err)

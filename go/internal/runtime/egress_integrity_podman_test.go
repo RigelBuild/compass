@@ -47,7 +47,7 @@ func capEffOf(t *testing.T, ctx context.Context, cli *PodmanCLI, id WorkloadID, 
 		t.Fatalf("CapEff probe exited %d: %s", out.ExitCode, out.Stderr)
 	}
 	// /proc/self/status line: "CapEff:\t0000000000000000"
-	for _, line := range strings.Split(out.Stdout, "\n") {
+	for line := range strings.SplitSeq(out.Stdout, "\n") {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "CapEff:"); ok {
 			return strings.TrimSpace(rest)
 		}

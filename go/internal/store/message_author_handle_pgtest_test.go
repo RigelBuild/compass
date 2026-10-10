@@ -117,47 +117,7 @@ func TestMessageAuthorHandleOwnerQualification(t *testing.T) {
 		t.Fatalf("AppendMessage(user) author_handle = %q, want bare %q", userMessage.AuthorHandle, owner.Handle)
 	}
 
-	list, err := s.ListMessages(ctx, ListMessagesQuery{Actor: owner.ID, ChannelID: ch})
-	if err != nil {
-		t.Fatalf("ListMessages: %v", err)
-	}
-	byID := make(map[MessageID]string, len(list))
-	for _, message := range list {
-		byID[message.ID] = message.AuthorHandle
-	}
-	if byID[agentMessage.ID] != qualified || byID[userMessage.ID] != owner.Handle {
-		t.Fatalf("ListMessages author handles = agent %q, user %q; want %q and %q", byID[agentMessage.ID], byID[userMessage.ID], qualified, owner.Handle)
-	}
-
-	owed, err := s.UndeliveredMessages(ctx, recipient.ID)
-	if err != nil {
-		t.Fatalf("UndeliveredMessages: %v", err)
-	}
-	messages := owed[ch]
-	if len(messages) != 2 {
-		t.Fatalf("UndeliveredMessages[%s] = %v, want both messages", ch, messages)
-	}
-	for _, message := range messages {
-		want := owner.Handle
-		if message.ID == agentMessage.ID {
-			want = qualified
-		}
-		if message.AuthorHandle != want {
-			t.Errorf("UndeliveredMessages author_handle for %s = %q, want %q", message.ID, message.AuthorHandle, want)
-		}
-	}
-
-	if err := s.RecordOwedMention(ctx, recipient.ID, ch, string(agentMessage.ID)); err != nil {
-		t.Fatalf("RecordOwedMention: %v", err)
-	}
-	owedMentions, err := s.OwedMentions(ctx, recipient.ID)
-	if err != nil {
-		t.Fatalf("OwedMentions: %v", err)
-	}
-	mentions := owedMentions[ch]
-	if len(mentions) != 1 || mentions[0].AuthorHandle != qualified {
-		t.Fatalf("OwedMentions author_handle = %v, want one message with %q", mentions, qualified)
-	}
+	assertAuthorHandleReads(t, ctx, s, owner, recipient.ID, ch, agentMessage.ID, userMessage.ID, qualified)
 
 	askPosted, inserted, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID,
@@ -170,83 +130,7 @@ func TestMessageAuthorHandleOwnerQualification(t *testing.T) {
 		t.Fatal("AppendMessage(ask) returned inserted=false, want an inserted message")
 	}
 
-	readers := []struct {
-		name   string
-		wantID MessageID
-		read   func() (Message, error)
-	}{
-		{
-			name:   "author block update",
-			wantID: agentMessage.ID,
-			read: func() (Message, error) {
-				return s.UpdateMessageBlocksAsAuthor(ctx, author.ID, agentMessage.ID, []MessageBlock{textBlock("settled searchable marker")})
-			},
-		},
-		{
-			name:   "MessageByID",
-			wantID: agentMessage.ID,
-			read: func() (Message, error) {
-				return s.MessageByID(ctx, string(agentMessage.ID))
-			},
-		},
-		{
-			name:   "SearchMessages",
-			wantID: agentMessage.ID,
-			read: func() (Message, error) {
-				found, err := s.SearchMessages(ctx, owner.ID, SearchScope{ChannelID: ch}, "searchable marker", Page{})
-				if err != nil {
-					return Message{}, err
-				}
-				for _, message := range found {
-					if message.ID == agentMessage.ID {
-						return message, nil
-					}
-				}
-				return Message{}, nil
-			},
-		},
-		{
-			name:   "UnroutedMentionMessages",
-			wantID: agentMessage.ID,
-			read: func() (Message, error) {
-				unrouted, err := s.UnroutedMentionMessages(ctx, 0, 100)
-				if err != nil {
-					return Message{}, err
-				}
-				for _, message := range unrouted {
-					if message.ID == agentMessage.ID {
-						return message.Message, nil
-					}
-				}
-				return Message{}, nil
-			},
-		},
-		{
-			name:   "replay via GetMessageByRequestID",
-			wantID: agentMessage.ID,
-			read: func() (Message, error) {
-				message, inserted, err := s.AppendMessage(ctx, Message{
-					AuthorAccountID: author.ID,
-					Blocks:          []MessageBlock{textBlock("agent note")},
-				}, string(ch), TopicRef{Name: "general"}, requestID)
-				if err == nil && inserted {
-					return Message{}, errors.New("AppendMessage replay inserted a new row")
-				}
-				return message, err
-			},
-		},
-		{
-			name:   "FindAskMessage via AnswerAsk",
-			wantID: askPosted.ID,
-			read: func() (Message, error) {
-				ask, _, err := s.AnswerAsk(ctx, owner.ID, "owner-qualified-ask", []AskAnswer{{
-					QuestionID:      "q1",
-					ChosenOptionIDs: []string{"opt-a"},
-				}})
-				return ask, err
-			},
-		},
-	}
+	readers := authorHandleReaders(ctx, s, owner.ID, author.ID, ch, agentMessage.ID, askPosted.ID, requestID)
 	for _, reader := range readers {
 		t.Run(reader.name, func(t *testing.T) {
 			message, err := reader.read()
@@ -260,6 +144,137 @@ func TestMessageAuthorHandleOwnerQualification(t *testing.T) {
 				t.Fatalf("read author = %q handle %q, want %q and %q", message.AuthorAccountID, message.AuthorHandle, author.ID, qualified)
 			}
 		})
+	}
+}
+
+// authorHandleReader reads one message through a store path that must carry
+// the owner-qualified author handle.
+type authorHandleReader struct {
+	name   string
+	wantID MessageID
+	read   func() (Message, error)
+}
+
+func authorHandleReaders(ctx context.Context, s *Store, owner, author AccountID, ch ChannelID, agentID, askID MessageID, requestID string) []authorHandleReader {
+	return []authorHandleReader{
+		{
+			name:   "author block update",
+			wantID: agentID,
+			read: func() (Message, error) {
+				return s.UpdateMessageBlocksAsAuthor(ctx, author, agentID, []MessageBlock{textBlock("settled searchable marker")})
+			},
+		},
+		{
+			name:   "MessageByID",
+			wantID: agentID,
+			read: func() (Message, error) {
+				return s.MessageByID(ctx, string(agentID))
+			},
+		},
+		{
+			name:   "SearchMessages",
+			wantID: agentID,
+			read: func() (Message, error) {
+				found, err := s.SearchMessages(ctx, owner, SearchScope{ChannelID: ch}, "searchable marker", Page{})
+				if err != nil {
+					return Message{}, err
+				}
+				for _, message := range found {
+					if message.ID == agentID {
+						return message, nil
+					}
+				}
+				return Message{}, nil
+			},
+		},
+		{
+			name:   "UnroutedMentionMessages",
+			wantID: agentID,
+			read: func() (Message, error) {
+				unrouted, err := s.UnroutedMentionMessages(ctx, 0, 100)
+				if err != nil {
+					return Message{}, err
+				}
+				for _, message := range unrouted {
+					if message.ID == agentID {
+						return message.Message, nil
+					}
+				}
+				return Message{}, nil
+			},
+		},
+		{
+			name:   "replay via GetMessageByRequestID",
+			wantID: agentID,
+			read: func() (Message, error) {
+				message, inserted, err := s.AppendMessage(ctx, Message{
+					AuthorAccountID: author,
+					Blocks:          []MessageBlock{textBlock("agent note")},
+				}, string(ch), TopicRef{Name: "general"}, requestID)
+				if err == nil && inserted {
+					return Message{}, errors.New("AppendMessage replay inserted a new row")
+				}
+				return message, err
+			},
+		},
+		{
+			name:   "FindAskMessage via AnswerAsk",
+			wantID: askID,
+			read: func() (Message, error) {
+				ask, _, err := s.AnswerAsk(ctx, owner, "owner-qualified-ask", []AskAnswer{{
+					QuestionID:      "q1",
+					ChosenOptionIDs: []string{"opt-a"},
+				}})
+				return ask, err
+			},
+		},
+	}
+}
+
+// assertAuthorHandleReads checks the list, delivery, and mention reads carry
+// the qualified agent handle and the bare user handle.
+func assertAuthorHandleReads(t *testing.T, ctx context.Context, s *Store, owner Account, recipient AccountID, ch ChannelID, agentID, userID MessageID, qualified string) {
+	t.Helper()
+	list, err := s.ListMessages(ctx, ListMessagesQuery{Actor: owner.ID, ChannelID: ch})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	byID := make(map[MessageID]string, len(list))
+	for _, message := range list {
+		byID[message.ID] = message.AuthorHandle
+	}
+	if byID[agentID] != qualified || byID[userID] != owner.Handle {
+		t.Fatalf("ListMessages author handles = agent %q, user %q; want %q and %q", byID[agentID], byID[userID], qualified, owner.Handle)
+	}
+
+	owed, err := s.UndeliveredMessages(ctx, recipient)
+	if err != nil {
+		t.Fatalf("UndeliveredMessages: %v", err)
+	}
+	messages := owed[ch]
+	if len(messages) != 2 {
+		t.Fatalf("UndeliveredMessages[%s] = %v, want both messages", ch, messages)
+	}
+	for _, message := range messages {
+		want := owner.Handle
+		if message.ID == agentID {
+			want = qualified
+		}
+		if message.AuthorHandle != want {
+			t.Errorf("UndeliveredMessages author_handle for %s = %q, want %q", message.ID, message.AuthorHandle, want)
+		}
+	}
+
+	if err := s.RecordOwedMention(ctx, recipient, ch, string(agentID)); err != nil {
+		t.Fatalf("RecordOwedMention: %v", err)
+	}
+	owedMentions, err := s.OwedMentions(ctx, recipient)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	mentions := owedMentions[ch]
+	if len(mentions) != 1 || mentions[0].AuthorHandle != qualified {
+		t.Fatalf("OwedMentions author_handle = %v, want one message with %q", mentions, qualified)
 	}
 }
 

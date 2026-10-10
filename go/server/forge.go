@@ -853,7 +853,7 @@ type forgeOp struct {
 // unimplemented naming provider+op; ErrBudgetExhausted / *StatusError{429} →
 // resource_exhausted; everything else → internal. ForgeCallError.RetryAfterMs
 // carries "time until a retry stops fail-fasting": a *forge.RateLimitError
-// (RIG-2255) recovered via errors.As on the budget-exhausted arm supplies its
+// (RIG-2255) recovered via errors.AsType on the budget-exhausted arm supplies its
 // RetryAfter, clamped to [0, math.MaxUint32] ms; a value of 0 means no hint (a
 // bare ErrBudgetExhausted sentinel, a header-less live rate limit, or a
 // *StatusError{429} that isRateLimited did not classify as a skip). The value is

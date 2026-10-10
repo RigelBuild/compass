@@ -128,7 +128,7 @@ func TestContainerPostgresUpDown(t *testing.T) {
 
 	// The container is gone and the record removed.
 	waitContainerGone(t, name, containerGoneBudget)
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
 		t.Fatalf("stack.pgids record %q still present after a full down: stat err = %v", recordPath, err)
 	}
@@ -182,7 +182,7 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compass-stack down (external db): %v\n%s", err, out)
 	}
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 
 	// The external postgres is UNTOUCHED by the stack's teardown — still up.
 	if !externalPostgresReachable(externalDSN) {
@@ -311,8 +311,7 @@ func containerExists(t *testing.T, name string) bool {
 	if err == nil {
 		return true
 	}
-	var ee *exec.ExitError
-	if errorsAsExit(err, &ee) && ee.ExitCode() == 1 {
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok && ee.ExitCode() == 1 {
 		return false
 	}
 	t.Fatalf("podman container exists %q: %v", name, err)
@@ -321,6 +320,8 @@ func containerExists(t *testing.T, name string) bool {
 
 // waitContainerGone polls until the named container is absent or the budget
 // elapses — the event-gate for the teardown, never a sleep.
+//
+//nolint:unparam // read-clarity signature: the budget stays visible at each teardown call site
 func waitContainerGone(t *testing.T, name string, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -423,10 +424,4 @@ func externalPostgresReachable(dsn string) bool {
 	}
 	defer func() { _ = conn.Close(ctx) }() // probe-only conn; close error is not the verdict (the ping is)
 	return conn.Ping(ctx) == nil
-}
-
-// errorsAsExit is errors.As specialized to *exec.ExitError for the exists
-// exit-code read.
-func errorsAsExit(err error, target **exec.ExitError) bool {
-	return errors.As(err, target)
 }

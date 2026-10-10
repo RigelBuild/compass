@@ -84,52 +84,7 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 
 	// ---- setup: two owner tenants ----
 
-	owner1ID, err := f.CreateUser(ctx, t4Owner1Handle, "T4 Owner One")
-	if err != nil {
-		t.Fatalf("CreateUser(%s): %v", t4Owner1Handle, err)
-	}
-	owner2ID, err := f.CreateUser(ctx, t4Owner2Handle, "T4 Owner Two")
-	if err != nil {
-		t.Fatalf("CreateUser(%s): %v", t4Owner2Handle, err)
-	}
-
-	// Observer bearers for both tenants. These are the credentials every
-	// assertion below rides; the admin bearer would make all three vacuous.
-	_, owner1Comms, err := f.AsObserver(ctx, t4Owner1Handle)
-	if err != nil {
-		t.Fatalf("AsObserver(owner-1 %s): %v", t4Owner1Handle, err)
-	}
-	_, owner2Comms, err := f.AsObserver(ctx, t4Owner2Handle)
-	if err != nil {
-		t.Fatalf("AsObserver(owner-2 %s): %v", t4Owner2Handle, err)
-	}
-
-	// One agent under EACH owner, never started (no Provision, no StartSession —
-	// an account plus its home channel needs no container). f.CreateAgent
-	// (agent_ops.go:22) cannot serve here: it rides the ADMIN bearer, and
-	// CreateAgent creates the agent under the CALLER's resolved owner
-	// (comms/comms.go:109 ResolveOwner), so it would put both agents under the
-	// bootstrap admin and there would be no cross-owner pair to prove anything
-	// about. So each agent is created over its OWN owner's observer client — the
-	// same "call the generated client AsObserver returned" shape assertion 3
-	// uses for OpenDM, not a new fixture primitive.
-	agent1ID, agent1Owner := createAgentAs(ctx, t, owner1Comms, t4Agent1Handle, "T4 Agent One")
-	agent2ID, agent2Owner := createAgentAs(ctx, t, owner2Comms, t4Agent2Handle, "T4 Agent Two")
-	if agent1ID == agent2ID {
-		t.Fatalf("the two owners' agents share account id %q; the per-owner agent namespaces are not distinct", agent1ID)
-	}
-	// The load-bearing precondition for assertion 3, checked rather than assumed.
-	// Distinct account ids hold for any two accounts, INCLUDING two agents under
-	// one owner — so id-distinctness alone would let assertion 3's cross-owner arm
-	// silently degrade into a second copy of its unknown-handle arm (both return
-	// NOT_FOUND) and stay green while the cross-owner authz branch
-	// (comms/comms.go:683) never executed. Assert the placement the arm depends on.
-	if agent1Owner != owner1ID {
-		t.Fatalf("agent %s landed under owner %q, want owner-1 %q; the cross-owner arm would not be cross-owner", t4Agent1Handle, agent1Owner, owner1ID)
-	}
-	if agent2Owner != owner2ID {
-		t.Fatalf("agent %s landed under owner %q, want owner-2 %q; the cross-owner arm would not be cross-owner", t4Agent2Handle, agent2Owner, owner2ID)
-	}
+	owner1ID, owner2ID, owner1Comms, owner2Comms := t4SetupTenants(ctx, t, f)
 
 	// owner-1's PRIVATE channel: ungrouped, so membership-only visibility
 	// (fixture.go:302-307). owner-2 is not a member and cannot reach it through
@@ -281,49 +236,7 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 		t.Fatalf("AsObserver(owner-1's agent %s): %v", agent1Handle, err)
 	}
 
-	crossOwnerPeer := t4Owner2Handle + "/" + t4Agent2Handle
-	crossCode, crossMsg := openDMRejection(ctx, t, agent1Comms, crossOwnerPeer)
-	if crossCode != connect.CodeNotFound {
-		t.Fatalf("OpenDM(cross-owner peer %q) = %v, want %v (a foreign owner's agent must never be reachable)",
-			crossOwnerPeer, crossCode, connect.CodeNotFound)
-	}
-
-	// The second arm is what makes the first one mean anything: asserting only
-	// the cross-owner code would pass even if an unknown handle returned
-	// something else, and the contract is that the two are INDISTINGUISHABLE —
-	// a caller must not be able to probe a foreign peer's existence by
-	// comparing rejections.
-	unknownCode, unknownMsg := openDMRejection(ctx, t, agent1Comms, t4GhostHandle)
-	if unknownCode != connect.CodeNotFound {
-		t.Fatalf("OpenDM(unknown peer %q) = %v, want %v", t4GhostHandle, unknownCode, connect.CodeNotFound)
-	}
-	if crossCode != unknownCode {
-		t.Fatalf("OpenDM cross-owner (%q) = %v but unknown (%q) = %v; the two must be indistinguishable so a foreign peer's existence never leaks",
-			crossOwnerPeer, crossCode, t4GhostHandle, unknownCode)
-	}
-
-	// The MESSAGE axis, which the codes cannot cover. Both arms reach NOT_FOUND
-	// through DIFFERENT branches — cross-owner through OpenDM's same-owner check
-	// (comms.go:683), unknown through the resolver miss (resolve.go:86-90) — and
-	// they share a code only by funnelling into the same edgeError arm
-	// (context.go:58). What actually closes the oracle is notFoundHandle
-	// re-keying both to the SUBMITTED handle (resolve.go:137). So a
-	// regression that drops that re-key on either arm — leaking a resolved owner
-	// id, the store's own handle spelling, or a "different owner" phrase — keeps
-	// both codes NOT_FOUND and is invisible to a code compare. Normalize away the
-	// submitted handle, the one field that legitimately differs, then require the
-	// remainder to match exactly.
-	//
-	// Comparing the full remainder is deliberate: a leak's shape cannot be
-	// enumerated in advance, so anything weaker (a prefix, or just asserting the
-	// owner id is absent) reopens the hole. The coupling is to one shared
-	// template, notFoundHandle at resolve.go:137 — reword that and update here.
-	crossRedacted := strings.ReplaceAll(crossMsg, crossOwnerPeer, "<peer>")
-	unknownRedacted := strings.ReplaceAll(unknownMsg, t4GhostHandle, "<peer>")
-	if crossRedacted != unknownRedacted {
-		t.Fatalf("OpenDM rejection messages are distinguishable once the submitted handle is redacted:\n cross-owner (%q): %q\n unknown     (%q): %q\nthe two must be byte-identical or a caller can probe a foreign peer's existence by comparing messages (shared template: notFoundHandle, resolve.go:137)",
-			crossOwnerPeer, crossRedacted, t4GhostHandle, unknownRedacted)
-	}
+	assertTenantOpenDMIndistinguishable(t, ctx, agent1Comms)
 }
 
 // createAgentAs creates an agent over an EXPLICIT comms client (an observer's),
@@ -443,17 +356,117 @@ func openDMRejection(ctx context.Context, t *testing.T, comms commsServiceClient
 // CodeUnknown) — so it fires only if that guarantee changes.
 //
 // Transport faults are NOT caught here; they arrive already coded
-// (CodeUnavailable, CodeDeadlineExceeded, CodeInternal) and so pass errors.As.
+// (CodeUnavailable, CodeDeadlineExceeded, CodeInternal) are handled by errors.AsType.
 // What stops them is the absolute NOT_FOUND assertion at each call site, which
 // fatals before the message compare runs. Do not weaken those to a bare
 // cross-vs-unknown code compare: two identical transport faults would satisfy
 // it, and this helper would not save you.
 func rejectionMessage(t *testing.T, peerHandle string, err error) string {
 	t.Helper()
-	var cerr *connect.Error
-	if !errors.As(err, &cerr) {
+	cerr, ok := errors.AsType[*connect.Error](err)
+	if !ok {
 		t.Fatalf("OpenDM(peer %q) failed with an uncoded error %T (%v); connect is expected to code every client error, and without a connect message the comparison below would be vacuous",
 			peerHandle, err, err)
 	}
 	return cerr.Message()
+}
+
+func assertTenantOpenDMIndistinguishable(t *testing.T, ctx context.Context, agent1Comms commsServiceClient) {
+	t.Helper()
+	crossOwnerPeer := t4Owner2Handle + "/" + t4Agent2Handle
+	crossCode, crossMsg := openDMRejection(ctx, t, agent1Comms, crossOwnerPeer)
+	if crossCode != connect.CodeNotFound {
+		t.Fatalf("OpenDM(cross-owner peer %q) = %v, want %v (a foreign owner's agent must never be reachable)",
+			crossOwnerPeer, crossCode, connect.CodeNotFound)
+	}
+
+	// The second arm is what makes the first one mean anything: asserting only
+	// the cross-owner code would pass even if an unknown handle returned
+	// something else, and the contract is that the two are INDISTINGUISHABLE —
+	// a caller must not be able to probe a foreign peer's existence by
+	// comparing rejections.
+	unknownCode, unknownMsg := openDMRejection(ctx, t, agent1Comms, t4GhostHandle)
+	if unknownCode != connect.CodeNotFound {
+		t.Fatalf("OpenDM(unknown peer %q) = %v, want %v", t4GhostHandle, unknownCode, connect.CodeNotFound)
+	}
+	if crossCode != unknownCode {
+		t.Fatalf("OpenDM cross-owner (%q) = %v but unknown (%q) = %v; the two must be indistinguishable so a foreign peer's existence never leaks",
+			crossOwnerPeer, crossCode, t4GhostHandle, unknownCode)
+	}
+
+	// The MESSAGE axis, which the codes cannot cover. Both arms reach NOT_FOUND
+	// through DIFFERENT branches — cross-owner through OpenDM's same-owner check
+	// (comms.go:683), unknown through the resolver miss (resolve.go:86-90) — and
+	// they share a code only by funnelling into the same edgeError arm
+	// (context.go:58). What actually closes the oracle is notFoundHandle
+	// re-keying both to the SUBMITTED handle (resolve.go:137). So a
+	// regression that drops that re-key on either arm — leaking a resolved owner
+	// id, the store's own handle spelling, or a "different owner" phrase — keeps
+	// both codes NOT_FOUND and is invisible to a code compare. Normalize away the
+	// submitted handle, the one field that legitimately differs, then require the
+	// remainder to match exactly.
+	//
+	// Comparing the full remainder is deliberate: a leak's shape cannot be
+	// enumerated in advance, so anything weaker (a prefix, or just asserting the
+	// owner id is absent) reopens the hole. The coupling is to one shared
+	// template, notFoundHandle at resolve.go:137 — reword that and update here.
+	crossRedacted := strings.ReplaceAll(crossMsg, crossOwnerPeer, "<peer>")
+	unknownRedacted := strings.ReplaceAll(unknownMsg, t4GhostHandle, "<peer>")
+	if crossRedacted != unknownRedacted {
+		t.Fatalf("OpenDM rejection messages are distinguishable once the submitted handle is redacted:\n cross-owner (%q): %q\n unknown     (%q): %q\nthe two must be byte-identical or a caller can probe a foreign peer's existence by comparing messages (shared template: notFoundHandle, resolve.go:137)",
+			crossOwnerPeer, crossRedacted, t4GhostHandle, unknownRedacted)
+	}
+}
+
+// t4SetupTenants creates the two owner tenants and one never-started agent under each.
+func t4SetupTenants(ctx context.Context, t *testing.T, f *Fixture) (owner1ID, owner2ID string, owner1Comms, owner2Comms commsServiceClient) {
+	t.Helper()
+	var err error
+	owner1ID, err = f.CreateUser(ctx, t4Owner1Handle, "T4 Owner One")
+	if err != nil {
+		t.Fatalf("CreateUser(%s): %v", t4Owner1Handle, err)
+	}
+	owner2ID, err = f.CreateUser(ctx, t4Owner2Handle, "T4 Owner Two")
+	if err != nil {
+		t.Fatalf("CreateUser(%s): %v", t4Owner2Handle, err)
+	}
+
+	// Observer bearers for both tenants. These are the credentials every
+	// assertion below rides; the admin bearer would make all three vacuous.
+	_, owner1Comms, err = f.AsObserver(ctx, t4Owner1Handle)
+	if err != nil {
+		t.Fatalf("AsObserver(owner-1 %s): %v", t4Owner1Handle, err)
+	}
+	_, owner2Comms, err = f.AsObserver(ctx, t4Owner2Handle)
+	if err != nil {
+		t.Fatalf("AsObserver(owner-2 %s): %v", t4Owner2Handle, err)
+	}
+
+	// One agent under EACH owner, never started (no Provision, no StartSession —
+	// an account plus its home channel needs no container). f.CreateAgent
+	// (agent_ops.go:22) cannot serve here: it rides the ADMIN bearer, and
+	// CreateAgent creates the agent under the CALLER's resolved owner
+	// (comms/comms.go:109 ResolveOwner), so it would put both agents under the
+	// bootstrap admin and there would be no cross-owner pair to prove anything
+	// about. So each agent is created over its OWN owner's observer client — the
+	// same "call the generated client AsObserver returned" shape assertion 3
+	// uses for OpenDM, not a new fixture primitive.
+	agent1ID, agent1Owner := createAgentAs(ctx, t, owner1Comms, t4Agent1Handle, "T4 Agent One")
+	agent2ID, agent2Owner := createAgentAs(ctx, t, owner2Comms, t4Agent2Handle, "T4 Agent Two")
+	if agent1ID == agent2ID {
+		t.Fatalf("the two owners' agents share account id %q; the per-owner agent namespaces are not distinct", agent1ID)
+	}
+	// The load-bearing precondition for assertion 3, checked rather than assumed.
+	// Distinct account ids hold for any two accounts, INCLUDING two agents under
+	// one owner — so id-distinctness alone would let assertion 3's cross-owner arm
+	// silently degrade into a second copy of its unknown-handle arm (both return
+	// NOT_FOUND) and stay green while the cross-owner authz branch
+	// (comms/comms.go:683) never executed. Assert the placement the arm depends on.
+	if agent1Owner != owner1ID {
+		t.Fatalf("agent %s landed under owner %q, want owner-1 %q; the cross-owner arm would not be cross-owner", t4Agent1Handle, agent1Owner, owner1ID)
+	}
+	if agent2Owner != owner2ID {
+		t.Fatalf("agent %s landed under owner %q, want owner-2 %q; the cross-owner arm would not be cross-owner", t4Agent2Handle, agent2Owner, owner2ID)
+	}
+	return owner1ID, owner2ID, owner1Comms, owner2Comms
 }

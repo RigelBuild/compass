@@ -55,9 +55,7 @@ func TestTourStateConcurrentClaimsHaveOneWinner(t *testing.T) {
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	for range claimants {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			claimed, err := s.ClaimTourStart(ctx, account.ID, "welcome")
 			if err != nil {
@@ -65,7 +63,7 @@ func TestTourStateConcurrentClaimsHaveOneWinner(t *testing.T) {
 				return
 			}
 			results <- claimed
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

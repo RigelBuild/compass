@@ -142,7 +142,7 @@ func TestCommsListMessagesChannelResolution(t *testing.T) {
 // home seed first as its own turn; routing it by the seed body keeps it off the
 // shared positional slot. Registered after listMessagesMarker, so the trigger
 // turns, whose history also holds the seed, still match the read route first.
-func init() {
+func registerListMessagesFixtureOptions() {
 	registerSharedFixtureOption(
 		WithCannedMarkerScript(listMessagesMarker,
 			CannedToolCall("comms_list_messages", fmt.Sprintf(`{"channel":%q}`, listMessagesChannel)),

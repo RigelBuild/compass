@@ -146,6 +146,6 @@ const (
 	redeliverReply  = "canned redelivered turn settled OK"
 )
 
-func init() {
+func registerRedeliverFixtureOptions() {
 	registerSharedFixtureOption(WithCannedMarkerScript(redeliverMarker, CannedText(warmReply), CannedText(redeliverReply)))
 }

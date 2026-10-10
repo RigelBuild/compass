@@ -20,7 +20,7 @@ import (
 
 // postAsk commits a pending ask authored by agent into ch's "general" topic and
 // returns its ask id. The ask is agent-authored, exactly as the real flow.
-func postAsk(t *testing.T, ctx context.Context, s *store.Store, ch store.ChannelID, agent store.AccountID, askID string) {
+func postAsk(t *testing.T, ctx context.Context, s *store.Store, ch store.ChannelID, agent store.AccountID, askID string) { //nolint:unparam // read-clarity signature: askID names the ask each step posts; currently constant, not dead code.
 	t.Helper()
 	if _, _, err := s.AppendMessage(ctx, store.Message{
 		AuthorAccountID: agent,
@@ -39,7 +39,7 @@ func postAsk(t *testing.T, ctx context.Context, s *store.Store, ch store.Channel
 // answerAndPublish answers askID as answerer and publishes the answer's
 // message_posted ref — the comms RespondToAsk effect (the store insert + the
 // delivery trigger) without the RPC edge.
-func answerAndPublish(t *testing.T, ctx context.Context, s *store.Store, c *Consumer, answerer store.AccountID, askID string) store.Message {
+func answerAndPublish(t *testing.T, ctx context.Context, s *store.Store, c *Consumer, answerer store.AccountID, askID string) store.Message { //nolint:unparam // read-clarity signature: askID names the ask being answered; currently constant, not dead code.
 	t.Helper()
 	_, answer, err := s.AnswerAsk(ctx, answerer, askID, []store.AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	if err != nil {

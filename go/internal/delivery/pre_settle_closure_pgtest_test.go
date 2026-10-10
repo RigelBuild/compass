@@ -119,7 +119,7 @@ func owedTotal(t *testing.T, ctx context.Context, s *store.Store, agent store.Ac
 // deadline — the durable barrier for the crash/agent-authored legs, where the
 // owed row (not a dispatch) is the recovery scan's observable effect. Polls the
 // real store, never a sleep-as-synchronization.
-func waitOwed(t *testing.T, ctx context.Context, s *store.Store, agent store.AccountID, want int) {
+func waitOwed(t *testing.T, ctx context.Context, s *store.Store, agent store.AccountID, want int) { //nolint:unparam // read-clarity signature: want states the expected owed-row count at each call site; currently constant, not dead code.
 	t.Helper()
 	deadline := time.After(testTimeout)
 	tick := time.NewTicker(time.Millisecond)
