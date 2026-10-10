@@ -753,19 +753,21 @@ func TestNewRunnerVerifierNilNowUsesWallClock(t *testing.T) {
 	}
 }
 
-func TestFetchErrorOmitsQueryString(t *testing.T) {
+func TestFetchErrorOmitsQueryAndPath(t *testing.T) {
 	f := newFakeIssuer(t)
 	f.set(http.StatusServiceUnavailable)
-	_, err := fetchHTTPS(t.Context(), trustingClient(f), f.srv.URL+"/keys?access_token=s3cr3t")
+	_, err := fetchHTTPS(t.Context(), trustingClient(f), f.srv.URL+"/keys/p4thsecr3t?access_token=s3cr3t")
 	if err == nil {
 		t.Fatal("fetchHTTPS against a 503 succeeded")
 	}
-	if strings.Contains(err.Error(), "s3cr3t") || strings.Contains(err.Error(), "access_token") {
-		t.Fatalf("fetch error leaks the query string: %v", err)
+	for _, leak := range []string{"s3cr3t", "access_token", "p4thsecr3t"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("fetch error leaks %q: %v", leak, err)
+		}
 	}
-	_, err = fetchHTTPS(t.Context(), trustingClient(f), "http://example.test/keys?access_token=s3cr3t")
-	if err == nil || strings.Contains(err.Error(), "s3cr3t") {
-		t.Fatalf("non-https fetch error = %v, want a rejection without the query string", err)
+	_, err = fetchHTTPS(t.Context(), trustingClient(f), "http://example.test/p4thsecr3t?access_token=s3cr3t")
+	if err == nil || strings.Contains(err.Error(), "s3cr3t") || strings.Contains(err.Error(), "p4thsecr3t") {
+		t.Fatalf("non-https fetch error = %v, want a rejection without query or path", err)
 	}
 }
 

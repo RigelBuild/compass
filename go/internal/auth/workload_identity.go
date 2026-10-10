@@ -499,10 +499,10 @@ func fetchHTTPS(ctx context.Context, client *http.Client, rawURL string) ([]byte
 	return body, nil
 }
 
-// safeURL renders u as scheme, host and path only: queries and userinfo can
+// safeURL renders u as scheme and host only: the path, query and userinfo can
 // carry credentials, and these strings reach logs.
 func safeURL(u *url.URL) string {
-	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }
 
 // keySet is a loaded JWKS with each key's RFC 7638 thumbprint, computed once at

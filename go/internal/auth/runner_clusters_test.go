@@ -82,6 +82,7 @@ func TestParseRunnerClustersRejectsInvalidFiles(t *testing.T) {
 		{"jwksURI without a host", file(entry("a", "https://a.example.test", "jwksURI: https:///keys")), "jwksURI"},
 		{"unknown field", file(entry("a", "https://a.example.test", "audiences: [x]")), "audiences"},
 		{"unknown top-level field", "clusterz: []\n", "clusterz"},
+		{"second document", file(entry("a", "https://a.example.test")) + "---\nclusterz: []\n", "one YAML document"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

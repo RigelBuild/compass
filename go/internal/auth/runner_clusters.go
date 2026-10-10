@@ -71,6 +71,11 @@ func ParseRunnerClusters(data []byte) ([]RunnerCluster, error) {
 	if err := dec.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing runner clusters: %w", err)
 	}
+	// A later document would otherwise be ignored without validation.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, errors.New("parsing runner clusters: the file must hold one YAML document")
+	}
 	clusters := make([]RunnerCluster, 0, len(file.Clusters))
 	for _, e := range file.Clusters {
 		c := RunnerCluster{
