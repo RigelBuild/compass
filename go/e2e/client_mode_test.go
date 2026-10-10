@@ -171,11 +171,18 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	// the door as a bearer, never on a command line.
 	assertTokenNotInCmdlines(t, f.RuntimeDir(), f.AdminToken())
 
-	// Exercise the production SaveClient writer.
+	assertClientAppToml(t, f.ServerURL(), f.AdminToken(), caPEM)
+}
+
+// assertClientAppToml saves a client-mode app.toml through the production
+// SaveClient writer and checks the mode, the normalized URL, the CA copy, and
+// that the token never lands in the file.
+func assertClientAppToml(t *testing.T, serverURL, token string, caPEM []byte) {
+	t.Helper()
 	appTomlPath := filepath.Join(t.TempDir(), "app.toml")
 	if _, err := appconfig.SaveClient(appTomlPath, appconfig.Config{
 		Mode:      appconfig.ModeClient,
-		ServerURL: f.ServerURL(),
+		ServerURL: serverURL,
 	}, caPEM); err != nil {
 		t.Fatalf("save client-mode app.toml: %v", err)
 	}
@@ -190,7 +197,7 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	if saved.Mode != appconfig.ModeClient {
 		t.Fatalf("saved mode = %s, want client", saved.Mode)
 	}
-	wantURL, err := appconfig.NormalizeServerURL(f.ServerURL())
+	wantURL, err := appconfig.NormalizeServerURL(serverURL)
 	if err != nil {
 		t.Fatalf("normalize fixture server URL: %v", err)
 	}
@@ -211,7 +218,7 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	if !bytes.Equal(savedCA, caPEM) {
 		t.Fatal("saved CA copy does not match fixture CA")
 	}
-	if strings.Contains(string(raw), f.AdminToken()) {
+	if strings.Contains(string(raw), token) {
 		t.Fatal("client-mode app.toml contains the admin token substring; the token must never be persisted in config")
 	}
 }

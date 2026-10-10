@@ -47,9 +47,10 @@ func prNumbers(iss *compassv1.Issue) []uint32 {
 	return out
 }
 
-// cached returns the board's cached issue at number.
-func cached(t *testing.T, p *IssueProjection, number uint32) *compassv1.Issue {
+// cachedIssue1 returns the board's cached issue #1, the issue every test here seeds.
+func cachedIssue1(t *testing.T, p *IssueProjection) *compassv1.Issue {
 	t.Helper()
+	const number = 1
 	for _, iss := range p.Snapshot() {
 		if iss.GetNumber() == number {
 			return iss
@@ -94,7 +95,7 @@ func TestPublishPullRequestAttachesAndStateChangeKeepsPrs(t *testing.T) {
 		t.Fatalf("fanned prs = %v, want [10]", got)
 	}
 
-	id := cached(t, p, 1).GetId()
+	id := cachedIssue1(t, p).GetId()
 	if err := st.SetIssueState(ctx, id, store.IssueStateInProgress); err != nil {
 		t.Fatalf("SetIssueState: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestPullRequestBeforeIssueAttachesLater(t *testing.T) {
 	p, _, _ := newIssueBoard(t)
 	mustPublishPR(t, p, ingestedPR(10, 0, time.Hour, 1))
 	mustPublishIssue(t, p, 1)
-	if got := prNumbers(cached(t, p, 1)); !slices.Equal(got, []uint32{10}) {
+	if got := prNumbers(cachedIssue1(t, p)); !slices.Equal(got, []uint32{10}) {
 		t.Fatalf("late issue prs = %v, want [10]", got)
 	}
 }
@@ -165,7 +166,7 @@ func TestFallbackMovesWhenExplicitTargetArrives(t *testing.T) {
 		t.Fatalf("CreatePullRequestWithLink: %v", err)
 	}
 	mustPublishPR(t, p, ingestedPR(10, 0, time.Hour, 1))
-	if got := prNumbers(cached(t, p, 1)); !slices.Equal(got, []uint32{10}) {
+	if got := prNumbers(cachedIssue1(t, p)); !slices.Equal(got, []uint32{10}) {
 		t.Fatalf("A prs before B arrives = %v, want the fallback [10]", got)
 	}
 
@@ -194,7 +195,7 @@ func TestPrsOrderSurvivesRehydrate(t *testing.T) {
 	if err := fresh.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("Rehydrate: %v", err)
 	}
-	if got := prNumbers(cached(t, fresh, 1)); !slices.Equal(got, []uint32{10, 20, 30}) {
+	if got := prNumbers(cachedIssue1(t, fresh)); !slices.Equal(got, []uint32{10, 20, 30}) {
 		t.Fatalf("rehydrated prs = %v, want forge-created order [10 20 30]", got)
 	}
 }
@@ -222,7 +223,7 @@ func TestTransitionOnUncachedIssueLoadsPrs(t *testing.T) {
 	p, bus, st := newIssueBoard(t)
 	mustPublishIssue(t, p, 1)
 	mustPublishPR(t, p, ingestedPR(10, 0, time.Hour, 1))
-	id := cached(t, p, 1).GetId()
+	id := cachedIssue1(t, p).GetId()
 
 	cold := NewIssueProjection(bus, st)
 	if err := st.SetIssueState(ctx, id, store.IssueStateInProgress); err != nil {
@@ -247,7 +248,7 @@ func TestTransitionRecordsRowNewerThanCaller(t *testing.T) {
 	ctx := context.Background()
 	p, _, st := newIssueBoard(t)
 	mustPublishIssue(t, p, 1)
-	id := cached(t, p, 1).GetId()
+	id := cachedIssue1(t, p).GetId()
 	if err := st.SetIssueState(ctx, id, store.IssueStateInProgress); err != nil {
 		t.Fatalf("SetIssueState: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestTransitionRecordsRowNewerThanCaller(t *testing.T) {
 	if err := p.RecordAndPublish(ctx, stale); err != nil {
 		t.Fatalf("RecordAndPublish: %v", err)
 	}
-	if got := cached(t, p, 1); got.GetTitle() != "renamed" || got.GetState() != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
+	if got := cachedIssue1(t, p); got.GetTitle() != "renamed" || got.GetState() != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
 		t.Fatalf("cached title %q state %v, want renamed IN_PROGRESS", got.GetTitle(), got.GetState())
 	}
 }
@@ -273,7 +274,7 @@ func TestTransitionRecordsRowNewerThanCaller(t *testing.T) {
 func TestTransitionPublishesWhenReadBackFails(t *testing.T) {
 	p, _, st := newIssueBoard(t)
 	mustPublishIssue(t, p, 1)
-	id := cached(t, p, 1).GetId()
+	id := cachedIssue1(t, p).GetId()
 	committed, err := st.GetIssue(context.Background(), id)
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
@@ -284,7 +285,7 @@ func TestTransitionPublishesWhenReadBackFails(t *testing.T) {
 	if err := p.RecordAndPublish(ctx, committed); err == nil {
 		t.Fatal("RecordAndPublish error = nil, want the failed re-read")
 	}
-	if got := cached(t, p, 1).GetState(); got != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
+	if got := cachedIssue1(t, p).GetState(); got != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
 		t.Fatalf("cached state = %v, want IN_PROGRESS", got)
 	}
 }
