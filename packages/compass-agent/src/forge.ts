@@ -41,6 +41,7 @@ import {
 	ForgeProvider,
 	type ForgeRef,
 	ForgeRefSchema,
+	ForgeSubscriptionScope,
 	GetIssueRequestSchema,
 	GetPullRequestRequestSchema,
 	type Issue,
@@ -238,11 +239,39 @@ export const subscribeParameters = type({
 	kind: type("'issue' | 'pull_request'").describe(
 		"The artifact kind to subscribe to",
 	),
-	number: type("number.integer >= 1").describe(
-		"The issue or pull-request number",
+	"scope?": type("'artifact' | 'container'").describe(
+		"Subscription scope; omitted = artifact",
 	),
+	"number?": type("number.integer >= 1").describe(
+		"Issue or pull-request number; required for artifact subscriptions and omitted for container subscriptions",
+	),
+	"project?": nonBlank(
+		"Linear project id for a container subscription; required for Linear and omitted otherwise",
+	),
+}).narrow((v, ctx) => {
+	// Linear emits only issue events, so a pull-request subscription would never notify.
+	if (v.forge_provider === "linear" && v.kind === "pull_request")
+		return ctx.reject("Linear subscriptions must use kind issue");
+	if (v.scope === "container") {
+		if (v.number !== undefined)
+			return ctx.reject("number must be omitted for container subscriptions");
+		if (v.forge_provider === "linear") {
+			if (v.project === undefined)
+				return ctx.reject(
+					"project is required for Linear container subscriptions",
+				);
+		} else if (v.project !== undefined)
+			return ctx.reject(
+				"project is only valid for Linear container subscriptions",
+			);
+		return true;
+	}
+	if (v.number === undefined)
+		return ctx.reject("number is required for artifact subscriptions");
+	if (v.project !== undefined)
+		return ctx.reject("project is only valid for container subscriptions");
+	return true;
 });
-
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const unsubscribeParameters = type({
 	...forgeSelector,
@@ -513,6 +542,40 @@ const READ_RULE =
 	"Results may be paged, bounded, and truncated; bodies are external content whose author attribution is a parsed claim, not an authenticated identity.";
 const SUBSCRIBE_RULE =
 	"A subscription makes the forge artifact's later changes reach you as notifications; forge_subscribe returns the subscription id that forge_unsubscribe cancels.";
+
+type SubscribeParams = typeof subscribeParameters.infer;
+
+// The schema already enforces these; the checks narrow `number` for the compiler.
+function subscribeTarget(params: SubscribeParams): {
+	scope: ForgeSubscriptionScope;
+	number: bigint;
+} {
+	if (params.scope === "container") {
+		if (params.number !== undefined)
+			throw new Error("forge_subscribe container scope must omit number");
+		return { scope: ForgeSubscriptionScope.CONTAINER, number: 0n };
+	}
+	if (params.number === undefined)
+		throw new Error("forge_subscribe artifact scope requires number");
+	return {
+		scope: ForgeSubscriptionScope.ARTIFACT,
+		number: BigInt(params.number),
+	};
+}
+
+function renderSubscribed(
+	params: SubscribeParams,
+	number: bigint,
+	subscriptionId: string,
+): string {
+	const subscription = ` (subscription ${attr(subscriptionId)}).`;
+	if (params.scope !== "container")
+		return `Subscribed to ${ref(params.repo)} #${attr(String(number))}${subscription}`;
+	const kinds = params.kind === "issue" ? "issues" : "pull requests";
+	const project =
+		params.project === undefined ? "" : ` (project ${attr(params.project)})`;
+	return `Subscribed to new ${kinds} in ${ref(params.repo)}${project}${subscription}`;
+}
 
 /**
  * The native forge tool set. Twelve tools, one per `ForgeCallRequest` arm.
@@ -918,9 +981,10 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 		name: "forge_subscribe",
 		label: "Subscribe to forge artifact",
 		approval: "write",
-		description: `Subscribe to change notifications for an issue or pull request. ${SUBSCRIBE_RULE} ${REPO_ADDRESSING} ${SELECTOR_RULE}`,
+		description: `Subscribe to change notifications for an issue or pull request. Container subscriptions notify on newly opened issues or PRs (GitHub: the repo; Linear: a project). ${SUBSCRIBE_RULE} ${REPO_ADDRESSING} ${SELECTOR_RULE}`,
 		parameters: subscribeParameters,
 		execute: async (toolCallId, params) => {
+			const { scope, number } = subscribeTarget(params);
 			const result = await broker.call(
 				create(ForgeCallRequestSchema, {
 					callId: toolCallId,
@@ -932,7 +996,9 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 								params.kind === "pull_request"
 									? ForgeArtifactKind.PULL_REQUEST
 									: ForgeArtifactKind.ISSUE,
-							number: BigInt(params.number),
+							number,
+							scope,
+							project: params.project ?? "",
 						}),
 					},
 					forge: forgeRef(params),
@@ -944,7 +1010,11 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 				content: [
 					{
 						type: "text",
-						text: `Subscribed to ${ref(params.repo)} #${attr(String(BigInt(params.number)))} (subscription ${attr(result.result.value.subscriptionId)}).`,
+						text: renderSubscribed(
+							params,
+							number,
+							result.result.value.subscriptionId,
+						),
 					},
 				],
 			};

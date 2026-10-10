@@ -24,6 +24,7 @@ import {
 	type ForgeCallResult,
 	ForgeCallResultSchema,
 	ForgeProvider,
+	ForgeSubscriptionScope,
 	type Issue,
 	IssueSchema,
 	ListIssuesResponseSchema,
@@ -963,14 +964,46 @@ describe("forge_subscribe / forge_unsubscribe", () => {
 		expect(req.call.case).toBe("subscribe");
 		if (req.call.case !== "subscribe") throw new Error("expected arm");
 		expect(req.call.value.number).toBe(8n);
+		expect(req.call.value.scope).toBe(ForgeSubscriptionScope.ARTIFACT);
+		expect(req.call.value.project).toBe("");
 		// kind maps to the PULL_REQUEST enum (2).
 		expect(req.call.value.kind).toBe(2);
 		expect(textOf(result)).toBe("Subscribed to o/r #8 (subscription sub-1).");
 	});
 
-	test("both subscription tools surface the server's in-band unimplemented as a thrown failure", async () => {
+	test("container subscription sends explicit scope and project", async () => {
 		const transport = new FakeTransport(
-			errorResult("unimplemented", "subscription writer not yet wired"),
+			create(ForgeCallResultSchema, {
+				callId: "call-1",
+				result: {
+					case: "subscribed",
+					value: create(SubscribeForgeResponseSchema, {
+						subscriptionId: "sub-1",
+					}),
+				},
+			}),
+		);
+		const t = tool(new ForgeBroker(transport), "forge_subscribe");
+		const result = await exec(t, "tc-1", {
+			repo: "SEA",
+			forge_provider: "linear",
+			kind: "issue",
+			scope: "container",
+			project: "project-1",
+		});
+		const req = transport.requests[0];
+		if (req.call.case !== "subscribe") throw new Error("expected arm");
+		expect(req.call.value.scope).toBe(ForgeSubscriptionScope.CONTAINER);
+		expect(req.call.value.number).toBe(0n);
+		expect(req.call.value.project).toBe("project-1");
+		expect(textOf(result)).toBe(
+			"Subscribed to new issues in SEA (project project-1) (subscription sub-1).",
+		);
+	});
+
+	test("both subscription tools surface an in-band server error as a thrown failure", async () => {
+		const transport = new FakeTransport(
+			errorResult("unimplemented", "subscription unavailable"),
 		);
 		const broker = new ForgeBroker(transport);
 		await expect(
@@ -980,14 +1013,14 @@ describe("forge_subscribe / forge_unsubscribe", () => {
 				number: 1,
 			}),
 		).rejects.toThrow(
-			"forge_subscribe failed: unimplemented: subscription writer not yet wired",
+			"forge_subscribe failed: unimplemented: subscription unavailable",
 		);
 		await expect(
 			exec(tool(broker, "forge_unsubscribe"), "tc-2", {
 				subscription_id: "sub-1",
 			}),
 		).rejects.toThrow(
-			"forge_unsubscribe failed: unimplemented: subscription writer not yet wired",
+			"forge_unsubscribe failed: unimplemented: subscription unavailable",
 		);
 	});
 
@@ -1253,5 +1286,72 @@ describe("forge parameter schemas", () => {
 		expect(rejects(unsubscribeParameters, { subscription_id: "sub-1" })).toBe(
 			false,
 		);
+	});
+
+	test("subscribe rejects ambiguous container and artifact coordinates", () => {
+		expect(
+			rejects(subscribeParameters, {
+				repo: "o/r",
+				kind: "issue",
+				scope: "container",
+				number: 5,
+			}),
+		).toBe(true);
+		expect(rejects(subscribeParameters, { repo: "o/r", kind: "issue" })).toBe(
+			true,
+		);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "SEA",
+				forge_provider: "linear",
+				kind: "issue",
+				scope: "container",
+			}),
+		).toBe(true);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "SEA",
+				forge_provider: "linear",
+				kind: "issue",
+				scope: "container",
+				project: "project-1",
+			}),
+		).toBe(false);
+	});
+
+	test("subscribe rejects provider combinations that can never notify", () => {
+		expect(
+			rejects(subscribeParameters, {
+				repo: "SEA",
+				forge_provider: "linear",
+				kind: "pull_request",
+				scope: "container",
+				project: "project-1",
+			}),
+		).toBe(true);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "SEA",
+				forge_provider: "linear",
+				kind: "pull_request",
+				number: 3,
+			}),
+		).toBe(true);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "o/r",
+				kind: "issue",
+				scope: "container",
+				project: "project-1",
+			}),
+		).toBe(true);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "o/r",
+				forge_provider: "github",
+				kind: "pull_request",
+				scope: "container",
+			}),
+		).toBe(false);
 	});
 });
