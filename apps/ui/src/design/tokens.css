@@ -245,11 +245,6 @@
 	--cx-display-sm: 22px; /* even 11px multiple — the only sanctioned display sizes */
 	--cx-display-lg: 44px;
 
-	/* --- Radius --- */
-	--cx-radius-sm: 3px;
-	--cx-radius-md: 6px;
-	--cx-radius-lg: 10px;
-
 	/* --- Elevation (menu/dialog/palette layering; subtle low-alpha dark-surface
 	   shadows escalating 0→3) --- */
 	--cx-elev-0: none;

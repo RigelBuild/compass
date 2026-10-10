@@ -11,7 +11,6 @@
 	width: 560px;
 	max-width: 100%;
 	border: 1px solid var(--cx-border-strong);
-	border-radius: var(--cx-radius-lg);
 	background: var(--cx-bg-panel);
 	color: var(--cx-text);
 	font-family: var(--cx-font-ui);
@@ -93,7 +92,6 @@
 	height: 26px;
 	padding: 0 var(--cx-space-2);
 	border-left: 2px solid transparent;
-	border-radius: var(--cx-radius-sm);
 	background: transparent;
 	color: var(--cx-text);
 	font-family: var(--cx-font-ui);
@@ -139,7 +137,6 @@
 	margin-left: auto;
 	padding: var(--cx-space-1) var(--cx-space-2);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-sm);
 	color: var(--cx-text-dim);
 	font-family: var(--cx-font-ui);
 	font-size: var(--cx-text-xs);

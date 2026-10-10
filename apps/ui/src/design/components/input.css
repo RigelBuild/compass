@@ -10,7 +10,6 @@
 	width: 100%;
 	padding: var(--cx-space-2) var(--cx-space-3);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-md);
 	background: var(--cx-bg-panel);
 	color: var(--cx-text);
 	font-family: var(--cx-font-ui);

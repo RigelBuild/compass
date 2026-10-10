@@ -35,7 +35,7 @@ Conventions across the set:
 - **Tokens:** `--cx-bg-panel`, `--cx-bg-hover`, `--cx-bg-active`,
   `--cx-bg-selected`, `--cx-accent`, `--cx-accent-hover`, `--cx-accent-muted`,
   `--cx-error`, `--cx-border`, `--cx-text`, `--cx-text-bright`, `--cx-bg`,
-  `--cx-font-ui`, `--cx-text-xs/-sm`, `--cx-space-1/-2/-3`, `--cx-radius-md`,
+  `--cx-font-ui`, `--cx-text-xs/-sm`, `--cx-space-1/-2/-3`,
   `--cx-motion-fast`, `--cx-ease-out`, `--cx-focus-ring`.
 
 Primary is an accent fill; ghost is borderless with a hover wash; danger uses
@@ -50,7 +50,7 @@ Primary is an accent fill; ghost is borderless with a hover wash; danger uses
 - **Tokens:** `--cx-bg-panel`, `--cx-bg-hover`, `--cx-bg-active`,
   `--cx-border`, `--cx-border-focus`, `--cx-accent`, `--cx-text`,
   `--cx-text-bright`, `--cx-text-faint`, `--cx-font-ui`, `--cx-text-sm`,
-  `--cx-space-2/-3/-6/-8`, `--cx-radius-md`, `--cx-motion-fast`,
+  `--cx-space-2/-3/-6/-8`, `--cx-motion-fast`,
   `--cx-ease-out`, `--cx-focus-ring`.
 
 The composer is multi-line and grows to a `40vh` cap; Enter / Shift-Enter is
@@ -64,7 +64,7 @@ The composer is multi-line and grows to a `40vh` cap; Enter / Shift-Enter is
 - **Tokens:** `--cx-bg-panel`, `--cx-bg-hover`, `--cx-bg-active`,
   `--cx-bg-selected`, `--cx-accent`, `--cx-border`, `--cx-text`,
   `--cx-text-bright`, `--cx-font-ui`, `--cx-text-sm`, `--cx-space-3`,
-  `--cx-radius-md`, `--cx-motion-fast`, `--cx-ease-out`, `--cx-focus-ring`.
+  `--cx-motion-fast`, `--cx-ease-out`, `--cx-focus-ring`.
 
 Issue / PR / backlog rows on the panel tier; selection is the selection surface
 plus the accent left rule, never a raised background.
@@ -81,7 +81,7 @@ plus the accent left rule, never a raised background.
   `--cx-bg-selected`, `--cx-accent`, `--cx-border`, `--cx-text`,
   `--cx-text-dim`, `--cx-text-bright`, `--cx-ci-pass/-fail/-pending`,
   `--cx-review-approved/-changes/-pending`, `--cx-bg`, `--cx-font-ui`,
-  `--cx-text-xs`, `--cx-space-1/-2/-4/-5`, `--cx-radius-sm`,
+  `--cx-text-xs`, `--cx-space-1/-2/-4/-5`,
   `--cx-motion-fast`, `--cx-ease-out`, `--cx-focus-ring`.
 
 ### Axis badge — `.cx-axis-badge` (RIG-2117 / RIG-2121, shipped variant)
@@ -846,7 +846,7 @@ Topbar view-tabs, right-sidebar activity bar, workspace tab strip.
 - **States:** a focused pane draws an accent 1px inner rule (the spatial-focus
   marker); interactive children own their own `:focus-visible` ring.
 - **Tokens:** `--cx-bg-panel`, `--cx-accent`, `--cx-border`, `--cx-text`,
-  `--cx-font-ui`, `--cx-text-sm`, `--cx-radius-md`, `--cx-motion-base`,
+  `--cx-font-ui`, `--cx-text-sm`, `--cx-motion-base`,
   `--cx-ease-out`.
 
 The workspace's two fixed panes (home channel · Session Log). Focus is
@@ -875,7 +875,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   surface; keyboard is WAI-ARIA via Kobalte, styled entirely by our classes.
 - **Tokens:** `--cx-bg-panel`, `--cx-bg-hover`, `--cx-bg-active`,
   `--cx-bg-selected`, `--cx-border`, `--cx-text`, `--cx-text-bright`,
-  `--cx-font-ui`, `--cx-text-sm`, `--cx-space-1/-2/-8`, `--cx-radius-sm/-md`,
+  `--cx-font-ui`, `--cx-text-sm`, `--cx-space-1/-2/-8`,
   `--cx-elev-2`, `--cx-z-overlay`, `--cx-motion-fast`, `--cx-ease-out`,
   `--cx-focus-ring`.
 
@@ -886,7 +886,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   Kobalte. Interactive children own their focus rings.
 - **Tokens:** `--cx-bg-panel`, `--cx-scrim`, `--cx-border-strong`,
   `--cx-text`, `--cx-font-ui`, `--cx-text-sm`, `--cx-space-4/-5`,
-  `--cx-radius-lg`, `--cx-elev-3`, `--cx-z-modal`.
+  `--cx-elev-3`, `--cx-z-modal`.
 
 ## Command palette (Kobalte combobox)
 
@@ -930,7 +930,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   `--cx-accent`, `--cx-border`, `--cx-border-strong`, `--cx-border-focus`,
   `--cx-text`, `--cx-text-bright`, `--cx-text-dim`, `--cx-text-faint`,
   `--cx-font-ui`, `--cx-text-xs/-sm/-lg`, `--cx-space-1/-2/-3/-4`,
-  `--cx-radius-sm/-lg`, `--cx-elev-3`, `--cx-z-palette`, `--cx-motion-fast`,
+  `--cx-elev-3`, `--cx-z-palette`, `--cx-motion-fast`,
   `--cx-ease-out`, `--cx-focus-ring`.
 
 ## Tooltip (Kobalte)
@@ -947,7 +947,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   (400ms) is Kobalte's timing prop. Never load-bearing — the same info is
   reachable elsewhere (a converted control keeps its `aria-keyshortcuts`).
 - **Tokens:** `--cx-bg-raised`, `--cx-border`, `--cx-text`, `--cx-font-ui`,
-  `--cx-text-xs`, `--cx-space-1/-2`, `--cx-radius-sm`, `--cx-elev-1`,
+  `--cx-text-xs`, `--cx-space-1/-2`, `--cx-elev-1`,
   `--cx-z-overlay`.
 
 ## Toast
@@ -958,7 +958,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   dismiss control is a `.cx-btn`.
 - **Tokens:** `--cx-bg-panel`, `--cx-border`, `--cx-border-strong`,
   `--cx-info`, `--cx-ok`, `--cx-warn`, `--cx-error`, `--cx-text`,
-  `--cx-font-ui`, `--cx-text-sm`, `--cx-space-2/-3`, `--cx-radius-md`,
+  `--cx-font-ui`, `--cx-text-sm`, `--cx-space-2/-3`,
   `--cx-elev-2`, `--cx-z-toast`.
 
 ## Tour
@@ -987,7 +987,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   `--cx-bg-hover`, `--cx-accent`, `--cx-border`, `--cx-text`, `--cx-text-bright`,
   `--cx-text-dim`, `--cx-text-faint`, `--cx-pulse-color`, `--cx-pulse-period`,
   `--cx-font-ui`, `--cx-text-xs/-sm/-lg`, `--cx-space-1/-2/-3/-6`,
-  `--cx-radius-sm/-md`, `--cx-elev-2`, `--cx-z-modal`, `--cx-z-overlay`,
+  `--cx-elev-2`, `--cx-z-modal`, `--cx-z-overlay`,
   `--cx-focus-ring`, `--cx-motion-base`, `--cx-ease-out`.
 
 ## Ask block
@@ -999,7 +999,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   lit). Option buttons follow the `.cx-btn` state contract.
 - **Tokens:** `--cx-bg-panel`, `--cx-accent`, `--cx-border`,
   `--cx-border-strong`, `--cx-text`, `--cx-text-dim`, `--cx-font-ui`,
-  `--cx-text-sm`, `--cx-space-2/-3/-4`, `--cx-radius-md`.
+  `--cx-text-sm`, `--cx-space-2/-3/-4`.
 
 ## Markdown content
 
@@ -1021,7 +1021,7 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
   boot-sequence spec is **T8**; this owns the class contract and consumes the
   D9 motion tokens.
 - **Tokens:** `--cx-accent`, `--cx-border`, `--cx-text`, `--cx-space-1/-4`,
-  `--cx-radius-sm`, `--cx-motion-slow`, `--cx-motion-base`, `--cx-ease-out`.
+  `--cx-motion-slow`, `--cx-motion-base`, `--cx-ease-out`.
 
 ## Scrollbar
 

@@ -28,7 +28,6 @@
 	max-width: min(360px, calc(100vw - var(--cx-space-6)));
 	padding: var(--cx-space-3);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-md);
 	background: var(--cx-bg-raised);
 	color: var(--cx-text);
 	font-family: var(--cx-font-ui);
@@ -72,7 +71,6 @@
 .cx-tour-actions button {
 	padding: var(--cx-space-1) var(--cx-space-2);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-sm);
 	background: var(--cx-bg-panel);
 	color: var(--cx-text);
 	font: inherit;
@@ -144,7 +142,6 @@
 	margin-inline-start: var(--cx-space-2);
 	padding: 0 var(--cx-space-1);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-sm);
 	color: var(--cx-text-dim);
 	font-size: var(--cx-text-xs);
 	line-height: 1.4;
