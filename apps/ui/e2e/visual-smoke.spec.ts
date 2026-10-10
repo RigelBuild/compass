@@ -299,7 +299,10 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		const loaded = await page.evaluate(async () => ({
 			display: (await document.fonts.load('22px "Departure Mono"')).length,
 			mono: (await document.fonts.load('12px "Space Mono"')).length,
+			italic: (await document.fonts.load('italic 12px "Space Mono"')).map(
+				(f) => f.style,
+			),
 		}));
-		expect(loaded).toEqual({ display: 1, mono: 1 });
+		expect(loaded).toEqual({ display: 1, mono: 1, italic: ["italic"] });
 	});
 });

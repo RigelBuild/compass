@@ -1,7 +1,8 @@
 /* Rigel brand primitive tier — mirrored verbatim from the Rigel brand source (frozen brand token set), 2026-08-06. Brand co-reviews any change to this block. The ONLY file where --rigel-* and raw hex may appear. */
 
 /* Brand faces, bundled by Vite from ./fonts so no host install is assumed.
-   Same OFL files and descriptors as the engineering docsite. */
+   Byte copies of the faces CI pins; the italics keep emphasis slanted, since
+   a bundled family hides the installed one and font-synthesis is off. */
 @font-face {
 	font-family: "Departure Mono";
 	src: url("./fonts/DepartureMono-Regular.otf") format("opentype");
@@ -18,6 +19,20 @@
 	font-family: "Space Mono";
 	src: url("./fonts/SpaceMono-Bold.ttf") format("truetype");
 	font-weight: 700;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("./fonts/SpaceMono-Italic.ttf") format("truetype");
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("./fonts/SpaceMono-BoldItalic.ttf") format("truetype");
+	font-weight: 700;
+	font-style: italic;
 	font-display: swap;
 }
 @font-face {
