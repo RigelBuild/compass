@@ -15,6 +15,29 @@ FROM agent_accounts AS a
 WHERE a.account_id = sqlc.arg(account_id)
 ON CONFLICT DO NOTHING;
 
+-- name: RevokeAgentForgeScope :execrows
+-- Agent rows only: a user id deletes nothing, so a user grant is never removed here.
+DELETE FROM account_forge_scopes
+WHERE account_id IN (SELECT a.account_id FROM agent_accounts AS a WHERE a.account_id = $1)
+  AND forge_provider = $2 AND forge_host = $3 AND repo = $4;
+
+-- name: ListAgentForgeScopeRepos :many
+-- An account's own rows only; the owner's grants are not included.
+SELECT scope.repo
+FROM account_forge_scopes AS scope
+WHERE scope.account_id = $1
+  AND scope.forge_provider = $2
+  AND scope.forge_host = $3
+ORDER BY scope.repo;
+
+-- name: CopyAgentForgeScopes :exec
+-- A new child starts with its parent agent's own rows; runs under RLS.
+INSERT INTO account_forge_scopes (account_id, forge_provider, forge_host, repo)
+SELECT sqlc.arg(child_id), scope.forge_provider, scope.forge_host, scope.repo
+FROM account_forge_scopes AS scope
+WHERE scope.account_id = sqlc.arg(parent_id)
+ON CONFLICT DO NOTHING;
+
 -- name: ForgeScopeUserExists :one
 SELECT EXISTS (SELECT 1 FROM user_accounts WHERE account_id = $1);
 

@@ -9,6 +9,25 @@ import (
 	"context"
 )
 
+const copyAgentForgeScopes = `-- name: CopyAgentForgeScopes :exec
+INSERT INTO account_forge_scopes (account_id, forge_provider, forge_host, repo)
+SELECT $1, scope.forge_provider, scope.forge_host, scope.repo
+FROM account_forge_scopes AS scope
+WHERE scope.account_id = $2
+ON CONFLICT DO NOTHING
+`
+
+type CopyAgentForgeScopesParams struct {
+	ChildID  string
+	ParentID string
+}
+
+// A new child starts with its parent agent's own rows; runs under RLS.
+func (q *Queries) CopyAgentForgeScopes(ctx context.Context, arg CopyAgentForgeScopesParams) error {
+	_, err := q.db.Exec(ctx, copyAgentForgeScopes, arg.ChildID, arg.ParentID)
+	return err
+}
+
 const forgeScopeUserExists = `-- name: ForgeScopeUserExists :one
 SELECT EXISTS (SELECT 1 FROM user_accounts WHERE account_id = $1)
 `
@@ -110,6 +129,42 @@ func (q *Queries) HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (b
 	return exists, err
 }
 
+const listAgentForgeScopeRepos = `-- name: ListAgentForgeScopeRepos :many
+SELECT scope.repo
+FROM account_forge_scopes AS scope
+WHERE scope.account_id = $1
+  AND scope.forge_provider = $2
+  AND scope.forge_host = $3
+ORDER BY scope.repo
+`
+
+type ListAgentForgeScopeReposParams struct {
+	AccountID     string
+	ForgeProvider int16
+	ForgeHost     string
+}
+
+// An account's own rows only; the owner's grants are not included.
+func (q *Queries) ListAgentForgeScopeRepos(ctx context.Context, arg ListAgentForgeScopeReposParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAgentForgeScopeRepos, arg.AccountID, arg.ForgeProvider, arg.ForgeHost)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var repo string
+		if err := rows.Scan(&repo); err != nil {
+			return nil, err
+		}
+		items = append(items, repo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listForgeScopeRepos = `-- name: ListForgeScopeRepos :many
 SELECT DISTINCT scope.repo
 FROM account_forge_scopes AS scope
@@ -144,6 +199,33 @@ func (q *Queries) ListForgeScopeRepos(ctx context.Context, arg ListForgeScopeRep
 		return nil, err
 	}
 	return items, nil
+}
+
+const revokeAgentForgeScope = `-- name: RevokeAgentForgeScope :execrows
+DELETE FROM account_forge_scopes
+WHERE account_id IN (SELECT a.account_id FROM agent_accounts AS a WHERE a.account_id = $1)
+  AND forge_provider = $2 AND forge_host = $3 AND repo = $4
+`
+
+type RevokeAgentForgeScopeParams struct {
+	AccountID     string
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+}
+
+// Agent rows only: a user id deletes nothing, so a user grant is never removed here.
+func (q *Queries) RevokeAgentForgeScope(ctx context.Context, arg RevokeAgentForgeScopeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAgentForgeScope,
+		arg.AccountID,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeForgeScope = `-- name: RevokeForgeScope :exec
