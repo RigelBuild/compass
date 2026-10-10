@@ -32,6 +32,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
@@ -73,9 +74,10 @@ type bridgeService struct {
 	conn   atomic.Pointer[connection]
 	events eventEmitter
 	tokens tokenstore.Store
+	setup  *setupWiring
 
-	// connectMu makes each Connect single-flight: the target bearer is one shared
-	// slot, so overlapping probes could carry each other's token or disarm it.
+	// connectMu serializes configured-server Connect probes that share one bearer
+	// slot. Server choices are serialized by firstRunGate.
 	connectMu sync.Mutex
 	// phase is "setup" or "reopen" while no connection is installed. It is never
 	// a connection, so CompassRPC stays on the no-connection error.
@@ -131,6 +133,32 @@ func newBridgeService(conn *connection, events eventEmitter, tokens tokenstore.S
 	if conn != nil {
 		s.conn.Store(conn)
 	}
+	return s
+}
+
+func newSetupBridgeService(events eventEmitter, tokens tokenstore.Store, setup *setupWiring) *bridgeService {
+	if setup == nil {
+		setup = &setupWiring{}
+	}
+	if setup.gate == nil {
+		setup.gate = &firstRunGate{}
+	}
+	if setup.picks == nil {
+		setup.picks = &caPicks{}
+	}
+	if setup.newTarget == nil {
+		setup.newTarget = bridge.NewTLSTarget
+	}
+	if setup.saveClient == nil {
+		setup.saveClient = appconfig.SaveClient
+	}
+	s := &bridgeService{
+		events:   events,
+		tokens:   tokens,
+		setup:    setup,
+		inflight: make(map[string]*inflightCall),
+	}
+	s.setPhase("setup")
 	return s
 }
 
@@ -224,14 +252,14 @@ func (s *bridgeService) CompassRPCCancel(_ context.Context, req cancelRequest) {
 	}
 }
 
-// Connect runs the native-client connect probe against the remote daemon over
-// the target's TLS-anchored, bearer-injecting transport, and persists+arms the
-// token on success. A non-empty req.Token is the candidate; an empty token means
-// "use the stored one" (boot auto-connect). On any failure the target is
-// disarmed before returning so a failed probe never leaves a bad bearer armed
-// (T5 starts unarmed and only a successful Connect arms it). The token never
-// appears in Message or any log/error.
+// Connect probes and arms the configured server, then stores the candidate token.
+// An empty token reads the stored token for that server. A server choice uses
+// first-run wiring to validate, probe, and save the selected remote before it is
+// installed. Failed probes leave their target disarmed; tokens are never logged.
 func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connectResult {
+	if req.Server != nil {
+		return s.connectServerChoice(ctx, req)
+	}
 	conn := s.conn.Load()
 	if conn == nil || conn.target == nil || s.tokens == nil {
 		return connectResult{Kind: connectKindOther, Message: "Connect is not available: no remote target is configured"}
@@ -261,6 +289,106 @@ func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connect
 		conn.target.SetBearer("")
 		return connectResult{Kind: connectKindOther, Message: "Connected, but could not save the token"}
 	}
+	return result
+}
+
+func (s *bridgeService) connectServerChoice(ctx context.Context, req connectRequest) connectResult {
+	if s.setup == nil {
+		return connectResult{Kind: connectKindOther, Message: "The server is set in app.toml."}
+	}
+	setup := s.setup
+	if err := setup.gate.begin(); err != nil {
+		return connectResult{Kind: connectKindOther, Message: err.Error()}
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			setup.gate.end(false)
+		}
+	}()
+
+	serverURL, err := appconfig.NormalizeServerURL(req.Server.URL)
+	if err != nil {
+		if urlErr, ok := errors.AsType[*appconfig.URLError](err); ok {
+			return connectResult{Kind: connectKindInvalidURL, Message: urlErr.Reason}
+		}
+		return connectResult{Kind: connectKindInvalidURL, Message: err.Error()}
+	}
+
+	var caPEM []byte
+	if req.Server.CARef != "" {
+		var ok bool
+		caPEM, ok = setup.picks.get(req.Server.CARef)
+		if !ok {
+			return connectResult{Kind: connectKindInvalidCA, Message: "Choose the certificate again."}
+		}
+		if len(caPEM) == 0 {
+			return connectResult{Kind: connectKindInvalidCA, Message: "The file is not a PEM certificate."}
+		}
+	}
+	candidate, err := setup.newTarget(serverURL, caPEM)
+	if err != nil {
+		return connectResult{Kind: connectKindInvalidCA, Message: "The file is not a PEM certificate."}
+	}
+	installed := false
+	defer func() {
+		if !installed {
+			client, _ := candidate.Client()
+			client.CloseIdleConnections()
+		}
+	}()
+
+	if s.tokens == nil {
+		return connectResult{Kind: connectKindOther, Message: "Connect is not available: no remote target is configured"}
+	}
+	token := req.Token
+	if token == "" {
+		token, err = s.tokens.Read(serverURL)
+		if err != nil {
+			if errors.Is(err, tokenstore.ErrNotFound) {
+				return connectResult{Kind: connectKindBadToken, Message: "No stored token; enter one to connect"}
+			}
+			return connectResult{Kind: connectKindOther, Message: "Could not read the stored token"}
+		}
+	}
+
+	result := s.probe(ctx, candidate, token)
+	if !result.OK {
+		return result
+	}
+	_, err = setup.saveClient(
+		setup.configPath,
+		appconfig.Config{Mode: appconfig.ModeClient, ServerURL: serverURL},
+		caPEM,
+	)
+	if errors.Is(err, appconfig.ErrConfigExists) {
+		candidate.SetBearer("")
+		decide(setup.gate, s, false)
+		finished = true
+		return connectResult{Kind: connectKindOther, Message: setupDecidedMessage}
+	}
+	if err != nil {
+		candidate.SetBearer("")
+		return connectResult{Kind: connectKindOther, Message: "Connected, but the settings could not be saved: " + err.Error()}
+	}
+	if err := s.tokens.Write(serverURL, token); err != nil {
+		candidate.SetBearer("")
+		setup.picks.clear()
+		decide(setup.gate, s, false)
+		finished = true
+		return connectResult{Kind: connectKindOther, Message: "Saved, but could not store the token. Quit and reopen Compass, then enter it again."}
+	}
+
+	s.conn.Store(&connection{
+		mode:      "client",
+		serverURL: serverURL,
+		target:    candidate,
+		pump:      bridge.NewPump(candidate),
+	})
+	installed = true
+	setup.picks.clear()
+	decide(setup.gate, s, true)
+	finished = true
 	return result
 }
 
@@ -312,6 +440,7 @@ func (s *bridgeService) probe(ctx context.Context, target *bridge.Target, token 
 		AccountID:     accountID,
 		ServerVersion: serverVersion,
 		APIVersion:    serverAPIVersion,
+		ServerURL:     serverURL,
 	}
 }
 
@@ -497,13 +626,18 @@ const (
 	connectKindBadToken        = "bad-token"
 	connectKindVersionMismatch = "version-mismatch"
 	connectKindOther           = "other"
+	connectKindInvalidURL      = "invalid-url"
+	connectKindInvalidCA       = "invalid-ca"
 )
 
-// connectRequest is the compass Connect argument: a pasted bearer token, or the
-// empty string meaning "use the stored one" (a boot-internal auto-connect call,
-// never a user submit).
+type serverChoice struct {
+	URL   string `json:"url"`
+	CARef string `json:"caRef"`
+}
+
 type connectRequest struct {
-	Token string `json:"token"`
+	Token  string        `json:"token"`
+	Server *serverChoice `json:"server,omitempty"`
 }
 
 // connectResult is the Connect outcome the webview renders. Kind is the sealed
@@ -518,11 +652,12 @@ type connectRequest struct {
 // race a webview-goroutine Connect (bridge_service.go accountID doc).
 type connectResult struct {
 	OK            bool   `json:"ok"`
-	Kind          string `json:"kind"`    // "" | "bad-url" | "bad-cert" | "bad-token" | "version-mismatch" | "other"
+	Kind          string `json:"kind"`    // "" | "bad-url" | "bad-cert" | "bad-token" | "invalid-url" | "invalid-ca" | "version-mismatch" | "other"
 	Message       string `json:"message"` // safe from the token; MAY echo untrusted server text — render escaped
 	AccountID     string `json:"accountId"`
 	ServerVersion string `json:"serverVersion"` // untrusted server-reported string
 	APIVersion    string `json:"apiVersion"`    // untrusted server-reported string
+	ServerURL     string `json:"serverUrl"`
 }
 
 // classifyConnectErr maps a probe error to a sealed connect kind + safe message.
