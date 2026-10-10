@@ -99,3 +99,23 @@ func (s *Store) RequireAgentSessionSubscriber(ctx context.Context, caller Accoun
 	}
 	return nil
 }
+
+// RequireAgentSessionOwner permits the session's owning user or an admin to
+// control it. Its single EXISTS query returns the same ErrNotFound for unknown
+// sessions and unauthorized callers.
+func (s *Store) RequireAgentSessionOwner(ctx context.Context, caller AccountID, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	allowed, err := s.q.RequireAgentSessionOwner(ctx, db.RequireAgentSessionOwnerParams{
+		SessionID:   sessionID,
+		OwnerUserID: string(caller),
+	})
+	if err != nil {
+		return fmt.Errorf("store: authorize agent session owner: %w", err)
+	}
+	if !allowed {
+		return fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
+	}
+	return nil
+}
