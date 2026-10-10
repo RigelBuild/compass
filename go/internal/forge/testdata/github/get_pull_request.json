@@ -71,6 +71,9 @@
 					"data": {
 						"repository": {
 							"pullRequest": {
+								"closingIssuesReferences": {
+									"nodes": []
+								},
 								"reviewThreads": {
 									"pageInfo": {
 										"hasNextPage": false,
@@ -218,7 +221,10 @@
 						}
 					]
 				}
-			]
+			],
+			"CreatedAt": "0001-01-01T00:00:00Z",
+			"UpdatedAt": "0001-01-01T00:00:00Z",
+			"ClosingRefs": null
 		}
 	}
 }

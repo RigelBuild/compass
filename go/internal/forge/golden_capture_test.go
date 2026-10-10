@@ -33,6 +33,7 @@ const (
 	canonURL         = "https://example.invalid/canonical" // html_url, url, target_url -> URL
 	canonIDString    = "canonical-id"                      // a string/UUID id (Linear) -> ID / resolve coordinate
 	canonUpdatedAt   = "2026-08-01T12:30:00Z"              // updated_at, updatedAt -> UpdatedAt
+	canonCreatedAt   = "2026-08-01T12:00:00Z"              // created_at -> CreatedAt
 	canonSHA         = "canonicalsha"                      // sha -> HeadSHA
 	canonRef         = "canonical-ref"                     // ref -> HeadRef/BaseRef
 	canonTitle       = "canonical title"                   // title -> Title
@@ -71,6 +72,7 @@ var volatileFields = map[string]struct{}{
 	"ID":           {},
 	"URL":          {},
 	"UpdatedAt":    {},
+	"CreatedAt":    {},
 	"HeadSHA":      {},
 	"HeadRef":      {},
 	"BaseRef":      {},
@@ -94,6 +96,7 @@ var wireVolatile = map[string]func(node any) any{
 	"target_url":  fixedSentinel(canonURL),
 	"updated_at":  fixedSentinel(canonUpdatedAt),
 	"updatedAt":   fixedSentinel(canonUpdatedAt),
+	"created_at":  fixedSentinel(canonCreatedAt),
 	"login":       fixedSentinel(canonAccount),
 	"displayName": fixedSentinel(canonAccount),
 	"sha":         fixedSentinel(canonSHA),
@@ -134,6 +137,7 @@ func canonCursor(node any) any {
 //   - ID       <- id           (ghComment.ID numeric; Linear comment id is a UUID string)
 //   - URL      <- html_url,url,target_url (GitHub HTMLURL + ghStatus.TargetURL -> Check.URL; Linear URL)
 //   - UpdatedAt<- updated_at,updatedAt (GitHub updated_at; Linear updatedAt)
+//   - CreatedAt<- created_at   (ghPull/ghPullDetail.CreatedAt)
 //   - HeadSHA  <- sha           (ghPullDetail.Head.SHA)
 //   - HeadRef  <- ref           (ghPull/ghPullDetail.Head.Ref)
 //   - BaseRef  <- ref           (ghPull/ghPullDetail.Base.Ref) — same wire key as HeadRef
@@ -147,6 +151,7 @@ var domainToWire = map[string][]string{
 	"ID":           {"id"},
 	"URL":          {"html_url", "url", "target_url"},
 	"UpdatedAt":    {"updated_at", "updatedAt"},
+	"CreatedAt":    {"created_at"},
 	"HeadSHA":      {"sha"},
 	"HeadRef":      {"ref"},
 	"BaseRef":      {"ref"},
@@ -426,7 +431,7 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 	// (1) Completeness across every wire-volatile key.
 	all := json.RawMessage(`{
 		"number": 1, "id": 2, "html_url": "h", "url": "u", "target_url": "t",
-		"updated_at": "a", "updatedAt": "b", "login": "l", "displayName": "d",
+		"updated_at": "a", "updatedAt": "b", "created_at": "c", "login": "l", "displayName": "d",
 		"sha": "s", "oid": "o", "ref": "r", "title": "ti", "body": "bo", "description": "de",
 		"endCursor": "Y3Vyc29y", "last": { "endCursor": null },
 		"state": "open", "keep": "kept"
@@ -435,6 +440,7 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 		"number": 42, "id": 42, "html_url": "https://example.invalid/canonical",
 		"url": "https://example.invalid/canonical", "target_url": "https://example.invalid/canonical",
 		"updated_at": "2026-08-01T12:30:00Z", "updatedAt": "2026-08-01T12:30:00Z",
+		"created_at": "2026-08-01T12:00:00Z",
 		"login": "octocat", "displayName": "octocat", "sha": "canonicalsha", "oid": "canonicalsha",
 		"ref": "canonical-ref", "title": "canonical title", "body": "canonical body",
 		"description": "canonical body", "endCursor": "canonical-cursor", "last": { "endCursor": null },
@@ -575,6 +581,7 @@ func TestUpdateCanonicalizeComposite(t *testing.T) {
 		// extra leg 4: GraphQL threads + required contexts — a bot comment login
 		// and body inside nested arrays, a thread node id, and paging cursors.
 		{status: 200, body: json.RawMessage(`{ "data": { "repository": { "pullRequest": {
+			"closingIssuesReferences": { "nodes": [] },
 			"reviewThreads": { "pageInfo": { "hasNextPage": false, "endCursor": "live-cursor" }, "nodes": [
 				{ "id": "PRRT_live", "isResolved": true, "path": "main.go", "comments": {
 					"pageInfo": { "hasNextPage": false, "endCursor": "live-c" },

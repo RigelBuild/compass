@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"connectrpc.com/connect"
@@ -119,7 +120,11 @@ func (b *boardService) SetIssueStateAsAccount(
 	if err != nil {
 		return nil, err
 	}
-	return &compassv1internal.SetIssueStateResponse{Issue: board.IssueToProto(committed)}, nil
+	wire, err := b.issueBrd.CommittedIssue(ctx, committed)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return &compassv1internal.SetIssueStateResponse{Issue: wire}, nil
 }
 
 // errUnspecifiedTarget is the in-band cause for an ISSUE_STATE_UNSPECIFIED
@@ -180,11 +185,11 @@ func (b *boardService) SetIssueState(
 		return store.Issue{}, transitionStoreError(err)
 	}
 
-	// Record + fan out the committed transition on the projection (the issue=16
-	// live stream + the durable-cache snapshot). State-only: the executor already
-	// owns the durable commit, so this never touches the store (a forge-only
-	// upsert would demand forge fields and could not carry the state column).
-	b.issueBrd.RecordAndPublish(committed)
+	// Record + fan out the committed transition. It always publishes; an error
+	// only means its re-read failed, and the transition is already durable.
+	if err := b.issueBrd.RecordAndPublish(ctx, committed); err != nil {
+		slog.WarnContext(ctx, "board: issue transition published from the caller's row", "issue", issueID, "error", err)
+	}
 
 	// Outbound tracker mirror on a real transition. Nil-safe. ARCHIVED has no
 	// tracker status, so it is elided. The mirror runs AFTER the state is durable +

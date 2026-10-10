@@ -83,7 +83,13 @@ func (s *Store) RecordAuthoredArtifact(ctx context.Context, a AuthoredArtifact) 
 	if err := a.valid(); err != nil {
 		return err
 	}
-	if err := s.q.RecordAuthoredArtifact(ctx, db.RecordAuthoredArtifactParams{
+	return recordAuthoredArtifact(ctx, s.q, a)
+}
+
+// recordAuthoredArtifact writes a validated row through q, so a caller's
+// transaction can include it.
+func recordAuthoredArtifact(ctx context.Context, q *db.Queries, a AuthoredArtifact) error {
+	if err := q.RecordAuthoredArtifact(ctx, db.RecordAuthoredArtifactParams{
 		ForgeProvider:   int16(a.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum (forge_authored_artifacts.forge_provider), always within int16
 		ForgeHost:       a.Host,
 		Repo:            a.Repo,

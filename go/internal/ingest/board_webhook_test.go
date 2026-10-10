@@ -160,9 +160,9 @@ func TestArmDropsNonEnabledRepo(t *testing.T) {
 	}
 }
 
-// TestArmDropsPRKind: a pull_request-kind event is filtered at Enqueue — never
-// queued, never hydrated.
-func TestArmDropsPRKind(t *testing.T) {
+// TestArmDropsPRKindWithoutPullHydrator: with no PR hydrator configured, a
+// pull_request-kind event is filtered at Enqueue — never queued, never hydrated.
+func TestArmDropsPRKindWithoutPullHydrator(t *testing.T) {
 	h := &fakeHydrator{result: forge.Issue{State: "open"}}
 	arm, sink := newArmHarness(t, h, newFakeTargets("owner/repo"), 16)
 

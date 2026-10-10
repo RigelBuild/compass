@@ -90,6 +90,9 @@ broker/identity/registration shape as comms:
 
 `forge_create_issue`/`forge_create_pull_request` carry a broker-scoped DL-206
 `client_request_id` (`ForgeBroker.idempotencyKey`); the other arms send none.
+`forge_create_pull_request` takes an optional `issue` (selector + `repo` +
+`number`) that links the PR to that issue on the board; the server checks only
+its shape, never reads the issue.
 Every tool spreads an optional forge selector (`forge_provider` +
 `forge_host`): unset = the configured default GitHub forge (DL-202);
 `forge_provider: "linear"` targets the issues-only Linear provider (DL-051)

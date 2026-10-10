@@ -314,9 +314,9 @@ func (s *service) SearchIssues(
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	out := make([]*compassv1.Issue, 0, len(issues))
-	for _, issue := range issues {
-		out = append(out, board.IssueToProto(issue))
+	out, err := s.issueBrd.IssueToProtoWithPrs(ctx, issues...)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&compassv1.SearchIssuesResponse{Issues: out}), nil
 }

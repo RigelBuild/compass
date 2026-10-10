@@ -8,6 +8,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,7 +115,8 @@ func newCachedPullNumberResolver(base PullNumberResolver, ttl time.Duration, now
 // forge.ErrNoPullRequestForSHA so the router's step 0 cannot tell a cache hit
 // from a fresh resolve.
 func (c *CachedPullNumberResolver) PullNumberForSHA(ctx context.Context, repo, headSHA string) (uint64, error) {
-	key := pullNumberKey{repo: repo, sha: headSHA}
+	// The board lane passes a lowercased repo and the notify lane does not.
+	key := pullNumberKey{repo: strings.ToLower(repo), sha: headSHA}
 
 	now := c.now()
 	c.mu.Lock()

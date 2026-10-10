@@ -1334,11 +1334,13 @@ func buildBoardWebhookWiring(
 	}
 	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok, Client: httpClient})
 
-	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, client, log)
+	// The board lane reuses the notify lane's head-SHA cache: every check_suite
+	// reaches both lanes, so one cache keeps it to one lookup.
+	notifyLane := buildForgeNotifyLane(cfg, st, hub, client, log)
+	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, client, notifyLane.pulls, log)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	notifyLane := buildForgeNotifyLane(cfg, st, hub, client, log)
 	sink := &fanoutSink{sinks: []ForgeEventSink{lane.sink, notifyLane.sink}}
 	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
 	// client is returned as the shared primary App client the author write leg
@@ -1406,6 +1408,7 @@ func buildBoardIngestLane(
 	st *store.Store,
 	issueBrd *board.IssueProjection,
 	client *forge.GitHub,
+	pullNumbers ingest.PullNumberResolver,
 	log *slog.Logger,
 ) (*boardIngestLane, error) {
 	fc := cfg.Forge.resolved()
@@ -1423,14 +1426,21 @@ func buildBoardIngestLane(
 	// (2) Assemble the pipeline over the shared client: the Ingester (sharing the
 	// existing issue projection), and the two arms over store adapters binding
 	// (provider, host).
-	ing := ingest.NewIngester(client, issueBrd, &compassv1.ForgeRef{
+	ref := &compassv1.ForgeRef{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 		Host:     fc.Host,
+	}
+	ing := ingest.NewIngester(client, issueBrd, ref)
+	pulls := ingest.NewPullRequestHydrator(client, issueBrd, ref)
+	arm := ingest.NewBoardWebhookArm(client, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{
+		Log:         log,
+		Pulls:       pulls,
+		PullNumbers: pullNumbers,
 	})
-	arm := ingest.NewBoardWebhookArm(client, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{Log: log})
 	reconciler := ingest.NewBoardReconciler(client, ing, &boardReconcileStore{st: st, provider: provider, host: fc.Host}, ingest.BoardReconcileConfig{
 		Backstop: fc.App.ReconcileBackstop,
 		Log:      log,
+		Pulls:    pulls,
 	})
 	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm, client: client}, nil
 }
@@ -1476,6 +1486,21 @@ func (a *boardReconcileStore) LoadRepoWatermark(ctx context.Context, repo string
 // coordinate after its rows sank (advance-after-sink).
 func (a *boardReconcileStore) StoreRepoWatermark(ctx context.Context, repo string, mark time.Time, etag string) error {
 	return a.st.StoreForgeRepoWatermark(ctx, a.provider, a.host, repo, mark, etag)
+}
+
+// PullRequestUpdatedAt returns the stored PR row's forge updated_at.
+func (a *boardReconcileStore) PullRequestUpdatedAt(ctx context.Context, repo string, number uint64) (time.Time, bool, error) {
+	return a.st.PullRequestUpdatedAt(ctx, store.ForgeCoord{Provider: a.provider, Host: a.host, Repo: repo, Number: number})
+}
+
+// PRsBackfilledAt returns when the repo's PR backfill ran.
+func (a *boardReconcileStore) PRsBackfilledAt(ctx context.Context, repo string) (time.Time, bool, error) {
+	return a.st.PRsBackfilledAt(ctx, a.provider, a.host, repo)
+}
+
+// MarkPRsBackfilled records that the repo's PR backfill ran.
+func (a *boardReconcileStore) MarkPRsBackfilled(ctx context.Context, repo string, at time.Time) error {
+	return a.st.MarkPRsBackfilled(ctx, a.provider, a.host, repo, at)
 }
 
 // forgeNotifyLane is the assembled GitHub agent-notification lane (RIG-2732 T7):

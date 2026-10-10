@@ -472,3 +472,18 @@ func TestCachedPullNumberResolverLastObservedWins(t *testing.T) {
 		t.Errorf("after a later observation = (%d, %v), want (88, nil)", num, err)
 	}
 }
+
+// TestCachedPullNumberResolverIgnoresRepoCase: the board and notify lanes pass
+// the same repo in different casing and share one lookup.
+func TestCachedPullNumberResolverIgnoresRepoCase(t *testing.T) {
+	base := &countingResolver{bySHA: map[string]uint64{"abc": 4}}
+	c := newCachedPullNumberResolver(base, time.Minute, time.Now)
+	for _, repo := range []string{"Owner/Repo", "owner/repo"} {
+		if n, err := c.PullNumberForSHA(context.Background(), repo, "abc"); err != nil || n != 4 {
+			t.Fatalf("PullNumberForSHA(%q) = %d, %v", repo, n, err)
+		}
+	}
+	if base.calls != 1 {
+		t.Fatalf("base calls = %d, want 1", base.calls)
+	}
+}

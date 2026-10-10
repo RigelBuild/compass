@@ -128,6 +128,7 @@ type Querier interface {
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
 	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
+	DeleteClosingRefLink(ctx context.Context, arg DeleteClosingRefLinkParams) error
 	// DeleteComputeUsageIntervalsBefore removes both events only when the end is old.
 	// It runs as the system role, so the tenant predicate is the only tenant scope.
 	DeleteComputeUsageIntervalsBefore(ctx context.Context, arg DeleteComputeUsageIntervalsBeforeParams) (int64, error)
@@ -180,6 +181,7 @@ type Querier interface {
 	// Its created_at is the best start we hold, so the start is marked estimated.
 	EnsureComputeUsageIntervalStart(ctx context.Context, agentAccountID string) error
 	EnsureForgeRepoSubscription(ctx context.Context, arg EnsureForgeRepoSubscriptionParams) error
+	FallbackIssuesForTarget(ctx context.Context, arg FallbackIssuesForTargetParams) ([]FallbackIssuesForTargetRow, error)
 	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
 	ForgeScopeUserExists(ctx context.Context, accountID string) (bool, error)
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
@@ -300,6 +302,7 @@ type Querier interface {
 	// An agent's group lives in its owner's namespace, which keys top-level names.
 	InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) (string, error)
 	InsertChannelPin(ctx context.Context, arg InsertChannelPinParams) error
+	InsertClosingRefLink(ctx context.Context, arg InsertClosingRefLinkParams) error
 	InsertCoordinationChannel(ctx context.Context, arg InsertCoordinationChannelParams) (string, error)
 	InsertCoordinationGroup(ctx context.Context, arg InsertCoordinationGroupParams) error
 	// Born kind=DM, zero-value policy (OPEN, ownerless) + mandatory; poison-free via
@@ -318,6 +321,9 @@ type Querier interface {
 	// RETURNING) rather than clobbering the winner. The seeded version is 1.
 	InsertModelRegistry(ctx context.Context, registry []byte) (int64, error)
 	InsertOwnerDMGroup(ctx context.Context, arg InsertOwnerDMGroupParams) error
+	// The create path's write: a webhook-hydrated row already present always wins.
+	// Only an enabled repo gets a row, since board ingestion never refreshes others.
+	InsertPullRequestIfAbsent(ctx context.Context, arg InsertPullRequestIfAbsentParams) error
 	InsertServerKeyState(ctx context.Context, arg InsertServerKeyStateParams) error
 	// Server-secrets registry queries (design record T0, mechanism C1/D6). The
 	// SERVER-owned half of the names-only secret registry, physically separate from
@@ -378,6 +384,7 @@ type Querier interface {
 	ListForgeScopeRepos(ctx context.Context, arg ListForgeScopeReposParams) ([]string, error)
 	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
+	ListPullRequestLinks(ctx context.Context, arg ListPullRequestLinksParams) ([]ListPullRequestLinksRow, error)
 	// ListTenantIDs lists every tenant. tenants has no row-level security, so the
 	// app role sees them all without the BYPASSRLS system role.
 	ListTenantIDs(ctx context.Context) ([]string, error)
@@ -400,6 +407,7 @@ type Querier interface {
 	// read methods map the generated rows (provider int, nullable swept_updated_at)
 	// back to the domain time.Time / ForgeRepoSubscription.
 	LoadForgeRepoWatermark(ctx context.Context, arg LoadForgeRepoWatermarkParams) (LoadForgeRepoWatermarkRow, error)
+	LoadPRsBackfilledAt(ctx context.Context, arg LoadPRsBackfilledAtParams) (pgtype.Timestamptz, error)
 	// Channel-pins (pinned board) queries (sqlc adoption T3, RIG-3034). These
 	// replace the inline SQL literals in internal/store/channel_pins.go; the
 	// hand-written Store methods and the in-tx FOR UPDATE lock / cap-check control
@@ -475,6 +483,7 @@ type Querier interface {
 	// an append would count the append's events twice or lose them.
 	LockTokenUsage(ctx context.Context) error
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
+	MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledParams) (int64, error)
 	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
 	MessageByID(ctx context.Context, id string) (MessageByIDRow, error)
 	MessageChannel(ctx context.Context, id string) (string, error)
@@ -492,6 +501,10 @@ type Querier interface {
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) error
+	PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error)
+	// Explicit links attach directly; a closing reference attaches only when none
+	// of the PR's explicit targets is an issue on the board.
+	PullRequestsForIssues(ctx context.Context, arg PullRequestsForIssuesParams) ([]PullRequestsForIssuesRow, error)
 	// Agent config-bundle queries (sqlc adoption T5, RIG-3034). These replace the
 	// inline SQL literals in internal/store/agent_config.go; the hand-written Store
 	// methods keep their signatures and own the bundle validation/hash and the
@@ -669,6 +682,7 @@ type Querier interface {
 	UpdateModelRegistry(ctx context.Context, arg UpdateModelRegistryParams) (int64, error)
 	UpdateTopicLastSeq(ctx context.Context, arg UpdateTopicLastSeqParams) error
 	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error
+	UpsertExplicitPullRequestLink(ctx context.Context, arg UpsertExplicitPullRequestLinkParams) error
 	UpsertForgeArtifactCursor(ctx context.Context, arg UpsertForgeArtifactCursorParams) error
 	// Issue-domain queries (sqlc adoption T6, RIG-3034). These replace the inline
 	// SQL literals in internal/store/issues.go; the hand-written Store methods keep
@@ -688,6 +702,8 @@ type Querier interface {
 	// ErrNotFound/ErrInvalidArgument mapping. The LinearAgentSession read maps the
 	// generated nullable fields back to LinearAgentSessionRow inline.
 	UpsertLinearAgentSession(ctx context.Context, arg UpsertLinearAgentSessionParams) (int64, error)
+	// Zero rows affected means the stored row is newer and the write was skipped.
+	UpsertPullRequestGuarded(ctx context.Context, arg UpsertPullRequestGuardedParams) (int64, error)
 	// UpsertSecret writes declaration+value in one row and, on a re-write of an
 	// existing (name, scope_kind, scope_id), rewrites value/nonce/key_version and the
 	// routing metadata. updated_at is maintained by the set_updated_at trigger, which

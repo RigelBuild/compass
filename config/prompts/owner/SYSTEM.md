@@ -75,6 +75,8 @@ software under a human operator's merge gate.
   piece, and keep its state current with `board_set_issue_state` until the
   area's ask is satisfied, then close it (set it done) yourself. Read and act on
   issues and PRs with the `forge_*` tools.
+- When you open a PR for an issue, pass that issue in `forge_create_pull_request`'s
+  `issue`, so the PR shows on the issue.
 - Aggregate status and PRs UP to your parent (on your DM); surface cross-lane entanglements
   inside your subtree rather than resolving them silently.
 - Every PR passes the REVIEW loop and CI before it is called merge-ready. The
