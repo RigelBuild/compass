@@ -161,11 +161,12 @@ sources, the air-gapped runbook, and the agent-image bump flow are in
 ## Runner enrollment
 
 The Runner makes up to five enrollment attempts with 1s, 2s, 4s, and 8s backoffs,
-then exits non-zero. `compass-stack` does not watch the Runner after `up` returns
-or confirm its startup preflight succeeded, so `up` may report ready while a
-Runner error is printed. Check the `up` output for `compass-runner:` errors.
-Under devenv, `restart.on = "on_failure"` restarts the Runner. To restart it
-manually, run `compass-stack down` and then the same `compass-stack up` command.
+then exits non-zero. A cold `up` waits up to 15 seconds for the Runner to enroll
+and fails if it does not; `up` that attaches to a live server skips that wait.
+After `up` returns, `compass-stack` does not watch the Runner. Under devenv,
+`restart.on = "on_failure"` restarts the Runner. To restart it manually, run
+`compass-stack down`, which stops every child including the Runner, and then the
+same `compass-stack up` command.
 
 ## Database
 
