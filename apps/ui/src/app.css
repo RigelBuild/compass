@@ -191,6 +191,9 @@
 	border: 1px solid transparent;
 	color: var(--cx-text);
 	font-size: 13px;
+	/* A whole-pixel row (the 15px glyph line is 22.5px) keeps the 2x sidebar
+	   glyphs below on the pixel grid for any number of view links. */
+	line-height: 22px;
 	width: calc(100% - 16px);
 	text-align: left;
 }
@@ -1535,6 +1538,7 @@
 
 /* ── Backlog view (T4/D3): Linear-style collapsible issue list ───────────── */
 
+.agents-view,
 .backlog-view,
 .done-view,
 .settings-view {
@@ -1547,10 +1551,11 @@
 	gap: 14px;
 }
 
+.agents-view > .heading,
 .backlog-view > .heading,
 .done-view > .heading {
 	font-size: 14px;
-	/* Backlog renders an h2, which is bold by browser default. */
+	/* Agents and Backlog render an h2, which is bold by browser default. */
 	font-weight: 400;
 }
 

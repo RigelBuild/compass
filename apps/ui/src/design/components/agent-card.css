@@ -1,0 +1,171 @@
+/* Agent tree — the site's Manager tree as a main view (AgentsView). Rows indent
+   26px per depth with a 1px elbow spine up to the parent; each row holds one
+   .agent-card. A spine into a working child carries data-flow="1" and a 1×6px
+   accent pip runs down it at --cx-spine-flow-period, which reduced motion
+   zeroes in tokens.css. Consumes only --cx-* tokens. */
+
+.agent-tree {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	max-width: 440px;
+	display: flex;
+	flex-direction: column;
+	gap: var(--cx-space-2);
+}
+
+.tree-row {
+	position: relative;
+	padding-left: calc(var(--depth) * 26px);
+}
+
+/* The elbow: down from the gap above, then across into the card's middle. */
+.tree-spine {
+	position: absolute;
+	top: calc(-1 * var(--cx-space-2));
+	left: calc((var(--depth) - 1) * 26px + 9px);
+	width: 13px;
+	height: calc(50% + var(--cx-space-2));
+	border-left: 1px solid var(--cx-border);
+	border-bottom: 1px solid var(--cx-border);
+}
+
+.tree-spine[data-flow="1"]::after {
+	content: "";
+	position: absolute;
+	top: 0;
+	left: -1px;
+	width: 1px;
+	height: 6px;
+	background: var(--cx-accent);
+	animation: cx-spine-flow var(--cx-spine-flow-period) var(--cx-ease-out)
+		infinite;
+}
+
+@keyframes cx-spine-flow {
+	0% {
+		top: 0;
+		opacity: 0;
+	}
+	15%,
+	85% {
+		opacity: 1;
+	}
+	100% {
+		top: calc(100% - 6px);
+		opacity: 0;
+	}
+}
+
+/* A zeroed period leaves the pip frozen at its first frame; hide it instead. */
+@media (prefers-reduced-motion: reduce) {
+	.tree-spine[data-flow="1"]::after {
+		display: none;
+	}
+}
+
+:root[data-reduce="on"] .tree-spine[data-flow="1"]::after {
+	display: none;
+}
+
+.agent-card {
+	display: grid;
+	grid-template-columns: 20px 1fr auto;
+	align-items: center;
+	gap: 11px;
+	width: 100%;
+	min-width: 0;
+	padding: 9px var(--cx-space-3);
+	background: var(--cx-bg-panel);
+	border: 1px solid var(--cx-border);
+	text-align: left;
+	transition: background var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+.agent-card:hover {
+	background: var(--cx-bg-hover);
+}
+
+.agent-card:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -1px;
+}
+
+.agent-card[data-root="1"] {
+	background: var(--cx-bg-raised);
+	border-left: 2px solid var(--cx-accent);
+}
+
+.agent-card[data-root="1"]:hover {
+	background: var(--cx-bg-hover);
+}
+
+.ac-body {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.ac-name {
+	overflow: hidden;
+	color: var(--cx-text);
+	font-size: var(--cx-text-md);
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.ac-meta {
+	display: flex;
+	align-items: center;
+	gap: var(--cx-space-2);
+}
+
+.ac-state {
+	color: var(--cx-st-idle);
+	font-size: 10px;
+}
+
+.ac-state[data-state="working"] {
+	color: var(--cx-st-working);
+}
+
+.ac-state[data-state="waiting"] {
+	color: var(--cx-st-waiting);
+}
+
+.ac-state[data-state="done"] {
+	color: var(--cx-st-done);
+}
+
+.ac-state[data-state="paused"] {
+	color: var(--cx-st-paused);
+}
+
+.ac-state[data-state="stopped"] {
+	color: var(--cx-st-stopped);
+}
+
+.ac-state[data-state="error"] {
+	color: var(--cx-st-error);
+}
+
+.ac-state[data-state="disconnected"] {
+	color: var(--cx-st-disconnected);
+}
+
+.ac-issue {
+	padding: 2px 6px;
+	background: var(--cx-bg);
+	border: 1px solid var(--cx-border);
+	color: var(--cx-text-dim);
+	font-size: var(--cx-text-xs);
+	white-space: nowrap;
+}
+
+.agents-empty {
+	margin: 0;
+	padding: var(--cx-space-3);
+	color: var(--cx-text-dim);
+	font-size: var(--cx-text-sm);
+}

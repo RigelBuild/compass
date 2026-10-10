@@ -79,6 +79,18 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		});
 	});
 
+	test("agents", async ({ page }) => {
+		await page.goto("/#/agents");
+		await page.locator(".agents-view").waitFor({ state: "visible" });
+		await page.locator(".agent-card").first().waitFor({ state: "visible" });
+		await page.evaluate(() => document.fonts.ready);
+		await expect(page).toHaveScreenshot("agents.png", {
+			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
 	test("backlog", async ({ page }) => {
 		await page.goto("/#/backlog");
 		await page.locator(".backlog-view").waitFor({ state: "visible" });

@@ -19,6 +19,7 @@ const routes: { name: string; path: string; match: RouteMatch }[] = [
 		path: "/agent/acc-x",
 		match: { view: "agent", agentId: "acc-x" },
 	},
+	{ name: "agents", path: "/agents", match: { view: "agents" } },
 	{ name: "backlog", path: "/backlog", match: { view: "backlog" } },
 	{ name: "done", path: "/done", match: { view: "done" } },
 	{ name: "settings", path: "/settings", match: { view: "settings" } },

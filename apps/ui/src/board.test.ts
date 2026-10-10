@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	ACTIVE_STATES,
 	activeIssues,
+	agentIssueChip,
 	backlogIssues,
 	boardAgents,
 	cellItems,
@@ -289,6 +290,41 @@ describe("laneTotal", () => {
 		expect(laneTotal(list, "in_progress")).toBe(3);
 		expect(laneTotal(list, "blocked")).toBe(1);
 		expect(laneTotal(list, "queued")).toBe(0);
+	});
+});
+
+describe("agentIssueChip", () => {
+	test("no active issue yields no chip", () => {
+		const list = [ws({ id: "o", state: "in_progress", assignee: "other" })];
+		expect(agentIssueChip("a", list, false)).toBeNull();
+	});
+
+	test("one active issue yields its key", () => {
+		const list = [
+			ws({ id: "i1", state: "in_review", assignee: "a", number: 7 }),
+		];
+		expect(agentIssueChip("a", list, false)).toBe("acme/repo#7");
+		expect(agentIssueChip("a", list, true)).toBe("github.com/acme/repo#7");
+	});
+
+	test("several active issues yield a count", () => {
+		const list = [
+			ws({ id: "i1", state: "in_progress", assignee: "a" }),
+			ws({ id: "i2", state: "blocked", assignee: "a" }),
+			ws({ id: "i3", state: "done", assignee: "a" }),
+		];
+		expect(agentIssueChip("a", list, false)).toBe("3 open");
+	});
+
+	test("pre-active and archived issues are ignored", () => {
+		const list = [
+			ws({ id: "b", state: "backlog", assignee: "a" }),
+			ws({ id: "t", state: "todo", assignee: "a" }),
+			ws({ id: "x", state: "archived", assignee: "a" }),
+			ws({ id: "q", state: "queued", assignee: "a", number: 3 }),
+		];
+		expect(agentIssueChip("a", list, false)).toBe("acme/repo#3");
+		expect(agentIssueChip("a", list.slice(0, 3), false)).toBeNull();
 	});
 });
 

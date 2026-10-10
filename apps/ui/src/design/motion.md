@@ -23,7 +23,8 @@ the product UI in `brand motion.md` §"The tech stack").
   (320ms, rare full-view morph — if a motion needs to be slower than 320ms to
   read, the motion is wrong), `--cx-ease-out` (settle), `--cx-ease-morph`
   (shared-element), `--cx-pulse-color`, `--cx-pulse-period` (1.6s),
-  `--cx-stream-char-ms` (12ms), `--cx-cursor-blink` (1s). A literal `200ms` or
+  `--cx-spine-flow-period` (1.4s), `--cx-stream-char-ms` (12ms),
+  `--cx-cursor-blink` (1s). A literal `200ms` or
   `cubic-bezier(...)` in a component is a review failure, exactly like a raw hex
   (`brand motion.md` §"Consumption rule"; enforced by `cx-token-gate`). A
   `steps(N)` count is keyframe structure, not a duration, and is allowed; the
@@ -43,7 +44,8 @@ the product UI in `brand motion.md` §"The tech stack").
   instant state change or a ≤80ms opacity crossfade; the meaning survives, only
   the travel drops, and motion never sole-carries meaning — state is always also
   in glyph / color / text (`brand motion.md` §"Reduced-motion discipline").
-  `tokens.css` zeroes every duration and `--cx-pulse-period` under
+  `tokens.css` zeroes every duration, `--cx-pulse-period` and
+  `--cx-spine-flow-period` under
   `prefers-reduced-motion: reduce` and mirrors it on `[data-reduce="on"]`, so
   token-driven travel collapses automatically; the per-primitive notes below
   cover only what needs an explicit substitution beyond that zeroing.
@@ -68,6 +70,19 @@ the brand pulse cadence.
   `tokens.css`, collapsing the pulse to a static green glyph. The other seven
   states never animate — glyph + color distinguish them (`brand state-icons.md`),
   so the set is reduced-motion-safe by construction.
+
+## Spine flow
+
+The agent tree's delegation cue (`components/agent-card.css`): a 1×6px
+`--cx-accent` pip runs down the spine into a `working` child.
+
+- **Keyframe.** `@keyframes cx-spine-flow` fades the pip in, moves it from the
+  top of the spine to its foot, and fades it out, once per
+  `--cx-spine-flow-period` with `--cx-ease-out`.
+- **Budget.** It is the Agents view's one unbounded motion; the state-dot column
+  beside it stays the sanctioned exception.
+- **Reduced-motion.** The period is zeroed in `tokens.css` and the pip is
+  hidden, so the static spine still shows the delegation.
 
 ## Chase-light spinner + bar
 
@@ -232,3 +247,4 @@ removal; state always also carried by glyph / color / text):
 | everyday | ease-out translate + fade | instant, or ≤80ms opacity crossfade |
 | boot-sequence | staged pixel-assembly + pulse + fades | instant final state |
 | tour entrance | chase walks the welcome frame once | frame cells lit at once |
+| spine flow | pip runs down the spine into a working child | pip hidden; static spine |

@@ -397,7 +397,7 @@ describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
 	test("every converted view button drops `title`, keeps `aria-keyshortcuts` where a chord exists, and has a text accessible name", () => {
 		const { container } = mountSidebar();
 		const buttons = viewButtons(container);
-		expect(buttons.length).toBe(4);
+		expect(buttons.length).toBe(5);
 		for (const b of buttons) {
 			expect(b.hasAttribute("title")).toBe(false);
 			// Text-labelled buttons carry their accessible name from visible text —
@@ -408,6 +408,16 @@ describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
 		// Bridge + Settings have keymap rows → aria-keyshortcuts present.
 		const bridge = buttons.find((b) => b.textContent?.includes("Bridge"));
 		expect(bridge?.getAttribute("aria-keyshortcuts")).toBeTruthy();
+	});
+
+	test("Agents is the first view link and opens the agent tree", () => {
+		const { store, container } = mountSidebar();
+		const first = viewButtons(container)[0];
+		expect(first?.textContent).toContain("Agents");
+		if (!first) throw new Error("no view link rendered");
+		fireEvent.click(first);
+		flushSync();
+		expect(store.view()).toBe("agents");
 	});
 });
 

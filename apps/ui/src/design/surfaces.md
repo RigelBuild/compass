@@ -393,6 +393,28 @@ streaming treatment's igniting character, not the brand mark.
 7. Add the trace-empty and home-channel-empty states.
 8. Delete the legacy workspace/log selectors in the same diff.
 
+## Agents
+
+The agent tree as a main view at `/agents`: the site's Manager tree. It is the
+first view link in the left sidebar and the first view destination in the
+palette.
+
+**Composition.** One `.agent-card` per agent (`agent-card.css`) in a
+`.tree-row` indented 26px per depth, depth-first with parents above children.
+A 1px `--cx-border` elbow (`.tree-spine`) joins each child to its parent. The
+card is a `20px 1fr auto` grid: the 2× `.cx-state-dot`, the handle over the
+state label in the state color, and an issue chip (the active issue key, or
+`N open`). Root cards sit on `--cx-bg-raised` with a 2px `--cx-accent` left
+rule. A spine into a `working` child carries `data-flow="1"` and a pip runs
+down it at `--cx-spine-flow-period`.
+
+**Focus and keyboard.** The main-view focus zone. Each card is a button; click
+or `Enter` opens the agent's workspace.
+
+**Empty states.** No agents renders one "No agents yet." line.
+
+**Mark placement.** None.
+
 ## Backlog / Done / Settings
 
 These are list and form surfaces with no bespoke styling: they reuse the shared
@@ -428,8 +450,8 @@ sections with current values; an unconfigured mapping row shows a faint
 
 ## Window-scoped views
 
-Every top-level surface — the Bridge, a channel and its topics, an agent
-workspace, Backlog / Done, and Settings — is an independently mountable
+Every top-level surface — the Bridge, the agent tree, a channel and its topics,
+an agent workspace, Backlog / Done, and Settings — is an independently mountable
 window-scoped view. This is the decomposition that makes the desktop app
 first-class multi-window: one window on the Bridge, another on a channel, another
 on a specific agent's workspace.

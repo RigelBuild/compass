@@ -11,6 +11,7 @@ const ROUTE_PATTERN: Record<RouteMatch["view"], string> = {
 	channel: "/channel/:channelId",
 	topic: "/channel/:channelId/topic/:topicId",
 	agent: "/agent/:agentId",
+	agents: "/agents",
 	backlog: "/backlog",
 	done: "/done",
 	settings: "/settings",

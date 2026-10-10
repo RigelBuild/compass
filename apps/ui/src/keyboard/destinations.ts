@@ -43,15 +43,28 @@ function scored<T extends { id: string; title: string }>(
 }
 
 /**
- * The four static view destinations (Bridge/Backlog/Done/Settings) — the same
- * `show*` paths the D6 seed commands fire, surfaced as navigation results.
+ * The five static view destinations (Agents/Bridge/Backlog/Done/Settings) — the
+ * same `show*` paths the D6 seed commands fire, surfaced as navigation results.
  */
-const VIEW_TARGETS: readonly { id: string; title: string }[] = [
+const VIEW_TARGETS = [
+	{ id: "agents", title: "Agents" },
 	{ id: "bridge", title: "Bridge" },
 	{ id: "backlog", title: "Backlog" },
 	{ id: "done", title: "Done" },
 	{ id: "settings", title: "Settings" },
-];
+] as const satisfies readonly { id: string; title: string }[];
+
+// Keyed on the target ids, so a new view target cannot ship without its route.
+const VIEW_SHOW = {
+	agents: "showAgents",
+	bridge: "showBridge",
+	backlog: "showBacklog",
+	done: "showDone",
+	settings: "showSettings",
+} as const satisfies Record<
+	(typeof VIEW_TARGETS)[number]["id"],
+	keyof AppStore
+>;
 
 function mapMessageHit(
 	message: Message,
@@ -180,10 +193,7 @@ export function createStoreDestinationProviders(
 			query: (input) =>
 				Promise.resolve(
 					scored(VIEW_TARGETS, "view", input, (item) => () => {
-						if (item.id === "backlog") store.showBacklog();
-						else if (item.id === "done") store.showDone();
-						else if (item.id === "settings") store.showSettings();
-						else store.showBridge();
+						store[VIEW_SHOW[item.id]]();
 					}),
 				),
 		},

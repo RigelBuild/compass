@@ -22,6 +22,7 @@ function stubDeps(
 	overrides: Partial<{
 		showBridge: () => void;
 		toggleShortcuts: () => void;
+		showAgents: () => void;
 		showBacklog: () => void;
 		showDone: () => void;
 		showSettings: () => void;
@@ -38,6 +39,7 @@ function stubDeps(
 	return {
 		showBridge: () => {},
 		toggleShortcuts: () => {},
+		showAgents: () => {},
 		showBacklog: () => {},
 		showDone: () => {},
 		showSettings: () => {},

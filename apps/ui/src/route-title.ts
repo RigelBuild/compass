@@ -14,6 +14,8 @@ export function routeTitle(
 	switch (match.view) {
 		case "bridge":
 			return "Bridge";
+		case "agents":
+			return "Agents";
 		case "backlog":
 			return "Backlog";
 		case "done":

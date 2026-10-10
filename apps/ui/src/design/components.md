@@ -853,6 +853,22 @@ carried by the accent rule, not a raised background.
 
 Agent tree + channel/topic rows; caret, state dot, pin affordance.
 
+## Agent card
+
+- **Classes:** `.agent-tree` > `.tree-row` (`--depth`) holding an optional
+  `.tree-spine` (`data-flow="1"` into a working child) and an `.agent-card`
+  (`data-root="1"` on roots), with `.ac-name`, `.ac-state` (`data-state`) and
+  `.ac-issue`. CSS in `agent-card.css`.
+- **States:** rest / hover / focus. Root cards add the raised ground and the
+  accent left rule.
+- **Tokens:** `--cx-bg`, `--cx-bg-panel`, `--cx-bg-raised`, `--cx-bg-hover`,
+  `--cx-border`, `--cx-accent`, `--cx-text`, `--cx-text-dim`, `--cx-st-*`,
+  `--cx-text-xs/-sm/-md`, `--cx-space-2/-3`, `--cx-spine-flow-period`,
+  `--cx-motion-fast`, `--cx-ease-out`, `--cx-focus-ring`.
+
+The Agents view's Manager tree. The spine pip is the view's one unbounded
+motion; reduced motion zeroes its period and hides it.
+
 ## Menu (Kobalte)
 
 - **Class:** `.cx-menu`, with `.cx-menu-item` (`data-highlighted`,

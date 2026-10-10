@@ -70,6 +70,7 @@
 	/* --- Compass motion tier (inherited, consumed as-is) --- */
 	--cx-motion-fast: 80ms; /* user-caused feedback */
 	--cx-motion-base: 140ms; /* system-caused change */
+	--cx-spine-flow-period: 1.4s; /* agent-tree spine pip, the site's spine-flow */
 
 	/* --- Brand motion tier (this layer) --- */
 	--rigel-motion-slow: 320ms; /* rare full-view morph */
@@ -278,6 +279,7 @@
 @media (prefers-reduced-motion: reduce) {
 	:root {
 		--cx-motion-fast: 0ms;
+		--cx-spine-flow-period: 0s;
 		--cx-motion-base: 0ms;
 		--rigel-motion-slow: 0ms;
 		--rigel-pulse-period: 0s;
@@ -288,6 +290,7 @@
    without changing OS settings. data-reduce="on" mirrors the media query. */
 :root[data-reduce="on"] {
 	--cx-motion-fast: 0ms;
+	--cx-spine-flow-period: 0s;
 	--cx-motion-base: 0ms;
 	--rigel-motion-slow: 0ms;
 	--rigel-pulse-period: 0s;
