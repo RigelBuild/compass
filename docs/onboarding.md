@@ -89,137 +89,44 @@ between them is a host change, not a data migration.
 **The tier is chosen at bring-up by the `COMPASS_RUNTIME_BACKEND` environment
 variable, not by the host's capabilities.** A KVM-capable host still runs the
 entry tier's containers unless you ask for microVMs. The microVM tier also
-needs guest images and a run root; see
-[Bringing the stack up](#bringing-the-stack-up).
+needs guest images and a run root; see the
+[guest image guide](./self-host-guest-image.md).
 
 ## What to run it on
 
-Pick the host by capability rather than by brand. Both tiers need a Linux host
-with rootless podman available.
-
-**Entry tier — any Linux box that can run rootless podman.** No `/dev/kvm`
-needed. A small VPS is enough to start; give it enough RAM for the server, the
-database container, and your concurrent sessions.
-
-**microVM tier — a host where `/dev/kvm` is present and openable.** In practice
-that means one of:
-
-- a bare-metal or dedicated-server machine (a dedicated-vCPU cloud plan is not
-  the same thing — dedicated cores do not imply an exposed `/dev/kvm`);
-- a cloud instance type that explicitly advertises **nested virtualization**;
-- a Linux workstation where your user is in the `kvm` group.
-
-Most general-purpose cloud instances do not expose `/dev/kvm`, and nothing tells
-you until a session fails to boot. Check before you commit to a provider: on any
-candidate host, `ls -l /dev/kvm` answers it with nothing installed, and
-`compass-stack preflight` confirms the full set once the binaries are in place.
-
-Known to work, in no particular order and with no endorsement implied:
-bare-metal and dedicated-server offerings from Hetzner, OVH, and Equinix Metal;
-nested-virt instance types on Google Compute Engine; `*.metal` instance types on
-AWS EC2. Any host meeting the capability bar above works just as well. This list
-is a starting point for shopping rather than a ranking between vendors.
+Choose a host by capability, not brand. Both tiers need Linux and rootless
+podman. The entry tier needs no KVM. The microVM tier needs `/dev/kvm` openable
+by the stack user and the microVM userspace. Most cloud instances do not expose
+`/dev/kvm`; check the [self-host prerequisites](./self-host.md#prerequisites)
+before choosing a host.
 
 ## Deployment shapes
 
-Two shapes, both documented in full in [self-host.md](./self-host.md). That
-reference is written for the microVM tier: read its KVM and microVM-userspace
-prerequisites as microVM-tier-only, while its flags, systemd unit, and database
-sections apply to both tiers.
+Two shapes are supported:
 
-**Dedicated Linux box.** The stack runs on its own machine, the server binds a
-routable TLS address, and clients connect from elsewhere. This is the shape for a
-shared or long-lived install.
+- **Dedicated Linux box.** The server runs on its own host and serves clients
+  over TLS. See [Dedicated KVM machine](./self-host.md#dedicated-kvm-machine).
+- **One box, localhost TLS.** The stack and client share a machine, and the
+  server serves only the local client. See
+  [One-box localhost-TLS](./self-host.md#one-box-localhost-tls).
 
-**One box, localhost TLS.** The stack and the client live on the same machine and
-the server binds the loopback door. This is the evaluation and solo-use shape.
-TLS still applies, so the client transport is identical to the dedicated-box
-shape — only the reachable surface differs.
+The self-host guide describes the microVM tier. Its KVM and microVM-userspace
+prerequisites are microVM-only; its installation, flags, systemd, and database
+instructions apply to both tiers.
 
 ## Bringing the stack up
 
-Install the binaries, then bring the stack up. The nix flake is the recommended
-channel for both tiers: it pins every binary to a matched set, needs no manual
-`PATH` placement, and carries the pinned microVM userspace for the microVM tier.
+Install the binaries with the [recommended Nix flake](./self-host.md#nix-flake-recommended)
+or a [release tarball](./self-host.md#release-tarball), then follow the
+[prerequisites](./self-host.md#prerequisites) and the commands for your
+[deployment shape](./self-host.md#deployment-shapes). Containers are the
+default tier. Select microVMs with `COMPASS_RUNTIME_BACKEND=microvm`; that tier
+also needs guest assets and a run root, covered by the
+[guest image guide](self-host-guest-image.md).
 
-```console
-nix profile install \
-    github:RigelBuild/compass#compass-server \
-    github:RigelBuild/compass#compass-runner \
-    github:RigelBuild/compass#compass-stack \
-    github:RigelBuild/compass#compass-stack-env
-```
-
-On the entry tier you can omit `compass-stack-env`: the microVM userspace is
-only used by the microVM tier. A release tarball is also published per release
-and does not carry that userspace either. Both channels are covered in
-[self-host.md](./self-host.md#installing-the-binaries).
-
-On a microVM-tier host, check the host prerequisites before the first bring-up:
-
-```console
-compass-stack preflight
-```
-
-This verifies `/dev/kvm`, rootless podman, and the microVM userspace floors. A
-failing check names the missing dependency and exits non-zero. It covers the
-host, not the whole microVM contract — see the microVM-tier note below.
-
-> **Entry tier:** `compass-stack preflight` currently checks the microVM
-> prerequisites unconditionally, so it reports failures for `/dev/kvm` and the
-> microVM userspace on an entry-tier host even though that host is supported.
-> Skip the preflight on the entry tier for now; a backend-aware preflight that
-> reports the right verdict per tier is in progress.
-
-Then bring it up. The stack provisions its own PostgreSQL by default, so there
-is no database to install:
-
-```console
-compass-stack up \
-    --state-dir /var/lib/compass \
-    --image ghcr.io/rigelbuild/compass-agent:latest \
-    --gateway-image <gateway-image>@sha256:<hex> \
-    --listen 0.0.0.0:50052
-```
-
-This runs the entry tier, which is the default backend. The LLM gateway has no
-default image, so `up` needs `--gateway-image` or `--gateway-external`.
-
-> **microVM tier:** selecting the backend is not sufficient on its own. The
-> runner also needs a guest kernel, rootfs, and initrd, plus a run root. Pull
-> or stage the guest with `--guest-artifact` or `--guest-dir`, or set the
-> `COMPASS_MICROVM_*` paths, and set `COMPASS_MICROVM_RUNROOT`; the
-> [guest image guide](self-host-guest-image.md) covers each. `compass-stack up`
-> does not yet check that the runner started, so a runner that fails preflight
-> still reports ready. Check the `up` output for `compass-runner:` errors.
-
-Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. To
-check on the stack afterwards, `compass-stack status` takes the same
-`--state-dir`, `--image`, and `--listen` as `up`:
-
-```console
-compass-stack status \
-    --state-dir /var/lib/compass \
-    --image ghcr.io/rigelbuild/compass-agent:latest \
-    --listen 0.0.0.0:50052
-```
-
-The `--listen` above is the dedicated-box value; on the one-box shape drop it
-here too, exactly as you did for `up`.
-
-It attaches to a running stack and reports the server's health. Note that it is
-not a read-only probe: against a stack that is not running it brings one up
-rather than reporting it down, which is why it takes the same `--listen` — pass
-the one you brought the stack up with. The health it reports is the server's,
-not the whole stack's; the agent runner is started last and is not covered, so
-a ready server does not by itself confirm a session can run. Connecting a
-client and running a session needs the app, which has no working install yet —
-see the note in [The app](#the-app).
-
-For a stack that survives reboots, run it under systemd —
-[self-host.md](./self-host.md#running-under-systemd) carries a working unit. To
-use an existing PostgreSQL instead of the bundled one, see
-[Database](./self-host.md#database).
+The stack bundles PostgreSQL by default. To use an existing database, see
+[Database](./self-host.md#database). For reboot persistence and readiness
+checks, see [Running under systemd](./self-host.md#running-under-systemd).
 
 ## On a Mac
 
