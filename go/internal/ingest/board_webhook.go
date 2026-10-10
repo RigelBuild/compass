@@ -55,13 +55,20 @@ type BoardArmConfig struct {
 	QueueSize int
 	// Log is the arm logger; nil uses slog.Default().
 	Log *slog.Logger
+	// Pulls hydrates PR events onto the board; nil drops every PR event.
+	Pulls *PullRequestHydrator
+	// PullNumbers maps a CHECKS event's head SHA to its PR; nil drops those events.
+	PullNumbers PullNumberResolver
 }
 
-// boardCoord is the (repo, number) coalescing key: the drain collapses every
-// queued event for one coordinate to a single hydrate GET.
+// boardCoord is the coalescing key: the drain collapses every queued event for
+// one artifact to a single hydrate. A CHECKS event keys on its head SHA until
+// the drain resolves it to a PR number.
 type boardCoord struct {
-	repo   string
-	number uint64
+	repo    string
+	kind    compassv1internal.ForgeArtifactKind
+	number  uint64
+	headSHA string
 }
 
 // BoardWebhookArm consumes board-relevant forge events from the webhook ingress
@@ -70,6 +77,8 @@ type BoardWebhookArm struct {
 	queue    chan forge.ForgeEvent
 	hydrator issueHydrator
 	ing      *Ingester
+	pulls    *PullRequestHydrator
+	numbers  PullNumberResolver
 	targets  TargetChecker
 	log      *slog.Logger
 	dropped  atomic.Int64
@@ -90,6 +99,8 @@ func NewBoardWebhookArm(h issueHydrator, ing *Ingester, targets TargetChecker, c
 		queue:    make(chan forge.ForgeEvent, size),
 		hydrator: h,
 		ing:      ing,
+		pulls:    cfg.Pulls,
+		numbers:  cfg.PullNumbers,
 		targets:  targets,
 		log:      log,
 	}
@@ -100,12 +111,11 @@ func NewBoardWebhookArm(h issueHydrator, ing *Ingester, targets TargetChecker, c
 func (a *BoardWebhookArm) Dropped() int64 { return a.dropped.Load() }
 
 // Enqueue satisfies server.ForgeEventSink's contract (github_webhook.go:44-51):
-// it MUST NOT block. It filters to board-relevant issue events (Change ∈
-// {OPENED, STATE, UPDATE} ∧ Kind == ISSUE — PR events and COMMENT-change events
-// dropped, design.md:231-237) then channel try-sends; a full queue DROPS the
-// event with the drop metric + a Warn (the T3 reconciler heals it).
+// it MUST NOT block. It filters to board-relevant events, then channel
+// try-sends; a full queue DROPS the event with the drop metric + a Warn (the
+// reconciler heals it).
 func (a *BoardWebhookArm) Enqueue(_ context.Context, ev forge.ForgeEvent) {
-	if !boardRelevant(ev) {
+	if !a.boardRelevant(ev) {
 		return
 	}
 	select {
@@ -115,25 +125,6 @@ func (a *BoardWebhookArm) Enqueue(_ context.Context, ev forge.ForgeEvent) {
 		boardWebhookDrops.Add(1)
 		a.log.Warn("board webhook: queue full, dropping event (reconciler heals)",
 			"repo", ev.Repo, "number", ev.Number, "change", ev.Change)
-	}
-}
-
-// boardRelevant reports whether an event is a board-relevant issue change:
-// Kind == ISSUE and Change ∈ {OPENED, STATE, UPDATE}. COMMENT-change issue
-// events (issue_comment also parses to Kind ISSUE, githubapp_webhook.go:196-210)
-// and every PR-kind event are excluded — the board projects issues only, and
-// admitting comments would burn one hydrate GET per comment (design.md:231-237).
-func boardRelevant(ev forge.ForgeEvent) bool {
-	if ev.Kind != compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE {
-		return false
-	}
-	switch ev.Change {
-	case compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED,
-		compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_STATE,
-		compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_UPDATE:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -151,18 +142,47 @@ func (a *BoardWebhookArm) Run(ctx context.Context) error {
 	}
 }
 
-// drainBatch coalesces first into a distinct-coordinate set (design.md:271-274):
-// it seeds with the event that woke the drain, non-blockingly drains every other
-// currently-queued event, and keys each on its NORMALIZED (repo, number) — so an
-// edit storm on one issue, and a mixed-case duplicate of one repo, both collapse
-// to a single coordinate. It then hydrates + sinks each distinct coordinate once,
-// in arrival order.
+// boardRelevant reports whether an event changes what the board shows. Issue
+// events count on OPENED, STATE or UPDATE; an issue COMMENT would burn one
+// hydrate per comment for nothing shown. Every PR event counts, since reviews
+// and checks show on the PR, but only when the arm can hydrate PRs.
+func (a *BoardWebhookArm) boardRelevant(ev forge.ForgeEvent) bool {
+	switch ev.Kind {
+	case compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE:
+		switch ev.Change {
+		case compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED,
+			compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_STATE,
+			compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_UPDATE:
+			return true
+		default:
+			return false
+		}
+	case compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST:
+		if a.pulls == nil {
+			return false
+		}
+		if ev.Number == 0 {
+			return ev.HeadSHA != "" && a.numbers != nil
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// drainBatch coalesces the event that woke the drain and every other queued
+// event into distinct keys: normalized repo, kind and number, or head SHA for a
+// CHECKS event with no number. An edit storm and a mixed-case duplicate both
+// collapse to one key. It then hydrates + sinks each key once, in arrival order.
 func (a *BoardWebhookArm) drainBatch(ctx context.Context, first forge.ForgeEvent) {
 	seen := map[boardCoord]struct{}{}
 	var order []boardCoord
 
 	add := func(ev forge.ForgeEvent) {
-		c := boardCoord{repo: normalizeBoardRepo(ev.Repo), number: ev.Number}
+		c := boardCoord{repo: normalizeBoardRepo(ev.Repo), kind: ev.Kind, number: ev.Number}
+		if ev.Number == 0 {
+			c.headSHA = ev.HeadSHA
+		}
 		if _, ok := seen[c]; ok {
 			return
 		}
@@ -182,18 +202,18 @@ func (a *BoardWebhookArm) drainBatch(ctx context.Context, first forge.ForgeEvent
 
 process:
 	for _, c := range order {
-		if err := a.hydrateAndSink(ctx, c); err != nil {
+		if err := a.resolveAndSink(ctx, c, seen); err != nil {
 			if errors.Is(err, forge.ErrBudgetExhausted) {
 				// Budget exhausted pauses the drain: abandon the rest of this
 				// batch (the reconciler heals the un-hydrated coordinates) and
 				// resume once the client gate reopens.
 				a.log.WarnContext(ctx, "board webhook: budget exhausted, pausing drain (reconciler heals)",
-					"repo", c.repo, "number", c.number)
+					"repo", c.repo, "number", c.number, "head_sha", c.headSHA)
 				return
 			}
 			// Per-event errors log-and-continue (driver.go:96-98 idiom).
 			a.log.WarnContext(ctx, "board webhook: hydrate/sink failed (isolated)",
-				"repo", c.repo, "number", c.number, "err", err)
+				"repo", c.repo, "number", c.number, "head_sha", c.headSHA, "err", err)
 		}
 		if ctx.Err() != nil {
 			return
@@ -201,10 +221,34 @@ process:
 	}
 }
 
-// hydrateAndSink gates the coordinate's repo, hydrates the issue via an
-// unconditional conditional GET (the event proves change; no stored per-issue
-// ETag in v1, design.md:276-277), and sinks the fresh issue through the shared
-// Ingester (ingest.go:82-99 — the one owner-strip/translate/stamp pipeline). A
+// resolveAndSink maps a head-SHA CHECKS key to its PR number, then hydrates.
+// A disabled repo spends no lookup. A commit with no PR is skipped, as is a PR
+// already in this batch; seen gains the resolved key so a later duplicate is
+// skipped too.
+func (a *BoardWebhookArm) resolveAndSink(ctx context.Context, c boardCoord, seen map[boardCoord]struct{}) error {
+	if c.headSHA != "" {
+		enabled, err := a.targets.IsEnabledRepo(ctx, c.repo)
+		if err != nil || !enabled {
+			return err
+		}
+		n, err := a.numbers.PullNumberForSHA(ctx, c.repo, c.headSHA)
+		if errors.Is(err, forge.ErrNoPullRequestForSHA) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		c = boardCoord{repo: c.repo, kind: c.kind, number: n}
+		if _, dup := seen[c]; dup {
+			return nil
+		}
+		seen[c] = struct{}{}
+	}
+	return a.hydrateAndSink(ctx, c)
+}
+
+// hydrateAndSink gates the coordinate's repo, then hydrates the artifact (the
+// event proves change, so an issue read sends no stored ETag) and sinks it. A
 // non-enabled repo is dropped silently.
 func (a *BoardWebhookArm) hydrateAndSink(ctx context.Context, c boardCoord) error {
 	enabled, err := a.targets.IsEnabledRepo(ctx, c.repo)
@@ -213,6 +257,9 @@ func (a *BoardWebhookArm) hydrateAndSink(ctx context.Context, c boardCoord) erro
 	}
 	if !enabled {
 		return nil
+	}
+	if c.kind == compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST {
+		return a.pulls.Hydrate(ctx, c.repo, c.number)
 	}
 	res, err := a.hydrator.GetIssueConditional(ctx, c.repo, c.number, "")
 	if err != nil {
