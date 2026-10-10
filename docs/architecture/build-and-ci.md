@@ -255,9 +255,10 @@ The frozen record
 distribution surface. This section lists what is live.
 
 **The Release.** `release-pr` cuts the `vX.Y.Z` tag and creates the GitHub
-Release as a **draft**. `release-assets` builds and attaches every asset, then
-publishes the draft as its last step. Releases are immutable once published,
-so a release published before its assets exist could never get them.
+Release as a **draft**. `release-assets` builds the Linux assets, collects the
+macOS dmg from `release-assets-macos`, attaches the set, then publishes the
+draft as its last step. Releases are immutable once published, so a release
+published before its assets exist could never get them.
 
 | Asset | Built by | Notes |
 | --- | --- | --- |
@@ -265,7 +266,11 @@ so a release published before its assets exist could never get them.
 | `compass_<tag>_darwin-arm64` | `release-assets` | the CLI, cross-built |
 | `compass-app_<tag>_linux-amd64.tar.gz` | `release-assets` | gtk4 shell, the embedded sidecars, UI dist |
 | `compass-app_<tag>_darwin-arm64.dmg` | `release-assets-macos` (`macos-14`) | ad-hoc signed `.app`; handed over as an artifact |
-| `SHA256SUMS`, `nix-outputs.json` | `release-assets` | one checksum file over the binaries |
+| `SHA256SUMS` | `release-assets` | checksums of the six downloads above |
+| `nix-outputs.json` | `release-assets` | nix output manifest; not in `SHA256SUMS` |
+
+`compass-stack` is not a release asset yet, although the design record adds it
+to the binary set. Install it from the flake.
 
 The macOS app links the system WebKit framework, so it builds only on a mac
 runner and is never cross-compiled. Developer ID signing, notarization and the
@@ -274,14 +279,16 @@ enrollment.
 
 **Nix flake.** `flake.nix` exposes `compass`, `compass-server`,
 `compass-runner`, `compass-stack`, `compass-app`, `compass-ui` and
-`compass-stack-env`. `compass-stack-env` bundles the microVM userspace trio and
-`secretspec`. The `flake-gate` moon project runs `nix flake check`, so a
-package that stops building from a bare checkout fails CI.
+`compass-stack-env`, for `x86_64-linux` only. `compass-stack-env` bundles the
+microVM userspace trio and `secretspec`. The `flake-gate` moon project runs
+`nix flake check`, so a package that stops building from a bare checkout fails
+CI.
 
 **darwin CI.** The `ci.yml` `darwin` job compiles the macOS shell and builds
 the ad-hoc signed `.app`/`.dmg` with `tools/macos-bundle` on `macos-14`. It
-runs the full sweep on every push to main and nightly, and runs on a PR only
-when moon reports a darwin-relevant project affected.
+runs on every push to main and nightly. On a PR it runs only when the setup
+job's `darwin_affected` output is true (computed by `tools/ci-matrix` from the
+changed paths).
 
 **Postgres image.** The stack's default database is the stock `postgres:18`
 image pinned by digest (`DefaultPostgresImage` in
