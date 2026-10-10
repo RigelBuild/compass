@@ -149,6 +149,63 @@ func TestDeliverSequenceGapDetection(t *testing.T) {
 			t.Fatal("SeenGap true on a contiguous 1,2,3; a gap-free stream must not flag")
 		}
 	})
+
+	// A restarted Runner's counter starts over, so the tracker must start over too.
+	t.Run("re-enroll restarts tracking", func(t *testing.T) {
+		hub := newHubOnly()
+		enroll := func() {
+			hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+		}
+		enroll()
+		deliverSeq(t, hub, 10)
+		deliverSeq(t, hub, 12)
+		enroll()
+		deliverSeq(t, hub, 1)
+		if hub.SeenGap() {
+			t.Fatal("SeenGap true after re-enroll; the old process's missing 11 must not carry over")
+		}
+		deliverSeq(t, hub, 3)
+		if !hub.SeenGap() {
+			t.Fatal("SeenGap false after the new process's 1 then 3")
+		}
+	})
+
+	// Untracked seqs can never be proven seen, so overflow holds for the enrollment.
+	t.Run("overflow stays a gap until re-enroll", func(t *testing.T) {
+		hub := newHubOnly()
+		enroll := func() {
+			hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+		}
+		enroll()
+		deliverSeq(t, hub, 1)
+		deliverSeq(t, hub, maxMissingSeqs+3)
+		for seq := uint64(2); seq < maxMissingSeqs+3; seq++ {
+			deliverSeq(t, hub, seq)
+		}
+		if !hub.SeenGap() {
+			t.Fatal("SeenGap false after an overflowed jump; untracked seqs cannot be proven seen")
+		}
+		enroll()
+		deliverSeq(t, hub, 1)
+		if hub.SeenGap() {
+			t.Fatal("SeenGap true after re-enroll; overflow must reset with the enrollment")
+		}
+	})
+
+	// Container Gateways share one counter on separate streams, so 2 can trail 3.
+	t.Run("late arrival closes the gap", func(t *testing.T) {
+		hub := newHubOnly()
+		deliverSeq(t, hub, 1)
+		deliverSeq(t, hub, 3)
+		deliverSeq(t, hub, 4)
+		if !hub.SeenGap() {
+			t.Fatal("SeenGap false while seq 2 is still missing")
+		}
+		deliverSeq(t, hub, 2)
+		if hub.SeenGap() {
+			t.Fatal("SeenGap true after the late seq 2 arrived; nothing was lost")
+		}
+	})
 }
 
 // deliverSeq delivers one trace frame at seq n (a frame that touches no sink of

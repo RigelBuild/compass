@@ -21,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -43,6 +45,9 @@ type RunnerEvent struct {
 	RunnerID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
+	// EnrollGen is the hub's enrollment generation when the frame's stream opened;
+	// a session frame from an older one is dropped. Zero means no enrollment fence.
+	EnrollGen uint64
 }
 
 // LifecycleSink publishes an extracted agent-session lifecycle transition onto
@@ -207,19 +212,23 @@ type SessionBindingStore interface {
 	// returns the session id it DISPLACED (empty when the account held none) —
 	// the prior session the hub must evict from both maps. It runs on the
 	// request ctx (tenant-scoped), so the write lands under the acting tenant.
-	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced string, err error)
+	// version names the written row; a release conditioned on it cannot remove a re-bind.
+	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced, version string, err error)
 	// ResolveSessionBinding resolves the agent account and owning Runner a live
 	// session speaks for — the cache-miss read behind accountForSession.
 	// store.ErrNotFound is the fail-closed miss (mapped to ok=false),
-	// byte-identical to today's CodeNotFound.
-	ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error)
+	// byte-identical to today's CodeNotFound. version names the row read.
+	ResolveSessionBinding(ctx context.Context, sessionID string) (account store.AccountID, runnerID, version string, err error)
 	// SessionForAccount resolves the live session bound to an account — the
 	// cache-miss read behind SessionForAccount (the reverse direction). Same
 	// fail-closed store.ErrNotFound contract. Returns the owning Runner id too.
-	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID string, err error)
+	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID, version string, err error)
 	// DeleteSessionBinding releases one session's binding — the unbind write.
 	// Idempotent: releasing an already-released session is a no-op success.
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
+	// DeleteSessionBindingVersion releases sessionID only while its row is still
+	// the write that returned version; removed reports whether it was.
+	DeleteSessionBindingVersion(ctx context.Context, sessionID, version string) (removed bool, err error)
 	// DeleteSessionBindingsForRunner is the enroll sweep: it releases every
 	// binding attached to runnerID and RETURNS the rows it removed, driving the
 	// enroll reap (offline edges + held-deliver reap) from durable truth
@@ -405,6 +414,8 @@ type Hub struct {
 	reapStale map[string]uint64
 	// bindingEpoch fences read-throughs across reap start and completion.
 	bindingEpoch uint64
+	// lastLifetime numbers sessionAccounts inserts (sessionBinding.lifetime). mu-guarded.
+	lastLifetime uint64
 	// runnerEpoch entries are bounded by the number of distinct Runner ids.
 	runnerEpoch map[string]uint64
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall delegates
@@ -428,7 +439,14 @@ type Hub struct {
 	// bindingWriteMu serializes whole enrolls (map-clear through reap) with promotion
 	// writes and cache updates. Lock it before mu; never hold mu across a store call.
 	bindingWriteMu sync.Mutex
-	mu             sync.Mutex
+	// lifecycleMu guards lifecycleSeqs and sessionLocks. Held only for map access;
+	// a session's ordering is held by its own sessionLocks entry.
+	lifecycleMu sync.Mutex
+	// sessionLocks serialize one session's lifecycle frames from seq record through
+	// publication, so a slow binding lookup stalls only that session. Refcounted and
+	// removed when idle. lifecycleMu-guarded.
+	sessionLocks map[string]*sessionLock
+	mu           sync.Mutex
 
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
@@ -443,6 +461,17 @@ type Hub struct {
 	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
 	// (CodeNotFound) not inheriting a stale account (OQ-2).
 	sessionAccounts map[string]sessionBinding
+	// lifecycleSeqs maps a session to the highest RunnerSeq of an accepted lifecycle
+	// frame. One lifetime's frames arrive in seq order, so a lower one is from a
+	// cancelled stream or a dead lifetime. An LRU, so a boundary outlives unbind but
+	// not maxLifecycleSeqs newer sessions; purged on re-enroll. lifecycleMu-guarded.
+	lifecycleSeqs *lru.Cache[string, uint64]
+	// enrollMu fences session-frame delivery (read) against enroll (write), and
+	// guards enrollGen, which counts enrollments so a stream opened before a
+	// re-enroll cannot act on its sessions. Lock order: enrollMu, bindingWriteMu, a
+	// session lock, lifecycleMu, mu.
+	enrollMu  sync.RWMutex
+	enrollGen uint64
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
 	// consumer (RIG-1569 T3) resolves a subscribed account to its live session to
@@ -450,9 +479,13 @@ type Hub struct {
 	accountSessions map[store.AccountID]string
 	// lastSeq is the highest RunnerSeq Deliver has accepted, for gap detection.
 	lastSeq uint64
-	// seenGap records whether a sequence gap was ever observed (in-transit
-	// loss), surfaced for the board/diagnostics.
-	seenGap bool
+	// missingSeqs holds skipped RunnerSeqs not yet seen. Container Gateways share
+	// one counter but send on separate streams, so a skipped seq may arrive late;
+	// a gap is loss only while it stays open. Capped at maxMissingSeqs.
+	missingSeqs map[uint64]struct{}
+	// gapOverflow is set once more seqs went missing than the cap can track; it
+	// stays set for the enrollment, since untracked seqs can never be proven seen.
+	gapOverflow bool
 	// unknownFrames counts frames whose oneof variant was unset or unrecognized
 	// — logged and counted, never silently dropped (agent.proto:38-39).
 	unknownFrames uint64
@@ -478,9 +511,14 @@ type attachedRunner struct {
 }
 
 // sessionBinding is one live session's principal and the Runner that owns it.
+// version and lifetime name one binding of the session id, so a release from an
+// older lifetime can skip a re-bind: version is the durable write ("" when none
+// was made), lifetime is the cache entry, unique per insert and never zero.
 type sessionBinding struct {
 	account  store.AccountID
 	runnerID string
+	version  string
+	lifetime uint64
 }
 
 // NewHub constructs a hub over the two write-through sinks and the agent-comms
@@ -502,6 +540,10 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
+		lifecycleSeqs:     newLifecycleSeqs(),
+		sessionLocks:      make(map[string]*sessionLock),
+		enrollGen:         1,
+		missingSeqs:       make(map[uint64]struct{}),
 		reapStale:         make(map[string]uint64),
 		runnerEpoch:       make(map[string]uint64),
 	}
@@ -675,7 +717,20 @@ func (h *Hub) SetBoardCaller(c BoardCaller) {
 // whose variant is unset or unrecognized is logged and counted, never silently
 // dropped (design.md:1427-1434, agent.proto:38-39).
 func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
-	h.recordSeq(ev.RunnerSeq)
+	// Held for the whole delivery so enroll cannot reset sequence or lifecycle state
+	// between the generation check and their use. Never re-acquired below: a nested
+	// RLock deadlocks behind a pending enroll.
+	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
+	stale := h.staleEnrollmentLocked(ev)
+	// A lifecycle frame holds its session's lock from before its seq is recorded,
+	// so a higher seq the hub has already seen is never overtaken.
+	if !stale && sessionState(ev.Frame) != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+		defer h.lockSession(ev.SessionID)()
+	}
+	if !stale {
+		h.recordSeq(ev.RunnerSeq)
+	}
 
 	frame := ev.Frame
 	oneof := frame.GetFrame()
@@ -687,7 +742,10 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
-		h.deliverSession(ctx, ev.RunnerID, ev.SessionID, f.Session)
+		// Acks stay unfenced: they are idempotent and record work already done.
+		if !stale {
+			h.deliverSession(ctx, ev, f.Session)
+		}
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
@@ -704,12 +762,20 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 }
 
-// SeenGap reports whether Deliver ever observed a Runner-sequence gap. For the
+// EnrollGeneration returns the current enrollment generation, for a stream to
+// stamp on its RunnerEvents.
+func (h *Hub) EnrollGeneration() uint64 {
+	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
+	return h.enrollGen
+}
+
+// SeenGap reports whether a skipped Runner sequence is still unseen. For the
 // board/diagnostics; a gap means in-transit loss the Client bus resync recovers.
 func (h *Hub) SeenGap() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.seenGap
+	return h.seenGapLocked()
 }
 
 // UnknownFrames reports the count of unset/unrecognized frames Deliver has seen.
@@ -735,7 +801,7 @@ func (h *Hub) DroppedAcks() uint64 {
 // one would interleave with Deliver and could report a gap without the drop that
 // accompanied it.
 type FrameDiagnostics struct {
-	// SeenGap is true once a Runner-sequence gap was observed (in-transit loss
+	// SeenGap is true while a skipped Runner sequence is unseen (in-transit loss
 	// the Client bus resync recovers).
 	SeenGap bool
 	// UnknownFrames counts frames whose oneof variant was unset or unrecognized.
@@ -754,7 +820,7 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return FrameDiagnostics{
-		SeenGap:       h.seenGap,
+		SeenGap:       h.seenGapLocked(),
 		UnknownFrames: h.unknownFrames,
 		DroppedAcks:   h.droppedAcks,
 	}
@@ -789,7 +855,8 @@ func (h *Hub) fireRunnerReady() {
 // deliverSession routes session frames to the observation pane, publishes lifecycle
 // transitions, and retires an owned session when its Runner reports ERRORED.
 // UNSPECIFIED means "trace only, no transition".
-func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf *compassv1internal.SessionFrame) {
+func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1internal.SessionFrame) {
+	runnerID, sessionID, seq := ev.RunnerID, ev.SessionID, ev.RunnerSeq
 	state := sf.GetState()
 	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
 	// A frame the publishing Runner may not speak for is dropped whole: its trace,
@@ -800,10 +867,24 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
 		return
 	}
-	h.tail.RelaySessionFrame(sessionID, sf)
 	if !lifecycle {
+		h.tail.RelaySessionFrame(sessionID, sf)
 		return
 	}
+	// Deliver holds the session's lock for a lifecycle frame.
+	h.lifecycleMu.Lock()
+	last, seen := h.lifecycleSeqs.Get(sessionID)
+	if !seen || seq > last {
+		h.lifecycleSeqs.Add(sessionID, seq)
+	}
+	h.lifecycleMu.Unlock()
+	if seen && seq <= last {
+		h.log.Debug("ignored lifecycle frame older than the session's latest",
+			slog.String("runner_id", runnerID), slog.String("session_id", sessionID),
+			slog.String("state", state.String()), slog.Uint64("runner_seq", seq), slog.Uint64("latest_seq", last))
+		return
+	}
+	h.tail.RelaySessionFrame(sessionID, sf)
 	// Resolve the session's agent account and stamp it onto the published status — the
 	// DL-167 attribution join. A status published after a Runner reconnect cleared the
 	// maps carries none (the residual gap). runnerRuntimeIdentity reads tier/posture in
@@ -837,7 +918,7 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	}
 	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
-		h.dropLostSessionDetached(ctx, runnerID, sessionID, true)
+		h.dropLostSessionDetached(ctx, h.enrollGen, runnerID, sessionID, &binding, true)
 	}
 }
 
@@ -939,20 +1020,91 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	}
 }
 
-// recordSeq advances the accepted-sequence high-water mark and flags a gap when
-// the observed seq is not exactly one past the last (in-transit loss). The first
-// event (lastSeq == 0) establishes the baseline without flagging.
+// maxLifecycleSeqs bounds lifecycleSeqs. A buffered stale frame lands within
+// seconds, long before this many newer sessions could evict its boundary.
+const maxLifecycleSeqs = 4096
+
+func newLifecycleSeqs() *lru.Cache[string, uint64] {
+	c, err := lru.New[string, uint64](maxLifecycleSeqs)
+	if err != nil {
+		panic(err) // only a non-positive size errors
+	}
+	return c
+}
+
+// sessionLock is one session's lifecycle mutex; refs counts holders and waiters.
+type sessionLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockSession locks sessionID's lifecycle mutex and returns its unlock.
+func (h *Hub) lockSession(sessionID string) func() {
+	h.lifecycleMu.Lock()
+	l := h.sessionLocks[sessionID]
+	if l == nil {
+		l = &sessionLock{}
+		h.sessionLocks[sessionID] = l
+	}
+	l.refs++
+	h.lifecycleMu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		h.lifecycleMu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(h.sessionLocks, sessionID)
+		}
+		h.lifecycleMu.Unlock()
+	}
+}
+
+// sessionState is a session frame's lifecycle state, UNSPECIFIED for any other frame.
+func sessionState(frame *compassv1internal.AgentFrame) compassv1.AgentSessionState {
+	return frame.GetSession().GetState()
+}
+
+// staleEnrollmentLocked reports, and logs, an event whose stream predates the
+// current enrollment. Zero EnrollGen means unfenced. Caller holds enrollMu.
+func (h *Hub) staleEnrollmentLocked(ev RunnerEvent) bool {
+	if ev.EnrollGen == 0 || ev.EnrollGen == h.enrollGen {
+		return false
+	}
+	h.log.Debug("dropped event from a stream opened before re-enroll",
+		slog.String("runner_id", ev.RunnerID), slog.String("session_id", ev.SessionID))
+	return true
+}
+
+// maxMissingSeqs bounds missingSeqs against a corrupt or hostile seq jump.
+const maxMissingSeqs = 4096
+
+// recordSeq advances the accepted-sequence high-water mark and records the seqs
+// a jump skipped; a late arrival fills its gap. The first event (lastSeq == 0)
+// establishes the baseline without flagging.
 func (h *Hub) recordSeq(seq uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if seq <= h.lastSeq {
+		delete(h.missingSeqs, seq)
+		return
+	}
 	if h.lastSeq != 0 && seq > h.lastSeq+1 {
-		h.seenGap = true
 		h.log.Warn("runner event sequence gap",
 			slog.Uint64("expected", h.lastSeq+1), slog.Uint64("got", seq))
+		for missing := h.lastSeq + 1; missing < seq; missing++ {
+			if len(h.missingSeqs) >= maxMissingSeqs {
+				h.gapOverflow = true
+				break
+			}
+			h.missingSeqs[missing] = struct{}{}
+		}
 	}
-	if seq > h.lastSeq {
-		h.lastSeq = seq
-	}
+	h.lastSeq = seq
+}
+
+// seenGapLocked reports whether any skipped seq is still unseen. Caller holds mu.
+func (h *Hub) seenGapLocked() bool {
+	return h.gapOverflow || len(h.missingSeqs) > 0
 }
 
 // countUnknown records and logs an unknown frame.
@@ -1000,6 +1152,13 @@ type promotedPair struct {
 // so none of its pre-enroll sessions live. A failed durable reap still runs the
 // in-RAM fallback, then returns the error so the Runner retries enrollment.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
+	// Held until the runner and router are replaced, so a stream that snapshots
+	// both under it sees one enrollment's pair.
+	h.enrollMu.Lock()
+	h.lifecycleMu.Lock()
+	h.lifecycleSeqs.Purge()
+	h.enrollGen++
+	h.lifecycleMu.Unlock()
 	// Held from the map-clear through the reap, so no promotion lands in between.
 	h.bindingWriteMu.Lock()
 	h.mu.Lock()
@@ -1029,6 +1188,10 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	clear(h.accountSessions)
+	// A new Runner process restarts RunnerSeq, so gap tracking restarts with it.
+	h.lastSeq = 0
+	clear(h.missingSeqs)
+	h.gapOverflow = false
 	// Refuse read-through for this Runner from the instant the maps are cleared:
 	// a concurrent lookup could otherwise resurrect rows while the reap is in flight.
 	h.bindingEpoch++
@@ -1038,6 +1201,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 		h.reapStale[id] = epoch
 	}
 	h.mu.Unlock()
+	h.enrollMu.Unlock()
 
 	// Choose the reap set. With a durable store the ROWS are reaped and the edges
 	// driven from what was removed (the authoritative set); without one, the in-RAM
@@ -1112,6 +1276,15 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 // no Runner is enrolled. The id travels out with the router so a caller that must
 // attribute the call to a Runner names the one that served it, rather than re-reading
 // the registry and racing a re-enroll onto the wrong id.
+// routerForStream returns the Runner's router and the enrollment generation it
+// belongs to, read as one pair.
+func (h *Hub) routerForStream(sessionID string) (*commandRouter, uint64, error) {
+	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
+	router, _, err := h.routerFor(sessionID)
+	return router, h.enrollGen, err
+}
+
 func (h *Hub) routerFor(sessionID string) (*commandRouter, string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
