@@ -201,6 +201,16 @@ func waitDialBackoff(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
+// agentHostConfig copies Runner-wide agent settings into the session host.
+func agentHostConfig(cfg RunnerConfig, runnerID string) AgentHostConfig {
+	return AgentHostConfig{
+		RuntimeDir:    cfg.RuntimeDir,
+		AgentModel:    cfg.AgentModel,
+		AgentBatching: cfg.AgentBatching,
+		RunnerID:      runnerID,
+	}
+}
+
 // Run attaches to the Server with bounded enrollment retries, then hosts sessions until ctx is cancelled.
 // A cancelled ctx is a clean shutdown (nil); exhausted retries or a dropped session stream return an error.
 func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Logger) error {
@@ -236,11 +246,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	log.Info("runner enrolled", slog.String("runner_id", runnerID), slog.Bool("reattached", link.Reattached()))
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(cfg.Engine, registry)
-	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
-		RuntimeDir: cfg.RuntimeDir,
-		AgentModel: cfg.AgentModel,
-		RunnerID:   runnerID,
-	}, log)
+	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, agentHostConfig(cfg, runnerID), log)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);
 	// close them all on shutdown, draining any in-flight call.

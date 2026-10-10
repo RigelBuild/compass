@@ -57,6 +57,7 @@ func run() error {
 		"Model selector handed to every agent this Runner starts (the agent's "+
 			"COMPASS_MODEL). Empty leaves each agent on its own default. "+
 			"Defaults to $COMPASS_AGENT_MODEL.")
+	agentBatching := registerAgentBatchingFlag(flag.CommandLine)
 	egressHosts := flag.String("egress-allow", "",
 		"Comma-separated default-deny egress allowlist (DNS names or IP literals).")
 	runtimeDir := flag.String("runtime-dir", "/run/compass",
@@ -158,14 +159,25 @@ func run() error {
 	defer otelShutdown()
 
 	return runner.Run(ctx, runner.RunnerConfig{
-		RunnerID:   id,
-		ServerAddr: addr,
-		Token:      tokenSource,
-		Engine:     engine,
-		RuntimeDir: *runtimeDir,
-		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
-		HTTPClient: httpClient,
+		RunnerID:      id,
+		ServerAddr:    addr,
+		Token:         tokenSource,
+		Engine:        engine,
+		RuntimeDir:    *runtimeDir,
+		AgentModel:    orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
+		AgentBatching: resolveAgentBatchingConfig(*agentBatching).AgentBatching,
+		HTTPClient:    httpClient,
 	}, specs, log)
+}
+
+func registerAgentBatchingFlag(flags *flag.FlagSet) *string {
+	return flags.String("agent-batching", "",
+		"Idle inbound batching setting handed to every agent this Runner starts. "+
+			"Defaults to $COMPASS_AGENT_BATCHING.")
+}
+
+func resolveAgentBatchingConfig(flagValue string) runner.RunnerConfig {
+	return runner.RunnerConfig{AgentBatching: orEnv(flagValue, "COMPASS_AGENT_BATCHING")}
 }
 
 func resolveTokenSource(staticToken, tokenPath string, log *slog.Logger) (runner.TokenSource, error) {
