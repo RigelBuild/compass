@@ -2,7 +2,9 @@
 
 Holds the self-hosted Renovate configuration and the post-upgrade scripts that
 keep related dependency pins and lockfiles in sync. The config groups updates
-into reviewable PRs and limits which helper commands Renovate can run.
+into reviewable PRs and limits which helper commands Renovate can run. A Meissa
+bump relocks the `meissa` input and `refresh-biome-catalog.ts` moves the
+`@biomejs/biome` catalog pin to Meissa's biome.
 
 ## Run
 

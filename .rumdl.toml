@@ -12,6 +12,10 @@
 # lives here as plain config rather than a `--config` chain on the moon line,
 # keeping the policy reviewable in one place.
 
+# The shared Meissa base policy, from the dev shell (and CI) env. Top-level, not
+# under [global], where rumdl ignores it. The rules below override the base.
+extends = "$RUMDL_BASE_CONFIG"
+
 [global]
 # Each excluded tree is an agent-context PAYLOAD, not docsite prose — loaded
 # verbatim into a model's context, its shape fixed by design, so prose rules

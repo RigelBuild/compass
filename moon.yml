@@ -52,9 +52,9 @@ tasks:
       - '!**/node_modules/**'
       - '/biome.json'
     options:
-      # Never cache: an always-fresh whole-repo gate. Runs the nixpkgs `biome`
-      # on PATH (provided by the devenv shell) — not `bunx @biomejs/biome` — so
-      # one nixpkgs pin decides the version for everyone.
+      # Never cache: an always-fresh whole-repo gate. Runs Meissa's `biome` on
+      # PATH (provided by the devenv shell) — not `bunx @biomejs/biome` — so
+      # one Meissa pin in devenv.lock decides the version for everyone.
       cache: false
 
   # Write-mode: biome format + import organization + safe lint fixes. Local
@@ -65,14 +65,14 @@ tasks:
     options:
       runInCI: false
 
-  # rumdl reads /.rumdl.toml (rules + exclude). It prunes `exclude` before
-  # reading any file, so the policy lives entirely in that config — no glob
-  # operands, no --config chain.
+  # rumdl reads /.rumdl.toml (rules + exclude), which extends Meissa's base
+  # policy via $RUMDL_BASE_CONFIG. It prunes `exclude` before reading any file,
+  # so the policy lives entirely in that config — no glob operands.
   markdownlint:
     command: 'rumdl check .'
     inputs: ['**/*.md', '!**/node_modules/**', '/.rumdl.toml']
     options:
-      # Never cache the whole-repo gate. Runs the nixpkgs `rumdl` on PATH
+      # Never cache the whole-repo gate. Runs Meissa's `rumdl` on PATH
       # (provided by devenv), not `bunx`.
       cache: false
 

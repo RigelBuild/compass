@@ -27,8 +27,8 @@
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
 
-  # A github-type node (owner/repo/rev/narHash), here NixOS/nixpkgs. The
-  # `nixpkgs` node is cachix/devenv-nixpkgs, whose rev carries 0.14.0 (no `age`
+  # A github-type node (owner/repo/rev/narHash), here NixOS/nixpkgs. Root's
+  # nixpkgs input is cachix/devenv-nixpkgs, whose rev carries 0.14.0 (no `age`
   # provider), which is why this second input exists.
   node = lock.nodes."secretspec-nixpkgs".locked;
   nixpkgsSrc = builtins.fetchTarball {

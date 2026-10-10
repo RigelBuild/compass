@@ -70,3 +70,9 @@ inputs:
   # (the same reason skopeo-nix2container sits outside it).
   secretspec-nixpkgs:
     url: github:NixOS/nixpkgs/nixpkgs-unstable
+  # meissa: the shared lint toolchain — rumdl + biome and the rumdl base policy
+  # (base.toml, which .rumdl.toml extends). Pinned by rev in devenv.lock and
+  # deliberately NOT `follows: nixpkgs`: Meissa's linters come from Meissa's own
+  # locked nixpkgs, so every consumer runs the identical derivations.
+  meissa:
+    url: github:RigelBuild/meissa

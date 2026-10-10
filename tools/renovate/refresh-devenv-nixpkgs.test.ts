@@ -17,7 +17,7 @@ const SCRIPT_REL = "tools/renovate/refresh-devenv-nixpkgs.ts";
 const CORE_REL = "tools/renovate/refresh-devenv-nixpkgs.core.ts";
 const REAL_SCRIPT = join(import.meta.dir, "refresh-devenv-nixpkgs.ts");
 const REAL_CORE = join(import.meta.dir, "refresh-devenv-nixpkgs.core.ts");
-// Step 6 imports nixpkgsLockedRev from ../toolchain/flake-parity-core.ts, so the
+// Step 3 imports nixpkgsLockedRev from ../toolchain/flake-parity-core.ts, so the
 // throwaway repo must carry it at the same repo-root-relative path.
 const PARITY_CORE_REL = "tools/toolchain/flake-parity-core.ts";
 const REAL_PARITY_CORE = join(
@@ -39,8 +39,7 @@ const HERMETIC_ENV = {
 };
 
 // A devenv.lock with distinct outer (channel) and inner (nixpkgs-src) revs, so
-// the eval targets the INNER one. The stub `nix` returns versions keyed off the
-// inner rev, proving the script evaluated nixpkgs-src, not the channel node.
+// the flake lockstep provably follows the OUTER channel rev.
 const INNER_REV_BASE = "1111111111111111111111111111111111111111";
 const INNER_REV_BUMP = "2222222222222222222222222222222222222222";
 const OUTER_REV_BASE = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -94,10 +93,8 @@ function devenvLock(outerRev: string, innerRev: string): string {
 	);
 }
 
-// Minimal root package.json with a catalog block carrying the biome pin plus a
-// same-named `catalog:` CONSUMER ref that must survive untouched. Compass bakes
-// rumdl from the same channel, but it carries NO catalog pin, so
-// the fixture — like the real manifest — only pins biome.
+// Minimal root package.json with the biome catalog pin. biome follows Meissa,
+// not this channel, so the channel task must leave it byte-equal.
 function packageJson(biome: string): string {
 	return `${JSON.stringify(
 		{
@@ -117,7 +114,7 @@ function packageJson(biome: string): string {
 }
 
 // Minimal root flake.nix whose inputs.nixpkgs.url hard-codes the devenv-nixpkgs
-// channel (OUTER) rev — the literal step 6 must rewrite in lockstep with a
+// channel (OUTER) rev — the literal step 3 must rewrite in lockstep with a
 // channel bump. A second, prose mention of the rev guards that the rewrite
 // touches ONLY the URL, not documentation that legitimately names the rev.
 function flakeNix(outerRev: string): string {
@@ -132,14 +129,14 @@ function flakeNix(outerRev: string): string {
 
 // Minimal flake.lock recording the nixpkgs channel rev in the `nodes.nixpkgs.
 // locked.rev` path the parity gate compares (flake-parity-core.nixpkgsLockedRev).
-// Seeded at the BASE rev so a bump makes step 6's `flakeLockRev !== channelRev`
+// Seeded at the BASE rev so a bump makes step 3's `flakeLockRev !== channelRev`
 // gate fire; the stub `nix flake update` rewrites it to the bumped rev.
 function flakeLock(outerRev: string): string {
 	return `${JSON.stringify(
 		{
 			nodes: {
 				nixpkgs: { locked: { rev: outerRev, type: "github" } },
-				root: {},
+				root: { inputs: { nixpkgs: "nixpkgs" } },
 			},
 			root: "root",
 			version: 7,
@@ -162,53 +159,25 @@ fi
 exit 0
 `;
 
-// Stub `nix`: `nix eval --raw … NixOS/nixpkgs/<rev>#…<attr>.version` → a version
-// string keyed off BOTH the rev and the attr, so the assertion proves the
-// script evaluated the bumped INNER rev (not the outer/base) for biome.
-// Emits GARBAGE for an unknown rev so the fail-loud path is reachable.
+// Stub `nix`: only the flake re-lock is legal; any other call fails the run.
 const STUB_NIX = `#!/usr/bin/env bash
 set -euo pipefail
-# Step 6 re-locks the flake: \`nix flake update nixpkgs …\`. Simulate the real
-# re-lock offline: read the rev flake.nix now pins (step 6 rewrote it first) and
+# Step 3 re-locks the flake: \`nix flake update nixpkgs …\`. Simulate the real
+# re-lock offline: read the rev flake.nix now pins (step 3 rewrote it first) and
 # write a flake.lock whose nodes.nixpkgs.locked.rev matches — the exact field the
-# parity gate compares — then record it ran so the harness can assert step 6
+# parity gate compares — then record it ran so the harness can assert step 3
 # fired. No network.
 if [ "\${1:-}" = "flake" ] && [ "\${2:-}" = "update" ]; then
   touch .nix-flake-update-ran
   rev=$(grep -oE 'devenv-nixpkgs/[a-f0-9]{40}' flake.nix | head -1 | cut -d/ -f2)
   cat > flake.lock <<LOCK
-{ "nodes": { "nixpkgs": { "locked": { "rev": "$rev", "type": "github" } }, "root": {} }, "root": "root", "version": 7 }
+{ "nodes": { "nixpkgs": { "locked": { "rev": "$rev", "type": "github" } }, "root": { "inputs": { "nixpkgs": "nixpkgs" } } }, "root": "root", "version": 7 }
 LOCK
   exit 0
 fi
-# Otherwise a \`nix eval --raw … NixOS/nixpkgs/<rev>#…<attr>.version\` → a version
-# string keyed off BOTH the rev and the attr, so the assertion proves the
-# script evaluated the bumped INNER rev (not the outer/base) for biome.
-# Emits GARBAGE for an unknown rev so the fail-loud path is reachable.
-ref="\${@: -1}"
-rev="\${ref#github:NixOS/nixpkgs/}"; rev="\${rev%%#*}"
-attrpath="\${ref#*#}"; attr="\${attrpath%.version}"; attr="\${attr##*.}"
-if [ "$rev" = "${INNER_REV_BUMP}" ]; then
-  case "$attr" in
-    biome) printf '2.5.6' ;;
-    *) printf 'UNKNOWN-ATTR' ;;
-  esac
-else
-  printf 'WRONG-REV-%s' "$rev"
-fi
-`;
-
-// Stub bun: swallow bun install --lockfile-only (record a marker) so the harness
-// can assert step 5 fired, offline. The passthrough execs the REAL bun by absolute
-// path (process.execPath), NOT a bare bun — under Bun ≥1.4, Bun-Shell resolves a
-// bare command via PATH (prepended with this stub dir) and would recurse to timeout.
-const STUB_BUN = `#!/usr/bin/env bash
-set -euo pipefail
-if [ "\${1:-}" = "install" ]; then
-  touch .bun-install-ran
-  exit 0
-fi
-exec ${JSON.stringify(process.execPath)} "$@"
+# This task evaluates nothing: the biome pin moved to refresh-biome-catalog.ts.
+echo "unexpected nix invocation: $*" >&2
+exit 1
 `;
 
 async function buildRepo(): Promise<string> {
@@ -216,7 +185,7 @@ async function buildRepo(): Promise<string> {
 	await mkdir(join(repo, "tools", "renovate"), { recursive: true });
 	await mkdir(join(repo, "stubbin"), { recursive: true });
 
-	// Ship the REAL script + its core + the flake-parity-core module step 6
+	// Ship the REAL script + its core + the flake-parity-core module step 3
 	// imports (nixpkgsLockedRev), so the SHIPPED file runs unmodified.
 	await Bun.write(join(repo, SCRIPT_REL), await readFile(REAL_SCRIPT, "utf8"));
 	await Bun.write(join(repo, CORE_REL), await readFile(REAL_CORE, "utf8"));
@@ -237,7 +206,6 @@ async function buildRepo(): Promise<string> {
 	for (const [name, body] of [
 		["devenv", STUB_DEVENV],
 		["nix", STUB_NIX],
-		["bun", STUB_BUN],
 	] as const) {
 		await Bun.write(join(repo, "stubbin", name), body);
 		await chmod(join(repo, "stubbin", name), 0o755);
@@ -255,8 +223,7 @@ async function buildRepo(): Promise<string> {
 }
 
 // Run the shipped script as Renovate does: bun tools/renovate/…ts, cwd = repo
-// root, stubs first on PATH. The real bun runs the script; the stub bun only
-// intercepts bun install and execs the real bun for other calls.
+// root, stubs first on PATH.
 async function runRefresh(repo: string) {
 	return await $`bun ${SCRIPT_REL}`
 		.cwd(repo)
@@ -279,21 +246,21 @@ describe("tools/renovate/refresh-devenv-nixpkgs.ts lockstep (RIG-2432)", () => {
 	});
 
 	// Self-gate: with devenv.lock unchanged vs base, the script is a cheap no-op
-	// — no re-lock, no eval, no rewrite. Guards the gate against being dropped
+	// — no re-lock, no flake rewrite. Guards the gate against being dropped
 	// (an unconditional run would re-lock + rewrite on EVERY Renovate branch).
 	test("is a no-op when devenv.lock is unchanged vs base", async () => {
 		const res = await runRefresh(repo);
 		expect(res.exitCode).toBe(0);
 		expect(res.stdout.toString()).toContain("nothing to do");
-		// package.json untouched.
-		const pkg = await readFile(join(repo, "package.json"), "utf8");
-		expect(pkg).toContain('"@biomejs/biome": "2.4.16"');
+		// flake.nix untouched.
+		const flake = await readFile(join(repo, "flake.nix"), "utf8");
+		expect(flake).toContain(`github:cachix/devenv-nixpkgs/${OUTER_REV_BASE}`);
 	});
 
 	// The end-to-end happy path: bump devenv.lock's outer rev, run the script, and
-	// assert it re-locked, evaluated the BUMPED INNER rev, rewrote the biome catalog
-	// pin, left the catalog: consumer alone, and ran the lockfile re-resolve.
-	test("re-locks, evaluates inner rev, and rewrites the biome catalog pin", async () => {
+	// assert it re-locked and kept flake.nix + flake.lock on the channel rev
+	// without touching the biome pin, which Meissa owns now.
+	test("re-locks and lockstep-updates the flake, leaving the biome pin", async () => {
 		// Simulate the regex update: rewrite ONLY the outer channel rev.
 		await Bun.write(
 			join(repo, "devenv.lock"),
@@ -304,14 +271,13 @@ describe("tools/renovate/refresh-devenv-nixpkgs.ts lockstep (RIG-2432)", () => {
 		expect(res.exitCode).toBe(0);
 		expect(res.stdout.toString()).not.toContain("nothing to do");
 
-		// Pin rewritten to the stub-nix version for the BUMPED inner rev.
+		// The relock ran (the stub devenv wrote the BUMPED inner rev).
+		const lock = await readFile(join(repo, "devenv.lock"), "utf8");
+		expect(lock).toContain(INNER_REV_BUMP);
+		// The biome pin is byte-equal: refresh-biome-catalog.ts owns it.
 		const pkg = await readFile(join(repo, "package.json"), "utf8");
-		expect(pkg).toContain('"@biomejs/biome": "2.5.6"');
-		// Consumer ref preserved.
-		expect(pkg).toContain('"@biomejs/biome": "catalog:"');
-		// Step 5 fired (bun install --lockfile-only).
-		expect(await Bun.file(join(repo, ".bun-install-ran")).exists()).toBe(true);
-		// Step 6: flake.nix rewritten to the BUMPED OUTER (channel) rev, and the
+		expect(pkg).toBe(packageJson("2.4.16"));
+		// Step 3: flake.nix rewritten to the BUMPED OUTER (channel) rev, and the
 		// flake re-lock ran. Renovate moved devenv.lock's channel rev; step 6
 		// keeps flake.nix's inputs.nixpkgs.url + flake.lock in lockstep so the
 		// flake-parity gate does not red on the skew.
@@ -330,58 +296,22 @@ describe("tools/renovate/refresh-devenv-nixpkgs.ts lockstep (RIG-2432)", () => {
 		expect(nixpkgsLockedRev(flakeLockText)).toBe(OUTER_REV_BUMP);
 	});
 
-	// No-op-rewrite branch: a channel bump that does NOT move biome (the stub
-	// still evaluates to the CURRENT pin) leaves package.json byte-equal and
-	// SKIPS the lockfile re-resolve. Force this by seeding package.json to the
-	// version the stub returns for the bumped inner rev, then bump.
-	test("skips rewrite + lockfile when biome did not move", async () => {
-		await Bun.write(join(repo, "package.json"), packageJson("2.5.6"));
-		await $`git add -A`.cwd(repo).env(HERMETIC_ENV).quiet();
-		await $`git commit -q -m seed`.cwd(repo).env(HERMETIC_ENV).quiet();
-		await $`git update-ref refs/remotes/origin/main main`
-			.cwd(repo)
-			.env(HERMETIC_ENV)
-			.quiet();
+	// Fail-loud: a failed re-lock must stop the run before the flake moves, so
+	// a half-relocked devenv.lock never ships beside a lockstepped flake.
+	test("fails loud (exit≠0) when the re-lock fails", async () => {
 		await Bun.write(
 			join(repo, "devenv.lock"),
 			devenvLock(OUTER_REV_BUMP, INNER_REV_BASE),
 		);
-
-		const res = await runRefresh(repo);
-		expect(res.exitCode).toBe(0);
-		expect(res.stdout.toString()).toContain("already match");
-		// Lockfile re-resolve skipped (no pin change).
-		expect(await Bun.file(join(repo, ".bun-install-ran")).exists()).toBe(false);
-		// ...but step 6 STILL fired: the flake lockstep is decoupled from the
-		// biome-pin rewrite (its whole reason to be a separate step). The channel
-		// moved, so flake.nix's URL rev + flake.lock's locked rev must both track
-		// it even though package.json/bun.lock stayed put.
-		const flake = await readFile(join(repo, "flake.nix"), "utf8");
-		expect(flake).toContain(`github:cachix/devenv-nixpkgs/${OUTER_REV_BUMP}`);
-		const flakeLockText = await readFile(join(repo, "flake.lock"), "utf8");
-		expect(nixpkgsLockedRev(flakeLockText)).toBe(OUTER_REV_BUMP);
-	});
-
-	// Fail-loud: if the version eval yields a non-version string (a broken rev,
-	// a nix error), the script must die non-zero, never write a garbage pin.
-	// Force it by bumping the inner rev to one the stub doesn't recognize.
-	test("fails loud (exit≠0) when the version eval yields garbage", async () => {
-		await Bun.write(
-			join(repo, "devenv.lock"),
-			devenvLock(OUTER_REV_BUMP, "9999999999999999999999999999999999999999"),
-		);
-		// Stub devenv would rewrite to INNER_REV_BUMP; override so the re-lock
-		// keeps the unrecognized inner rev the stub nix returns garbage for.
 		await Bun.write(
 			join(repo, "stubbin", "devenv"),
-			`#!/usr/bin/env bash\nexit 0\n`,
+			`#!/usr/bin/env bash\nexit 1\n`,
 		);
 		await chmod(join(repo, "stubbin", "devenv"), 0o755);
 
 		const res = await runRefresh(repo);
 		expect(res.exitCode).not.toBe(0);
-		// package.json pin untouched (no garbage written).
-		const pkg = await readFile(join(repo, "package.json"), "utf8");
-		expect(pkg).toContain('"@biomejs/biome": "2.4.16"');
+		const flake = await readFile(join(repo, "flake.nix"), "utf8");
+		expect(flake).toContain(`github:cachix/devenv-nixpkgs/${OUTER_REV_BASE}`);
 	});
 });

@@ -2,10 +2,11 @@
 
 Keeps the dev shell and CI on the same pinned tool closures. The version pins
 and `toolchain-tools.nix` define Bun, Node, and Moon; `gate-tools.nix` exposes
-the language toolchains and pinned nixpkgs tools as CI build and identity sets.
-The directory also contains reusable Nix environments for GTK, Chromium,
-microVM, secretspec, and patched skopeo, plus TypeScript parity and version
-checks.
+the language toolchains, pinned nixpkgs tools, and Meissa's linters (biome,
+rumdl, and the rumdl base policy, from the `meissa` input in `devenv.lock`) as
+CI build and identity sets. The directory also contains reusable Nix
+environments for GTK, Chromium, microVM, secretspec, and patched skopeo, plus
+TypeScript parity and version checks.
 
 ## Run
 

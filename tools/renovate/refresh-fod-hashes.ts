@@ -89,7 +89,7 @@ export type FodEntry = {
 	// unreachable.
 	buildFile: string;
 	buildTarget: string;
-	// The devenv lock whose nodes.nixpkgs.locked.rev supplies buildFile's pkgs
+	// The devenv lock whose root nixpkgs input supplies buildFile's pkgs
 	// (repo-root-relative). Load-bearing: a scope-specific refresher selects by
 	// this field, the invariants check it names the lock buildFile reads, and the
 	// divergence error quotes both revs. Do not respell it (leading ./, absolute).
@@ -425,12 +425,16 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 // a placeholder.
 async function vehicleChannelRev(lockFile: string): Promise<string> {
 	try {
-		let cur: unknown = JSON.parse(await Bun.file(lockFile).text());
-		for (const key of ["nodes", "nixpkgs", "locked", "rev"]) {
-			if (!isObj(cur)) return `<unreadable: ${lockFile} has no ${key}>`;
-			cur = cur[key];
-		}
-		return typeof cur === "string" ? cur : `<unreadable: ${lockFile}>`;
+		const lock: unknown = JSON.parse(await Bun.file(lockFile).text());
+		const nodes = isObj(lock) && isObj(lock.nodes) ? lock.nodes : {};
+		// Follow root's `nixpkgs` input: an unfollowed input can own the bare key.
+		const root = nodes.root;
+		const key = isObj(root) && isObj(root.inputs) ? root.inputs.nixpkgs : null;
+		const node = typeof key === "string" ? nodes[key] : undefined;
+		const rev = isObj(node) && isObj(node.locked) ? node.locked.rev : undefined;
+		return typeof rev === "string"
+			? rev
+			: `<unreadable: ${lockFile} has no root nixpkgs rev>`;
 	} catch (error) {
 		return `<unreadable: ${lockFile} (${String(error)})>`;
 	}
