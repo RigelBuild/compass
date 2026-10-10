@@ -2167,6 +2167,298 @@ func (x *CommitConversationFrameResponse) GetSeq() uint64 {
 	return 0
 }
 
+type RelaySessionBlobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Blob          *PutSessionBlobRequest `protobuf:"bytes,2,opt,name=blob,proto3" json:"blob,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RelaySessionBlobRequest) Reset() {
+	*x = RelaySessionBlobRequest{}
+	mi := &file_compass_v1_runner_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelaySessionBlobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelaySessionBlobRequest) ProtoMessage() {}
+
+func (x *RelaySessionBlobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_runner_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelaySessionBlobRequest.ProtoReflect.Descriptor instead.
+func (*RelaySessionBlobRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *RelaySessionBlobRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *RelaySessionBlobRequest) GetBlob() *PutSessionBlobRequest {
+	if x != nil {
+		return x.Blob
+	}
+	return nil
+}
+
+type RelaySessionBlobResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RelaySessionBlobResponse) Reset() {
+	*x = RelaySessionBlobResponse{}
+	mi := &file_compass_v1_runner_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelaySessionBlobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelaySessionBlobResponse) ProtoMessage() {}
+
+func (x *RelaySessionBlobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_runner_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelaySessionBlobResponse.ProtoReflect.Descriptor instead.
+func (*RelaySessionBlobResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{29}
+}
+
+type FetchSessionBlobsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ContainerName string                 `protobuf:"bytes,1,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
+	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Lowercase hex digests, newest first; the Server stops at its byte budget.
+	Sha256        []string `protobuf:"bytes,3,rep,name=sha256,proto3" json:"sha256,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchSessionBlobsRequest) Reset() {
+	*x = FetchSessionBlobsRequest{}
+	mi := &file_compass_v1_runner_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchSessionBlobsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchSessionBlobsRequest) ProtoMessage() {}
+
+func (x *FetchSessionBlobsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_runner_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchSessionBlobsRequest.ProtoReflect.Descriptor instead.
+func (*FetchSessionBlobsRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *FetchSessionBlobsRequest) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
+}
+
+func (x *FetchSessionBlobsRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *FetchSessionBlobsRequest) GetSha256() []string {
+	if x != nil {
+		return x.Sha256
+	}
+	return nil
+}
+
+type FetchSessionBlobsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Frame:
+	//
+	//	*FetchSessionBlobsResponse_Header
+	//	*FetchSessionBlobsResponse_Chunk
+	Frame         isFetchSessionBlobsResponse_Frame `protobuf_oneof:"frame"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchSessionBlobsResponse) Reset() {
+	*x = FetchSessionBlobsResponse{}
+	mi := &file_compass_v1_runner_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchSessionBlobsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchSessionBlobsResponse) ProtoMessage() {}
+
+func (x *FetchSessionBlobsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_runner_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchSessionBlobsResponse.ProtoReflect.Descriptor instead.
+func (*FetchSessionBlobsResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *FetchSessionBlobsResponse) GetFrame() isFetchSessionBlobsResponse_Frame {
+	if x != nil {
+		return x.Frame
+	}
+	return nil
+}
+
+func (x *FetchSessionBlobsResponse) GetHeader() *SessionBlobHeader {
+	if x != nil {
+		if x, ok := x.Frame.(*FetchSessionBlobsResponse_Header); ok {
+			return x.Header
+		}
+	}
+	return nil
+}
+
+func (x *FetchSessionBlobsResponse) GetChunk() []byte {
+	if x != nil {
+		if x, ok := x.Frame.(*FetchSessionBlobsResponse_Chunk); ok {
+			return x.Chunk
+		}
+	}
+	return nil
+}
+
+type isFetchSessionBlobsResponse_Frame interface {
+	isFetchSessionBlobsResponse_Frame()
+}
+
+type FetchSessionBlobsResponse_Header struct {
+	Header *SessionBlobHeader `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
+}
+
+type FetchSessionBlobsResponse_Chunk struct {
+	Chunk []byte `protobuf:"bytes,2,opt,name=chunk,proto3,oneof"`
+}
+
+func (*FetchSessionBlobsResponse_Header) isFetchSessionBlobsResponse_Frame() {}
+
+func (*FetchSessionBlobsResponse_Chunk) isFetchSessionBlobsResponse_Frame() {}
+
+type SessionBlobHeader struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Sha256    string                 `protobuf:"bytes,1,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	SizeBytes uint64                 `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	// Set when the Server confirmed the blob is not stored; no chunks follow.
+	Absent        bool `protobuf:"varint,3,opt,name=absent,proto3" json:"absent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionBlobHeader) Reset() {
+	*x = SessionBlobHeader{}
+	mi := &file_compass_v1_runner_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionBlobHeader) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionBlobHeader) ProtoMessage() {}
+
+func (x *SessionBlobHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_runner_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionBlobHeader.ProtoReflect.Descriptor instead.
+func (*SessionBlobHeader) Descriptor() ([]byte, []int) {
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *SessionBlobHeader) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *SessionBlobHeader) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *SessionBlobHeader) GetAbsent() bool {
+	if x != nil {
+		return x.Absent
+	}
+	return false
+}
+
 var File_compass_v1_runner_proto protoreflect.FileDescriptor
 
 const file_compass_v1_runner_proto_rawDesc = "" +
@@ -2294,14 +2586,33 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\tcommitted\x18\x01 \x01(\bR\tcommitted\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x02 \x01(\tR\tmessageId\x12\x10\n" +
-	"\x03seq\x18\x03 \x01(\x04R\x03seq*\xf1\x01\n" +
+	"\x03seq\x18\x03 \x01(\x04R\x03seq\"o\n" +
+	"\x17RelaySessionBlobRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x125\n" +
+	"\x04blob\x18\x02 \x01(\v2!.compass.v1.PutSessionBlobRequestR\x04blob\"\x1a\n" +
+	"\x18RelaySessionBlobResponse\"x\n" +
+	"\x18FetchSessionBlobsRequest\x12%\n" +
+	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x16\n" +
+	"\x06sha256\x18\x03 \x03(\tR\x06sha256\"u\n" +
+	"\x19FetchSessionBlobsResponse\x127\n" +
+	"\x06header\x18\x01 \x01(\v2\x1d.compass.v1.SessionBlobHeaderH\x00R\x06header\x12\x16\n" +
+	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\a\n" +
+	"\x05frame\"b\n" +
+	"\x11SessionBlobHeader\x12\x16\n" +
+	"\x06sha256\x18\x01 \x01(\tR\x06sha256\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x02 \x01(\x04R\tsizeBytes\x12\x16\n" +
+	"\x06absent\x18\x03 \x01(\bR\x06absent*\xf1\x01\n" +
 	"\x0fRunnerErrorCode\x12!\n" +
 	"\x1dRUNNER_ERROR_CODE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!RUNNER_ERROR_CODE_ALREADY_RUNNING\x10\x01\x12\x1f\n" +
 	"\x1bRUNNER_ERROR_CODE_NOT_FOUND\x10\x02\x12\x1e\n" +
 	"\x1aRUNNER_ERROR_CODE_INTERNAL\x10\x03\x12(\n" +
 	"$RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED\x10\x04\x12)\n" +
-	"%RUNNER_ERROR_CODE_FAILED_PRECONDITION\x10\x052\xde\a\n" +
+	"%RUNNER_ERROR_CODE_FAILED_PRECONDITION\x10\x052\xa1\t\n" +
 	"\rRunnerService\x12?\n" +
 	"\x06Enroll\x12\x19.compass.v1.EnrollRequest\x1a\x1a.compass.v1.EnrollResponse\x12I\n" +
 	"\bSessions\x12\x1b.compass.v1.SessionsRequest\x1a\x1c.compass.v1.SessionsResponse(\x010\x01\x12V\n" +
@@ -2313,7 +2624,9 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x17CommitConversationFrame\x12*.compass.v1.CommitConversationFrameRequest\x1a+.compass.v1.CommitConversationFrameResponse\x12Q\n" +
 	"\fFetchSecrets\x12\x1f.compass.v1.FetchSecretsRequest\x1a .compass.v1.FetchSecretsResponse\x12Q\n" +
 	"\fBindLifetime\x12\x1f.compass.v1.BindLifetimeRequest\x1a .compass.v1.BindLifetimeResponse\x12_\n" +
-	"\x10FetchAgentConfig\x12#.compass.v1.FetchAgentConfigRequest\x1a$.compass.v1.FetchAgentConfigResponse0\x01b\x06proto3"
+	"\x10FetchAgentConfig\x12#.compass.v1.FetchAgentConfigRequest\x1a$.compass.v1.FetchAgentConfigResponse0\x01\x12]\n" +
+	"\x10RelaySessionBlob\x12#.compass.v1.RelaySessionBlobRequest\x1a$.compass.v1.RelaySessionBlobResponse\x12b\n" +
+	"\x11FetchSessionBlobs\x12$.compass.v1.FetchSessionBlobsRequest\x1a%.compass.v1.FetchSessionBlobsResponse0\x01b\x06proto3"
 
 var (
 	file_compass_v1_runner_proto_rawDescOnce sync.Once
@@ -2328,7 +2641,7 @@ func file_compass_v1_runner_proto_rawDescGZIP() []byte {
 }
 
 var file_compass_v1_runner_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_compass_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_compass_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_compass_v1_runner_proto_goTypes = []any{
 	(RunnerErrorCode)(0),                       // 0: compass.v1.RunnerErrorCode
 	(*EnrollRequest)(nil),                      // 1: compass.v1.EnrollRequest
@@ -2359,97 +2672,109 @@ var file_compass_v1_runner_proto_goTypes = []any{
 	(*RelayBoardCallResponse)(nil),             // 26: compass.v1.RelayBoardCallResponse
 	(*CommitConversationFrameRequest)(nil),     // 27: compass.v1.CommitConversationFrameRequest
 	(*CommitConversationFrameResponse)(nil),    // 28: compass.v1.CommitConversationFrameResponse
-	(v1.RuntimeTier)(0),                        // 29: compass.v1.RuntimeTier
-	(v1.EgressPosture)(0),                      // 30: compass.v1.EgressPosture
-	(*v1.StartAgentSessionResponse)(nil),       // 31: compass.v1.StartAgentSessionResponse
-	(*v1.StopAgentSessionResponse)(nil),        // 32: compass.v1.StopAgentSessionResponse
-	(*v1.ReloadAgentSessionResponse)(nil),      // 33: compass.v1.ReloadAgentSessionResponse
-	(*v1.GetAgentStatusResponse)(nil),          // 34: compass.v1.GetAgentStatusResponse
-	(*v1.ProvisionAgentWorkspaceResponse)(nil), // 35: compass.v1.ProvisionAgentWorkspaceResponse
-	(*v1.RemoveAgentWorkspaceResponse)(nil),    // 36: compass.v1.RemoveAgentWorkspaceResponse
-	(*v1.StartAgentSessionRequest)(nil),        // 37: compass.v1.StartAgentSessionRequest
-	(*v1.StopAgentSessionRequest)(nil),         // 38: compass.v1.StopAgentSessionRequest
-	(*v1.ReloadAgentSessionRequest)(nil),       // 39: compass.v1.ReloadAgentSessionRequest
-	(*v1.GetAgentStatusRequest)(nil),           // 40: compass.v1.GetAgentStatusRequest
-	(*v1.ProvisionAgentWorkspaceRequest)(nil),  // 41: compass.v1.ProvisionAgentWorkspaceRequest
-	(*ForgeNotification)(nil),                  // 42: compass.v1.ForgeNotification
-	(*v1.RemoveAgentWorkspaceRequest)(nil),     // 43: compass.v1.RemoveAgentWorkspaceRequest
-	(*AgentControl)(nil),                       // 44: compass.v1.AgentControl
-	(v1.SecretDelivery)(0),                     // 45: compass.v1.SecretDelivery
-	(v1.SecretKind)(0),                         // 46: compass.v1.SecretKind
-	(*AgentFrame)(nil),                         // 47: compass.v1.AgentFrame
-	(*CommsCallRequest)(nil),                   // 48: compass.v1.CommsCallRequest
-	(*CommsCallResult)(nil),                    // 49: compass.v1.CommsCallResult
-	(*LifecycleCallRequest)(nil),               // 50: compass.v1.LifecycleCallRequest
-	(*LifecycleCallResult)(nil),                // 51: compass.v1.LifecycleCallResult
-	(*ForgeCallRequest)(nil),                   // 52: compass.v1.ForgeCallRequest
-	(*ForgeCallResult)(nil),                    // 53: compass.v1.ForgeCallResult
-	(*BoardCallRequest)(nil),                   // 54: compass.v1.BoardCallRequest
-	(*BoardCallResult)(nil),                    // 55: compass.v1.BoardCallResult
+	(*RelaySessionBlobRequest)(nil),            // 29: compass.v1.RelaySessionBlobRequest
+	(*RelaySessionBlobResponse)(nil),           // 30: compass.v1.RelaySessionBlobResponse
+	(*FetchSessionBlobsRequest)(nil),           // 31: compass.v1.FetchSessionBlobsRequest
+	(*FetchSessionBlobsResponse)(nil),          // 32: compass.v1.FetchSessionBlobsResponse
+	(*SessionBlobHeader)(nil),                  // 33: compass.v1.SessionBlobHeader
+	(v1.RuntimeTier)(0),                        // 34: compass.v1.RuntimeTier
+	(v1.EgressPosture)(0),                      // 35: compass.v1.EgressPosture
+	(*v1.StartAgentSessionResponse)(nil),       // 36: compass.v1.StartAgentSessionResponse
+	(*v1.StopAgentSessionResponse)(nil),        // 37: compass.v1.StopAgentSessionResponse
+	(*v1.ReloadAgentSessionResponse)(nil),      // 38: compass.v1.ReloadAgentSessionResponse
+	(*v1.GetAgentStatusResponse)(nil),          // 39: compass.v1.GetAgentStatusResponse
+	(*v1.ProvisionAgentWorkspaceResponse)(nil), // 40: compass.v1.ProvisionAgentWorkspaceResponse
+	(*v1.RemoveAgentWorkspaceResponse)(nil),    // 41: compass.v1.RemoveAgentWorkspaceResponse
+	(*v1.StartAgentSessionRequest)(nil),        // 42: compass.v1.StartAgentSessionRequest
+	(*v1.StopAgentSessionRequest)(nil),         // 43: compass.v1.StopAgentSessionRequest
+	(*v1.ReloadAgentSessionRequest)(nil),       // 44: compass.v1.ReloadAgentSessionRequest
+	(*v1.GetAgentStatusRequest)(nil),           // 45: compass.v1.GetAgentStatusRequest
+	(*v1.ProvisionAgentWorkspaceRequest)(nil),  // 46: compass.v1.ProvisionAgentWorkspaceRequest
+	(*ForgeNotification)(nil),                  // 47: compass.v1.ForgeNotification
+	(*v1.RemoveAgentWorkspaceRequest)(nil),     // 48: compass.v1.RemoveAgentWorkspaceRequest
+	(*AgentControl)(nil),                       // 49: compass.v1.AgentControl
+	(v1.SecretDelivery)(0),                     // 50: compass.v1.SecretDelivery
+	(v1.SecretKind)(0),                         // 51: compass.v1.SecretKind
+	(*AgentFrame)(nil),                         // 52: compass.v1.AgentFrame
+	(*CommsCallRequest)(nil),                   // 53: compass.v1.CommsCallRequest
+	(*CommsCallResult)(nil),                    // 54: compass.v1.CommsCallResult
+	(*LifecycleCallRequest)(nil),               // 55: compass.v1.LifecycleCallRequest
+	(*LifecycleCallResult)(nil),                // 56: compass.v1.LifecycleCallResult
+	(*ForgeCallRequest)(nil),                   // 57: compass.v1.ForgeCallRequest
+	(*ForgeCallResult)(nil),                    // 58: compass.v1.ForgeCallResult
+	(*BoardCallRequest)(nil),                   // 59: compass.v1.BoardCallRequest
+	(*BoardCallResult)(nil),                    // 60: compass.v1.BoardCallResult
+	(*PutSessionBlobRequest)(nil),              // 61: compass.v1.PutSessionBlobRequest
 }
 var file_compass_v1_runner_proto_depIdxs = []int32{
-	29, // 0: compass.v1.EnrollRequest.runtime_tier:type_name -> compass.v1.RuntimeTier
-	30, // 1: compass.v1.EnrollRequest.egress_posture:type_name -> compass.v1.EgressPosture
-	31, // 2: compass.v1.SessionsRequest.start:type_name -> compass.v1.StartAgentSessionResponse
-	32, // 3: compass.v1.SessionsRequest.stop:type_name -> compass.v1.StopAgentSessionResponse
-	33, // 4: compass.v1.SessionsRequest.reload:type_name -> compass.v1.ReloadAgentSessionResponse
-	34, // 5: compass.v1.SessionsRequest.status:type_name -> compass.v1.GetAgentStatusResponse
-	35, // 6: compass.v1.SessionsRequest.provision:type_name -> compass.v1.ProvisionAgentWorkspaceResponse
+	34, // 0: compass.v1.EnrollRequest.runtime_tier:type_name -> compass.v1.RuntimeTier
+	35, // 1: compass.v1.EnrollRequest.egress_posture:type_name -> compass.v1.EgressPosture
+	36, // 2: compass.v1.SessionsRequest.start:type_name -> compass.v1.StartAgentSessionResponse
+	37, // 3: compass.v1.SessionsRequest.stop:type_name -> compass.v1.StopAgentSessionResponse
+	38, // 4: compass.v1.SessionsRequest.reload:type_name -> compass.v1.ReloadAgentSessionResponse
+	39, // 5: compass.v1.SessionsRequest.status:type_name -> compass.v1.GetAgentStatusResponse
+	40, // 6: compass.v1.SessionsRequest.provision:type_name -> compass.v1.ProvisionAgentWorkspaceResponse
 	16, // 7: compass.v1.SessionsRequest.error:type_name -> compass.v1.RunnerError
-	36, // 8: compass.v1.SessionsRequest.remove:type_name -> compass.v1.RemoveAgentWorkspaceResponse
-	37, // 9: compass.v1.SessionsResponse.start:type_name -> compass.v1.StartAgentSessionRequest
-	38, // 10: compass.v1.SessionsResponse.stop:type_name -> compass.v1.StopAgentSessionRequest
-	39, // 11: compass.v1.SessionsResponse.reload:type_name -> compass.v1.ReloadAgentSessionRequest
-	40, // 12: compass.v1.SessionsResponse.status:type_name -> compass.v1.GetAgentStatusRequest
-	41, // 13: compass.v1.SessionsResponse.provision:type_name -> compass.v1.ProvisionAgentWorkspaceRequest
-	42, // 14: compass.v1.SessionsResponse.forge_notification:type_name -> compass.v1.ForgeNotification
+	41, // 8: compass.v1.SessionsRequest.remove:type_name -> compass.v1.RemoveAgentWorkspaceResponse
+	42, // 9: compass.v1.SessionsResponse.start:type_name -> compass.v1.StartAgentSessionRequest
+	43, // 10: compass.v1.SessionsResponse.stop:type_name -> compass.v1.StopAgentSessionRequest
+	44, // 11: compass.v1.SessionsResponse.reload:type_name -> compass.v1.ReloadAgentSessionRequest
+	45, // 12: compass.v1.SessionsResponse.status:type_name -> compass.v1.GetAgentStatusRequest
+	46, // 13: compass.v1.SessionsResponse.provision:type_name -> compass.v1.ProvisionAgentWorkspaceRequest
+	47, // 14: compass.v1.SessionsResponse.forge_notification:type_name -> compass.v1.ForgeNotification
 	12, // 15: compass.v1.SessionsResponse.secrets_version:type_name -> compass.v1.SecretsVersion
 	15, // 16: compass.v1.SessionsResponse.config_version:type_name -> compass.v1.ConfigVersion
 	6,  // 17: compass.v1.SessionsResponse.deliver_control:type_name -> compass.v1.DispatchControl
-	43, // 18: compass.v1.SessionsResponse.remove:type_name -> compass.v1.RemoveAgentWorkspaceRequest
+	48, // 18: compass.v1.SessionsResponse.remove:type_name -> compass.v1.RemoveAgentWorkspaceRequest
 	5,  // 19: compass.v1.SessionsResponse.resume_body:type_name -> compass.v1.ResumeBody
-	44, // 20: compass.v1.DispatchControl.op:type_name -> compass.v1.AgentControl
+	49, // 20: compass.v1.DispatchControl.op:type_name -> compass.v1.AgentControl
 	11, // 21: compass.v1.FetchSecretsResponse.secrets:type_name -> compass.v1.ResolvedSecret
-	45, // 22: compass.v1.ResolvedSecret.delivery:type_name -> compass.v1.SecretDelivery
-	46, // 23: compass.v1.ResolvedSecret.kind:type_name -> compass.v1.SecretKind
+	50, // 22: compass.v1.ResolvedSecret.delivery:type_name -> compass.v1.SecretDelivery
+	51, // 23: compass.v1.ResolvedSecret.kind:type_name -> compass.v1.SecretKind
 	0,  // 24: compass.v1.RunnerError.code:type_name -> compass.v1.RunnerErrorCode
-	47, // 25: compass.v1.PublishEventsRequest.frame:type_name -> compass.v1.AgentFrame
-	48, // 26: compass.v1.RelayCommsCallRequest.call:type_name -> compass.v1.CommsCallRequest
-	49, // 27: compass.v1.RelayCommsCallResponse.result:type_name -> compass.v1.CommsCallResult
-	50, // 28: compass.v1.RelayLifecycleCallRequest.call:type_name -> compass.v1.LifecycleCallRequest
-	51, // 29: compass.v1.RelayLifecycleCallResponse.result:type_name -> compass.v1.LifecycleCallResult
-	52, // 30: compass.v1.RelayForgeCallRequest.call:type_name -> compass.v1.ForgeCallRequest
-	53, // 31: compass.v1.RelayForgeCallResponse.result:type_name -> compass.v1.ForgeCallResult
-	54, // 32: compass.v1.RelayBoardCallRequest.call:type_name -> compass.v1.BoardCallRequest
-	55, // 33: compass.v1.RelayBoardCallResponse.result:type_name -> compass.v1.BoardCallResult
-	47, // 34: compass.v1.CommitConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
-	1,  // 35: compass.v1.RunnerService.Enroll:input_type -> compass.v1.EnrollRequest
-	3,  // 36: compass.v1.RunnerService.Sessions:input_type -> compass.v1.SessionsRequest
-	17, // 37: compass.v1.RunnerService.PublishEvents:input_type -> compass.v1.PublishEventsRequest
-	19, // 38: compass.v1.RunnerService.RelayCommsCall:input_type -> compass.v1.RelayCommsCallRequest
-	21, // 39: compass.v1.RunnerService.RelayLifecycleCall:input_type -> compass.v1.RelayLifecycleCallRequest
-	23, // 40: compass.v1.RunnerService.RelayForgeCall:input_type -> compass.v1.RelayForgeCallRequest
-	25, // 41: compass.v1.RunnerService.RelayBoardCall:input_type -> compass.v1.RelayBoardCallRequest
-	27, // 42: compass.v1.RunnerService.CommitConversationFrame:input_type -> compass.v1.CommitConversationFrameRequest
-	7,  // 43: compass.v1.RunnerService.FetchSecrets:input_type -> compass.v1.FetchSecretsRequest
-	9,  // 44: compass.v1.RunnerService.BindLifetime:input_type -> compass.v1.BindLifetimeRequest
-	13, // 45: compass.v1.RunnerService.FetchAgentConfig:input_type -> compass.v1.FetchAgentConfigRequest
-	2,  // 46: compass.v1.RunnerService.Enroll:output_type -> compass.v1.EnrollResponse
-	4,  // 47: compass.v1.RunnerService.Sessions:output_type -> compass.v1.SessionsResponse
-	18, // 48: compass.v1.RunnerService.PublishEvents:output_type -> compass.v1.PublishEventsResponse
-	20, // 49: compass.v1.RunnerService.RelayCommsCall:output_type -> compass.v1.RelayCommsCallResponse
-	22, // 50: compass.v1.RunnerService.RelayLifecycleCall:output_type -> compass.v1.RelayLifecycleCallResponse
-	24, // 51: compass.v1.RunnerService.RelayForgeCall:output_type -> compass.v1.RelayForgeCallResponse
-	26, // 52: compass.v1.RunnerService.RelayBoardCall:output_type -> compass.v1.RelayBoardCallResponse
-	28, // 53: compass.v1.RunnerService.CommitConversationFrame:output_type -> compass.v1.CommitConversationFrameResponse
-	8,  // 54: compass.v1.RunnerService.FetchSecrets:output_type -> compass.v1.FetchSecretsResponse
-	10, // 55: compass.v1.RunnerService.BindLifetime:output_type -> compass.v1.BindLifetimeResponse
-	14, // 56: compass.v1.RunnerService.FetchAgentConfig:output_type -> compass.v1.FetchAgentConfigResponse
-	46, // [46:57] is the sub-list for method output_type
-	35, // [35:46] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	52, // 25: compass.v1.PublishEventsRequest.frame:type_name -> compass.v1.AgentFrame
+	53, // 26: compass.v1.RelayCommsCallRequest.call:type_name -> compass.v1.CommsCallRequest
+	54, // 27: compass.v1.RelayCommsCallResponse.result:type_name -> compass.v1.CommsCallResult
+	55, // 28: compass.v1.RelayLifecycleCallRequest.call:type_name -> compass.v1.LifecycleCallRequest
+	56, // 29: compass.v1.RelayLifecycleCallResponse.result:type_name -> compass.v1.LifecycleCallResult
+	57, // 30: compass.v1.RelayForgeCallRequest.call:type_name -> compass.v1.ForgeCallRequest
+	58, // 31: compass.v1.RelayForgeCallResponse.result:type_name -> compass.v1.ForgeCallResult
+	59, // 32: compass.v1.RelayBoardCallRequest.call:type_name -> compass.v1.BoardCallRequest
+	60, // 33: compass.v1.RelayBoardCallResponse.result:type_name -> compass.v1.BoardCallResult
+	52, // 34: compass.v1.CommitConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
+	61, // 35: compass.v1.RelaySessionBlobRequest.blob:type_name -> compass.v1.PutSessionBlobRequest
+	33, // 36: compass.v1.FetchSessionBlobsResponse.header:type_name -> compass.v1.SessionBlobHeader
+	1,  // 37: compass.v1.RunnerService.Enroll:input_type -> compass.v1.EnrollRequest
+	3,  // 38: compass.v1.RunnerService.Sessions:input_type -> compass.v1.SessionsRequest
+	17, // 39: compass.v1.RunnerService.PublishEvents:input_type -> compass.v1.PublishEventsRequest
+	19, // 40: compass.v1.RunnerService.RelayCommsCall:input_type -> compass.v1.RelayCommsCallRequest
+	21, // 41: compass.v1.RunnerService.RelayLifecycleCall:input_type -> compass.v1.RelayLifecycleCallRequest
+	23, // 42: compass.v1.RunnerService.RelayForgeCall:input_type -> compass.v1.RelayForgeCallRequest
+	25, // 43: compass.v1.RunnerService.RelayBoardCall:input_type -> compass.v1.RelayBoardCallRequest
+	27, // 44: compass.v1.RunnerService.CommitConversationFrame:input_type -> compass.v1.CommitConversationFrameRequest
+	7,  // 45: compass.v1.RunnerService.FetchSecrets:input_type -> compass.v1.FetchSecretsRequest
+	9,  // 46: compass.v1.RunnerService.BindLifetime:input_type -> compass.v1.BindLifetimeRequest
+	13, // 47: compass.v1.RunnerService.FetchAgentConfig:input_type -> compass.v1.FetchAgentConfigRequest
+	29, // 48: compass.v1.RunnerService.RelaySessionBlob:input_type -> compass.v1.RelaySessionBlobRequest
+	31, // 49: compass.v1.RunnerService.FetchSessionBlobs:input_type -> compass.v1.FetchSessionBlobsRequest
+	2,  // 50: compass.v1.RunnerService.Enroll:output_type -> compass.v1.EnrollResponse
+	4,  // 51: compass.v1.RunnerService.Sessions:output_type -> compass.v1.SessionsResponse
+	18, // 52: compass.v1.RunnerService.PublishEvents:output_type -> compass.v1.PublishEventsResponse
+	20, // 53: compass.v1.RunnerService.RelayCommsCall:output_type -> compass.v1.RelayCommsCallResponse
+	22, // 54: compass.v1.RunnerService.RelayLifecycleCall:output_type -> compass.v1.RelayLifecycleCallResponse
+	24, // 55: compass.v1.RunnerService.RelayForgeCall:output_type -> compass.v1.RelayForgeCallResponse
+	26, // 56: compass.v1.RunnerService.RelayBoardCall:output_type -> compass.v1.RelayBoardCallResponse
+	28, // 57: compass.v1.RunnerService.CommitConversationFrame:output_type -> compass.v1.CommitConversationFrameResponse
+	8,  // 58: compass.v1.RunnerService.FetchSecrets:output_type -> compass.v1.FetchSecretsResponse
+	10, // 59: compass.v1.RunnerService.BindLifetime:output_type -> compass.v1.BindLifetimeResponse
+	14, // 60: compass.v1.RunnerService.FetchAgentConfig:output_type -> compass.v1.FetchAgentConfigResponse
+	30, // 61: compass.v1.RunnerService.RelaySessionBlob:output_type -> compass.v1.RelaySessionBlobResponse
+	32, // 62: compass.v1.RunnerService.FetchSessionBlobs:output_type -> compass.v1.FetchSessionBlobsResponse
+	50, // [50:63] is the sub-list for method output_type
+	37, // [37:50] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_runner_proto_init() }
@@ -2485,13 +2810,17 @@ func file_compass_v1_runner_proto_init() {
 		(*FetchAgentConfigResponse_Version)(nil),
 		(*FetchAgentConfigResponse_Chunk)(nil),
 	}
+	file_compass_v1_runner_proto_msgTypes[31].OneofWrappers = []any{
+		(*FetchSessionBlobsResponse_Header)(nil),
+		(*FetchSessionBlobsResponse_Chunk)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_runner_proto_rawDesc), len(file_compass_v1_runner_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   28,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

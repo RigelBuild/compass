@@ -98,6 +98,10 @@ service AgentGateway {
   // account and runs the transition under that caller (single-trust-domain MVP,
   // amendment §Resolved decisions 2). INTERNAL surface (never public gen).
   rpc Board(BoardCallRequest) returns (BoardCallResult);
+
+  // PutSessionBlob (unary): best-effort upload of one inline-image blob from
+  // the session's blob dir. The Runner binds the session from the socket.
+  rpc PutSessionBlob(PutSessionBlobRequest) returns (PutSessionBlobResponse);
 }
 
 // One agent-initiated comms call. `call_id` is the agent-minted correlation id
@@ -518,3 +522,11 @@ message PostConversationFrameResponse {}
 // The Control subscribe request carries no session id: the per-container socket
 // the call arrives on IS the session identity (design Decision #4).
 message ControlSubscribeRequest {}
+
+// One content-addressed session blob. sha256 is lowercase hex of data; the
+// Server recomputes it and rejects a mismatch. At most 15 MiB of data.
+message PutSessionBlobRequest {
+  string sha256 = 1;
+  bytes data = 2;
+}
+message PutSessionBlobResponse {}
