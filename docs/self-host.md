@@ -168,6 +168,48 @@ After `up` returns, `compass-stack` does not watch the Runner. Under devenv,
 `compass-stack down`, which stops every child including the Runner, and then the
 same `compass-stack up` command.
 
+### Kubernetes projected-token enrollment
+
+Configure the Server with `--runner-clusters` or `$COMPASS_RUNNER_CLUSTERS` and
+point the Runner at its projected token with `--token-file` or
+`$COMPASS_RUNNER_TOKEN_FILE`. A cluster entry uses the following schema:
+
+```yaml
+clusters:
+  - name: prod-eks
+    issuer: https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE
+    audience: compass-runner
+    namespace: compass-runners
+    serviceAccount: compass-runner
+    maxTokenLifetime: 600s
+```
+
+`audience` and `maxTokenLifetime` show their defaults. By default the Server
+finds keys through OIDC discovery on `issuer`. Set at most one of `jwksURI` or
+`jwksFile` to override that, and set `caFile` for an issuer with a private CA.
+
+Every cluster must have a unique issuer. The Server selects a cluster by the
+token's `iss`; sharing an issuer or a signing key across clusters is rejected.
+For a self-managed cluster, set a unique `--service-account-issuer` and do not
+copy the same service-account signing key into another cluster.
+The default Kubernetes configuration binds `system:service-account-issuer-discovery`
+to `system:serviceaccounts`, so the cluster's discovery document and JWKS
+require authenticated access. An out-of-cluster Server can reach the keys by
+choosing one of three options: bind that role to `system:unauthenticated` with
+anonymous authentication enabled; publish JWKS at a reachable
+`--service-account-jwks-uri`; or configure a local `jwksFile`, which requires
+a Server rollout for every key rotation.
+
+During a live issuer change, keep the old value as a second
+`--service-account-issuer` until tokens from both issuers expire. Publish a new
+signing key at least one hour before using it. Set `deployers` to the identity
+that applies the Runner manifests: Flux's kustomize-controller, or the
+ServiceAccount a Kustomization impersonates. Narrow `controllers` to the single
+username used by the controller manager when it is known.
+
+The projected-token DaemonSet currently supports one node only. Rollout beyond
+one node waits for the multi-Runner hub.
+
 ## Database
 
 By default the stack provisions its own PostgreSQL as a bundled rootless

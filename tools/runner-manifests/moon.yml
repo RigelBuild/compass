@@ -11,4 +11,4 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', 'seccomp/*.json', '../../runner-image/Dockerfile']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', 'seccomp/*.json', '/runner-image/Dockerfile']

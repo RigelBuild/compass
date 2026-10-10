@@ -6,8 +6,17 @@ Render Kubernetes objects from an operator values file:
 bun run render.ts values.example.json
 ```
 
-The image must be a `repo@sha256:<digest>` reference. Replace the example node
-selector, taint, host paths, Server address, and token Secret before applying.
+The image must be a `repo@sha256:<digest>` reference. Configure node selectors,
+taints, host paths, the Server address, token lifetimes, and admission identities
+before applying.
+
+The DaemonSet uses a projected `compass-runner` ServiceAccount token at
+`/var/run/secrets/compass/runner/token`. Set `tokenExpirationSeconds` to at
+least 600 and no higher than `maxTokenLifetimeSeconds`. The admission policy
+uses `admission.controllers` and `admission.deployers`; set them to the
+controller identities that create Runner pods and the identity that applies
+the DaemonSet. The ServiceAccount has no RBAC binding. Rollout beyond one node
+waits for the multi-Runner hub.
 
 ## KVM device delivery
 
@@ -31,15 +40,6 @@ selector, taint, host paths, Server address, and token Secret before applying.
   quotas. Provide the separate runtime host tree for stale-session reaping.
   Own both by uid and gid 65532: user-namespaced pods mount them idmapped. Not
   yet verified on a real node.
-- Create the `runnerTokenSecret` with the key named in the values file.
-
-**Single-node only for now.** A Runner token is minted for one runner ID, and
-each pod enrolls as its node name. One shared Secret therefore enrolls only
-the node whose name matches the token. Per-node token delivery is not
-designed yet.
 
 Metrics: set `OTEL_EXPORTER_OTLP_ENDPOINT` to push them. The Runner serves no
 scrape endpoint.
-
-The Runner does not call the Kubernetes API. Its ServiceAccount disables
-credential automount, and no Role is rendered.

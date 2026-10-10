@@ -56,6 +56,9 @@ projects:
   # the CI sweep — that suite is what catches a build-arg or closure-root drift,
   # since no compass CI step can build the image itself today.
   runner-image: 'tools/runner-image'
+  # The Runner manifest renderer and projected-token admission policy. Registered
+  # so its render behavior suite and typecheck run in the Moon CI sweep.
+  runner-manifests: 'tools/runner-manifests'
   # The agent-image pin the microVM guest rootfs derives from. Registered so
   # its typecheck + pure-core unit tests ride the CI sweep — that suite is what
   # catches a provenance or layer-order drift, and moon discovers projects only
