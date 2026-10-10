@@ -186,10 +186,10 @@
 	--cx-issue-done: var(--rigel-cyan);
 
 	/* --- CI / review --- */
-	--cx-ci-pass: var(--cx-ok);
+	--cx-ci-pass: var(--rigel-green);
 	--cx-ci-fail: var(--cx-error);
 	--cx-ci-pending: var(--cx-warn);
-	--cx-review-approved: var(--cx-ok);
+	--cx-review-approved: var(--rigel-cyan);
 	--cx-review-changes: var(--cx-error);
 	--cx-review-pending: var(--cx-text-faint);
 
