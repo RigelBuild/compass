@@ -151,6 +151,9 @@ type ServeConfig struct {
 	// bound, with each bound address (nil for a door that is off). It lets a
 	// caller bind port 0 and learn the real port with no release-and-rebind gap.
 	OnBound func(dev, network net.Addr)
+	// RunnerClustersPath is the Runner cluster file (--runner-clusters). When
+	// set, the RunnerService door also accepts projected ServiceAccount tokens.
+	RunnerClustersPath string
 }
 
 // ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
@@ -996,6 +999,12 @@ func buildDoors(
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearTokens *linearagent.TokenSource,
 ) (serveDoors, error) {
+	// Built even without a network door, so a bad cluster file or a reserved-ID
+	// clash refuses start the same way on every topology.
+	runnerVerifier, err := buildRunnerVerifier(ctx, cfg, st)
+	if err != nil {
+		return serveDoors{}, err
+	}
 	usageSvc := newUsageService(usage.NewPostgres(st), st)
 	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
@@ -1078,11 +1087,16 @@ func buildDoors(
 	}
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier)
 		if err != nil {
 			return serveDoors{}, err
 		}
 		netServer = s
+	}
+
+	// Started after every fallible step above; key refresh ends with the serve ctx.
+	if runnerVerifier != nil {
+		runnerVerifier.Start(ctx)
 	}
 
 	// netResolver records WHICH instance reached the container delivery path; a

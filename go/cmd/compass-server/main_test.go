@@ -355,6 +355,36 @@ func TestBuildServeConfigNatsURL(t *testing.T) {
 	}
 }
 
+// TestBuildServeConfigRunnerClusters pins --runner-clusters over
+// $COMPASS_RUNNER_CLUSTERS; with neither, projected tokens stay off.
+func TestBuildServeConfigRunnerClusters(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222")
+	tests := []struct {
+		name, flag, env, want string
+	}{
+		{name: "neither set leaves it off"},
+		{name: "env is the fallback", env: "/etc/compass/env.yaml", want: "/etc/compass/env.yaml"},
+		{name: "flag wins over env", flag: "/etc/compass/flag.yaml", env: "/etc/compass/env.yaml", want: "/etc/compass/flag.yaml"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("COMPASS_RUNNER_CLUSTERS", tt.env)
+			args := []string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"}
+			if tt.flag != "" {
+				args = append(args, "--runner-clusters", tt.flag)
+			}
+			cfg, _, err := buildServeConfig(args)
+			if err != nil {
+				t.Fatalf("buildServeConfig = %v, want nil", err)
+			}
+			if cfg.RunnerClustersPath != tt.want {
+				t.Errorf("RunnerClustersPath = %q, want %q", cfg.RunnerClustersPath, tt.want)
+			}
+		})
+	}
+}
+
 // TestBuildServeConfigPartialNetworkDoorErrors: a partial --listen/--tls group is
 // rejected at parse time (the resolveNetworkDoor guard), so the invalid combo
 // never reaches Serve. Complements resolveNetworkDoor's own unit test by proving

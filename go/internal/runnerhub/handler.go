@@ -106,7 +106,7 @@ func (h *Handler) Enroll(ctx context.Context, req *connect.Request[compassv1inte
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("runner session cleanup is temporarily unavailable"))
 	}
-	return connect.NewResponse(&compassv1internal.EnrollResponse{Reattached: reattached}), nil
+	return connect.NewResponse(&compassv1internal.EnrollResponse{Reattached: reattached, RunnerId: subj.ID}), nil
 }
 
 // Sessions binds the attached Runner's command router to this live bidi stream:

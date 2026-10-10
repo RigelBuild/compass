@@ -192,12 +192,16 @@ service RunnerService {
   rpc FetchAgentConfig(FetchAgentConfigRequest) returns (stream FetchAgentConfigResponse);
 }
 
-// Enroll request: the Runner announces its stable identity at connect. The id
-// is cross-checked against the authenticated token subject (store.Subject.ID for
-// a SubjectRunner token) — a mismatch is a spoofing attempt and is rejected
-// CodeUnauthenticated, so the field is a defense-in-depth cross-check, not a
-// trusted input. The credential itself rides the transport as a bearer token,
-// never a field here (mirroring IssueTokenRequest, compass.proto:237-242).
+// Enroll request: the Runner announces its stable identity at connect. A
+// non-empty id is cross-checked against the authenticated token subject
+// (store.Subject.ID for a SubjectRunner token) — a mismatch is a spoofing
+// attempt and is rejected CodeUnauthenticated, so the field is a
+// defense-in-depth cross-check, not a trusted input. A Runner authenticating
+// with a projected ServiceAccount token cannot compute its id (it does not know
+// its cluster's registered name), so it leaves the id empty and takes the
+// Server-assigned one from EnrollResponse.runner_id. The credential itself
+// rides the transport as a bearer token, never a field here (mirroring
+// IssueTokenRequest, compass.proto:237-242).
 //
 // runtime_tier and egress_posture are declared once here, not per session:
 // they are Runner-wide facts of the one backend this Runner drives, so the hub
@@ -215,9 +219,11 @@ message EnrollRequest {
 // Enroll response: the handshake ack. `reattached` distinguishes a fresh
 // enrollment from a re-attach of an already-registered Runner (OQ6 duplicate
 // enrollment) — the wire-level evidence a
-// reattach test asserts on.
+// reattach test asserts on. `runner_id` is the authenticated subject's id, the
+// identity the Runner uses for its ownership label and stale-container sweep.
 message EnrollResponse {
   bool reattached = 1;
+  string runner_id = 2;
 }
 
 // A session command result, sent Runner->Server on the Sessions request stream

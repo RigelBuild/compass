@@ -114,6 +114,38 @@ func TestMintRunnerTokenRequiresRunnerId(t *testing.T) {
 	}
 }
 
+// "/" is reserved for projected-token IDs; a minted "a/b" could otherwise
+// impersonate the Runner on node b of cluster a.
+func TestMintRunnerTokenRejectsSlashInRunnerID(t *testing.T) {
+	putter := &fakeTokenPutter{}
+	_, err := MintRunnerToken(t.Context(), putter, "a/b")
+	if !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("MintRunnerToken(a/b) = %v, want ErrInvalidArgument", err)
+	}
+	if len(putter.calls) != 0 {
+		t.Fatalf("PutTokenHash called %d times, want 0", len(putter.calls))
+	}
+	if err := StoreRunnerTokenHash(t.Context(), putter, "tok", "a/b"); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("StoreRunnerTokenHash(id a/b) = %v, want ErrInvalidArgument", err)
+	}
+	if len(putter.calls) != 0 {
+		t.Fatalf("PutTokenHash called %d times, want 0", len(putter.calls))
+	}
+}
+
+// A token with "." goes to the projected-token branch at the door and could
+// never resolve by hash, so storing one is refused.
+func TestStoreRunnerTokenHashRejectsDotInToken(t *testing.T) {
+	putter := &fakeTokenPutter{}
+	err := StoreRunnerTokenHash(t.Context(), putter, "a.b.c", "runner-1")
+	if !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("StoreRunnerTokenHash(token with dot) = %v, want ErrInvalidArgument", err)
+	}
+	if len(putter.calls) != 0 {
+		t.Fatalf("PutTokenHash called %d times, want 0", len(putter.calls))
+	}
+}
+
 // fakeHashResolver answers ResolveTokenHash from a fixed map or a fixed error.
 type fakeHashResolver struct {
 	known map[[32]byte]store.Subject

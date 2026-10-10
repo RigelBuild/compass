@@ -111,6 +111,7 @@ type Querier interface {
 	CountChannelPins(ctx context.Context, channelID string) (CountChannelPinsRow, error)
 	CountOwedMentions(ctx context.Context) (int64, error)
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
+	CountRunnerTokenIDsWithSlash(ctx context.Context) (int64, error)
 	CurrentAgentConfig(ctx context.Context) (CurrentAgentConfigRow, error)
 	// Model-registry queries (RIG-3122 P2). Back the hand-written Store methods in
 	// internal/store/model_registry.go, which own the fail-closed payload

@@ -70,3 +70,14 @@ func (s *Store) RevokeToken(ctx context.Context, hash [32]byte) error {
 	}
 	return nil
 }
+
+// CountRunnerTokenIDsWithSlash counts live Runner tokens whose subject ID holds
+// "/", the separator reserved for projected-token Runner IDs. Rows minted
+// before the reservation could collide with a node's ID, so serve refuses them.
+func (s *Store) CountRunnerTokenIDsWithSlash(ctx context.Context) (int64, error) {
+	n, err := s.q.CountRunnerTokenIDsWithSlash(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("store: count runner token ids with slash: %w", err)
+	}
+	return n, nil
+}

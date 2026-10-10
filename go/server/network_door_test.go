@@ -527,6 +527,13 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 		}
 	})
 
+	// The account door has no verifier: a projected token misses the hash lookup.
+	t.Run("projected runner token is Unauthenticated", func(t *testing.T) {
+		if code := issue("Bearer " + jwsShaped); code != connect.CodeUnauthenticated {
+			t.Fatalf("projected token on the account door = %v, want CodeUnauthenticated", code)
+		}
+	})
+
 	t.Run("non-admin token on adminOnly RPC is PermissionDenied", func(t *testing.T) {
 		if code := issue("Bearer " + memberTok); code != connect.CodePermissionDenied {
 			t.Fatalf("non-admin token on IssueToken = %v, want CodePermissionDenied", code)

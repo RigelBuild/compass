@@ -115,6 +115,25 @@ func TestAuthenticateLookupFailureIsUnavailable(t *testing.T) {
 	}
 }
 
+// Unusable cluster keys are an outage, not a verdict: the Runner must retry,
+// with a fixed message and no cause on the wire.
+func TestAuthenticateKeysUnavailableIsUnavailable(t *testing.T) {
+	cause := fmt.Errorf("runner cluster %q: %w", "prod-eks", auth.ErrKeysUnavailable)
+	b := &bearerAuth{resolve: func(context.Context, string, store.SubjectKind) (store.Subject, error) {
+		return store.Subject{}, cause
+	}}
+	_, err := b.authenticate(t.Context(), bearerHeader("a.b.c"))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("code = %v, want Unavailable", got)
+	}
+	if ce, ok := errors.AsType[*connect.Error](err); !ok || ce.Message() != "runner cluster keys unavailable" {
+		t.Fatalf("error = %v, want fixed message", err)
+	}
+	if strings.Contains(err.Error(), "prod-eks") {
+		t.Fatalf("wire error %q leaks the cluster name", err)
+	}
+}
+
 // A valid SubjectRunner token is accepted and its subject is set on the returned
 // context, so the handler can read it. A bug that dropped the subject would fail
 // the defense-in-depth check in Enroll.
@@ -210,6 +229,26 @@ func TestRunnerTokenAcceptedOverWire(t *testing.T) {
 	}
 	if resp.Msg.GetReattached() {
 		t.Fatal("first Enroll reattached = true, want false")
+	}
+}
+
+// A projected-token Runner cannot compute its own ID, so it enrolls with an
+// empty runner_id and must learn the authenticated subject's ID from the reply.
+func TestEnrollReturnsSubjectRunnerID(t *testing.T) {
+	hub := newHubOnly()
+	const id = "prod-eks/ip-10-0-1-5_ec2_internal"
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{
+		"projected-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: id}},
+	}}
+	url := newMountedH2CServer(t, hub, resolver.resolve)
+	client := newRawRunnerClient(t, url, "projected-tok")
+
+	resp, err := client.Enroll(t.Context(), connect.NewRequest(&compassv1internal.EnrollRequest{}))
+	if err != nil {
+		t.Fatalf("Enroll with empty runner_id = %v, want success", err)
+	}
+	if got := resp.Msg.GetRunnerId(); got != id {
+		t.Fatalf("EnrollResponse.runner_id = %q, want %q", got, id)
 	}
 }
 
