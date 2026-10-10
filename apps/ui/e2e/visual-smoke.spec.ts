@@ -136,7 +136,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	// under the 560px container breakpoint.
 	test("settings — narrow pane", async ({ page }) => {
 		await page.setViewportSize({ width: 1120, height: 720 });
-		await page.goto("/#/settings/tracker");
+		await page.goto("/#/settings/general");
 		const panel = page.locator(".view-panel", {
 			has: page.locator(".settings-view"),
 		});

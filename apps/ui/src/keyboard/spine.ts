@@ -139,7 +139,7 @@ export function createKeyboardSpine(deps: {
 	const viewSettings: Command = {
 		id: "view.settings" as CommandId,
 		title: "Go to Settings",
-		keywords: ["settings", "preferences", "config", "tracker"],
+		keywords: ["settings", "preferences"],
 		scope: "global",
 		run: () => deps.showSettings(),
 	};

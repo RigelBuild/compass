@@ -1909,11 +1909,6 @@ describe("comms fixture preconditions", () => {
 });
 
 describe("assignedIssues async load (PR3)", () => {
-	// Drain the microtask queue until the assigned-issues query reaches the
-	// expected size — no wall-clock timer, just the reactive state we're waiting
-	// on. The loader is now a solid-query query (keyed on the tracker handle), so
-	// it settles across a few microtask hops rather than the single tick the old
-	// promise-into-signal loader took; the drain polls that real state.
 	const drainUntil = async (
 		read: () => number,
 		want: (n: number) => boolean,
@@ -1921,59 +1916,16 @@ describe("assignedIssues async load (PR3)", () => {
 		for (let i = 0; i < 50 && !want(read()); i++) await Promise.resolve();
 	};
 
-	// At init the store fires the assigned-issues query; after it settles,
-	// assignedIssues() holds the fixture queue for the default (non-empty) handle.
-	// Before any tick it is [] (the query is pending); this pins the resolution.
 	test("loads the fixture queue for the default handle after a tick", async () => {
 		await withStoreAsync(async (s) => {
-			// Synchronously (pre-microtask) the query is pending → the empty fallback.
 			expect(s.assignedIssues()).toEqual([]);
-
 			await drainUntil(
 				() => s.assignedIssues().length,
 				(n) => n > 0,
 			);
-
 			expect(s.assignedIssues().map((w) => w.id)).toEqual(
 				STUB_ASSIGNED_ISSUES.map((w) => w.id),
 			);
-		});
-	});
-
-	// Reconfiguring to an empty handle re-keys the query, which yields [] for a
-	// blank handle (tracker-not-configured). Proves setTrackerConfig re-keys AND
-	// refetches with no manual reload — the handle is part of the query key.
-	test("clears the queue after setTrackerConfig with an empty handle", async () => {
-		await withStoreAsync(async (s) => {
-			await drainUntil(
-				() => s.assignedIssues().length,
-				(n) => n > 0,
-			);
-			expect(s.assignedIssues().length).toBeGreaterThan(0);
-
-			s.setTrackerConfig({ ...s.trackerConfig(), handle: "" });
-			await drainUntil(
-				() => s.assignedIssues().length,
-				(n) => n === 0,
-			);
-
-			expect(s.assignedIssues()).toEqual([]);
-		});
-	});
-});
-
-describe("setTrackerConfig (PR3)", () => {
-	// trackerConfig() reflects the config just set — the accessor the Settings
-	// view reads back. Uses a non-default handle so the assertion can only pass
-	// if the setter actually wrote the signal (not a default echo).
-	test("trackerConfig reflects a newly set config", () => {
-		withStore((s) => {
-			const next = { ...s.trackerConfig(), handle: "someone@else" };
-
-			s.setTrackerConfig(next);
-			flush();
-
-			expect(s.trackerConfig().handle).toBe("someone@else");
 		});
 	});
 });

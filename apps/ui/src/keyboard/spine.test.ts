@@ -34,9 +34,7 @@ function stubDeps(
 		closeTab: (tabId: string) => void;
 		focusPane: (pane: "first" | "second") => void;
 		startTour: () => void;
-		navigateSettings: (
-			section: "general" | "appearance" | "tracker" | "models",
-		) => void;
+		navigateSettings: (section: "general" | "appearance" | "models") => void;
 	}> = {},
 ) {
 	return {
@@ -217,9 +215,6 @@ describe("createKeyboardSpine", () => {
 		expect(cmd?.scope).toBe("global");
 		cmd?.run();
 		expect(opened).toEqual(["models"]);
-		expect(spine.registry.get(id("view.settings.tracker"))?.title).toBe(
-			"Go to Settings: Tracker",
-		);
 		expect(spine.registry.get(id("view.settings.appearance"))?.title).toBe(
 			"Go to Settings: Appearance",
 		);
