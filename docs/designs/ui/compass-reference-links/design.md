@@ -412,8 +412,11 @@ Times come from `l.now()`.
   the error. Then return the last good value with a nil error and log a
   warning, or return the error if there is no good value.
 - An empty `urlKey` is a failure, because no template can be built from it.
-- One mutex guards the cache and is held across the fetch, so concurrent
-  callers make one request. Each waits at most the fetch deadline.
+- A dedicated `workspaceMu sync.Mutex` (not `Linear.mu`) guards the cache
+  and is held across the fetch, so concurrent callers make one request.
+  `Linear.mu` stays as it is: `doGraphQL` takes it in `gateBlocked`, so
+  holding it across the fetch would deadlock. Each caller waits at most the
+  fetch deadline.
 
 Test cycle (red first), in `go/internal/forge/linear_test.go` with
 `newTestLinear`, `scriptedRoundTripper` and `fakeTokenSource`:
@@ -425,6 +428,8 @@ Test cycle (red first), in `go/internal/forge/linear_test.go` with
   error.
 - A failure with no good value returns an error. A second call inside
   `workspaceRetryAfter` sends no request. A call after it sends one.
+- A cache miss that succeeds through the real `doGraphQL` path returns
+  within the fetch deadline (regression guard for the lock split).
 - A round tripper that blocks until the request context ends: the call
   returns an error within the fetch deadline.
 - An empty `urlKey` returns an error.
