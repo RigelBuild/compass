@@ -27,6 +27,18 @@ import (
 // podmanUsable(), so there is no stack to build for — run (everything skips) and
 // exit without building.
 func TestMain(m *testing.M) {
+	registerAskFixtureOptions()
+	registerDuoFixtureOptions()
+	registerFanoutFixtureOptions()
+	registerListMessagesFixtureOptions()
+	registerRedeliverFixtureOptions()
+	registerCommsToolFixtureOptions()
+	registerToolsFixtureOptions()
+	registerLegFiveFixtureOptions()
+	registerForgeFixtureOptions()
+	registerLegTwoFixtureOptions()
+	registerLegThreeFourFixtureOptions()
+	registerSeamProbeFixtureOptions()
 	if !podmanUsable() {
 		os.Exit(m.Run())
 	}

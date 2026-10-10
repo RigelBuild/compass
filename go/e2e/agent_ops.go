@@ -151,13 +151,18 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 					out <- nil
 					return
 				}
+			case compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED,
+				compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING,
+				compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED,
+				compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED,
+				compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED:
 			}
 		}
 		if err := stream.Err(); err != nil {
 			out <- fmt.Errorf("SubscribeAgentSession stream: %w", err)
 			return
 		}
-		out <- fmt.Errorf("frame stream ended before reaching a WORKING→READY settle")
+		out <- errors.New("frame stream ended before reaching a WORKING→READY settle")
 	}()
 
 	select {
@@ -244,7 +249,7 @@ func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.Se
 			out <- received{err: fmt.Errorf("SubscribeAgentSession stream: %w", err)}
 			return
 		}
-		out <- received{err: fmt.Errorf("frame stream ended before a matching SessionInjection arrived")}
+		out <- received{err: errors.New("frame stream ended before a matching SessionInjection arrived")}
 	}()
 
 	select {

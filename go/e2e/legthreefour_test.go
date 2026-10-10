@@ -37,7 +37,7 @@ const mentionMarker = "e2e-route-leg34-mention"
 // @mention and the mentioned peer gets a STEER while an unmentioned subscriber
 // gets a DELIVER (leg 4). Modeled EXACTLY on TestLegTwoRealTurn: //go:build
 // podman, the podmanUsable() skip guard first, context.Background() as the test
-// root, sharedFixture(t) with this file's init()-registered canned routes,
+// root, sharedFixture(t) with this file's TestMain-registered canned routes,
 // container-reaping t.Cleanup
 // registered before the settling wait, and store-side assertions via
 // store.Open(ctx, f.DSN()).
@@ -433,7 +433,7 @@ const leg34SpawnMarker = "e2e-route-leg34-spawn"
 // spawner's own spawn+settle turns. mentionMarker is a stable substring of
 // mentionText (asserted below); off-script marker turns settle cleanly and
 // carry no assertion, so their reply text only needs to settle.
-func init() {
+func registerLegThreeFourFixtureOptions() {
 	registerSharedFixtureOption(
 		WithCannedMarkerScript(leg34SpawnMarker,
 			CannedToolCall(spawnToolName, leg34SpawnArgsJSON),

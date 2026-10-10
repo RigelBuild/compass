@@ -58,7 +58,7 @@ const askAnswerFraming = "Answer received for ask"
 // never asserted.
 const askSettle = "ask agent standing by"
 
-func init() {
+func registerAskFixtureOptions() {
 	askArgs := fmt.Sprintf(
 		`{"questions":[{"id":%q,"question":%q,"options":[{"label":%q},{"label":%q}]}],"topic":%q,"channel":%q,"create_topic":true}`,
 		askQID, askQuestion, askOptionA, askOptionB, askTopic, askChannel,

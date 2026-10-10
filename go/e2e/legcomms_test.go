@@ -20,7 +20,7 @@ import (
 // the agent itself (not the human trigger). Modeled EXACTLY on
 // TestLegThreeFourSpawnAndMessaging: //go:build podman, the podmanUsable() skip
 // guard first, context.Background() as the test root, sharedFixture(t) with
-// this file's init()-registered canned route, a container-reaping t.Cleanup
+// TestMain-registered canned route, a container-reaping t.Cleanup
 // registered before StartSession, store-side reads via store.Open(ctx, f.DSN()), tail-before-post
 // ordering, and a subscribe-before-post live-fan observation.
 //
@@ -179,7 +179,7 @@ const settleReply = "posted, standing by"
 // result returns.
 const commsToolMarker = "e2e-route-comms-post-tool"
 
-func init() {
+func registerCommsToolFixtureOptions() {
 	registerSharedFixtureOption(
 		WithCannedMarkerScript(commsToolMarker,
 			CannedToolCall("comms_post_message", postArgsJSON),

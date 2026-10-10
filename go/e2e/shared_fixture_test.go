@@ -12,11 +12,11 @@ import (
 	"testing"
 )
 
-// seamProbeMarker is this file's canned route, registered at init() the way
+// seamProbeMarker is this file's canned route, registered from TestMain the way
 // every leg sharing the stack must. It exists to be found in the stub.
 const seamProbeMarker = "seam-probe-marker"
 
-func init() {
+func registerSeamProbeFixtureOptions() {
 	// WithCannedScript is required, not decorative: only it sets fc.canned, the
 	// flag NewFixture gates the stub on (fixture.go:472). Markers registered
 	// without it are dropped and never serve a route.
@@ -32,7 +32,7 @@ const seamHandle = "shared-seam-owner"
 
 var (
 	seamOnce sync.Once
-	seamErr  error
+	errSeam  error
 	seamURL  string
 )
 
@@ -43,11 +43,11 @@ var (
 func seedSeamAccount(t *testing.T, f *Fixture, ctx context.Context) {
 	t.Helper()
 	seamOnce.Do(func() {
-		_, seamErr = f.CreateUser(ctx, seamHandle, "Shared Seam Owner")
+		_, errSeam = f.CreateUser(ctx, seamHandle, "Shared Seam Owner")
 		seamURL = f.ServerURL()
 	})
-	if seamErr != nil {
-		t.Fatalf("seed seam account %q: %v", seamHandle, seamErr)
+	if errSeam != nil {
+		t.Fatalf("seed seam account %q: %v", seamHandle, errSeam)
 	}
 }
 
@@ -115,8 +115,8 @@ func TestSharedFixtureLegTwo(t *testing.T) {
 	assertSeamVisible(t, f, ctx)
 }
 
-// TestSharedFixtureAppliesRegisteredOptions proves an option registered at
-// init() by ANY leg reaches the shared backend — the property that makes the
+// TestSharedFixtureAppliesRegisteredOptions proves an option registered from
+// TestMain by ANY leg reaches the shared backend — the property that makes the
 // seam independent of which leg runs first. A dropped marker route would settle
 // an agent turn on the wrong reply and still pass, so this is the vacuous-green
 // guard for the registration path.
@@ -130,18 +130,18 @@ func TestSharedFixtureAppliesRegisteredOptions(t *testing.T) {
 	if f.stub == nil {
 		t.Fatal("shared fixture has no canned stub; the registered canned option was dropped")
 	}
-	var got []string
+	got := make([]string, 0, len(f.stub.markers))
 	for _, m := range f.stub.markers {
 		got = append(got, m.marker)
 	}
 	if !slices.Contains(got, seamProbeMarker) {
 		t.Fatalf("registered marker %q absent from the shared stub (markers: %v); "+
-			"an init()-registered option did not reach stand-up", seamProbeMarker, got)
+			"a TestMain-registered option did not reach stand-up", seamProbeMarker, got)
 	}
 }
 
 // TestSharedFixtureRejectsPostStandUpRegistration pins the misuse diagnostic:
-// registering from a test body instead of an init() cannot be honoured, because
+// registering from a test body instead of TestMain cannot be honoured, because
 // canned routes freeze at construction. It must panic rather than drop silently.
 func TestSharedFixtureRejectsPostStandUpRegistration(t *testing.T) {
 	if !podmanUsable() {
