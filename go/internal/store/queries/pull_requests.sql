@@ -1,9 +1,14 @@
 -- name: InsertPullRequestIfAbsent :exec
 -- The create path's write: a webhook-hydrated row already present always wins.
+-- Only an enabled repo gets a row, since board ingestion never refreshes others.
 INSERT INTO pull_requests
     (forge_provider, forge_host, repo, number, forge_state,
      forge_created_at, forge_updated_at, pr)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+SELECT $1, $2, $3, $4, $5, $6, $7, $8
+ WHERE EXISTS (
+  SELECT 1 FROM forge_repo_subscriptions s
+   WHERE s.forge_provider = $1 AND s.forge_host = $2 AND s.enabled
+     AND (CASE WHEN $1 = 1 THEN lower(s.repo) ELSE s.repo END) = $3)
 ON CONFLICT (tenant_id, forge_provider, forge_host, repo, number) DO NOTHING;
 
 -- name: UpsertPullRequestGuarded :execrows

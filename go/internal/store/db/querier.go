@@ -325,6 +325,7 @@ type Querier interface {
 	InsertModelRegistry(ctx context.Context, registry []byte) (int64, error)
 	InsertOwnerDMGroup(ctx context.Context, arg InsertOwnerDMGroupParams) error
 	// The create path's write: a webhook-hydrated row already present always wins.
+	// Only an enabled repo gets a row, since board ingestion never refreshes others.
 	InsertPullRequestIfAbsent(ctx context.Context, arg InsertPullRequestIfAbsentParams) error
 	InsertServerKeyState(ctx context.Context, arg InsertServerKeyStateParams) error
 	// Server-secrets registry queries (design record T0, mechanism C1/D6). The

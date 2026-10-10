@@ -30,6 +30,7 @@ func prRow(repo string, n uint64, state string, created, updated time.Time) Pull
 	}
 }
 
+// seedBoardIssue stores an issue and enables its repo, as board ingestion would.
 func seedBoardIssue(t *testing.T, ctx context.Context, s *Store, c ForgeCoord) {
 	t.Helper()
 	if _, err := s.UpsertIssueForgeFields(ctx, IssueForgeFields{
@@ -37,6 +38,9 @@ func seedBoardIssue(t *testing.T, ctx context.Context, s *Store, c ForgeCoord) {
 		Number: uint32(c.Number), Title: "issue",
 	}); err != nil {
 		t.Fatalf("seed board issue %v: %v", c, err)
+	}
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: c.Provider, Host: c.Host, Repo: c.Repo, Enabled: true}); err != nil {
+		t.Fatalf("seed subscription %v: %v", c, err)
 	}
 }
 
@@ -300,6 +304,40 @@ func sameCoords(got, want []ForgeCoord) bool {
 	return len(got) == len(want) && !slices.ContainsFunc(want, func(c ForgeCoord) bool {
 		return !slices.Contains(got, c)
 	})
+}
+
+// TestCreatePullRequestOnUnwatchedRepoKeepsOnlyLink: a PR created in a repo
+// with no enabled subscription gets no PR row, since nothing would refresh it;
+// the explicit link is still written and attaches once a hydrate stores the row.
+func TestCreatePullRequestOnUnwatchedRepoKeepsOnlyLink(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, owner := seedAgent(t, s, "prl-unwatched")
+	issue := ghCoord("a/b", 1)
+	seedBoardIssue(t, ctx, s, issue)
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "Watched/Repo", Enabled: true}); err != nil {
+		t.Fatalf("EnsureForgeRepoSubscription: %v", err)
+	}
+
+	unwatched := prRow("code/x", 10, "open", prBase, time.Unix(0, 0))
+	if err := s.CreatePullRequestWithLink(ctx, authoredPR(agent, owner, unwatched), unwatched, &issue); err != nil {
+		t.Fatalf("CreatePullRequestWithLink: %v", err)
+	}
+	if _, ok, err := s.PullRequestUpdatedAt(ctx, unwatched.Coord); err != nil || ok {
+		t.Fatalf("unwatched PR row stored = %v, %v; want none", ok, err)
+	}
+	mustUpsertPR(t, ctx, s, prRow("code/x", 10, "open", prBase, prBase.Add(time.Hour)))
+	if got := prsFor(t, ctx, s, issue); !slices.Equal(got, []uint64{10}) {
+		t.Fatalf("link lost without a create-time row: got %v", got)
+	}
+
+	watched := prRow("watched/repo", 11, "open", prBase, time.Unix(0, 0))
+	if err := s.CreatePullRequestWithLink(ctx, authoredPR(agent, owner, watched), watched, &issue); err != nil {
+		t.Fatalf("CreatePullRequestWithLink: %v", err)
+	}
+	if _, ok, err := s.PullRequestUpdatedAt(ctx, watched.Coord); err != nil || !ok {
+		t.Fatalf("watched PR row stored = %v, %v; want stored", ok, err)
+	}
 }
 
 func TestPullRequestUpdatedAtGate(t *testing.T) {

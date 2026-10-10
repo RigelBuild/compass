@@ -64,6 +64,7 @@ export {
 	ListIssuesRequestSchema,
 	type ListIssuesResponse,
 	ListIssuesResponseSchema,
+	PullRequestIssueLinkSchema,
 	type ReviewCommentInput,
 	ReviewCommentInputSchema,
 	// The agent's activity-status upsert (internal-only AgentGateway gen): the

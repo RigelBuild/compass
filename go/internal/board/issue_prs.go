@@ -144,6 +144,20 @@ func (p *IssueProjection) CommittedIssue(ctx context.Context, si store.Issue) (*
 	return wires[0], nil
 }
 
+// PublishExplicitLink republishes an issue that just gained an explicit PR link,
+// and the closing-ref issues whose PRs it took over. A store-less projection
+// has no links and does nothing.
+func (p *IssueProjection) PublishExplicitLink(ctx context.Context, target store.ForgeCoord) error {
+	if p == nil || p.store == nil {
+		return nil
+	}
+	fallback, err := p.store.FallbackIssuesForTarget(ctx, target)
+	if err != nil {
+		return fmt.Errorf("board: fallback issues for target: %w", err)
+	}
+	return p.republishPrs(ctx, append(fallback, target))
+}
+
 // IssueToProtoWithPrs maps committed rows to wire Issues with their prs loaded,
 // for responses built outside the cache (SetIssueState, SearchIssues). A nil
 // projection, as in tests that run without a board, maps rows without prs.
