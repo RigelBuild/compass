@@ -80,7 +80,8 @@
 	gap: var(--cx-space-1);
 }
 
-.settings-row-label label {
+.settings-row-label label,
+.settings-row-label .settings-row-name {
 	color: var(--cx-text);
 	font-size: var(--cx-text-sm);
 }

@@ -69,6 +69,7 @@ export function createLiveClients(
 export interface ServerInfo {
 	readonly version: string;
 	readonly apiVersion: string;
+	readonly rev: string;
 }
 
 /** Probe the server for liveness + version — the first round-trip the UI makes
@@ -78,7 +79,7 @@ export interface ServerInfo {
  *  provisioning handshake — those come from the boot config). */
 export async function probeServer(client: CompassClient): Promise<ServerInfo> {
 	const resp = await client.getServerInfo({});
-	return { version: resp.version, apiVersion: resp.apiVersion };
+	return { version: resp.version, apiVersion: resp.apiVersion, rev: resp.rev };
 }
 
 /** The caller's own account id, resolved server-side from the connection's

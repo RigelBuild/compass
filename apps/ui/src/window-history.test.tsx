@@ -164,7 +164,7 @@ describe("window layout over one linear history (record A2)", () => {
 			{ value: "/settings" },
 		]);
 		await flush();
-		expect(store.focusedView().path()).toBe("/settings/tracker");
+		expect(store.focusedView().path()).toBe("/settings/general");
 		expect(memory.length()).toBe(2);
 
 		memory.back();

@@ -545,7 +545,7 @@ describe("LeftSidebar open modes", () => {
 		if (!settings) throw new Error("no Settings view button");
 		middleClick(settings);
 		await flush();
-		expect(paths(store)).toEqual(["/", "/settings/tracker"]);
+		expect(paths(store)).toEqual(["/", "/settings/general"]);
 
 		const bridge = viewButtons(container).find((b) =>
 			b.textContent?.includes("Bridge"),
@@ -553,7 +553,7 @@ describe("LeftSidebar open modes", () => {
 		if (!bridge) throw new Error("no Bridge view button");
 		fireEvent.click(bridge, { ctrlKey: true });
 		await flush();
-		expect(paths(store)).toEqual(["/", "/settings/tracker"]);
+		expect(paths(store)).toEqual(["/", "/settings/general"]);
 		expect(store.view()).toBe("bridge");
 	});
 

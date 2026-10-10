@@ -3,16 +3,16 @@ import { fireEvent } from "@solidjs/testing-library";
 import { flush, mountApp } from "../../test-router";
 
 describe("SettingsView", () => {
-	test("bare settings canonicalizes to Tracker and selects its nav link", async () => {
+	test("bare settings canonicalizes to General and selects its nav link", async () => {
 		const { store, container } = mountApp("/settings");
 		await flush();
 
-		expect(store.focusedView().path()).toBe("/settings/tracker");
-		const tracker = container.querySelector<HTMLAnchorElement>(
-			'a.cx-tab[href="#/settings/tracker"]',
+		expect(store.focusedView().path()).toBe("/settings/general");
+		const general = container.querySelector<HTMLAnchorElement>(
+			'a.cx-tab[href="#/settings/general"]',
 		);
-		expect(tracker?.dataset.selected).toBe("");
-		expect(tracker?.getAttribute("aria-current")).toBe("page");
+		expect(general?.dataset.selected).toBe("");
+		expect(general?.getAttribute("aria-current")).toBe("page");
 	});
 
 	test("clicking Models shows the Models section instead of the tracker editor", async () => {
@@ -61,7 +61,7 @@ describe("SettingsView", () => {
 			background: true,
 		});
 		await flush();
-		expect(store.settingsPath()).toBe("/settings/tracker");
+		expect(store.settingsPath()).toBe("/settings/general");
 	});
 
 	test("refocusing a Settings tab makes its section the last one shown", async () => {

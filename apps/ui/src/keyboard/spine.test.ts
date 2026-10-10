@@ -34,7 +34,7 @@ function stubDeps(
 		closeTab: (tabId: string) => void;
 		focusPane: (pane: "first" | "second") => void;
 		startTour: () => void;
-		navigateSettings: (section: "tracker" | "models") => void;
+		navigateSettings: (section: "general" | "tracker" | "models") => void;
 	}> = {},
 ) {
 	return {

@@ -72,7 +72,7 @@ export interface FakeCompass {
 	failNextStop: (error: Error) => void;
 	/** The server info GetServerInfo returns — the boot probe reads it into the
 	 *  daemon banner. Set before constructing the store to drive the live path. */
-	serverInfo: { version: string; apiVersion: string };
+	serverInfo: { version: string; apiVersion: string; rev: string };
 	/** Reject the next GetServerInfo with `error` (one-shot) — the server-down /
 	 *  RPC-error path the boot probe must leave the banner offline for. */
 	failNextProbe: (error: Error) => void;
@@ -116,7 +116,11 @@ export function createFakeCompass(): FakeCompass {
 	let stopFailure: Error | undefined;
 	let probeFailure: Error | undefined;
 	let whoAmIFailure: Error | undefined;
-	const serverInfo = { version: "9.9.9-test", apiVersion: "compass.v1" };
+	const serverInfo = {
+		version: "9.9.9-test",
+		apiVersion: "compass.v1",
+		rev: "",
+	};
 	// Defaults to the fixture caller (store.ts CALLER_ID) so boot/store tests
 	// resolve a caller with no per-test setup.
 	const whoAmIAccountId = { accountId: "acc-matt" };
@@ -155,6 +159,7 @@ export function createFakeCompass(): FakeCompass {
 			return {
 				version: serverInfo.version,
 				apiVersion: serverInfo.apiVersion,
+				rev: serverInfo.rev,
 			};
 		},
 		whoAmI: async (_req: Record<string, never>) => {

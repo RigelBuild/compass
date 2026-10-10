@@ -122,7 +122,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	});
 
 	test("settings", async ({ page }) => {
-		await page.goto("/#/settings/tracker");
+		await page.goto("/#/settings/general");
 		await page.locator(".settings-view").waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
 		await expect(page).toHaveScreenshot("settings.png", {

@@ -433,6 +433,8 @@ export interface AppStore {
 	 *  and flips this to the live info; an offline store keeps STUB_DAEMON
 	 *  (live:false). */
 	daemon: Accessor<DaemonInfo>;
+	/** Base URL of the connection shown on General settings. */
+	serverUrl: () => string | undefined;
 
 	// ── Comms: the channel surface (design: architecture-lineage) ──
 	/** The calling account (the authenticated user; comms.proto caller model). */
@@ -614,6 +616,8 @@ export interface AppStoreOptions {
 	 *  store's owner has no provider ancestor, so a context read would throw
 	 *  `No QueryClient set` at boot (§A3). */
 	readonly queryClient: QueryClient;
+	/** The server base URL used by the live connection, when available. */
+	readonly serverUrl?: string;
 	/** The shared transport used to key and call the store's connect queries; absent means offline. */
 	readonly transport?: Transport;
 	/** The live comms client. Present → the store runs `runCommsStream` over it
@@ -1421,6 +1425,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 					setDaemon({
 						version: info.version,
 						apiVersion: info.apiVersion,
+						rev: info.rev,
 						live: true,
 					});
 			})
@@ -2449,6 +2454,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		rightTabGroups,
 		agentRepos,
 		activeRepoId: () => focusedView().activeRepoId(),
+		serverUrl: () => options.serverUrl,
 		activeRepo,
 		setActiveRepo,
 		setActiveBranch,

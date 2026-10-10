@@ -90,6 +90,7 @@ async function main(
 			analytics,
 			queryClient,
 			callerId,
+			serverUrl: connection.baseUrl,
 			// Namespace persisted UI prefs (the pinned-agent set) to this
 			// deployment, so one server/workspace's account ids never hydrate as
 			// pins on another (Record A §T3). The door URL + caller identity is

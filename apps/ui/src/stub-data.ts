@@ -460,6 +460,7 @@ export function agentTree(
 export interface DaemonInfo {
 	version: string;
 	apiVersion: string;
+	rev: string;
 	/** true when a real daemon answered; false when this is stub data. */
 	live: boolean;
 }
@@ -478,6 +479,7 @@ export interface FileNode {
 export const STUB_DAEMON: DaemonInfo = {
 	version: "0.1.0-dev",
 	apiVersion: "compass.v1",
+	rev: "",
 	live: false,
 };
 

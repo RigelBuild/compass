@@ -10,7 +10,12 @@ export function SettingsRow(props: {
 	return (
 		<div class="settings-row">
 			<div class="settings-row-label">
-				<label for={props.for}>{props.label}</label>
+				{/* A read-only row has no control, so its name is plain text. */}
+				{props.for ? (
+					<label for={props.for}>{props.label}</label>
+				) : (
+					<span class="settings-row-name">{props.label}</span>
+				)}
 				{props.help && (
 					<span id={helpId} class="settings-row-help">
 						{props.help}
