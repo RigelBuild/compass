@@ -141,6 +141,10 @@ type Linear struct {
 	// process restarts.
 	workflowStates map[string]workflowStateCacheEntry
 
+	// createdIDs maps "<team>-<number>" -> issue UUID for issues this client
+	// created; the number index trails a create, so follow-ups must not query it.
+	createdIDs map[string]string
+
 	// probeDone/actorCapable cache the one-time actor-capability probe (A4).
 	// Once probeDone, actorCapable governs whether writes set createAsUser.
 	probeDone    bool
@@ -170,6 +174,7 @@ func NewLinear(cfg LinearConfig) *Linear {
 		log:            log,
 		teamIDs:        make(map[string]string),
 		workflowStates: make(map[string]workflowStateCacheEntry),
+		createdIDs:     make(map[string]string),
 		now:            time.Now,
 	}
 }
@@ -217,7 +222,16 @@ func (l *Linear) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 	if err := l.doGraphQL(ctx, query, map[string]any{gqlInputKey: input}, &out); err != nil {
 		return Issue{}, fmt.Errorf("forge: linear create issue %q: %w", repo, err)
 	}
-	return out.IssueCreate.Issue.toIssue(), nil
+	issue := out.IssueCreate.Issue
+	if issue.ID != "" {
+		l.mu.Lock()
+		if len(l.createdIDs) >= createdIDCap {
+			clear(l.createdIDs)
+		}
+		l.createdIDs[issueKey(repo, uint64(issue.Number))] = issue.ID
+		l.mu.Unlock()
+	}
+	return issue.toIssue(), nil
 }
 
 // CommentOnIssue posts a comment on issue number in the team keyed by repo. body
@@ -634,10 +648,21 @@ func (l *Linear) resolveTeamID(ctx context.Context, key string) (string, error) 
 	return id, nil
 }
 
-// resolveIssueID maps a (team key, per-team number) pair to a Linear issue UUID
-// via the issues query, for CommentOnIssue's issueId. Not cached — an issue
-// number is written to at most a handful of times per session.
+// createdIDCap bounds createdIDs; a full map is cleared, and a miss falls back
+// to the number lookup, which by then has caught up.
+const createdIDCap = 1024
+
+func issueKey(repo string, number uint64) string { return repo + "-" + strconv.FormatUint(number, 10) }
+
+// resolveIssueID maps a (team key, per-team number) pair to a Linear issue UUID,
+// from createdIDs when this client made the issue, else via the issues query.
 func (l *Linear) resolveIssueID(ctx context.Context, repo string, number uint64) (string, error) {
+	l.mu.Lock()
+	id, ok := l.createdIDs[issueKey(repo, number)]
+	l.mu.Unlock()
+	if ok {
+		return id, nil
+	}
 	const query = `query CompassIssueIDByNumber($filter: IssueFilter!) {
   issues(filter: $filter, first: 1) {
     nodes { id }
@@ -994,6 +1019,7 @@ func linearResetFromHeader(raw string) time.Time {
 // into forge.Issue. Body is Description (returned RAW; the Service strips).
 const issueFieldsFragment = `
 fragment CompassIssueFields on Issue {
+  id
   number
   title
   description
@@ -1008,6 +1034,7 @@ fragment CompassIssueFields on Issue {
 // are decoded). number is a GraphQL Float; creator is null for app/bot-created
 // issues.
 type linearIssue struct {
+	ID          string  `json:"id"`
 	Number      float64 `json:"number"`
 	Title       string  `json:"title"`
 	Description string  `json:"description"`

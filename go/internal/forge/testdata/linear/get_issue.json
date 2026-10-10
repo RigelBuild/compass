@@ -7,7 +7,7 @@
 		"method": "POST",
 		"path": "/graphql",
 		"body": {
-			"query": "query CompassIssueGet($filter: IssueFilter!) {\n  issues(filter: $filter, first: 1) {\n    nodes { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
+			"query": "query CompassIssueGet($filter: IssueFilter!) {\n  issues(filter: $filter, first: 1) {\n    nodes { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  id\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
 			"variables": {
 				"filter": {
 					"team": { "key": { "eq": "SEA" } },
