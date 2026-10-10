@@ -20,6 +20,7 @@ import { appRoutes } from "./routes";
 import { type AppStore, createAppStore } from "./store";
 import { flush, mountApp } from "./test-router";
 import { testQueryClient } from "./test-support";
+import { DEMO_AGENTS } from "./tour/demo";
 
 // Route-behavior tests (record A4 / T3): the URL is the source of truth. These
 // exercise the shared route table (routes.tsx) on a memory-history router — the
@@ -273,6 +274,30 @@ describe("pending-aware topic deep-link (record A3)", () => {
 		expect(store.selectedTopicId()).toBeNull();
 
 		fake.close();
+	});
+});
+
+// Through App's real router adapter: leaving a demo route must replace the
+// history entry, so Back cannot land on a demo id the store no longer serves.
+describe("demo-route teardown on the real router", () => {
+	test("Back after ending the tour skips the demo route", async () => {
+		const demoAgent = DEMO_AGENTS[0]?.account.id ?? "";
+		const { store, history } = mountApp("/");
+		await flush();
+		store.showBacklog();
+		await flush();
+		store.tour.start("replay");
+		await flush();
+		store.openAgent(demoAgent);
+		await flush();
+		expect(history.get()).toBe(`/agent/${demoAgent}`);
+		store.tour.close();
+		await flush();
+		expect(history.get()).toBe("/");
+		history.back();
+		await flush();
+		expect(history.get()).toBe("/backlog");
+		expect(store.view()).toBe("backlog");
 	});
 });
 
