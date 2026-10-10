@@ -1096,7 +1096,7 @@ func buildDoors(
 	}
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayCredSvc, gatewayRegistrySvc)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayServices{credentials: gatewayCredSvc, registry: gatewayRegistrySvc})
 		if err != nil {
 			return serveDoors{}, err
 		}

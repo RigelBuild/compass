@@ -16,7 +16,7 @@ import (
 )
 
 type gatewayRegistryReader interface {
-	CurrentModelRegistry(ctx context.Context) (int64, store.ModelRegistry, error)
+	GatewayModelRegistry(ctx context.Context) (int64, store.ModelRegistry, error)
 	ModelRegistryVersion(ctx context.Context) (int64, error)
 }
 
@@ -35,18 +35,14 @@ func newGatewayRegistryService(registry gatewayRegistryReader, log *slog.Logger)
 	return &gatewayRegistryService{registry: registry, log: log}
 }
 
-func (s *gatewayRegistryService) GetGatewayModelRegistry(ctx context.Context, _ *connect.Request[compassv1internal.GetGatewayModelRegistryRequest]) (*connect.Response[compassv1internal.GetGatewayModelRegistryResponse], error) {
+func (s *gatewayRegistryService) GetGatewayModelRegistry(
+	ctx context.Context,
+	_ *connect.Request[compassv1internal.GetGatewayModelRegistryRequest],
+) (*connect.Response[compassv1internal.GetGatewayModelRegistryResponse], error) {
 	if err := s.requireGatewaySubject(ctx); err != nil {
 		return nil, err
 	}
-
-	version, registry, err := s.registry.CurrentModelRegistry(ctx)
-	if errors.Is(err, store.ErrNotFound) {
-		return connect.NewResponse(&compassv1internal.GetGatewayModelRegistryResponse{
-			Version:  0,
-			Registry: registryToProto(store.ModelRegistry{}),
-		}), nil
-	}
+	version, registry, err := s.registry.GatewayModelRegistry(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "gateway model registry read failed", "error", err)
 		return nil, connect.NewError(connect.CodeInternal, errGatewayRegistryUnavailable)
@@ -57,7 +53,10 @@ func (s *gatewayRegistryService) GetGatewayModelRegistry(ctx context.Context, _ 
 	}), nil
 }
 
-func (s *gatewayRegistryService) GetGatewayModelRegistryVersion(ctx context.Context, _ *connect.Request[compassv1internal.GetGatewayModelRegistryVersionRequest]) (*connect.Response[compassv1internal.GetGatewayModelRegistryVersionResponse], error) {
+func (s *gatewayRegistryService) GetGatewayModelRegistryVersion(
+	ctx context.Context,
+	_ *connect.Request[compassv1internal.GetGatewayModelRegistryVersionRequest],
+) (*connect.Response[compassv1internal.GetGatewayModelRegistryVersionResponse], error) {
 	if err := s.requireGatewaySubject(ctx); err != nil {
 		return nil, err
 	}

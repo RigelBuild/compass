@@ -221,6 +221,33 @@ func TestDeleteModelRegistryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestModelRegistryVersionNeverReusesDeletedVersion(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	actor := mustUser(t, s, "registry-version-reuse-operator")
+	if version, err := s.PutModelRegistry(ctx, actor.ID, reg1("opus"), 0); err != nil || version != 1 {
+		t.Fatalf("initial seed = (%d, %v), want (1, nil)", version, err)
+	}
+	if err := s.DeleteModelRegistry(ctx); err != nil {
+		t.Fatalf("DeleteModelRegistry: %v", err)
+	}
+	if version, err := s.ModelRegistryVersion(ctx); err != nil || version != 2 {
+		t.Fatalf("version after delete = (%d, %v), want (2, nil)", version, err)
+	}
+	if _, _, err := s.CurrentModelRegistry(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CurrentModelRegistry after delete = %v, want ErrNotFound", err)
+	}
+	if err := s.DeleteModelRegistry(ctx); err != nil {
+		t.Fatalf("second DeleteModelRegistry: %v", err)
+	}
+	if version, err := s.ModelRegistryVersion(ctx); err != nil || version != 2 {
+		t.Fatalf("version after second delete = (%d, %v), want (2, nil)", version, err)
+	}
+	if version, err := s.PutModelRegistry(ctx, actor.ID, reg1("sonnet"), 0); err != nil || version != 3 {
+		t.Fatalf("reseed = (%d, %v), want (3, nil)", version, err)
+	}
+}
+
 // TestDeleteModelRegistryIdempotent: deleting an already-unconfigured registry is
 // a no-op success.
 func TestDeleteModelRegistryIdempotent(t *testing.T) {

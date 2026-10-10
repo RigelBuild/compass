@@ -17,8 +17,7 @@ clean: true
 # guest_control.proto — the host<->guest microVM control plane, RIG-2588 T3,
 # internal Go lane only; compass/v1/gateway_credentials.proto — the LLM gateway's
 # credential source; compass/v1/gateway_auth.proto — the LLM gateway's
-# agent-token verifier; compass/v1/gateway_registry.proto — its model-registry
-# reader, all internal Go lane only) are fenced OFF the
+# agent-token verifier) are fenced OFF the
 # public client surfaces here: buf v2 scopes path filters at the input
 # level, so excluding them from this template keeps protoc-gen-es (→ compass-client)
 # and protoc-gen-go/connect-go (→ go/gen) from ever emitting them. Their gen lives

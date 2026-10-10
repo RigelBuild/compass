@@ -28,10 +28,10 @@ type gatewayRegistryContextStore struct {
 	versionUsedSystemRole bool
 }
 
-func (s *gatewayRegistryContextStore) CurrentModelRegistry(ctx context.Context) (int64, store.ModelRegistry, error) {
+func (s *gatewayRegistryContextStore) GatewayModelRegistry(ctx context.Context) (int64, store.ModelRegistry, error) {
 	s.currentCalled = true
 	s.currentUsedSystemRole = store.IsSystemRole(ctx)
-	return s.Store.CurrentModelRegistry(ctx)
+	return s.Store.GatewayModelRegistry(ctx)
 }
 
 func (s *gatewayRegistryContextStore) ModelRegistryVersion(ctx context.Context) (int64, error) {
@@ -79,7 +79,19 @@ func assertGatewayRegistryAllowlist(t *testing.T, ctx context.Context, client co
 	}
 }
 
-func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
+type gatewayRegistryDoorFixture struct {
+	ctx          context.Context
+	store        *store.Store
+	operator     store.Account
+	accountToken string
+	serviceToken string
+	otherService string
+	client       compassv1internalconnect.GatewayRegistryClient
+	queryStore   *gatewayRegistryContextStore
+}
+
+func newGatewayRegistryDoorFixture(t *testing.T) *gatewayRegistryDoorFixture {
+	t.Helper()
 	ctx := t.Context()
 	st, err := store.Open(ctx, pgtest.RequireDSN(t))
 	if err != nil {
@@ -102,24 +114,32 @@ func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
 	if err := st.PutTokenHash(ctx, sha256.Sum256([]byte(otherServiceToken)), store.Subject{Kind: store.SubjectService, ID: "other-service"}); err != nil {
 		t.Fatalf("PutTokenHash(other service): %v", err)
 	}
-
 	queryStore := &gatewayRegistryContextStore{Store: st}
 	registryService := newGatewayRegistryService(queryStore, nil)
 	resolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)
 	}
-	runnerResolve := newRunnerResolve(func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
-		return resolve(ctx, presented, want)
-	}, nil)
+	runnerResolve := newRunnerResolve(resolve, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
 	mux := http.NewServeMux()
-	mountGatewayServices(mux, &gatewayCredentialsService{}, registryService, otelIC, runnerResolve)
+	mountGatewayServices(mux, gatewayServices{registry: registryService}, otelIC, runnerResolve)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := compassv1internalconnect.NewGatewayRegistryClient(http.DefaultClient, server.URL)
+	return &gatewayRegistryDoorFixture{
+		ctx: ctx, store: st, operator: operator, accountToken: accountToken,
+		serviceToken: serviceToken, otherService: otherServiceToken,
+		client: compassv1internalconnect.NewGatewayRegistryClient(http.DefaultClient, server.URL), queryStore: queryStore,
+	}
+}
+
+func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
+	fixture := newGatewayRegistryDoorFixture(t)
+	ctx, st, operator := fixture.ctx, fixture.store, fixture.operator
+	serviceToken := fixture.serviceToken
+	queryStore, client := fixture.queryStore, fixture.client
 
 	unconfigured, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(serviceToken))
 	if err != nil {
@@ -182,12 +202,33 @@ func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
 		t.Fatalf("GetGatewayModelRegistryVersion after update: %v", err)
 	}
 	assertGatewayRegistryVersion(t, observedVersion.Msg, 2)
+	updatedRead, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(serviceToken))
+	if err != nil {
+		t.Fatalf("GetGatewayModelRegistry after update: %v", err)
+	}
+	if updatedRead.Msg.GetVersion() != 2 || !proto.Equal(updatedRead.Msg.GetRegistry(), registryToProto(updatedRegistry)) {
+		t.Fatalf("updated registry response = %v, want version 2 and payload %v", updatedRead.Msg, registryToProto(updatedRegistry))
+	}
+	if err := st.DeleteModelRegistry(ctx); err != nil {
+		t.Fatalf("DeleteModelRegistry: %v", err)
+	}
+	deleted, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(serviceToken))
+	if err != nil {
+		t.Fatalf("GetGatewayModelRegistry after delete: %v", err)
+	}
+	deletedVersion, err := client.GetGatewayModelRegistryVersion(ctx, gatewayRegistryVersionRequest(serviceToken))
+	if err != nil {
+		t.Fatalf("GetGatewayModelRegistryVersion after delete: %v", err)
+	}
+	if deleted.Msg.GetVersion() == 0 || deleted.Msg.GetVersion() != deletedVersion.Msg.GetVersion() || len(deleted.Msg.GetRegistry().GetEntries()) != 0 {
+		t.Fatalf("deleted full read = %v, version-only = %d; want same non-zero version and empty registry", deleted.Msg, deletedVersion.Msg.GetVersion())
+	}
 	for _, tt := range []struct {
 		name  string
 		token string
 	}{
-		{name: "account bearer", token: accountToken},
-		{name: "different service", token: otherServiceToken},
+		{name: "account bearer", token: fixture.accountToken},
+		{name: "different service", token: fixture.otherService},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			assertGatewayRegistryAllowlist(t, ctx, client, tt.token)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -22,7 +23,10 @@ type fakeGatewayRegistryStore struct {
 	versionErr error
 }
 
-func (s *fakeGatewayRegistryStore) CurrentModelRegistry(context.Context) (int64, store.ModelRegistry, error) {
+func (s *fakeGatewayRegistryStore) GatewayModelRegistry(context.Context) (int64, store.ModelRegistry, error) {
+	if errors.Is(s.currentErr, store.ErrNotFound) {
+		return 0, store.ModelRegistry{}, nil
+	}
 	return s.version, s.registry, s.currentErr
 }
 
@@ -111,12 +115,29 @@ func TestGatewayRegistryServiceMapsStoreErrors(t *testing.T) {
 	svc := newGatewayRegistryUnitService(st)
 	ctx := gatewayRegistryServiceContext(t, store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID})
 	_, err := svc.GetGatewayModelRegistry(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{}))
-	if connect.CodeOf(err) != connect.CodeInternal {
-		t.Fatalf("GetGatewayModelRegistry error = %v, want Internal", err)
+	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), storeErr.Error()) {
+		t.Fatalf("GetGatewayModelRegistry error = %v, want generic Internal", err)
 	}
 	_, err = svc.GetGatewayModelRegistryVersion(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryVersionRequest{}))
-	if connect.CodeOf(err) != connect.CodeInternal {
-		t.Fatalf("GetGatewayModelRegistryVersion error = %v, want Internal", err)
+	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), storeErr.Error()) {
+		t.Fatalf("GetGatewayModelRegistryVersion error = %v, want generic Internal", err)
+	}
+}
+
+func TestGatewayRegistryServiceReturnsTombstoneVersion(t *testing.T) {
+	st := &fakeGatewayRegistryStore{version: 2, registry: store.ModelRegistry{}}
+	svc := newGatewayRegistryUnitService(st)
+	ctx := gatewayRegistryServiceContext(t, store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID})
+	full, err := svc.GetGatewayModelRegistry(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{}))
+	if err != nil {
+		t.Fatalf("GetGatewayModelRegistry: %v", err)
+	}
+	version, err := svc.GetGatewayModelRegistryVersion(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryVersionRequest{}))
+	if err != nil {
+		t.Fatalf("GetGatewayModelRegistryVersion: %v", err)
+	}
+	if full.Msg.GetVersion() != 2 || full.Msg.GetVersion() != version.Msg.GetVersion() || len(full.Msg.GetRegistry().GetEntries()) != 0 {
+		t.Fatalf("tombstone reads = (%v, %d), want empty registry and matching version 2", full.Msg, version.Msg.GetVersion())
 	}
 }
 
