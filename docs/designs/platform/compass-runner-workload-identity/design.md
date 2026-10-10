@@ -275,6 +275,14 @@ spec:
         resources: [pods, serviceaccounts/token]
       - apiGroups: [""]
         apiVersions: [v1]
+        operations: [CONNECT]                 # exec/attach are CONNECT requests
+        resources: [pods/exec, pods/attach]
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [pods/ephemeralcontainers]
+      - apiGroups: [""]
+        apiVersions: [v1]
         operations: [CREATE, UPDATE]
         resources: [replicationcontrollers]
       - apiGroups: [apps]
@@ -292,20 +300,29 @@ spec:
          'system:kube-controller-manager']
     - name: deployers                       # render parameter
       expression: "['system:serviceaccount:flux-system:kustomize-controller']"
+    - name: breakGlassGroups                # render parameter; admin exec access
+      expression: "['system:masters']"
     - name: res
       expression: request.resource.resource
     - name: podSpec
       expression: >-
-        variables.res == 'pods' ? object.spec
+        request.subResource != '' ? null
+        : variables.res == 'pods' ? object.spec
         : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec
         : object.spec.template.spec
     - name: usesRunnerSA
       expression: >-
-        has(variables.podSpec.serviceAccountName) &&
-        variables.podSpec.serviceAccountName == 'compass-runner'
+        request.subResource != '' ? false
+        : has(variables.podSpec.serviceAccountName) &&
+          variables.podSpec.serviceAccountName == 'compass-runner'
     - name: isRunnerDS
       expression: variables.res == 'daemonsets' && object.metadata.name == 'compass-runner'
   validations:
+    - expression: >-
+        !(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) ||
+        !request.name.startsWith('compass-runner-') ||
+        request.userInfo.groups.exists(g, g in variables.breakGlassGroups)
+      message: only a break-glass group may exec into, attach to, or add ephemeral containers to the compass-runner pod
     - expression: >-
         variables.res != 'serviceaccounts' || request.name != 'compass-runner' ||
         request.userInfo.username.startsWith('system:node:')

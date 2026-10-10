@@ -235,8 +235,8 @@ capacity sizing); this record fixes the *shape*.
     rollout is session-affecting and must be rate-limited.
   - `securityContext`, device resource request, and the two hostPath mounts per
     §Privilege shape.
-  - `spec.nodeName` via `fieldRef` into the environment, so the Runner can
-    identify its node.
+  - No node-name environment: the Server assigns the Runner ID during
+    enrollment (see the workload-identity record).
   - No scrape annotation: the Runner pushes metrics over OTLP
     (`OTEL_EXPORTER_OTLP_ENDPOINT`) and serves no scrape endpoint.
   - **Liveness probe: conservative, or absent.** A probe-driven container

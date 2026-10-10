@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { evaluate } from "@marcbachmann/cel-js";
 import {
 	assertRunnerImageDigest,
 	assertRunnerMaxUnavailable,
@@ -27,11 +28,23 @@ const values: RunnerDeployValues = {
 		runtimeRoot: "/srv/compass/runtime",
 	},
 	serverAddr: "https://compass-server.example.test:7443",
-	runnerTokenSecret: { name: "compass-runner-token", key: "token" },
+	tokenExpirationSeconds: 600,
+	maxTokenLifetimeSeconds: 600,
+	admission: {
+		controllers: [
+			"system:serviceaccount:kube-system:daemon-set-controller",
+			"system:kube-controller-manager",
+		],
+		deployers: ["system:serviceaccount:flux-system:kustomize-controller"],
+	},
 	maxUnavailable: 1,
 	perSessionReapSeconds: 180,
 	priorityClassValue: 1000000,
 };
+const defaultIdentityValues = { ...values };
+delete defaultIdentityValues.tokenExpirationSeconds;
+delete defaultIdentityValues.maxTokenLifetimeSeconds;
+delete defaultIdentityValues.admission;
 
 type JsonObject = Record<string, unknown>;
 
@@ -90,7 +103,10 @@ function assertPrivilegeShape(daemonSet: unknown): void {
 
 	const volumes = nested(podSpec, "volumes");
 	if (!Array.isArray(volumes)) throw new Error("expected volume list");
-	const hostPaths = volumes.map((volume) => object(object(volume).hostPath));
+	const hostPaths = volumes
+		.map(object)
+		.filter((volume) => volume.hostPath !== undefined)
+		.map((volume) => object(volume.hostPath));
 	expect(hostPaths).toHaveLength(2);
 	expect(hostPaths.map((hostPath) => hostPath.type).sort()).toEqual([
 		"Directory",
@@ -162,7 +178,415 @@ describe("renderRunnerManifests", () => {
 		expect(object(twoSessionResources.requests).cpu).toBe("4");
 	});
 
-	test("mounts only the session tree and runtime tree at the Runner paths", () => {
+	test("mounts the projected Runner token read-only and disables pod automount", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		const podSpec = object(nested(daemonSet, "spec", "template", "spec"));
+		const runner = containers(daemonSet)[0];
+		if (runner === undefined) throw new Error("runner container is missing");
+		expect(podSpec.automountServiceAccountToken).toBe(false);
+		expect(runner.volumeMounts).toContainEqual({
+			name: "compass-runner-token",
+			mountPath: "/var/run/secrets/compass/runner",
+			readOnly: true,
+		});
+		expect(podSpec.volumes).toContainEqual({
+			name: "compass-runner-token",
+			projected: {
+				sources: [
+					{
+						serviceAccountToken: {
+							audience: "compass-runner",
+							expirationSeconds: 600,
+							path: "token",
+						},
+					},
+				],
+			},
+		});
+	});
+
+	test("limits projected token expiry to the configured server lifetime", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		const volumes = nested(daemonSet, "spec", "template", "spec", "volumes");
+		if (!Array.isArray(volumes)) throw new Error("expected volumes");
+		const token = volumes
+			.map(object)
+			.find((volume) => volume.name === "compass-runner-token");
+		if (token === undefined) throw new Error("projected token volume missing");
+		expect(nested(token, "projected", "sources")).toEqual([
+			{
+				serviceAccountToken: {
+					audience: "compass-runner",
+					expirationSeconds: 600,
+					path: "token",
+				},
+			},
+		]);
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				tokenExpirationSeconds: 601,
+				maxTokenLifetimeSeconds: 600,
+			}),
+		).toThrow("tokenExpirationSeconds must not exceed maxTokenLifetimeSeconds");
+	});
+
+	test("uses 600-second defaults and rejects token expirations below Kubernetes minimum", () => {
+		const daemonSet = runnerDaemonSet(
+			renderRunnerManifests(defaultIdentityValues),
+		);
+		const volumes = nested(daemonSet, "spec", "template", "spec", "volumes");
+		if (!Array.isArray(volumes)) throw new Error("expected volumes");
+		const token = volumes
+			.map(object)
+			.find((volume) => volume.name === "compass-runner-token");
+		if (token === undefined) throw new Error("projected token volume missing");
+		const sources = nested(token, "projected", "sources");
+		if (!Array.isArray(sources) || sources[0] === undefined)
+			throw new Error("projected token source missing");
+		expect(nested(sources[0], "serviceAccountToken", "expirationSeconds")).toBe(
+			600,
+		);
+		const policy = renderRunnerManifests(defaultIdentityValues).find(
+			(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+		);
+		if (policy === undefined) throw new Error("policy missing");
+		const variables = nested(policy, "spec", "variables");
+		if (!Array.isArray(variables)) throw new Error("policy variables missing");
+		expect(
+			variables.map(object).find((entry) => entry.name === "controllers")
+				?.expression,
+		).toBe(
+			"['system:serviceaccount:kube-system:daemon-set-controller', 'system:kube-controller-manager']",
+		);
+		expect(
+			variables.map(object).find((entry) => entry.name === "deployers")
+				?.expression,
+		).toBe("['system:serviceaccount:flux-system:kustomize-controller']");
+		expect(() =>
+			renderRunnerManifests({ ...values, tokenExpirationSeconds: 599 }),
+		).toThrow("tokenExpirationSeconds must be at least 600 seconds");
+	});
+	test("renders admission policy constraints and pod-spec routing", () => {
+		const manifests = renderRunnerManifests(values);
+		const policy = manifests.find(
+			(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+		);
+		const binding = manifests.find(
+			(manifest) =>
+				object(manifest).kind === "ValidatingAdmissionPolicyBinding",
+		);
+		if (policy === undefined || binding === undefined)
+			throw new Error("policy and binding are required");
+		const spec = object(policy.spec);
+		expect(spec.failurePolicy).toBe("Fail");
+		expect(nested(binding, "spec", "policyName")).toBe(
+			nested(policy, "metadata", "name"),
+		);
+		expect(nested(policy, "spec", "matchConstraints", "resourceRules")).toEqual(
+			[
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["CREATE"],
+					resources: ["pods", "serviceaccounts/token"],
+				},
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["CONNECT"],
+					resources: ["pods/exec", "pods/attach"],
+				},
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["UPDATE"],
+					resources: ["pods/ephemeralcontainers"],
+				},
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["CREATE", "UPDATE"],
+					resources: ["replicationcontrollers"],
+				},
+				{
+					apiGroups: ["apps"],
+					apiVersions: ["v1"],
+					operations: ["CREATE", "UPDATE"],
+					resources: [
+						"daemonsets",
+						"deployments",
+						"replicasets",
+						"statefulsets",
+					],
+				},
+				{
+					apiGroups: ["batch"],
+					apiVersions: ["v1"],
+					operations: ["CREATE", "UPDATE"],
+					resources: ["jobs", "cronjobs"],
+				},
+			],
+		);
+		const variables = nested(policy, "spec", "variables");
+		if (!Array.isArray(variables)) throw new Error("policy variables missing");
+		const expressions = Object.fromEntries(
+			variables.map((entry) => {
+				const variable = object(entry);
+				return [String(variable.name), variable.expression];
+			}),
+		);
+		expect(expressions.podSpec).toBe(
+			"request.subResource != '' ? null : variables.res == 'pods' ? object.spec : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec",
+		);
+		expect(expressions.usesRunnerSA).toBe(
+			"request.subResource != '' ? false : has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == 'compass-runner'",
+		);
+		const validations = nested(policy, "spec", "validations");
+		if (!Array.isArray(validations))
+			throw new Error("policy validations missing");
+		expect(object(validations[0]).expression).toBe(
+			"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-') || request.userInfo.groups.exists(g, g in variables.breakGlassGroups)",
+		);
+	});
+	test("restores the DaemonSet selector to the pod template labels", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		expect(nested(daemonSet, "spec", "selector", "matchLabels")).toEqual(
+			nested(daemonSet, "spec", "template", "metadata", "labels"),
+		);
+	});
+
+	test("caps projected token expiry at the Kubernetes maximum", () => {
+		const tooLong = 2 ** 32 + 1;
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				tokenExpirationSeconds: tooLong,
+				maxTokenLifetimeSeconds: tooLong,
+			}),
+		).toThrow();
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				tokenExpirationSeconds: 2 ** 32,
+				maxTokenLifetimeSeconds: 2 ** 32,
+			}),
+		).not.toThrow();
+	});
+
+	test("lets only break-glass groups exec into, attach to, or debug the Runner pod", () => {
+		// Evaluate the rendered policy's CEL the way the apiserver does: variables
+		// in order, then every validation must hold.
+		const admits = (
+			input: typeof values,
+			request: { operation: string; subResource: string; groups: string[] },
+		) => {
+			const policy = renderRunnerManifests(input).find(
+				(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+			);
+			if (policy === undefined) throw new Error("policy missing");
+			const variables = nested(policy, "spec", "variables");
+			const validations = nested(policy, "spec", "validations");
+			if (!Array.isArray(variables) || !Array.isArray(validations))
+				throw new Error("policy body missing");
+			const ctx: Record<string, unknown> = {
+				request: {
+					operation: request.operation,
+					subResource: request.subResource,
+					name: "compass-runner-abcde",
+					resource: { resource: "pods" },
+					userInfo: { username: "alice", groups: request.groups },
+				},
+				object: null,
+				oldObject: null,
+				variables: {},
+			};
+			const vars = ctx.variables as Record<string, unknown>;
+			for (const entry of variables.map(object)) {
+				vars[String(entry.name)] = evaluate(String(entry.expression), ctx);
+			}
+			return validations
+				.map(object)
+				.every((entry) => evaluate(String(entry.expression), ctx) === true);
+		};
+		const requests = [
+			{ operation: "CONNECT", subResource: "exec" },
+			{ operation: "CONNECT", subResource: "attach" },
+			{ operation: "UPDATE", subResource: "ephemeralcontainers" },
+		];
+		for (const request of requests) {
+			expect(admits(values, { ...request, groups: ["system:masters"] })).toBe(
+				true,
+			);
+			expect(
+				admits(values, { ...request, groups: ["system:authenticated"] }),
+			).toBe(false);
+		}
+		const custom = {
+			...values,
+			admission: {
+				...values.admission,
+				breakGlassGroups: ["ops:runner-admins"],
+			},
+		};
+		expect(
+			admits(custom, {
+				operation: "CONNECT",
+				subResource: "exec",
+				groups: ["ops:runner-admins"],
+			}),
+		).toBe(true);
+		expect(
+			admits(custom, {
+				operation: "CONNECT",
+				subResource: "exec",
+				groups: ["system:masters"],
+			}),
+		).toBe(false);
+		const policyFor = (input: typeof values) => {
+			const policy = renderRunnerManifests(input).find(
+				(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+			);
+			const variables = nested(policy, "spec", "variables");
+			if (!Array.isArray(variables)) throw new Error("variables missing");
+			return variables
+				.map(object)
+				.find((entry) => entry.name === "breakGlassGroups")?.expression;
+		};
+		expect(policyFor(values)).toBe("['system:masters']");
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { ...values.admission, breakGlassGroups: [] },
+			}),
+		).toThrow("admission.breakGlassGroups must not be empty");
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { ...values.admission, breakGlassGroups: ["bad'group"] },
+			}),
+		).toThrow();
+	});
+
+	test("renders admission username defaults and configured deployers", () => {
+		const controllers = values.admission?.controllers;
+		if (controllers === undefined)
+			throw new Error("default controllers are missing");
+		const manifests = renderRunnerManifests(values);
+		const policy = manifests.find(
+			(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+		);
+		const binding = manifests.find(
+			(manifest) =>
+				object(manifest).kind === "ValidatingAdmissionPolicyBinding",
+		);
+		if (policy === undefined || binding === undefined)
+			throw new Error("policy and binding are required");
+		const variables = nested(policy, "spec", "variables");
+		if (!Array.isArray(variables)) throw new Error("policy variables missing");
+		const expressions = Object.fromEntries(
+			variables.map((entry) => {
+				const variable = object(entry);
+				return [String(variable.name), variable.expression];
+			}),
+		);
+		expect(expressions.controllers).toBe(
+			"['system:serviceaccount:kube-system:daemon-set-controller', 'system:kube-controller-manager']",
+		);
+		expect(expressions.deployers).toBe(
+			"['system:serviceaccount:flux-system:kustomize-controller']",
+		);
+		expect(nested(binding, "spec", "validationActions")).toEqual(["Deny"]);
+		expect(
+			nested(policy, "spec", "matchConstraints", "namespaceSelector"),
+		).toEqual({
+			matchLabels: { "kubernetes.io/metadata.name": values.namespace },
+		});
+		const custom = renderRunnerManifests({
+			...values,
+			admission: { controllers, deployers: ["example:deployer"] },
+		});
+		const customPolicy = custom.find(
+			(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+		);
+		if (customPolicy === undefined) throw new Error("policy missing");
+		const customVariables = nested(customPolicy, "spec", "variables");
+		if (!Array.isArray(customVariables))
+			throw new Error("policy variables missing");
+		expect(
+			customVariables.map(object).find((entry) => entry.name === "deployers")
+				?.expression,
+		).toBe("['example:deployer']");
+	});
+
+	test("rejects quote usernames and emits no RBAC bindings", () => {
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: {
+					controllers: values.admission?.controllers ?? [],
+					deployers: ["bad'user"],
+				},
+			}),
+		).toThrow();
+		const manifests = renderRunnerManifests(values);
+		expect(
+			manifests.some((manifest) =>
+				["RoleBinding", "ClusterRoleBinding"].includes(
+					String(object(manifest).kind),
+				),
+			),
+		).toBe(false);
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { controllers: [], deployers: ["ok"] },
+			}),
+		).toThrow("admission.controllers must not be empty");
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { controllers: ["ok"], deployers: [""] },
+			}),
+		).toThrow("admission.deployers entry must not be empty");
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { controllers: ["bad\\username"], deployers: ["ok"] },
+			}),
+		).toThrow(
+			"admission.controllers entries must not contain quotes, backslashes, or control characters",
+		);
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { controllers: ["bad\nusername"], deployers: ["ok"] },
+			}),
+		).toThrow();
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { controllers: ["ok"], deployers: ["bad\rusername"] },
+			}),
+		).toThrow();
+	});
+
+	test("uses the projected token file and leaves Runner ID to the server", () => {
+		const runner = containers(
+			runnerDaemonSet(renderRunnerManifests(values)),
+		)[0];
+		if (runner === undefined || !Array.isArray(runner.env))
+			throw new Error("runner env is missing");
+		const env = Object.fromEntries(
+			runner.env.map((entry) => [String(object(entry).name), object(entry)]),
+		);
+		expect(env.COMPASS_RUNNER_TOKEN_FILE?.value).toBe(
+			"/var/run/secrets/compass/runner/token",
+		);
+		expect(env).not.toHaveProperty("COMPASS_RUNNER_TOKEN");
+		expect(env).not.toHaveProperty("COMPASS_RUNNER_ID");
+	});
+	test("mounts only the session tree, runtime tree, and projected token", () => {
 		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
 		const podSpec = object(nested(daemonSet, "spec", "template", "spec"));
 		const runner = containers(daemonSet)[0];
@@ -171,18 +595,23 @@ describe("renderRunnerManifests", () => {
 		const mounts = runner.volumeMounts;
 		if (!Array.isArray(volumes) || !Array.isArray(mounts))
 			throw new Error("expected volumes and mounts");
-		expect(volumes).toHaveLength(2);
-		expect(mounts.map((mount) => object(mount).mountPath).sort()).toEqual([
-			"/run/compass",
-			"/var/lib/compass/sessions",
-		]);
-		const hostPaths = volumes.map((volume) => object(object(volume).hostPath));
+		const hostVolumes = volumes
+			.map(object)
+			.filter((volume) => volume.hostPath !== undefined);
+		expect(hostVolumes).toHaveLength(2);
+		expect(mounts.map((mount) => object(mount).mountPath).sort()).toEqual(
+			[
+				"/run/compass",
+				"/var/lib/compass/sessions",
+				"/var/run/secrets/compass/runner",
+			].sort(),
+		);
+		const hostPaths = hostVolumes.map((volume) => object(volume.hostPath));
 		expect(hostPaths).toEqual([
 			{ path: values.hostPaths.sessionVolumeRoot, type: "Directory" },
 			{ path: values.hostPaths.runtimeRoot, type: "Directory" },
 		]);
 	});
-
 	test("provisions the runtime host path and validates qualified device resources", () => {
 		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
 		const podSpec = nested(daemonSet, "spec", "template", "spec");
@@ -222,7 +651,7 @@ describe("renderRunnerManifests", () => {
 		).toThrow();
 	});
 
-	test("uses fieldRef, secretKeyRef, and runtime settings consumed by compass-runner", () => {
+	test("uses runtime settings consumed by compass-runner", () => {
 		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
 		const runner = containers(daemonSet)[0];
 		if (runner === undefined || !Array.isArray(runner.env))
@@ -230,15 +659,6 @@ describe("renderRunnerManifests", () => {
 		const env = Object.fromEntries(
 			runner.env.map((entry) => [String(object(entry).name), object(entry)]),
 		);
-		expect(nested(env, "COMPASS_RUNNER_ID", "valueFrom")).toEqual({
-			fieldRef: { fieldPath: "spec.nodeName" },
-		});
-		expect(nested(env, "COMPASS_RUNNER_TOKEN", "valueFrom")).toEqual({
-			secretKeyRef: {
-				name: values.runnerTokenSecret.name,
-				key: values.runnerTokenSecret.key,
-			},
-		});
 		expect(nested(env, "COMPASS_SERVER_ADDR", "value")).toBe(values.serverAddr);
 		expect(nested(env, "COMPASS_MICROVM_RUNROOT", "value")).toBe(
 			"/run/compass/microvm",
@@ -271,6 +691,9 @@ describe("renderRunnerManifests", () => {
 				"maxUnavailable",
 			),
 		).toBe(1);
+		expect(
+			nested(daemonSet, "spec", "updateStrategy", "rollingUpdate", "maxSurge"),
+		).toBe(0);
 	});
 
 	test("rejects mutable image tags and accepts a digest reference", () => {

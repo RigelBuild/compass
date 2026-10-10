@@ -4,6 +4,17 @@ export const RUNNER_UID = 65532;
 const RUNNER_NAME = "compass-runner";
 const SESSION_MOUNT_PATH = "/var/lib/compass/sessions";
 const RUNTIME_MOUNT_PATH = "/run/compass";
+const RUNNER_TOKEN_PATH = "/var/run/secrets/compass/runner/token";
+const DEFAULT_TOKEN_LIFETIME_SECONDS = 600;
+const DEFAULT_ADMISSION_CONTROLLERS = [
+	"system:serviceaccount:kube-system:daemon-set-controller",
+	"system:kube-controller-manager",
+] as const;
+const DEFAULT_ADMISSION_DEPLOYERS = [
+	"system:serviceaccount:flux-system:kustomize-controller",
+] as const;
+// Cluster admins keep exec and debug access to the Runner pod as a break-glass.
+const DEFAULT_ADMISSION_BREAK_GLASS_GROUPS = ["system:masters"] as const;
 
 export interface RunnerDeployValues {
 	namespace: string;
@@ -22,7 +33,13 @@ export interface RunnerDeployValues {
 	runnerOverheadMiB: number;
 	hostPaths: { sessionVolumeRoot: string; runtimeRoot: string };
 	serverAddr: string;
-	runnerTokenSecret: { name: string; key: string };
+	tokenExpirationSeconds?: number;
+	maxTokenLifetimeSeconds?: number;
+	admission?: {
+		controllers?: readonly string[];
+		deployers?: readonly string[];
+		breakGlassGroups?: readonly string[];
+	};
 	maxUnavailable: number;
 	perSessionReapSeconds: number;
 	priorityClassValue: number;
@@ -30,9 +47,19 @@ export interface RunnerDeployValues {
 
 type ValidatedRunnerDeployValues = Omit<
 	RunnerDeployValues,
-	"seccompProfilePath"
+	| "seccompProfilePath"
+	| "tokenExpirationSeconds"
+	| "maxTokenLifetimeSeconds"
+	| "admission"
 > & {
 	seccompProfilePath: string;
+	tokenExpirationSeconds: number;
+	maxTokenLifetimeSeconds: number;
+	admission: {
+		controllers: readonly string[];
+		deployers: readonly string[];
+		breakGlassGroups: readonly string[];
+	};
 };
 
 export function assertRunnerImageDigest(image: string): void {
@@ -98,6 +125,7 @@ function assertResourceName(name: string): void {
 	if (
 		parts.length !== 2 ||
 		prefix === undefined ||
+		domain === undefined ||
 		resource === undefined ||
 		!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(resource) ||
 		!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(prefix) ||
@@ -121,6 +149,50 @@ function assertResourceName(name: string): void {
 	}
 }
 
+function validateTokenLifetimes(values: ValidatedRunnerDeployValues): void {
+	assertPositiveInteger(
+		"tokenExpirationSeconds",
+		values.tokenExpirationSeconds,
+	);
+	if (values.tokenExpirationSeconds < DEFAULT_TOKEN_LIFETIME_SECONDS) {
+		throw new Error("tokenExpirationSeconds must be at least 600 seconds");
+	}
+	if (values.tokenExpirationSeconds > 2 ** 32) {
+		throw new Error(
+			"tokenExpirationSeconds must not exceed 4294967296 seconds",
+		);
+	}
+	assertPositiveInteger(
+		"maxTokenLifetimeSeconds",
+		values.maxTokenLifetimeSeconds,
+	);
+	if (values.maxTokenLifetimeSeconds < DEFAULT_TOKEN_LIFETIME_SECONDS) {
+		throw new Error("maxTokenLifetimeSeconds must be at least 600 seconds");
+	}
+	if (values.tokenExpirationSeconds > values.maxTokenLifetimeSeconds) {
+		throw new Error(
+			"tokenExpirationSeconds must not exceed maxTokenLifetimeSeconds",
+		);
+	}
+}
+
+function validateAdmissionNames(
+	admission: ValidatedRunnerDeployValues["admission"],
+): void {
+	for (const [name, entries] of Object.entries(admission)) {
+		if (entries.length === 0)
+			throw new Error(`admission.${name} must not be empty`);
+		for (const entry of entries) {
+			assertNonEmpty(`admission.${name} entry`, entry);
+			if (/['\\\p{Cc}]/u.test(entry)) {
+				throw new Error(
+					`admission.${name} entries must not contain quotes, backslashes, or control characters`,
+				);
+			}
+		}
+	}
+}
+
 function validateValues(values: ValidatedRunnerDeployValues): void {
 	assertNamespace(values.namespace);
 	assertRunnerImageDigest(values.image);
@@ -129,6 +201,8 @@ function validateValues(values: ValidatedRunnerDeployValues): void {
 	assertNonEmpty("toleration.key", values.toleration.key);
 	assertNonEmpty("toleration.value", values.toleration.value);
 	assertResourceName(values.kvmResourceName);
+	validateTokenLifetimes(values);
+	validateAdmissionNames(values.admission);
 	assertNonEmpty("seccompProfilePath", values.seccompProfilePath);
 	if (
 		values.seccompProfilePath.startsWith("/") ||
@@ -152,8 +226,6 @@ function validateValues(values: ValidatedRunnerDeployValues): void {
 	} catch {
 		throw new Error("serverAddr must be an absolute HTTPS URL");
 	}
-	assertNonEmpty("runnerTokenSecret.name", values.runnerTokenSecret.name);
-	assertNonEmpty("runnerTokenSecret.key", values.runnerTokenSecret.key);
 	assertRunnerMaxUnavailable(values.maxUnavailable);
 	assertPositiveInteger("perSessionReapSeconds", values.perSessionReapSeconds);
 	if (
@@ -213,7 +285,40 @@ export function parseRunnerDeployValues(
 	const selector = objectValue(root.nodeSelector, "nodeSelector");
 	const toleration = objectValue(root.toleration, "toleration");
 	const hostPaths = objectValue(root.hostPaths, "hostPaths");
-	const secret = objectValue(root.runnerTokenSecret, "runnerTokenSecret");
+	const admissionInput =
+		root.admission === undefined
+			? undefined
+			: objectValue(root.admission, "admission");
+	const controllers =
+		admissionInput?.controllers === undefined
+			? DEFAULT_ADMISSION_CONTROLLERS
+			: admissionInput.controllers;
+	const deployers =
+		admissionInput?.deployers === undefined
+			? DEFAULT_ADMISSION_DEPLOYERS
+			: admissionInput.deployers;
+	if (
+		!Array.isArray(controllers) ||
+		!controllers.every((item) => typeof item === "string")
+	) {
+		throw new Error("admission.controllers must be an array of strings");
+	}
+	if (
+		!Array.isArray(deployers) ||
+		!deployers.every((item) => typeof item === "string")
+	) {
+		throw new Error("admission.deployers must be an array of strings");
+	}
+	const breakGlassGroups =
+		admissionInput?.breakGlassGroups === undefined
+			? DEFAULT_ADMISSION_BREAK_GLASS_GROUPS
+			: admissionInput.breakGlassGroups;
+	if (
+		!Array.isArray(breakGlassGroups) ||
+		!breakGlassGroups.every((item) => typeof item === "string")
+	) {
+		throw new Error("admission.breakGlassGroups must be an array of strings");
+	}
 	const effect = stringValue(toleration, "effect", "toleration.effect");
 	if (
 		effect !== "NoSchedule" &&
@@ -262,10 +367,19 @@ export function parseRunnerDeployValues(
 			),
 		},
 		serverAddr: stringValue(root, "serverAddr", "serverAddr"),
-		runnerTokenSecret: {
-			name: stringValue(secret, "name", "runnerTokenSecret.name"),
-			key: stringValue(secret, "key", "runnerTokenSecret.key"),
-		},
+		tokenExpirationSeconds:
+			root.tokenExpirationSeconds === undefined
+				? DEFAULT_TOKEN_LIFETIME_SECONDS
+				: numberValue(root, "tokenExpirationSeconds", "tokenExpirationSeconds"),
+		maxTokenLifetimeSeconds:
+			root.maxTokenLifetimeSeconds === undefined
+				? DEFAULT_TOKEN_LIFETIME_SECONDS
+				: numberValue(
+						root,
+						"maxTokenLifetimeSeconds",
+						"maxTokenLifetimeSeconds",
+					),
+		admission: { controllers, deployers, breakGlassGroups },
 		maxUnavailable: numberValue(root, "maxUnavailable", "maxUnavailable"),
 		perSessionReapSeconds: numberValue(
 			root,
@@ -316,7 +430,10 @@ export function renderRunnerManifests(
 				selector: { matchLabels: labels },
 				updateStrategy: {
 					type: "RollingUpdate",
-					rollingUpdate: { maxUnavailable: values.maxUnavailable },
+					rollingUpdate: {
+						maxSurge: 0,
+						maxUnavailable: values.maxUnavailable,
+					},
 				},
 				template: {
 					metadata: { labels },
@@ -326,6 +443,7 @@ export function renderRunnerManifests(
 						hostPID: false,
 						hostIPC: false,
 						serviceAccountName: RUNNER_NAME,
+						automountServiceAccountToken: false,
 						priorityClassName: RUNNER_NAME,
 						nodeSelector: {
 							[values.nodeSelector.key]: values.nodeSelector.value,
@@ -372,17 +490,18 @@ export function renderRunnerManifests(
 								volumeMounts: [
 									{ name: "session-volumes", mountPath: SESSION_MOUNT_PATH },
 									{ name: "runner-runtime", mountPath: RUNTIME_MOUNT_PATH },
+									{
+										name: "compass-runner-token",
+										mountPath: "/var/run/secrets/compass/runner",
+										readOnly: true,
+									},
 								],
 								// No liveness probe: a pid-1 restart tears down all node sessions.
 								env: [
-									{
-										name: "COMPASS_RUNNER_ID",
-										valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } },
-									},
 									{ name: "COMPASS_SERVER_ADDR", value: values.serverAddr },
 									{
-										name: "COMPASS_RUNNER_TOKEN",
-										valueFrom: { secretKeyRef: values.runnerTokenSecret },
+										name: "COMPASS_RUNNER_TOKEN_FILE",
+										value: RUNNER_TOKEN_PATH,
 									},
 									{ name: "COMPASS_MICROVM_RUNROOT", value: runtimePath },
 									{
@@ -416,9 +535,152 @@ export function renderRunnerManifests(
 									type: "Directory",
 								},
 							},
+							{
+								name: "compass-runner-token",
+								projected: {
+									sources: [
+										{
+											serviceAccountToken: {
+												audience: "compass-runner",
+												expirationSeconds: values.tokenExpirationSeconds,
+												path: "token",
+											},
+										},
+									],
+								},
+							},
 						],
 					},
 				},
+			},
+		},
+		{
+			apiVersion: "admissionregistration.k8s.io/v1",
+			kind: "ValidatingAdmissionPolicy",
+			metadata: { name: "compass-runner-identity" },
+			spec: {
+				failurePolicy: "Fail",
+				matchConstraints: {
+					namespaceSelector: {
+						matchLabels: {
+							"kubernetes.io/metadata.name": values.namespace,
+						},
+					},
+					resourceRules: [
+						{
+							apiGroups: [""],
+							apiVersions: ["v1"],
+							operations: ["CREATE"],
+							resources: ["pods", "serviceaccounts/token"],
+						},
+						{
+							apiGroups: [""],
+							apiVersions: ["v1"],
+							// exec and attach reach admission as CONNECT, not CREATE.
+							operations: ["CONNECT"],
+							resources: ["pods/exec", "pods/attach"],
+						},
+						{
+							apiGroups: [""],
+							apiVersions: ["v1"],
+							operations: ["UPDATE"],
+							resources: ["pods/ephemeralcontainers"],
+						},
+						{
+							apiGroups: [""],
+							apiVersions: ["v1"],
+							operations: ["CREATE", "UPDATE"],
+							resources: ["replicationcontrollers"],
+						},
+						{
+							apiGroups: ["apps"],
+							apiVersions: ["v1"],
+							operations: ["CREATE", "UPDATE"],
+							resources: [
+								"daemonsets",
+								"deployments",
+								"replicasets",
+								"statefulsets",
+							],
+						},
+						{
+							apiGroups: ["batch"],
+							apiVersions: ["v1"],
+							operations: ["CREATE", "UPDATE"],
+							resources: ["jobs", "cronjobs"],
+						},
+					],
+				},
+				variables: [
+					{
+						name: "controllers",
+						expression: `[${values.admission.controllers.map((item) => `'${item}'`).join(", ")}]`,
+					},
+					{
+						name: "deployers",
+						expression: `[${values.admission.deployers.map((item) => `'${item}'`).join(", ")}]`,
+					},
+					{
+						name: "breakGlassGroups",
+						expression: `[${values.admission.breakGlassGroups.map((item) => `'${item}'`).join(", ")}]`,
+					},
+					{ name: "res", expression: "request.resource.resource" },
+					{
+						name: "podSpec",
+						expression:
+							"request.subResource != '' ? null : variables.res == 'pods' ? object.spec : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec",
+					},
+					{
+						name: "usesRunnerSA",
+						expression:
+							"request.subResource != '' ? false : has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == 'compass-runner'",
+					},
+					{
+						name: "isRunnerDS",
+						expression:
+							"variables.res == 'daemonsets' && object.metadata.name == 'compass-runner'",
+					},
+				],
+				validations: [
+					{
+						expression:
+							"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-') || request.userInfo.groups.exists(g, g in variables.breakGlassGroups)",
+						message:
+							"only a break-glass group may exec into, attach to, or add ephemeral containers to the compass-runner pod",
+					},
+					{
+						expression:
+							"variables.res != 'serviceaccounts' || request.name != 'compass-runner' || request.userInfo.username.startsWith('system:node:')",
+						message: "only kubelets may request a compass-runner token",
+					},
+					{
+						expression:
+							"variables.res != 'pods' || !variables.usesRunnerSA || (request.userInfo.username in variables.controllers && has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(r, has(r.controller) && r.controller && r.apiVersion == 'apps/v1' && r.kind == 'DaemonSet' && r.name == 'compass-runner'))",
+						message:
+							"compass-runner pods must come from the compass-runner DaemonSet",
+					},
+					{
+						expression:
+							"variables.res in ['pods', 'serviceaccounts'] || variables.isRunnerDS || !variables.usesRunnerSA",
+						message:
+							"only the compass-runner DaemonSet may use the compass-runner ServiceAccount",
+					},
+					{
+						expression:
+							"!variables.isRunnerDS || request.userInfo.username in variables.deployers || (request.operation == 'UPDATE' && object.spec == oldObject.spec)",
+						message:
+							"only a deployer may create or change the compass-runner DaemonSet",
+					},
+				],
+			},
+		},
+		{
+			apiVersion: "admissionregistration.k8s.io/v1",
+			kind: "ValidatingAdmissionPolicyBinding",
+			metadata: { name: "compass-runner-identity" },
+			spec: {
+				policyName: "compass-runner-identity",
+				validationActions: ["Deny"],
 			},
 		},
 	];
