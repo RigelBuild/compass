@@ -52,14 +52,28 @@ PRs."
   }
   ```
 
+  The broker is nil without the App; `buildGitCredentialBroker` returns:
+
+  ```go
+  return nil, nil //nolint:nilnil // nil broker means App not configured
+  ```
+
   Both paths close.
 - Declaring a GitHub-kind secret (`SECRET_KIND_GH`, handled in
   `go/server/secrets_service.go`) is rejected, so a user cannot store a
   credential that would never be delivered.
 - Without the App, an agent has no GitHub credential. Startup does not fail
-  on that alone: with neither App configured, forge writes stay off silently
-  (`warnPartialForgeWriteSecrets` in `go/server/serve.go` warns only for a
-  partial App configuration), and that stays.
+  on that alone, and forge writes stay off silently.
+  `warnPartialForgeWriteSecrets` in `go/server/serve.go` warns only for a
+  partial App configuration:
+
+  ```go
+  if havePrimary == haveReviewer {
+  	return // both configured (enabled path, not here) or both absent (intentional off)
+  }
+  ```
+
+  That stays.
 
 ### OQ-10: permission set
 
@@ -121,10 +135,16 @@ Repo carriage removed (RIG-1527, Matt 2026-07-29): spawn/provision no longer
 clone a repo for the agent.
 ```
 
-`runSpawn` in `go/server/spawn.go` provisions with only
-`ProvisionAgentWorkspaceRequest{ClientRequestId: crid}`. Choosing the
-source, its storage key and its lifecycle is a design pass of its own, filed
-as a follow-up record. The frozen record's T4/T5 build on it.
+`runSpawn` in `go/server/spawn.go` provisions with only an idempotency key:
+
+```go
+provResp, err := s.provisionAgent(ctx, acc, &compassv1.ProvisionAgentWorkspaceRequest{
+	ClientRequestId: crid,
+})
+```
+
+Choosing the source, its storage key and its lifecycle is a design pass of
+its own, filed as a follow-up record. The frozen record's T4/T5 build on it.
 
 ### Tasks
 
