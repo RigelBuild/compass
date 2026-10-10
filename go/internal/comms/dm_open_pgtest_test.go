@@ -111,40 +111,11 @@ func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
 			}
 			close(txReady)
 
-			poll := time.NewTicker(10 * time.Millisecond)
-			defer poll.Stop()
-			for {
-				var blocked bool
-				if err := tx.QueryRow(ctx, `
-					SELECT EXISTS (
-						SELECT 1
-						FROM pg_locks waiting
-						JOIN pg_locks deleting
-						  ON deleting.pid = pg_backend_pid()
-						WHERE NOT waiting.granted
-						  AND waiting.locktype IN ('transactionid', 'tuple')
-						  AND (waiting.locktype = 'transactionid' OR waiting.relation = 'user_peers'::regclass)
-						  AND deleting.locktype = 'relation'
-						  AND deleting.mode = 'RowExclusiveLock'
-						  AND deleting.relation = 'user_peers'::regclass
-						  AND pg_blocking_pids(waiting.pid) @> ARRAY[deleting.pid]
-					)
-				`).Scan(&blocked); err != nil {
-					return fmt.Errorf("observe OpenDM peering lock wait: %w", err)
-				}
-				if blocked {
-					observedWait = true
-					close(lockWaitObserved)
-					break
-				}
-				select {
-				case openErr := <-openDone:
-					return fmt.Errorf("OpenDM returned before waiting on the directed approval lock: %v", openErr)
-				case <-poll.C:
-				case <-ctx.Done():
-					return fmt.Errorf("timed out waiting for OpenDM to block on the peering row lock: %w", ctx.Err())
-				}
+			if err := waitForPeeringLockWait(ctx, tx, openDone); err != nil {
+				return err
 			}
+			observedWait = true
+			close(lockWaitObserved)
 
 			select {
 			case commit := <-finishTx:
@@ -194,15 +165,7 @@ func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
 	select {
 	case openErr := <-openDone:
 		connectNotFoundFor(t, openErr, peerHandle, "OpenDM after concurrent revoke")
-		var unknownConnectErr, revokedConnectErr *connect.Error
-		if !errors.As(unknownErr, &unknownConnectErr) || !errors.As(openErr, &revokedConnectErr) {
-			t.Fatalf("OpenDM errors = (%v, %v), want Connect errors", unknownErr, openErr)
-		}
-		unknownMessage := strings.ReplaceAll(unknownConnectErr.Message(), "ghost", "<handle>")
-		revokedMessage := strings.ReplaceAll(revokedConnectErr.Message(), peerHandle, "<handle>")
-		if revokedMessage != unknownMessage {
-			t.Fatalf("unknown error message = %q, revoked-peer message = %q; want byte-identical after handle substitution", unknownMessage, revokedMessage)
-		}
+		assertSameNotFoundShape(t, unknownErr, "ghost", openErr, peerHandle)
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for OpenDM after peering transaction commit: %v", ctx.Err())
 	}
@@ -216,6 +179,16 @@ func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
 	if dmChannels != 0 {
 		t.Fatalf("cross-owner DM channel count after revoked peering = %d, want 0", dmChannels)
 	}
+}
+
+type openDMResult struct {
+	response *connect.Response[compassv1.OpenDMResponse]
+	err      error
+}
+
+type revokePeerResult struct {
+	response *connect.Response[compassv1.RevokePeerResponse]
+	err      error
 }
 
 // TestOpenDMRevokeWaitsForOpenDMCommit gates OpenDM after its peering check and before its FK insert.
@@ -236,37 +209,15 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 		}
 	}
 
-	host := ownerA.ID
-	if ownerB.ID < host {
-		host = ownerB.ID
-	}
-	var groupID store.ChannelGroupID
-	if err := st.WithTx(ctx, func(tx pgx.Tx) error {
-		if err := store.LockOwnerDMTx(ctx, tx, host); err != nil {
-			return err
-		}
-		var err error
-		groupID, err = st.EnsureOwnerDMGroupTx(ctx, tx, host)
-		return err
-	}); err != nil {
-		t.Fatalf("pre-create host DM group: %v", err)
-	}
+	groupID := ensureHostDMGroup(t, ctx, st, min(ownerA.ID, ownerB.ID))
 
-	type openResult struct {
-		response *connect.Response[compassv1.OpenDMResponse]
-		err      error
-	}
-	type revokeResult struct {
-		response *connect.Response[compassv1.RevokePeerResponse]
-		err      error
-	}
 	releaseHolder := make(chan struct{})
 	holderReady := make(chan int, 1)
 	holderDone := make(chan error, 1)
 	holderFinished := make(chan struct{})
-	openDone := make(chan openResult, 1)
+	openDone := make(chan openDMResult, 1)
 	openFinished := make(chan struct{})
-	revokeDone := make(chan revokeResult, 1)
+	revokeDone := make(chan revokePeerResult, 1)
 	revokeFinished := make(chan struct{})
 	holderStarted, openStarted, revokeStarted := false, false, false
 	holderReleased := false
@@ -290,25 +241,7 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 	}()
 
 	go func() {
-		err := st.WithTx(ctx, func(tx pgx.Tx) error {
-			var locked int
-			// The channel FK takes KEY SHARE, so FOR UPDATE blocks after authorization.
-			if err := tx.QueryRow(ctx, "SELECT 1 FROM channel_groups WHERE id = $1 FOR UPDATE", string(groupID)).Scan(&locked); err != nil {
-				return fmt.Errorf("lock host DM group: %w", err)
-			}
-			var pid int
-			if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
-				return fmt.Errorf("read holder backend pid: %w", err)
-			}
-			holderReady <- pid
-			select {
-			case <-releaseHolder:
-				return nil
-			case <-ctx.Done():
-				return fmt.Errorf("wait to release group lock: %w", ctx.Err())
-			}
-		})
-		holderDone <- err
+		holderDone <- holdDMGroupLock(ctx, st, groupID, holderReady, releaseHolder)
 		close(holderFinished)
 	}()
 	holderStarted = true
@@ -321,45 +254,15 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 		t.Fatalf("timed out acquiring host group lock: %v", ctx.Err())
 	}
 
-	waitForBlockedBy := func(blockerPID int, operation string, finished <-chan struct{}) (int, error) {
-		poll := time.NewTicker(10 * time.Millisecond)
-		defer poll.Stop()
-		for {
-			var pid int
-			err := st.WithTx(ctx, func(tx pgx.Tx) error {
-				return tx.QueryRow(ctx, `
-					SELECT waiting.pid
-					FROM pg_locks waiting
-					WHERE waiting.pid <> pg_backend_pid()
-					  AND NOT waiting.granted
-					  AND pg_blocking_pids(waiting.pid) @> ARRAY[$1::int]
-					LIMIT 1
-				`, blockerPID).Scan(&pid)
-			})
-			if err == nil {
-				return pid, nil
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return 0, fmt.Errorf("observe %s lock wait: %w", operation, err)
-			}
-			select {
-			case <-finished:
-				return 0, fmt.Errorf("%s completed before blocking on backend %d", operation, blockerPID)
-			case <-poll.C:
-			case <-ctx.Done():
-				return 0, fmt.Errorf("timed out waiting for %s to block on backend %d: %w", operation, blockerPID, ctx.Err())
-			}
-		}
-	}
 	go func() {
 		response, err := svc.OpenDM(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.OpenDMRequest{
 			PeerHandle: ownerB.Handle + "/" + peer.Handle,
 		}))
-		openDone <- openResult{response: response, err: err}
+		openDone <- openDMResult{response: response, err: err}
 		close(openFinished)
 	}()
 	openStarted = true
-	openPID, err := waitForBlockedBy(holderPID, "OpenDM", openFinished)
+	openPID, err := waitForBlockedBy(ctx, st, holderPID, "OpenDM", openFinished)
 	if err != nil {
 		t.Fatalf("OpenDM did not wait on the host group lock: %v", err)
 	}
@@ -368,11 +271,11 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 		response, err := svc.RevokePeer(WithActor(ctx, ownerA.ID), connect.NewRequest(&compassv1.RevokePeerRequest{
 			PeerHandle: ownerB.Handle,
 		}))
-		revokeDone <- revokeResult{response: response, err: err}
+		revokeDone <- revokePeerResult{response: response, err: err}
 		close(revokeFinished)
 	}()
 	revokeStarted = true
-	if _, err := waitForBlockedBy(openPID, "RevokePeer", revokeFinished); err != nil {
+	if _, err := waitForBlockedBy(ctx, st, openPID, "RevokePeer", revokeFinished); err != nil {
 		t.Fatalf("RevokePeer did not wait on OpenDM's peering lock: %v", err)
 	}
 
@@ -387,44 +290,120 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 		t.Fatalf("timed out committing host group lock transaction: %v", ctx.Err())
 	}
 
-	var opened openResult
+	var opened openDMResult
 	select {
 	case opened = <-openDone:
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for OpenDM: %v", ctx.Err())
 	}
-	if opened.err != nil {
-		t.Fatalf("OpenDM while peered: %v", opened.err)
-	}
-	if opened.response == nil || opened.response.Msg.GetChannel() == nil {
-		t.Fatal("OpenDM returned no channel")
-	}
 	wantName := crossOwnerDMName(caller.ID, peer.ID)
-	if !opened.response.Msg.GetCreated() || opened.response.Msg.GetChannel().GetName() != wantName {
-		t.Fatalf("OpenDM = created %v name %q, want created %v name %q", opened.response.Msg.GetCreated(), opened.response.Msg.GetChannel().GetName(), true, wantName)
-	}
+	assertCreatedDM(t, opened.response, opened.err, wantName)
 
-	var revoked revokeResult
+	var revoked revokePeerResult
 	select {
 	case revoked = <-revokeDone:
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for RevokePeer after OpenDM: %v", ctx.Err())
 	}
-	if revoked.err != nil {
-		t.Fatalf("RevokePeer after OpenDM commit: %v", revoked.err)
-	}
-	if revoked.response == nil || !revoked.response.Msg.GetDeleted() {
-		t.Fatal("RevokePeer deleted = false, want true")
-	}
+	assertRevokeDeleted(t, revoked.response, revoked.err)
 
-	peered, err := st.OwnersPeered(ctx, ownerA.ID, ownerB.ID)
+	assertDMSurvivesRevoke(t, ctx, st, ownerA.ID, ownerB.ID, store.ChannelID(opened.response.Msg.GetChannel().GetId()), wantName, caller.ID, peer.ID)
+}
+
+// waitForPeeringLockWait polls, inside the deleting transaction, until OpenDM blocks on its row lock.
+func waitForPeeringLockWait(ctx context.Context, tx pgx.Tx, openDone <-chan error) error {
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		var blocked bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_locks waiting
+				JOIN pg_locks deleting
+				  ON deleting.pid = pg_backend_pid()
+				WHERE NOT waiting.granted
+				  AND waiting.locktype IN ('transactionid', 'tuple')
+				  AND (waiting.locktype = 'transactionid' OR waiting.relation = 'user_peers'::regclass)
+				  AND deleting.locktype = 'relation'
+				  AND deleting.mode = 'RowExclusiveLock'
+				  AND deleting.relation = 'user_peers'::regclass
+				  AND pg_blocking_pids(waiting.pid) @> ARRAY[deleting.pid]
+			)
+		`).Scan(&blocked); err != nil {
+			return fmt.Errorf("observe OpenDM peering lock wait: %w", err)
+		}
+		if blocked {
+			return nil
+		}
+		select {
+		case openErr := <-openDone:
+			return fmt.Errorf("OpenDM returned before waiting on the directed approval lock: %v", openErr)
+		case <-poll.C:
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for OpenDM to block on the peering row lock: %w", ctx.Err())
+		}
+	}
+}
+
+// assertSameNotFoundShape fails unless both errors carry byte-identical messages once each handle is masked.
+func assertSameNotFoundShape(t *testing.T, unknownErr error, unknownHandle string, revokedErr error, revokedHandle string) {
+	t.Helper()
+	unknownConnectErr, unknownOK := errors.AsType[*connect.Error](unknownErr)
+	revokedConnectErr, revokedOK := errors.AsType[*connect.Error](revokedErr)
+	if !unknownOK || !revokedOK {
+		t.Fatalf("OpenDM errors = (%v, %v), want Connect errors", unknownErr, revokedErr)
+	}
+	unknownMessage := strings.ReplaceAll(unknownConnectErr.Message(), unknownHandle, "<handle>")
+	revokedMessage := strings.ReplaceAll(revokedConnectErr.Message(), revokedHandle, "<handle>")
+	if revokedMessage != unknownMessage {
+		t.Fatalf("unknown error message = %q, revoked-peer message = %q; want byte-identical after handle substitution", unknownMessage, revokedMessage)
+	}
+}
+
+// waitForBlockedBy returns the backend pid waiting on blockerPID, failing if the operation finishes first.
+func waitForBlockedBy(ctx context.Context, st *store.Store, blockerPID int, operation string, finished <-chan struct{}) (int, error) {
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		var pid int
+		err := st.WithTx(ctx, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `
+				SELECT waiting.pid
+				FROM pg_locks waiting
+				WHERE waiting.pid <> pg_backend_pid()
+				  AND NOT waiting.granted
+				  AND pg_blocking_pids(waiting.pid) @> ARRAY[$1::int]
+				LIMIT 1
+			`, blockerPID).Scan(&pid)
+		})
+		if err == nil {
+			return pid, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("observe %s lock wait: %w", operation, err)
+		}
+		select {
+		case <-finished:
+			return 0, fmt.Errorf("%s completed before blocking on backend %d", operation, blockerPID)
+		case <-poll.C:
+		case <-ctx.Done():
+			return 0, fmt.Errorf("timed out waiting for %s to block on backend %d: %w", operation, blockerPID, ctx.Err())
+		}
+	}
+}
+
+// assertDMSurvivesRevoke checks the owners are unpeered and the committed DM kept its name and members.
+func assertDMSurvivesRevoke(t *testing.T, ctx context.Context, st *store.Store, ownerA, ownerB store.AccountID, id store.ChannelID, wantName string, caller, peer store.AccountID) {
+	t.Helper()
+	peered, err := st.OwnersPeered(ctx, ownerA, ownerB)
 	if err != nil {
 		t.Fatalf("check peering after revoke: %v", err)
 	}
 	if peered {
 		t.Fatal("owners remain peered after RevokePeer")
 	}
-	channel, err := st.GetChannel(ctx, store.ChannelID(opened.response.Msg.GetChannel().GetId()))
+	channel, err := st.GetChannel(ctx, id)
 	if err != nil {
 		t.Fatalf("load DM after revoke: %v", err)
 	}
@@ -434,9 +413,73 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 	if channel.Name != wantName {
 		t.Fatalf("DM after revoke name = %q, want %q", channel.Name, wantName)
 	}
-	if !slices.Contains(channel.MemberAccountIDs, caller.ID) || !slices.Contains(channel.MemberAccountIDs, peer.ID) {
-		t.Fatalf("DM after revoke members = %v, want both %q and %q", channel.MemberAccountIDs, caller.ID, peer.ID)
+	if !slices.Contains(channel.MemberAccountIDs, caller) || !slices.Contains(channel.MemberAccountIDs, peer) {
+		t.Fatalf("DM after revoke members = %v, want both %q and %q", channel.MemberAccountIDs, caller, peer)
 	}
+}
+
+// assertCreatedDM fails unless OpenDM succeeded and created a DM with the wanted name.
+func assertCreatedDM(t *testing.T, response *connect.Response[compassv1.OpenDMResponse], err error, wantName string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("OpenDM while peered: %v", err)
+	}
+	if response == nil || response.Msg.GetChannel() == nil {
+		t.Fatal("OpenDM returned no channel")
+	}
+	if !response.Msg.GetCreated() || response.Msg.GetChannel().GetName() != wantName {
+		t.Fatalf("OpenDM = created %v name %q, want created %v name %q", response.Msg.GetCreated(), response.Msg.GetChannel().GetName(), true, wantName)
+	}
+}
+
+// ensureHostDMGroup pre-creates the host owner's DM group so a test can lock its row.
+func ensureHostDMGroup(t *testing.T, ctx context.Context, st *store.Store, host store.AccountID) store.ChannelGroupID {
+	t.Helper()
+	var groupID store.ChannelGroupID
+	if err := st.WithTx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockOwnerDMTx(ctx, tx, host); err != nil {
+			return err
+		}
+		var err error
+		groupID, err = st.EnsureOwnerDMGroupTx(ctx, tx, host)
+		return err
+	}); err != nil {
+		t.Fatalf("pre-create host DM group: %v", err)
+	}
+	return groupID
+}
+
+// assertRevokeDeleted fails unless RevokePeer succeeded and reports the peering deleted.
+func assertRevokeDeleted(t *testing.T, response *connect.Response[compassv1.RevokePeerResponse], err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("RevokePeer after OpenDM commit: %v", err)
+	}
+	if response == nil || !response.Msg.GetDeleted() {
+		t.Fatal("RevokePeer deleted = false, want true")
+	}
+}
+
+// holdDMGroupLock row-locks the DM group, sends its backend pid on ready, and holds the lock until release.
+func holdDMGroupLock(ctx context.Context, st *store.Store, groupID store.ChannelGroupID, ready chan<- int, release <-chan struct{}) error {
+	return st.WithTx(ctx, func(tx pgx.Tx) error {
+		var locked int
+		// The channel FK takes KEY SHARE, so FOR UPDATE blocks after authorization.
+		if err := tx.QueryRow(ctx, "SELECT 1 FROM channel_groups WHERE id = $1 FOR UPDATE", string(groupID)).Scan(&locked); err != nil {
+			return fmt.Errorf("lock host DM group: %w", err)
+		}
+		var pid int
+		if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+			return fmt.Errorf("read holder backend pid: %w", err)
+		}
+		ready <- pid
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("wait to release group lock: %w", ctx.Err())
+		}
+	})
 }
 
 // TestOpenDMReopenResumesSameChannel: a second open of the same pair — in EITHER
@@ -535,10 +578,7 @@ func TestOpenDMCrossOwnerMutualPeeringUsesStableNameAndHome(t *testing.T) {
 	if !first.Msg.GetCreated() || channel.GetKind() != compassv1.ChannelKind_CHANNEL_KIND_DM {
 		t.Fatalf("first open = created %v kind %v, want created DM", first.Msg.GetCreated(), channel.GetKind())
 	}
-	host := ownerA.ID
-	if ownerB.ID < host {
-		host = ownerB.ID
-	}
+	host := min(ownerA.ID, ownerB.ID)
 	groups, err := st.ListChannelGroups(ctx, host)
 	if err != nil {
 		t.Fatalf("ListChannelGroups(host): %v", err)
@@ -612,8 +652,8 @@ func TestOpenDMRejectsUnpeeredCoMemberAndRevokedPeer(t *testing.T) {
 		t.Helper()
 		_, err := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: handle}))
 		connectCodeIs(t, err, connect.CodeNotFound, "OpenDM("+handle+")")
-		var ce *connect.Error
-		if !errors.As(err, &ce) || ce.Message() != notFoundFor(handle) {
+		ce, ok := errors.AsType[*connect.Error](err)
+		if !ok || ce.Message() != notFoundFor(handle) {
 			t.Fatalf("OpenDM(%q) error = %v, want %q", handle, err, notFoundFor(handle))
 		}
 	}
