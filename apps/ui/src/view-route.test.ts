@@ -8,6 +8,11 @@ const routes: { name: string; path: string; match: RouteMatch }[] = [
 		path: "/settings/general",
 		match: { view: "settings", section: "general" },
 	},
+	{
+		name: "settings appearance",
+		path: "/settings/appearance",
+		match: { view: "settings", section: "appearance" },
+	},
 	{ name: "bridge", path: "/", match: { view: "bridge" } },
 	{
 		name: "channel",

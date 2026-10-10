@@ -17,6 +17,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import App from "./App";
 import { StoreContext } from "./context";
 import type { LiveClients } from "./live/client";
+import { applyReduceMotion } from "./preferences";
 import { appRoutes } from "./routes";
 import type { AppStore } from "./store";
 
@@ -71,6 +72,7 @@ export function mountShell(
 	queryClient: QueryClient,
 	clients?: Pick<LiveClients, "comms" | "compass">,
 ): () => void {
+	applyReduceMotion(document.documentElement, store.reduceMotion());
 	const Router = createRouter({
 		routes: appRoutes,
 		history: stateHashHistory(),
