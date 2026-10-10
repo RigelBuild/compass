@@ -30,46 +30,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"time"
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
+	"github.com/RigelBuild/compass/go/internal/embedded"
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
-
-// bringUpTimeout bounds the whole embedded bring-up (preflight + compass-stack
-// up + WhoAmI) as a backstop against a wedged launch; app.Run() itself is not
-// context-bound. It is generous because a cold first run pulls THREE images —
-// the agent image from GHCR plus the stock postgres and collector images
-// (DL-260) — before the stack reaches Ready, so the window covers three
-// sequential registry pulls, not one.
-//
-// On darwin the window is wider still. The machine ensure step runs inside it,
-// and a cold `podman machine init` downloads a VM image before any of the
-// above starts — minutes on its own, on a link whose speed we do not control.
-// A budget that cannot fit the work it wraps is not a backstop; it is a
-// deadline the first launch on a fresh Mac loses every time, and the error it
-// produces names the timeout rather than the download. So darwin gets a window
-// sized for cold provisioning plus the same three pulls. Both remain backstops
-// against a wedge, not performance targets.
-//
-// The configured embedded bring-up runs before a window opens. First-run setup
-// only runs preflight inside the visible chooser and saves the choice; the next
-// launch takes the configured bring-up path.
-var bringUpTimeout = bringUpTimeoutFor(runtime.GOOS)
-
-// bringUpTimeoutFor returns the bring-up budget for the given host OS. It takes
-// the OS as a parameter rather than reading runtime.GOOS so the per-OS choice
-// is unit-testable from any host.
-func bringUpTimeoutFor(goos string) time.Duration {
-	if goos == "darwin" {
-		return 15 * time.Minute
-	}
-	return 180 * time.Second
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -105,7 +73,7 @@ func run() error {
 			"executable, then compass-stack on $PATH.")
 	imageFlag := flag.String("image", "",
 		"Agent container image ref for the embedded stack. Defaults to "+
-			"$COMPASS_AGENT_IMAGE, then "+defaultAgentImage+".")
+			"$COMPASS_AGENT_IMAGE, then "+embedded.DefaultAgentImage+".")
 	flag.Parse()
 
 	socket := resolveSocket(*socketFlag)
@@ -125,12 +93,12 @@ func run() error {
 		dialog  *dialogService
 	)
 	if setupMode {
-		svc, setup, dialog, err = newSetupServices(stateDir, resolveImage(*imageFlag))
+		svc, setup, dialog, err = newSetupServices(stateDir, embedded.ResolveImage(*imageFlag))
 		if err != nil {
 			return err
 		}
 	} else {
-		svc, quitter, err = launch(cfg, socket, stateDir, resolveImage(*imageFlag), stackBinFlag)
+		svc, quitter, err = launch(cfg, socket, stateDir, embedded.ResolveImage(*imageFlag), stackBinFlag)
 		if err != nil {
 			return err
 		}
@@ -273,12 +241,12 @@ func newSetupServices(stateDir, image string) (*bridgeService, *setupService, *d
 	picks := &caPicks{}
 	wiring := &setupWiring{configPath: configPath, gate: gate, picks: picks}
 	svc := newSetupBridgeService(nil, tokenstore.New(stateDir), wiring)
-	preflight := realPreflight(image)
+	preflight := embedded.RealPreflight(image)
 	setup := &setupService{
 		gate: gate,
 		svc:  svc,
 		preflight: func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, bringUpTimeout)
+			ctx, cancel := context.WithTimeout(ctx, embedded.BringUpTimeout)
 			defer cancel()
 			return preflight(ctx)
 		},
@@ -297,23 +265,23 @@ func launch(
 ) (*bridgeService, *quitController, error) {
 	switch cfg.Mode {
 	case appconfig.ModeEmbedded:
-		stackBin, err := resolveStackBin(*stackBinFlag)
+		stackBin, err := embedded.ResolveStackBin(*stackBinFlag)
 		if err != nil {
 			return nil, nil, err
 		}
-		pipeline := embeddedPipeline{
-			preflight: realPreflight(image),
-			stackUp:   runStackUp(stackBin),
-			whoAmI:    whoAmIOverUDS,
+		pipeline := embedded.Pipeline{
+			Preflight: embedded.RealPreflight(image),
+			StackUp:   embedded.RunStackUp(stackBin),
+			WhoAmI:    embedded.WhoAmIOverUDS,
 		}
-		params := embeddedParams{socket: socket, stateDir: stateDir, image: image}
+		params := embedded.Params{Socket: socket, StateDir: stateDir, Image: image}
 
 		// The embedded bring-up (preflight → stack up → WhoAmI) runs BEFORE the
 		// window opens, under a bounded context. launch() is invoked once from run()
 		// with no context upstream, so this context.Background() is the sanctioned
 		// root of the bring-up pipeline, not a mid-tree re-root.
-		bringUpCtx, cancel := context.WithTimeout(context.Background(), bringUpTimeout)
-		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, runStackDown(stackBin))
+		bringUpCtx, cancel := context.WithTimeout(context.Background(), embedded.BringUpTimeout)
+		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, embedded.RunStackDown(stackBin))
 		cancel()
 		if err != nil {
 			return nil, nil, err
@@ -418,4 +386,29 @@ func distDirForExecutable(exe string) string {
 		return filepath.Join(filepath.Dir(dir), "Resources", "dist")
 	}
 	return filepath.Join(dir, "dist")
+}
+
+// runEmbedded runs the embedded-mode launch and builds the embedded-only quit
+// controller. It runs the pipeline (preflight → stack up → WhoAmI) and, on
+// success, returns the resolved caller account id together with a *quitController
+// wired to the injected stackDown seam (its quit func is wired to app.Quit by
+// run() once the app exists). embedded.ResolveStackBin and this controller are embedded
+// concerns only: a client-only install has no compass-stack binary and no stack
+// to stop, so neither may gate a client launch (design §T5.6).
+func runEmbedded(
+	ctx context.Context,
+	pipeline embedded.Pipeline,
+	params embedded.Params,
+	stackDown func(ctx context.Context, args []string) error,
+) (string, *quitController, error) {
+	accountID, err := pipeline.Run(ctx, params)
+	if err != nil {
+		return "", nil, err
+	}
+	quitter := &quitController{
+		stackDown: stackDown,
+		params:    params,
+		timeout:   embedded.StackDownTimeout,
+	}
+	return accountID, quitter, nil
 }

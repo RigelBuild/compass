@@ -32,15 +32,15 @@ real agent container. The packaged-app smoke therefore remains manual.
 Embedded mode is the zero-config path. The app runs host preflight, brings up
 the local stack, resolves the caller identity, and then opens the board. The
 pipeline order is preflight, `compass-stack up`, then `WhoAmI`
-(`runEmbedded` in `go/cmd/compass-app/embedded.go`: "pipeline ... WhoAmI").
+(`Pipeline.Run` in `go/internal/embedded/embedded.go`: "preflight → stack up → WhoAmI").
 
 ### 1. Check embedded prerequisites
 
 Embedded mode requires Linux or macOS, rootless podman, and podman 4.3 or
 newer. These are fatal host checks. The agent image is checked locally but is
 pulled from GHCR by the stack when it is missing
-(`Deps.Run` in `go/internal/preflight/preflight.go`, `runEmbedded` in
-`go/cmd/compass-app/embedded.go`). Confirm rootless podman and the
+(`Deps.Run` in `go/internal/preflight/preflight.go`, `Pipeline.Run` in
+`go/internal/embedded/embedded.go`). Confirm rootless podman and the
 image before the smoke to avoid a cold pull:
 
 ```bash
@@ -90,7 +90,7 @@ so residue from an unpinned launch is not mistaken for a clean teardown
 
 The stack binary resolution order is the `--compass-stack` flag,
 `COMPASS_STACK_BIN`, a `compass-stack` sibling of the running `compass-app`,
-then `PATH` (`resolveStackBin` in `go/cmd/compass-app/embedded.go`). For this smoke, do not
+then `PATH` (`ResolveStackBin` in `go/internal/embedded/embedded.go`). For this smoke, do not
 pass `--compass-stack` and require all launch overrides to be unset:
 
 ```bash
@@ -105,9 +105,9 @@ from outside the bundle. `COMPASS_DATABASE_DSN` must also be clear so the smoke
 uses the bundle's state-directory database configuration.
 
 The app resolves `compass-stack` as a sibling of the running `compass-app`
-executable, preferred over PATH (`resolveStackBin` in `go/cmd/compass-app/embedded.go`), and
+executable, preferred over PATH (`ResolveStackBin` in `go/internal/embedded/embedded.go`), and
 prepends that same `bin/` directory for the supervised sidecars
-(`prependExecDirToPath` in `go/cmd/compass-app/embedded.go`). So the bundle's staged
+(`prependExecDirToPath` in `go/internal/embedded/embedded.go`). So the bundle's staged
 `compass-stack` wins even when an ambient one is on PATH, which is what the
 launch below relies on.
 
@@ -145,15 +145,15 @@ compass-stack up --state-dir <state-dir> --image ghcr.io/rigelbuild/compass-agen
 ```
 
 `stackUpArgs` passes only `up`, `--state-dir`, `--image`, and `--socket`
-(`stackUpArgs` in `go/cmd/compass-app/embedded.go`). It deliberately does not pass
+(`stackUpArgs` in `go/internal/embedded/embedded.go`). It deliberately does not pass
 `--database`, `--postgres-image`, `--collector-image`, or `--listen`. The image
 ref is the locked GHCR default unless `--image` or `$COMPASS_AGENT_IMAGE`
-overrides it (`resolveImage` in `go/cmd/compass-app/embedded.go`).
+overrides it (`ResolveImage` in `go/internal/embedded/embedded.go`).
 
 ### 4. Confirm the embedded board and run one session
 
 Wait for the app to bring the stack to Ready. It then resolves the caller with
-`WhoAmI` over the local socket (`runEmbedded` in `go/cmd/compass-app/embedded.go`).
+`WhoAmI` over the local socket (`Pipeline.Run` in `go/internal/embedded/embedded.go`).
 Confirm that the app opens the board directly, without a client connect screen
 or bearer entry. Embedded mode has no client `server_url` or `ca_cert`
 configuration (`Parse` in `go/internal/appconfig/appconfig.go`:

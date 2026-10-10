@@ -1,6 +1,4 @@
-//go:build (linux && gtk4) || darwin
-
-package main
+package embedded
 
 // Sidecar PATH threading: prependExecDirToPath prepends the resolved
 // compass-stack's bundle dir to the child PATH so staged sidecars win

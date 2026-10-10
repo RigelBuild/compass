@@ -1,5 +1,3 @@
-//go:build (linux && gtk4) || darwin
-
 // The podman-machine probe and ensure step behind an injected seam. On macOS the
 // podman CLI drives a Linux VM ("the machine") and a fresh Mac has no machine at
 // all, so embedded mode must both DETECT the machine's state and PROVISION it —
@@ -20,7 +18,7 @@
 // string are accepted; a missing field degrades, never panics), and an
 // unparseable answer is classified UNKNOWN, which is never ready. The failure
 // copy always names the podman command the operator can run themselves.
-package main
+package embedded
 
 import (
 	"context"
@@ -288,7 +286,7 @@ func machineSocketReachable(ctx context.Context, d machineDeps, info machineInfo
 //
 // The init download is minutes long and runs under the caller's context, which
 // the embedded pipeline bounds with its bring-up window. On darwin that window
-// is sized for a cold provision (bringUpTimeoutFor in main.go), so a healthy
+// is sized for a cold provision (BringUpTimeoutFor), so a healthy
 // first run fits inside it. The copy on the failure path still names the init
 // command, so an operator who does exhaust the window gets something to run by
 // hand rather than a bare deadline error.

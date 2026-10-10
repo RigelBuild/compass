@@ -1,6 +1,4 @@
-//go:build (linux && gtk4) || darwin
-
-// The embedded-mode launch pipeline. Embedded mode wires the native shell
+// Package embedded is the embedded-mode launch pipeline. Embedded mode wires the native shell
 // end-to-end before the window opens: host preflight → spawn and supervise the
 // private stack (via the compass-stack CLI) → learn the caller account id
 // (WhoAmI, DL-111) → hand the resolved socket + account id to the bridge/UI. It
@@ -8,12 +6,12 @@
 // probes, the compass-stack exec, the h2c-UDS WhoAmI dial) behind small injected
 // seams, so the orchestration is unit-testable without a real stack.
 //
-// This file supervises the stack through the compass-stack BINARY, not by
+// It supervises the stack through the compass-stack BINARY, not by
 // importing go/internal/stack: `compass-stack up` brings the stack to Ready and
 // exits 0 while the children keep running (fire-and-return), so the pipeline
 // runs it, waits for exit 0, and then dials the same socket it passed as
 // --socket.
-package main
+package embedded
 
 import (
 	"context"
@@ -23,11 +21,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec" //nolint:depguard // embedded stack supervisor: runs the compass-stack up/down binaries through the injected launch seams
+	"os/exec" //nolint:depguard // stack seam: runs the resolved compass-stack binary for up/down
 	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -36,15 +35,15 @@ import (
 	"github.com/RigelBuild/compass/go/internal/preflight"
 )
 
-// defaultAgentImage is the canonical agent image ref the embedded stack runs
+// DefaultAgentImage is the canonical agent image ref the embedded stack runs
 // when no --image/$COMPASS_AGENT_IMAGE is supplied. The ref is locked
 // (docs/designs/infra/ci/compass-agent-image-publish/design.md, "the name/tag
 // contract"); the native app does not bundle the image (DL-112) —
 // compass-stack podman-pulls it from GHCR at first run.
-const defaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"
+const DefaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"
 
 // The compass-stack CLI flag names the embedded pipeline drives. Shared by
-// stackUpArgs and stackDownArgs so the two argv builders cannot drift on a flag
+// stackUpArgs and StackDownArgs so the two argv builders cannot drift on a flag
 // spelling (and so the strings are named once rather than repeated inline).
 const (
 	flagStateDir = "--state-dir"
@@ -52,81 +51,56 @@ const (
 	flagSocket   = "--socket"
 )
 
-// embeddedPipeline is the embedded-mode launch pipeline over its injected
+// Pipeline is the embedded-mode launch pipeline over its injected
 // external effects. Each field is one genuine effect the real launch supplies
 // (preflight run, the compass-stack up exec, the WhoAmI dial); a test supplies
 // deterministic stubs, so the orchestration — order, short-circuit, and the
 // argv it builds — is verified with no real podman/stack/exec.
-type embeddedPipeline struct {
-	// preflight runs the host precondition checks and folds any failures into a
+type Pipeline struct {
+	// Preflight runs the host precondition checks and folds any failures into a
 	// single legible error (the real seam wraps preflight.Deps.Run(...).Err()).
-	preflight func(ctx context.Context) error
-	// stackUp runs `compass-stack up` with the given argv and waits for it to
+	Preflight func(ctx context.Context) error
+	// StackUp runs `compass-stack up` with the given argv and waits for it to
 	// exit 0 (fire-and-return); a non-zero exit is returned as an error carrying
 	// the captured stderr.
-	stackUp func(ctx context.Context, args []string) error
-	// whoAmI dials the stack socket over h2c-UDS and returns the caller account
+	StackUp func(ctx context.Context, args []string) error
+	// WhoAmI dials the stack socket over h2c-UDS and returns the caller account
 	// id (WhoAmI, DL-111 — server-derived, never supplied).
-	whoAmI func(ctx context.Context, socket string) (string, error)
+	WhoAmI func(ctx context.Context, socket string) (string, error)
 }
 
-// embeddedParams is the resolved input to one embedded launch: the single socket
+// Params is the resolved input to one embedded launch: the single socket
 // path the stack serves and the pipeline then dials, plus the stack argv inputs.
 // The argv omits --database so compass-stack recomputes the default DSN from
 // --state-dir (the app carries no second DSN copy — §A2 reconciliation 1).
-type embeddedParams struct {
-	// socket is resolveSocket()'s result — the SAME value passed to
+type Params struct {
+	// Socket is resolveSocket()'s result — the SAME value passed to
 	// `--socket` and dialed for WhoAmI (and, upstream, the bridge pump).
-	socket string
-	// stateDir is the app state directory passed to `--state-dir`.
-	stateDir string
-	// image is the agent image ref passed to `--image`.
-	image string
+	Socket string
+	// StateDir is the app state directory passed to `--state-dir`.
+	StateDir string
+	// Image is the agent image ref passed to `--image`.
+	Image string
 }
 
-// runEmbedded runs the embedded-mode launch and builds the embedded-only quit
-// controller. It runs the pipeline (preflight → stack up → WhoAmI) and, on
-// success, returns the resolved caller account id together with a *quitController
-// wired to the injected stackDown seam (its quit func is wired to app.Quit by
-// run() once the app exists). resolveStackBin and this controller are embedded
-// concerns only: a client-only install has no compass-stack binary and no stack
-// to stop, so neither may gate a client launch (design §T5.6).
-func runEmbedded(
-	ctx context.Context,
-	pipeline embeddedPipeline,
-	params embeddedParams,
-	stackDown func(ctx context.Context, args []string) error,
-) (string, *quitController, error) {
-	accountID, err := pipeline.run(ctx, params)
-	if err != nil {
-		return "", nil, err
-	}
-	quitter := &quitController{
-		stackDown: stackDown,
-		params:    params,
-		timeout:   stackDownTimeout,
-	}
-	return accountID, quitter, nil
-}
-
-// run executes the embedded launch in order: preflight → stack up → WhoAmI. A
+// Run executes the embedded launch in order: preflight → stack up → WhoAmI. A
 // preflight failure short-circuits (the stack is never spawned) and returns the
 // aggregated legible error verbatim. On success it returns the resolved caller
 // account id.
-func (p embeddedPipeline) run(ctx context.Context, params embeddedParams) (string, error) {
-	if err := p.preflight(ctx); err != nil {
+func (p Pipeline) Run(ctx context.Context, params Params) (string, error) {
+	if err := p.Preflight(ctx); err != nil {
 		return "", err
 	}
 
 	args := stackUpArgs(params)
-	if err := p.stackUp(ctx, args); err != nil {
+	if err := p.StackUp(ctx, args); err != nil {
 		return "", err
 	}
-	slog.Info("stack ready", "socket", params.socket)
+	slog.Info("stack ready", "socket", params.Socket)
 
-	accountID, err := p.whoAmI(ctx, params.socket)
+	accountID, err := p.WhoAmI(ctx, params.Socket)
 	if err != nil {
-		return "", fmt.Errorf("resolving caller identity over %s: %w", params.socket, err)
+		return "", fmt.Errorf("resolving caller identity over %s: %w", params.Socket, err)
 	}
 	slog.Info("caller identity resolved", "account", accountID)
 	return accountID, nil
@@ -140,12 +114,12 @@ func (p embeddedPipeline) run(ctx context.Context, params embeddedParams) (strin
 // duplicate that logic), and --postgres-image/--collector-image/--listen are
 // omitted so the CLI's defaults are the contract (the app re-learns nothing the
 // stack already owns — §A2 reconciliation 2).
-func stackUpArgs(p embeddedParams) []string {
+func stackUpArgs(p Params) []string {
 	args := []string{
 		"up",
-		flagStateDir, p.stateDir,
-		flagImage, p.image,
-		flagSocket, p.socket,
+		flagStateDir, p.StateDir,
+		flagImage, p.Image,
+		flagSocket, p.Socket,
 	}
 	return args
 }
@@ -184,14 +158,14 @@ func captureStderr(cmd *exec.Cmd) (read func() string, cleanup func(), err error
 	return read, cleanup, nil
 }
 
-// runStackUp is the real stackUp seam: it execs the compass-stack binary at bin
+// RunStackUp is the real stackUp seam: it execs the compass-stack binary at bin
 // with the given argv and waits for it to exit 0 (up is fire-and-return, so
 // Run returning nil means the stack reached Ready and its children keep
 // running). A non-zero exit is surfaced with the captured stderr so the failure
 // copy is legible.
-func runStackUp(bin string) func(ctx context.Context, args []string) error {
+func RunStackUp(bin string) func(ctx context.Context, args []string) error {
 	return func(ctx context.Context, args []string) error {
-		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
+		//nolint:gosec // G204: bin is operator/PATH-resolved (ResolveStackBin) and
 		// the argv is pipeline-assembled (stackUpArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = prependExecDirToPath(os.Environ(), filepath.Dir(bin))
@@ -205,7 +179,7 @@ func runStackUp(bin string) func(ctx context.Context, args []string) error {
 				return fmt.Errorf("compass-stack up exceeded the %s bring-up window "+
 					"(a cold first run pulls three images from their registries — the agent "+
 					"image from GHCR, the postgres and collector images from their stock "+
-					"registries — which can take longer): %w", bringUpTimeout, err)
+					"registries — which can take longer): %w", BringUpTimeout, err)
 			}
 			if msg := stderr(); msg != "" {
 				return fmt.Errorf("compass-stack up failed: %w: %s", err, msg)
@@ -216,7 +190,7 @@ func runStackUp(bin string) func(ctx context.Context, args []string) error {
 	}
 }
 
-// stackDownArgs builds the `compass-stack down` argv from the resolved params.
+// StackDownArgs builds the `compass-stack down` argv from the resolved params.
 // It mirrors stackUpArgs (pure, no I/O, no exec) so the exact teardown
 // invocation is unit-testable without running anything. down parses the SAME
 // config flags as up, and its resolveConfig REQUIRES a non-empty --state-dir AND
@@ -226,25 +200,25 @@ func runStackUp(bin string) func(ctx context.Context, args []string) error {
 // recomputes the identical default DSN from --state-dir), and --linger is
 // omitted because down is not lingerable (down's whole job is to tear the stack
 // down, so a linger flag would be nonsense — compass-stack rejects it).
-func stackDownArgs(p embeddedParams) []string {
+func StackDownArgs(p Params) []string {
 	args := []string{
 		"down",
-		flagStateDir, p.stateDir,
-		flagImage, p.image,
-		flagSocket, p.socket,
+		flagStateDir, p.StateDir,
+		flagImage, p.Image,
+		flagSocket, p.Socket,
 	}
 	return args
 }
 
-// runStackDown is the real stackDown seam: it execs the compass-stack binary at
+// RunStackDown is the real stackDown seam: it execs the compass-stack binary at
 // bin with the given argv and waits for it to exit 0 (down attaches to the live
 // stack, SIGTERMs the child tree, waits the server drain, and releases the
 // lock). A non-zero exit is surfaced with the captured stderr so the failure
-// copy is legible — mirroring runStackUp's shape exactly.
-func runStackDown(bin string) func(ctx context.Context, args []string) error {
+// copy is legible — mirroring RunStackUp's shape exactly.
+func RunStackDown(bin string) func(ctx context.Context, args []string) error {
 	return func(ctx context.Context, args []string) error {
-		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
-		// the argv is pipeline-assembled (stackDownArgs), not user input.
+		//nolint:gosec // G204: bin is operator/PATH-resolved (ResolveStackBin) and
+		// the argv is pipeline-assembled (StackDownArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
 		// down has already consumed its teardown record, so a timeout must SIGTERM
 		// it: SIGKILL would skip the survivor rewrite and leak the stack.
@@ -259,7 +233,7 @@ func runStackDown(bin string) func(ctx context.Context, args []string) error {
 		if err := cmd.Run(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
 				return fmt.Errorf("compass-stack down exceeded the %s teardown window "+
-					"(attach, SIGTERM the child tree, wait the server drain): %w", stackDownTimeout, err)
+					"(attach, SIGTERM the child tree, wait the server drain): %w", StackDownTimeout, err)
 			}
 			if msg := stderr(); msg != "" {
 				return fmt.Errorf("compass-stack down failed: %w: %s", err, msg)
@@ -270,12 +244,12 @@ func runStackDown(bin string) func(ctx context.Context, args []string) error {
 	}
 }
 
-// whoAmIOverUDS is the real whoAmI seam: it dials the stack socket over
+// WhoAmIOverUDS is the real whoAmI seam: it dials the stack socket over
 // prior-knowledge cleartext HTTP/2 (the same door compass-server serves) and
 // calls WhoAmI, returning the server-derived caller account id. The transport
 // shape mirrors internal/stack/adapters/health.go (the established h2c-UDS
 // connect dial).
-func whoAmIOverUDS(ctx context.Context, socket string) (string, error) {
+func WhoAmIOverUDS(ctx context.Context, socket string) (string, error) {
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
 	transport := &http.Transport{
@@ -299,7 +273,7 @@ func whoAmIOverUDS(ctx context.Context, socket string) (string, error) {
 	return id, nil
 }
 
-// resolveStackBin picks the compass-stack binary to supervise the stack with:
+// ResolveStackBin picks the compass-stack binary to supervise the stack with:
 // the --compass-stack flag, else $COMPASS_STACK_BIN, else a compass-stack
 // sibling of the running executable (where a packaged build stages it, mirroring
 // resolveAssetsDir's beside-the-executable pattern), else compass-stack on
@@ -307,7 +281,7 @@ func whoAmIOverUDS(ctx context.Context, socket string) (string, error) {
 // sidecar wins over any ambient compass-stack, while a dev-box build (no
 // sibling) still falls through to $PATH. A legible error names every place it
 // looked when none resolves.
-func resolveStackBin(flagValue string) (string, error) {
+func ResolveStackBin(flagValue string) (string, error) {
 	if flagValue != "" {
 		return flagValue, nil
 	}
@@ -360,20 +334,20 @@ func prependExecDirToPath(env []string, execDir string) []string {
 	return append(out, "PATH="+execDir)
 }
 
-// resolveImage picks the agent image ref: the --image flag, else
+// ResolveImage picks the agent image ref: the --image flag, else
 // $COMPASS_AGENT_IMAGE (the same env compass-runner honors), else the locked
 // GHCR default.
-func resolveImage(flagValue string) string {
+func ResolveImage(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
 	}
 	if env := os.Getenv("COMPASS_AGENT_IMAGE"); env != "" {
 		return env
 	}
-	return defaultAgentImage
+	return DefaultAgentImage
 }
 
-// realPreflight builds the preflight seam over the real host-probe adapters,
+// RealPreflight builds the preflight seam over the real host-probe adapters,
 // classified at this wiring boundary (see classifyPreflight). The DB probe and
 // the app-side DSN duplicate are gone (§A2 reconciliation 1): under DL-260
 // postgres is a container the stack itself starts, so a pre-`up` reachability
@@ -384,7 +358,7 @@ func resolveImage(flagValue string) string {
 // machine. The preflight core keys the check off GOOS and FAILS on darwin when
 // the adapter is nil, so this wiring cannot regress into a silently-skipped
 // check.
-func realPreflight(image string) func(ctx context.Context) error {
+func RealPreflight(image string) func(ctx context.Context) error {
 	deps := realPreflightDeps(runtime.GOOS)
 	params := preflight.Params{AgentImage: image}
 	return func(ctx context.Context) error {
@@ -441,4 +415,46 @@ func classifyPreflight(results preflight.Results) error {
 		}
 	}
 	return fatal.Err()
+}
+
+// StackDownTimeout bounds the explicit teardown (compass-stack down: attach,
+// SIGTERM the child tree, wait the server drain, release the lock). The bring-up
+// context is already cancelled by the time the window is open, so
+// stopStackAndQuit roots a FRESH bounded context off the caller's rather than
+// reusing it.
+const StackDownTimeout = 60 * time.Second
+
+// stackDownCancelGrace is how long a timed-out down gets after SIGTERM to
+// rewrite its survivor record before os/exec escalates to SIGKILL.
+const stackDownCancelGrace = 10 * time.Second
+
+// BringUpTimeout bounds the whole embedded bring-up (preflight + compass-stack
+// up + WhoAmI) as a backstop against a wedged launch; app.Run() itself is not
+// context-bound. It is generous because a cold first run pulls THREE images —
+// the agent image from GHCR plus the stock postgres and collector images
+// (DL-260) — before the stack reaches Ready, so the window covers three
+// sequential registry pulls, not one.
+//
+// On darwin the window is wider still. The machine ensure step runs inside it,
+// and a cold `podman machine init` downloads a VM image before any of the
+// above starts — minutes on its own, on a link whose speed we do not control.
+// A budget that cannot fit the work it wraps is not a backstop; it is a
+// deadline the first launch on a fresh Mac loses every time, and the error it
+// produces names the timeout rather than the download. So darwin gets a window
+// sized for cold provisioning plus the same three pulls. Both remain backstops
+// against a wedge, not performance targets.
+//
+// The configured embedded bring-up runs before a window opens. First-run setup
+// only runs preflight inside the visible chooser and saves the choice; the next
+// launch takes the configured bring-up path.
+var BringUpTimeout = BringUpTimeoutFor(runtime.GOOS)
+
+// BringUpTimeoutFor returns the bring-up budget for the given host OS. It takes
+// the OS as a parameter rather than reading runtime.GOOS so the per-OS choice
+// is unit-testable from any host.
+func BringUpTimeoutFor(goos string) time.Duration {
+	if goos == "darwin" {
+		return 15 * time.Minute
+	}
+	return 180 * time.Second
 }

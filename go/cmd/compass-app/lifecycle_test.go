@@ -14,6 +14,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/RigelBuild/compass/go/internal/embedded"
 )
 
 // TestStackDownArgs: the pure argv builder emits the exact `compass-stack down`
@@ -21,16 +23,16 @@ import (
 // (compass-stack recomputes the default DSN from --state-dir) and --linger (down
 // is not lingerable).
 func TestStackDownArgs(t *testing.T) {
-	args := stackDownArgs(baseParams)
+	args := embedded.StackDownArgs(baseParams)
 
 	want := []string{
 		"down",
-		"--state-dir", baseParams.stateDir,
-		"--image", baseParams.image,
-		"--socket", baseParams.socket,
+		"--state-dir", baseParams.StateDir,
+		"--image", baseParams.Image,
+		"--socket", baseParams.Socket,
 	}
 	if !slices.Equal(args, want) {
-		t.Errorf("stackDownArgs = %v, want %v", args, want)
+		t.Errorf("StackDownArgs = %v, want %v", args, want)
 	}
 	if slices.Contains(args, "--database") {
 		t.Errorf("argv carries --database, want it omitted (compass-stack defaults the DSN): %v", args)
@@ -41,7 +43,7 @@ func TestStackDownArgs(t *testing.T) {
 }
 
 // TestStopStackAndQuitHappyPath: a successful teardown runs down with EXACTLY
-// the stackDownArgs(params) argv and then quits the app exactly once.
+// the StackDownArgs(params) argv and then quits the app exactly once.
 func TestStopStackAndQuitHappyPath(t *testing.T) {
 	var gotArgs []string
 	quitCount := 0
@@ -52,12 +54,12 @@ func TestStopStackAndQuitHappyPath(t *testing.T) {
 		},
 		params:  baseParams,
 		quit:    func() { quitCount++ },
-		timeout: stackDownTimeout,
+		timeout: embedded.StackDownTimeout,
 	}
 
 	c.stopStackAndQuit(context.Background())
 
-	if want := stackDownArgs(baseParams); !slices.Equal(gotArgs, want) {
+	if want := embedded.StackDownArgs(baseParams); !slices.Equal(gotArgs, want) {
 		t.Errorf("stackDown argv = %v, want %v", gotArgs, want)
 	}
 	if quitCount != 1 {
@@ -76,7 +78,7 @@ func TestStopStackAndQuitQuitsAnywayOnDownFailure(t *testing.T) {
 		},
 		params:  baseParams,
 		quit:    func() { quitCount++ },
-		timeout: stackDownTimeout,
+		timeout: embedded.StackDownTimeout,
 	}
 
 	c.stopStackAndQuit(context.Background())
