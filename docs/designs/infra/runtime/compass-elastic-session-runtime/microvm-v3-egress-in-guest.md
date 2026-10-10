@@ -462,12 +462,16 @@ opening with `microvmtest.Require(t)`.
   (`microvm.Launch` + `GuestClient`, the boot_microvm_test.go:155-159
   pattern) — no new production code. Produces the KVM-gated test files only.
 - **Test cycle (KVM-gated):**
-  1. **Allowlisted reachable / non-allowlisted blocked, both families:** boot
+  1. **Allowlisted reachable / non-allowlisted blocked (IPv4 live):** boot
      a session whose `WorkloadSpec.Egress` allowlists one real host; in-guest
      execs (agent uid) show the allowlisted host connects and a
-     non-allowlisted raw IPv4 and IPv6 destination time out — mirroring the
+     non-allowlisted raw IPv4 destination times out — mirroring the
      podman lifecycle proof (lifecycle_test.go:137-140) inside the guest
-     netns.
+     netns. *Amended (Matt, 2026-10-07):* only the IPv4 deny is probed live. The
+     guest (passt) and the CI runners have no IPv6 route, so a live IPv6
+     connect fails `ENETUNREACH` before the firewall and would pass
+     vacuously; the dual-stack ruleset is covered hermetically
+     (`TestAllowlistedHostPopulatesBothFamilies`, `egress_test.go`).
   2. **Arm-failure ⇒ teardown ⇒ start fails:** drive guestd directly
      (`microvm.Launch` + `GuestClient`) with a Provision whose script is
      `exit 1`: the RPC errors, a follow-up Exec is gate-refused; then at the
@@ -496,8 +500,8 @@ opening with `microvmtest.Require(t)`.
 - [ ] W2 — `WorkloadSpec.Egress` threaded Create→Start→`ProvisionRequest`;
       `AgentRuntime.provision` probe-and-skips `armEgress` on self-arming
       backends (podman path byte-identical)
-- [ ] W3 — KVM-gated in-guest egress integration suite (allow/deny both
-      families, arm-failure teardown, agent-uid `nft flush` refused,
+- [ ] W3 — KVM-gated in-guest egress integration suite (IPv4 allow/deny
+      live, dual-stack ruleset hermetic, arm-failure teardown, agent-uid `nft flush` refused,
       always-arm verification) + V8 alignment
 
 ## Open Questions
