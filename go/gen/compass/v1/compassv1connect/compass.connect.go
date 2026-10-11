@@ -50,6 +50,9 @@ const (
 	CompassServiceGetServerInfoProcedure = "/compass.v1.CompassService/GetServerInfo"
 	// CompassServiceWhoAmIProcedure is the fully-qualified name of the CompassService's WhoAmI RPC.
 	CompassServiceWhoAmIProcedure = "/compass.v1.CompassService/WhoAmI"
+	// CompassServiceGetRefLinkRulesProcedure is the fully-qualified name of the CompassService's
+	// GetRefLinkRules RPC.
+	CompassServiceGetRefLinkRulesProcedure = "/compass.v1.CompassService/GetRefLinkRules"
 	// CompassServiceGetTourStateProcedure is the fully-qualified name of the CompassService's
 	// GetTourState RPC.
 	CompassServiceGetTourStateProcedure = "/compass.v1.CompassService/GetTourState"
@@ -159,6 +162,9 @@ type CompassServiceClient interface {
 	// authenticatedOpen: any authenticated caller may learn its OWN identity
 	// (not admin-gated). account_id is server-derived, never client-supplied.
 	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
+	// Link targets for issue and PR references in rendered text, built from the
+	// configured forges. authenticatedOpen: the rules hold no secrets.
+	GetRefLinkRules(context.Context, *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error)
 	// Per-account first-run progress. No account id is accepted; the server keys
 	// each operation to the authenticated caller.
 	GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error)
@@ -330,6 +336,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
 			connect.WithClientOptions(opts...),
 		),
+		getRefLinkRules: connect.NewClient[v1.GetRefLinkRulesRequest, v1.GetRefLinkRulesResponse](
+			httpClient,
+			baseURL+CompassServiceGetRefLinkRulesProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("GetRefLinkRules")),
+			connect.WithClientOptions(opts...),
+		),
 		getTourState: connect.NewClient[v1.GetTourStateRequest, v1.GetTourStateResponse](
 			httpClient,
 			baseURL+CompassServiceGetTourStateProcedure,
@@ -481,6 +493,7 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 type compassServiceClient struct {
 	getServerInfo           *connect.Client[v1.GetServerInfoRequest, v1.GetServerInfoResponse]
 	whoAmI                  *connect.Client[v1.WhoAmIRequest, v1.WhoAmIResponse]
+	getRefLinkRules         *connect.Client[v1.GetRefLinkRulesRequest, v1.GetRefLinkRulesResponse]
 	getTourState            *connect.Client[v1.GetTourStateRequest, v1.GetTourStateResponse]
 	claimTourStart          *connect.Client[v1.ClaimTourStartRequest, v1.ClaimTourStartResponse]
 	setTourState            *connect.Client[v1.SetTourStateRequest, v1.SetTourStateResponse]
@@ -515,6 +528,11 @@ func (c *compassServiceClient) GetServerInfo(ctx context.Context, req *connect.R
 // WhoAmI calls compass.v1.CompassService.WhoAmI.
 func (c *compassServiceClient) WhoAmI(ctx context.Context, req *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
 	return c.whoAmI.CallUnary(ctx, req)
+}
+
+// GetRefLinkRules calls compass.v1.CompassService.GetRefLinkRules.
+func (c *compassServiceClient) GetRefLinkRules(ctx context.Context, req *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error) {
+	return c.getRefLinkRules.CallUnary(ctx, req)
 }
 
 // GetTourState calls compass.v1.CompassService.GetTourState.
@@ -651,6 +669,9 @@ type CompassServiceHandler interface {
 	// authenticatedOpen: any authenticated caller may learn its OWN identity
 	// (not admin-gated). account_id is server-derived, never client-supplied.
 	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
+	// Link targets for issue and PR references in rendered text, built from the
+	// configured forges. authenticatedOpen: the rules hold no secrets.
+	GetRefLinkRules(context.Context, *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error)
 	// Per-account first-run progress. No account id is accepted; the server keys
 	// each operation to the authenticated caller.
 	GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error)
@@ -818,6 +839,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceGetRefLinkRulesHandler := connect.NewUnaryHandler(
+		CompassServiceGetRefLinkRulesProcedure,
+		svc.GetRefLinkRules,
+		connect.WithSchema(compassServiceMethods.ByName("GetRefLinkRules")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceGetTourStateHandler := connect.NewUnaryHandler(
 		CompassServiceGetTourStateProcedure,
 		svc.GetTourState,
@@ -968,6 +995,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceGetServerInfoHandler.ServeHTTP(w, r)
 		case CompassServiceWhoAmIProcedure:
 			compassServiceWhoAmIHandler.ServeHTTP(w, r)
+		case CompassServiceGetRefLinkRulesProcedure:
+			compassServiceGetRefLinkRulesHandler.ServeHTTP(w, r)
 		case CompassServiceGetTourStateProcedure:
 			compassServiceGetTourStateHandler.ServeHTTP(w, r)
 		case CompassServiceClaimTourStartProcedure:
@@ -1031,6 +1060,10 @@ func (UnimplementedCompassServiceHandler) GetServerInfo(context.Context, *connec
 
 func (UnimplementedCompassServiceHandler) WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.WhoAmI is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) GetRefLinkRules(context.Context, *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetRefLinkRules is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error) {
