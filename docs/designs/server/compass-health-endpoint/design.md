@@ -29,8 +29,8 @@ checker.
 One `serverHealth` checker (`go/server/health.go`) implements
 `grpchealth.Checker`. It has two views:
 
-- **gRPC:** `grpc.health.v1.Health/Check`, from `grpchealth.NewHandler` with a
-  1 KiB read cap.
+- **gRPC:** `grpc.health.v1.Health/Check` and `Health/Watch`, from
+  `grpchealth.NewHandler` with a 1 KiB read cap. Watch answers `Unimplemented`.
 - **HTTP:** `GET /healthz`, with an optional `?service=` that defaults to `""`.
   SERVING returns 200, NOT_SERVING 503 and an unknown service 404. The body is
   `serving` or `not_serving`. The `GET` pattern also matches HEAD.
@@ -47,7 +47,7 @@ Any other name returns NotFound.
 
 **Boot.** `Serve` opens the store and builds the doors before any door serves.
 
-**Drain.** `drainDoors` calls `markDraining` first, then closes the buses and
+**Drain.** `drainDoors` marks draining before `Shutdown` (H1 pins only that), then closes the buses and
 calls `Shutdown`, which closes listeners at once, so probers rarely see
 NOT_SERVING until a drain grace or Watch lands (DL-312). Without Watch, grpc-go
 client-side health treats `Unimplemented` as Ready (`health/client.go`) through
@@ -59,13 +59,10 @@ stream". The hub holds one Runner today, so the checker reads
 Not `Hub.EnrolledRunners`: it keeps the last Runner after a disconnect.
 
 **Half-open links (deferred).** A dead link keeps `RunnerEnrolled` true until a
-send fails or TCP gives up. Accepted connections (default `net.ListenConfig`
-or adopted `--listen-fd`) get Go's keepalive (15s idle, 15s interval, 9
-probes): about 150s on Linux. Queued unacked data falls to retransmission
-timeouts; behind a proxy, keepalive sees the proxy.
-`http.HTTP2Config.SendPingTimeout` covers queued data and L4 passthrough; an
-HTTP/2-terminating proxy answers PING itself, needing an application-level
-Sessions heartbeat. Each is its own issue.
+send fails or TCP gives up: Go's default keepalive detects it in about 150s on
+Linux; queued data falls to retransmission timeouts. `SendPingTimeout` covers
+queued data and L4 passthrough; an HTTP/2-terminating proxy answers PING
+itself, so that path needs a Sessions heartbeat.
 
 **Probers** (network rows assume OQ 3 A). A gRPC Check returns NOT_SERVING
 inside an OK response, so only probers that read it see a drain.
@@ -145,8 +142,9 @@ The kubelet `grpc` probe is plaintext (TLS needs an alpha gate).
      `Shutdown`, not before the bus closes.
   4. `TestServeHealthOnEveryDoor` (`health_pgtest_test.go`): with no
      credentials, a gRPC Check is SERVING and `GET /healthz` returns 200 on the
-     socket, dev and TLS doors. Under B, token-less TLS rows expect
-     `Unauthenticated` and 401, and a bearer row expects SERVING.
+     socket, dev and TLS doors, and a token-less Watch is `Unimplemented`.
+     Under B, token-less TLS Check and Watch expect `Unauthenticated`,
+     `/healthz` 401, and a bearer row expects SERVING.
 
 ### H2 — Runner service
 
@@ -172,7 +170,7 @@ The kubelet `grpc` probe is plaintext (TLS needs an alpha gate).
   `sudo -u compass curl --unix-socket ~compass/.compass/server.sock http://localhost/healthz`.
   The network door requires TLS 1.3 (`loadNetworkTLS`); an ALB needs a TLS 1.3
   listener policy. Point status-code LB checks at `/healthz`, and rate-limit
-  both routes upstream until RIG-1298 lands. Alert on `compass.runner`.
+  both routes upstream until RIG-5243 lands. Alert on `compass.runner`.
 - **Red → green:** before H1, that command returns 404. After H1, it prints
   `serving`. `rumdl check` passes.
 
@@ -195,12 +193,13 @@ The kubelet `grpc` probe is plaintext (TLS needs an alpha gate).
    a bearer token", and its token-less scenario rejects any RPC before the
    handler. An anonymous Check contradicts it.
    - **A (recommended):** anonymous on every door; amend that requirement to
-     exempt `grpc.health.v1.Health/Check` and `GET /healthz`. Per-request
+     exempt Health `Check`, `Watch` (`Unimplemented` today) and
+     `GET /healthz`. Per-request
      bounds: the 1 KiB read cap, header timeout, body-read deadline, no store
      read. Residual: no rate or concurrency limit (no network-door route has
      one), no per-Check span or log, and a `compass.runner` Check takes
      `Hub.mu` and the router mutex, contending with Runner traffic under a
-     flood. RIG-1298's per-IP limits and aggregate visibility must cover both
+     flood. RIG-5243 (per-IP limits, aggregate visibility) must cover both
      routes; until then the operator rate-limits them upstream.
    - **B:** anonymous on socket and dev, bearer on the network door. Any valid
      account bearer works (the state-dir bootstrap-admin token or an
