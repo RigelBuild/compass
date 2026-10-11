@@ -402,7 +402,8 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR
 
 // CommentOnPullRequest posts a conversation comment on PR number in repo. GitHub
 // models PR conversation comments as issue comments, so this targets the issues
-// comments endpoint. body is PRE-stamped; clientID is ignored, as above.
+// comments endpoint. body is PRE-stamped; clientID is ignored: GitHub has no
+// create-time idempotency key.
 func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number uint64, body, _ string) (Comment, error) {
 	in := struct {
 		Body string `json:"body"`
@@ -1017,7 +1018,8 @@ func (g *GitHub) doJSON(ctx context.Context, method, url string, in, out any) er
 //
 // method is the HTTP verb: the create/comment/review writes and the GraphQL
 // query POST, the state transitions and comment edits PATCH, and comment delete
-// DELETE. A nil in sends no body and a nil out skips decoding (a 204 delete).
+// DELETE. These calls are unconditional (no If-None-Match). A nil in sends no
+// body; a nil out drains and discards the response (a 204 delete).
 func (g *GitHub) doJSONOn(ctx context.Context, resource rateResource, method, url string, in, out any) error {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
@@ -1063,14 +1065,17 @@ func (g *GitHub) doJSONOn(ctx context.Context, resource rateResource, method, ur
 	}
 	g.recordBudget(resp, resource)
 
-	if out != nil {
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("read body: %w", err)
-		}
-		if err := json.Unmarshal(respBody, out); err != nil {
-			return fmt.Errorf("decode response: %w", err)
-		}
+	if out == nil {
+		// Drain so the connection returns to the pool; the bound caps a surprise body.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		return nil
+	}
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+	if err := json.Unmarshal(respBody, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
 }

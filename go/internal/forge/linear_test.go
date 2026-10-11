@@ -197,6 +197,72 @@ func TestLinearCommentOnIssueClientID(t *testing.T) {
 	}
 }
 
+// Linear refuses a reused comment id as an insert conflict. A retry after a
+// lost response must adopt the comment the first attempt created, not fail.
+func TestLinearCommentOnIssueRetryAdoptsExistingClientID(t *testing.T) {
+	const clientID = "6f9619ff-8b86-4d11-b42d-00c04fc964ff"
+	conflict := scriptedResponse{status: http.StatusOK, body: `{"errors":[{"message":"conflict on insert of Comment","extensions":{"code":"INPUT_ERROR"}}],"data":null}`}
+	existing := func(issue string) scriptedResponse {
+		return scriptedResponse{status: http.StatusOK, body: `{"data":{"comment":{"id":"` + clientID + `","url":"https://linear.app/c","body":"a reply","user":null,"issue":{"id":"` + issue + `"}}}}`}
+	}
+	resolve := scriptedResponse{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-9"}]}}}`}
+
+	t.Run("same issue adopts", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict, existing("issue-uuid-9")}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		got, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID)
+		if err != nil {
+			t.Fatalf("CommentOnIssue retry: %v", err)
+		}
+		if got.Key != clientID || got.URL != "https://linear.app/c" {
+			t.Errorf("adopted Comment = %+v, want the existing comment", got)
+		}
+		query, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[3]))
+		if !strings.Contains(query, "comment(id: $id)") || vars["id"] != clientID {
+			t.Errorf("adoption read = %q vars %v, want comment(id) for the client id", query, vars)
+		}
+	})
+	t.Run("foreign issue keeps the error", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict, existing("other-issue")}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		if _, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID); err == nil {
+			t.Fatal("CommentOnIssue adopted a comment on another issue; want the create error")
+		}
+	})
+	t.Run("no client id never reads", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		if _, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", ""); err == nil {
+			t.Fatal("CommentOnIssue without a client id succeeded on an error; want the error")
+		}
+		if rt.calls != 3 {
+			t.Errorf("requests = %d, want 3 (no adoption read without a client id)", rt.calls)
+		}
+	})
+}
+
+// A short scan would let the mirror post a duplicate, so a missing issue or a
+// next page without a cursor fails instead of returning a partial list.
+func TestLinearListCommentsSinceRefusesPartialScan(t *testing.T) {
+	resolve := scriptedResponse{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-9"}]}}}`}
+	for name, page := range map[string]string{
+		"null issue":     `{"data":{"issue":null}}`,
+		"no next cursor": `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"x"}],"pageInfo":{"hasNextPage":true,"endCursor":""}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, {status: http.StatusOK, body: page}}}
+			l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+			got, err := l.ListCommentsSince(context.Background(), "SEA", 7, time.Time{})
+			if err == nil {
+				t.Fatalf("ListCommentsSince = %+v, nil; want an error", got)
+			}
+			if rt.calls != 2 {
+				t.Errorf("requests = %d, want 2 (refused without fetching another page)", rt.calls)
+			}
+		})
+	}
+}
+
 func TestLinearEditComment(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: http.StatusOK, body: `{"data":{"commentUpdate":{"comment":{"id":"comment-uuid","url":"https://linear.app/comment","body":"edited","user":{"displayName":"Ada"}}}}}`}}}
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))

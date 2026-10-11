@@ -933,8 +933,16 @@ func TestGitHubListCommentsSinceWalksPages(t *testing.T) {
 	if rt.calls != 2 {
 		t.Fatalf("requests = %d, want both pages", rt.calls)
 	}
-	if value := rt.requests[0].URL.Query().Get("since"); value != "2026-10-11T10:00:00Z" {
-		t.Errorf("since query = %q, want UTC timestamp", value)
+	for i, req := range rt.requests {
+		if req.URL.Path != "/repos/org/repo/issues/7/comments" {
+			t.Errorf("page %d path = %q, want the issue-comments endpoint", i+1, req.URL.Path)
+		}
+		if value := req.URL.Query().Get("since"); value != "2026-10-11T10:00:00Z" {
+			t.Errorf("page %d since = %q, want UTC timestamp", i+1, value)
+		}
+		if page := req.URL.Query().Get("page"); page != strconv.Itoa(i+1) {
+			t.Errorf("request %d page = %q, want %d", i+1, page, i+1)
+		}
 	}
 }
 

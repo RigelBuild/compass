@@ -257,6 +257,13 @@ func (l *Linear) CommentOnIssue(ctx context.Context, repo string, number uint64,
 		} `json:"commentCreate"`
 	}
 	if err := l.doGraphQL(ctx, query, map[string]any{gqlInputKey: input}, &out); err != nil {
+		// Linear refuses a reused id as an insert conflict, so a retry after a
+		// lost response adopts the comment the first attempt already created.
+		if _, refused := errors.AsType[*StatusError](err); refused && clientID != "" {
+			if c, ok := l.commentOnIssue(ctx, clientID, issueID); ok {
+				return c, nil
+			}
+		}
 		return Comment{}, fmt.Errorf("forge: linear comment on issue %q#%d: %w", repo, number, err)
 	}
 	return out.CommentCreate.Comment.toComment(), nil
@@ -312,7 +319,7 @@ func (l *Linear) ListCommentsSince(ctx context.Context, repo string, number uint
 			vars["after"] = after
 		}
 		var out struct {
-			Issue struct {
+			Issue *struct {
 				Comments struct {
 					Nodes    []linearComment `json:"nodes"`
 					PageInfo struct {
@@ -325,14 +332,22 @@ func (l *Linear) ListCommentsSince(ctx context.Context, repo string, number uint
 		if err := l.doGraphQL(ctx, query, vars, &out); err != nil {
 			return nil, fmt.Errorf("forge: linear list comments since %q#%d: %w", repo, number, err)
 		}
+		// A short scan would make the caller post a duplicate, so a missing
+		// issue or a page with no cursor is an error, never a partial list.
+		if out.Issue == nil {
+			return nil, &StatusError{Status: http.StatusNotFound, Message: fmt.Sprintf("no issue %s-%d", repo, number)}
+		}
 		for _, comment := range out.Issue.Comments.Nodes {
 			all = append(all, comment.toComment())
 		}
-		next := out.Issue.Comments.PageInfo.EndCursor
-		if !out.Issue.Comments.PageInfo.HasNextPage || next == "" {
+		page := out.Issue.Comments.PageInfo
+		if !page.HasNextPage {
 			return all, nil
 		}
-		after = next
+		if page.EndCursor == "" {
+			return nil, fmt.Errorf("forge: linear list comments since %q#%d: next page has no cursor", repo, number)
+		}
+		after = page.EndCursor
 	}
 }
 
@@ -506,6 +521,29 @@ func (l *Linear) Checks(ctx context.Context, repo string, number uint64) (Checks
 // BodyLimit is the max body size (BYTES) the Service enforces before a write.
 // See linearBodyLimit for the conservative-constant rationale.
 func (l *Linear) BodyLimit() int { return linearBodyLimit }
+
+// commentOnIssue reads comment id and reports whether it exists on issueID. Any
+// read failure reports false, so the caller returns its original create error.
+func (l *Linear) commentOnIssue(ctx context.Context, id, issueID string) (Comment, bool) {
+	const query = `query CompassCommentGet($id: String!) {
+  comment(id: $id) { id url body user { displayName } issue { id } }
+}`
+	var out struct {
+		Comment *struct {
+			linearComment
+			Issue *struct {
+				ID string `json:"id"`
+			} `json:"issue"`
+		} `json:"comment"`
+	}
+	if err := l.doGraphQL(ctx, query, map[string]any{"id": id}, &out); err != nil {
+		return Comment{}, false
+	}
+	if out.Comment == nil || out.Comment.Issue == nil || out.Comment.Issue.ID != issueID {
+		return Comment{}, false
+	}
+	return out.Comment.toComment(), true
+}
 
 // --- Provider: unexported plumbing -------------------------------------------
 
