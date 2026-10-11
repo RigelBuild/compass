@@ -82,12 +82,12 @@ func TestGroupSignallerLivenessOrphanedGroup(t *testing.T) {
 		t.Fatalf("Signal(SIGKILL) to orphaned group = %v", err)
 	}
 	// init reaps the reparented member; poll that event with a deadline.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitBudget(t))
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for gs.Liveness(pgid, startTime) != stack.GroupGone {
 		if !time.Now().Before(deadline) {
-			t.Fatalf("orphaned group %d still present 5s after SIGKILL", pgid)
+			t.Fatalf("orphaned group %d still present at the test deadline after SIGKILL", pgid)
 		}
 		<-ticker.C
 	}

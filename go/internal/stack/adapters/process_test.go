@@ -192,10 +192,13 @@ func startHelper(t *testing.T, mode string, component stack.Component, extraEnv 
 // loudly on timeout. Gated on the event (file present), not the clock.
 func waitReady(t *testing.T, readyPath string, proc stack.Process) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.Now().Add(waitBudget(t))
+	for {
 		if _, err := os.Stat(readyPath); err == nil {
 			return
+		}
+		if !time.Now().Before(deadline) {
+			break
 		}
 		time.Sleep(time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the child's ready file above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}

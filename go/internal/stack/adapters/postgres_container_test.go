@@ -245,7 +245,7 @@ func fakePodman(t *testing.T, body string) (*podmanExec, string) {
 	if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return &podmanExec{program: prog, timeout: 5 * time.Second}, argvLog
+	return &podmanExec{program: prog, timeout: waitBudget(t)}, argvLog
 }
 
 // readArgv returns the recorded podman invocations, one per element.
@@ -298,7 +298,9 @@ func TestTermSendsConfiguredStopSignal(t *testing.T) {
 // TestPodmanCallReturnsWhenGrandchildHoldsStderr: a podman that exits while a
 // child it spawned keeps stderr open must not hang the call past WaitDelay.
 func TestPodmanCallReturnsWhenGrandchildHoldsStderr(t *testing.T) {
-	e, _ := fakePodman(t, "sleep 8 &\nexit 0\n")
+	// The grandchild outlives the call timeout, so only WaitDelay can free the call in time.
+	e, _ := fakePodman(t, "sleep 31 &\nexit 0\n")
+	e.timeout = 30 * time.Second
 	done := make(chan error, 2)
 	go func() { done <- e.fireAndCheck(context.Background(), []string{"rm", "x"}) }()
 	go func() {
