@@ -145,7 +145,14 @@ async function auditDirectory(
 			`bun audit failed for ${directory} (exit ${exitCode})${stderr.trim().length > 0 ? `: ${stderr.trim()}` : ""}`,
 		);
 	}
-	return { directory, findings: parseAuditOutput(stdout) };
+	const findings = parseAuditOutput(stdout);
+	// Exit 1 means advisories were found; an empty report with it is a failed request.
+	if ((exitCode === 1) !== findings.length > 0) {
+		throw new Error(
+			`bun audit exit ${exitCode} disagrees with its report for ${directory}${stderr.trim().length > 0 ? `: ${stderr.trim()}` : ""}`,
+		);
+	}
+	return { directory, findings };
 }
 
 async function runGate(): Promise<number> {
