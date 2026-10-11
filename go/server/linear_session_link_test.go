@@ -226,7 +226,7 @@ func serveLinearSessionLink(t *testing.T, handler http.Handler, method, id strin
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.Handle(linearSessionLinkPattern, handler)
-	req := httptest.NewRequest(method, sessionLinkFor("https://compass.example.com", id), nil)
+	req := httptest.NewRequestWithContext(t.Context(), method, sessionLinkFor("https://compass.example.com", id), nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec

@@ -76,8 +76,9 @@ func linHandler(t *testing.T, secret []byte, now time.Time, sessionNil bool) (*l
 	return lh, data, session
 }
 
-func linPost(h http.Handler, sig string, body []byte) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, linearWebhookPath, strings.NewReader(string(body)))
+func linPost(t *testing.T, h http.Handler, sig string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, linearWebhookPath, strings.NewReader(string(body)))
 	if sig != "" {
 		req.Header.Set(linearSignatureHeader, sig)
 	}
@@ -96,7 +97,7 @@ func TestLinearWebhookHandler_BadSignature(t *testing.T) {
 	h, data, session := linHandler(t, secret, now, false)
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":1,"team":{"key":"RIG"},"url":"u"}}`, freshTS(now))
 
-	rec := linPost(h, "deadbeef", body)
+	rec := linPost(t, h, "deadbeef", body)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d, want 400", rec.Code)
 	}
@@ -111,7 +112,7 @@ func TestLinearWebhookHandler_IssueCreate(t *testing.T) {
 	h, data, session := linHandler(t, secret, now, false)
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"https://linear.app/i/7"}}`, freshTS(now))
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}
@@ -139,7 +140,7 @@ func TestLinearWebhookHandler_CommentCreate(t *testing.T) {
 	h, data, session := linHandler(t, secret, now, false)
 	body := fmt.Appendf(nil, `{"type":"Comment","action":"create","webhookTimestamp":%d,"data":{"id":"c1","body":"hello","user":{"displayName":"Ann"},"issue":{"number":3,"url":"https://linear.app/i/3","team":{"key":"RIG"}}}}`, freshTS(now))
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}
@@ -160,7 +161,7 @@ func TestLinearWebhookHandler_SessionEvent(t *testing.T) {
 	h, data, session := linHandler(t, secret, now, false)
 	body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":"s1"}}`, freshTS(now))
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}
@@ -190,7 +191,7 @@ func TestLinearWebhookHandler_SessionDeliveryID(t *testing.T) {
 			h, _, session := linHandler(t, secret, now, false)
 			body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":"s1"}}`, freshTS(now))
 
-			req := httptest.NewRequest(http.MethodPost, linearWebhookPath, strings.NewReader(string(body)))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, linearWebhookPath, strings.NewReader(string(body)))
 			req.Header.Set(linearSignatureHeader, linSign(secret, body))
 			if tc.header != "" {
 				req.Header.Set(linearDeliveryHeader, tc.header)
@@ -214,7 +215,7 @@ func TestLinearWebhookHandler_SessionQueueFull(t *testing.T) {
 	session.enqErr = linearagent.ErrQueueFull
 	body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":"s1"}}`, freshTS(now))
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d, want 500 (Linear retries on full queue)", rec.Code)
 	}
@@ -231,7 +232,7 @@ func TestLinearWebhookHandler_StaleTimestamp(t *testing.T) {
 	stale := now.Add(-5 * time.Minute).UnixMilli()
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"u"}}`, stale)
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (stale -> 200-with-drop, not 400)", rec.Code)
 	}
@@ -246,7 +247,7 @@ func TestLinearWebhookHandler_NilSessionSink(t *testing.T) {
 	h, data, _ := linHandler(t, secret, now, true) // sessionSink nil
 	body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":"s1"}}`, freshTS(now))
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (logged-and-dropped)", rec.Code)
 	}
@@ -261,7 +262,7 @@ func TestLinearWebhookHandler_IgnoredType(t *testing.T) {
 	h, data, session := linHandler(t, secret, now, false)
 	body := fmt.Appendf(nil, `{"type":"Reaction","action":"create","webhookTimestamp":%d}`, freshTS(now))
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (ignored type)", rec.Code)
 	}
@@ -276,7 +277,7 @@ func TestLinearWebhookHandler_IssueRemoveDrops(t *testing.T) {
 	h, data, session := linHandler(t, secret, now, false)
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"remove","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"u"}}`, freshTS(now))
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (remove -> ok=false drop)", rec.Code)
 	}
@@ -299,7 +300,7 @@ func TestLinearWebhookHandler_NilDataSink(t *testing.T) {
 	lh.now = func() time.Time { return now }
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"u"}}`, freshTS(now))
 
-	rec := linPost(lh, linSign(secret, body), body)
+	rec := linPost(t, lh, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (nil dataSink -> 200-with-drop)", rec.Code)
 	}
@@ -313,7 +314,7 @@ func TestLinearWebhookHandler_MethodNotAllowed(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	h, data, session := linHandler(t, secret, now, false)
 
-	req := httptest.NewRequest(http.MethodGet, linearWebhookPath, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, linearWebhookPath, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -336,7 +337,7 @@ func TestLinearWebhookHandler_BodyTooLarge(t *testing.T) {
 
 	// No signature needed: MaxBytesReader trips during io.ReadAll, before the
 	// HMAC verify is ever reached.
-	rec := linPost(h, "", body)
+	rec := linPost(t, h, "", body)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("code = %d, want 413 (body over 1 MiB cap)", rec.Code)
 	}
@@ -359,7 +360,7 @@ func TestLinearWebhookHandler_SecretUnavailable(t *testing.T) {
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"u"}}`, freshTS(now))
 
 	// No signature needed: the secret resolver faults before the HMAC verify.
-	rec := linPost(lh, "", body)
+	rec := linPost(t, lh, "", body)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code = %d, want 503 (secret resolve fault)", rec.Code)
 	}
@@ -376,7 +377,7 @@ func TestLinearWebhookHandler_VerifiedUnparseable(t *testing.T) {
 	// acks 200-and-drops (Linear should not retry a malformed-but-authentic body).
 	body := []byte("not json at all")
 
-	rec := linPost(h, linSign(secret, body), body)
+	rec := linPost(t, h, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (verified-but-unparseable -> ack-and-drop)", rec.Code)
 	}
@@ -416,7 +417,7 @@ func TestBuildLinearWebhookWiring_DeliversToInjectedSink(t *testing.T) {
 	lh.now = func() time.Time { return now }
 
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"https://linear.app/i/7"}}`, freshTS(now))
-	rec := linPost(lh, linSign(secret, body), body)
+	rec := linPost(t, lh, linSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}

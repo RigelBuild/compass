@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +28,7 @@ import (
 // podmanUsable(), so there is no stack to build for — run (everything skips) and
 // exit without building.
 func TestMain(m *testing.M) {
+	ctx := context.Background() // run-root: TestMain has no test context
 	registerAskFixtureOptions()
 	registerDuoFixtureOptions()
 	registerFanoutFixtureOptions()
@@ -40,15 +42,15 @@ func TestMain(m *testing.M) {
 	registerLegTwoFixtureOptions()
 	registerLegThreeFourFixtureOptions()
 	registerSeamProbeFixtureOptions()
-	if !podmanUsable() {
+	if !podmanUsable(ctx) {
 		os.Exit(m.Run())
 	}
-	if err := requireFreshAgentImage(); err != nil {
+	if err := requireFreshAgentImage(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e TestMain: %v\n", err)
 		os.Exit(1)
 	}
 
-	binDir, err := buildStackBinaries()
+	binDir, err := buildStackBinaries(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e TestMain: build stack binaries: %v\n", err)
 		os.Exit(1)
@@ -65,7 +67,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	// Down the shared fixture before exiting: its children hold this binary's
 	// stdout, so leaving them up strands the run in an I/O-incomplete wait.
-	shutdownShared()
+	shutdownShared(ctx)
 	_ = os.RemoveAll(binDir)
 	os.Exit(code)
 }
@@ -76,7 +78,7 @@ func TestMain(m *testing.M) {
 // go.mod check below, which fails legibly if the layout ever moves. The t-free
 // signature lets TestMain call it once per run (there is no *testing.T there);
 // the caller owns the returned dir's removal.
-func buildStackBinaries() (string, error) {
+func buildStackBinaries(ctx context.Context) (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("getwd: %w", err)
@@ -90,7 +92,7 @@ func buildStackBinaries() (string, error) {
 		return "", fmt.Errorf("make bin dir: %w", err)
 	}
 	for _, name := range []string{"compass-postgres", "compass-server", "compass-runner"} {
-		cmd := exec.Command("go", "build", "-o", filepath.Join(binDir, name), "./cmd/"+name)
+		cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(binDir, name), "./cmd/"+name)
 		cmd.Dir = moduleRoot
 		if out, err := cmd.CombinedOutput(); err != nil {
 			_ = os.RemoveAll(binDir)
@@ -102,10 +104,10 @@ func buildStackBinaries() (string, error) {
 
 // requireFreshAgentImage gates the run on agentImageGate with the real tree,
 // environment and image stamp.
-func requireFreshAgentImage() error {
+func requireFreshAgentImage(ctx context.Context) error {
 	return agentImageGate(os.Getenv, filepath.Join("..", "..", "packages", "compass-agent"), func() string {
 		// A missing stamp file exits non-zero; that image predates stamping, so stale.
-		out, _ := exec.Command("podman", "run", "--rm", "--entrypoint", "cat", agentImage,
+		out, _ := exec.CommandContext(ctx, "podman", "run", "--rm", "--entrypoint", "cat", agentImage,
 			"/etc/compass-agent/source-fingerprint").Output()
 		return string(out)
 	})

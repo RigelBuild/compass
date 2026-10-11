@@ -19,10 +19,10 @@ import (
 // fixed defaults would collide on the second publish, so both answering at once
 // proves the host side follows Config.
 func TestBundledPortsFollowConfig(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background() // test root context (rule://go-thread-context exemption)
+	ctx := t.Context()
 
 	binDir := buildBinariesFromModuleRoot(t)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -59,8 +59,8 @@ type bundledStack struct {
 // bundled collector, every host port drawn from freePorts.
 func upBundledStack(ctx context.Context, t *testing.T, root string) bundledStack {
 	t.Helper()
-	fx := newContainerFixture(t, root)
-	ports := freePorts(t, 5)
+	fx := newContainerFixture(ctx, t, root)
+	ports := freePorts(ctx, t, 5)
 	cfg := stack.Config{
 		StateDir:            fx.cfg.StateDir,
 		SocketPath:          fx.cfg.SocketPath,
@@ -84,8 +84,10 @@ func upBundledStack(ctx context.Context, t *testing.T, root string) bundledStack
 		t.Fatalf("buildDeps: %v", err)
 	}
 	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), downBudget)
+		defer cancel()
 		for _, n := range []string{derivedNatsName(cfg.StateDir), derivedCollectorName(cfg.StateDir), derivedContainerName(cfg.StateDir)} {
-			if out, err := exec.Command("podman", "rm", "--force", "--volumes", n).CombinedOutput(); err != nil {
+			if out, err := exec.CommandContext(cleanupCtx, "podman", "rm", "--force", "--volumes", n).CombinedOutput(); err != nil {
 				t.Logf("cleanup guard: podman rm %s (ignored): %v\n%s", n, err, out)
 			}
 		}

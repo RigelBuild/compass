@@ -58,7 +58,7 @@ type handoff struct {
 // h.afterAck. The captured preamble is returned via the gotPreamble channel.
 func fakeMuxer(t *testing.T, path string, h handoff) <-chan string {
 	t.Helper()
-	ln, err := net.Listen("unix", path)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("binding fake muxer: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestDialGuest_Refusal(t *testing.T) {
 // the newline and leave "HELLO" on the wire for the returned conn.
 func TestDialGuest_NoOverRead(t *testing.T) {
 	path := socketPath(t)
-	ln, err := net.Listen("unix", path)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("binding muxer: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestDialGuest_NoOverRead(t *testing.T) {
 // until testTimeout and fails the suite.
 func TestDialGuest_HandshakeDeadline(t *testing.T) {
 	path := socketPath(t)
-	ln, err := net.Listen("unix", path)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("binding silent muxer: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestGuestClient_HealthRoundTrip(t *testing.T) {
 	// acks OK, then hands the transparent conn to the h2c server via a one-shot
 	// net.Listener. A new listener per accepted connection keeps the server's
 	// Accept loop fed without a persistent shared listener.
-	ln, err := net.Listen("unix", path)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("binding muxer: %v", err)
 	}

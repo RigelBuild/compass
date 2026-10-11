@@ -17,7 +17,7 @@ import (
 // owed. Posting AFTER RemoveWorkspace deletes the placement makes the wake a
 // benign no-placement no-op, so the message stays owed for the next start.
 func TestCommsOfflineRedeliveryOnSessionStart(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

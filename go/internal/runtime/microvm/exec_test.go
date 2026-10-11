@@ -55,7 +55,7 @@ func serveFakeGuest(t *testing.T, fake *fakeGuest) *GuestExec {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "guest.sock")
 
-	ln, err := net.Listen("unix", path)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("binding fake guest: %v", err)
 	}

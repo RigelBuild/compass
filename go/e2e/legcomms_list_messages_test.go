@@ -27,7 +27,7 @@ const (
 // channel argument: an explicit name reads that channel, an omitted one falls
 // back to HOME, and neither leaks the other's messages.
 func TestCommsListMessagesChannelResolution(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 	ctx := context.Background()

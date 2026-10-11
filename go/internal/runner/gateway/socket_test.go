@@ -94,7 +94,7 @@ func leaveOwnedSocket(t *testing.T, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), socketDirMode); err != nil {
 		t.Fatalf("pre-creating socket dir: %v", err)
 	}
-	ln, err := net.Listen("unix", path)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("binding leftover socket: %v", err)
 	}

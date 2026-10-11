@@ -37,11 +37,11 @@ func TestCannedModelServerEmitsParseableSSE(t *testing.T) {
 	// container leg's requirement (pasta forwards only to the routable host
 	// address, never loopback) so the stub is exercised the way production
 	// reaches it.
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
-	srv, err := startCannedModelServer(host+":0", []CannedTurn{CannedText(reply)})
+	srv, err := startCannedModelServer(t.Context(), host+":0", []CannedTurn{CannedText(reply)})
 	if err != nil {
 		t.Fatalf("startCannedModelServer: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestCannedModelServerEmitsParseableSSE(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	url := srv.BaseURL(host) + "/chat/completions"
@@ -132,11 +132,11 @@ func TestCannedModelServerEmitsParseableSSE(t *testing.T) {
 // POST (the sole method the provider uses) and answers anything else with 405
 // rather than a panic or a bogus stream (rule://go-no-panic-in-lib).
 func TestCannedModelServerRejectsNonPost(t *testing.T) {
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
-	srv, err := startCannedModelServer(host+":0", []CannedTurn{CannedText("unused")})
+	srv, err := startCannedModelServer(t.Context(), host+":0", []CannedTurn{CannedText("unused")})
 	if err != nil {
 		t.Fatalf("startCannedModelServer: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestCannedModelServerRejectsNonPost(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.BaseURL(host)+"/chat/completions", nil)
@@ -282,11 +282,11 @@ func TestCannedModelServerEmitsToolCallTurn(t *testing.T) {
 		toolName = "my_tool"
 		argsJSON = `{"k":"v"}`
 	)
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
-	srv, err := startCannedModelServer(host+":0", []CannedTurn{CannedToolCall(toolName, argsJSON)})
+	srv, err := startCannedModelServer(t.Context(), host+":0", []CannedTurn{CannedToolCall(toolName, argsJSON)})
 	if err != nil {
 		t.Fatalf("startCannedModelServer: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestCannedModelServerEmitsToolCallTurn(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	turn := readCannedTurn(ctx, t, srv.BaseURL(host)+"/chat/completions")
@@ -337,11 +337,11 @@ func TestCannedModelServerServesMultiTurnScript(t *testing.T) {
 		argsJSON = `{"a":1}`
 		reply    = "all done"
 	)
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
-	srv, err := startCannedModelServer(host+":0", []CannedTurn{
+	srv, err := startCannedModelServer(t.Context(), host+":0", []CannedTurn{
 		CannedToolCall(toolName, argsJSON),
 		CannedText(reply),
 	})
@@ -354,7 +354,7 @@ func TestCannedModelServerServesMultiTurnScript(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	url := srv.BaseURL(host) + "/chat/completions"
 
@@ -393,11 +393,11 @@ func TestCannedModelServerServesMultiTurnScript(t *testing.T) {
 // past the end of the script is a test bug, so the stub answers HTTP 500 with a
 // body naming exhaustion rather than hanging or serving a default turn.
 func TestCannedModelServerExhaustionIs500(t *testing.T) {
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
-	srv, err := startCannedModelServer(host+":0", []CannedTurn{CannedText("only turn")})
+	srv, err := startCannedModelServer(t.Context(), host+":0", []CannedTurn{CannedText("only turn")})
 	if err != nil {
 		t.Fatalf("startCannedModelServer: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestCannedModelServerExhaustionIs500(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	url := srv.BaseURL(host) + "/chat/completions"
 
@@ -443,11 +443,11 @@ func TestCannedModelServerExhaustionIs500(t *testing.T) {
 // script is a caller bug, so startCannedModelServer returns an error rather than
 // serving a backend that can never settle a turn.
 func TestCannedModelServerRejectsEmptyScript(t *testing.T) {
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
-	srv, err := startCannedModelServer(host+":0", []CannedTurn{})
+	srv, err := startCannedModelServer(t.Context(), host+":0", []CannedTurn{})
 	if err == nil {
 		if srv != nil {
 			_ = srv.Close() // unexpected success; release the listener
@@ -486,11 +486,11 @@ func TestCannedSetupMarker(t *testing.T) {
 // reddens here, in the hermetic (no-podman) lane.
 func TestCannedSetupMarkerRoutesOffScript(t *testing.T) {
 	const scripted = "the one scripted turn"
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
-	srv, err := startCannedModelServer(host+":0", []CannedTurn{CannedText(scripted)})
+	srv, err := startCannedModelServer(t.Context(), host+":0", []CannedTurn{CannedText(scripted)})
 	if err != nil {
 		t.Fatalf("startCannedModelServer: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestCannedSetupMarkerRoutesOffScript(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	url := srv.BaseURL(host) + "/chat/completions"
 
@@ -543,11 +543,12 @@ func TestCannedCustomMarkerRoutesOffScript(t *testing.T) {
 		markerReply = "canned mention turn settled OK"
 		scripted    = "the one scripted turn"
 	)
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
 	srv, err := startCannedModelServer(
+		t.Context(),
 		host+":0",
 		[]CannedTurn{CannedText(scripted)},
 		newCannedMarker(marker, markerReply),
@@ -561,7 +562,7 @@ func TestCannedCustomMarkerRoutesOffScript(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	url := srv.BaseURL(host) + "/chat/completions"
 
@@ -610,7 +611,7 @@ func TestCannedMarkerScriptAdvancesAndTerminalRepeats(t *testing.T) {
 		argsJSON = `{"channel":"c1","text":"hi"}`
 		settle   = "posted it"
 	)
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
@@ -618,6 +619,7 @@ func TestCannedMarkerScriptAdvancesAndTerminalRepeats(t *testing.T) {
 	// carries the two-turn tool-call sequence. Both coexist on one backend, which
 	// is the shape a leg uses (its own ordered script + a marker-routed peer).
 	srv, err := startCannedModelServer(
+		t.Context(),
 		host+":0",
 		[]CannedTurn{CannedText("the one positional turn")},
 		newCannedMarkerScript(marker, CannedToolCall(toolName, argsJSON), CannedText(settle)),
@@ -631,9 +633,7 @@ func TestCannedMarkerScriptAdvancesAndTerminalRepeats(t *testing.T) {
 		}
 	})
 
-	// context.Background() as the test root (rule://go-thread-context's test
-	// exemption), matching every sibling test in this file.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	url := srv.BaseURL(host) + "/chat/completions"
 	markerBody := `{"model":"x","messages":[{"role":"user","content":"` + marker + `"}]}`
@@ -694,11 +694,12 @@ func TestCannedMarkerScriptAdvancesAndTerminalRepeats(t *testing.T) {
 // route with no turns can never settle a matching request, so it is a caller bug
 // startCannedModelServer refuses rather than a 500 discovered mid-leg.
 func TestCannedMarkerScriptRejectsEmptyTurns(t *testing.T) {
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
 	srv, err := startCannedModelServer(
+		t.Context(),
 		host+":0",
 		[]CannedTurn{CannedText("x")},
 		newCannedMarkerScript("no-turns-marker"),
@@ -741,11 +742,12 @@ func TestCannedMarkerScriptsAreIndependentPerMarker(t *testing.T) {
 		settleB   = "b-settle"
 		positiona = "the one positional turn"
 	)
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
 	srv, err := startCannedModelServer(
+		t.Context(),
 		host+":0",
 		[]CannedTurn{CannedText(positiona)},
 		newCannedMarkerScript(markerA, CannedToolCall(toolA, argsA), CannedText(settleA)),
@@ -760,9 +762,7 @@ func TestCannedMarkerScriptsAreIndependentPerMarker(t *testing.T) {
 		}
 	})
 
-	// context.Background() as the test root (rule://go-thread-context's test
-	// exemption), matching every sibling test in this file.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	url := srv.BaseURL(host) + "/chat/completions"
 	bodyA := `{"model":"x","messages":[{"role":"user","content":"` + markerA + `"}]}`
@@ -830,11 +830,12 @@ func TestCannedMarkerScriptCallIDsStayDistinct(t *testing.T) {
 		toolName = "comms_post_message"
 		argsJSON = `{"channel":"c1","text":"hi"}`
 	)
-	host, err := hostRoutableAddr()
+	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
 	}
 	srv, err := startCannedModelServer(
+		t.Context(),
 		host+":0",
 		[]CannedTurn{CannedText("the one positional turn")},
 		newCannedMarkerScript(marker, CannedToolCall(toolName, argsJSON)),
@@ -848,9 +849,7 @@ func TestCannedMarkerScriptCallIDsStayDistinct(t *testing.T) {
 		}
 	})
 
-	// context.Background() as the test root (rule://go-thread-context's test
-	// exemption), matching every sibling test in this file.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	url := srv.BaseURL(host) + "/chat/completions"
 	body := `{"model":"x","messages":[{"role":"user","content":"` + marker + `"}]}`

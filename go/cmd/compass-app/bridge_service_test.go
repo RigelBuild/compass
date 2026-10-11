@@ -63,7 +63,7 @@ func (e *fakeEmitter) Emit(name string, data ...any) bool {
 func stubServer(t *testing.T, handler http.HandlerFunc) (socketPath string) {
 	t.Helper()
 	socketPath = filepath.Join(t.TempDir(), "daemon.sock")
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}
@@ -72,7 +72,7 @@ func stubServer(t *testing.T, handler http.HandlerFunc) (socketPath string) {
 	srv := &http.Server{Handler: handler, Protocols: p}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), testTimeout)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	})

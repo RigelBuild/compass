@@ -60,7 +60,7 @@ func (s *supervisor) startGatewayProxy(ctx context.Context, socketPath string, u
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("removing stale agent socket %s: %w", socketPath, err)
 	}
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("listening on agent socket %s: %w", socketPath, err)
 	}

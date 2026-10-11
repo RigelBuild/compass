@@ -73,7 +73,7 @@ func assertSeamVisible(t *testing.T, f *Fixture, ctx context.Context) {
 // the default root sits on the exact path every NewFixture claims — and that
 // leg's cleanup RemoveAll would delete this stack's live sockets mid-run.
 func TestSharedFixtureRootIsDisjointFromPerLegRoot(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -88,7 +88,7 @@ func TestSharedFixtureRootIsDisjointFromPerLegRoot(t *testing.T) {
 
 // TestSharedFixtureLegOne is the first of two legs sharing one stack.
 func TestSharedFixtureLegOne(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -104,7 +104,7 @@ func TestSharedFixtureLegOne(t *testing.T) {
 // stack holds. seamOnce makes that order-independent — the pair is the unit of
 // proof, so running one alone proves nothing.
 func TestSharedFixtureLegTwo(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -121,7 +121,7 @@ func TestSharedFixtureLegTwo(t *testing.T) {
 // an agent turn on the wrong reply and still pass, so this is the vacuous-green
 // guard for the registration path.
 func TestSharedFixtureAppliesRegisteredOptions(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -144,7 +144,7 @@ func TestSharedFixtureAppliesRegisteredOptions(t *testing.T) {
 // registering from a test body instead of TestMain cannot be honoured, because
 // canned routes freeze at construction. It must panic rather than drop silently.
 func TestSharedFixtureRejectsPostStandUpRegistration(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

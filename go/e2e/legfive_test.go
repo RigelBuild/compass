@@ -31,7 +31,7 @@ import (
 // bare stack. podmanUsable() SKIPs it in a container-less sandbox. Every wait it
 // makes is ctx-bounded (AwaitTurnSettled) — no sleeps, no polling, no retries.
 func TestLegFivePersistAndResume(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

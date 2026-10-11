@@ -35,19 +35,19 @@ import (
 // precisely what the broken `podman exec --env-file` channel (host-side path
 // resolution) could never reach.
 func TestMaterializeEnvDeliveryReadableInContainer(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
 
 	tmp := t.TempDir()
-	buildImage(t, tmp)
+	buildImage(t, t.Context(), tmp)
 
 	name := "compass-secrets-env-" + strconv.Itoa(os.Getpid())
 	facade := NewAgentRuntime(NewPodmanCLI())
-	ctx := context.Background()
-
-	_ = exec.Command("podman", "rm", "--force", name).Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", name).Run() })
+	ctx := t.Context()
+	cleanupCtx := context.WithoutCancel(ctx)
+	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run()
+	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run() })
 
 	const home = "/home/agent"
 	spec := AgentSpec{
@@ -64,7 +64,7 @@ func TestMaterializeEnvDeliveryReadableInContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch the agent container: %v", err)
 	}
-	t.Cleanup(func() { _ = facade.Teardown(ctx, handle) })
+	t.Cleanup(func() { _ = facade.Teardown(cleanupCtx, handle) })
 
 	// A value chosen to break a naive delivery: it carries an '=', a space, and
 	// shell metacharacters. The base64 transport must carry it verbatim, and the

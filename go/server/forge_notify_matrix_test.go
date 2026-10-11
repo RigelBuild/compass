@@ -86,7 +86,7 @@ func assertEvent(t *testing.T, ev forge.ForgeEvent, w wantEvent) {
 func postGH(t *testing.T, secret []byte, sw signedWebhook) forge.ForgeEvent {
 	t.Helper()
 	h, sink := newTestHandler(t, secret)
-	rec := doPost(h, sw.event, sw.delivery, sw.sig, sw.body)
+	rec := doPost(t, h, sw.event, sw.delivery, sw.sig, sw.body)
 	if rec.Code != 200 {
 		t.Fatalf("ingress code = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -253,7 +253,7 @@ func TestForgeWebhookMatrix_TamperedRejected(t *testing.T) {
 		h, sink := newTestHandler(t, secret)
 		tampered := append([]byte{}, sw.body...)
 		tampered[len(tampered)-1] = '!' // corrupt one body byte so the HMAC no longer matches (fail-closed happens before parse)
-		rec := doPost(h, sw.event, sw.delivery, sw.sig, tampered)
+		rec := doPost(t, h, sw.event, sw.delivery, sw.sig, tampered)
 		if rec.Code != 400 {
 			t.Fatalf("code = %d, want 400 (fail-closed)", rec.Code)
 		}

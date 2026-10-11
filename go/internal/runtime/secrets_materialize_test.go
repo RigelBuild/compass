@@ -93,7 +93,7 @@ func (r *scriptRunner) specsSnapshot() []ExecSpec {
 // container runs `sh -s`, failing the test if the script itself errors.
 func runScript(t *testing.T, script string) {
 	t.Helper()
-	cmd := exec.Command("sh", "-s")
+	cmd := exec.CommandContext(t.Context(), "sh", "-s")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

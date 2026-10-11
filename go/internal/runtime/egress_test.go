@@ -213,7 +213,7 @@ func TestEgressSubshellToleratesFailingAddElement(t *testing.T) {
 		forced = nftAddRe.ReplaceAllString(forced, "false")
 		outer := "set -eu\n" + forced + "\necho REACHED_END"
 
-		out, err := exec.Command("sh", "-c", outer).CombinedOutput()
+		out, err := exec.CommandContext(t.Context(), "sh", "-c", outer).CombinedOutput()
 		if err != nil {
 			t.Fatalf("outer `set -eu` script aborted on a tolerated add failure (err=%v)\nsubshell under test:\n%s\nrewritten:\n%s\noutput:\n%s", err, sub, forced, out)
 		}

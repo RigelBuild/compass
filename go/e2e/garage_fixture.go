@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec" //nolint:depguard // e2e harness: podman run/exec for the Garage archive container
@@ -19,9 +20,9 @@ const garageImage = "docker.io/dxflrs/garage:v2.1.0@sha256:850490b7aef237f30859c
 
 type garageFixture struct{ name, endpoint, bucket, accessKey, secretKey string }
 
-func startGarageFixture(t *testing.T) *garageFixture {
+func startGarageFixture(ctx context.Context, t *testing.T) *garageFixture {
 	t.Helper()
-	port := freePorts(t, 1)[0]
+	port := freePorts(t, ctx, 1)[0]
 	root := t.TempDir()
 	// The image has no writable /var/lib, so metadata and data live under /tmp.
 	config := fmt.Sprintf(`metadata_dir = "/tmp/meta"
@@ -43,24 +44,26 @@ admin_token = %q
 		t.Fatalf("write Garage config: %v", err)
 	}
 	name := fmt.Sprintf("compass-e2e-garage-%d-%d", os.Getpid(), port)
-	cmd := exec.Command("podman", "run", "-d", "--rm", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:3900", port), "-v", configPath+":/etc/garage.toml:Z", garageImage) //nolint:gosec // fixed podman argv; name/port/path are fixture-minted
+	cmd := exec.CommandContext(ctx, "podman", "run", "-d", "--rm", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:3900", port), "-v", configPath+":/etc/garage.toml:Z", garageImage) //nolint:gosec // fixed podman argv; name/port/path are fixture-minted
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("start Garage: %v: %s", err, out)
 	}
 	t.Cleanup(func() {
-		if out, err := exec.Command("podman", "rm", "-f", name).CombinedOutput(); err != nil { //nolint:gosec // exact-name rm of the fixture container
+		// The container must be reaped after t.Context is canceled.
+		cleanupCtx := context.WithoutCancel(ctx)
+		if out, err := exec.CommandContext(cleanupCtx, "podman", "rm", "-f", name).CombinedOutput(); err != nil { //nolint:gosec // exact-name rm of the fixture container
 			t.Errorf("remove Garage container: %v: %s", err, out)
 		}
 	})
 	run := func(args ...string) string {
 		t.Helper()
-		out, err := exec.Command("podman", append([]string{"exec", name, "/garage"}, args...)...).CombinedOutput() //nolint:gosec // fixed garage CLI verbs from this file
+		out, err := exec.CommandContext(ctx, "podman", append([]string{"exec", name, "/garage"}, args...)...).CombinedOutput() //nolint:gosec // fixed garage CLI verbs from this file
 		if err != nil {
 			t.Fatalf("garage %s: %v: %s", strings.Join(args, " "), err, out)
 		}
 		return string(out)
 	}
-	nodeID := awaitGarageNodeID(t, name)
+	nodeID := awaitGarageNodeID(t, ctx, name)
 	run("layout", "assign", "-z", "dc1", "-c", "1G", nodeID)
 	run("layout", "apply", "--version", "1")
 	id, secret := parseGarageKey(t, run("key", "create", "compass-e2e"))
@@ -72,13 +75,13 @@ admin_token = %q
 
 // awaitGarageNodeID polls until the server has written its node key; garage
 // exposes no readiness signal, so a CLI probe is the only observable.
-func awaitGarageNodeID(t *testing.T, name string) string {
+func awaitGarageNodeID(t *testing.T, ctx context.Context, name string) string {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		out, err := exec.Command("podman", "exec", name, "/garage", "node", "id", "-q").Output() //nolint:gosec // fixture-minted container name
+		out, err := exec.CommandContext(ctx, "podman", "exec", name, "/garage", "node", "id", "-q").Output() //nolint:gosec // fixture-minted container name
 		if err == nil {
 			id, _, _ := strings.Cut(strings.TrimSpace(string(out)), "@")
 			if id != "" {

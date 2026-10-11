@@ -54,10 +54,10 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 	if shuffle := flag.Lookup("test.shuffle"); shuffle != nil && shuffle.Value.String() != "off" {
 		t.Skipf("requires final file-ordered execution; -test.shuffle=%s", shuffle.Value.String())
 	}
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
-	closeSharedForLegSix()
+	closeSharedForLegSix(t.Context())
 
 	ctx := context.Background() // test root, threaded into every primitive
 
@@ -65,7 +65,7 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 	// run2's Up re-attaches the postgres cluster run1 initialized (the DB data
 	// dir lives under stateDir). Its single end-of-test RemoveAll is owned here,
 	// NOT per-Up, so run1's Down cannot delete the DB before run2.
-	site := newPersistentSite(t)
+	site := newPersistentSite(ctx, t)
 
 	// A FIXED handle across both runs. CreateAgent is create-only (a duplicate
 	// handle is an already_exists conflict, not find-or-create), so run1 MINTS
@@ -108,7 +108,7 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 	// name — the observable proof it came up, probed with a dependency-free
 	// `podman container exists` (the same check legthreefour_test.go:170 and the
 	// runtime suite use, the same direct podman-shelling podmanUsable relies on).
-	if exec.Command("podman", "container", "exists", containerName).Run() != nil {
+	if exec.CommandContext(t.Context(), "podman", "container", "exists", containerName).Run() != nil {
 		t.Fatalf("container %q is not present after run1 Provision — the first lifetime never created it, so the leak/collision premise cannot be exercised", containerName)
 	}
 
@@ -204,7 +204,7 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 	}
 	// The re-provisioned container is PRESENT by that exact name — the GREEN: with
 	// the preflight, the second Provision succeeds across the stack restart.
-	if exec.Command("podman", "container", "exists", containerName).Run() != nil {
+	if exec.CommandContext(t.Context(), "podman", "container", "exists", containerName).Run() != nil {
 		t.Fatalf("container %q is not present after run2 Provision — the idempotent re-provision did not bring the container back up", containerName)
 	}
 }

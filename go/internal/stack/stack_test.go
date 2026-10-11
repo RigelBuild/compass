@@ -184,7 +184,7 @@ func TestUpFailureClosesNetworkListener(t *testing.T) {
 		t.Fatal("Up() = nil, want certificate failure")
 	}
 	addr := <-addrCh
-	listener, err := net.Listen("tcp", addr)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", addr)
 	if err != nil {
 		t.Fatalf("rebind %s after failed Up: %v", addr, err)
 	}
@@ -687,7 +687,7 @@ func TestStackHandsNetworkListenerToServer(t *testing.T) {
 		done <- upResult{s, err}
 	}()
 	<-entered // server started, runner Start blocked: Up has not returned
-	listener, rebindErr := net.Listen("tcp", addr)
+	listener, rebindErr := (&net.ListenConfig{}).Listen(t.Context(), "tcp", addr)
 	close(gate)
 	res := <-done
 	if res.err != nil {

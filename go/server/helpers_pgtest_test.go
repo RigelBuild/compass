@@ -49,7 +49,7 @@ func waitListening(t *testing.T, path string) {
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		conn, err := net.Dial("unix", path)
+		conn, err := (&net.Dialer{}).DialContext(t.Context(), "unix", path)
 		if err == nil {
 			conn.Close()
 			return

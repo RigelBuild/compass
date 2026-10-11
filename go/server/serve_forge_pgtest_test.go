@@ -165,7 +165,7 @@ func TestBoardWebhookIngressSinksHydratedIssue(t *testing.T) {
 	// POST a signed issues.opened webhook through the real handler.
 	gh := newFakeGitHubForge(secret, repo)
 	sw := gh.openIssue(t, 1, "https://github.com/owner/repo/issues/1")
-	rec := doPost(handler, sw.event, sw.delivery, sw.sig, sw.body)
+	rec := doPost(t, handler, sw.event, sw.delivery, sw.sig, sw.body)
 	if rec.Code != 200 {
 		t.Fatalf("ingress code = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -513,7 +513,7 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 
 	// A net listener is required for the buildNetworkServer arm to be built at
 	// all — with netListener nil the D6 direction is never exercised.
-	netListener, err := net.Listen("tcp", "127.0.0.1:0")
+	netListener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 // so it answers the operator-visible question: is the ingress reachable.
 func hasLinearWebhookRoute(t *testing.T, srv *http.Server) bool {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/webhooks/linear", strings.NewReader("{}"))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhooks/linear", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 	// An unmounted path 404s. A mounted handler rejects an unsigned body

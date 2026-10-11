@@ -25,7 +25,7 @@ import (
 // sleeps, no retries: readiness is the Up postcondition observed via Health, and
 // every RPC carries a deterministic deadline.
 func TestHarnessCore(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -123,7 +123,7 @@ func TestHarnessCore(t *testing.T) {
 func assertRunnerHasConfiguredFlags(t *testing.T, f *Fixture) {
 	t.Helper()
 	runtimeDir := f.runtimeDir
-	out, err := exec.Command("ps", "-eo", "args").CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), "ps", "-eo", "args").CombinedOutput()
 	if err != nil {
 		t.Fatalf("ps -eo args: %v\n%s", err, out)
 	}

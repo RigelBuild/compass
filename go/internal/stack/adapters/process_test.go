@@ -131,7 +131,8 @@ func helperForkMember() {
 	if err != nil {
 		os.Exit(4)
 	}
-	member := exec.Command(self)
+	// Re-exec root: no test context exists, and the parent stops the group by signal.
+	member := exec.CommandContext(context.Background(), self)
 	member.Env = append(os.Environ(),
 		helperEnvVar+"=sleep",
 		helperReadyKey+"="+os.Getenv(helperMemberReadyKey))
@@ -171,7 +172,7 @@ func startHelper(t *testing.T, mode string, component stack.Component, extraEnv 
 	env := append([]string{helperReadyKey + "=" + readyPath}, extraEnv...)
 
 	sup := NewProcessSupervisor()
-	proc, err := sup.Start(context.Background(), stack.ProcessSpec{
+	proc, err := sup.Start(t.Context(), stack.ProcessSpec{
 		Component: component,
 		Env:       env,
 	})
@@ -198,7 +199,7 @@ func waitReady(t *testing.T, readyPath string, proc stack.Process) {
 		}
 		time.Sleep(time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the child's ready file above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
-	_ = proc.Signal(context.Background(), stack.SignalTerm)
+	_ = proc.Signal(context.WithoutCancel(t.Context()), stack.SignalTerm)
 	t.Fatalf("child never armed (ready file %s absent within deadline)", readyPath)
 }
 
@@ -260,7 +261,7 @@ func TestComponentBinaryResolution(t *testing.T) {
 
 func TestStartUnknownComponent(t *testing.T) {
 	sup := NewProcessSupervisor()
-	if _, err := sup.Start(context.Background(), stack.ProcessSpec{Component: stack.Component(99)}); err == nil {
+	if _, err := sup.Start(t.Context(), stack.ProcessSpec{Component: stack.Component(99)}); err == nil {
 		t.Fatal("Start with unknown component err = nil, want error")
 	}
 }
@@ -270,7 +271,7 @@ func TestStartBinaryNotOnPath(t *testing.T) {
 	// name the component and the binary.
 	t.Setenv("PATH", t.TempDir())
 	sup := NewProcessSupervisor()
-	_, err := sup.Start(context.Background(), stack.ProcessSpec{Component: stack.ComponentServer})
+	_, err := sup.Start(t.Context(), stack.ProcessSpec{Component: stack.ComponentServer})
 	if err == nil {
 		t.Fatal("Start with binary absent from PATH err = nil, want error")
 	}
@@ -287,10 +288,10 @@ func TestLifecycleGracefulStopThreadsEnv(t *testing.T) {
 	echoOut := filepath.Join(t.TempDir(), "echo")
 	proc := startHelper(t, "trapecho", stack.ComponentServer,
 		[]string{helperEchoKey + "=expected", helperEchoOutKey + "=" + echoOut})
-	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
+	if err := proc.Signal(t.Context(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
-	if err := proc.Wait(context.Background()); err != nil {
+	if err := proc.Wait(t.Context()); err != nil {
 		t.Fatalf("Wait after SIGTERM = %v, want nil (graceful drain)", err)
 	}
 	got, err := os.ReadFile(echoOut)
@@ -310,10 +311,10 @@ func TestLifecycleEnvNotThreadedIsObservablyEmpty(t *testing.T) {
 	echoOut := filepath.Join(t.TempDir(), "echo")
 	proc := startHelper(t, "trapecho", stack.ComponentServer,
 		[]string{helperEchoOutKey + "=" + echoOut})
-	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
+	if err := proc.Signal(t.Context(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
-	if err := proc.Wait(context.Background()); err != nil {
+	if err := proc.Wait(t.Context()); err != nil {
 		t.Fatalf("Wait after SIGTERM = %v, want nil (graceful drain)", err)
 	}
 	got, err := os.ReadFile(echoOut)
@@ -331,10 +332,10 @@ func TestLifecycleEnvNotThreadedIsObservablyEmpty(t *testing.T) {
 // window the embedded runner also has must not make a clean drain look failed.
 func TestWaitNormalizesRawSignalTermDeath(t *testing.T) {
 	proc := startHelper(t, "notrap", stack.ComponentRunner, nil)
-	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
+	if err := proc.Signal(t.Context(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
-	if err := proc.Wait(context.Background()); err != nil {
+	if err := proc.Wait(t.Context()); err != nil {
 		t.Fatalf("Wait after SIGTERM = %v, want nil (raw signal:terminated is our drain)", err)
 	}
 }
@@ -346,10 +347,10 @@ func TestWaitNormalizesRawSignalTermDeath(t *testing.T) {
 // miss (that only normalizes a signaled death, not an exit code).
 func TestWaitNormalizesNonzeroExitAfterSignal(t *testing.T) {
 	proc := startHelper(t, "trapexit1", stack.ComponentRunner, nil)
-	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
+	if err := proc.Signal(t.Context(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
-	if err := proc.Wait(context.Background()); err != nil {
+	if err := proc.Wait(t.Context()); err != nil {
 		t.Fatalf("Wait after SIGTERM = %v, want nil (nonzero exit after our SIGTERM is a clean drain)", err)
 	}
 }
@@ -390,7 +391,7 @@ func TestStartPassesExtraFilesAsFD3(t *testing.T) {
 // startup failure or crash of a child we did not stop.
 func TestWaitSurfacesNonzeroExitWithoutSignal(t *testing.T) {
 	proc := startHelper(t, "exitnonzero", stack.ComponentRunner, nil)
-	if err := proc.Wait(context.Background()); err == nil {
+	if err := proc.Wait(t.Context()); err == nil {
 		t.Fatal("Wait = nil, want non-nil (an unsolicited nonzero exit must surface — normalization is post-Signal only)")
 	}
 }
@@ -403,7 +404,7 @@ func TestWaitHonorsContext(t *testing.T) {
 	}
 	pid := p.cmd.Process.Pid
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
 	err := proc.Wait(ctx)
@@ -423,10 +424,10 @@ func TestUnknownSignal(t *testing.T) {
 	proc := startHelper(t, "trap", stack.ComponentServer, []string{helperEchoKey + "=expected"})
 	// Clean up the child so the test does not leak it.
 	t.Cleanup(func() {
-		_ = proc.Signal(context.Background(), stack.SignalTerm)
-		_ = proc.Wait(context.Background())
+		_ = proc.Signal(context.WithoutCancel(t.Context()), stack.SignalTerm)
+		_ = proc.Wait(context.WithoutCancel(t.Context()))
 	})
-	if err := proc.Signal(context.Background(), stack.ProcessSignal(99)); err == nil {
+	if err := proc.Signal(t.Context(), stack.ProcessSignal(99)); err == nil {
 		t.Fatal("Signal with unknown disposition err = nil, want error")
 	}
 }

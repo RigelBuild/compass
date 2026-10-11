@@ -96,7 +96,7 @@ func run(args []string) error {
 	case "status":
 		return runStatus(ctx, rest)
 	case "preflight":
-		return runPreflight(rest)
+		return runPreflight(ctx, rest)
 	default:
 		return usageError(sub)
 	}

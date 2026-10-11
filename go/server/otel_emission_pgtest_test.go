@@ -210,7 +210,7 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	// An actual (non-preflight) cross-origin GET carries the CORS
 	// Access-Control-Expose-Headers response header; rs/cors joins the exposed
 	// set into one comma-separated value.
-	req := httptest.NewRequest(http.MethodGet, compassv1connect.CompassServiceGetServerInfoProcedure, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, compassv1connect.CompassServiceGetServerInfoProcedure, nil)
 	req.Header.Set("Origin", corsOriginForTest)
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
@@ -262,7 +262,7 @@ func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 	// comparison silently fails to discriminate.
 	preflight := func(t *testing.T, requested string) (string, string) {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodOptions, compassv1connect.CompassServiceGetServerInfoProcedure, nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, compassv1connect.CompassServiceGetServerInfoProcedure, nil)
 		req.Header.Set("Origin", corsOriginForTest)
 		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
 		req.Header.Set("Access-Control-Request-Headers", requested)
@@ -329,7 +329,7 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 	// funnel to diagnose, so a key that only appears on success is the wrong
 	// half of the seam.
 	const wantSession = "0198f2c1-7b3a-7000-8b1e-2f9d4c5a6e70"
-	req := httptest.NewRequest(http.MethodPost, compassv1connect.CompassServiceGetServerInfoProcedure, strings.NewReader("{}"))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, compassv1connect.CompassServiceGetServerInfoProcedure, strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Posthog-Session-Id", wantSession)
 	rec := httptest.NewRecorder()

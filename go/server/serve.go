@@ -732,7 +732,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// on-disk state, so a bad address, an in-use port, or a bad TLS keypair
 	// fails Serve here — leaving no socket, directory, or admin-token file
 	// behind — rather than dying unobserved in a detached serving goroutine.
-	listeners, err := bindListeners(cfg)
+	listeners, err := bindListeners(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -748,7 +748,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Single-instance: never unlink a socket a live server is still serving.
-	if err := clearStaleSocket(cfg.SocketPath); err != nil {
+	if err := clearStaleSocket(ctx, cfg.SocketPath); err != nil {
 		listeners.close()
 		return err
 	}
@@ -757,7 +757,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// net.Listen creates it with 0666 & ^umask, so a permissive umask under a
 	// traversable parent would expose a connectable socket until the chmod below.
 	// Startup is single-goroutine here, so the process-global umask is safe to set.
-	udsListener, err := listenUnixPrivate(cfg.SocketPath)
+	udsListener, err := listenUnixPrivate(ctx, cfg.SocketPath)
 	if err != nil {
 		listeners.close()
 		return fmt.Errorf("binding socket at %s: %w", cfg.SocketPath, err)

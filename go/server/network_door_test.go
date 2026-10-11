@@ -233,18 +233,18 @@ func readAdminToken(t *testing.T, stateDir string) string {
 // ---- Group 1: TLS handshake against a self-signed pair ----
 
 func TestBindListenersClosesInheritedListenerWhenTLSFails(t *testing.T) {
-	listener, err := net.Listen("tcp", loopbackAny)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", loopbackAny)
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
-	_, err = bindListeners(ServeConfig{
+	_, err = bindListeners(t.Context(), ServeConfig{
 		ListenListener: listener,
 		TLS:            &TLSConfig{CertPath: filepath.Join(t.TempDir(), "missing.crt"), KeyPath: filepath.Join(t.TempDir(), "missing.key")},
 	})
 	if err == nil {
 		t.Fatal("bindListeners() error = nil, want TLS load failure")
 	}
-	conn, dialErr := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	conn, dialErr := (&net.Dialer{Timeout: time.Second}).DialContext(t.Context(), "tcp", listener.Addr().String())
 	if dialErr == nil {
 		_ = conn.Close()
 		t.Fatal("inherited listener still accepted connections after TLS failure")
@@ -279,16 +279,19 @@ func TestServeNetworkDoorTLSHandshakeAndRPC(t *testing.T) {
 	// Handshake + ALPN: a raw TLS dial trusting the cert must negotiate h2. This
 	// is the direct proof the door terminates TLS and advertises HTTP/2 via ALPN
 	// (networkProtocols). A deadline dialer bounds a wedged handshake.
-	rawConn, err := tls.DialWithDialer(
-		&net.Dialer{Deadline: time.Now().Add(testTimeout)},
-		"tcp", addr,
-		&tls.Config{RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}},
-	)
+	rawConn, err := (&tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: testTimeout},
+		Config:    &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}},
+	}).DialContext(t.Context(), "tcp", addr)
 	if err != nil {
 		t.Fatalf("TLS handshake against the network door: %v", err)
 	}
 	defer rawConn.Close()
-	if got := rawConn.ConnectionState().NegotiatedProtocol; got != "h2" {
+	tlsConn, ok := rawConn.(*tls.Conn)
+	if !ok {
+		t.Fatalf("TLS dial returned %T, want *tls.Conn", rawConn)
+	}
+	if got := tlsConn.ConnectionState().NegotiatedProtocol; got != "h2" {
 		t.Fatalf("negotiated ALPN = %q, want h2 (the door must be HTTP/2-native over TLS)", got)
 	}
 
@@ -317,7 +320,7 @@ func TestServeWithInheritedListenerServesTLSAndRPC(t *testing.T) {
 	socketPath := filepath.Join(dir, "compass.sock")
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
-	listener, err := net.Listen("tcp", loopbackAny)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", loopbackAny)
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
@@ -334,12 +337,18 @@ func TestServeWithInheritedListenerServesTLSAndRPC(t *testing.T) {
 		t.Fatalf("inherited listener bound address = %q, want %q", bound.network, addr)
 	}
 	waitServing(t, socketPath)
-	rawConn, err := tls.DialWithDialer(&net.Dialer{Deadline: time.Now().Add(testTimeout)}, "tcp", addr,
-		&tls.Config{RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}})
+	rawConn, err := (&tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: testTimeout},
+		Config:    &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}},
+	}).DialContext(t.Context(), "tcp", addr)
 	if err != nil {
 		t.Fatalf("TLS handshake against inherited listener: %v", err)
 	}
-	if got := rawConn.ConnectionState().NegotiatedProtocol; got != "h2" {
+	tlsConn, ok := rawConn.(*tls.Conn)
+	if !ok {
+		t.Fatalf("TLS dial returned %T, want *tls.Conn", rawConn)
+	}
+	if got := tlsConn.ConnectionState().NegotiatedProtocol; got != "h2" {
 		t.Fatalf("negotiated ALPN = %q, want h2", got)
 	}
 	if err := rawConn.Close(); err != nil {
@@ -943,11 +952,10 @@ func TestServeNetworkDoorRejectsTLS12(t *testing.T) {
 	// correctly must fail the handshake against the 1.3-floor door — the failure
 	// is the version negotiation, not a cert or name mismatch. A deadline dialer
 	// bounds a wedged handshake so a regression that hangs fails fast.
-	conn, err := tls.DialWithDialer(
-		&net.Dialer{Deadline: time.Now().Add(testTimeout)},
-		"tcp", addr,
-		&tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MaxVersion: tls.VersionTLS12},
-	)
+	conn, err := (&tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: testTimeout},
+		Config:    &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MaxVersion: tls.VersionTLS12},
+	}).DialContext(t.Context(), "tcp", addr)
 	if err == nil {
 		conn.Close()
 		t.Fatal("TLS 1.2 handshake succeeded against the network door — the TLS 1.3 floor (MinVersion) regressed")

@@ -35,7 +35,7 @@ func testCredential(uint32) *syscall.Credential { return nil }
 // cancelled. defaultUID is the session default exec uid Provision recorded.
 func newTestSupervisor(t *testing.T, provisioned bool, defaultUID uint32) (compassv1internalconnect.GuestControlClient, *supervisor) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

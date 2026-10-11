@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -46,14 +47,14 @@ func checkKVM() hostcheck.Result { return hostcheck.DecideKVM(hostcheck.ProbeKVM
 
 // checkPodman resolves podman on PATH and, if found, asks `podman info` whether
 // the host is rootless-capable, then returns the verdict.
-func checkPodman() hostcheck.Result {
+func checkPodman(ctx context.Context) hostcheck.Result {
 	path, lookErr := exec.LookPath(podmanBinary)
 	if lookErr != nil {
 		return decidePodman(lookErr, nil, false)
 	}
 	// G204: path is a LookPath-resolved fixed binary name and the args are
 	// literals — neither is user-controlled (mirrors adapters/process.go:63).
-	out, infoErr := exec.Command(path, "info", "--format", "{{.Host.Security.Rootless}}").Output() //nolint:gosec // G204: LookPath-resolved fixed binary, literal args
+	out, infoErr := exec.CommandContext(ctx, path, "info", "--format", "{{.Host.Security.Rootless}}").Output() //nolint:gosec // G204: LookPath-resolved fixed binary, literal args
 	rootless := strings.TrimSpace(string(out)) == "true"
 	return decidePodman(nil, infoErr, rootless)
 }
@@ -61,21 +62,21 @@ func checkPodman() hostcheck.Result {
 // checkBinaryVersion resolves one external binary on PATH and runs its
 // --version, then returns the version verdict against the floor. It is generic
 // over any VersionFloor — the microVM trio and the secretspec CLI alike.
-func checkBinaryVersion(f hostcheck.VersionFloor) hostcheck.Result {
+func checkBinaryVersion(ctx context.Context, f hostcheck.VersionFloor) hostcheck.Result {
 	path, lookErr := exec.LookPath(f.Binary)
 	if lookErr != nil {
 		return hostcheck.DecideVersion(f, lookErr, nil, "")
 	}
 	// G204: path is a LookPath-resolved fixed binary name and "--version" is a
 	// literal — neither is user-controlled (mirrors adapters/process.go:63).
-	out, runErr := exec.Command(path, "--version").Output() //nolint:gosec // G204: LookPath-resolved fixed binary, literal arg
+	out, runErr := exec.CommandContext(ctx, path, "--version").Output() //nolint:gosec // G204: LookPath-resolved fixed binary, literal arg
 	return hostcheck.DecideVersion(f, nil, runErr, string(out))
 }
 
 // runPreflight runs every check, prints a legible result line per check to
 // stdout, and returns an error naming the hard failures. A failed check is a
 // legible non-zero exit, never a crash: every check catches a missing dependency.
-func runPreflight(args []string) error {
+func runPreflight(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
 	runtimeBackend := fs.String("runtime-backend", "",
 		"Session backend the runner runs agents on ('microvm'). Empty leaves the "+
@@ -94,14 +95,14 @@ func runPreflight(args []string) error {
 
 	checks := []preflightCheck{
 		{result: checkKVM(), microVM: true},
-		{result: checkPodman()},
+		{result: checkPodman(ctx)},
 	}
 	for _, f := range hostcheck.MicroVMFloors {
-		checks = append(checks, preflightCheck{result: checkBinaryVersion(f), microVM: true})
+		checks = append(checks, preflightCheck{result: checkBinaryVersion(ctx, f), microVM: true})
 	}
 	// Keep secretspec after the contiguous microVM group; it is a server
 	// dependency rather than a microVM userspace binary.
-	checks = append(checks, preflightCheck{result: checkBinaryVersion(hostcheck.SecretSpecFloor)})
+	checks = append(checks, preflightCheck{result: checkBinaryVersion(ctx, hostcheck.SecretSpecFloor)})
 
 	lines, failed := preflightLines(backend, checks)
 	for _, line := range lines {

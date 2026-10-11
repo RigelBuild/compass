@@ -317,7 +317,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// exported on PATH there (see main_test.go); the ProcessSupervisor resolves
 	// each Component to a bare binary name via exec.LookPath against that entry.
 
-	root, stateDir, pgPort := acquireFixtureRoot(tb, fc)
+	root, stateDir, pgPort := acquireFixtureRoot(tb, ctx, fc)
 	pgSockDir, runtimeDir, serverSock := makeFixtureDirs(tb, root)
 
 	// The DSN host is the socket DIRECTORY postgres -k listens on (libpq unix
@@ -390,7 +390,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// stub means plain mode and every canned field stays as set above.
 	var stub *cannedModelServer
 	if fc.canned {
-		stub = configureCannedModel(tb, &cfg, root, fc.cannedScript, fc.cannedMarkers, fc.cannedImageInput)
+		stub = configureCannedModel(ctx, tb, &cfg, root, fc.cannedScript, fc.cannedMarkers, fc.cannedImageInput)
 	}
 
 	deps := stack.Deps{
@@ -412,7 +412,8 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// drains the children. Down is safe to call twice; the happy-path test asserts
 	// Down's outcome explicitly, so this guard only covers a failed/panicked test.
 	tb.Cleanup(func() {
-		_ = st.Down(ctx) // best-effort teardown guard; a Down error here is not actionable during cleanup
+		// Keep stack shutdown alive after the test context is canceled; this fixture owns the child processes.
+		_ = st.Down(context.WithoutCancel(ctx)) // best-effort teardown guard; a Down error here is not actionable during cleanup
 	})
 	// A detached-t caller's cleanup above is unreachable, so hand it the live
 	// stack here — the only point that is both after a successful Up and before
@@ -482,7 +483,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	return f
 }
 
-func acquireFixtureRoot(tb testing.TB, fc fixtureConfig) (root, stateDir string, pgPort int) {
+func acquireFixtureRoot(tb testing.TB, ctx context.Context, fc fixtureConfig) (root, stateDir string, pgPort int) {
 	tb.Helper()
 	// Acquire the root/stateDir/ports either fresh (the default ephemeral
 	// fixture) or from a persistent site (WithSite — the H6 cross-restart
@@ -500,7 +501,7 @@ func acquireFixtureRoot(tb testing.TB, fc fixtureConfig) (root, stateDir string,
 		// newPersistentSite owns the site's single end-of-test RemoveAll instead.
 		root = shortRoot(tb, "h1")
 		stateDir = tb.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
-		pgPort = freePorts(tb, 1)[0]
+		pgPort = freePorts(tb, ctx, 1)[0]
 	}
 	return root, stateDir, pgPort
 }
@@ -801,14 +802,14 @@ const pastaHostGateway = "169.254.1.2"
 // It returns the running stub; its Close rides a t.Cleanup so teardown never
 // leaks it. cfgRoot is the fixture's short root (the models.yml host dir lives
 // under it, short enough to stay clear of any path budget).
-func configureCannedModel(tb testing.TB, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker, imageInput bool) *cannedModelServer {
+func configureCannedModel(ctx context.Context, tb testing.TB, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker, imageInput bool) *cannedModelServer {
 	tb.Helper()
 
-	hostAddr, err := hostRoutableAddr()
+	hostAddr, err := hostRoutableAddr(ctx)
 	if err != nil {
 		tb.Fatalf("resolve host routable address for canned model: %v", err)
 	}
-	stub, err := startCannedModelServer(hostAddr+":0", script, markers...)
+	stub, err := startCannedModelServer(ctx, hostAddr+":0", script, markers...)
 	if err != nil {
 		tb.Fatalf("start canned model server: %v", err)
 	}
@@ -851,12 +852,12 @@ func configureCannedModel(tb testing.TB, cfg *stack.Config, cfgRoot string, scri
 // reading the kernel-assigned port, then closing — for children that take a
 // fixed port number. All listeners are held open until every port is read so
 // the kernel cannot hand the same port twice.
-func freePorts(tb testing.TB, n int) []int {
+func freePorts(tb testing.TB, ctx context.Context, n int) []int {
 	tb.Helper()
 	lns := make([]net.Listener, 0, n)
 	ports := make([]int, 0, n)
 	for range n {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 		if err != nil {
 			tb.Fatalf("reserve port: %v", err)
 		}
@@ -911,7 +912,7 @@ type fixtureSite struct {
 // validateRuntimeDir); the state dir is not budgeted, so a t.TempDir is fine
 // there. The pg port is allocated ONCE — run1's Down stops postgres before
 // run2's Up reuses it; the network door is bound fresh (:0) by each Up.
-func newPersistentSite(t *testing.T) fixtureSite {
+func newPersistentSite(ctx context.Context, t *testing.T) fixtureSite {
 	t.Helper()
 	// A short, unique root — NOT via shortRoot: inlined to keep the site's single
 	// RemoveAll here alongside the rest of its lifecycle. Suffix "h6" keeps it
@@ -926,7 +927,7 @@ func newPersistentSite(t *testing.T) fixtureSite {
 	return fixtureSite{
 		root:     root,
 		stateDir: t.TempDir(),
-		pgPort:   freePorts(t, 1)[0],
+		pgPort:   freePorts(t, ctx, 1)[0],
 	}
 }
 
@@ -936,8 +937,8 @@ var podmanProbeLog sync.Once
 // podmanUsable reports whether rootless podman can run the real agent image
 // here. A missing binary or broken rootless setup means SKIP, not fail — a
 // container-less sandbox is not a test failure.
-func podmanUsable() bool {
-	out, err := exec.Command("podman", "run", "--rm", agentImage, "true").CombinedOutput()
+func podmanUsable(ctx context.Context) bool {
+	out, err := exec.CommandContext(ctx, "podman", "run", "--rm", agentImage, "true").CombinedOutput()
 	if err != nil {
 		// The skip message alone cannot tell a missing image from a broken userns.
 		podmanProbeLog.Do(func() {

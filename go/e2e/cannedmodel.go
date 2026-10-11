@@ -34,6 +34,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,8 +70,8 @@ const (
 // packet is sent) and reading the kernel-selected local IP, the same trick
 // `ip route get` performs. Returns an error rather than panicking so the caller
 // (a test) decides fatality.
-func hostRoutableAddr() (string, error) {
-	conn, err := net.Dial("udp", "1.1.1.1:80")
+func hostRoutableAddr(ctx context.Context) (string, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "udp", "1.1.1.1:80")
 	if err != nil {
 		return "", fmt.Errorf("resolving host routable address: %w", err)
 	}
@@ -254,7 +255,7 @@ const setupReply = "canned setup turn settled OK"
 // draws that route's next turn without consuming a positional slot, additive to
 // the built-in Setup marker. A marker with no turns is a construction error, for
 // the same reason an empty script is — a route that can never settle a turn.
-func startCannedModelServer(bindAddr string, script []CannedTurn, markers ...cannedMarker) (*cannedModelServer, error) {
+func startCannedModelServer(ctx context.Context, bindAddr string, script []CannedTurn, markers ...cannedMarker) (*cannedModelServer, error) {
 	if len(script) == 0 {
 		return nil, errors.New("canned model server requires a non-empty script")
 	}
@@ -263,7 +264,7 @@ func startCannedModelServer(bindAddr string, script []CannedTurn, markers ...can
 			return nil, fmt.Errorf("canned model server marker %q requires at least one turn", m.marker)
 		}
 	}
-	ln, err := net.Listen("tcp", bindAddr)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", bindAddr)
 	if err != nil {
 		return nil, fmt.Errorf("canned model server listen on %q: %w", bindAddr, err)
 	}

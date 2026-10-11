@@ -1385,6 +1385,7 @@ func TestRecreateRetryIsShortUnderDefaultAckWait(t *testing.T) {
 // partitionDialer refuses every dial while partitioned, reporting each refusal,
 // so a test can hold the fabric's connection down for as long as it needs.
 type partitionDialer struct {
+	ctx         context.Context
 	partitioned atomic.Bool
 	refused     chan struct{}
 }
@@ -1397,7 +1398,7 @@ func (d *partitionDialer) Dial(network, address string) (net.Conn, error) {
 		}
 		return nil, errors.New("partitioned")
 	}
-	return net.Dial(network, address)
+	return (&net.Dialer{}).DialContext(d.ctx, network, address)
 }
 
 // TestReapedLiveConsumerIsRecreated covers a reap while a subscription is still
@@ -1407,7 +1408,7 @@ func TestReapedLiveConsumerIsRecreated(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
 	url := testServer(t)
-	dialer := &partitionDialer{refused: make(chan struct{}, 1)}
+	dialer := &partitionDialer{ctx: ctx, refused: make(chan struct{}, 1)}
 	f := newFabric(t, Config{URL: url, Log: quietLogger(t), Options: []nats.Option{
 		nats.SetCustomDialer(dialer),
 		nats.ReconnectWait(time.Millisecond),

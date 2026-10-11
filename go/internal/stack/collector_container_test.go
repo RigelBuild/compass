@@ -346,7 +346,7 @@ func TestBundledPortsDistinctIgnoresExternalComponent(t *testing.T) {
 		CollectorGRPCPort: 1, CollectorHTTPPort: 2, CollectorHealthPort: 3,
 		NatsClientPort: 1, NatsMonitorPort: 1, ExternalNatsURL: "nats://elsewhere:4222",
 	}
-	if err := cfg.checkBundledPortsDistinct(); err != nil {
+	if err := cfg.checkBundledPortsDistinct(t.Context()); err != nil {
 		t.Fatalf("checkBundledPortsDistinct with external NATS = %v, want nil", err)
 	}
 }
@@ -356,32 +356,32 @@ func TestBundledPortsDistinctCoversGatewayAndListenAddr(t *testing.T) {
 	cfg, _ := newHarness(t)
 	gw := cfg
 	gw.NatsClientPort = 4100
-	if err := gw.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "the bundled gateway and NatsClientPort") {
+	if err := gw.checkBundledPortsDistinct(t.Context()); err == nil || !strings.Contains(err.Error(), "the bundled gateway and NatsClientPort") {
 		t.Fatalf("NATS on the gateway port = %v, want a refusal", err)
 	}
 	gw.ExternalGatewayURL = "http://elsewhere:4000"
-	if err := gw.checkBundledPortsDistinct(); err != nil {
+	if err := gw.checkBundledPortsDistinct(t.Context()); err != nil {
 		t.Fatalf("NATS on the gateway port with an external gateway = %v, want nil", err)
 	}
 	la := cfg
 	la.ListenAddr = "127.0.0.1:" + strconv.Itoa(cfg.CollectorGRPCPort)
-	if err := la.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorGRPCPort") {
+	if err := la.checkBundledPortsDistinct(t.Context()); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorGRPCPort") {
 		t.Fatalf("ListenAddr on a collector port = %v, want a refusal", err)
 	}
 	for _, addr := range []string{"0.0.0.0", "[::]", "localhost", "localhost.localdomain"} {
 		la.ListenAddr = addr + ":" + strconv.Itoa(cfg.CollectorGRPCPort)
-		if err := la.checkBundledPortsDistinct(); err == nil {
+		if err := la.checkBundledPortsDistinct(t.Context()); err == nil {
 			t.Fatalf("ListenAddr %q on a collector port = nil, want a refusal", la.ListenAddr)
 		}
 	}
 	svc := cfg
 	svc.CollectorHTTPPort = 80
 	svc.ListenAddr = "127.0.0.1:http"
-	if err := svc.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorHTTPPort") {
+	if err := svc.checkBundledPortsDistinct(t.Context()); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorHTTPPort") {
 		t.Fatalf("ListenAddr service-name port on a collector port = %v, want a refusal", err)
 	}
 	la.ListenAddr = "127.0.0.2:" + strconv.Itoa(cfg.CollectorGRPCPort)
-	if err := la.checkBundledPortsDistinct(); err != nil {
+	if err := la.checkBundledPortsDistinct(t.Context()); err != nil {
 		t.Fatalf("ListenAddr on another loopback address = %v, want nil (no shared bind)", err)
 	}
 }

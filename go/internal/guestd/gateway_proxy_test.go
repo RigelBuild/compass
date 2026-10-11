@@ -76,7 +76,7 @@ func fileConn(t *testing.T, fd int) net.Conn {
 // on error.
 func dialClientSocket(t *testing.T, socketPath string) net.Conn {
 	t.Helper()
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "unix", socketPath)
 	if err != nil {
 		t.Fatalf("dial proxy socket %s: %v", socketPath, err)
 	}
@@ -235,7 +235,7 @@ func TestGatewayProxyCloseTearsDownCleanly(t *testing.T) {
 	_ = client.Close()
 
 	// The listener is closed, so a fresh dial to the socket must fail.
-	if c, err := net.Dial("unix", socketPath); err == nil {
+	if c, err := (&net.Dialer{}).DialContext(t.Context(), "unix", socketPath); err == nil {
 		_ = c.Close()
 		t.Fatal("proxy socket still accepts after Close; listener leaked")
 	}

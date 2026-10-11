@@ -42,9 +42,10 @@ func TestBuildLinearWiringSessionSink(t *testing.T) {
 		lh.now = func() time.Time { return now }
 		return w, lh
 	}
-	post := func(lh *linearWebhookHandler, session string) int {
+	post := func(t *testing.T, lh *linearWebhookHandler, session string) int {
+		t.Helper()
 		body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":%q}}`, freshTS(now), session)
-		return linPost(lh, linSign(secret, body), body).Code
+		return linPost(t, lh, linSign(secret, body), body).Code
 	}
 
 	t.Run("configured: events reach the dispatcher queue", func(t *testing.T) {
@@ -64,11 +65,11 @@ func TestBuildLinearWiringSessionSink(t *testing.T) {
 		// Nothing drains, so the queue fills: every POST up to the buffer is
 		// accepted, and the next one is the 500 that makes Linear retry.
 		for i := range linearResponderBuffer {
-			if code := post(lh, fmt.Sprintf("s%d", i)); code != http.StatusOK {
+			if code := post(t, lh, fmt.Sprintf("s%d", i)); code != http.StatusOK {
 				t.Fatalf("POST %d code = %d, want 200 (enqueued)", i, code)
 			}
 		}
-		if code := post(lh, "overflow"); code != http.StatusInternalServerError {
+		if code := post(t, lh, "overflow"); code != http.StatusInternalServerError {
 			t.Fatalf("overflow POST code = %d, want 500 (queue full)", code)
 		}
 	})
@@ -85,7 +86,7 @@ func TestBuildLinearWiringSessionSink(t *testing.T) {
 		if lh.sessionSink != nil {
 			t.Fatalf("session sink = %#v, want a nil interface", lh.sessionSink)
 		}
-		if code := post(lh, "s1"); code != http.StatusOK {
+		if code := post(t, lh, "s1"); code != http.StatusOK {
 			t.Fatalf("code = %d, want 200 (logged and dropped)", code)
 		}
 	})

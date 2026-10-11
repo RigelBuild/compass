@@ -84,7 +84,7 @@ func sharedFixture(t *testing.T) *Fixture {
 	shared.once.Do(func() {
 		shared.stoodUp = true
 		shared.env = os.Environ()
-		shared.f, shared.err = standUpShared(shared.opts...)
+		shared.f, shared.err = standUpShared(t.Context(), shared.opts...)
 	})
 	if shared.err != nil {
 		t.Fatalf("shared e2e fixture stand-up failed (every leg in this package shares it): %v", shared.err)
@@ -106,10 +106,11 @@ func sharedFixture(t *testing.T) *Fixture {
 // The site is supplied rather than defaulted because shortRoot keys its root on
 // the PID alone: the default root used by a plain NewFixture call is the same
 // path. A distinct suffix keeps them disjoint, as the H6 site does.
-func standUpShared(opts ...fixtureOption) (*Fixture, error) {
-	ctx := context.Background() // run-root: the shared stack outlives every leg, so no leg's ctx can own it
+func standUpShared(ctx context.Context, opts ...fixtureOption) (*Fixture, error) {
+	// run-root: the shared stack outlives every leg, so no leg's cancel can own it.
+	ctx = context.WithoutCancel(ctx)
 
-	site, err := newSharedSite()
+	site, err := newSharedSite(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +238,7 @@ func (r *standUpRecorder) dirs() []string {
 // newSharedSite mints the shared stack's own root, state dir, and pg port.
 // It mirrors newPersistentSite but is t-free and registers no cleanup, because
 // shutdownShared owns this site's lifetime.
-func newSharedSite() (fixtureSite, error) {
+func newSharedSite(ctx context.Context) (fixtureSite, error) {
 	root := filepath.Join("/tmp", "ce"+strconv.Itoa(os.Getpid())+"sh")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fixtureSite{}, fmt.Errorf("mkdir shared site root: %w", err)
@@ -246,7 +247,7 @@ func newSharedSite() (fixtureSite, error) {
 	if err != nil {
 		return fixtureSite{}, fmt.Errorf("make shared state dir: %w", err)
 	}
-	ports, err := freeSharedPorts(1)
+	ports, err := freeSharedPorts(ctx, 1)
 	if err != nil {
 		return fixtureSite{}, err
 	}
@@ -255,11 +256,11 @@ func newSharedSite() (fixtureSite, error) {
 
 // freeSharedPorts is freePorts without the *testing.T. Every listener is held
 // open until all are chosen so the kernel cannot hand out the same port twice.
-func freeSharedPorts(n int) ([]int, error) {
+func freeSharedPorts(ctx context.Context, n int) ([]int, error) {
 	lns := make([]net.Listener, 0, n)
 	ports := make([]int, 0, n)
 	for range n {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 		if err != nil {
 			return nil, fmt.Errorf("reserve port: %w", err)
 		}
@@ -279,16 +280,16 @@ func freeSharedPorts(n int) ([]int, error) {
 }
 
 // closeSharedForLegSix disables the shared stack before the final restart test.
-func closeSharedForLegSix() {
+func closeSharedForLegSix(ctx context.Context) {
 	shared.closed = true
-	shutdownShared()
+	shutdownShared(ctx)
 }
 
 // shutdownShared tears the shared stack down. TestMain calls it after m.Run()
 // returns; TestLegSixTeardownIdempotence calls it first, as the last test. It is
 // a no-op when no leg stood the fixture up. Teardown failures are reported to
 // stderr: there is no test left to fail.
-func shutdownShared() {
+func shutdownShared(ctx context.Context) {
 	if !shared.stoodUp || shared.f == nil {
 		return
 	}
@@ -297,8 +298,7 @@ func shutdownShared() {
 
 	// The detached T's own cleanups are unreachable, so Down, the canned stub,
 	// and the two directories NewFixture created are released by hand here.
-	ctx := context.Background() // run-root: TestMain owns the shared stack beyond every leg
-	err := f.stack.Down(ctx)
+	err := f.stack.Down(context.WithoutCancel(ctx))
 	if f.stub != nil {
 		err = errors.Join(err, f.stub.Close())
 	}
