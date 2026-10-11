@@ -227,6 +227,13 @@
         "typescript": "catalog:",
       },
     },
+    "tools/homebrew-tap": {
+      "name": "@compass/homebrew-tap",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/inline-sql-gate": {
       "name": "@compass/inline-sql-gate",
       "bin": {
@@ -574,6 +581,8 @@
     "@compass/gateway-image": ["@compass/gateway-image@workspace:tools/gateway-image"],
 
     "@compass/guest-image": ["@compass/guest-image@workspace:tools/guest-image"],
+
+    "@compass/homebrew-tap": ["@compass/homebrew-tap@workspace:tools/homebrew-tap"],
 
     "@compass/inline-sql-gate": ["@compass/inline-sql-gate@workspace:tools/inline-sql-gate"],
 
