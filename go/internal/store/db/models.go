@@ -58,6 +58,36 @@ type AgentActivity struct {
 	TenantID         string
 }
 
+type AgentBoard struct {
+	AgentAccountID  string
+	FocusTaskKey    string
+	HaltKind        int16
+	HaltRef         string
+	HaltReason      string
+	WrittenTurn     int64
+	WrittenAtUnixMs int64
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	TenantID        string
+}
+
+type AgentBoardTask struct {
+	AgentAccountID  string
+	TaskKey         string
+	Title           string
+	PrimaryRef      string
+	Refs            []string
+	State           int16
+	Note            string
+	Waiting         []byte
+	Subagents       []byte
+	Position        int32
+	WrittenAtUnixMs int64
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	TenantID        string
+}
+
 type AgentConfigBundle struct {
 	Singleton bool
 	Version   string

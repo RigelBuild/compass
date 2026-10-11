@@ -455,6 +455,8 @@ type Ask struct {
 	// primitive; internal callers may set one), so uniqueness rests on the edge
 	// strip, not on the store rejecting a supplied id.
 	AskID string
+	// Ref is the explicit issue or pull request this ask concerns.
+	Ref string
 	// Questions are the questions the agent asked, in order. At least one; a
 	// zero-question ask is rejected on both marshal and unmarshal.
 	Questions []AskQuestion
