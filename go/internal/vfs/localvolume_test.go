@@ -169,7 +169,7 @@ func TestVolumeRootRejectsTraversal(t *testing.T) {
 		"sess-x" + metaDirSuffix,
 		reapingSuffix,
 		lockFileSuffix,
-		metaDirSuffix,
+		storeDirName,
 	}
 	for _, bad := range badIDs {
 		if _, err := m.CreateVolume(t.Context(), bad); !errors.Is(err, ErrInvalidSessionID) {
@@ -641,18 +641,10 @@ func TestExpireRejectsACorruptStamp(t *testing.T) {
 	}
 }
 
-// TestReservedVerbsReturnHonestSentinels pins the reserved-not-implemented
-// surface: each verb fails with its own errors.Is-detectable sentinel and a
-// zero result, so no caller can read a nil error or an empty id as success.
-// W2 replaces Snapshot's body; D4 replaces Archive's and Restore's (OQ-2).
+// TestReservedVerbsReturnHonestSentinels pins the reserved Archive and Restore verbs.
 func TestReservedVerbsReturnHonestSentinels(t *testing.T) {
 	m := newManager(t)
-	v := mustCreate(t, m, "sess-reserved")
-
-	if id, err := m.Snapshot(t.Context(), v); !errors.Is(err, ErrSnapshotNotImplemented) || id != "" {
-		t.Errorf("Snapshot = (%q, %v), want (\"\", ErrSnapshotNotImplemented)", id, err)
-	}
-	if ref, err := m.Archive(t.Context(), v); !errors.Is(err, ErrArchiveNotImplemented) || ref != "" {
+	if ref, err := m.Archive(t.Context(), Volume{}); !errors.Is(err, ErrArchiveNotImplemented) || ref != "" {
 		t.Errorf("Archive = (%q, %v), want (\"\", ErrArchiveNotImplemented)", ref, err)
 	}
 	if got, err := m.Restore(t.Context(), ArchiveRef("ref-x")); !errors.Is(err, ErrRestoreNotImplemented) || got != (Volume{}) {

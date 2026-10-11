@@ -508,6 +508,31 @@ jobs:
           GH_TOKEN: ${{ contains(matrix.targets, 'design-ledger-gate:ci') && github.token || '' }}
         run: moon run ${{ join(matrix.targets, ' ') }}
 
+      - name: vfs reflink snapshot leg
+        if: matrix.run == 'true' && matrix.group == 'go'
+        # The runner's root FS is ext4, which has no reflink, so the battery's
+        # vfs tests only cover the copy fallback. A loopback XFS gives the probe a real reflink FS.
+        working-directory: go
+        run: |
+          xfs=$(nix build --no-link --print-out-paths \
+            -f "$GITHUB_WORKSPACE/tools/toolchain/gate-tools.nix" env --arg attrs '["xfsprogs"]')
+          img="$RUNNER_TEMP/vfs-reflink.img"
+          truncate -s 512M "$img"
+          "$xfs/bin/mkfs.xfs" -q -m reflink=1 "$img"
+          sudo mkdir -p /mnt/vfs-reflink
+          sudo mount -o loop "$img" /mnt/vfs-reflink
+          sudo chown "$(id -u):$(id -g)" /mnt/vfs-reflink
+          rc=0
+          COMPASS_VFS_REFLINK_DIR=/mnt/vfs-reflink go test ./internal/vfs/ \
+            -run '^TestProbeSelectsReflinkOnACapableFS$' -count=1 -v >/tmp/vfs-reflink.log 2>&1 || rc=$?
+          cat /tmp/vfs-reflink.log
+          [ "$rc" -eq 0 ] || exit "$rc"
+          # A skip would pass silently, so require the PASS line.
+          grep -q '^--- PASS: TestProbeSelectsReflinkOnACapableFS' /tmp/vfs-reflink.log || {
+            echo "::error::the reflink probe test did not PASS (skipped or missing)"
+            exit 1
+          }
+
       - name: Retrospect
         if: matrix.run == 'true' && (success() || failure())
         # Collapse this leg's flat task fan-out into per-task sections in the
