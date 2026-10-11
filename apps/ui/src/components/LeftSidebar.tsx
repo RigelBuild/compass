@@ -75,7 +75,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 				</Show>
 				<Show when={a().activity}>
 					<span class="agent-activity" title={a().activity}>
-						<RefText text={a().activity ?? ""} />
+						<RefText text={a().activity ?? ""} inControl />
 					</span>
 				</Show>
 			</button>

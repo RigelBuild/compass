@@ -115,7 +115,7 @@ export const IssueCard: Component<{
 				<span class="cx-tour-demo-badge">Demo</span>
 			</Show>
 			<span class="card-title">
-				<RefText text={props.issue.title} />
+				<RefText text={props.issue.title} inControl />
 			</span>
 			<span class="card-foot">
 				<span class="card-author">

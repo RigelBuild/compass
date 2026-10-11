@@ -49,7 +49,7 @@ const DoneRow: Component<{ issue: Issue }> = (props) => {
 					</Show>
 				</span>
 				<span class="done-row-title">
-					<RefText text={props.issue.title} />
+					<RefText text={props.issue.title} inControl />
 				</span>
 				<span class="done-row-foot">
 					<span class="done-row-branch">{props.issue.branch}</span>

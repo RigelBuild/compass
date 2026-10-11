@@ -1,11 +1,20 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
-import { flush } from "solid-js";
+import { type Accessor, flush } from "solid-js";
 import { RefLinkRulesContext } from "../context";
 import { createFakeCompass } from "../live/compass-fake";
+import type { RefLinkRule } from "../refs/grammar";
 import { createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { RefText } from "./RefText";
+
+const LINEAR_RIG: Accessor<readonly RefLinkRule[]> = () => [
+	{
+		kind: "linear",
+		prefix: "RIG",
+		urlTemplate: "https://linear.app/rigel/issue/{key}-{number}",
+	},
+];
 
 async function mount(text: string): Promise<HTMLElement> {
 	const compass = createFakeCompass();
@@ -59,6 +68,44 @@ describe("RefText", () => {
 			);
 			expect(link.getAttribute("target")).toBe("_blank");
 			expect(link.getAttribute("rel")).toBe("noreferrer noopener");
+		} finally {
+			opener.mockRestore();
+		}
+	});
+});
+
+describe("RefText inside a button", () => {
+	test("renders no anchor and opens the ref without activating the button", () => {
+		const opener = spyOn(window, "open").mockImplementation(() => null);
+		let clicks = 0;
+		let dblclicks = 0;
+		try {
+			const { container } = render(() => (
+				<RefLinkRulesContext value={LINEAR_RIG}>
+					<button
+						type="button"
+						onClick={() => clicks++}
+						onDblClick={() => dblclicks++}
+					>
+						<RefText text="Fix RIG-12" inControl />
+					</button>
+				</RefLinkRulesContext>
+			));
+			expect(container.querySelector("button a")).toBeNull();
+			const ref = container.querySelector("button [role=link]");
+			if (!ref) throw new Error("reference did not render");
+			ref.dispatchEvent(
+				new MouseEvent("click", { bubbles: true, cancelable: true }),
+			);
+			ref.dispatchEvent(
+				new MouseEvent("dblclick", { bubbles: true, cancelable: true }),
+			);
+			expect(opener).toHaveBeenCalledWith(
+				"https://linear.app/rigel/issue/RIG-12",
+				"_blank",
+				"noreferrer,noopener",
+			);
+			expect([clicks, dblclicks]).toEqual([0, 0]);
 		} finally {
 			opener.mockRestore();
 		}

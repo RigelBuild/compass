@@ -26,7 +26,7 @@ const BacklogRow: Component<{ issue: Issue }> = (props) => {
 					{issueKey(props.issue, isMultiForge(store.issues()))}
 				</span>
 				<span class="backlog-title">
-					<RefText text={props.issue.title} />
+					<RefText text={props.issue.title} inControl />
 				</span>
 				<span class="backlog-priority" data-priority={props.issue.priority}>
 					{props.issue.priority}

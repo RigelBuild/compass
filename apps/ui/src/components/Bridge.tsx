@@ -195,7 +195,7 @@ const PrCard: Component<{
 				</span>
 			</span>
 			<span class="card-title">
-				<RefText text={pr().title} />
+				<RefText text={pr().title} inControl />
 			</span>
 			<span class="card-foot">
 				<span class="card-author">
