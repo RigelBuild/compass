@@ -1789,8 +1789,9 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 		// that the population has not shrunk or grown. A newly coupled site is a
 		// deliberate edit: update this number in the same change.
 		//
-		// 13 = today's baseline 14, less the one site-entry pair the merged rule removes.
-		expect(coupled.length).toBe(13);
+		// 20 = main's 13 plus seven: the entrypoint.nix pin is now one entry per
+		// system, so each of its seven coupled sites gains a second pair.
+		expect(coupled.length).toBe(20);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 

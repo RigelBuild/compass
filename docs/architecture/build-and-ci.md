@@ -287,6 +287,14 @@ runs on every push to main and nightly. On a PR it runs only when the setup
 job's `darwin_affected` output is true (computed by `tools/ci-matrix` from the
 changed paths).
 
+**arm64 agent FOD pin.** `agent-image/entrypoint.nix` pins one node_modules
+`outputHash` per system. The `renovate:agent-fod` task checks the host's pin,
+so the `ci.yml` `agent-fod-arm64` job reruns the same script on
+`ubuntu-24.04-arm` for the `aarch64-linux` pin. On a PR it runs only when the
+setup job's `agent_fod_affected` output is true (moon reports
+`renovate:agent-fod` affected). `refresh-fod-hashes.ts` rewrites both pins
+from any host, because each FOD selects its arch with `bun install --cpu`.
+
 **Postgres image.** The stack's default database is the stock `postgres:18`
 image pinned by digest (`DefaultPostgresImage` in
 `go/internal/stack/postgres_image.go`). There is no postgres build lane;

@@ -98,23 +98,26 @@ export const FOD_ENTRIES: FodEntry[] = [
 		triggers: ["go/go.mod", "go/go.sum"],
 		mirrorFiles: ["flake.nix"],
 	},
-	{
-		id: "agent-node-modules-agent-image-pkgs",
-		file: "agent-image/entrypoint.nix",
-		marker: 'outputHash = "sha256-',
-		drvFragment: "node-modules",
-		// Imports entrypoint.nix with pkgs from agent-image/devenv.lock, the bun the
-		// OCI build uses. Root devenv.lock stays a trigger: config.json5 gates on it.
-		buildFile: "tools/renovate/agent-image-fod-vehicle.nix",
-		buildTarget: "compass-agent",
-		vehicleChannelLock: "agent-image/devenv.lock",
-		triggers: [
-			"bun.lock",
-			"devenv.lock",
-			"agent-image/devenv.lock",
-			"tools/toolchain/versions/bun.nix",
-		],
-	},
+	...(["x86_64-linux", "aarch64-linux"] as const).map(
+		(system): FodEntry => ({
+			id: `agent-node-modules-${system}`,
+			file: "agent-image/entrypoint.nix",
+			marker: `"${system}" = "sha256-`,
+			drvFragment: "node-modules",
+			// Imports entrypoint.nix with pkgs from agent-image/devenv.lock, the bun the
+			// OCI build uses. Root devenv.lock stays a trigger: config.json5 gates on it.
+			// Each system's FOD selects its arch with `bun install --cpu`, so one host refreshes both.
+			buildFile: "tools/renovate/agent-image-fod-vehicle.nix",
+			buildTarget: `compass-agent.nodeModulesBySystem.${system}`,
+			vehicleChannelLock: "agent-image/devenv.lock",
+			triggers: [
+				"bun.lock",
+				"devenv.lock",
+				"agent-image/devenv.lock",
+				"tools/toolchain/versions/bun.nix",
+			],
+		}),
+	),
 	{
 		id: "ui-node-modules",
 		file: "apps/ui/dist.nix",
