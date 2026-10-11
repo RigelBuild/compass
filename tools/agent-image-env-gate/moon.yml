@@ -44,10 +44,10 @@ tasks:
   check:
     # The real gate: build the exact spec the publish lane ships, inspect its
     # OCI config, and assert env-cleanliness + platform. Depends on
-    # compass-agent-image:build so the realise is ordered first; the
-    # ci-matrix task-level closure schedules both on any shared input
-    # (scheduling.test.ts pins that). The
-    # index.ts `nix run … container build` is then a store cache hit. Run from
+    # compass-agent-image:build so the realise is ordered first; ci-matrix's
+    # task-level closure schedules both on any shared input, which
+    # scheduling.test.ts pins. The index.ts `nix run … container build` is
+    # then a store cache hit. Run from
     # the workspace root (index.ts cd's into agent-image/ itself so `devenv
     # container build` resolves the image's devenv.yaml/devenv.lock).
     command: 'bun run tools/agent-image-env-gate/index.ts'
