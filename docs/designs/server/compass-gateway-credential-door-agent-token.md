@@ -24,12 +24,11 @@ agent, owner and tenant from that token's row.
 
 **One identity rule.** A door call needs two tokens. The `llm-gateway`
 service bearer in `Authorization` proves the caller is the gateway. The new
-`agent_token` field says on whose behalf it calls. The door verifies the agent
-token with the existing `auth.TokenMinter.Verify` and then runs the store call
-under that token's tenant. Neither token alone opens the door. The service
-bearer stays because an agent container can reach the network door: an agent
-token alone would let an agent read its owner's plaintext credentials
-directly, which is what the T5 egress cutover exists to stop.
+`agent_token` field says on whose behalf it calls; the door checks it with
+`auth.TokenMinter.Verify`. Neither token alone opens the door. The service
+bearer stays because an agent container can reach the network door, and an
+agent token alone would let an agent read plaintext credentials, which the T5
+egress cutover exists to stop.
 
 **Agent → owner → tenant comes from one row.** `gateway_tokens` already stores
 `agent_account_id`, `owner_user_id` and `tenant_id` (`0001_init.sql`:
@@ -50,18 +49,17 @@ query selects `tenant_id` (the DL-381 shape). The door then calls
 These already check, under RLS, that the credential is in the agent's owner
 pool, so a token of owner X cannot touch owner Y's rows.
 
-This deletes the door's system-role lookup. `resolveTenant` today calls
-`s.scope.GatewayAgentTenant(ctx, agent)`, and `Store.GatewayAgentTenant` runs
-`s.q.GatewayAgentTenant(WithSystemRole(ctx), string(agent))`. It is named in
-the `WithSystemRole` allowlist comment in `go/internal/store/tenant_tx.go`.
-After this change, the request path has one fewer BYPASSRLS entrypoint
-(DL-315).
+This deletes the door's system-role lookup, `Store.GatewayAgentTenant`
+(`s.q.GatewayAgentTenant(WithSystemRole(ctx), string(agent))`), which is
+named in the `WithSystemRole` allowlist comment in
+`go/internal/store/tenant_tx.go`. The request path loses one BYPASSRLS
+entrypoint (DL-315).
 
-**`agent_account_id` is removed, not deprecated.** Each request message drops
-it, reserves its number and name, and gains
-`string agent_token = N [debug_redact = true]`. The field form copies
-`VerifyAgentTokenRequest.token` in `gateway_auth.proto`, and the handler keeps
-the rule that it never logs `req.Msg`. No client depends on the old field:
+**`agent_account_id` is removed, not deprecated.** Each request message
+reserves its number and name and gains
+`string agent_token = N [debug_redact = true]`, the form of
+`VerifyAgentTokenRequest.token` in `gateway_auth.proto`. No client depends on
+the old field:
 
 - the stack pins no gateway image (`DefaultGatewayImage = ""` in
   `go/internal/stack/gateway_image.go`);
@@ -71,8 +69,8 @@ the rule that it never logs `req.Msg`. No client depends on the old field:
 - the buf breaking gate is off before GA (`buf.yaml`: "RE-ADD AT GA / first
   pinned client (tracked: RIG-1951)").
 
-"Ignore, then remove" would keep option A's trust path open for a window in
-which no client needs it, and that window is the hole this record closes.
+"Ignore, then remove" would keep option A's hole open while no client needs
+it.
 
 **The gateway carries the triggering token.** The per-owner `AuthStorage`
 stays as it is. `resolveStorage(caller)` still keys on
@@ -87,28 +85,32 @@ this.#agentAccountId = opts.agentAccountId;
 ```
 
 `AuthStorage` calls the store with no request context
-(`listAuthCredentials`, `updateAuthCredential`, `pollExternalChanges`, …).
-Passing the token through those calls would change `auth-storage.ts`
-signatures, which the parent record's §Global Constraints forbids ("never the
-routing core"). So the token travels in an `AsyncLocalStorage` scope that the
-compass module owns. The fork already uses this pattern
+(`listAuthCredentials`, `updateAuthCredential`, `pollExternalChanges`, …),
+and changing those signatures is barred by the parent record ("never the
+routing core"). So the token travels in a compass-owned `AsyncLocalStorage`
+scope, a pattern the fork already uses
 (`credentialRedactionScope = new AsyncLocalStorage<boolean>()` in
 `packages/ai/src/providers/transform-messages.ts`). The scope is set at one
 seam: a new optional route option that wraps each routed request, including
 its `resolveStorage` call. The compass embedder fills the scope with the
-request's admitted bearer (`presentedBearer(req)`), and does not wrap when
-there is none. `startAuthGateway` already refuses any admission that did not
-come from `Authorization: Bearer`.
+request's admitted bearer, and does not wrap when there is none. In
+RigelBuild/oh-my-pi, `presentedBearer` (`packages/ai/src/auth-gateway/http.ts`)
+reads only `Authorization`, and `startAuthGateway`
+(`packages/ai/src/auth-gateway/server.ts`) refuses any other admission:
 
-The store reads the scope at the moment it starts a door call or queues a
-write, and it keeps that token with the queued job. The token is not read
-again when the job runs. Rules:
+```ts
+/** The bearer token from `Authorization`, or `undefined` when none (or a blank one) is presented. */
+export function presentedBearer(req: Request): string | undefined {
+// Only an `Authorization: Bearer` admission can be confined, so any other is refused.
+```
+
+The store reads the scope when it starts a door call or queues a write; the
+job keeps that token. Rules:
 
 1. **No scope, no door call.** A list or reload with no token in scope is
-   skipped, and the store keeps its current view. A write with no token in
-   scope is parked as `unsynced`. The next request's poll resends it. No
-   timer ever calls the door. This follows the posted reading "no background
-   refresh without a triggering request" (Q1).
+   skipped; the store keeps its current view. A write with no token in scope
+   is parked as `unsynced`, and the next request's poll resends it. No timer
+   ever calls the door (the posted reading, Q1).
 2. **A revoked token parks the write.** Agent tokens rotate on re-placement
    and are revoked on stop (`TokenMinter.Mint` and `Revoke`), so a token can
    die between admission and the door call. The door then answers
@@ -154,8 +156,9 @@ Constraints).
   Rejected.
 - **Thread the token through `AuthStorage` calls.** This changes routing-core
   signatures. Rejected by the parent record.
-- **Embedder wraps `router.route` itself.** `startAuthGateway` builds its
-  router privately (`const router = createAuthGatewayRouter(opts);`), so the
+- **Embedder wraps `router.route` itself.** `startAuthGateway`
+  (`packages/ai/src/auth-gateway/server.ts`) builds its router privately
+  (`const router = createAuthGatewayRouter(opts);`), so the
   embedder would have to copy the admission code. Rejected for the
   `routeScope` option.
 
@@ -170,12 +173,10 @@ Constraints).
   marked `[debug_redact = true]`. The door handler never logs `req.Msg`. The
   store never puts a token in a log line or an error message.
 - **Door errors do not leak which check failed.** An unknown, revoked or
-  malformed agent token is `UNAUTHENTICATED` with the fixed message
-  `invalid agent token`. That is the `VerifyAgentToken` message. A credential
-  outside the token's owner pool stays the shared `errGatewayCredentialNotFound`.
-  Its comment, "shared by an unknown agent and a missing or out-of-pool
-  credential", drops "an unknown agent", because that case is now
-  `UNAUTHENTICATED`.
+  malformed agent token is `UNAUTHENTICATED` `invalid agent token`, the
+  `VerifyAgentToken` message. An out-of-pool credential stays the shared
+  `errGatewayCredentialNotFound`. Its comment drops "an unknown agent",
+  because that case is now `UNAUTHENTICATED`.
 - **Field numbers.** `UpdateCredentialOAuthRequest.agent_token` is 6,
   because RIG-5084 (compass#2130) takes 5 for `clear_fields`.
 - **Image pin.** The first fork pin in `tools/gateway-image/fork-pin.json`
@@ -212,15 +213,13 @@ because removing the field breaks the generated getter the door calls.
   `GatewayAgentTenant`, `TestGatewayAgentTenantCrossTenantLookup`, and both
   `GatewayAgentTenant` mentions in the `tenant_tx.go` role comments.
 - `go/server/gateway_credentials_service.go`: replace `agentTenantResolver`
-  with the existing `gatewayTokenVerifier` (`gateway_auth.go`), and replace
-  `resolveTenant` with `resolveCaller`. `resolveCaller` keeps the service
-  subject check, calls `Verify`, and returns
-  `store.WithTenant(store.WithoutSystemRole(ctx), caller.TenantID)` (the
-  current form) plus `caller.AgentAccountID`. It
-  keeps one Info audit line per call (procedure, agent, owner, tenant), but
-  not the "cross-tenant agent lookup" text. `newGatewayServices` builds one
-  `auth.NewGatewayTokens(st)` and passes it to both the credentials service
-  and the auth service.
+  with the existing `gatewayTokenVerifier` (`gateway_auth.go`), and
+  `resolveTenant` with `resolveCaller`. It keeps the service subject check,
+  calls `Verify`, and returns
+  `store.WithTenant(store.WithoutSystemRole(ctx), caller.TenantID)` plus
+  `caller.AgentAccountID`. It keeps one Info audit line per call (procedure,
+  agent, owner, tenant). `newGatewayServices` passes one
+  `auth.NewGatewayTokens(st)` to both the credentials and auth services.
 - No change to `classify_exhaustive_test.go`. The file stays in
   `ungatedFileDescriptors`.
 
@@ -294,6 +293,18 @@ route body, including the `resolveStorage` call, inside `routeScope` when it
 is set. The call sits inside the existing `try`, so a throw from the wrapper
 still answers 500. Without the option, behavior is unchanged.
 
+A streamed turn outlives `route`. `handleFormatEndpoint`
+(`packages/ai/src/auth-gateway/server.ts`) returns
+`new Response(sseStream, {`, and `streamSimpleRequest`
+(`packages/ai/src/stream.ts`) runs its producer as `void (async () => {`. On
+an upstream auth failure, that producer calls the API-key resolver again,
+so a refresh write can run after `route` returns. The scope still holds:
+"The store is accessible to any asynchronous operations created within the
+callback" ([Node.js `AsyncLocalStorage.run`](https://nodejs.org/api/async_context.html)).
+A throwaway check under Bun 1.4.2, the fork's `packageManager`, read the
+`run` value in such a producer and in a `ReadableStream` `pull`, both after
+`Bun.serve`'s `fetch` had returned.
+
 Interfaces:
 
 ```ts
@@ -302,10 +313,15 @@ Interfaces:
 routeScope?: <T>(req: Request, run: () => Promise<T>) => Promise<T>;
 ```
 
-Test cycle: a new `packages/ai/test/auth-gateway-route-scope.test.ts`. A
-value that `routeScope` puts in an `AsyncLocalStorage` is visible inside
-`resolveStorage` and inside the storage call the route makes. A throwing
-`routeScope` answers 500.
+Test cycle: a new `packages/ai/test/auth-gateway-route-scope.test.ts`.
+
+- A value that `routeScope` puts in an `AsyncLocalStorage` is visible inside
+  `resolveStorage` and inside the storage call the route makes.
+- Streaming: the upstream answers 401 only after `router.route` has returned
+  its Response. The auth retry refreshes the OAuth credential, and the
+  recording credential store sees the initiating request's value on that
+  write.
+- A throwing `routeScope` answers 500.
 
 ### T3 — Compass store uses the triggering token (compass-gateway)
 
@@ -363,8 +379,10 @@ Test cycle, in `packages/ai/test/compass-credential-store.test.ts`:
 
 - Each door call carries the scope's token and no `agentAccountId`.
 - A write queued under token A that runs after A's scope ends still sends A.
-- With no scope, `pollExternalChanges()` makes no fetch. A write makes no
-  fetch, and the next poll under token B sends it with B.
+- With no scope, `open()` and `refreshSnapshot()` throw and make no fetch,
+  and `pollExternalChanges()` makes no fetch. A write makes no fetch, and the
+  next poll under token B sends it with B.
+- A scope that holds `""` behaves as no scope.
 - `unauthenticated` on `UpdateCredentialOAuth` parks the write.
   `hasPendingWrites()` is true. The next poll under another token commits it,
   and `hasPendingWrites()` is false.
@@ -399,7 +417,6 @@ it … If this reading is wrong, say so."), which Matt has not confirmed.
 
 **Recommendation: A.** A write is parked only when the agent's token is
 revoked during that agent's own in-flight request, or when no request is in
-scope. The first window is narrow, and the second needs an owner with no
-running agent, where nothing uses the credential. B adds long-lived token
-state to cover the same narrow window. Decision needed from Matt on RIG-5080:
-A or B.
+scope, which needs an owner with no running agent. B adds long-lived token
+state for the same narrow window. Decision needed from Matt on RIG-5080: A
+or B.
