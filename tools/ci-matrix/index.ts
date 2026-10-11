@@ -99,10 +99,8 @@ const GUEST_IMAGE_PROJECT = "compass-guest-image";
 export const ALWAYS_RUN_ON_PR = "design-ledger-gate";
 
 /**
- * The FOD check the arm64 leg reruns natively for the aarch64-linux pin. Keyed on
- * moon's task-affected set, so the leg tracks the task's declared inputs with no
- * second path list.
- */
+ * The FOD check the arm64 leg reruns natively. Keyed on moon's task-affected set,
+ * so the leg tracks the task's declared inputs with no second path list. */
 export const AGENT_FOD_TASK = "renovate:agent-fod";
 
 /**

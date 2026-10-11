@@ -1046,4 +1046,15 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 			"gtk4_affected=false",
 		]);
 	});
+
+	test("agent_fod_affected renders the agent-fod task's own state", () => {
+		// The rollup excuses the arm job's skip on this exact value, so a
+		// mis-serialized "false" would silently drop the arm64 pin check.
+		const line = (affectedTasks: string[]) =>
+			outputLines(generate(prInput({ affectedIds: [], affectedTasks }))).find(
+				(l) => l.startsWith("agent_fod_affected="),
+			);
+		expect(line(["renovate:agent-fod"])).toBe("agent_fod_affected=true");
+		expect(line(["renovate:test"])).toBe("agent_fod_affected=false");
+	});
 });
