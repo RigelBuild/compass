@@ -560,7 +560,7 @@ describe("an unbound caller session", () => {
 		}
 	}
 
-	// The Server's hub answers NotFound when a Runner reconnect dropped the binding; the
+	// The Server's hub answers NotFound when the binding is gone or unverifiable; the
 	// Runner's gateway answers PermissionDenied before Start binds one. Neither looked at
 	// the target, so the model must not read either as "target not found".
 	for (const [label, code] of [
@@ -575,7 +575,7 @@ describe("an unbound caller session", () => {
 				const err = new ConnectError("no agent account bound to session", code);
 				const t = tool(new LifecycleBroker(new RejectingTransport(err)), name);
 				await expect(exec(t, "tc-1", params)).rejects.toThrow(
-					`${name} failed: your own session is not bound to an agent account (Runner reconnect or not yet started); the target was not checked`,
+					`${name} failed: your own session could not be resolved to an agent account (unbound after a Runner reconnect, not yet started, or the binding could not be verified); the target was not checked`,
 				);
 			});
 		}

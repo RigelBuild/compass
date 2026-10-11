@@ -61,7 +61,7 @@ export class LifecycleBroker {
 
 	/**
 	 * Forwards `req`. A transport `NotFound` / `PermissionDenied` means the caller's own
-	 * session has no binding (Runner reconnect, or before Start); the target was never
+	 * session did not resolve (unbound, or its binding was unverifiable); the target was never
 	 * looked up, so it is rethrown as {@link UnboundSessionError} for the tool to name.
 	 */
 	async call(req: LifecycleCallRequest): Promise<LifecycleCallResult> {
@@ -77,11 +77,11 @@ export class LifecycleBroker {
 	}
 }
 
-/** The caller's own session is unbound; distinct from an in-band target `not_found`. */
+/** The caller's own session did not resolve; distinct from an in-band target `not_found`. */
 export class UnboundSessionError extends Error {
 	constructor(options: ErrorOptions) {
 		super(
-			"your own session is not bound to an agent account (Runner reconnect or not yet started); the target was not checked",
+			"your own session could not be resolved to an agent account (unbound after a Runner reconnect, not yet started, or the binding could not be verified); the target was not checked",
 			options,
 		);
 		this.name = "UnboundSessionError";
