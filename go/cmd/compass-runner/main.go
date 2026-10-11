@@ -114,6 +114,9 @@ func run() error {
 	if addr == "" {
 		return errors.New("a server address is required: pass --server or set $COMPASS_SERVER_ADDR")
 	}
+	if err := validateAgentBatching(*agentBatching); err != nil {
+		return err
+	}
 	tokenPath := orEnv(*tokenFile, "COMPASS_RUNNER_TOKEN_FILE")
 	tokenSource, err := resolveTokenSource(os.Getenv("COMPASS_RUNNER_TOKEN"), tokenPath, log)
 	if err != nil {
@@ -173,12 +176,21 @@ func run() error {
 
 func registerAgentBatchingFlag(flags *flag.FlagSet) *string {
 	return flags.String("agent-batching", "",
-		"Idle inbound batching setting handed to every agent this Runner starts. "+
+		"Idle inbound batching for every agent this Runner starts: \"on\" or \"off\" (default off). "+
 			"Defaults to $COMPASS_AGENT_BATCHING.")
 }
 
 func resolveAgentBatchingConfig(flagValue string) runner.RunnerConfig {
 	return runner.RunnerConfig{AgentBatching: orEnv(flagValue, "COMPASS_AGENT_BATCHING")}
+}
+
+// The agent acts only on "on", so any other non-empty value is a typo that would leave batching off silently.
+func validateAgentBatching(flagValue string) error {
+	v := resolveAgentBatchingConfig(flagValue).AgentBatching
+	if v != "" && v != "on" && v != "off" {
+		return fmt.Errorf("--agent-batching (or $COMPASS_AGENT_BATCHING) must be \"on\" or \"off\", got %q", v)
+	}
+	return nil
 }
 
 func resolveTokenSource(staticToken, tokenPath string, log *slog.Logger) (runner.TokenSource, error) {

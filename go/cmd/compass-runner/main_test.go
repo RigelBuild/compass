@@ -55,8 +55,26 @@ func TestAgentBatchingFlagAndEnvironmentFallback(t *testing.T) {
 				t.Fatalf("parse batching flag: %v", err)
 			}
 			cfg := resolveAgentBatchingConfig(*batching)
+			if err := validateAgentBatching(*batching); err != nil {
+				t.Fatalf("validateAgentBatching: %v", err)
+			}
 			if cfg.AgentBatching != tc.want {
 				t.Fatalf("RunnerConfig.AgentBatching = %q, want %q", cfg.AgentBatching, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentBatchingRejectsUnknownValue(t *testing.T) {
+	for _, tc := range []struct{ name, flag, env string }{
+		{name: "flag typo", flag: "true"},
+		{name: "environment typo", env: "yes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("COMPASS_AGENT_BATCHING", tc.env)
+			err := validateAgentBatching(tc.flag)
+			if err == nil || !strings.Contains(err.Error(), `must be "on" or "off"`) {
+				t.Fatalf("validateAgentBatching error = %v, want the on/off refusal", err)
 			}
 		})
 	}
