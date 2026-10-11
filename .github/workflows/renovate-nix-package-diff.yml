@@ -1,0 +1,88 @@
+name: renovate-nix-package-diff
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: nix-package-diff-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: startsWith(github.head_ref, 'renovate/') && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Skip if this head is already published
+        id: skip
+        run: |
+          body=$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" --json body --jq .body)
+          if [[ "$body" == *"nix-package-diff head=${HEAD_SHA}"* ]]; then
+            printf '{"headSha":"%s","skip":true,"results":[]}\n' "$HEAD_SHA" > diff.json
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore package diff cache
+        id: cache
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: diff.json
+          key: nix-package-diff-v1-${{ env.HEAD_SHA }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.skip.outputs.skip != 'true' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        if: steps.skip.outputs.skip != 'true' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        if: steps.skip.outputs.skip != 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs | jq -r '.[].store')
+          [ -n "$stores" ] || { echo "::error::gate-tools.nix langs produced no store paths" >&2; exit 1; }
+          readarray -t store_paths <<<"$stores"
+          nix build --out-link "$RUNNER_TEMP/langs" "${store_paths[@]}"
+          for store in "${store_paths[@]}"; do echo "$store/bin" >>"$GITHUB_PATH"; done
+
+      - name: Collect package changes
+        id: collect
+        if: steps.skip.outputs.skip != 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: bun tools/renovate/nix-package-diff.ts collect
+
+      - name: Save package diff cache
+        if: always() && steps.skip.outputs.skip != 'true' && steps.cache.outputs.cache-hit != 'true' && hashFiles('diff.json') != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: diff.json
+          key: nix-package-diff-v1-${{ env.HEAD_SHA }}
+
+      - name: Upload package diff artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nix-package-diff
+          path: diff.json
+          if-no-files-found: error
