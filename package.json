@@ -36,7 +36,11 @@
 	},
 	"overrides": {
 		"@tanstack/virtual-core": "3.17.8",
-		"@tanstack/query-core": "5.102.5"
+		"@tanstack/query-core": "5.102.5",
+		"adm-zip": "0.6.1",
+		"postcss-selector-parser": "7.1.6",
+		"seroval": "1.6.8",
+		"seroval-plugins": "1.6.8"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "catalog:"
