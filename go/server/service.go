@@ -138,7 +138,7 @@ func (s *service) ProvisionAgentWorkspace(
 	if s.hub == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
-	acc, err := s.resolveQualifiedAgent(ctx, req.Msg.GetAgentHandle())
+	acc, err := resolveQualifiedAgent(ctx, s.store, req.Msg.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +376,7 @@ func (s *service) IssueToken(
 	var acc store.Account
 	var err error
 	if qh := store.ParseQualifiedHandle(raw); qh.Qualified() {
-		acc, err = s.resolveQualifiedAgent(ctx, raw)
+		acc, err = resolveQualifiedAgent(ctx, s.store, raw)
 	} else if acc, err = s.store.UserByHandle(ctx, raw); err != nil {
 		err = handleLookupError(raw, err)
 	}
@@ -561,19 +561,18 @@ func (s *service) provisionAgent(
 	return resp, nil
 }
 
-// resolveQualifiedAgent resolves an `owner/agent` handle on the admin door, which
-// has no agent session to default a bare handle's owner from. A bare handle and
-// every miss return the same NotFound naming the submitted handle.
-func (s *service) resolveQualifiedAgent(ctx context.Context, raw string) (store.Account, error) {
+// resolveQualifiedAgent resolves an `owner/agent` handle without a session owner.
+// Every miss returns the same NotFound naming the submitted handle.
+func resolveQualifiedAgent(ctx context.Context, st *store.Store, raw string) (store.Account, error) {
 	qh := store.ParseQualifiedHandle(raw)
 	if !qh.Qualified() || qh.Malformed() {
 		return store.Account{}, handleNotFound(raw)
 	}
-	owner, err := s.store.UserByHandle(ctx, qh.Owner)
+	owner, err := st.UserByHandle(ctx, qh.Owner)
 	if err != nil {
 		return store.Account{}, handleLookupError(raw, err)
 	}
-	acc, err := s.store.AgentByHandle(ctx, owner.ID, qh.Handle)
+	acc, err := st.AgentByHandle(ctx, owner.ID, qh.Handle)
 	if err != nil {
 		return store.Account{}, handleLookupError(raw, err)
 	}

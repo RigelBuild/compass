@@ -1023,6 +1023,19 @@ func buildDoors(
 	if err != nil {
 		return serveDoors{}, fmt.Errorf("otel: rpc interceptor: %w", err)
 	}
+	// The forge broker supplies the host and the targeted secret signal before
+	// any public door is assembled.
+	gitCredentials, err := buildGitCredentialBroker(cfg, st, serverResolver, hub, slog.Default())
+	if err != nil {
+		return serveDoors{}, err
+	}
+	// A nil hub must reach the service as a nil interface, not a typed nil.
+	var repoSignal agentSecretsSignaler
+	if hub != nil {
+		repoSignal = hub
+	}
+	agentRepositorySvc := newAgentRepositoryService(st, gitCredentials, repoSignal)
+
 	// CommsService rides the socket + dev doors and the network shared chain; it
 	// mounts the same otelconnect + trace-response pair as CompassService.
 	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc,
@@ -1039,6 +1052,8 @@ func buildDoors(
 	// is the credential, and admin being a user satisfies the user-only writes.
 	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+	agentRepositoryPath, agentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
+		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	usageSocketPath, usageSocketHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
 		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
 			auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
@@ -1047,6 +1062,7 @@ func buildDoors(
 	udsMux.Handle(commsPath, commsHandler)
 	udsMux.Handle(secretsSocketPath, secretsSocketHandler)
 	udsMux.Handle(usageSocketPath, usageSocketHandler)
+	udsMux.Handle(agentRepositoryPath, agentRepositoryHandler)
 	udsServer := &http.Server{Handler: udsMux, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply; the network door below sets it
 
 	// Dev-only browser door: the same services with permissive CORS on the
@@ -1064,6 +1080,8 @@ func buildDoors(
 		// (a user) the handler reads for the user-only write authz.
 		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		devAgentRepositoryPath, devAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
+			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		devUsagePath, devUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
 			connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
 				auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
@@ -1072,6 +1090,7 @@ func buildDoors(
 		devMux.Handle(commsPath, commsHandler)
 		devMux.Handle(devSecretsPath, devSecretsHandler)
 		devMux.Handle(devUsagePath, devUsageHandler)
+		devMux.Handle(devAgentRepositoryPath, devAgentRepositoryHandler)
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
@@ -1090,13 +1109,9 @@ func buildDoors(
 	// One variable feeds both the call and the record below, so the two cannot
 	// drift apart and the recorded instance is always the delivered one. The
 	// broker mints from the SERVER App key but adds only a repo-scoped token.
-	gitCredentials, err := buildGitCredentialBroker(cfg, st, serverResolver, hub, slog.Default())
-	if err != nil {
-		return serveDoors{}, err
-	}
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayServices{credentials: gatewayCredSvc, registry: gatewayRegistrySvc})
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, agentRepositorySvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayServices{credentials: gatewayCredSvc, registry: gatewayRegistrySvc})
 		if err != nil {
 			return serveDoors{}, err
 		}
