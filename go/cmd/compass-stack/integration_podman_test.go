@@ -46,11 +46,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,12 +84,20 @@ const agentImage = "docker.io/library/alpine:latest"
 // server is gone fails fast rather than waiting out a dial.
 const probeTimeout = 2 * time.Second
 
+// podmanProbeLog prints the probe failure once per process, not once per test.
+var podmanProbeLog sync.Once
+
 // podmanUsable reports whether rootless podman can run a container here. A
 // missing binary or broken rootless setup means skip, not fail — mirrors
 // internal/runtime/lifecycle_test.go:56-60.
 func podmanUsable() bool {
 	out, err := exec.Command("podman", "run", "--rm", agentImage, "true").CombinedOutput()
-	_ = out // combined output is only of interest on failure, which err already signals
+	if err != nil {
+		// The skip message alone cannot tell a missing image from a broken userns.
+		podmanProbeLog.Do(func() {
+			fmt.Fprintf(os.Stderr, "podmanUsable: podman run %s: %v\n%s\n", agentImage, err, out)
+		})
+	}
 	return err == nil
 }
 
