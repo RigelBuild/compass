@@ -7,10 +7,13 @@ import (
 	"testing"
 )
 
-// podmanTierFakeRuntime reports a tier that applies mounts.
-type podmanTierFakeRuntime struct{ *fakeRuntime }
+// tieredFakeRuntime is a fakeRuntime that names its tier.
+type tieredFakeRuntime struct {
+	*fakeRuntime
+	tier WorkloadTier
+}
 
-func (podmanTierFakeRuntime) Tier() WorkloadTier { return WorkloadTierPodman }
+func (f tieredFakeRuntime) Tier() WorkloadTier { return f.tier }
 
 func volumeSpec(mounts ...Mount) AgentSpec {
 	spec := specWithCreds(false)
@@ -20,24 +23,26 @@ func volumeSpec(mounts ...Mount) AgentSpec {
 }
 
 func TestLaunchSourceVolumeMountsCheckoutDirReadWrite(t *testing.T) {
-	fake := newFakeRuntime(t)
-	rt := NewAgentRuntime(podmanTierFakeRuntime{fake})
-	spec := volumeSpec(Mount{HostPath: "/var/lib/compass/vol/a", ContainerPath: "/work/repo"})
-
-	if _, err := rt.Launch(t.Context(), spec); err != nil {
-		t.Fatalf("Launch error = %v", err)
-	}
-	fake.mu.Lock()
-	created := fake.created.Mounts
-	fake.mu.Unlock()
-	if !slices.Contains(created, Mount{HostPath: "/var/lib/compass/vol/a", ContainerPath: "/work/repo"}) {
-		t.Fatalf("WorkloadSpec.Mounts = %v, want the writable volume mount at the checkout dir", created)
-	}
-	// The checkout dir is still created on the mounted path, so a fresh volume
-	// gets an agent-owned working dir exactly like the clone-dir path.
-	calls := fake.callsSnapshot()
-	if !slices.Contains(calls, "exec:mkdir -p /work/repo") {
-		t.Fatalf("calls = %v, want mkdir -p on the mounted checkout dir", calls)
+	volume := Mount{HostPath: "/var/lib/compass/vol/a", ContainerPath: "/work/repo"}
+	for _, tier := range []WorkloadTier{WorkloadTierPodman, WorkloadTierMicroVM, WorkloadTierAppleContainer} {
+		t.Run(string(tier), func(t *testing.T) {
+			fake := newFakeRuntime(t)
+			rt := NewAgentRuntime(tieredFakeRuntime{fake, tier})
+			if _, err := rt.Launch(t.Context(), volumeSpec(volume)); err != nil {
+				t.Fatalf("Launch error = %v", err)
+			}
+			fake.mu.Lock()
+			created := fake.created.Mounts
+			fake.mu.Unlock()
+			if !slices.Contains(created, volume) {
+				t.Fatalf("WorkloadSpec.Mounts = %v, want the writable volume mount at the checkout dir", created)
+			}
+			// The checkout dir is still created on the mounted path, so a fresh
+			// volume gets an agent-owned working dir like the clone-dir path.
+			if calls := fake.callsSnapshot(); !slices.Contains(calls, "exec:mkdir -p /work/repo") {
+				t.Fatalf("calls = %v, want mkdir -p on the mounted checkout dir", calls)
+			}
+		})
 	}
 }
 
@@ -53,7 +58,7 @@ func TestLaunchSourceVolumeRejectsSpecWithoutWritableCheckoutMount(t *testing.T)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeRuntime(t)
-			rt := NewAgentRuntime(podmanTierFakeRuntime{fake})
+			rt := NewAgentRuntime(tieredFakeRuntime{fake, WorkloadTierPodman})
 			_, err := rt.Launch(t.Context(), volumeSpec(tc.mounts...))
 			if !errors.Is(err, ErrVolumeMountMissing) {
 				t.Fatalf("Launch error = %v, want ErrVolumeMountMissing", err)
@@ -78,16 +83,11 @@ func TestLaunchZeroSourceIsCloneDir(t *testing.T) {
 	}
 }
 
-// hostTierFakeRuntime reports the host tier, whose backend ignores mounts.
-type hostTierFakeRuntime struct{ *fakeRuntime }
-
-func (hostTierFakeRuntime) Tier() WorkloadTier { return WorkloadTierHost }
-
 // A tier that ignores mounts, or one that does not name itself (a wrapper that
 // drops Tier), would run the checkout outside the volume, so both are refused.
 func TestLaunchSourceVolumeRefusedOnTierWithoutMounts(t *testing.T) {
 	tests := map[string]func(*fakeRuntime) WorkloadRuntime{
-		"host tier":    func(f *fakeRuntime) WorkloadRuntime { return hostTierFakeRuntime{f} },
+		"host tier":    func(f *fakeRuntime) WorkloadRuntime { return tieredFakeRuntime{f, WorkloadTierHost} },
 		"unknown tier": func(f *fakeRuntime) WorkloadRuntime { return f },
 	}
 	for name, wrap := range tests {
@@ -107,7 +107,7 @@ func TestLaunchSourceVolumeRefusedOnTierWithoutMounts(t *testing.T) {
 
 func TestLaunchUnknownSourceRefused(t *testing.T) {
 	fake := newFakeRuntime(t)
-	rt := NewAgentRuntime(podmanTierFakeRuntime{fake})
+	rt := NewAgentRuntime(tieredFakeRuntime{fake, WorkloadTierPodman})
 	spec := specWithCreds(false)
 	spec.Workspace.Source = SourceVolume + 1
 	if _, err := rt.Launch(t.Context(), spec); !errors.Is(err, ErrUnknownWorkspaceSource) {
