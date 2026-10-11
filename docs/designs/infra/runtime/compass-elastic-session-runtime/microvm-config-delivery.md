@@ -34,7 +34,8 @@ plus a relative `current` symlink flipped by rename. The agent is unchanged:
 it reads `AGENT_CONFIG_MOUNT_PATH` through `current/` (`resolveConfigMountPath`,
 `packages/compass-agent/src/config-reader.ts`). Exec cannot do this job:
 `WriteAgentFiles` (`go/internal/runtime/agent.go`) writes as the agent uid,
-and `resolveUID` (`go/internal/guestd/supervisor.go`) refuses uid 0.
+and `resolveUID` (`go/internal/guestd/supervisor.go`) refuses uid 0: "exec uid
+0 is refused: the guest supervisor never runs an exec as root".
 
 ### (b) Wire shape (additive contract change)
 
@@ -57,7 +58,9 @@ It streams because the compressed tarball's wire cap (see (c)) exceeds the
 `go/internal/guestd/vsock.go`). The frame schema mirrors
 `FetchAgentConfigResponse` (`proto/compass/v1/runner.proto`); the direction is
 new, and client streaming follows `PublishEvents`. The host sends 512 KiB
-chunks (`configChunkBytes`, `go/internal/runnerhub/handler.go`). Shipping with it: the
+chunks under a new Runner-side `installChunkBytes`. It matches the Server's
+`configChunkBytes` (`go/internal/runnerhub/handler.go`) by choice, not by
+reuse. Shipping with it: the
 doc comments above, one file-header line, and the regenerated internal Go
 lane. The gen-fence already covers the `GuestControl` stem, so it needs no
 edit. `runner-tiers.md` does not cover config delivery.
@@ -79,7 +82,8 @@ The boundary has three legs:
 
 - **Ownership.** The tree and `current` are root-owned under the 0711
   `/run/compass` that `startGatewayProxy`
-  (`go/internal/guestd/gateway_proxy.go`) creates.
+  (`go/internal/guestd/gateway_proxy.go`) creates:
+  `os.MkdirAll(filepath.Dir(socketPath), 0o711)`.
 - **No DAC override.** Exec children are non-root with an empty capability
   set (`linuxCredential`), so the agent cannot write, chmod, or rename there.
 - **No RPC access.** `peerCIDListener` (`go/internal/guestd/vsock.go`) refuses
@@ -172,7 +176,10 @@ unchanged.
   0755/0644 with a `version` file and a relative `current`.
 - **Build.** guestd stays `CGO_ENABLED=0` and go.mod is unchanged, so the
   `vendorHash` in `guest-image/default.nix` should hold. The guest-image
-  build confirms it.
+  build confirms it. T1 adds `/go/internal/agentconfig/**` to the `build`
+  inputs in `guest-image/moon.yml`, which list `/go/internal/guestd/**` and
+  `/go/internal/gen/**` today. Without it, a kernel change would not
+  reschedule the guest-image build.
 
 ## Plan
 
@@ -247,6 +254,8 @@ ships inert code.
   - A traversal member returns `CodeInvalidArgument`, with no flip.
   - An unknown top dir installs (the guest is schema-agnostic).
   - `""` leaves no `current`.
+  - A filesystem failure (the test root made read-only after Provision)
+    returns `CodeInternal`, with no flip.
 
 ### T3 — Host client, Runner wiring, gate removal
 
@@ -333,7 +342,8 @@ Alternatives, and OQ-4 is resolved by `if_version`.
   slice).
 - **OQ-6 (non-load-bearing): guest RAM.** `--microvm-memory-mb` defaults to 0 ("VMM default"),
   but `vmmArgs` (`go/internal/runtime/microvm/launch.go`) always passes
-  `size=<n>M`, so 0 reaches cloud-hypervisor as `size=0M`. The worst-case
+  `"--memory", "size=" + strconv.Itoa(cfg.MemoryMB) + "M,shared=on"`, so 0
+  reaches cloud-hypervisor as `size=0M`. The worst-case
   install holds the wire tarball plus two version dirs on tmpfs before the
   prune. **Recommendation:** a floor (0 resolves to 1024 MiB in `bootConfig`,
   and non-zero values below 512 are rejected), filed as its own issue. This
