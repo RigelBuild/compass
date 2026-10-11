@@ -4,6 +4,8 @@ import { useStore } from "../context";
 import type { Issue } from "../stub-data";
 import { Glyph } from "./Glyph";
 
+import { RefText } from "./RefText";
+
 /** A single Linear-style issue row: id · title · priority · state · tracker.
  *  Clicking the row selects the issue (staying on the view). Not the board
  *  `IssueCard` — that's a swimlane card and can't nest a list row. */
@@ -23,7 +25,9 @@ const BacklogRow: Component<{ issue: Issue }> = (props) => {
 				<span class="backlog-id">
 					{issueKey(props.issue, isMultiForge(store.issues()))}
 				</span>
-				<span class="backlog-title">{props.issue.title}</span>
+				<span class="backlog-title">
+					<RefText text={props.issue.title} />
+				</span>
 				<span class="backlog-priority" data-priority={props.issue.priority}>
 					{props.issue.priority}
 				</span>

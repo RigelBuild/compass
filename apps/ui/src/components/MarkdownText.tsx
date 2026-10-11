@@ -1,5 +1,4 @@
 import Markdown, { type Components } from "@rigelbuild/solid-markdown";
-import { Browser } from "@wailsio/runtime";
 import type { Element as HastElement } from "hast";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,6 +9,7 @@ import {
 	Show,
 } from "solid-js";
 import type { Account } from "../comms-stub";
+import { useRefLinkRules } from "../context";
 import {
 	getCachedHighlight,
 	isLeadingEdgeHighlight,
@@ -19,6 +19,8 @@ import { highlightToHtml } from "../markdown/highlighter";
 import { rehypeInertRaw } from "../markdown/rehype-inert-raw";
 import { rehypeMentionChips } from "../markdown/rehype-mention-chips";
 import { rehypeProseBreaks } from "../markdown/rehype-prose-breaks";
+import { openExternal } from "../open-external";
+import { remarkRefLinks } from "../refs/remark-ref-links";
 import { safeHref } from "../safe-url";
 
 // The message-surface renderer: renders a text block as markdown (CommonMark +
@@ -39,36 +41,6 @@ import { safeHref } from "../safe-url";
  *  text keeps the sentence around it readable. */
 function imgPlaceholder(alt: string | undefined): string {
 	return alt ? `[image: ${alt}]` : "[image]";
-}
-
-/** Open a link OUTSIDE the app — never as an in-page navigation. The single seam
- *  the `a` override routes activation through, with the framework dependency
- *  (`@wailsio/runtime`) confined here (design §A2 / DL-109 zone discipline).
- *
- *  Inside the Wails shell (`window._wails.environment` is injected by the native
- *  runtime, prod and dev alike) the OS default browser opens via
- *  `Browser.OpenURL`; in the plain-browser dev build — where no Wails runtime is
- *  reachable and calling it would throw — a `window.open` with the same
- *  bypass-proofing (`noreferrer,noopener`) opens a new tab. The caller has
- *  already scheme-sanitized the href (`safeHref`), so this only ever receives a
- *  vetted absolute URL. */
-function isNativeShell(): boolean {
-	// The native Wails runtime injects `window._wails.environment` into the page
-	// (prod and dev alike, internal/runtime/runtime_{prod,dev}.go); a plain
-	// browser build has no such object. Narrow with `in`/`typeof` so the property
-	// read is actually checked rather than asserted onto `window`.
-	if (typeof window === "undefined") return false;
-	if (!("_wails" in window)) return false;
-	const wails = window._wails;
-	return typeof wails === "object" && wails !== null && "environment" in wails;
-}
-
-function openExternal(href: string): void {
-	if (isNativeShell()) {
-		void Browser.OpenURL(href).catch(() => {});
-		return;
-	}
-	window.open(href, "_blank", "noreferrer,noopener");
 }
 
 /** The concatenated raw text of a hast element's descendants — the verbatim
@@ -300,6 +272,11 @@ export const MarkdownText: Component<{
 	// than the old per-chip live resolution — an accepted tradeoff, account-map
 	// changes are rare and a full re-parse is what every streaming tick already
 	// costs).
+	const refLinkRules = useRefLinkRules();
+	const remarkPlugins = createMemo(() => {
+		const rules = refLinkRules();
+		return [remarkGfm, remarkRefLinks(() => rules)];
+	});
 	const rehypePlugins = createMemo(() => [
 		rehypeInertRaw,
 		rehypeProseBreaks,
@@ -358,7 +335,7 @@ export const MarkdownText: Component<{
 		<div class="msg-text markdown-content">
 			<Markdown
 				renderingStrategy="reconcile"
-				remarkPlugins={[remarkGfm]}
+				remarkPlugins={remarkPlugins()}
 				rehypePlugins={rehypePlugins()}
 				components={components}
 			>

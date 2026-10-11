@@ -45,6 +45,7 @@ import { BacklogList } from "./BacklogView";
 import { BadgeGlyph } from "./BadgeGlyph";
 import { DoneList } from "./DoneView";
 import { IssueCard } from "./IssueCard";
+import { RefText } from "./RefText";
 import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
@@ -193,7 +194,9 @@ const PrCard: Component<{
 					{issueKey(props.row.issue, props.multiForge)}
 				</span>
 			</span>
-			<span class="card-title">{pr().title}</span>
+			<span class="card-title">
+				<RefText text={pr().title} />
+			</span>
 			<span class="card-foot">
 				<span class="card-author">
 					{assignee() ? `@${assignee()}` : "unassigned"}

@@ -14,6 +14,7 @@ import {
 	createCompassClient,
 	createCompassWebTransport,
 } from "@compass/client";
+import type { RefLinkRule } from "../refs/grammar";
 import type { ResolvedConnection } from "./provider";
 
 /** The typed compass.v1 clients the app dials, built from one Connection. */
@@ -80,6 +81,24 @@ export interface ServerInfo {
 export async function probeServer(client: CompassClient): Promise<ServerInfo> {
 	const resp = await client.getServerInfo({});
 	return { version: resp.version, apiVersion: resp.apiVersion, rev: resp.rev };
+}
+
+/** Read configured link targets once from the connected Compass service. */
+export async function loadRefLinkRules(
+	client: CompassClient,
+): Promise<RefLinkRule[]> {
+	const response = await client.getRefLinkRules({});
+	return response.rules.flatMap((rule) =>
+		rule.kind === "github" || rule.kind === "linear"
+			? [
+					{
+						kind: rule.kind,
+						prefix: rule.prefix,
+						urlTemplate: rule.urlTemplate,
+					},
+				]
+			: [],
+	);
 }
 
 /** The caller's own account id, resolved server-side from the connection's

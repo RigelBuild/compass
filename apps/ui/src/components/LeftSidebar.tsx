@@ -21,6 +21,7 @@ import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
 import { DEMO_AGENTS, isDemoId } from "../tour/demo";
 import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
 import { Glyph } from "./Glyph";
+import { RefText } from "./RefText";
 import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
@@ -74,7 +75,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 				</Show>
 				<Show when={a().activity}>
 					<span class="agent-activity" title={a().activity}>
-						{a().activity}
+						<RefText text={a().activity ?? ""} />
 					</span>
 				</Show>
 			</button>

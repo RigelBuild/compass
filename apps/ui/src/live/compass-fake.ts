@@ -94,6 +94,10 @@ export interface FakeCompass {
 	/** Reject the next WhoAmI with `error` (one-shot) — the server-answered-but-
 	 *  identity-unlearnable path a boot guard must surface. */
 	failNextWhoAmI: (error: Error) => void;
+	/** The fixture link rules served by GetRefLinkRules. */
+	refLinkRules: { kind: string; prefix: string; urlTemplate: string }[];
+	/** Reject the next GetRefLinkRules with `error` (one-shot). */
+	failNextRefLinkRules: (error: Error) => void;
 	/** Emit an agentSessionStatus on the SubscribeEvents stream — the source of
 	 *  the session ids the store tails. */
 	pushSessionStatus: (
@@ -131,6 +135,19 @@ export function createFakeCompass(opts?: {
 	let skipFailure: Error | undefined;
 	let probeFailure: Error | undefined;
 	let whoAmIFailure: Error | undefined;
+	let rulesFailure: Error | undefined;
+	const refLinkRules = [
+		{
+			kind: "github",
+			prefix: "github.com",
+			urlTemplate: "https://github.com/{owner}/{repo}/issues/{number}",
+		},
+		{
+			kind: "linear",
+			prefix: "RIG",
+			urlTemplate: "https://linear.app/rigel/issue/{key}-{number}",
+		},
+	];
 	const serverInfo = {
 		version: "9.9.9-test",
 		apiVersion: "compass.v1",
@@ -185,6 +202,14 @@ export function createFakeCompass(opts?: {
 				apiVersion: serverInfo.apiVersion,
 				rev: serverInfo.rev,
 			};
+		},
+		getRefLinkRules: async (_req: Record<string, never>) => {
+			if (rulesFailure) {
+				const err = rulesFailure;
+				rulesFailure = undefined;
+				throw err;
+			}
+			return { rules: refLinkRules };
 		},
 		whoAmI: async (_req: Record<string, never>) => {
 			if (whoAmIFailure) {
@@ -256,6 +281,10 @@ export function createFakeCompass(opts?: {
 		whoAmIAccountId,
 		failNextWhoAmI: (error) => {
 			whoAmIFailure = error;
+		},
+		refLinkRules,
+		failNextRefLinkRules: (error) => {
+			rulesFailure = error;
 		},
 		pushSessionStatus: (accountId, sessionId, state, atUnixMs = 0) => {
 			eventSeq++;
