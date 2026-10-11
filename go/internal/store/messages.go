@@ -85,9 +85,14 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	switch {
 	case errors.Is(err, errMessageInsertConflict):
 		// ON CONFLICT DO NOTHING suppressed the insert: a row with this
-		// idempotency key exists (a retry). The tx rolls back; return the
-		// committed row with inserted=false so the handler suppresses a
-		// duplicate MessagePosted. AnswerAsk carries no key, so it never hits this.
+		// idempotency key exists (a retry). Return the committed row with
+		// inserted=false so the handler suppresses a duplicate MessagePosted.
+		// AnswerAsk carries no key, so it never hits this.
+		// Roll back first: the re-read goes through the pool, which a
+		// one-connection pool could not otherwise serve.
+		if err := tx.Rollback(ctx); err != nil {
+			return Message{}, false, fmt.Errorf("store: roll back deduped append: %w", err)
+		}
 		stored, err := s.getMessageByRequestID(ctx, m.AuthorAccountID, clientRequestID)
 		return stored, false, err
 	case pgErrIs(err, pgForeignKeyViolation):

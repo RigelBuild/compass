@@ -15,9 +15,9 @@ import (
 // links it. Open has no tracer seam, so the migrated store's pool is swapped for
 // a traced one on the same DSN; s.q reads s.pool per call.
 func OpenTraced(ctx context.Context, dsn string, tracer pgx.QueryTracer) (*Store, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+	cfg, err := poolConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("store: parse traced dsn: %w", err)
+		return nil, err
 	}
 	cfg.ConnConfig.Tracer = tracer
 	s, err := Open(ctx, dsn)
