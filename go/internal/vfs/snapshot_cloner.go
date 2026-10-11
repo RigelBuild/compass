@@ -127,7 +127,7 @@ func cloneRegular(ctx context.Context, srcRoot, dstRoot *os.Root, path string, m
 	}
 	var cloneErr error
 	if reflink {
-		cloneErr = unix.IoctlFileClone(int(dst.Fd()), int(src.Fd()))
+		cloneErr = reflinkFile(dst, src)
 	} else {
 		_, cloneErr = io.Copy(dst, src)
 	}
@@ -203,7 +203,7 @@ func probeCloner(storeDir string) (selected cloner, resultErr error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("vfs: opening reflink probe source: %w", err), dst.Close(), removeProbe(stagingRoot, srcName), removeProbe(stagingRoot, dstName))
 	}
-	cloneErr := unix.IoctlFileClone(int(dst.Fd()), int(srcFile.Fd()))
+	cloneErr := reflinkFile(dst, srcFile)
 	closeErr := errors.Join(srcFile.Close(), dst.Close())
 	cleanupErr := errors.Join(removeProbe(stagingRoot, srcName), removeProbe(stagingRoot, dstName))
 	if cleanupErr != nil {

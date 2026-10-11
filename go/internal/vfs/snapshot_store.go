@@ -79,7 +79,7 @@ func (m *LocalManager) Snapshot(ctx context.Context, v Volume) (VolumeSnapshotID
 	return id, errors.Join(snapshotErr, lock.release())
 }
 
-func (m *LocalManager) snapshotLocked(ctx context.Context, v Volume) (VolumeSnapshotID, error) {
+func (m *LocalManager) snapshotLocked(ctx context.Context, v Volume) (id VolumeSnapshotID, resultErr error) {
 	if err := requireVolumeRoot(v.HostRoot, v.SessionID); err != nil {
 		return "", err
 	}
@@ -90,14 +90,24 @@ func (m *LocalManager) snapshotLocked(ctx context.Context, v Volume) (VolumeSnap
 	if _, err := rand.Read(random[:]); err != nil {
 		return "", fmt.Errorf("vfs: generating snapshot id: %w", err)
 	}
-	id := VolumeSnapshotID(hex.EncodeToString(random[:]))
+	id = VolumeSnapshotID(hex.EncodeToString(random[:]))
 	staging := filepath.Join(m.snapshotStoreDir(), snapshotStagingDir, string(id))
 	tree := m.snapshotPath(id)
+	lock, err := lockVolume(ctx, staging)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, removeSnapshotLockLocked(staging), lock.release())
+	}()
 	if err := os.Mkdir(staging, volumeDirMode); err != nil { //nolint:gosec // staging path is built from the fixed store root and a cryptographic snapshot ID
 		return "", fmt.Errorf("vfs: creating snapshot staging tree %q: %w", staging, err)
 	}
 	if err := m.cloner.cloneTree(ctx, v.HostRoot, staging); err != nil {
 		return "", errors.Join(fmt.Errorf("vfs: cloning volume %q to snapshot %q: %w", v.HostRoot, id, err), removeSnapshotPath(staging))
+	}
+	if err := syncTree(staging); err != nil {
+		return "", errors.Join(fmt.Errorf("vfs: syncing snapshot staging tree %q: %w", id, err), removeSnapshotPath(staging))
 	}
 	if err := os.Rename(staging, tree); err != nil { //nolint:gosec // both paths use fixed store directories and a cryptographic snapshot ID
 		return "", errors.Join(fmt.Errorf("vfs: committing snapshot %q: %w", id, err), removeSnapshotPath(staging))
@@ -173,13 +183,20 @@ func (m *LocalManager) promoteSnapshotLocked(key SnapshotKey, id VolumeSnapshotI
 }
 
 // CurrentSnapshot returns the current snapshot for an account and repo.
-func (m *LocalManager) CurrentSnapshot(ctx context.Context, key SnapshotKey) (VolumeSnapshotID, error) {
+func (m *LocalManager) CurrentSnapshot(ctx context.Context, key SnapshotKey) (id VolumeSnapshotID, resultErr error) {
 	if err := validateSnapshotKey(key); err != nil {
 		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	lock, err := m.storeLock(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, lock.release())
+	}()
 	entry, err := readSnapshotIndex(m.snapshotIndexPath(key))
 	if err != nil {
 		return "", err
@@ -187,7 +204,7 @@ func (m *LocalManager) CurrentSnapshot(ctx context.Context, key SnapshotKey) (Vo
 	if entry == nil || entry.AgentAccountID != key.AgentAccountID || entry.Repo != key.Repo {
 		return "", fmt.Errorf("vfs: current snapshot for account %q repo %q: %w", key.AgentAccountID, key.Repo, ErrSnapshotNotFound)
 	}
-	id := VolumeSnapshotID(entry.SnapshotID)
+	id = VolumeSnapshotID(entry.SnapshotID)
 	if validateSnapshotID(id) != nil {
 		return "", fmt.Errorf("vfs: invalid indexed snapshot id: %w", ErrSnapshotNotFound)
 	}
@@ -201,7 +218,8 @@ func (m *LocalManager) CurrentSnapshot(ctx context.Context, key SnapshotKey) (Vo
 	return id, nil
 }
 
-// RestoreSnapshot materializes a stored tree into an empty or interrupted volume.
+// RestoreSnapshot restores the id from CurrentSnapshot for this session's account; the index key owns that boundary.
+// A superseded id returns ErrSnapshotNotFound, so the caller takes the cold path.
 func (m *LocalManager) RestoreSnapshot(ctx context.Context, id VolumeSnapshotID, v Volume) error {
 	if err := validateSnapshotID(id); err != nil {
 		return err
@@ -262,6 +280,9 @@ func (m *LocalManager) restoreSnapshotLocked(ctx context.Context, id VolumeSnaps
 		}
 		cleanupErr = errors.Join(cleanupErr, syncDir(filepath.Dir(marker)))
 		return errors.Join(fmt.Errorf("vfs: restoring snapshot %q into %q: %w", id, v.HostRoot, err), cleanupErr)
+	}
+	if err := syncTree(v.HostRoot); err != nil {
+		return fmt.Errorf("vfs: syncing restored volume %q: %w", v.HostRoot, err)
 	}
 	if err := os.Remove(marker); err != nil {
 		return fmt.Errorf("vfs: clearing restore marker %q: %w", marker, err)
@@ -377,41 +398,91 @@ func (m *LocalManager) sweepSnapshots(ctx context.Context, olderThan time.Durati
 
 func (m *LocalManager) sweepSnapshotsLocked(ctx context.Context, now time.Time, olderThan time.Duration) error {
 	var errs []error
+	errs = append(errs, m.sweepStaging(ctx, now, olderThan))
+	referenced, err := m.referencedSnapshots()
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	errs = append(errs, m.sweepSnapshotTrees(ctx, now, olderThan, referenced))
+	return errors.Join(errs...)
+}
+
+func (m *LocalManager) sweepStaging(ctx context.Context, now time.Time, olderThan time.Duration) error {
 	staging := filepath.Join(m.snapshotStoreDir(), snapshotStagingDir)
-	stagingEntries, err := os.ReadDir(staging)
+	entries, err := os.ReadDir(staging)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("vfs: scanning snapshot staging dir %q: %w", staging, err))
-	} else {
-		for _, entry := range stagingEntries {
-			if err := ctx.Err(); err != nil {
-				errs = append(errs, err)
-				break
-			}
-			path := filepath.Join(staging, entry.Name())
-			info, err := os.Stat(path)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("vfs: inspecting staged snapshot %q: %w", path, err))
-				continue
-			}
-			if now.Sub(info.ModTime()) <= olderThan {
-				continue
-			}
-			if err := removeSnapshotPath(path); err != nil {
-				errs = append(errs, fmt.Errorf("vfs: sweeping staged snapshot %q: %w", path, err))
-			}
+		return fmt.Errorf("vfs: scanning snapshot staging dir %q: %w", staging, err)
+	}
+	var errs []error
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), lockFileSuffix) {
+			continue
 		}
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		path := filepath.Join(staging, entry.Name())
+		errs = append(errs, sweepStagingEntry(ctx, path, now, olderThan))
 	}
-	referenced, refErr := m.referencedSnapshots()
-	if refErr != nil {
-		errs = append(errs, refErr)
-		return errors.Join(errs...)
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), lockFileSuffix) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		path := filepath.Join(staging, entry.Name())
+		errs = append(errs, sweepOrphanStagingLock(ctx, path))
 	}
-	trees := filepath.Join(m.snapshotStoreDir(), snapshotTreesDir)
-	treeEntries, err := os.ReadDir(trees)
+	return errors.Join(errs...)
+}
+
+func sweepStagingEntry(ctx context.Context, path string, now time.Time, olderThan time.Duration) error {
+	lock, err := tryLockVolume(ctx, path)
+	if err != nil || lock == nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return lock.release()
+	}
 	if err != nil {
-		return errors.Join(append(errs, fmt.Errorf("vfs: scanning snapshot trees %q: %w", trees, err))...)
+		return errors.Join(fmt.Errorf("vfs: inspecting staged snapshot %q: %w", path, err), lock.release())
 	}
-	for _, entry := range treeEntries {
+	if now.Sub(info.ModTime()) <= olderThan {
+		return lock.release()
+	}
+	if err := removeSnapshotPath(path); err != nil {
+		return errors.Join(fmt.Errorf("vfs: sweeping staged snapshot %q: %w", path, err), lock.release())
+	}
+	return errors.Join(removeSnapshotLockLocked(path), lock.release())
+}
+
+func sweepOrphanStagingLock(ctx context.Context, path string) error {
+	root := strings.TrimSuffix(path, lockFileSuffix)
+	lock, err := tryLockVolume(ctx, root)
+	if err != nil || lock == nil {
+		return err
+	}
+	_, err = os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		err = removeSnapshotLockLocked(root)
+	} else if err != nil {
+		err = fmt.Errorf("vfs: inspecting staged snapshot for orphan lock %q: %w", root, err)
+	}
+	return errors.Join(err, lock.release())
+}
+
+func (m *LocalManager) sweepSnapshotTrees(ctx context.Context, now time.Time, olderThan time.Duration, referenced map[string]bool) error {
+	trees := filepath.Join(m.snapshotStoreDir(), snapshotTreesDir)
+	entries, err := os.ReadDir(trees)
+	if err != nil {
+		return fmt.Errorf("vfs: scanning snapshot trees %q: %w", trees, err)
+	}
+	var errs []error
+	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			break
@@ -433,6 +504,21 @@ func (m *LocalManager) sweepSnapshotsLocked(ctx context.Context, now time.Time, 
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func removeSnapshotLockLocked(root string) error {
+	rootExists, err := pathExists(root)
+	if err != nil {
+		return err
+	}
+	if rootExists {
+		return nil
+	}
+	path := root + lockFileSuffix
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // path is the lock sibling of an internal store directory.
+		return fmt.Errorf("vfs: removing snapshot staging lock %q: %w", path, err)
+	}
+	return nil
 }
 
 func removeSnapshotPath(path string) error {

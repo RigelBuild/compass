@@ -299,6 +299,43 @@ func TestSnapshotKeyValidation(t *testing.T) {
 	}
 }
 
+func TestExpireSkipsLockedSnapshotStaging(t *testing.T) {
+	m := newManager(t)
+	staging := filepath.Join(m.snapshotStoreDir(), snapshotStagingDir, "in-progress")
+	lock, err := lockVolume(t.Context(), staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lock.release(); err != nil {
+			t.Errorf("release staging lock: %v", err)
+		}
+	}()
+	if err := os.Mkdir(staging, volumeDirMode); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(staging, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Expire(t.Context(), time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(t, staging) {
+		t.Fatal("Expire removed staging while its copy lock was held")
+	}
+	if err := lock.release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Expire(t.Context(), time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, staging) || exists(t, staging+lockFileSuffix) {
+		t.Fatal("Expire left old staging directory or its lock file after release")
+	}
+}
+
 func TestExpireSweepsSnapshotsByAgeAndKeepsReferences(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "source")
