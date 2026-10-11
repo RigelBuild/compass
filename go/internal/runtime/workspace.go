@@ -76,7 +76,7 @@ type Workspace struct {
 
 // checkWorkspaceSource fails closed on an unknown source, and requires a volume
 // workspace's checkout dir to be a writable mount on a backend that applies
-// mounts, so the in-container path and the volume cannot drift apart.
+// mounts (an unknown tier is refused), so the in-container path and the volume cannot drift apart.
 func checkWorkspaceSource(spec AgentSpec, tier WorkloadTier) error {
 	switch spec.Workspace.Source {
 	case SourceCloneDir:
@@ -85,8 +85,10 @@ func checkWorkspaceSource(spec AgentSpec, tier WorkloadTier) error {
 	default:
 		return fmt.Errorf("%w: %d", ErrUnknownWorkspaceSource, spec.Workspace.Source)
 	}
-	if tier == WorkloadTierHost {
-		return fmt.Errorf("%w: the host tier applies no mounts", ErrVolumeMountMissing)
+	switch tier {
+	case WorkloadTierPodman, WorkloadTierMicroVM, WorkloadTierAppleContainer:
+	default:
+		return fmt.Errorf("%w: tier %q is not known to apply mounts", ErrVolumeMountMissing, tier)
 	}
 	if slices.ContainsFunc(spec.Mounts, func(m Mount) bool {
 		return !m.ReadOnly && m.ContainerPath == spec.Workspace.CheckoutDir

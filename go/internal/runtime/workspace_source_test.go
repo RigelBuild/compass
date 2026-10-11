@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+// podmanTierFakeRuntime reports a tier that applies mounts.
+type podmanTierFakeRuntime struct{ *fakeRuntime }
+
+func (podmanTierFakeRuntime) Tier() WorkloadTier { return WorkloadTierPodman }
+
 func volumeSpec(mounts ...Mount) AgentSpec {
 	spec := specWithCreds(false)
 	spec.Workspace.Source = SourceVolume
@@ -16,7 +21,7 @@ func volumeSpec(mounts ...Mount) AgentSpec {
 
 func TestLaunchSourceVolumeMountsCheckoutDirReadWrite(t *testing.T) {
 	fake := newFakeRuntime(t)
-	rt := NewAgentRuntime(fake)
+	rt := NewAgentRuntime(podmanTierFakeRuntime{fake})
 	spec := volumeSpec(Mount{HostPath: "/var/lib/compass/vol/a", ContainerPath: "/work/repo"})
 
 	if _, err := rt.Launch(t.Context(), spec); err != nil {
@@ -48,7 +53,7 @@ func TestLaunchSourceVolumeRejectsSpecWithoutWritableCheckoutMount(t *testing.T)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeRuntime(t)
-			rt := NewAgentRuntime(fake)
+			rt := NewAgentRuntime(podmanTierFakeRuntime{fake})
 			_, err := rt.Launch(t.Context(), volumeSpec(tc.mounts...))
 			if !errors.Is(err, ErrVolumeMountMissing) {
 				t.Fatalf("Launch error = %v, want ErrVolumeMountMissing", err)
@@ -78,24 +83,37 @@ type hostTierFakeRuntime struct{ *fakeRuntime }
 
 func (hostTierFakeRuntime) Tier() WorkloadTier { return WorkloadTierHost }
 
-func TestLaunchSourceVolumeRefusedOnHostTier(t *testing.T) {
-	fake := hostTierFakeRuntime{newFakeRuntime(t)}
-	rt := NewAgentRuntime(fake)
-	spec := volumeSpec(Mount{HostPath: "/v", ContainerPath: "/work/repo"})
-	if _, err := rt.Launch(t.Context(), spec); !errors.Is(err, ErrVolumeMountMissing) {
-		t.Fatalf("Launch error = %v, want ErrVolumeMountMissing: a host process cannot see the mount", err)
+// A tier that ignores mounts, or one that does not name itself (a wrapper that
+// drops Tier), would run the checkout outside the volume, so both are refused.
+func TestLaunchSourceVolumeRefusedOnTierWithoutMounts(t *testing.T) {
+	tests := map[string]func(*fakeRuntime) WorkloadRuntime{
+		"host tier":    func(f *fakeRuntime) WorkloadRuntime { return hostTierFakeRuntime{f} },
+		"unknown tier": func(f *fakeRuntime) WorkloadRuntime { return f },
 	}
-	if calls := fake.callsSnapshot(); len(calls) != 0 {
-		t.Fatalf("calls = %v, want none", calls)
+	for name, wrap := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeRuntime(t)
+			rt := NewAgentRuntime(wrap(fake))
+			spec := volumeSpec(Mount{HostPath: "/v", ContainerPath: "/work/repo"})
+			if _, err := rt.Launch(t.Context(), spec); !errors.Is(err, ErrVolumeMountMissing) {
+				t.Fatalf("Launch error = %v, want ErrVolumeMountMissing", err)
+			}
+			if calls := fake.callsSnapshot(); len(calls) != 0 {
+				t.Fatalf("calls = %v, want none", calls)
+			}
+		})
 	}
 }
 
 func TestLaunchUnknownSourceRefused(t *testing.T) {
 	fake := newFakeRuntime(t)
-	rt := NewAgentRuntime(fake)
+	rt := NewAgentRuntime(podmanTierFakeRuntime{fake})
 	spec := specWithCreds(false)
 	spec.Workspace.Source = SourceVolume + 1
 	if _, err := rt.Launch(t.Context(), spec); !errors.Is(err, ErrUnknownWorkspaceSource) {
 		t.Fatalf("Launch error = %v, want ErrUnknownWorkspaceSource", err)
+	}
+	if calls := fake.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("calls = %v, want none", calls)
 	}
 }
