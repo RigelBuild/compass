@@ -53,3 +53,30 @@ func TestSelectBackendUnknown(t *testing.T) {
 		t.Fatalf("SelectBackend(bogus) err = %q, want it to name the bad value", err)
 	}
 }
+
+func TestValidBackend(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "default", input: "", want: ""},
+		{name: "podman", input: "podman", want: "podman"},
+		{name: "trimmed microvm", input: " microvm ", want: "microvm"},
+		{name: "apple-container", input: "apple-container", want: "apple-container"},
+		{name: "host", input: "host", want: "host"},
+		{name: "unknown", input: "micorvm", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ValidBackend(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidBackend(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
+				t.Errorf("ValidBackend(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

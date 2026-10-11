@@ -40,6 +40,9 @@ are advisory on the default container tier; select the microVM tier with
 `--runtime-backend microvm` or `$COMPASS_RUNTIME_BACKEND=microvm` to make those
 checks hard failures. Rootless podman and `secretspec` are always required.
 
+The transcripts below are examples from a host without KVM and the microVM
+tools. Results depend on the host where you run preflight.
+
 ```console
 $ compass-stack preflight
 [WARN] kvm              /dev/kvm not openable: open /dev/kvm: no such file or directory (host must expose KVM; add the invoking user to the kvm group)

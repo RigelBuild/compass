@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/hostcheck"
+	runtimelib "github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // preflight is the T9 host bring-up gate: it surfaces the KVM/podman/microVM and
@@ -86,6 +87,10 @@ func runPreflight(args []string) error {
 	if *runtimeBackend == "" {
 		*runtimeBackend = os.Getenv("COMPASS_RUNTIME_BACKEND")
 	}
+	backend, err := runtimelib.ValidBackend(*runtimeBackend)
+	if err != nil {
+		return err
+	}
 
 	checks := []preflightCheck{
 		{result: checkKVM(), microVM: true},
@@ -98,7 +103,7 @@ func runPreflight(args []string) error {
 	// dependency rather than a microVM userspace binary.
 	checks = append(checks, preflightCheck{result: checkBinaryVersion(hostcheck.SecretSpecFloor)})
 
-	lines, failed := preflightLines(*runtimeBackend, checks)
+	lines, failed := preflightLines(backend, checks)
 	for _, line := range lines {
 		if err := printCheckLine(line); err != nil {
 			return err
@@ -125,7 +130,7 @@ func preflightLines(backend string, checks []preflightCheck) ([]string, []string
 		mark := "PASS"
 		if !c.OK {
 			mark = "FAIL"
-			if backend != "microvm" && check.microVM {
+			if backend != string(runtimelib.WorkloadTierMicroVM) && check.microVM {
 				mark = "WARN"
 			} else {
 				failed = append(failed, c.Name)

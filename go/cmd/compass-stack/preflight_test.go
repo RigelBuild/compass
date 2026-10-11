@@ -105,6 +105,60 @@ func TestRunPreflightRuntimeBackendPrecedence(t *testing.T) {
 	}
 }
 
+// TestRunPreflightBackendValidation checks backend normalization and rejects
+// invalid names before running checks. Empty PATH keeps binary outcomes stable.
+func TestRunPreflightBackendValidation(t *testing.T) {
+	tests := []struct {
+		name            string
+		backend         string
+		wantErrContains []string
+		wantErrAbsent   []string
+	}{
+		{
+			name:            "unknown backend is rejected before checks",
+			backend:         "micorvm",
+			wantErrContains: []string{"micorvm", "accepted values are", "podman", "microvm", "apple-container", "host"},
+			wantErrAbsent:   []string{"preflight failed:"},
+		},
+		{
+			name:            "whitespace around microvm is trimmed",
+			backend:         " microvm ",
+			wantErrContains: []string{"preflight failed: podman, cloud-hypervisor, virtiofsd, passt, secretspec"},
+		},
+		{
+			name:            "apple-container has advisory microvm prerequisites",
+			backend:         "apple-container",
+			wantErrContains: []string{"preflight failed: podman, secretspec"},
+			wantErrAbsent:   []string{"kvm", "cloud-hypervisor", "virtiofsd", "passt"},
+		},
+		{
+			name:            "host has advisory microvm prerequisites",
+			backend:         "host",
+			wantErrContains: []string{"preflight failed: podman, secretspec"},
+			wantErrAbsent:   []string{"kvm", "cloud-hypervisor", "virtiofsd", "passt"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PATH", t.TempDir())
+			err := runPreflight([]string{"--runtime-backend", tt.backend})
+			if err == nil {
+				t.Fatal("expected preflight error with an empty PATH or unknown backend")
+			}
+			for _, want := range tt.wantErrContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("preflight error %q does not contain %q", err, want)
+				}
+			}
+			for _, absent := range tt.wantErrAbsent {
+				if strings.Contains(err.Error(), absent) {
+					t.Errorf("preflight error %q unexpectedly contains %q", err, absent)
+				}
+			}
+		})
+	}
+}
+
 // TestPreflightLines applies backend policy to synthetic results so both
 // advisory and hard-failure paths are deterministic on every host.
 func TestPreflightLines(t *testing.T) {
@@ -153,6 +207,8 @@ func TestPreflightLines(t *testing.T) {
 		{name: "secretspec failure is hard by default", failures: []string{"secretspec"}, wantOutput: secretspecFailure, wantFailed: []string{"secretspec"}},
 		{name: "podman backend matches empty backend", backend: "podman", failures: []string{"kvm", "cloud-hypervisor", "virtiofsd", "passt"}, wantOutput: defaultWarnings},
 		{name: "podman and secretspec failures stay hard for microvm", backend: "microvm", failures: []string{"podman", "secretspec"}, wantOutput: strings.ReplaceAll(strings.ReplaceAll(secretspecFailure, "[PASS] podman", "[FAIL] podman"), "[PASS] secretspec", "[FAIL] secretspec"), wantFailed: []string{"podman", "secretspec"}},
+		{name: "apple-container prerequisites are advisory", backend: "apple-container", failures: []string{"kvm", "cloud-hypervisor", "virtiofsd", "passt"}, wantOutput: defaultWarnings},
+		{name: "host prerequisites are advisory", backend: "host", failures: []string{"kvm", "cloud-hypervisor", "virtiofsd", "passt"}, wantOutput: defaultWarnings},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,10 +226,9 @@ func TestPreflightLines(t *testing.T) {
 func preflightTestResults(failures ...string) []preflightCheck {
 	checks := make([]preflightCheck, 0, 6)
 	for _, name := range []string{"kvm", "podman", "cloud-hypervisor", "virtiofsd", "passt", "secretspec"} {
-		microVM := name == "kvm" || name == "cloud-hypervisor" || name == "virtiofsd" || name == "passt"
 		checks = append(checks, preflightCheck{
 			result:  hostcheck.Result{Name: name, OK: !slices.Contains(failures, name), Detail: "detail"},
-			microVM: microVM,
+			microVM: name == "kvm" || name == "cloud-hypervisor" || name == "virtiofsd" || name == "passt",
 		})
 	}
 	return checks
