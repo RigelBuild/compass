@@ -19,5 +19,13 @@ manual console work or one-off commands.
   apply, keep those changes separate and explain the dependency. Never bypass
   declarative state with an ad hoc mutation.
 
+## Alert behavior
+
+Treat a firing operational alert as an urgent signal. Confirm whether its target
+condition occurred; a false or stuck alert is a defect in the alert or the
+signal it reads, not a reason to silence it. Before deploying an alert change,
+verify that it fires for the target failure and stays quiet for healthy behavior.
+After deployment, check its state and promptly roll back or fix forward if it
+misfires.
 Provider and deployment adapters belong in user configuration or later skill
 bundles. This skill defines the workflow, not provider-specific commands.

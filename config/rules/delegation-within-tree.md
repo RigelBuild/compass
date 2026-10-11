@@ -13,3 +13,7 @@ A hands subagent executes its brief, reports results to its caller, and yields;
 it does not delegate beyond the brief or claim lane ownership. A Manager
 coordinates its assigned lane and remains accountable for delegated results.
 Use `skill://management-trees` for the tree and task mechanics.
+
+The parent verifies the combined changes by running the repository's actual CI
+task. A green subset reported by a subagent is not that gate; it may omit a
+project check. Use the task name from the repository.

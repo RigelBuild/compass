@@ -85,8 +85,23 @@ local scratch artifact. Four short sections:
 - **Plan** — decomposed tasks (see Plan discipline).
 - **Tasks** — a checklist mirroring the plan.
 
+Before drafting, read active decisions and existing design records. Cite each
+relevant decision and name the outcomes this design replaces.
+
+When a maintained, widely adopted library meets the requirement, prefer it over
+hand-rolling the same functionality. Use the standard library when it already
+covers the exact operation, and ground library choices in evidence of adoption
+and maintenance.
+For code claims, cite the symbol and repository-relative path and quote the
+supporting source. For documentation claims, cite the section heading and path.
+Do not cite a line number for changing source.
+
+**Open Questions go immediately below the title** so a reader can see unresolved
+decisions first. Remove the heading when no open questions remain; keep decided
+outcomes in the relevant section.
+
 **Flush-early — skeleton first, then edit.** The subagent `write`s the target
-path with the four section headers above plus an empty `## Open Questions`
+path with the title, an empty `## Open Questions`, and the four section headers
 **before** its deep recon, then `edit`s it section by section. The record is a
 valid, growing file on disk from the first minute — never composed in-context and
 held to a single terminal `write` at the end. That deferred-write shape is what
@@ -95,17 +110,21 @@ and the one big `write` never lands, so the run can reach its end with zero byte
 on disk. Skeleton-first makes a zero-progress run structurally impossible, and
 you can poll that same brief-given path and watch it grow.
 
-## Clarifications: batched, asked directly
+## Clarifications: batched by dependency
 
-The `design` subagent is headless — it cannot prompt the human. So it batches
-**all** open questions and assumptions into an **Open Questions** section of the
-record (and its returned summary), designing against a stated assumption rather
-than stalling. **You then ask the operator directly on your home channel in a
-single batched post** — every question with a recommendation — never a
-one-question-per-turn loop, and never routed through a parent Manager (that
-buries the decision in a coordination stream). The operator answers once; the
-design is updated and frozen. Forks promoted by the **Adversarial critique** ride
-this same single post — the critic adds no separate human round-trip.
+The `design` subagent is headless — it cannot prompt the human. Record open
+questions and assumptions in the design, and continue against stated assumptions
+where safe. The Manager asks the operator directly on its home channel, never
+routed through a parent Manager (that buries the decision in a coordination
+stream).
+
+Ask all questions that can be answered now in one batch. If a question depends
+on another answer, defer it until that answer arrives, then ask the newly
+answerable questions together. For each question, state the exact decision, its
+options and tradeoffs, and a clear **Recommendation:** line. Do not ask about a
+choice that the record or repository evidence already resolves. Forks promoted by the
+**Adversarial critique** ride the same batch; the critic adds no separate human
+round-trip.
 
 ## No merge with open questions (the pre-freeze gate)
 

@@ -69,6 +69,13 @@ These hold on every change, no exceptions.
   your work onto `main@origin` before you submit, so the PR is against current
   trunk and CI runs on a live base. Compass CI checks out full history; a stale
   base can green locally and fail the merge gate.
+- **Rebase without waiting for permission.** Rebasing onto the current target is
+  maintenance, even if the previous head was approved. After pushing a changed
+  head, obtain a fresh review of that head before handoff.
+- **Stack changes with overlapping edits.** If two PRs edit the same lines of a
+  file, base the later change on the tip of the first PR's line. A known conflict
+  counts even when their concerns differ; tell that line's owner and keep the
+  stack linear, with each PR focused.
 - **Stack aggressively, but re-verify each head after a rebase.** Chain dependent
   work into a stack instead of one fat PR. After you rebase a stack onto new
   `main`, a lower commit can shift what an upper commit sees — re-inspect each
@@ -134,7 +141,7 @@ jj-vine submit <issue>-<slug>                 # push (through the CI gate) + ope
 - **Branch naming: one bookmark per PR, named for its slice.** Lead with the
   issue reference and a short kebab-case description (`sea-1732-jj-skill`); no
   `user/` prefix. In multi-agent work, keep the name descriptive of the lane so
-  peers can tell stacks apart.
+  peers can tell stacks apart. Keep each PR single-purpose.
 
 `[TODO RIG-1882]` Distinct from the `jj-hp` CI gate above, the
 push-*authorization* guard that enforces the never-push-`main` and
@@ -242,6 +249,20 @@ affected head and its relevant checks after rebasing. A stack is one linear line
 submit its top so dependencies travel together, and describe each PR's base when
 handing off a stack. The operator owns the final merge. Do not submit after
 approval changes the reviewed head; obtain a fresh review after any such update.
+
+Before submitting a bookmark, check for commits in its line that no bookmark
+will publish:
+
+```sh
+B='<bookmark>'
+jj log --no-pager --no-graph -r "(descendants($B) ~ $B ~ empty()) ~ ::trunk() ~ ::(bookmarks() & descendants($B) ~ $B) ~ (working_copies() ~ @)"
+```
+
+The command must print nothing. It excludes commits already reachable from the
+trunk, commits included in a bookmark above this one, and other workspaces'
+working copies. If it prints a commit, place a bookmark on the nearest unpushed
+commit below it and submit that bookmark. Do not check only `<bookmark>..@`,
+which can include unrelated working-copy history.
 
 The detailed version-control invariants follow DL-142. Do not bypass the
 `jj-vine submit` path with direct pushes.

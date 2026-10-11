@@ -153,6 +153,15 @@ A Manager is a **coordinator, not a typist**. Implementation is done by
 in-process **subagents** you brief via the live `task` tool. Standing child
 Managers are a different thing (below).
 
+### Scope and capacity
+
+Every persistent Manager and delegated worker needs a clear scope in its role
+prompt or brief. Route work outside that scope to the current parent. The parent
+reassigns it within the subtree or escalates the resourcing need upward.
+
+Managers rebalance within their subtree before asking the Supervisor for another
+agent.
+
 ### Scope the subagent
 
 Cut work into **one self-contained slice** per subagent: exact file targets, the
