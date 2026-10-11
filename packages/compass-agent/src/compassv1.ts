@@ -275,6 +275,8 @@ export {
 	// The emitter builds one per trace event; the Session* sub-messages are the oneof payloads.
 	type SessionAssistantText,
 	SessionAssistantTextSchema,
+	type SessionBatchPending,
+	SessionBatchPendingSchema,
 	type SessionError,
 	SessionErrorKind,
 	SessionErrorSchema,
