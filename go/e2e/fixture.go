@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -929,6 +930,9 @@ func newPersistentSite(t *testing.T) fixtureSite {
 	}
 }
 
+// podmanProbeLog prints the probe failure once per process, not once per test.
+var podmanProbeLog sync.Once
+
 // podmanUsable reports whether rootless podman can run the real agent image
 // here. A missing binary or broken rootless setup means SKIP, not fail — a
 // container-less sandbox is not a test failure.
@@ -936,7 +940,9 @@ func podmanUsable() bool {
 	out, err := exec.Command("podman", "run", "--rm", agentImage, "true").CombinedOutput()
 	if err != nil {
 		// The skip message alone cannot tell a missing image from a broken userns.
-		fmt.Fprintf(os.Stderr, "podmanUsable: podman run %s: %v\n%s\n", agentImage, err, out)
+		podmanProbeLog.Do(func() {
+			fmt.Fprintf(os.Stderr, "podmanUsable: podman run %s: %v\n%s\n", agentImage, err, out)
+		})
 	}
 	return err == nil
 }
