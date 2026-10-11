@@ -68,7 +68,7 @@ describe("suiteFailed", () => {
 });
 
 describe("mutate", () => {
-	test("every mutant's target occurs exactly once in its own real source", async () => {
+	test("every mutant's target occurs the expected number of times in its own real source", async () => {
 		// Guards the verifier against silently verifying nothing: if a refactor
 		// moves or reshapes a branch, the find string stops matching and this
 		// fails loudly, instead of the mutant becoming a no-op that always
@@ -94,6 +94,20 @@ describe("mutate", () => {
 		}
 	});
 
+	test("no mutant target depends on whole-line comment text", async () => {
+		// A comment reword must not disarm a mutant: rewrite every whole-line `//`
+		// comment, then every target must still match its expected count.
+		const defaultSrc = new URL(
+			"../src/transport/control-source.ts",
+			import.meta.url,
+		).pathname;
+		for (const m of MUTANTS) {
+			const src = await Bun.file(m.src ?? defaultSrc).text();
+			const reworded = src.replace(/^(\s*\/\/).*$/gm, "$1 reworded");
+			expect(() => mutate(reworded, m), m.name).not.toThrow();
+		}
+	});
+
 	test("a target that is absent throws rather than no-op'ing", () => {
 		expect(() =>
 			mutate("unrelated source", {
@@ -103,6 +117,53 @@ describe("mutate", () => {
 				expect: "",
 			}),
 		).toThrow(/expected exactly 1 occurrence/);
+	});
+
+	test("occurrence replaces only the nth of an expected count", () => {
+		const m = { name: "n", find: "g;", replace: "", expect: "" };
+		expect(mutate("a g; b g; c", { ...m, occurrence: { of: 2, nth: 2 } })).toBe(
+			"a g; b  c",
+		);
+		expect(() =>
+			mutate("g; g; g;", { ...m, occurrence: { of: 2, nth: 1 } }),
+		).toThrow(/expected exactly 2 occurrences/);
+		for (const nth of [0, 3]) {
+			expect(() =>
+				mutate("g; g;", { ...m, occurrence: { of: 2, nth } }),
+			).toThrow(/outside 1\.\.2/);
+		}
+	});
+
+	test("each abort-guard mutant removes the guard it names", async () => {
+		// Code-delimited regions, so swapping the two nth values fails here.
+		const src = await Bun.file(
+			new URL("../src/transport/control-source.ts", import.meta.url).pathname,
+		).text();
+		const guard = "if (abort.signal.aborted) return;";
+		const region = (s: string, from: string, to: string) =>
+			s.slice(s.indexOf(from), s.indexOf(to, s.indexOf(from)));
+		const loop = (s: string) => region(s, "for (;;) {", "let openedAt = 0;");
+		const caught = (s: string) =>
+			region(
+				s,
+				"const err = result.left;",
+				"const applied = acks.appliedCount;",
+			);
+		const byName = (n: string) => {
+			const m = MUTANTS.find((x) => x.name === n);
+			if (!m) throw new Error(`no mutant named ${n}`);
+			return m;
+		};
+		const top = mutate(src, byName("top-of-loop abort guard"));
+		const side = mutate(src, byName("catch-side abort guard"));
+		expect([loop(top).includes(guard), caught(top).includes(guard)]).toEqual([
+			false,
+			true,
+		]);
+		expect([loop(side).includes(guard), caught(side).includes(guard)]).toEqual([
+			true,
+			false,
+		]);
 	});
 
 	test("a target occurring twice throws — ambiguous mutation", () => {

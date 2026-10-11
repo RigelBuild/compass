@@ -79,8 +79,10 @@ const PKG = new URL("..", import.meta.url).pathname;
 type Mutant = {
 	/** Name of the branch whose coverage this proves. */
 	readonly name: string;
-	/** Exact source text to replace — must match exactly once. */
+	/** Exact source text to replace — must match exactly once, unless `occurrence` is set. */
 	readonly find: string;
+	/** For code that repeats: `find` must match exactly `of` times; replace the `nth` (1-based). */
+	readonly occurrence?: { readonly of: number; readonly nth: number };
 	/** Replacement standing in for the branch being removed/neutered. */
 	readonly replace: string;
 	/** What a correct suite must report when this branch is gone. */
@@ -101,15 +103,16 @@ type Mutant = {
 
 /**
  * The branches whose coverage is proven here. `find` strings are matched
- * against the file verbatim and asserted to occur EXACTLY once, so a refactor
+ * against the file verbatim and asserted to occur the expected number of times, so a refactor
  * that moves or reshapes a branch fails loudly here instead of silently
  * verifying nothing — the same vacuity trap this script exists to catch.
  */
 export const MUTANTS: readonly Mutant[] = [
 	{
 		name: "top-of-loop abort guard",
-		find: "\t\t\tif (abort.signal.aborted) return;\n\t\t\t// Uptime is measured from STREAM ESTABLISHMENT",
-		replace: "\t\t\t// Uptime is measured from STREAM ESTABLISHMENT",
+		find: "\t\t\tif (abort.signal.aborted) return;\n",
+		occurrence: { of: 2, nth: 1 },
+		replace: "",
 		expect:
 			"a return()'d source must not re-open the subscription on the next loop turn",
 		expectedSurvivor:
@@ -131,8 +134,9 @@ export const MUTANTS: readonly Mutant[] = [
 	},
 	{
 		name: "catch-side abort guard",
-		find: "\t\t\tif (abort.signal.aborted) return;\n\t\t\t// No-progress bound",
-		replace: "\t\t\t// No-progress bound",
+		find: "\t\t\tif (abort.signal.aborted) return;\n",
+		occurrence: { of: 2, nth: 2 },
+		replace: "",
 		expect:
 			"an abort landing mid-stream must end quietly, never reconnect or fail() the buffer",
 		expectedSurvivor:
@@ -207,17 +211,25 @@ export const MUTANTS: readonly Mutant[] = [
 	},
 ];
 
-/** Apply one mutation to `source`, asserting the target occurs exactly once. */
+/** Apply one mutation to `source`, asserting the target occurs the expected number of times. */
 export function mutate(source: string, m: Mutant): string {
-	const hits = source.split(m.find).length - 1;
-	if (hits !== 1) {
+	const parts = source.split(m.find);
+	const hits = parts.length - 1;
+	const want = m.occurrence?.of ?? 1;
+	if (hits !== want) {
 		throw new Error(
-			`[${m.name}] expected exactly 1 occurrence of the target, found ${hits}. ` +
+			`[${m.name}] expected exactly ${want} occurrence${want === 1 ? "" : "s"} of the target, found ${hits}. ` +
 				`The branch moved or was reshaped — this mutant is no longer verifying ` +
-				`what it names. Update the find string.`,
+				`what it names. Update the find string or its occurrence.`,
 		);
 	}
-	return source.replace(m.find, m.replace);
+	const nth = m.occurrence?.nth ?? 1;
+	if (!Number.isInteger(nth) || nth < 1 || nth > want) {
+		throw new Error(`[${m.name}] occurrence.nth ${nth} is outside 1..${want}.`);
+	}
+	return (
+		parts.slice(0, nth).join(m.find) + m.replace + parts.slice(nth).join(m.find)
+	);
 }
 
 /**
