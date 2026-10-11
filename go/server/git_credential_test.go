@@ -356,6 +356,34 @@ func TestGitCredentialBrokerMintsNarrowedGrant(t *testing.T) {
 	}
 }
 
+// The negative entry lands between the pre-flight check and the flight, as when
+// a concurrent caller's flight rejects the same set.
+func TestGitCredentialBrokerNegativeCachedInFlightFallsBackToOwnerGrants(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"owner/base"})
+	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	clockCalls := 0
+	broker.clock = func() time.Time {
+		clockCalls++
+		if clockCalls == 2 {
+			broker.mu.Lock()
+			broker.negative["owner/base,owner/workstream"] = gitCredentialNegativeEntry{expiresAt: now.Add(gitCredentialMismatchCache)}
+			broker.mu.Unlock()
+		}
+		return now
+	}
+
+	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_owner" {
+		t.Fatalf("credential = (%q, %v), want owner-grants token", tok, ok)
+	}
+	if got, want := minter.mintRepos(), [][]string{{"base"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mint repository sets = %v, want only the owner set", got)
+	}
+}
+
 func TestGitCredentialScopeSeparatesOwners(t *testing.T) {
 	keyA, reposA, okA := gitCredentialScope([]string{"alice/app"})
 	keyB, reposB, okB := gitCredentialScope([]string{"bob/app"})
