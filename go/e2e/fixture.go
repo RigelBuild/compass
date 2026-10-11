@@ -933,6 +933,10 @@ func newPersistentSite(t *testing.T) fixtureSite {
 // here. A missing binary or broken rootless setup means SKIP, not fail — a
 // container-less sandbox is not a test failure.
 func podmanUsable() bool {
-	err := exec.Command("podman", "run", "--rm", agentImage, "true").Run()
+	out, err := exec.Command("podman", "run", "--rm", agentImage, "true").CombinedOutput()
+	if err != nil {
+		// The skip message alone cannot tell a missing image from a broken userns.
+		fmt.Fprintf(os.Stderr, "podmanUsable: podman run %s: %v\n%s\n", agentImage, err, out)
+	}
 	return err == nil
 }

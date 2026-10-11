@@ -46,6 +46,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -87,7 +88,10 @@ const probeTimeout = 2 * time.Second
 // internal/runtime/lifecycle_test.go:56-60.
 func podmanUsable() bool {
 	out, err := exec.Command("podman", "run", "--rm", agentImage, "true").CombinedOutput()
-	_ = out // combined output is only of interest on failure, which err already signals
+	if err != nil {
+		// The skip message alone cannot tell a missing image from a broken userns.
+		fmt.Fprintf(os.Stderr, "podmanUsable: podman run %s: %v\n%s\n", agentImage, err, out)
+	}
 	return err == nil
 }
 
