@@ -522,7 +522,19 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
           GH_TOKEN: ${{ contains(matrix.targets, 'design-ledger-gate:ci') && github.token || '' }}
-        run: moon run ${{ join(matrix.targets, ' ') }}
+        run: |
+          probe() { echo "PROBE4889 $1 shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) shallowfile=$(test -f .git/shallow && wc -l <.git/shallow || echo none) alt=$(test -f .git/objects/info/alternates && echo yes || echo no)"; }
+          probe start
+          tasks=$(moon query tasks | jq -r '.tasks|to_entries[]|.key as $p|.value|keys[]|"\($p):\(.)"' | sort)
+          for t in ${{ join(matrix.targets, ' ') }}; do
+            p=${t%%:*}
+            for task in $(printf '%s\n' "$tasks" | grep "^$p:" | grep -v ':ci$'); do
+              moon run "$task" --cache off >/tmp/probe-task.log 2>&1 || echo "PROBE4889 $task exited nonzero"
+              probe "$task"
+              if [ "$(git rev-parse --is-shallow-repository)" = true ]; then tail -40 /tmp/probe-task.log; git log --oneline -3; exit 1; fi
+            done
+          done
+          probe end
 
       - name: vfs reflink snapshot leg
         if: matrix.run == 'true' && matrix.group == 'go'
