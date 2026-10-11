@@ -98,6 +98,8 @@ type service struct {
 	tail           *sessionTail
 	accountRenamer accountRenamePublisher
 	adminID        store.AccountID
+	// refLinkRules provides the configured forge-link rules; nil returns none.
+	refLinkRules *refLinkRuleSource
 	// signaler emits a ConfigVersion signal to every live session after a
 	// successful config write (PutAgentConfig / DeleteAgentConfig), so live
 	// Runners re-fetch the bundle. *runnerhub.Hub satisfies it; the service

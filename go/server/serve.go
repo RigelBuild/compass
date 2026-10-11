@@ -947,7 +947,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// configured (the 2-App cutover). The author leg REUSES the shared primary App
 	// client so it rides the one budget gate; the reviewer leg gets its own; the
 	// Linear coordinate rides the shared forgeWiring.linearTokens instance.
-	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners); err != nil {
+	if svc.refLinkRules, err = wireForgeWriteAndLinks(ctx, cfg, st, issueBrd, serverResolver, hub, hubLog, forgeWiring, doors.linearNotify, udsListener, listeners); err != nil {
 		return err
 	}
 
@@ -2157,21 +2157,21 @@ func wireForgeWriteCaller(
 	linearTokens *linearagent.TokenSource,
 	udsListener net.Listener,
 	listeners boundListeners,
-) error {
+) (bool, error) {
 	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
-		return failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
+		return false, failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
 	}
 	if !cfg.Forge.forgeWritesEnabled(declaredSecrets) {
 		warnPartialForgeWriteSecrets(cfg.Forge, declaredSecrets, log)
-		return nil
+		return false, nil
 	}
 	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, primaryClient, linearTokens, log)
 	if err != nil {
-		return failStartup(udsListener, listeners, err)
+		return false, failStartup(udsListener, listeners, err)
 	}
 	hub.SetForgeCaller(forgeSvc)
-	return nil
+	return true, nil
 }
 
 // buildForgeWriteService assembles the agent forge-WRITE chokepoint (the

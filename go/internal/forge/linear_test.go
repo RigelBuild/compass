@@ -1351,3 +1351,68 @@ func TestLinearListIssuesStopsPagingAtLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestLinearOrganizationURLKeyCachesSuccess(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: `{"data":{"organization":{"urlKey":"workspace"}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	for i := range 2 {
+		got, err := l.OrganizationURLKey(t.Context())
+		if err != nil {
+			t.Fatalf("OrganizationURLKey call %d: %v", i+1, err)
+		}
+		if got != "workspace" {
+			t.Errorf("OrganizationURLKey call %d = %q, want workspace", i+1, got)
+		}
+	}
+	if rt.calls != 1 {
+		t.Fatalf("GraphQL requests = %d, want 1 after cached second call", rt.calls)
+	}
+	query, _ := decodeGraphQLReq(t, readReqBody(t, rt.requests[0]))
+	if !strings.Contains(query, "organization { urlKey }") {
+		t.Errorf("query = %q, want organization urlKey selection", query)
+	}
+}
+
+func TestLinearOrganizationURLKeyDoesNotCacheFailure(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: `{"errors":[{"message":"temporarily unavailable"}]}`},
+		{status: 200, body: `{"data":{"organization":{"urlKey":"workspace"}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	if _, err := l.OrganizationURLKey(t.Context()); err == nil {
+		t.Fatal("first OrganizationURLKey call succeeded, want GraphQL error")
+	}
+	got, err := l.OrganizationURLKey(t.Context())
+	if err != nil {
+		t.Fatalf("second OrganizationURLKey call: %v", err)
+	}
+	if got != "workspace" {
+		t.Errorf("second OrganizationURLKey = %q, want workspace", got)
+	}
+	if rt.calls != 2 {
+		t.Fatalf("GraphQL requests = %d, want 2 after uncached error", rt.calls)
+	}
+}
+
+func TestLinearOrganizationURLKeyRejectsEmptyAndRetries(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: `{"data":{"organization":{"urlKey":" "}}}`},
+		{status: 200, body: `{"data":{"organization":{"urlKey":"workspace"}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	if _, err := l.OrganizationURLKey(t.Context()); err == nil {
+		t.Fatal("empty organization URL key succeeded, want error")
+	}
+	got, err := l.OrganizationURLKey(t.Context())
+	if err != nil || got != "workspace" {
+		t.Fatalf("retry = (%q, %v), want (workspace, nil)", got, err)
+	}
+	if rt.calls != 2 {
+		t.Fatalf("GraphQL requests = %d, want 2 after empty key", rt.calls)
+	}
+}
