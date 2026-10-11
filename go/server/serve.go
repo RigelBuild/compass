@@ -1108,7 +1108,8 @@ func buildDoors(
 	// broker mints from the SERVER App key but adds only a repo-scoped token.
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, agentRepositorySvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gateway)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, agentRepositorySvc, hub, st, adminID,
+			netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gateway)
 		if err != nil {
 			return serveDoors{}, err
 		}
