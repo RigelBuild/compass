@@ -41,7 +41,8 @@ type AgentSpec struct {
 	Workspace Workspace
 	// Egress is default-deny egress with this allowlist.
 	Egress EgressPolicy
-	// Mounts is read-only host mounts (e.g. a host cache mounted read-only).
+	// Mounts is host mounts: read-only caches, and the writable session volume
+	// at a SourceVolume workspace's checkout dir.
 	Mounts []Mount
 	// Persona is the server-authoritative identity overlay for this agent,
 	// appended to the agent's system prompt at boot. Empty means no overlay.
@@ -176,6 +177,9 @@ func NewAgentRuntimeWithRegistry(runtime WorkloadRuntime, registry *AgentRegistr
 // user. On any failure after the container exists, the partial container is
 // removed so a retry starts clean rather than colliding on the name.
 func (r *AgentRuntime) Launch(ctx context.Context, spec AgentSpec) (*AgentHandle, error) {
+	if err := checkVolumeMount(spec); err != nil {
+		return nil, err
+	}
 	id, err := r.createAndStart(ctx, spec)
 	if err != nil {
 		return nil, err
