@@ -418,8 +418,9 @@ background. Other door calls skip that limit:
 
 - A cold open (`open()` awaits `refreshSnapshot()`) lists once, and the
   request waits for it.
-- Each write sends one `UpdateCredentialOAuth` or disable call.
-- A write conflict or own-commit adoption adds a list.
+- A write sends one `UpdateCredentialOAuth` or disable call.
+- A write conflict (`ABORTED`) adds a list, and its recovery can resend the
+  update or disable call.
 
 This record keeps those paths as they are and adds only the token. Matt chose
 to ship this and measure the rate on dev after T3.
