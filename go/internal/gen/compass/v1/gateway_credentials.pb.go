@@ -457,9 +457,8 @@ type UpdateCredentialOAuthRequest struct {
 	// The agent the gateway is serving. The Server checks id against this agent's pool
 	// before the CAS; a miss is the same NOT_FOUND as a missing row, so ids cannot be probed.
 	AgentAccountId string `protobuf:"bytes,4,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	// Optional token fields to clear, since an empty field keeps the stored value.
-	// Names are GatewayOAuthToken metadata fields (not access, refresh or expires_unix_ms);
-	// any other name is INVALID_ARGUMENT.
+	// GatewayOAuthToken metadata fields to zero (an empty field keeps its value); a clear
+	// wins over a sent value. access, refresh, expires_unix_ms or unknown: INVALID_ARGUMENT.
 	ClearFields   []string `protobuf:"bytes,5,rep,name=clear_fields,json=clearFields,proto3" json:"clear_fields,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

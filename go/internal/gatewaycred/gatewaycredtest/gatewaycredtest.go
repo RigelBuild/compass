@@ -254,7 +254,9 @@ func invalidArguments(h Harness) func(*testing.T) {
 			{name: "zero version", agent: agent, id: cred.ID, token: gatewaycred.OAuthToken{Access: "x"}},
 			{name: "empty access", agent: agent, id: cred.ID, version: 1},
 			{name: "unknown clear field", agent: agent, id: cred.ID, token: gatewaycred.OAuthToken{Access: "x"}, version: 1, clear: []string{"nope"}},
-			{name: "grant clear field", agent: agent, id: cred.ID, token: gatewaycred.OAuthToken{Access: "x"}, version: 1, clear: []string{"refresh"}},
+			{name: "clear access", agent: agent, id: cred.ID, token: gatewaycred.OAuthToken{Access: "x"}, version: 1, clear: []string{"access"}},
+			{name: "clear refresh", agent: agent, id: cred.ID, token: gatewaycred.OAuthToken{Access: "x"}, version: 1, clear: []string{"refresh"}},
+			{name: "clear expiry", agent: agent, id: cred.ID, token: gatewaycred.OAuthToken{Access: "x"}, version: 1, clear: []string{"expires_unix_ms"}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if _, err := s.UpdateOAuth(ctx, tc.agent, tc.id, tc.token, tc.version, tc.clear); !errors.Is(err, gatewaycred.ErrInvalidArgument) {
@@ -320,30 +322,46 @@ func oauthMerge(h Harness) func(*testing.T) {
 
 func oauthClear(h Harness) func(*testing.T) {
 	return func(t *testing.T) {
-		s, _ := h.New(t)
-		ctx := h.Ctx(t, 0)
-		agent, owner := h.Agent(t, ctx, "owner")
-		cred := create(t, ctx, s, own("anthropic", owner, gatewaycred.OAuthToken{
+		seeded := gatewaycred.OAuthToken{
 			Access: "stored-access", Refresh: "kept-refresh", ExpiresUnixMs: 77,
 			EnterpriseURL: "stale-enterprise", ProjectID: "stale-project", Email: "stale@example.test",
 			AccountID: "stale-account", APIEndpoint: "stale-api", OrgID: "stale-org", OrgName: "stale-organization",
 			AuthorizedAtUnixMs: 66, Region: "stale-region", InferenceRegion: "stale-inference", ActiveOrganizationID: "stale-active",
-		}))
-		clearFields := []string{
-			"enterprise_url", "project_id", "email", "account_id", "api_endpoint", "org_id",
-			"org_name", "authorized_at_unix_ms", "region", "inference_region", "active_organization_id",
 		}
-		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: "rotated-access", OrgName: "ignored"}, cred.Version, clearFields); err != nil {
-			t.Fatalf("UpdateOAuth: %v", err)
-		}
-		got, err := s.List(ctx, owner, "anthropic")
-		if err != nil {
-			t.Fatalf("List: %v", err)
-		}
-		tok, ok := got[0].OAuth()
-		want := gatewaycred.OAuthToken{Access: "rotated-access", Refresh: "kept-refresh", ExpiresUnixMs: 77}
-		if !ok || tok != want {
-			t.Fatalf("cleared OAuth token = %#v, want %#v", tok, want)
+		for name, zero := range map[string]func(*gatewaycred.OAuthToken){
+			"enterprise_url":         func(t *gatewaycred.OAuthToken) { t.EnterpriseURL = "" },
+			"project_id":             func(t *gatewaycred.OAuthToken) { t.ProjectID = "" },
+			"email":                  func(t *gatewaycred.OAuthToken) { t.Email = "" },
+			"account_id":             func(t *gatewaycred.OAuthToken) { t.AccountID = "" },
+			"api_endpoint":           func(t *gatewaycred.OAuthToken) { t.APIEndpoint = "" },
+			"org_id":                 func(t *gatewaycred.OAuthToken) { t.OrgID = "" },
+			"org_name":               func(t *gatewaycred.OAuthToken) { t.OrgName = "" },
+			"authorized_at_unix_ms":  func(t *gatewaycred.OAuthToken) { t.AuthorizedAtUnixMs = 0 },
+			"region":                 func(t *gatewaycred.OAuthToken) { t.Region = "" },
+			"inference_region":       func(t *gatewaycred.OAuthToken) { t.InferenceRegion = "" },
+			"active_organization_id": func(t *gatewaycred.OAuthToken) { t.ActiveOrganizationID = "" },
+		} {
+			t.Run(name, func(t *testing.T) {
+				s, _ := h.New(t)
+				ctx := h.Ctx(t, 0)
+				agent, owner := h.Agent(t, ctx, "owner")
+				cred := create(t, ctx, s, own("anthropic", owner, seeded))
+				// Sent org_name and region show that a clear wins over a sent value.
+				sent := gatewaycred.OAuthToken{Access: "rotated-access", OrgName: "sent-organization", Region: "sent-region"}
+				if _, err := s.UpdateOAuth(ctx, agent, cred.ID, sent, cred.Version, []string{name}); err != nil {
+					t.Fatalf("UpdateOAuth: %v", err)
+				}
+				got, err := s.List(ctx, owner, "anthropic")
+				if err != nil {
+					t.Fatalf("List: %v", err)
+				}
+				want := seeded
+				want.Access, want.OrgName, want.Region = "rotated-access", "sent-organization", "sent-region"
+				zero(&want)
+				if tok, ok := got[0].OAuth(); !ok || tok != want {
+					t.Fatalf("token after clearing %s = %#v, want %#v", name, tok, want)
+				}
+			})
 		}
 	}
 }

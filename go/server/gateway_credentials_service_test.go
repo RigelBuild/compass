@@ -180,8 +180,16 @@ func TestGatewayCredentialsServiceInvalidArguments(t *testing.T) {
 			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"org_id", "nope"}}))
 			return err
 		}},
-		{name: "update clears grant field", call: func(s *gatewayCredentialsService, ctx context.Context) error {
+		{name: "update clears access", call: func(s *gatewayCredentialsService, ctx context.Context) error {
+			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"access"}}))
+			return err
+		}},
+		{name: "update clears refresh", call: func(s *gatewayCredentialsService, ctx context.Context) error {
 			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"refresh"}}))
+			return err
+		}},
+		{name: "update clears expires_unix_ms", call: func(s *gatewayCredentialsService, ctx context.Context) error {
+			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"expires_unix_ms"}}))
 			return err
 		}},
 		{name: "disable empty agent", call: func(s *gatewayCredentialsService, ctx context.Context) error {
