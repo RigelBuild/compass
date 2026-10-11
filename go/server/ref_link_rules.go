@@ -5,16 +5,12 @@ package server
 import (
 	"context"
 	"log/slog"
-	"net"
 	"slices"
 
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
-	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/forge"
-	"github.com/RigelBuild/compass/go/internal/runnerhub"
-	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -48,33 +44,11 @@ func newRefLinkRuleSource(
 	return &refLinkRuleSource{githubHosts: hosts, teams: teams, linear: linear, log: log}
 }
 
-// wireForgeWriteAndLinks wires the forge-write caller, then builds the link
-// rules from what it enabled.
-func wireForgeWriteAndLinks(
-	ctx context.Context,
-	cfg ServeConfig,
-	st *store.Store,
-	issueBrd *board.IssueProjection,
-	resolver secrets.Resolver,
-	hub *runnerhub.Hub,
-	log *slog.Logger,
-	fw forgeReadWiring,
-	linearNotify *forgeNotifyLane,
-	udsListener net.Listener,
-	listeners boundListeners,
-) (*refLinkRuleSource, error) {
-	githubCoordinate, err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, resolver, hub, log, fw.primaryClient, fw.linearTokens, udsListener, listeners)
-	if err != nil {
-		return nil, err
-	}
-	return buildRefLinkRuleSource(cfg, githubCoordinate, st, linearNotify, log), nil
-}
-
-// buildRefLinkRuleSource links GitHub refs only when a write coordinate is
-// enabled, and reuses the Linear notify lane client for the urlKey read.
-func buildRefLinkRuleSource(cfg ServeConfig, githubCoordinate bool, st *store.Store, linearNotify *forgeNotifyLane, log *slog.Logger) *refLinkRuleSource {
+// buildRefLinkRuleSource links GitHub refs whenever the primary App reads the
+// forge, and reuses the Linear notify lane client for the urlKey read.
+func buildRefLinkRuleSource(cfg ServeConfig, githubConfigured bool, st refLinkTeamLister, linearNotify *forgeNotifyLane, log *slog.Logger) *refLinkRuleSource {
 	var githubHosts []string
-	if githubCoordinate {
+	if githubConfigured {
 		githubHosts = []string{cfg.Forge.resolved().Host}
 	}
 	var urlKey refLinkURLKeyReader

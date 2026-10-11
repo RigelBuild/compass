@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -109,6 +110,25 @@ func TestGetRefLinkRules(t *testing.T) {
 				if teams.calls != tc.wantTeams || key.calls != tc.wantKey {
 					t.Errorf("calls teams/key = %d/%d, want %d/%d", teams.calls, key.calls, tc.wantTeams, tc.wantKey)
 				}
+			}
+		})
+	}
+}
+
+func TestBuildRefLinkRuleSourceUsesConfiguredGitHubHost(t *testing.T) {
+	cfg := ServeConfig{Forge: ForgeConfig{Host: "ghe.example"}}
+	for _, tc := range []struct {
+		name       string
+		configured bool
+		want       []string
+	}{
+		{"primary App configured", true, []string{"ghe.example"}},
+		{"no GitHub App", false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := buildRefLinkRuleSource(cfg, tc.configured, nil, nil, nil)
+			if !slices.Equal(src.githubHosts, tc.want) {
+				t.Fatalf("githubHosts = %v, want %v", src.githubHosts, tc.want)
 			}
 		})
 	}

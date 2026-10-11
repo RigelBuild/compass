@@ -947,7 +947,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// configured (the 2-App cutover). The author leg REUSES the shared primary App
 	// client so it rides the one budget gate; the reviewer leg gets its own; the
 	// Linear coordinate rides the shared forgeWiring.linearTokens instance.
-	if svc.refLinkRules, err = wireForgeWriteAndLinks(ctx, cfg, st, issueBrd, serverResolver, hub, hubLog, forgeWiring, doors.linearNotify, udsListener, listeners); err != nil {
+	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners); err != nil {
 		return err
 	}
 
@@ -1185,6 +1185,8 @@ func buildDoors(
 		uds:    udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
 		linearNotify: linear.notify, linearResponder: linear.responder,
 	}
+	// GitHub refs link wherever the App reads the forge, writes or not.
+	svc.refLinkRules = buildRefLinkRuleSource(cfg, cfg.Forge.boardIngestionEnabled(), st, linear.notify, slog.Default())
 	// Only when set: a nil pointer stored in the interface would not compare nil.
 	if runnerVerifier != nil {
 		doors.runnerVerifier = runnerVerifier
@@ -2157,21 +2159,21 @@ func wireForgeWriteCaller(
 	linearTokens *linearagent.TokenSource,
 	udsListener net.Listener,
 	listeners boundListeners,
-) (bool, error) {
+) error {
 	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
-		return false, failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
+		return failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
 	}
 	if !cfg.Forge.forgeWritesEnabled(declaredSecrets) {
 		warnPartialForgeWriteSecrets(cfg.Forge, declaredSecrets, log)
-		return false, nil
+		return nil
 	}
 	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, primaryClient, linearTokens, log)
 	if err != nil {
-		return false, failStartup(udsListener, listeners, err)
+		return failStartup(udsListener, listeners, err)
 	}
 	hub.SetForgeCaller(forgeSvc)
-	return true, nil
+	return nil
 }
 
 // buildForgeWriteService assembles the agent forge-WRITE chokepoint (the

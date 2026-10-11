@@ -123,8 +123,12 @@ func TestAdminGateDeniesMissingIdentityOnAdminOnlyRPC(t *testing.T) {
 	wantPermissionDenied(t, err, "an adminOnly RPC with no caller in context")
 }
 
-// TestAdminGateAllowsAnyAccountOnOpenRPCs pins the procedures open to any
-// authenticated account, including read-only forge-link rules.
+// TestAdminGateAllowsAnyAccountOnOpenRPCs: the connect-time probe, the event
+// stream, and every CommsService method are open to any authenticated account —
+// a non-admin caller passes the gate on each. Mirrors
+// admin_gate_lets_a_non_admin_through_an_open_rpc, widened to the full open set,
+// and includes the recut additions CreateChannel + UpdateChannelMembers to pin
+// they classify open (not admin-gated).
 func TestAdminGateAllowsAnyAccountOnOpenRPCs(t *testing.T) {
 	gate := NewAdminGate(adminID)
 
@@ -134,6 +138,7 @@ func TestAdminGateAllowsAnyAccountOnOpenRPCs(t *testing.T) {
 	}{
 		{"GetServerInfo", compassv1connect.CompassServiceGetServerInfoProcedure},
 		{"GetRefLinkRules", compassv1connect.CompassServiceGetRefLinkRulesProcedure},
+		{"SubscribeEvents", compassv1connect.CompassServiceSubscribeEventsProcedure},
 		{"ListBoardIssues", compassv1connect.CompassServiceListBoardIssuesProcedure},
 		{"SkipBatchWindow", compassv1connect.CompassServiceSkipBatchWindowProcedure},
 		{"CommsCreateUser", compassv1connect.CommsServiceCreateUserProcedure},
@@ -180,6 +185,7 @@ func TestClassifyProcedureClassifiesKnownAndUnknownProcedures(t *testing.T) {
 		{"RenameAccount", compassv1connect.CompassServiceRenameAccountProcedure, true, true},
 		{"RemoveAgentWorkspace", compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure, true, true},
 		{"PutAgentConfig", compassv1connect.CompassServicePutAgentConfigProcedure, true, true},
+		{"DeleteAgentConfig", compassv1connect.CompassServiceDeleteAgentConfigProcedure, true, true},
 		{"GetRefLinkRules", compassv1connect.CompassServiceGetRefLinkRulesProcedure, false, true},
 		{"GetServerInfo", compassv1connect.CompassServiceGetServerInfoProcedure, false, true},
 		{"SubscribeEvents", compassv1connect.CompassServiceSubscribeEventsProcedure, false, true},
