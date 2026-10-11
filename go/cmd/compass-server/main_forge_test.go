@@ -47,6 +47,8 @@ func TestResolveForgeMapping(t *testing.T) {
 			linearClientID:         "LINEAR_CID",
 			linearClientSecret:     "LINEAR_CSECRET",
 			linearWebhook:          "LINEAR_WEBHOOK_SECRET",
+			mergeQueues:            "Owner/Repo=trunk:main",
+			trunkTokenSecret:       "TRUNK_TOKEN",
 		})
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
@@ -60,6 +62,8 @@ func TestResolveForgeMapping(t *testing.T) {
 			LinearClientIDSecretName: "LINEAR_CID",
 			LinearClientSecretName:   "LINEAR_CSECRET",
 			LinearWebhookSecretName:  "LINEAR_WEBHOOK_SECRET",
+			TrunkTokenSecretName:     "TRUNK_TOKEN",
+			MergeQueues:              []server.MergeQueueConfig{{Repo: "owner/repo", Provider: "trunk", Branch: "main"}},
 			App: server.ForgeAppConfig{
 				AppID:                12345,
 				InstallationID:       678,

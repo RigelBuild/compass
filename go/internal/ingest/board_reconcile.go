@@ -67,6 +67,10 @@ type BoardReconcileConfig struct {
 	Log *slog.Logger
 	// Pulls hydrates listed PR rows and runs the backfill; nil skips PR rows.
 	Pulls *PullRequestHydrator
+	// Queues maps queue provider names to their Trunk-style readers.
+	Queues map[string]forge.MergeQueue
+	// QueueConfigs resolves queue provider and target branch per repository.
+	QueueConfigs QueueConfigs
 }
 
 // BoardReconciler drives the backstop sweep over the enabled-repo set, listing

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
@@ -236,6 +238,45 @@ func TestPrsOrderSurvivesRehydrate(t *testing.T) {
 	}
 	if got := prNumbers(cachedIssue1(t, fresh)); !slices.Equal(got, []uint32{10, 20, 30}) {
 		t.Fatalf("rehydrated prs = %v, want forge-created order [10 20 30]", got)
+	}
+}
+
+func TestPublishPullRequestMergeQueueUpdatesLinkedIssueOnlyWhenChanged(t *testing.T) {
+	ctx := context.Background()
+	p, bus, _ := newIssueBoard(t)
+	mustPublishIssue(t, p, 1)
+	mustPublishPR(t, p, ingestedPR(10, 0, time.Hour, 1))
+	live := subscribe(t, bus)
+	coord := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "rigelbuild/compass", Number: 10}
+	entry := &compassv1.MergeQueueEntry{Provider: "trunk", State: "testing"}
+	body, err := protojson.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := p.UpdatePullRequestMergeQueue(ctx, coord, body)
+	if err != nil || !changed {
+		t.Fatalf("UpdatePullRequestMergeQueue = %v, %v; want changed", changed, err)
+	}
+	if err := p.PublishPullRequestMergeQueue(ctx, coord, entry); err != nil {
+		t.Fatalf("PublishPullRequestMergeQueue: %v", err)
+	}
+	issue := recvIssue(t, live)
+	if got := issue.GetPrs()[0].GetMergeQueue().GetState(); got != "testing" {
+		t.Fatalf("linked PR merge queue state = %q, want testing", got)
+	}
+	changed, err = p.UpdatePullRequestMergeQueue(ctx, coord, body)
+	if err != nil || changed {
+		t.Fatalf("repeat UpdatePullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+	}
+	if changed {
+		if err := p.PublishPullRequestMergeQueue(ctx, coord, entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case event := <-live:
+		t.Fatalf("unchanged queue value emitted another issue event: %v", event.Payload)
+	default:
 	}
 }
 

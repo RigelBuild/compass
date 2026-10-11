@@ -273,6 +273,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		TranscriptSafetyValveCapBytes: positiveCap(*f.transcriptSafetyValveCapBytes, os.Getenv("COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES")),
 		UsageEventRetention:           usageRetention,
 		RunnerClustersPath:            firstNonEmpty(*f.runnerClusters, os.Getenv("COMPASS_RUNNER_CLUSTERS")),
+		MergeQueueInterval:            0,
 	}
 	keepListenListener = true
 	return config, false, nil
@@ -488,6 +489,8 @@ type forgeFlags struct {
 	linearClientID           *string
 	linearClientSecret       *string
 	linearWebhook            *string
+	mergeQueues              *string
+	trunkTokenSecret         *string
 	scopeEnforcementDisabled *string
 	scopeGrants              *string
 }
@@ -558,6 +561,8 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 			"Comma-separated user scope grants seeded at boot, each "+
 				"account:provider:host:repo with provider github or linear and repo * for a "+
 				"whole host. Insert only. Defaults to $COMPASS_FORGE_SCOPE_GRANTS."),
+		mergeQueues:      fs.String("forge-merge-queues", "", "Comma-separated owner/name=trunk:branch entries. Defaults to $COMPASS_FORGE_MERGE_QUEUES."),
+		trunkTokenSecret: fs.String("forge-trunk-token-secret", "", "Declared server-only secret NAME for Trunk API access. Defaults to $COMPASS_FORGE_TRUNK_TOKEN_SECRET."),
 	}
 }
 
@@ -580,6 +585,8 @@ func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 		linearWebhook:            firstNonEmpty(*f.linearWebhook, os.Getenv("COMPASS_FORGE_LINEAR_WEBHOOK_SECRET")),
 		scopeEnforcementDisabled: firstNonEmpty(*f.scopeEnforcementDisabled, os.Getenv("COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT")),
 		scopeGrants:              firstNonEmpty(*f.scopeGrants, os.Getenv("COMPASS_FORGE_SCOPE_GRANTS")),
+		mergeQueues:              firstNonEmpty(*f.mergeQueues, os.Getenv("COMPASS_FORGE_MERGE_QUEUES")),
+		trunkTokenSecret:         firstNonEmpty(*f.trunkTokenSecret, os.Getenv("COMPASS_FORGE_TRUNK_TOKEN_SECRET")),
 	})
 }
 
@@ -600,6 +607,8 @@ type forgeInputs struct {
 	linearClientID           string
 	linearClientSecret       string
 	linearWebhook            string
+	mergeQueues              string
+	trunkTokenSecret         string
 	scopeEnforcementDisabled string
 	scopeGrants              string
 }
@@ -613,6 +622,10 @@ type forgeInputs struct {
 // host / secret NAMEs are left zero for server-side defaulting.
 func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 	seed, err := parseForgeRepos(in.repos)
+	if err != nil {
+		return server.ForgeConfig{}, err
+	}
+	queues, err := parseMergeQueues(in.mergeQueues)
 	if err != nil {
 		return server.ForgeConfig{}, err
 	}
@@ -646,6 +659,8 @@ func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 		Host:                     in.host,
 		ForgeCAPath:              in.ca,
 		SeedRepos:                seed,
+		TrunkTokenSecretName:     in.trunkTokenSecret,
+		MergeQueues:              queues,
 		LinearClientIDSecretName: in.linearClientID,
 		LinearClientSecretName:   in.linearClientSecret,
 		LinearWebhookSecretName:  in.linearWebhook,
@@ -700,6 +715,39 @@ func parseForgeRepos(repos string) ([]string, error) {
 		out = append(out, strings.ToLower(trimmed))
 	}
 	return out, nil
+}
+
+func parseMergeQueues(raw string) ([]server.MergeQueueConfig, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	configs := make([]server.MergeQueueConfig, 0, strings.Count(raw, ",")+1)
+	seen := make(map[string]struct{}, cap(configs))
+	for item := range strings.SplitSeq(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		repo, spec, ok := strings.Cut(item, "=")
+		if !ok || strings.Contains(spec, "=") {
+			return nil, fmt.Errorf("invalid --forge-merge-queues entry %q: want owner/name=trunk:branch", item)
+		}
+		owner, name, repoOK := strings.Cut(repo, "/")
+		provider, branch, providerOK := strings.Cut(spec, ":")
+		if !repoOK || owner == "" || name == "" || strings.Contains(name, "/") || !providerOK || provider == "" || branch == "" || strings.Contains(branch, ":") {
+			return nil, fmt.Errorf("invalid --forge-merge-queues entry %q: want owner/name=trunk:branch", item)
+		}
+		if provider != "trunk" {
+			return nil, fmt.Errorf("unsupported merge queue provider %q", provider)
+		}
+		repo = strings.ToLower(repo)
+		if _, exists := seen[repo]; exists {
+			return nil, fmt.Errorf("duplicate --forge-merge-queues repo %q", repo)
+		}
+		seen[repo] = struct{}{}
+		configs = append(configs, server.MergeQueueConfig{Repo: repo, Provider: provider, Branch: branch})
+	}
+	return configs, nil
 }
 
 // parseForgeScopeGrants parses account:provider:host:repo entries. The store

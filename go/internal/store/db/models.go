@@ -260,16 +260,18 @@ type ForgeAuthoredArtifact struct {
 }
 
 type ForgeRepoSubscription struct {
-	ForgeProvider   int16
-	ForgeHost       string
-	Repo            string
-	Enabled         bool
-	SweptUpdatedAt  pgtype.Timestamptz
-	ListEtag        string
-	PrsBackfilledAt pgtype.Timestamptz
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-	TenantID        string
+	ForgeProvider    int16
+	ForgeHost        string
+	Repo             string
+	MergeQueue       string
+	MergeQueueBranch string
+	Enabled          bool
+	SweptUpdatedAt   pgtype.Timestamptz
+	ListEtag         string
+	PrsBackfilledAt  pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	TenantID         string
 }
 
 type ForgeStateTransition struct {

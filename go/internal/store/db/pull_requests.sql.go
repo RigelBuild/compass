@@ -250,6 +250,56 @@ func (q *Queries) PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequest
 	return forge_updated_at, err
 }
 
+const pullRequestLinks = `-- name: PullRequestLinks :many
+SELECT issue_forge_provider, issue_forge_host, issue_repo, issue_number
+  FROM pull_request_issue_links
+ WHERE pr_forge_provider = $1 AND pr_forge_host = $2 AND pr_repo = $3 AND pr_number = $4
+`
+
+type PullRequestLinksParams struct {
+	PrForgeProvider int16
+	PrForgeHost     string
+	PrRepo          string
+	PrNumber        int64
+}
+
+type PullRequestLinksRow struct {
+	IssueForgeProvider int16
+	IssueForgeHost     string
+	IssueRepo          string
+	IssueNumber        int64
+}
+
+func (q *Queries) PullRequestLinks(ctx context.Context, arg PullRequestLinksParams) ([]PullRequestLinksRow, error) {
+	rows, err := q.db.Query(ctx, pullRequestLinks,
+		arg.PrForgeProvider,
+		arg.PrForgeHost,
+		arg.PrRepo,
+		arg.PrNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PullRequestLinksRow
+	for rows.Next() {
+		var i PullRequestLinksRow
+		if err := rows.Scan(
+			&i.IssueForgeProvider,
+			&i.IssueForgeHost,
+			&i.IssueRepo,
+			&i.IssueNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const pullRequestsForIssues = `-- name: PullRequestsForIssues :many
 WITH want AS (
     SELECT unnest($1::smallint[]) AS provider,
@@ -342,6 +392,35 @@ func (q *Queries) PullRequestsForIssues(ctx context.Context, arg PullRequestsFor
 		return nil, err
 	}
 	return items, nil
+}
+
+const setPullRequestMergeQueue = `-- name: SetPullRequestMergeQueue :execrows
+UPDATE pull_requests
+   SET pr = jsonb_set(pr, '{mergeQueue}', $5::jsonb, true)
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4
+   AND pr -> 'mergeQueue' IS DISTINCT FROM $5::jsonb
+`
+
+type SetPullRequestMergeQueueParams struct {
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+	Number        int64
+	Column5       []byte
+}
+
+func (q *Queries) SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setPullRequestMergeQueue,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+		arg.Number,
+		arg.Column5,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertExplicitPullRequestLink = `-- name: UpsertExplicitPullRequestLink :exec

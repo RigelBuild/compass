@@ -29,6 +29,24 @@ func (p *IssueProjection) PublishPullRequestUpdate(ctx context.Context, in inges
 	return p.republishPrs(ctx, affected)
 }
 
+// PublishPullRequestMergeQueue republishes issues after the sweeper stores a queue entry.
+func (p *IssueProjection) PublishPullRequestMergeQueue(
+	ctx context.Context,
+	coord store.ForgeCoord,
+	_ *compassv1.MergeQueueEntry,
+) error {
+	links, err := p.store.PullRequestLinks(ctx, coord)
+	if err != nil {
+		return fmt.Errorf("board: load pull request links for queue update: %w", err)
+	}
+	return p.republishPrs(ctx, links)
+}
+
+// UpdatePullRequestMergeQueue persists the entry and reports whether it changed.
+func (p *IssueProjection) UpdatePullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, entry []byte) (bool, error) {
+	return p.store.SetPullRequestMergeQueue(ctx, coord, entry)
+}
+
 // pullRequestRow maps an ingested PR to the store row plus its closing refs on the PR's forge.
 func pullRequestRow(in ingest.IngestedPullRequest) (store.PullRequestRow, []store.ForgeCoord, error) {
 	pr := in.PR

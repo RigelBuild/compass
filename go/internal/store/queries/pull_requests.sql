@@ -101,3 +101,13 @@ SELECT DISTINCT c.issue_forge_provider, c.issue_forge_host, c.issue_repo, c.issu
 -- name: PullRequestForgeUpdatedAt :one
 SELECT forge_updated_at FROM pull_requests
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4;
+
+-- name: PullRequestLinks :many
+SELECT issue_forge_provider, issue_forge_host, issue_repo, issue_number
+  FROM pull_request_issue_links
+ WHERE pr_forge_provider = $1 AND pr_forge_host = $2 AND pr_repo = $3 AND pr_number = $4;
+-- name: SetPullRequestMergeQueue :execrows
+UPDATE pull_requests
+   SET pr = jsonb_set(pr, '{mergeQueue}', $5::jsonb, true)
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4
+   AND pr -> 'mergeQueue' IS DISTINCT FROM $5::jsonb;

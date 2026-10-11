@@ -394,3 +394,27 @@ func TestPullRequestMixedCaseBoardIssueResolvesExplicitLink(t *testing.T) {
 		t.Fatalf("closing ref attached although the explicit target is on the board: %v", got)
 	}
 }
+
+func TestSetPullRequestMergeQueueChangesOnlyOnDifferentEntry(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	coord := ghCoord("owner/repo", 7)
+	mustUpsertPR(t, ctx, s, prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(time.Hour)))
+	entry := []byte(`{"provider":"trunk","state":"testing","changedAt":"2026-10-11T12:34:56Z"}`)
+	changed, err := s.SetPullRequestMergeQueue(ctx, coord, entry)
+	if err != nil || !changed {
+		t.Fatalf("first SetPullRequestMergeQueue = %v, %v; want changed", changed, err)
+	}
+	changed, err = s.SetPullRequestMergeQueue(ctx, coord, entry)
+	if err != nil || changed {
+		t.Fatalf("same SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+	}
+	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
+	if err != nil || !changed {
+		t.Fatalf("clear SetPullRequestMergeQueue = %v, %v; want changed", changed, err)
+	}
+	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
+	if err != nil || changed {
+		t.Fatalf("repeat clear SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+	}
+}

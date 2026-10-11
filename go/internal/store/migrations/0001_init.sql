@@ -1041,6 +1041,8 @@ CREATE TABLE forge_repo_subscriptions (
     forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
     forge_host     TEXT     NOT NULL,
     repo           TEXT     NOT NULL,
+    merge_queue        TEXT     NOT NULL DEFAULT '',
+    merge_queue_branch TEXT     NOT NULL DEFAULT '',
     enabled        BOOLEAN  NOT NULL DEFAULT TRUE,
     swept_updated_at TIMESTAMPTZ,              -- last swept forge updated_at watermark; NULL = never swept
     list_etag      TEXT     NOT NULL DEFAULT '', -- conditional-GET etag for the repo LIST walk
