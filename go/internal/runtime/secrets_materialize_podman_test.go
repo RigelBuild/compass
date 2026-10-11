@@ -64,7 +64,7 @@ func TestMaterializeEnvDeliveryReadableInContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch the agent container: %v", err)
 	}
-	t.Cleanup(func() { _ = facade.Teardown(ctx, handle) })
+	t.Cleanup(func() { _ = facade.Teardown(cleanupCtx, handle) })
 
 	// A value chosen to break a naive delivery: it carries an '=', a space, and
 	// shell metacharacters. The base64 transport must carry it verbatim, and the

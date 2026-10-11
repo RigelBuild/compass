@@ -280,3 +280,47 @@ func TestStartSuitePostgresMainChildExitShortCircuits(t *testing.T) {
 		t.Errorf("want fast fail via child-exit short-circuit (< 10s), took %s", elapsed)
 	}
 }
+
+// TestStartSuitePostgresMainCancelStopsWrapper proves a canceled startup ctx
+// returns before suiteReadyBudget and SIGTERMs and reaps the running wrapper; the
+// trap writes its marker late, so a stop that skips the wait finds no marker.
+func TestStartSuitePostgresMainCancelStopsWrapper(t *testing.T) {
+	binDir := t.TempDir()
+	marks := t.TempDir()
+	armed, termed := filepath.Join(marks, "armed"), filepath.Join(marks, "termed")
+	stub := filepath.Join(binDir, "compass-postgres")
+	script := "#!/bin/sh\ntrap 'sleep 0.3; touch " + termed + "; exit 0' TERM\ntouch " + armed + "\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub compass-postgres: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Cancel only once the stub has its TERM trap set, so the signal is observable.
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		defer cancel()
+		for range tick.C {
+			if _, err := os.Stat(armed); err == nil || ctx.Err() != nil {
+				return
+			}
+		}
+	}()
+	start := time.Now()
+	_, stop, err := StartSuitePostgresMain(ctx, t.TempDir(), t.TempDir(), 5432)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if stop != nil {
+		t.Errorf("want nil stop on error, got non-nil")
+	}
+	if elapsed >= 10*time.Second {
+		t.Errorf("want prompt return on cancel (< 10s), took %s", elapsed)
+	}
+	if _, statErr := os.Stat(termed); statErr != nil {
+		t.Errorf("wrapper was not SIGTERMed and reaped before return: %v", statErr)
+	}
+}

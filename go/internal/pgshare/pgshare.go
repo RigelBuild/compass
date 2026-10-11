@@ -429,6 +429,8 @@ func waitSuiteReady(ctx context.Context, dsn string, done <-chan struct{}, waitE
 		select {
 		case <-done:
 			return fmt.Errorf("pgshare: %s exited before accepting connections: %w", suitePGBinary, *waitErr)
+		case <-ctx.Done():
+			return fmt.Errorf("pgshare: waiting for %s: %w", suitePGBinary, ctx.Err())
 		default:
 		}
 		if time.Now().After(deadline) {
