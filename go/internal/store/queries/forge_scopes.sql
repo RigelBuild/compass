@@ -33,9 +33,12 @@ ORDER BY scope.repo;
 -- name: CopyAgentForgeScopes :exec
 -- A new child starts with its parent agent's own rows; runs under RLS.
 INSERT INTO account_forge_scopes (account_id, forge_provider, forge_host, repo)
-SELECT sqlc.arg(child_id), scope.forge_provider, scope.forge_host, scope.repo
+SELECT child.account_id, scope.forge_provider, scope.forge_host, scope.repo
 FROM account_forge_scopes AS scope
-WHERE scope.account_id = sqlc.arg(parent_id)
+JOIN agent_accounts AS parent ON parent.account_id = scope.account_id
+JOIN agent_accounts AS child ON child.account_id = sqlc.arg(child_id)
+WHERE parent.account_id = sqlc.arg(parent_id)
+  AND parent.owner_user_id = child.owner_user_id
 ON CONFLICT DO NOTHING;
 
 -- name: ForgeScopeUserExists :one
