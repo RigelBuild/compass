@@ -9,8 +9,10 @@ import {
 	AgentSessionFrameSchema,
 	AgentSessionState,
 	AgentSessionStatusSchema,
+	type Issue as BoardIssue,
 	type CompassClient,
 	create,
+	type SubscribeEventsRequest,
 	type SubscribeEventsResponse,
 	SubscribeEventsResponseSchema,
 	type SessionEvent as WireSessionEvent,
@@ -111,7 +113,10 @@ export interface FakeCompass {
 }
 
 /** Build the fake. Pure and synchronous apart from the RPC's promise. */
-export function createFakeCompass(): FakeCompass {
+export function createFakeCompass(opts?: {
+	readonly events?: readonly SubscribeEventsResponse[];
+	readonly board?: readonly BoardIssue[];
+}): FakeCompass {
 	const stops: RecordedStop[] = [];
 	let stopFailure: Error | undefined;
 	let probeFailure: Error | undefined;
@@ -170,14 +175,26 @@ export function createFakeCompass(): FakeCompass {
 			}
 			return { accountId: whoAmIAccountId.accountId };
 		},
-		// The board read stream. Yields only what a test pushes via pushSessionStatus
-		// and holds open until abort; board events are scripted in events.test.ts.
-		subscribeEvents: (
-			_req: unknown,
-			opts?: { signal?: AbortSignal },
-		): AsyncGenerator<SubscribeEventsResponse> => events.drain(opts?.signal),
+		// The board read stream. Scripted fixtures get a cold-start boundary and
+		// tail before the queue; ordinary tests keep the push-only stream.
+		subscribeEvents: async function* (
+			request: SubscribeEventsRequest,
+			streamOptions?: { signal?: AbortSignal },
+		): AsyncGenerator<SubscribeEventsResponse> {
+			if (opts && request.sinceSeq === 0n) {
+				yield create(SubscribeEventsResponseSchema, {
+					seq: 0n,
+					atUnixMs: 0n,
+					instanceEpoch: 1n,
+					snapshotSeq: 0n,
+					payload: { case: undefined },
+				});
+				for (const frame of opts.events ?? []) yield frame;
+			}
+			yield* events.drain(streamOptions?.signal);
+		},
 		// The cold-start re-snapshot the events driver reads at its first frame.
-		listBoardIssues: async () => ({ issues: [] }),
+		listBoardIssues: async () => ({ issues: opts?.board ?? [] }),
 		// Sends the server's registration ack first, then the session's queue.
 		subscribeAgentSession: async function* (
 			req: { sessionId: string },
