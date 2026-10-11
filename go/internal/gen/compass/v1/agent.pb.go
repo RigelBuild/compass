@@ -434,6 +434,7 @@ type AgentControl struct {
 	//	*AgentControl_Replay
 	//	*AgentControl_ReplayComplete
 	//	*AgentControl_ForgeNotification
+	//	*AgentControl_StartNow
 	Control       isAgentControl_Control `protobuf_oneof:"control"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -546,6 +547,15 @@ func (x *AgentControl) GetForgeNotification() *ForgeNotification {
 	return nil
 }
 
+func (x *AgentControl) GetStartNow() *StartNowControl {
+	if x != nil {
+		if x, ok := x.Control.(*AgentControl_StartNow); ok {
+			return x.StartNow
+		}
+	}
+	return nil
+}
+
 type isAgentControl_Control interface {
 	isAgentControl_Control()
 }
@@ -582,6 +592,10 @@ type AgentControl_ForgeNotification struct {
 	ForgeNotification *ForgeNotification `protobuf:"bytes,9,opt,name=forge_notification,json=forgeNotification,proto3,oneof"`
 }
 
+type AgentControl_StartNow struct {
+	StartNow *StartNowControl `protobuf:"bytes,10,opt,name=start_now,json=startNow,proto3,oneof"`
+}
+
 func (*AgentControl_Prompt) isAgentControl_Control() {}
 
 func (*AgentControl_Steer) isAgentControl_Control() {}
@@ -595,6 +609,8 @@ func (*AgentControl_Replay) isAgentControl_Control() {}
 func (*AgentControl_ReplayComplete) isAgentControl_Control() {}
 
 func (*AgentControl_ForgeNotification) isAgentControl_Control() {}
+
+func (*AgentControl_StartNow) isAgentControl_Control() {}
 
 // Representable payloads (existing compass.v1 scalars only).
 type PromptControl struct {
@@ -642,6 +658,44 @@ func (x *PromptControl) GetInput() string {
 	return ""
 }
 
+// Ends the agent's idle batching window now. Empty: it names no message. It
+// starts a turn on whatever is queued, or does nothing.
+type StartNowControl struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartNowControl) Reset() {
+	*x = StartNowControl{}
+	mi := &file_compass_v1_agent_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartNowControl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartNowControl) ProtoMessage() {}
+
+func (x *StartNowControl) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartNowControl.ProtoReflect.Descriptor instead.
+func (*StartNowControl) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{5}
+}
+
 // A bare barrier signal: replay is complete, live ops may now flow. No payload.
 type ReplayComplete struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -651,7 +705,7 @@ type ReplayComplete struct {
 
 func (x *ReplayComplete) Reset() {
 	*x = ReplayComplete{}
-	mi := &file_compass_v1_agent_proto_msgTypes[5]
+	mi := &file_compass_v1_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -663,7 +717,7 @@ func (x *ReplayComplete) String() string {
 func (*ReplayComplete) ProtoMessage() {}
 
 func (x *ReplayComplete) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[5]
+	mi := &file_compass_v1_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -676,7 +730,7 @@ func (x *ReplayComplete) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayComplete.ProtoReflect.Descriptor instead.
 func (*ReplayComplete) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{5}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
 // SteerControl carries a comms Message: a channel `@`-mention routed into the
@@ -717,7 +771,7 @@ type SteerControl struct {
 
 func (x *SteerControl) Reset() {
 	*x = SteerControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[6]
+	mi := &file_compass_v1_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +783,7 @@ func (x *SteerControl) String() string {
 func (*SteerControl) ProtoMessage() {}
 
 func (x *SteerControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[6]
+	mi := &file_compass_v1_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -742,7 +796,7 @@ func (x *SteerControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SteerControl.ProtoReflect.Descriptor instead.
 func (*SteerControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{6}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SteerControl) GetMessage() *v1.Message {
@@ -793,7 +847,7 @@ type TranscriptReplay struct {
 
 func (x *TranscriptReplay) Reset() {
 	*x = TranscriptReplay{}
-	mi := &file_compass_v1_agent_proto_msgTypes[7]
+	mi := &file_compass_v1_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -805,7 +859,7 @@ func (x *TranscriptReplay) String() string {
 func (*TranscriptReplay) ProtoMessage() {}
 
 func (x *TranscriptReplay) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[7]
+	mi := &file_compass_v1_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -818,7 +872,7 @@ func (x *TranscriptReplay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranscriptReplay.ProtoReflect.Descriptor instead.
 func (*TranscriptReplay) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{7}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{8}
 }
 
 type ConfigControl struct {
@@ -829,7 +883,7 @@ type ConfigControl struct {
 
 func (x *ConfigControl) Reset() {
 	*x = ConfigControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[8]
+	mi := &file_compass_v1_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -841,7 +895,7 @@ func (x *ConfigControl) String() string {
 func (*ConfigControl) ProtoMessage() {}
 
 func (x *ConfigControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[8]
+	mi := &file_compass_v1_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -854,7 +908,7 @@ func (x *ConfigControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigControl.ProtoReflect.Descriptor instead.
 func (*ConfigControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{8}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{9}
 }
 
 // DeliverControl carries a comms Message to deliver into the agent's live
@@ -898,7 +952,7 @@ type DeliverControl struct {
 
 func (x *DeliverControl) Reset() {
 	*x = DeliverControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	mi := &file_compass_v1_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -910,7 +964,7 @@ func (x *DeliverControl) String() string {
 func (*DeliverControl) ProtoMessage() {}
 
 func (x *DeliverControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	mi := &file_compass_v1_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -923,7 +977,7 @@ func (x *DeliverControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverControl.ProtoReflect.Descriptor instead.
 func (*DeliverControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{9}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeliverControl) GetMessage() *v1.Message {
@@ -975,7 +1029,7 @@ type DeliveryAck struct {
 
 func (x *DeliveryAck) Reset() {
 	*x = DeliveryAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	mi := &file_compass_v1_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -987,7 +1041,7 @@ func (x *DeliveryAck) String() string {
 func (*DeliveryAck) ProtoMessage() {}
 
 func (x *DeliveryAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	mi := &file_compass_v1_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1000,7 +1054,7 @@ func (x *DeliveryAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryAck.ProtoReflect.Descriptor instead.
 func (*DeliveryAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{10}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DeliveryAck) GetMessageId() string {
@@ -1026,7 +1080,7 @@ type ForgeNotificationAck struct {
 
 func (x *ForgeNotificationAck) Reset() {
 	*x = ForgeNotificationAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[11]
+	mi := &file_compass_v1_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1038,7 +1092,7 @@ func (x *ForgeNotificationAck) String() string {
 func (*ForgeNotificationAck) ProtoMessage() {}
 
 func (x *ForgeNotificationAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[11]
+	mi := &file_compass_v1_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1051,7 +1105,7 @@ func (x *ForgeNotificationAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgeNotificationAck.ProtoReflect.Descriptor instead.
 func (*ForgeNotificationAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ForgeNotificationAck) GetSubscriptionId() string {
@@ -1080,7 +1134,7 @@ type ReplayCompleteAck struct {
 
 func (x *ReplayCompleteAck) Reset() {
 	*x = ReplayCompleteAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[12]
+	mi := &file_compass_v1_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1092,7 +1146,7 @@ func (x *ReplayCompleteAck) String() string {
 func (*ReplayCompleteAck) ProtoMessage() {}
 
 func (x *ReplayCompleteAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[12]
+	mi := &file_compass_v1_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1105,7 +1159,7 @@ func (x *ReplayCompleteAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayCompleteAck.ProtoReflect.Descriptor instead.
 func (*ReplayCompleteAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{12}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{13}
 }
 
 type ControlAck struct {
@@ -1127,7 +1181,7 @@ type ControlAck struct {
 
 func (x *ControlAck) Reset() {
 	*x = ControlAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[13]
+	mi := &file_compass_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1139,7 +1193,7 @@ func (x *ControlAck) String() string {
 func (*ControlAck) ProtoMessage() {}
 
 func (x *ControlAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[13]
+	mi := &file_compass_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1152,7 +1206,7 @@ func (x *ControlAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlAck.ProtoReflect.Descriptor instead.
 func (*ControlAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ControlAck) GetAckedSeq() uint64 {
@@ -1203,7 +1257,7 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\x05state\x18\x01 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x129\n" +
 	"\vtyped_event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\n" +
 	"typedEvent\x12#\n" +
-	"\rturn_sequence\x18\x03 \x01(\x04R\fturnSequence\"\xdd\x03\n" +
+	"\rturn_sequence\x18\x03 \x01(\x04R\fturnSequence\"\x99\x04\n" +
 	"\fAgentControl\x12\x1f\n" +
 	"\vcontrol_seq\x18\b \x01(\x04R\n" +
 	"controlSeq\x123\n" +
@@ -1213,10 +1267,13 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\x06config\x18\x05 \x01(\v2\x19.compass.v1.ConfigControlH\x00R\x06config\x126\n" +
 	"\x06replay\x18\x06 \x01(\v2\x1c.compass.v1.TranscriptReplayH\x00R\x06replay\x12E\n" +
 	"\x0freplay_complete\x18\a \x01(\v2\x1a.compass.v1.ReplayCompleteH\x00R\x0ereplayComplete\x12N\n" +
-	"\x12forge_notification\x18\t \x01(\v2\x1d.compass.v1.ForgeNotificationH\x00R\x11forgeNotificationB\t\n" +
+	"\x12forge_notification\x18\t \x01(\v2\x1d.compass.v1.ForgeNotificationH\x00R\x11forgeNotification\x12:\n" +
+	"\tstart_now\x18\n" +
+	" \x01(\v2\x1b.compass.v1.StartNowControlH\x00R\bstartNowB\t\n" +
 	"\acontrol\"%\n" +
 	"\rPromptControl\x12\x14\n" +
-	"\x05input\x18\x01 \x01(\tR\x05input\"\x10\n" +
+	"\x05input\x18\x01 \x01(\tR\x05input\"\x11\n" +
+	"\x0fStartNowControl\"\x10\n" +
 	"\x0eReplayComplete\"\xc2\x01\n" +
 	"\fSteerControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1f\n" +
@@ -1261,50 +1318,52 @@ func file_compass_v1_agent_proto_rawDescGZIP() []byte {
 	return file_compass_v1_agent_proto_rawDescData
 }
 
-var file_compass_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_compass_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_compass_v1_agent_proto_goTypes = []any{
 	(*AgentFrame)(nil),           // 0: compass.v1.AgentFrame
 	(*TranscriptEntry)(nil),      // 1: compass.v1.TranscriptEntry
 	(*SessionFrame)(nil),         // 2: compass.v1.SessionFrame
 	(*AgentControl)(nil),         // 3: compass.v1.AgentControl
 	(*PromptControl)(nil),        // 4: compass.v1.PromptControl
-	(*ReplayComplete)(nil),       // 5: compass.v1.ReplayComplete
-	(*SteerControl)(nil),         // 6: compass.v1.SteerControl
-	(*TranscriptReplay)(nil),     // 7: compass.v1.TranscriptReplay
-	(*ConfigControl)(nil),        // 8: compass.v1.ConfigControl
-	(*DeliverControl)(nil),       // 9: compass.v1.DeliverControl
-	(*DeliveryAck)(nil),          // 10: compass.v1.DeliveryAck
-	(*ForgeNotificationAck)(nil), // 11: compass.v1.ForgeNotificationAck
-	(*ReplayCompleteAck)(nil),    // 12: compass.v1.ReplayCompleteAck
-	(*ControlAck)(nil),           // 13: compass.v1.ControlAck
-	(v1.AgentSessionState)(0),    // 14: compass.v1.AgentSessionState
-	(*v1.SessionEvent)(nil),      // 15: compass.v1.SessionEvent
-	(*ForgeNotification)(nil),    // 16: compass.v1.ForgeNotification
-	(*v1.Message)(nil),           // 17: compass.v1.Message
+	(*StartNowControl)(nil),      // 5: compass.v1.StartNowControl
+	(*ReplayComplete)(nil),       // 6: compass.v1.ReplayComplete
+	(*SteerControl)(nil),         // 7: compass.v1.SteerControl
+	(*TranscriptReplay)(nil),     // 8: compass.v1.TranscriptReplay
+	(*ConfigControl)(nil),        // 9: compass.v1.ConfigControl
+	(*DeliverControl)(nil),       // 10: compass.v1.DeliverControl
+	(*DeliveryAck)(nil),          // 11: compass.v1.DeliveryAck
+	(*ForgeNotificationAck)(nil), // 12: compass.v1.ForgeNotificationAck
+	(*ReplayCompleteAck)(nil),    // 13: compass.v1.ReplayCompleteAck
+	(*ControlAck)(nil),           // 14: compass.v1.ControlAck
+	(v1.AgentSessionState)(0),    // 15: compass.v1.AgentSessionState
+	(*v1.SessionEvent)(nil),      // 16: compass.v1.SessionEvent
+	(*ForgeNotification)(nil),    // 17: compass.v1.ForgeNotification
+	(*v1.Message)(nil),           // 18: compass.v1.Message
 }
 var file_compass_v1_agent_proto_depIdxs = []int32{
 	2,  // 0: compass.v1.AgentFrame.session:type_name -> compass.v1.SessionFrame
-	12, // 1: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
-	13, // 2: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
-	10, // 3: compass.v1.AgentFrame.delivery_ack:type_name -> compass.v1.DeliveryAck
+	13, // 1: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
+	14, // 2: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
+	11, // 3: compass.v1.AgentFrame.delivery_ack:type_name -> compass.v1.DeliveryAck
 	1,  // 4: compass.v1.AgentFrame.transcript_entry:type_name -> compass.v1.TranscriptEntry
-	11, // 5: compass.v1.AgentFrame.forge_notification_ack:type_name -> compass.v1.ForgeNotificationAck
-	14, // 6: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
-	15, // 7: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
+	12, // 5: compass.v1.AgentFrame.forge_notification_ack:type_name -> compass.v1.ForgeNotificationAck
+	15, // 6: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
+	16, // 7: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
 	4,  // 8: compass.v1.AgentControl.prompt:type_name -> compass.v1.PromptControl
-	6,  // 9: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
-	9,  // 10: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
-	8,  // 11: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
-	7,  // 12: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
-	5,  // 13: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
-	16, // 14: compass.v1.AgentControl.forge_notification:type_name -> compass.v1.ForgeNotification
-	17, // 15: compass.v1.SteerControl.message:type_name -> compass.v1.Message
-	17, // 16: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	7,  // 9: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
+	10, // 10: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
+	9,  // 11: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
+	8,  // 12: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
+	6,  // 13: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
+	17, // 14: compass.v1.AgentControl.forge_notification:type_name -> compass.v1.ForgeNotification
+	5,  // 15: compass.v1.AgentControl.start_now:type_name -> compass.v1.StartNowControl
+	18, // 16: compass.v1.SteerControl.message:type_name -> compass.v1.Message
+	18, // 17: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_proto_init() }
@@ -1329,6 +1388,7 @@ func file_compass_v1_agent_proto_init() {
 		(*AgentControl_Replay)(nil),
 		(*AgentControl_ReplayComplete)(nil),
 		(*AgentControl_ForgeNotification)(nil),
+		(*AgentControl_StartNow)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1336,7 +1396,7 @@ func file_compass_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_agent_proto_rawDesc), len(file_compass_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
