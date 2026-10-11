@@ -10,6 +10,9 @@ import { EXIT, healthzOk, modelsListOk } from "./core.ts";
 const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const laneDir = dirname(fileURLToPath(import.meta.url));
 
+/** Ceiling for one podman or skopeo call; the image load is the slowest. */
+const COMMAND_TIMEOUT_MS = 300_000;
+
 type CommandResult = { status: number | null; stdout: string; stderr: string };
 
 function failUsage(): never {
@@ -54,13 +57,16 @@ function parseArgs(argv: readonly string[]): { out: string; fault?: Fault } {
 function run(
 	command: string,
 	args: readonly string[],
-	options: { env?: NodeJS.ProcessEnv } = {},
+	options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
 ): CommandResult {
+	// A stalled podman client must not hang the smoke past its budget.
 	const result = spawnSync(command, [...args], {
 		cwd: workspaceRoot,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
-		...options,
+		env: options.env,
+		timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
+		killSignal: "SIGKILL",
 	});
 	return {
 		status: result.status,
@@ -85,14 +91,15 @@ function requireCommand(
 }
 
 async function waitFor(
-	probe: () => Promise<boolean>,
+	probe: (remainingMs: number) => Promise<boolean>,
 	milliseconds: number,
 ): Promise<boolean> {
 	const deadline = Date.now() + milliseconds;
 	while (Date.now() < deadline) {
 		try {
 			// A probe that succeeds after the deadline is still a late service.
-			if ((await probe()) && Date.now() <= deadline) return true;
+			if ((await probe(deadline - Date.now())) && Date.now() <= deadline)
+				return true;
 		} catch {
 			// The service is not ready until the probe succeeds.
 		}
@@ -144,14 +151,18 @@ try {
 		"--bind=0.0.0.0:8765",
 	]);
 
-	const brokerReady = await waitFor(async () => {
-		const probe = run("podman", [
-			"exec",
-			broker,
-			"bun",
-			"-e",
-			"fetch('http://127.0.0.1:8765/v1/healthz', { signal: AbortSignal.timeout(2000) }).then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
-		]);
+	const brokerReady = await waitFor(async (remainingMs) => {
+		const probe = run(
+			"podman",
+			[
+				"exec",
+				broker,
+				"bun",
+				"-e",
+				"fetch('http://127.0.0.1:8765/v1/healthz', { signal: AbortSignal.timeout(2000) }).then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
+			],
+			{ timeoutMs: Math.max(remainingMs, 1) },
+		);
 		return probe.status === 0;
 	}, 30_000);
 	if (!brokerReady) {
