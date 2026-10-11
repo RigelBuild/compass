@@ -705,6 +705,7 @@
       // the rollup matches only patch/minor.
       matchManagers: ["custom.regex"],
       matchDepNames: ["cachix/devenv-nixpkgs"],
+      commitMessageTopic: "nixpkgs channel (dev shell)",
       groupName: "devenv nixpkgs channel",
       // Daily, on the workflow cron's cadence. This is a deliberate compass divergence
       // from the prior art, whose rule schedules weekly to bound `rolling`'s
@@ -774,6 +775,7 @@
       // git-refs update is type `digest`, and the rollup admits only patch/minor.
       matchManagers: ["custom.regex"],
       matchDepNames: ["RigelBuild/meissa"],
+      commitMessageTopic: "meissa lint toolchain (dev shell)",
       groupName: "meissa lint toolchain",
       // A git-refs digest carries no release timestamp, so the repo-wide strict
       // cooldown would hold it `pending` forever (the RIG-1220 shape). The
@@ -801,6 +803,10 @@
       // rule ensures either update carries both relocks.
       matchManagers: ["custom.regex"],
       matchDepNames: ["RigelBuild/devenv", "RigelBuild/devenv-agent-image"],
+      commitMessageTopic: "devenv modules (dev shell and agent image)",
+      group: {
+        commitMessageTopic: "devenv modules (dev shell and agent image)",
+      },
       groupName: "devenv fork",
       // Daily, on the workflow cron's cadence, like the devenv-nixpkgs rule.
       // Both locks resolve the moving fork `main` by default branch.
@@ -896,6 +902,7 @@
       // channel rule, since `rolling` moves near-daily.
       matchManagers: ["custom.regex"],
       matchDepNames: ["cachix/devenv-nixpkgs-agent-image"],
+      commitMessageTopic: "nixpkgs channel (agent image)",
       groupName: "devenv nixpkgs channel (agent-image)",
       minimumReleaseAge: null,
       // ── The relock task. ──

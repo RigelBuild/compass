@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import botConfig from "./bot-config.json5";
 import config from "./config.json5";
+import {
+	CLOSURE_TARGETS,
+	REVIEWABLE_CUT_VERIFIED_AT,
+} from "./nix-package-diff.core.ts";
 // The shipped FOD table. Imported (not restated) so the coverage guard at the
 // end of this file re-derives its requirement from the declaration itself.
 // Side-effect-safe: that module does no I/O at import (its main() is behind an
@@ -38,6 +42,8 @@ type PackageRule = {
 	enabled?: boolean;
 	force?: { enabled?: boolean };
 	postUpgradeTasks?: PostUpgradeTasks;
+	commitMessageTopic?: string;
+	group?: { commitMessageTopic?: string };
 };
 type CustomManager = {
 	customType?: string;
@@ -52,6 +58,7 @@ type CustomManager = {
 	currentDigestTemplate?: string;
 	versioningTemplate?: string;
 	extractVersionTemplate?: string;
+	commitMessageTopic?: string;
 };
 type RenovateConfig = {
 	extends: string[];
@@ -78,6 +85,52 @@ const bot = botConfig as {
 // tools/renovate/ → repo root is two levels up.
 const repoRoot = join(import.meta.dir, "..", "..");
 
+describe("tools/renovate nix lock commit message topics", () => {
+	const matchingFile = (manager: CustomManager, file: string): boolean =>
+		manager.managerFilePatterns?.some((pattern) => {
+			const match = /^\/(.*)\/$/.exec(pattern);
+			return match !== null && new RegExp(match[1] ?? "").test(file);
+		}) ?? false;
+
+	const ruleForManager = (manager: CustomManager): PackageRule | undefined =>
+		cfg.packageRules.find((candidate) =>
+			candidate.matchDepNames?.includes(manager.depNameTemplate ?? ""),
+		);
+
+	const lockDepsForRule = (rule: PackageRule): string[] =>
+		(rule.matchDepNames ?? []).filter((name) =>
+			(cfg.customManagers ?? []).some(
+				(candidate) =>
+					candidate.depNameTemplate === name &&
+					CLOSURE_TARGETS.some((target) =>
+						matchingFile(candidate, target.lock),
+					),
+			),
+		);
+
+	test("every lock manager has a target-labeled topic, including multi-dep groups", () => {
+		const managers = (cfg.customManagers ?? []).filter(
+			(manager) => manager.depNameTemplate,
+		);
+		for (const target of CLOSURE_TARGETS) {
+			const matchingManagers = managers.filter((manager) =>
+				matchingFile(manager, target.lock),
+			);
+			for (const manager of matchingManagers) {
+				const rule = ruleForManager(manager);
+				expect(
+					rule,
+					`${manager.depNameTemplate} needs a packageRule`,
+				).toBeDefined();
+				if (!rule) continue;
+				expect(rule.commitMessageTopic).toContain(target.label);
+				if (lockDepsForRule(rule).length > 1) {
+					expect(rule.group?.commitMessageTopic).toContain(target.label);
+				}
+			}
+		}
+	});
+});
 // The FOD-hash refresh command, declared once. It rides SIX task sites in
 // config.json5 and is asserted from several describes below; a rename must be a
 // single edit here, not one per assertion (a missed copy degrades quietly).
@@ -1678,6 +1731,10 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 		expect(
 			selfPin?.matchStrings?.some((s) => s.includes("bunx renovate@")),
 		).toBe(true);
+	});
+	test("the Reviewable body-cut pin matches the core's verified Renovate version", () => {
+		const match = /bunx renovate@(?<version>\S+)/.exec(runLines);
+		expect(match?.groups?.version).toBe(REVIEWABLE_CUT_VERIFIED_AT);
 	});
 
 	// The preflight step probes with GH_TOKEN but classifies token-PRESENCE off
