@@ -1015,6 +1015,7 @@ func buildDoors(
 	gatewayCredStore := gatewaycred.NewPostgres(st, masterKey, keyVersion)
 	gatewayCredSvc := newGatewayCredentialsService(st, gatewayCredStore, gatewayCredStore, slog.Default())
 	gatewayRegistrySvc := newGatewayRegistryService(st, slog.Default())
+	gatewayAuthSvc := newGatewayAuthService(auth.NewGatewayTokens(st))
 	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
 	// empty, so mounted unconditionally. otelconnect goes FIRST so the span
@@ -1096,7 +1097,7 @@ func buildDoors(
 	}
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayServices{credentials: gatewayCredSvc, registry: gatewayRegistrySvc})
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayServices{credentials: gatewayCredSvc, registry: gatewayRegistrySvc, auth: gatewayAuthSvc})
 		if err != nil {
 			return serveDoors{}, err
 		}

@@ -399,6 +399,7 @@ func buildNetworkServer(
 type gatewayServices struct {
 	credentials *gatewayCredentialsService
 	registry    *gatewayRegistryService
+	auth        *gatewayAuthService
 }
 
 func mountGatewayServices(
@@ -407,7 +408,7 @@ func mountGatewayServices(
 	otelIC *otelconnect.Interceptor,
 	runnerResolve runnerhub.TokenResolver,
 ) {
-	if services.credentials == nil && services.registry == nil {
+	if services.credentials == nil && services.registry == nil && services.auth == nil {
 		return
 	}
 	interceptors := connect.WithInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID))
@@ -418,6 +419,10 @@ func mountGatewayServices(
 	}
 	if services.registry != nil {
 		path, handler := compassv1internalconnect.NewGatewayRegistryHandler(services.registry, options...)
+		netMux.Handle(path, handler)
+	}
+	if services.auth != nil {
+		path, handler := compassv1internalconnect.NewGatewayAuthHandler(services.auth, options...)
 		netMux.Handle(path, handler)
 	}
 }
