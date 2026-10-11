@@ -1077,18 +1077,12 @@ describe("prChangedPaths", () => {
 	test("lists PR files only when the base has drifted", async () => {
 		const repo = await mkdtemp(join(tmpdir(), "ci-matrix-pr-paths-"));
 		tempRepos.push(repo);
-		const git = (args: string[]) => $`git ${args}`.cwd(repo).quiet();
+		// Identity per call: CI runners have no global git user.
+		const git = (args: string[]) =>
+			$`git -c user.name=t -c user.email=t@t ${args}`.cwd(repo).quiet();
 		const commit = async (message: string) => {
 			await git(["add", "-A"]);
-			await git([
-				"-c",
-				"user.name=t",
-				"-c",
-				"user.email=t@t",
-				"commit",
-				"-m",
-				message,
-			]);
+			await git(["commit", "-m", message]);
 		};
 
 		await git(["init", "-q", "-b", "main"]);
