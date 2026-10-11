@@ -354,7 +354,11 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets requires a session_id or container_name selector"))
 	}
-	resolved, err := h.resolver.ResolveFor(ctx, agent, "runner fetch")
+	tctx, err := h.hub.accountTenantContext(ctx, agent)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := h.resolver.ResolveFor(tctx, agent, "runner fetch")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving secrets: %w", err))
 	}

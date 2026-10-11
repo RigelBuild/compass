@@ -36,6 +36,8 @@ func (h *Hub) SetLifetimeBinder(b LifetimeBinder) {
 // LifetimeBinder wired receives a BindLifetime. It maps to CodeUnavailable.
 var errLifetimeBinderUnavailable = errors.New("runnerhub: no lifetime binder wired to serve BindLifetime")
 
+var errAccountTenantUnavailable = errors.New("runnerhub: no lifetime binder wired to resolve the account tenant")
+
 // errBindDenied is the one PermissionDenied cause for every refused bind, so a
 // foreign container, a foreign session, and an unknown session are identical.
 var errBindDenied = errors.New("runnerhub: session is not bindable from this container")
@@ -59,11 +61,10 @@ func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, session
 	if !ok {
 		return connect.NewError(connect.CodePermissionDenied, errBindDenied)
 	}
-	tenant, err := binder.AccountTenant(store.WithSystemRole(ctx), account)
+	tctx, err := h.accountTenantContext(ctx, account)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("resolving tenant for bind: %w", err))
+		return err
 	}
-	tctx := store.WithTenant(store.WithoutSystemRole(ctx), tenant)
 	if _, err := binder.BindLifetime(tctx, sessionID, account); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewError(connect.CodePermissionDenied, errBindDenied)
@@ -71,4 +72,20 @@ func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, session
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("binding lifetime: %w", err))
 	}
 	return nil
+}
+
+// accountTenantContext scopes ctx to account's tenant. The Runner door carries
+// no tenant, so the lookup runs under the system role and the result does not.
+func (h *Hub) accountTenantContext(ctx context.Context, account store.AccountID) (context.Context, error) {
+	h.mu.Lock()
+	binder := h.binder
+	h.mu.Unlock()
+	if binder == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errAccountTenantUnavailable)
+	}
+	tenant, err := binder.AccountTenant(store.WithSystemRole(ctx), account)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving account tenant: %w", err))
+	}
+	return store.WithTenant(store.WithoutSystemRole(ctx), tenant), nil
 }
