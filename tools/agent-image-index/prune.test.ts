@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	type PackageVersion,
+	parseLockPins,
 	planRetention,
 	type RetentionPlan,
 	recheckSkipReason,
@@ -313,5 +314,36 @@ describe("recheckSkipReason", () => {
 				NOW,
 			),
 		).toBeUndefined();
+	});
+});
+
+describe("parseLockPins", () => {
+	test("pins the index digest, every platform manifest and the tag of the checked-in lock", async () => {
+		const lock = await Bun.file(
+			new URL("../../guest-image/agent-oci.lock", import.meta.url),
+		).json();
+		const pins = parseLockPins(lock);
+		expect(pins.tag).toBe(lock.tag);
+		const manifests = Object.values(lock.platforms ?? {}).map((platform) =>
+			platform !== null &&
+			typeof platform === "object" &&
+			"manifest" in platform
+				? platform.manifest
+				: undefined,
+		);
+		expect(manifests).toHaveLength(2);
+		expect([...pins.digests].sort()).toEqual(
+			[lock.digest, ...manifests].sort(),
+		);
+	});
+
+	test("rejects a platform entry without a manifest digest", () => {
+		expect(() =>
+			parseLockPins({
+				tag: "git-0123456789ab",
+				digest: `sha256:${"a".repeat(64)}`,
+				platforms: { "linux/amd64": { digest: `sha256:${"b".repeat(64)}` } },
+			}),
+		).toThrow(/linux\/amd64 manifest was not a sha256 digest/);
 	});
 });
