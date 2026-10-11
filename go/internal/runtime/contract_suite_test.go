@@ -646,7 +646,7 @@ func deliberateKill(err error, caps backendCaps) bool {
 		return ok && e.Signal != 0
 	}
 	e, ok := errors.AsType[*exec.ExitError](err)
-	return ok && e.ExitCode() == -1
+	return ok && killedBySIGKILL(e)
 }
 
 // assertDeliberateKill fails unless err is the expected deliberate-kill error
