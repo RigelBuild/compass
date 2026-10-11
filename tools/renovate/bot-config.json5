@@ -121,12 +121,11 @@
   //      SEPARATE from (3) because the root
   //      channel script's flake lockstep has no counterpart in this scope:
   //      agent-image bakes no dev shell (`packages = [ ]`) and has no flake.
-  //   8. the guest-rootfs agent-image relock: on the moving `:latest` digest it
-  //      resolves which immutable `git-<sha12>` tag shares that manifest and
-  //      rewrites guest-image/agent-oci.lock's tag + digest + every layer
-  //      descriptor. The descriptors are the rootfs's fixed-output fetch keys
-  //      and Renovate cannot compute them, so a digest-only rewrite would
-  //      redden every fetch.
+  //   8. the guest-rootfs agent-image relock: on the moving `:latest` index
+  //      digest it resolves the immutable `git-<sha12>` tag that shares it
+  //      and rewrites the index digest plus each platform's manifest and layer
+  //      descriptors. These are the rootfs's fixed-output fetch keys, so a
+  //      digest-only rewrite would redden every fetch.
   //   9. the Go analysis pin refresh, which derives the paired fields and refreshes
   //      both source and vendor hashes after a nilaway or golangci-lint bump.
   //  10. the Meissa relock: `devenv update meissa` rewrites the meissa input and

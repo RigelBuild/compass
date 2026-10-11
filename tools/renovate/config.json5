@@ -449,20 +449,16 @@
       // guest rootfs is built FROM, so an agent publish that never reaches this
       // lock leaves the microVM backend running a stale agent indefinitely.
       //
-      // Detection tracks the MOVING `:latest` digest, not the pinned tag: the
-      // lock pins an immutable per-commit `git-<sha12>`, which no datasource can
-      // order (there is no version in it to compare). The postUpgradeTask below
-      // resolves `:latest` back to whichever immutable tag currently shares its
-      // manifest, which is sound because the publish lane asserts the pair
-      // shares a config digest and fails closed (.github/workflows/release.yml).
+      // Detection follows the moving `:latest` OCI index digest, not the
+      // pinned tag. The lock pins an immutable per-commit `git-<sha12>`, which
+      // no datasource can order. Relock matches index digests and fails closed
+      // if the moving and immutable tags do not identify the same index.
       //
-      // So the regex matches only the `digest` field, and `currentValue` is the
-      // literal `latest` the datasource can follow. The tag and layer fields are
-      // left for the relock — Renovate cannot compute the layer descriptor set.
+      // The regex matches only the top-level index digest. The relock owns the
+      // tag and each platform's manifest and layer descriptors.
       //
-      // versioningTemplate is explicit `docker` for the same reason as the
-      // postgres pin above: a custom.regex manager defaults to `semver-coerced`
-      // regardless of datasource.
+      // Explicit `docker` versioning avoids custom.regex's semver-coerced
+      // default, which mishandles digest references.
       customType: "regex",
       managerFilePatterns: ["/^guest-image/agent-oci\\.lock$/"],
       matchStrings: [
@@ -859,8 +855,8 @@
       // rewrite completes the update).
       //
       // The relock re-resolves the whole lock: it maps the moving `:latest`
-      // digest back to the immutable `git-<sha12>` tag that shares its
-      // manifest, then rewrites tag + digest + every layer descriptor together.
+      // index digest back to the immutable `git-<sha12>` tag with the same index,
+      // then rewrites the tag, index digest and each platform's manifest and layers.
       //
       // fileFilters is an INCLUDE allowlist — Renovate commits ONLY matching
       // files — and the lock is the only file this task writes. Listing less

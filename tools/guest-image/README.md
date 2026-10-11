@@ -1,9 +1,9 @@
 # guest-image
 
-Pins the published `compass-agent` image by immutable tag, manifest digest, and
-layer descriptors in `guest-image/agent-oci.lock`. It also assembles and
-publishes the guest kernel, rootfs, and initrd as one OCI artifact for the
-microVM guest.
+Pins the published `compass-agent` OCI index by immutable tag and index digest,
+with a manifest digest and ordered layer descriptors for each platform, in
+`guest-image/agent-oci.lock`. It also assembles and publishes the guest kernel,
+rootfs, and initrd as one OCI artifact for the microVM guest.
 
 ## Run
 

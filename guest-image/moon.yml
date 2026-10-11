@@ -50,20 +50,33 @@ tasks:
       - '/devenv.yaml'
 
   test:
-    # The layer-assembly fixtures: synthetic layers built in the sandbox, so no
-    # registry fetch and seconds rather than a full rootfs build.
-    command: 'nix build -f default.nix compass-guest-assembly-tests --no-link'
+    # The layer assembly fixtures and the pure v2 pin contract checks need no
+    # registry or guest boot.
+    command: 'nix build -f default.nix compass-guest-assembly-tests compass-guest-agent-pin-tests --no-link'
     options:
       cache: false
       runInCI: true
     inputs:
       - 'assemble-layers.sh'
       - 'assembly-tests.nix'
+      - 'agent-pin.nix'
+      - 'agent-pin-tests.nix'
       - 'default.nix'
       - '/devenv.lock'
 
+  eval-arm64:
+    command: 'nix eval -f default.nix compass-guest-agent-pin-smoke'
+    options:
+      cache: false
+      runInCI: true
+    inputs:
+      - 'default.nix'
+      - 'agent-pin.nix'
+      - 'agent-oci.lock'
+      - '/devenv.lock'
+
   ci:
-    deps: ['build', 'test']
+    deps: ['build', 'test', 'eval-arm64']
     options:
       cache: false
       runInCI: true

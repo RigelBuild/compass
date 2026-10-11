@@ -2,7 +2,7 @@
 	"name": "@compass/guest-image",
 	"private": true,
 	"type": "module",
-	"description": "Pin the published compass-agent image the microVM guest rootfs derives from: resolve an immutable git-<sha12> tag to its manifest digest and layer descriptor set, and write guest-image/agent-oci.lock. The lock is the rootfs's whole provenance story, so the pin enforces it rather than documenting it.",
+	"description": "Pin the published multi-platform compass-agent OCI index and its per-platform manifest and layer descriptors in guest-image/agent-oci.lock. The guest rootfs selects the member matching its nixpkgs host platform.",
 	"module": "pin-agent-image.ts",
 	"bin": {
 		"guest-image-pin-agent": "./pin-agent-image.ts"

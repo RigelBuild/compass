@@ -2,6 +2,7 @@
 # runtime boots per session guest. The rootfs userland IS the published agent
 # OCI image unpacked, fetched fixed-output against `agent-oci.lock`, so
 # guest/container drift is not expressible. Only the boot layer is added on top.
+{ crossSystem ? null }:
 let
   # The root devenv.lock-pinned nixpkgs, resolved as the other plain nix gates do
   # (read the lock, fetch that rev, import it). Supplies the BOOT layer only: the
@@ -12,82 +13,51 @@ let
     url = "https://github.com/${node.owner}/${node.repo}/archive/${node.rev}.tar.gz";
     sha256 = node.narHash;
   };
-  pkgs = import nixpkgsSrc { };
+  # Choose the OCI member for the same target platform as the boot layer.
+  pkgs = import nixpkgsSrc (if crossSystem == null then { } else { inherit crossSystem; });
   lib = pkgs.lib;
-
-  # The pinned agent image, written only by tools/guest-image/pin-agent-image.ts.
-  # The shape is re-checked HERE as well as in the pin tool: the tool guards the
-  # write path, this guards the eval, and a hand-edited lock has to defeat both.
+  agentPin = import ./agent-pin.nix { inherit lib; };
   agentLock = builtins.fromJSON (builtins.readFile ./agent-oci.lock);
+  checkedLock = agentPin.checkLock agentLock;
 
-  # Split registry host from repository path: the lock stores the full
-  # reference, the v2 API needs the two separately.
+  # The v2 registry API uses the lock's repository split into host and path.
   agentRegistry = "ghcr.io";
   agentPath = "rigelbuild/compass-agent";
   agentRepo = "${agentRegistry}/${agentPath}";
-
-  # A digest is only a pin if it is a real sha256. `match` returns null on any
-  # deviation, so a truncated or hex-invalid digest fails eval instead of
-  # reaching fetchurl as an unenforceable hash.
-  isSha256 = s: builtins.isString s && builtins.match "sha256:[0-9a-f]{64}" s != null;
-
-  # Fail at eval, naming the field, rather than letting a malformed lock surface
-  # as an opaque fetch or hash error deep in the build.
-  checkedLock =
-    let
-      bad =
-        if !builtins.isAttrs agentLock then
-          "lock must be a JSON object"
-        else if !builtins.isString (agentLock.repo or null) || agentLock.repo != agentRepo then
-          "repo must be ${agentRepo}, got ${toString (agentLock.repo or "<missing>")}"
-        else if
-          !builtins.isString (agentLock.tag or null) || builtins.match "git-[0-9a-f]{12}" agentLock.tag == null
-        then
-          "tag must match git-<sha12>, got ${toString (agentLock.tag or "<missing>")}"
-        else if !isSha256 (agentLock.digest or "") then
-          "digest must be sha256:<64 hex>, got ${toString (agentLock.digest or "<missing>")}"
-        else if !builtins.isList (agentLock.layers or null) || agentLock.layers == [ ] then
-          "layers must be a non-empty list"
-        else if !builtins.all isSha256 agentLock.layers then
-          "every layer must be sha256:<64 hex>"
-        else
-          null;
-    in
-    if bad == null then
-      agentLock
-    else
-      throw "guest-image: agent-oci.lock is not a valid pin: ${bad}. Restore it from main or delete it, then run `bun tools/guest-image/pin-agent-image.ts --tag git-<sha12>`; never edit it by hand.";
-
-  # The pinned manifest, fetched fixed-output against the lock's digest: a
-  # manifest digest IS the sha256 of its body, so nix's hash check authenticates
-  # it outright. Without this the digest would be decoration -- the layer
-  # descriptors alone decide what gets unpacked.
-  agentManifest = pkgs.fetchurl {
+  agentIndex = pkgs.fetchurl {
     url = "https://${agentRegistry}/v2/${agentPath}/manifests/${checkedLock.digest}";
+    curlOptsList = [
+      "-H"
+      "Authorization: Bearer QQ=="
+      "-H"
+      "Accept: application/vnd.oci.image.index.v1+json"
+    ];
+    hash = checkedLock.digest;
+  };
+  parsedIndex = builtins.fromJSON (builtins.readFile agentIndex);
+  # Select from the pkgs that builds the boot layer, never the eval host.
+  agentPlatform = agentPin.platformFor pkgs.stdenv.hostPlatform.system;
+  memberDigest = agentPin.memberDigest {
+    lock = checkedLock;
+    index = parsedIndex;
+    platform = agentPlatform;
+  };
+  agentManifest = pkgs.fetchurl {
+    url = "https://${agentRegistry}/v2/${agentPath}/manifests/${memberDigest}";
     curlOptsList = [
       "-H"
       "Authorization: Bearer QQ=="
       "-H"
       "Accept: application/vnd.oci.image.manifest.v1+json"
     ];
-    hash = checkedLock.digest;
+    hash = memberDigest;
   };
-
-  # The manifest's own ordered layer list. Reading it here rather than trusting
-  # the lock's copy binds the unpacked bytes to the pinned image: a hand-edited
-  # lock pairing this digest with another image's valid layers no longer builds.
-  manifestLayers = map (l: l.digest) (builtins.fromJSON (builtins.readFile agentManifest)).layers;
-
-  lockedLayers =
-    if manifestLayers == checkedLock.layers then
-      checkedLock.layers
-    else
-      throw "guest-image: agent-oci.lock layers do not match the manifest it pins (${checkedLock.digest}). Rewrite it with `bun tools/guest-image/pin-agent-image.ts --relock`, never by hand.";
-
-  # Each layer blob, fetched fixed-output against its descriptor digest -- the
-  # registry's own content address, where one archive's narHash would track
-  # skopeo's byte layout. The bearer is GHCR's literal anonymous public-read
-  # token, not a credential: an unauthenticated blob GET 401s demanding one.
+  parsedManifest = builtins.fromJSON (builtins.readFile agentManifest);
+  lockedLayers = agentPin.memberLayers {
+    lock = checkedLock;
+    manifest = parsedManifest;
+    platform = agentPlatform;
+  };
   agentLayers = map (
     digest:
     pkgs.fetchurl {
@@ -318,7 +288,31 @@ let
   # --all-root) makes the image a pure function of the closure, which is what
   # lets V5's preflight hash-verify the asset.
   rootfsUUID = "5da3f0a5-e0f5-4c0a-b0a1-c00000a55f5f";
+  pinTests = import ./agent-pin-tests.nix { inherit lib; };
+  pinSmoke =
+    let
+      armLock = checkedLock.platforms."linux/arm64";
+      x86Lock = checkedLock.platforms."linux/amd64";
+      pinFor = system:
+        let image = import ./default.nix { crossSystem = { inherit system; }; };
+        in image.compass-guest-rootfs.agentPin;
+      arm = pinFor "aarch64-linux";
+      x86 = pinFor "x86_64-linux";
+      unsupported = builtins.tryEval (builtins.deepSeq (agentPin.platformFor "riscv64-linux") true);
+      check = system: selected: platform: member:
+        let
+          manifestHash = "${selected.manifest.outputHashAlgo}:${selected.manifest.outputHash}";
+          layerHashes = map (layer: "${layer.outputHashAlgo}:${layer.outputHash}") selected.layers;
+        in
+        if selected.platform != platform then throw "guest-image: eval smoke: ${system} selected platform ${selected.platform}, lock pins ${platform}"
+        else if manifestHash != member.manifest then throw "guest-image: eval smoke: ${system} selected manifest ${manifestHash}, lock pins ${member.manifest}"
+        else if layerHashes != member.layers then throw "guest-image: eval smoke: ${system} selected layers ${builtins.toJSON layerHashes}, lock pins ${builtins.toJSON member.layers}"
+        else true;
+    in
+    if unsupported.success then throw "guest-image: eval smoke: riscv64-linux unexpectedly has an agent pin member"
+    else check "aarch64-linux" arm "linux/arm64" armLock && check "x86_64-linux" x86 "linux/amd64" x86Lock;
 in
+  # Match the userland architecture to the kernel and boot layer being built.
 {
   # Direct-boot kernel, substituted free from cache.nixos.org: its bzImage is
   # ${compass-guest-kernel}/bzImage.
@@ -335,6 +329,12 @@ in
           pkgs.erofs-utils
           pkgs.xz
         ];
+        passthru.agentPin = {
+          platform = agentPlatform;
+          index = agentIndex;
+          manifest = agentManifest;
+          layers = agentLayers;
+        };
       }
       ''
         root=$(mktemp -d)
@@ -367,7 +367,7 @@ in
 
         bash ${./assemble-layers.sh} restore-dir-modes "$root" ${lib.concatStringsSep " " agentLayers}
         bash ${./assemble-layers.sh} check-contract "$root" \
-          "${checkedLock.repo}@${checkedLock.digest}" ${lib.concatStringsSep " " userlandContract}
+          "${checkedLock.repo}@${memberDigest}" ${lib.concatStringsSep " " userlandContract}
 
         # Pack twice with identical flags and assert bit-equality; --workers=1
         # removes job-queue ordering as a variable. Intra-run smoke check only:
@@ -403,4 +403,8 @@ in
     inherit pkgs;
     script = ./assemble-layers.sh;
   };
+  compass-guest-agent-pin-tests = assert pinTests; pkgs.runCommand "compass-guest-agent-pin-tests" { } ''
+    touch $out
+  '';
+  compass-guest-agent-pin-smoke = pinSmoke;
 }
