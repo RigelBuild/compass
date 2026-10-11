@@ -59,6 +59,8 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 	// uses for its not-yet-wired subscribe control (LeftSidebar.tsx:171-184) — a
 	// visibly-dead button beats one that only reports into the console.
 	const fixture = () => view.agentSession()?.fixture === true;
+	// This pane's window, not the focused view's, so split panes stay apart.
+	const pending = () => store.batchPending(view.agentSession());
 	return (
 		<aside
 			class={["log-panel", { minimized: !store.logOpen() }]}
@@ -87,10 +89,10 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 								? "Can't start now: this session is fixture data, not a server-minted session."
 								: "Start now"
 						}
-						onClick={() => void store.skipBatchWindow()}
+						onClick={() => void store.skipBatchWindow(view.agentSession())}
 					>
-						{store.batchPending()
-							? `Start now (${store.batchPending()?.count} · ${hhmm(store.batchPending()?.firesAtMs ?? 0)})`
+						{pending()
+							? `Start now (${pending()?.count} · ${hhmm(pending()?.firesAtMs ?? 0)})`
 							: "Start now"}
 					</button>
 					<button

@@ -1230,7 +1230,7 @@ describe("demo targets never reach the server or storage", () => {
 			store.openAgent(DEMO_AGENT);
 			flush();
 			expect(store.selectedAgentId()).toBe(DEMO_AGENT);
-			await store.skipBatchWindow();
+			await store.skipBatchWindow(store.focusedView().agentSession());
 			expect(compass.skips).toEqual([]);
 		});
 	});

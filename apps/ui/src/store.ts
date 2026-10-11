@@ -570,12 +570,12 @@ export interface AppStore {
 	 *  `onCommsError` rather than rejected — there is no user text to preserve,
 	 *  unlike a failed post. */
 	stopAgent: () => Promise<void>;
-	/** Fire the focused session's batching window now. */
-	skipBatchWindow: () => Promise<void>;
+	/** Fire this session's batching window now; the caller passes its pane's session. */
+	skipBatchWindow: (session: AgentSession | undefined) => Promise<void>;
 	/** The last refusal from skipBatchWindow, cleared on the next attempt. */
 	skipError: Accessor<string | undefined>;
-	/** Pending window state for the focused session. */
-	batchPending: Accessor<BatchPending | undefined>;
+	/** This session's open window, or undefined when none is open. */
+	batchPending: (session: AgentSession | undefined) => BatchPending | undefined;
 	/** The message from the last REFUSED stop — a server refusal
 	 *  (`Unavailable`), a fixture-sourced session, or a store with no compass
 	 *  client — or undefined when the last attempt was not refused. Reactive, so
@@ -1480,8 +1480,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const fixtureSessions = options.sessions ?? STUB_SESSION_EVENTS;
 	const agentSessionById = (agentId: string): AgentSession | undefined =>
 		live ? live.sessionFor(agentId) : fixtureSessions[agentId];
-	const batchPending = (): BatchPending | undefined => {
-		const pending = focusedView().agentSession()?.batchPending;
+	const batchPending = (
+		session: AgentSession | undefined,
+	): BatchPending | undefined => {
+		const pending = session?.batchPending;
 		return pending && pending.count > 0 ? pending : undefined;
 	};
 
@@ -2103,11 +2105,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			refuseStop(error);
 		}
 	};
-	const skipBatchWindow = async (): Promise<void> => {
+	const skipBatchWindow = async (
+		session: AgentSession | undefined,
+	): Promise<void> => {
 		setSkipError(undefined);
-		if (isDemoId(selectedAgentId())) return;
-		const session = focusedView().agentSession();
-		if (!session) return;
+		if (!session || isDemoId(session.agentAccountId)) return;
 		if (session.fixture) {
 			refuseSkip(
 				new Error(

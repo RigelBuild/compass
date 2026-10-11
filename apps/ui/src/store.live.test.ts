@@ -1273,7 +1273,7 @@ describe("store skipBatchWindow (SkipBatchWindow)", () => {
 			store.openAgent(agentId);
 			flush();
 
-			await store.skipBatchWindow();
+			await store.skipBatchWindow(store.focusedView().agentSession());
 
 			expect(compass.skips).toEqual([{ sessionId: "sess-7" }]);
 			expect(store.skipError()).toBeUndefined();
@@ -1300,7 +1300,7 @@ describe("store skipBatchWindow (SkipBatchWindow)", () => {
 			store.openAgent(agentId);
 			flush();
 
-			await store.skipBatchWindow();
+			await store.skipBatchWindow(store.focusedView().agentSession());
 
 			expect(compass.skips).toEqual([]);
 			expect(store.skipError()).toMatch(/fixture data/);
@@ -1326,7 +1326,7 @@ describe("store skipBatchWindow (SkipBatchWindow)", () => {
 			store.openAgent(agentId);
 			flush();
 
-			await store.skipBatchWindow();
+			await store.skipBatchWindow(store.focusedView().agentSession());
 
 			expect(store.skipError()).toMatch(/no compass client/);
 			expect(String(errors[0])).toMatch(/no compass client/);
@@ -1354,7 +1354,7 @@ describe("store skipBatchWindow (SkipBatchWindow)", () => {
 			flush();
 			compass.failNextSkip(new Error("[unavailable] refused"));
 
-			await store.skipBatchWindow();
+			await store.skipBatchWindow(store.focusedView().agentSession());
 
 			expect(compass.skips).toEqual([{ sessionId: "sess-7" }]);
 			expect(store.skipError()).toMatch(/unavailable/);

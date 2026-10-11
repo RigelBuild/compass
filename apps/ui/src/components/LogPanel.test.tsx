@@ -338,6 +338,60 @@ describe("LogPanel (T-U2)", () => {
 		expect(alert?.textContent).toMatch(/fixture data/);
 	});
 	describe("Start now", () => {
+		test("an unfocused split pane shows and skips its own session's window", async () => {
+			const compass = createFakeCompass();
+			const a = "acc-compass-server";
+			const b = "acc-compass-native";
+			let dispose!: () => void;
+			const store = createRoot((d) => {
+				dispose = d;
+				return createAppStore({
+					queryClient: testQueryClient(),
+					compass: compass.client,
+					sessions: {
+						[a]: {
+							...served(a, true),
+							sessionId: "sess-a",
+							batchPending: { count: 2, firesAtMs: 1_700_000_040_000 },
+						},
+						[b]: { ...served(b, true), sessionId: "sess-b" },
+					},
+				});
+			});
+			try {
+				store.openAgent(a);
+				store.dispatchLayout({ kind: "split", direction: "row" });
+				// The split focuses the new pane, so this routes only the second pane.
+				store.openAgent(b);
+				flush();
+				const paneA = store
+					.viewScopes()
+					.find((scope) => scope.agent()?.account.id === a);
+				if (!paneA) throw new Error("no pane for the first agent");
+				expect(store.focusedView().agent()?.account.id).toBe(b);
+				const { container } = render(() => (
+					<StoreContext value={store}>
+						<ViewContext value={paneA}>
+							<Show when={paneA.agent()} keyed>
+								{(agent) => <LogPanel agent={agent} />}
+							</Show>
+						</ViewContext>
+					</StoreContext>
+				));
+				const start = container.querySelector<HTMLButtonElement>(".obs-start");
+				if (!start) throw new Error("Start now control not rendered");
+				expect(start.textContent).toBe("Start now (2 · 22:14)");
+
+				fireEvent.click(start);
+				await Promise.resolve();
+				await Promise.resolve();
+
+				expect(compass.skips).toEqual([{ sessionId: "sess-a" }]);
+			} finally {
+				dispose();
+			}
+		});
+
 		test("shows pending count and fire time, and stays enabled without pending state", () => {
 			const agentId = "acc-compass-server";
 			const pendingSession = {
