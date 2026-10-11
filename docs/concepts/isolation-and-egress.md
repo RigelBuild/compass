@@ -91,7 +91,7 @@ mediated by the Server.
 
 | Boundary | Mechanism | The agent cannot |
 | --- | --- | --- |
-| Execution | per-agent sandbox (podman container, or microVM where untrusted tenants share a host) | touch the host or another agent's sandbox |
+| Execution | per-agent sandbox (podman container, or microVM, required for untrusted multi-tenant operation) | touch the host or another agent's sandbox |
 | Network | default-deny nftables egress, allowlist-only | reach any host not explicitly allowed |
 | Firewall control | rules armed by root at launch; agent runs non-root, empty caps | flush or edit its own egress ruleset |
 | Server authority | egress-sealed, no server token; privileged calls forwarded by the Runner, resolved + executed by the Server | call privileged server RPCs directly |

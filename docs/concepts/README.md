@@ -48,7 +48,7 @@ concept; the tool and prompt material carry the detail, these carry the model.
   Resume rebuilds the compute and reconstructs the transcript into it.
 - **[Isolation and egress](./isolation-and-egress.md)** — model-written code is
   contained, not trusted: a per-agent sandbox (podman container, or microVM for
-  untrusted multi-tenant hosts) with default-deny egress and no server credential.
+  untrusted multi-tenant operation) with default-deny egress and no server credential.
 
 ## The tools
 
