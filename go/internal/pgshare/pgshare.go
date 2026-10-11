@@ -138,9 +138,9 @@ func AcquireDSN(t *testing.T) string {
 	return ""
 }
 
-// schemaSeq makes each per-test schema name unique within a process, so tests
-// that share one COMPASS_TEST_DATABASE_DSN database never collide even when the
-// go test runner runs their packages in parallel.
+// schemaSeq makes each per-test schema and database name unique within a
+// process, so tests sharing one COMPASS_TEST_DATABASE_DSN server never collide
+// even when the go test runner runs their packages in parallel.
 var schemaSeq atomic.Uint64
 
 // IsolatedSchemaDSN creates a fresh, uniquely-named schema on the database dsn
@@ -198,6 +198,37 @@ func withSearchPath(dsn, schema string) string {
 		return dsn + "&" + opt
 	}
 	return dsn + "?" + opt
+}
+
+// IsolatedDatabase creates a fresh, uniquely-named database on the server
+// dsn points at, registers its forced drop on test cleanup, and returns its
+// name. It isolates callers that cannot use IsolatedSchemaDSN, such as a
+// connection pooler that rejects the libpq options startup parameter.
+func IsolatedDatabase(t *testing.T, dsn string) string {
+	t.Helper()
+	name := fmt.Sprintf("pgtest_db_%d_%d", os.Getpid(), schemaSeq.Add(1))
+	conn, err := pgx.Connect(t.Context(), dsn)
+	if err != nil {
+		t.Fatalf("pgtest: connect to create database: %v", err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(t.Context())) }()
+	// name is a fixed-format identifier, no user input.
+	if _, err := conn.Exec(t.Context(), "CREATE DATABASE "+name); err != nil {
+		t.Fatalf("pgtest: create database %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		// t.Context is canceled before Cleanup runs; keep its values, not its deadline.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 30*time.Second)
+		defer cancel()
+		c, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			return // best-effort teardown, as IsolatedSchemaDSN
+		}
+		defer func() { _ = c.Close(ctx) }()
+		// FORCE ends any idle server connection a pooler still holds to it.
+		_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+	})
+	return name
 }
 
 // containerCLI returns the container runtime binary to drive (podman preferred,

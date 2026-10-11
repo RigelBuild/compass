@@ -647,6 +647,27 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      pgbouncer:
+        # A real transaction-mode pooler in front of the service Postgres, for
+        # the pooled-reuse RLS case. Pool size 1 forces consecutive clients onto
+        # one server backend, which is the reuse the test must observe. Pinned by
+        # digest for the same reason as the Postgres image.
+        image: edoburu/pgbouncer:v1.26.0-p0@sha256:b17551c776ef7e5769ef80b956d20f85e2fd25dd8912d31d58f782aad495b711
+        env:
+          DATABASE_URL: postgres://postgres:compass-test@postgres:5432
+          LISTEN_PORT: '6432'
+          POOL_MODE: transaction
+          DEFAULT_POOL_SIZE: '1'
+          AUTH_TYPE: scram-sha-256
+          # pgx's default exec mode prepares statements; PgBouncer tracks them
+          # per client only when this is non-zero.
+          MAX_PREPARED_STATEMENTS: '200'
+        ports: ['6432:6432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -p 6432"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       # checkout: the Real-Postgres suites run no git diff (their guard greps
       # files via `grep -rl`), but the sqlc-vet step below invokes `moon run`,
@@ -729,6 +750,9 @@ jobs:
           # uses this database (giving each test its own schema) instead of
           # managing a container.
           COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable
+          # The PgBouncer service above; the pooled-reuse case creates its own
+          # database and routes to it through this pooler.
+          COMPASS_TEST_POOLER_DSN: postgres://postgres:compass-test@127.0.0.1:6432/compass?sslmode=disable
           CGO_ENABLED: '1'
           # The harness SKIPS when it can reach no database — correct for a
           # container-less sandbox, but in CI the service Postgres above is
