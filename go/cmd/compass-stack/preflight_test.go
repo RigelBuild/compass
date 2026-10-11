@@ -121,9 +121,10 @@ func TestRunPreflightBackendValidation(t *testing.T) {
 			wantErrAbsent:   []string{"preflight failed:"},
 		},
 		{
-			name:            "whitespace around microvm is trimmed",
-			backend:         " microvm ",
-			wantErrContains: []string{"preflight failed: podman, cloud-hypervisor, virtiofsd, passt, secretspec"},
+			name:    "whitespace around microvm is trimmed",
+			backend: " microvm ",
+			// kvm may pass or fail by host; the trio fails hard either way with an empty PATH.
+			wantErrContains: []string{"preflight failed:", "podman", "cloud-hypervisor", "virtiofsd", "passt", "secretspec"},
 		},
 		{
 			name:            "apple-container has advisory microvm prerequisites",
