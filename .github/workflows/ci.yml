@@ -526,7 +526,7 @@ jobs:
           probe() { echo "PROBE4889 $1 shallow=$(git rev-parse --is-shallow-repository) count=$(git rev-list --count HEAD) shallowfile=$(test -f .git/shallow && wc -l <.git/shallow || echo none) alt=$(test -f .git/objects/info/alternates && echo yes || echo no)"; }
           probe start
           tasks=$(moon query tasks | jq -r '.tasks|to_entries[]|.key as $p|.value|keys[]|"\($p):\(.)"' | sort)
-          for t in ${{ join(matrix.targets, ' ') }}; do
+          for t in agent-image-env-gate:ci compass-ui:ci design-ledger-gate:ci inline-sql-gate:ci orion-ref-gate:ci renovate:ci root:ci sea-ref-gate:ci sql-migration-gate:ci stamp-gate:ci toolchain-parity:ci; do
             p=${t%%:*}
             for task in $(printf '%s\n' "$tasks" | grep "^$p:" | grep -v ':ci$'); do
               moon run "$task" --cache off >/tmp/probe-task.log 2>&1 || echo "PROBE4889 $task exited nonzero"
