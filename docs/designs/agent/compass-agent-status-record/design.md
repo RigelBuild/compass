@@ -217,10 +217,11 @@ be public, so the user decides where it may go (OQ-8).
   calls `CommsService.MirrorToForge` with a ref, prefilled from `ask.ref`. The
   clicking user must see the channel.
 - **Check.** Every post (auto, manual, or the D10 tool) runs one server check,
-  `mirrorAllowed`: the coordinate's mode admits the path (auto needs auto;
-  manual and the tool need manual or auto), then `requireForgeScope` for the
-  acting agent. The mode is read again at post time, so turning a coordinate
-  off stops queued rows.
+  `mirrorAllowed`: the coordinate's mode admits the path, then
+  `requireForgeScope` for the acting agent. An auto row and the D10 agent tool
+  need auto; only a user click may post to a manual coordinate, so manual
+  always means a human chose to post. The mode is read again at post time, so
+  turning a coordinate off stops queued rows.
 - **Identity (OQ-6).** Posts use the forge service write path, so they post as
   the Compass App. An agent's body carries the existing owner header
   (`forge.StampOwner`), which names the agent and its owner as `@handle`, like
@@ -235,6 +236,10 @@ be public, so the user decides where it may go (OQ-8).
   key and URL and `done`; exhaustion stores `failed` and the error. A pending
   or failed row is re-driven on the agent's next board write, in that agent's
   tenant context. A refused check marks the row `failed` with no retry.
+- **Lost responses.** A POST can succeed while its response is lost. Every
+  body ends with a hidden marker naming the row id. Before a retry posts, the
+  drive lists the target's recent comments and adopts one carrying the marker,
+  then edits it. So a retry never posts a second comment.
 - **Link back.** The header names the channel and topic. When `--public-url`
   (`$COMPASS_PUBLIC_URL`, `ServeConfig.PublicURL`) is set, it links the topic
   through `topicLinkFor`, beside `deepLinkFor` in `go/server/deeplink.go`
@@ -316,10 +321,12 @@ arms: `pr_comment = 6` for a PR target, `issue_comment = 3` for an issue. The
 agent tool `forge_mirror_messages` takes a target `ref` and one source:
 `message_ids` (1 to 50, one channel) or a `topic_id` (its newest 50 messages).
 The server checks channel visibility (the `ListMessages` check) and the D6
-`mirrorAllowed` check, then renders, stamps and posts one comment. It targets a
+`mirrorAllowed` check, which admits the tool only on an auto coordinate (a
+manual one needs a user click), then renders, stamps and posts one comment. It targets a
 PR comment when a `pull_requests` row exists. Over the forge's `bodyLimit`, the
 renderer drops whole oldest messages and says how many. A thread is one
-comment: mirroring the same topic to the same ref again edits that comment.
+comment: mirroring the same topic or message set to the same ref again edits
+that comment, found by its `source_key`.
 
 The arm honors `client_request_id`, as the create arms do
 (`forgeService.dedup`). The call claims a `forge_mirrors` row keyed
@@ -993,10 +1000,11 @@ Needs RIG-5077 T1 (`tracker.ResolveLinearStatus`) and T3
 (`docs/designs/server/compass-tracker-config/design.md`, "Consumer contract").
 
 ```sql
--- issues: widen the CHECK and add two columns in the existing block
+-- issues: widen the CHECK and add three columns in the existing block
 forge_provider   SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
-tracker_state_id TEXT     NOT NULL DEFAULT '',  -- last observed Linear workflow-state id
-tracker_status   TEXT     NOT NULL DEFAULT '',  -- its raw name, shown as TrackerRef.status
+tracker_state_id   TEXT     NOT NULL DEFAULT '',  -- last observed Linear workflow-state id
+tracker_state_type TEXT     NOT NULL DEFAULT '',  -- its Linear type, e.g. started
+tracker_status     TEXT     NOT NULL DEFAULT '',  -- its raw name, shown as TrackerRef.status
 ```
 
 ```go
@@ -1005,7 +1013,7 @@ tracker_status   TEXT     NOT NULL DEFAULT '',  -- its raw name, shown as Tracke
 func (l *Linear) ListUpdatedIssues(ctx context.Context, team string, since time.Time, _ string) (ConditionalResult[UpdatedRows], error)
 
 // go/internal/store
-// IssueForgeFields and Issue gain: TrackerStateID, TrackerStatus string.
+// IssueForgeFields and Issue gain: TrackerStateID, TrackerStateType, TrackerStatus string.
 type IssueUpsert struct { ID string; Applied bool; PrevTrackerStateID string }
 func (s *Store) UpsertIssueForgeFields(ctx context.Context, f IssueForgeFields) (IssueUpsert, error) // was (string, error)
 func (s *Store) ListEnabledForgeRepos(ctx context.Context, p ForgeProvider, host string) ([]string, error) // was repo-only
@@ -1018,17 +1026,18 @@ func (p *IssueProjection) PublishObservedIssue(ctx context.Context, issue *compa
 type linearBoardSink struct { brd *board.IssueProjection; st *store.Store; transitions *boardService }
 func (s *linearBoardSink) PublishIssueUpdate(ctx context.Context, issue *compassv1.Issue) error
 func buildLinearBoardLane(ctx context.Context, cfg ServeConfig, st *store.Store, issueBrd *board.IssueProjection, transitions *boardService, client *forge.Linear, log *slog.Logger) (*boardIngestLane, error)
+// linearWiring gains: board *boardIngestLane (nil when the lane is off).
 ```
 
-- `UpsertIssueForgeFields` writes the two tracker columns under the same
+- `UpsertIssueForgeFields` writes the three tracker columns under the same
   DL-129 recency guard. A sibling CTE reads the stored `tracker_state_id`
   first, so the query returns the id, whether the update applied, and the
   prior state id. A new row applies with an empty prior id.
 - `issueFieldsFragment` reads `state { id name type }` and `toIssue` fills the
   three fields. `TranslateIssue` sets `Issue.tracker` for a Linear issue to
   `{kind: "linear", id: "KEY-N", status, url, state_id, state_type}`.
-  `protoToForgeFields` copies `state_id` and `status`; `issueToProto` rebuilds
-  `tracker` from the row for provider 4.
+  `protoToForgeFields` copies `state_id`, `state_type` and `status`;
+  `issueToProto` rebuilds `tracker` from the row for provider 4.
 - `ListUpdatedIssues` pages `issues(filter: {team: {key: {eq: $team}},
   updatedAt: {gte: $since}}, orderBy: updatedAt)`. It returns no ETag and no
   pulls.
@@ -1044,7 +1053,11 @@ func buildLinearBoardLane(ctx context.Context, cfg ServeConfig, st *store.Store,
   client and `linearBoardSink`, a `BoardWebhookArm`, and a `BoardReconciler`
   with `Pulls: nil`.
 - `buildLinearWiring` sets `dataSink` to a `fanoutSink` over the notify sink
-  and the board lane sink, skipping a nil one.
+  and the board lane sink, skipping a nil one. It stores the lane on
+  `linearWiring.board`.
+- `Serve` starts the lane's `BoardWebhookArm.Run` and `BoardReconciler.Run`
+  on the serve errgroup, beside the GitHub board lane, under the serve
+  context, so shutdown stops both.
 - `linearBoardSink.PublishIssueUpdate` follows the #2110 consumer contract:
   1. `PublishObservedIssue`. Not applied: stop (an older observation).
   2. The prior state id equals `tracker.state_id`: stop (no state change). A
@@ -1069,8 +1082,11 @@ Tests:
   first observation resolves; an older observation resolves nothing.
 - A tracker `DONE` on an `ARCHIVED` issue is a no-op; an agent's still commits.
 - `ok=false` makes no transition.
-- The card carries `tracker.status` with the raw name and `tracker.id` `KEY-N`.
-- A signed `Issue` webhook reaches both the notify sink and the board sink.
+- The card carries `tracker.status` with the raw name, `tracker.state_type`,
+  and `tracker.id` `KEY-N`; all three survive a restart (round-trip from the
+  row).
+- A signed `Issue` webhook through a running `Serve` reaches both the notify
+  sink and the board sink, and the stored issue row changes.
 
 ### T13 ask mirroring: settings, outbox, comment edit (lane compass-comms, RIG-5061)
 
@@ -1115,6 +1131,7 @@ CREATE TABLE forge_mirrors (
     id                TEXT     PRIMARY KEY,
     source            SMALLINT NOT NULL CHECK (source IN (1, 2)),  -- 1 ask, 2 messages or topic
     ask_id            TEXT     NOT NULL DEFAULT '',
+    source_key        TEXT     NOT NULL DEFAULT '',  -- topic id, or a sorted message-id hash, for source 2
     actor_account_id  TEXT     NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,  -- agent or user
     agent_account_id  TEXT     REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,  -- NULL for a user click
     client_request_id TEXT,
@@ -1134,6 +1151,7 @@ CREATE TABLE forge_mirrors (
 CREATE UNIQUE INDEX forge_mirrors_ask_key ON forge_mirrors (tenant_id, ask_id) WHERE ask_id <> '';
 CREATE UNIQUE INDEX forge_mirrors_request_key ON forge_mirrors (tenant_id, agent_account_id, client_request_id)
     WHERE client_request_id IS NOT NULL;
+CREATE UNIQUE INDEX forge_mirrors_source_key ON forge_mirrors (tenant_id, source_key, target_ref) WHERE source_key <> '';
 CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE state <> 2;
 ```
 
@@ -1141,7 +1159,7 @@ CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE st
 // go/internal/store
 type ForgeMirrorMode int16 // ForgeMirrorOff = 0 (no row), ForgeMirrorManual = 1, ForgeMirrorAuto = 2
 type ForgeMirrorSetting struct { Provider ForgeProvider; Host, Repo string; Mode ForgeMirrorMode }
-type ForgeMirrorRow struct { ID string; Source int16; AskID string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string }
+type ForgeMirrorRow struct { ID string; Source int16; AskID, SourceKey string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string }
 func (s *Store) ForgeMirrorMode(ctx context.Context, p ForgeProvider, host, repo string) (ForgeMirrorMode, error)
 func (s *Store) ListForgeMirrorSettings(ctx context.Context) ([]ForgeMirrorSetting, error) // every enabled subscription; off when no row
 func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set ForgeMirrorSetting) error // off deletes the row
@@ -1156,6 +1174,8 @@ func bumpAskMirror(ctx context.Context, q *db.Queries, askID string) error
 
 // go/internal/forge, Provider gains:
 EditComment(ctx context.Context, repo, commentKey, body string) (Comment, error)
+// ListRecentComments reads the newest 50 comments on an issue or PR.
+ListRecentComments(ctx context.Context, repo string, number uint64) ([]Comment, error)
 
 // go/internal/mirror
 type Link struct { Channel, Topic, URL string } // URL "" when no public URL is set
@@ -1177,9 +1197,17 @@ type Mirrorer interface {
 }
 ```
 
-- `mirrorAllowed` runs `resolveTarget` for the ref's coordinate, requires a
-  mode at least `need` (auto includes manual), then `requireForgeScope` for
-  the actor. A mode too low is in-band `failed_precondition` naming the repo.
+- `mirrorAllowed` runs `resolveTarget` for the ref's coordinate and requires
+  the mode `need`: auto for an auto row and the agent tool; manual or auto
+  for a user click. Then it runs `requireForgeScope` for the actor. A mode too
+  low is in-band `failed_precondition` naming the repo.
+- `ClaimForgeMirror` finds an existing row by ask id, by
+  `client_request_id`, or by (`source_key`, `target_ref`). Mirroring the same
+  topic or message set to the same ref again bumps `body_rev` on that row, so
+  the drive edits one comment, whatever the request key.
+- `mirror.Drive`, before a POST on a row with no `comment_key`, calls
+  `ListRecentComments` and adopts a comment whose body carries
+  `<!-- compass-mirror:<row id> -->`. The renderers append that marker.
 - `PostMirror` runs `mirrorAllowed`. An agent actor's body is stamped with
   `resolveIdentity` and `forge.StampOwner`; a user actor's header names the
   user. An empty key calls `CommentOnPullRequest` when a `pull_requests` row
@@ -1206,11 +1234,14 @@ Tests:
 - Answering the ask edits the same comment; no second comment is posted.
 - A forge success stores the key and URL and marks `done`; three failures mark
   `failed`; a board write re-drives a failed row.
+- A POST that succeeds with a lost response is adopted on retry by its marker;
+  the forge sees one comment.
 - A mode turned off before the post marks the row `failed` and posts nothing.
 - A scope refusal marks `failed` without retry, and nothing is posted.
 - A non-admin `SetForgeMirrorSetting` gets `permission_denied`.
 - A user click on a manual target posts once and names the user; an off target
-  is refused.
+  is refused. The agent tool on a manual target is refused.
+- Two manual clicks mirroring one topic to one ref edit one comment.
 - With `--public-url` set the header links the topic; unset, it names the
   channel and topic with no link.
 - Every new row is invisible to another tenant.
@@ -1253,6 +1284,7 @@ func NewTrunk(cfg TrunkConfig) *Trunk
 type QueueConfigs interface { MergeQueueFor(ctx context.Context, repo string) (provider, branch string, err error) }
 // BoardReconcileConfig and NewPullRequestHydrator gain Queues map[string]forge.MergeQueue and QueueConfigs.
 func NewMergeQueueSweeper(queues map[string]forge.MergeQueue, cfgs QueueConfigs, st MergeQueueStore, sink MergeQueueSink, every time.Duration) *MergeQueueSweeper
+func (s *MergeQueueSweeper) Run(ctx context.Context) error // ticks every `every` until ctx ends
 type MergeQueueStore interface { OpenPullRequests(ctx context.Context, repo string) ([]uint64, error) }
 type MergeQueueSink interface { PublishPullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, e *compassv1.MergeQueueEntry) error }
 
@@ -1274,9 +1306,12 @@ func (s *Store) SetPullRequestMergeQueue(ctx context.Context, pr ForgeCoord, ent
   declared server-only secret, resolved through `newDeclaredSecretResolver`.
 - `Hydrate` reads the entry after `GetPullRequest` and sets
   `wire.merge_queue`. A queue error is logged and leaves the field unset.
-- The sweeper runs every 2 minutes per configured repo over its open PR rows,
-  50 per call. A changed entry goes to `SetPullRequestMergeQueue`, then the
-  projection republishes the linked issue.
+- `Serve` builds the sweeper when `--forge-merge-queues` names at least one
+  repo and starts `Run` on the serve errgroup. It runs every 2 minutes per
+  configured repo over its open PR rows, 50 per call. A changed entry goes to
+  `SetPullRequestMergeQueue`, then the projection republishes the linked
+  issue. Queue moves send no GitHub webhook, so the sweep is the only path
+  that keeps the stored state current.
 
 Tests:
 
@@ -1284,6 +1319,7 @@ Tests:
 - A queue error leaves the hydrate green; a repo with no config makes no Trunk
   call.
 - The sweep writes and republishes only changed entries.
+- A running `Serve` with a fake Trunk persists a changed entry within one tick.
 
 ### T16 UI: Bridge draft and queued PR lanes (lane ui, RIG-5059)
 
