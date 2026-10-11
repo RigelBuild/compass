@@ -78,11 +78,11 @@ func TestWaitConnectable(t *testing.T) {
 			return conn, err
 		}
 		start := time.Now()
-		err := waitConnectable(ctx, path, time.Minute, dial)
+		err := waitConnectable(ctx, path, 2*time.Second, dial)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("waitConnectable after cancel = %v, want context.Canceled", err)
 		}
-		if elapsed := time.Since(start); elapsed >= 10*time.Second {
+		if elapsed := time.Since(start); elapsed >= time.Second {
 			t.Fatalf("waitConnectable took %s after cancel, want a prompt return", elapsed)
 		}
 	})
