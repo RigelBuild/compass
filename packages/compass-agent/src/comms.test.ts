@@ -7,6 +7,8 @@
 // no Connect client, and no timing: a call in, a canned result out, the captured request asserted.
 
 import { describe, expect, test } from "bun:test";
+// biome-ignore lint/style/noRestrictedImports: construct Runner relay status errors for broker tests
+import { Code, ConnectError } from "@connectrpc/connect";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
@@ -371,6 +373,32 @@ describe("CommsBroker", () => {
 	});
 });
 
+describe("CommsBroker relay status errors", () => {
+	test("renders FailedPrecondition through the shared relay path", async () => {
+		const broker = new CommsBroker({
+			async comms() {
+				throw new ConnectError("binding details", Code.FailedPrecondition);
+			},
+		});
+		await expect(
+			exec(tool(broker, "comms_list_topics"), "tc-1", {}),
+		).rejects.toThrow(
+			"Your session is not bound to an agent account (the Runner may be reconnecting); the target was not checked.",
+		);
+	});
+	test("renders Unavailable through the shared relay path", async () => {
+		const broker = new CommsBroker({
+			async comms() {
+				throw new ConnectError("socket detail", Code.Unavailable);
+			},
+		});
+		await expect(
+			exec(tool(broker, "comms_list_topics"), "tc-2", {}),
+		).rejects.toThrow(
+			"The Runner relay is temporarily unavailable; retry the tool call.",
+		);
+	});
+});
 describe("createCommsTools", () => {
 	test("exposes exactly the twelve comms tools and never an ask-answering one", () => {
 		const tools = createCommsTools(

@@ -39,23 +39,16 @@ func relaySetIssueState(sessionID, callID string, req *compassv1internal.SetIssu
 	}
 }
 
-// 1. An unbound session fails closed CodeNotFound and NEVER reaches the caller —
-// no delegation is attempted for a session the hub has no binding for. This is
-// the core fail-closed guard: a session_id on the wire selects an account, it
-// never carries one, so an id the hub never bound resolves to nothing.
-//
-// Mutation: hardcode accountForSession to return a fixed account (ok=true) and
-// this test fails twice over — the error becomes nil and the caller records a
-// call.
-func TestRelayBoardCallUnboundSessionFailsClosedNotFound(t *testing.T) {
+// An unbound session fails generically before the BoardCaller is reached.
+func TestRelayBoardCallUnboundSessionFailsClosed(t *testing.T) {
 	hub, fake := newHubWithBoard()
 
 	_, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("never-bound", "bc-1", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
 	if err == nil {
-		t.Fatal("RelayBoardCall for an unbound session = nil error, want CodeNotFound (fail closed)")
+		t.Fatal("RelayBoardCall for an unbound session = nil error, want FailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodeNotFound {
-		t.Fatalf("unbound-session error code = %v, want NotFound", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("unbound-session error code = %v, want FailedPrecondition", got)
 	}
 	if calls := fake.snapshot(); len(calls) != 0 {
 		t.Fatalf("caller was invoked %d times for an unbound session, want 0 (no delegation attempt)", len(calls))

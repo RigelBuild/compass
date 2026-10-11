@@ -56,6 +56,7 @@ import {
 	TransitionPullRequestStateRequestSchema,
 	UnsubscribeForgeRequestSchema,
 } from "./compassv1";
+import { relayCall } from "./relay-error";
 import { attr, flat, login, ref } from "./render-guard";
 
 /**
@@ -90,7 +91,7 @@ export class ForgeBroker {
 	}
 
 	call(req: ForgeCallRequest): Promise<ForgeCallResult> {
-		return this.#transport.forge(req);
+		return relayCall(() => this.#transport.forge(req));
 	}
 }
 

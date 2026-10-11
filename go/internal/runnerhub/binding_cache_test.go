@@ -417,12 +417,8 @@ func TestAccountForRunnerSessionReadThroughChecksOwner(t *testing.T) {
 }
 
 // TestFailClosedStoppedNeverSeenAndPostReconnect pins all three fail-closed
-// misses in one place, each returning ok=false (the CodeNotFound the caller
-// mints): a STOPPED session, a NEVER-SEEN session, and a session that predates a
-// Runner RECONNECT. The reconnect case is the crux of the read-through design:
-// the durable rows SURVIVE a process death, so a naive "cache miss -> read the
-// table" would resolve a dead session; the re-enroll's durable reap
-// (DeleteSessionBindingsForRunner) is what keeps it fail-closed.
+// misses in one place: a stopped session, a never-seen session, and a session
+// that predates a Runner reconnect. A relay maps each miss to FailedPrecondition.
 func TestFailClosedStoppedNeverSeenAndPostReconnect(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()

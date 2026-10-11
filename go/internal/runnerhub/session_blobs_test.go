@@ -78,14 +78,14 @@ func TestHubRelaySessionBlobMapsGuards(t *testing.T) {
 	}{
 		{name: "store not wired", sess: "sess", sha: hash, data: data, blob: true, want: connect.CodeUnavailable},
 		{name: "nil request", store: &fakeSessionBlobStore{}, want: connect.CodeInvalidArgument, nilReq: true},
-		{name: "foreign session", store: &fakeSessionBlobStore{}, sess: "missing", sha: hash, data: data, blob: true, want: connect.CodeNotFound},
-		{name: "foreign runner", store: &fakeSessionBlobStore{}, sess: "sess", runner: "runner-2", sha: hash, data: data, blob: true, want: connect.CodeNotFound},
+		{name: "unknown session", store: &fakeSessionBlobStore{}, sess: "missing", sha: hash, data: data, blob: true, want: connect.CodeFailedPrecondition},
+		{name: "foreign runner", store: &fakeSessionBlobStore{}, sess: "sess", runner: "runner-2", sha: hash, data: data, blob: true, want: connect.CodeFailedPrecondition},
 		{name: "missing blob", store: &fakeSessionBlobStore{}, sess: "sess", want: connect.CodeInvalidArgument},
 		{name: "empty data", store: &fakeSessionBlobStore{}, sess: "sess", sha: hash, blob: true, want: connect.CodeInvalidArgument},
 		{name: "bad hash", store: &fakeSessionBlobStore{}, sess: "sess", sha: "bad", data: data, blob: true, want: connect.CodeInvalidArgument},
 		{name: "oversize", store: &fakeSessionBlobStore{}, sess: "sess", sha: hash, data: make([]byte, agentmsg.MaxSessionBlobBytes+1), blob: true, want: connect.CodeInvalidArgument},
 		{name: "store rejects digest", store: &fakeSessionBlobStore{putErr: store.ErrInvalidArgument}, sess: "sess", sha: hash, data: data, blob: true, want: connect.CodeInvalidArgument},
-		{name: "object store absent", store: &fakeSessionBlobStore{putErr: store.ErrFailedPrecondition}, sess: "sess", sha: hash, data: data, blob: true, want: connect.CodeFailedPrecondition},
+		{name: "object store absent", store: &fakeSessionBlobStore{putErr: store.ErrFailedPrecondition}, sess: "sess", sha: hash, data: data, blob: true, want: connect.CodeUnimplemented},
 		{name: "store failure", store: &fakeSessionBlobStore{putErr: errors.New("write failed")}, sess: "sess", sha: hash, data: data, blob: true, want: connect.CodeInternal},
 	}
 	for _, tc := range tests {
@@ -165,7 +165,7 @@ func TestHubFetchSessionBlobsSkipsOrdinaryReadFailure(t *testing.T) {
 	}
 }
 
-func TestHubFetchSessionBlobsReturnsFailedPreconditionOnRead(t *testing.T) {
+func TestHubFetchSessionBlobsReturnsUnimplementedOnRead(t *testing.T) {
 	h := newHubOnly()
 	h.bindContainer("container-a", testAgentAccount, testRunnerID)
 	data := []byte("indexed image")
@@ -178,8 +178,8 @@ func TestHubFetchSessionBlobsReturnsFailedPreconditionOnRead(t *testing.T) {
 	err := h.FetchSessionBlobs(t.Context(), testRunnerID, &compassv1internal.FetchSessionBlobsRequest{
 		ContainerName: "container-a", SessionId: "session-unbound", Sha256: []string{hash},
 	}, func(*compassv1internal.FetchSessionBlobsResponse) error { return nil })
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("FetchSessionBlobs read ErrFailedPrecondition = %v, want FailedPrecondition", err)
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("FetchSessionBlobs read ErrFailedPrecondition = %v, want Unimplemented", err)
 	}
 }
 

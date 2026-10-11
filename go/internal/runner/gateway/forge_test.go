@@ -8,11 +8,8 @@ package gateway
 // sleep-free — the fakes record every fact synchronously, so every assertion
 // reads a value the in-memory call already produced.
 //
-// The load-bearing case is the fail-closed guard: a forge call arriving before
-// Start binds a session (the socket is live from Provision) MUST be refused
-// CodePermissionDenied and MUST NEVER forward with an empty session id — a forge
-// write under an unbound session would be attributed by the Server to no
-// account, the exact security hole the seam exists to close.
+// The load-bearing case is the fail-closed guard: a forge call before Start
+// binds a session returns FailedPrecondition and never forwards an empty id.
 
 import (
 	"context"
@@ -64,24 +61,19 @@ func forgeCreateIssueCall() *compassv1internal.ForgeCallRequest {
 	}
 }
 
-// Case 1. SECURITY CORE — no session bound to the container fails closed
-// CodePermissionDenied and the relay is NEVER invoked. The socket is live from
-// Provision, before Start binds the session; a forge call in that window must
-// never forward with an empty session id nor attribute to any account. Mutation
-// proof: flip `if !ok || sessionID == "" {` to `if false {` -> the handler
-// forwards an empty session id -> the len(relay.calls) != 0 / nil-error
-// assertions go RED.
-func TestForgeNoSessionFailsClosedPermissionDenied(t *testing.T) {
+// No session bound to the container fails closed with FailedPrecondition and
+// never invokes the relay.
+func TestForgeNoSessionFailsClosedFailedPrecondition(t *testing.T) {
 	sessions := &fakeSessions{ok: false}
 	relay := &fakeForgeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Forge: relay})
 
 	resp, err := g.Forge(context.Background(), connect.NewRequest(forgeCreateIssueCall()))
 	if err == nil {
-		t.Fatal("Forge with no session bound = nil error, want CodePermissionDenied (fail closed)")
+		t.Fatal("Forge with no session bound = nil error, want CodeFailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("no-session error code = %v, want PermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("no-session error code = %v, want FailedPrecondition", got)
 	}
 	if resp != nil {
 		t.Fatalf("no-session response = %+v, want nil", resp)
@@ -91,23 +83,18 @@ func TestForgeNoSessionFailsClosedPermissionDenied(t *testing.T) {
 	}
 }
 
-// Case 1b. SECURITY CORE — a bound session whose id is empty (ok:true,
-// sessionID:"") is still unbound for attribution: it fails closed
-// CodePermissionDenied and the relay is NEVER invoked. This pins the SECOND
-// clause of the `!ok || sessionID == ""` guard, which Case 1 (ok:false) leaves
-// unexercised. Mutation proof: drop `|| sessionID == ""` -> an empty session id
-// forwards -> the len(relay.calls) != 0 / nil-error assertions go RED.
-func TestForgeEmptySessionIDFailsClosedPermissionDenied(t *testing.T) {
+// An empty session id is also unbound and must not reach the relay.
+func TestForgeEmptySessionIDFailsClosedFailedPrecondition(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "", ok: true}
 	relay := &fakeForgeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Forge: relay})
 
 	resp, err := g.Forge(context.Background(), connect.NewRequest(forgeCreateIssueCall()))
 	if err == nil {
-		t.Fatal("Forge with an empty session id = nil error, want CodePermissionDenied (empty session is unbound)")
+		t.Fatal("Forge with an empty session id = nil error, want CodeFailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("empty-session error code = %v, want PermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("empty-session error code = %v, want FailedPrecondition", got)
 	}
 	if resp != nil {
 		t.Fatalf("Forge returned a non-nil response alongside the fail-closed error")

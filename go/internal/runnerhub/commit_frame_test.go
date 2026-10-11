@@ -14,8 +14,7 @@ package runnerhub
 //
 //   - a hub with no transcript store wired fails CodeUnavailable, checked BEFORE
 //     resolution (a Deliver-only hub);
-//   - an unbound/unknown session fails closed CodeNotFound (no live account,
-//     never a stale one), and NEVER reaches the store;
+//   - an unbound session fails with FailedPrecondition and NEVER reaches the store;
 //   - a frame with no transcript_entry variant is CodeInvalidArgument (the
 //     terminal malformed-frame the Runner does not retry), and never reaches the
 //     store;
@@ -141,23 +140,16 @@ func TestCommitConversationFrameNilTranscriptStoreIsUnavailable(t *testing.T) {
 	}
 }
 
-// 2. An unbound session fails closed CodeNotFound and NEVER reaches the store —
-// the same fail-closed guard RelayCommsCall enforces, for the durable path: a
-// session_id selects an account from the hub's own binding, it never carries
-// one, so an id the hub never bound resolves to nothing and no append is
-// attempted.
-//
-// Mutation: hardcode accountForSession to return a fixed account (ok=true) and
-// this fails twice over — the error goes nil and the store records an append.
-func TestCommitConversationFrameUnboundSessionFailsClosedNotFound(t *testing.T) {
+// 2. An unbound session fails generically and never reaches the transcript store.
+func TestCommitConversationFrameUnboundSessionFailsClosed(t *testing.T) {
 	hub, ts := newHubWithTranscripts()
 
 	_, err := hub.CommitConversationFrame(context.Background(), testRunnerID, transcriptReq("never-bound", "key-1", 1, false, `{"e":1}`))
 	if err == nil {
-		t.Fatal("CommitConversationFrame for an unbound session = nil error, want CodeNotFound (fail closed)")
+		t.Fatal("CommitConversationFrame for an unbound session = nil error, want FailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodeNotFound {
-		t.Fatalf("unbound-session error code = %v, want NotFound", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("unbound-session error code = %v, want FailedPrecondition", got)
 	}
 	if calls := ts.snapshot(); len(calls) != 0 {
 		t.Fatalf("store was written %d times for an unbound session, want 0 (no append attempt)", len(calls))

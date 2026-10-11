@@ -5,8 +5,8 @@
 
 // Trust model (load-bearing security leg): the Runner is a pure forwarder and
 // asserts NO account. The SERVER resolves session_id -> agent account from this
-// hub's binding and executes under it. Unknown/stopped/dropped session fails
-// closed CodeNotFound — never a stale account. A session_id selects, never carries.
+// hub's binding and executes under it. Unbound sessions fail generically, while
+// unverifiable bindings return Unavailable so the Runner can retry.
 package runnerhub
 
 import (
@@ -38,12 +38,8 @@ func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID
 	h.containerAccounts[containerName] = sessionBinding{account: agentAccountID, runnerID: runnerID}
 }
 
-// promoteSession binds the container's provisioned account to the live
-// session_id Start minted. Called from Start after the Runner returns the
-// session id. If the container had no recorded account (a provision that named
-// none, or a container from before this leg existed), no session binding is
-// created and a later comms call for that session fails closed CodeNotFound.
-//
+// promoteSession binds the container's provisioned account to the live session.
+// A provision without an account creates no session binding.
 // RIG-3108: the maps are a read-through cache, so the durable binding is written
 // FIRST (RecordSessionBinding, on the request ctx so it lands tenant-scoped),
 // and only then are the maps updated under h.mu. The store returns the session
@@ -163,11 +159,7 @@ func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, t
 	}
 }
 
-// unbindSession removes a session's account binding. Called from Stop, so a
-// RelayCommsCall for a stopped session_id fails closed CodeNotFound — the same
-// answer as a never-seen session, never a stale reuse.
-//
-// It also drives presence to OFFLINE (RIG-1569 T8): a clean Stop tears the
+// unbindSession removes a live binding and drives presence offline.
 // session down, but a STOPPED/DISCONNECTED frame arriving after the unbind can
 // no longer resolve the account at deliverSession, so without an edge here the
 // account's presence would stay WORKING/IDLE/WAITING forever. Fire a terminal
@@ -322,19 +314,7 @@ func (h *Hub) unbindContainer(containerName string) {
 	delete(h.containerAccounts, containerName)
 }
 
-// accountForSession resolves the agent account bound to sessionID. The bool is
-// false when no live binding exists (never provisioned, stopped, or dropped on a
-// Runner reconnect) — the fail-closed signal RelayCommsCall turns into
-// CodeNotFound.
-//
-// RIG-3108: the map is a read-through cache. A hit returns immediately. A miss
-// falls through to the durable binding table ONLY when a Runner is currently
-// enrolled AND the ctx is request-scoped. Every enroll reaps that Runner's rows
-// across tenants, so such a session that predates the enroll stays a fail-closed miss, while a
-// binding another Server instance recorded after it resolves from the row. With no
-// Runner enrolled the gate skips the table round-trip. store.ErrNotFound (and any
-// store fault) maps to ok=false, so CodeNotFound behaviour is byte-identical to today.
-//
+// accountForSession resolves a session's binding; false covers all read misses.
 // The read-through is refused under a system-role ctx: SessionBindingStore's
 // reads are single-valued only because RLS narrows them to the acting tenant,
 // and a BYPASSRLS read could return a plausible row from an ARBITRARY tenant
@@ -359,6 +339,22 @@ func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID s
 		return "", false
 	}
 	return binding.account, true
+}
+
+// accountForRunnerSessionError preserves whether a binding miss was verifiable.
+func (h *Hub) accountForRunnerSessionError(ctx context.Context, runnerID, sessionID string) (store.AccountID, error) {
+	if runnerID == "" {
+		return "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound)
+	}
+	binding, state := h.lookupSessionBinding(ctx, sessionID)
+	switch {
+	case state == bindingUnverifiable:
+		return "", connect.NewError(connect.CodeUnavailable, errSessionBindingUnverifiable)
+	case state != bindingFound || binding.runnerID != runnerID:
+		return "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound)
+	default:
+		return binding.account, nil
+	}
 }
 
 // frameSession resolves the binding a published session frame speaks for and
@@ -628,14 +624,13 @@ var errCommsUnavailable = errors.New("runnerhub: no comms caller wired to serve 
 // a silent success.
 var errTranscriptsUnavailable = errors.New("runnerhub: no transcript store wired to serve CommitConversationFrame")
 
-// RelayCommsCall executes one agent-initiated comms call under the agent account
-// the relayed session resolves to. The Runner asserts no account; this resolves
-// session_id -> account from the hub's own binding and runs the call through the
-// CommsCaller under that account. An unresolved session fails closed
-// CodeNotFound. A comms failure (non-member channel, bad input, transport) is
-// mapped to the in-band CommsCallError variant of CommsCallResult — a tool
-// error the agent renders, NOT a Connect stream error that would tear the
-// transport down.
+var (
+	errSessionUnbound             = errors.New("runnerhub: caller session not bound to an agent account")
+	errSessionBindingUnverifiable = errors.New("runnerhub: caller session binding cannot be verified")
+)
+
+// RelayCommsCall executes a comms call under the bound agent account.
+// Binding errors distinguish an unbound caller from a retryable lookup fault.
 func (h *Hub) RelayCommsCall(
 	ctx context.Context,
 	runnerID string,
@@ -644,14 +639,9 @@ func (h *Hub) RelayCommsCall(
 	if h.comms == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
 	}
-	ctx, account, ok := h.runnerSessionAccount(ctx, runnerID, req.GetSessionId())
-	if !ok {
-		// Fail closed: no live session maps to this id. Never a stale account,
-		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
-		return nil, connect.NewError(
-			connect.CodeNotFound,
-			errors.New("runnerhub: no agent account bound to session"),
-		)
+	ctx, account, err := h.runnerSessionAccountError(ctx, runnerID, req.GetSessionId())
+	if err != nil {
+		return nil, err
 	}
 
 	call := req.GetCall()
@@ -688,26 +678,18 @@ func (h *Hub) RelayCommsCall(
 // (runner/gateway/post_conversation_frame.go). The method name and the request/
 // response messages keep the established CommitConversationFrame shape.
 //
-// Contract (ratified — do not redesign):
-//   - An unresolved session fails closed CodeNotFound — never a stale account,
-//     never the bootstrap admin. Same fail-closed shape as RelayCommsCall.
-//   - A hub with no transcript store wired fails CodeUnavailable (the durable
-//     transcript leg is not mounted — a Deliver-only hub). Checked BEFORE
-//     session resolution, so even a bound session gets Unavailable.
-//   - committed=true once the row commits, on a fresh commit AND on an
-//     idempotent replay of an already-committed key (the store dedups a
-//     duplicate idempotency_key as a silent success). The archive flush runs
-//     after, on the store's flusher, so object-store faults never reach this
-//     path. A non-commit is NEVER committed=false with a nil error —
+// A binding miss is FailedPrecondition; an unverifiable read is Unavailable.
+//   - committed=true on a fresh commit AND on an idempotent replay of an
+//     already-committed key (the store dedups a duplicate idempotency_key as a
+//     silent success). A non-commit is NEVER committed=false with a nil error —
 //     it is ALWAYS a Connect status error, because the Runner drives
 //     at-least-once purely off the Connect code (err==nil => committed).
 //   - Store errors are mapped to Connect codes (transcriptCommitError, mirroring
 //     the comms edgeError): ErrInvalidArgument -> InvalidArgument (a malformed or
 //     unknown-session frame, terminal), ErrConflict -> AlreadyExists (a genuine
-//     entry_seq collision, terminal), any other -> Internal (a transient Postgres
-//     fault on the commit path the relay should retry). Never a bare error
-//     connect.CodeOf would read as CodeUnknown — that would wrongly present as
-//     a retryable teardown.
+//     entry_seq collision, terminal), any other -> Internal (a transient store
+//     fault the relay should retry). Never a bare error connect.CodeOf would read
+//     as CodeUnknown — that would wrongly present as a retryable teardown.
 //   - message_id and seq are not meaningful for a transcript entry (the Runner
 //     reads neither): shipped as "" and 0.
 func (h *Hub) CommitConversationFrame(
@@ -722,14 +704,9 @@ func (h *Hub) CommitConversationFrame(
 		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	ctx, _, ok := h.runnerSessionAccount(ctx, runnerID, sessionID)
-	if !ok {
-		// Fail closed: no live session maps to this id. Never a stale account,
-		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
-		return nil, connect.NewError(
-			connect.CodeNotFound,
-			errors.New("runnerhub: no agent account bound to session"),
-		)
+	ctx, _, err := h.runnerSessionAccountError(ctx, runnerID, sessionID)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := h.commitFrame(ctx, transcripts, sessionID, req.GetFrame(), req.GetIdempotencyKey()); err != nil {
@@ -1031,60 +1008,77 @@ func sameBinding(a, b sessionBinding) bool {
 	return a.lifetime == b.lifetime
 }
 
-// runnerSessionAccount resolves the account bound to sessionID on runnerID under
-// that session's tenant, which the caller must use for every later store call.
-func (h *Hub) runnerSessionAccount(ctx context.Context, runnerID, sessionID string) (context.Context, store.AccountID, bool) {
-	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
-	if !scoped || !h.sessionTenantResolved(ctx) {
-		return ctx, "", false
+// runnerSessionAccountError fails closed on misses and preserves lookup faults.
+func (h *Hub) runnerSessionAccountError(ctx context.Context, runnerID, sessionID string) (context.Context, store.AccountID, error) {
+	bindings := h.sessionBindings()
+	if _, scoped := store.TenantFromContext(ctx); !scoped && bindings != nil {
+		tenant, err := h.lookupRunnerSessionTenant(ctx, bindings, runnerID, sessionID)
+		if err != nil {
+			code := bindingTenantCode(err)
+			if code == connect.CodeFailedPrecondition {
+				h.logBindingTenantError(runnerID, sessionID, err)
+				return ctx, "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound)
+			}
+			h.logBindingTenantError(runnerID, sessionID, err)
+			return ctx, "", connect.NewError(connect.CodeUnavailable, errSessionBindingUnverifiable)
+		}
+		ctx = store.WithTenant(ctx, tenant)
 	}
-	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
-	return ctx, account, ok
+	account, err := h.accountForRunnerSessionError(ctx, runnerID, sessionID)
+	return ctx, account, err
 }
 
-// sessionTenantResolved reports whether a relay may run on ctx. With a durable
-// binding store wired, a missing tenant (lookup miss or fault) would fall back to
-// the bootstrap tenant, so it fails closed.
-func (h *Hub) sessionTenantResolved(ctx context.Context) bool {
+func (h *Hub) sessionBindings() SessionBindingStore {
 	h.mu.Lock()
-	bindings := h.bindings
-	h.mu.Unlock()
-	if bindings == nil {
-		return true
+	defer h.mu.Unlock()
+	return h.bindings
+}
+
+func (h *Hub) lookupRunnerSessionTenant(ctx context.Context, bindings SessionBindingStore, runnerID, sessionID string) (store.TenantID, error) {
+	if runnerID == "" || sessionID == "" {
+		return "", store.ErrNotFound
 	}
-	_, ok := store.TenantFromContext(ctx)
-	return ok
+	return bindings.SessionBindingTenant(store.WithSystemRole(ctx), sessionID, runnerID)
 }
 
 // runnerSessionCtx scopes a Runner-originated ctx to the tenant that binds
-// sessionID to runnerID. Runners are shared across tenants, so the door sets none;
-// without this, binding reads and deletes run under the bootstrap tenant. The
-// tenant is read under the system role; everything after runs tenant-scoped.
-// An ambiguous session fails closed. A miss or a store fault keeps ctx, whose
-// own binding read then fails closed for a non-bootstrap session.
+// sessionID to runnerID. Runners are shared across tenants, so the door sets none.
 func (h *Hub) runnerSessionCtx(ctx context.Context, runnerID, sessionID string) (context.Context, bool) {
 	if _, ok := store.TenantFromContext(ctx); ok {
 		return ctx, true
 	}
-	h.mu.Lock()
-	bindings := h.bindings
-	h.mu.Unlock()
-	if bindings == nil || runnerID == "" || sessionID == "" {
+	bindings := h.sessionBindings()
+	if bindings == nil {
 		return ctx, true
 	}
-	tenant, err := bindings.SessionBindingTenant(store.WithSystemRole(ctx), sessionID, runnerID)
-	switch {
-	case err == nil:
+	tenant, err := h.lookupRunnerSessionTenant(ctx, bindings, runnerID, sessionID)
+	if err == nil {
 		return store.WithTenant(ctx, tenant), true
-	case errors.Is(err, store.ErrConflict):
+	}
+	code := bindingTenantCode(err)
+	if code == connect.CodeFailedPrecondition {
+		h.logBindingTenantError(runnerID, sessionID, err)
+		return ctx, false
+	}
+	h.log.Warn("resolve session tenant failed; continuing unscoped",
+		"session_id", sessionID, "error", err)
+	return ctx, true
+}
+
+func bindingTenantCode(err error) connect.Code {
+	switch {
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrConflict):
+		return connect.CodeFailedPrecondition
+	default:
+		return connect.CodeUnavailable
+	}
+}
+
+func (h *Hub) logBindingTenantError(runnerID, sessionID string, err error) {
+	if errors.Is(err, store.ErrConflict) {
 		h.log.Error("session bound in several tenants; refusing the runner call",
 			"session_id", sessionID, "runner_id", runnerID)
-		return ctx, false
-	case !errors.Is(err, store.ErrNotFound):
-		h.log.Warn("resolve session tenant failed; continuing unscoped",
-			"session_id", sessionID, "error", err)
 	}
-	return ctx, true
 }
 
 // archiveEnded hands a session that ended without Stop to the transcript archive.

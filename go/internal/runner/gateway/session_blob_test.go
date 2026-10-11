@@ -57,8 +57,8 @@ func TestPutSessionBlobUnboundSessionFailsClosed(t *testing.T) {
 	g := NewGateway(t.Context(), "cont-A", Deps{Sessions: &staticSessions{}, SessionBlobs: relay})
 
 	_, err := g.PutSessionBlob(t.Context(), connect.NewRequest(&compassv1internal.PutSessionBlobRequest{Data: []byte("blob")}))
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("PutSessionBlob error code = %v, want PermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("PutSessionBlob error code = %v, want FailedPrecondition", got)
 	}
 	if relay.calls != 0 {
 		t.Fatalf("RelaySessionBlob calls = %d, want 0", relay.calls)

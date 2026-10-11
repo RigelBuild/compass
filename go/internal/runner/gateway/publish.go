@@ -16,16 +16,10 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// Publish forwards the agent's trace/session frames up PublishEvents,
-// Runner-sequenced through the ordered per-session publisher, and routes the two
-// control-plane ack frames (ReplayCompleteAck, ControlAck) to the control lane
-// instead of relaying them. It fails closed (CodePermissionDenied) when no
-// session is bound to the container — the socket is live from Provision, before
-// Start binds the session, so a frame in that window must never forward under an
-// empty session id. Stream end closes the upstream PublishEvents stream and
-// awaits its ack; a mid-stream upstream send error ends this stream (the agent
-// reconnects per the loss model). A message past WithReadMaxBytes is a Connect
-// stream error surfaced by Receive.
+// Publish forwards agent frames through the ordered per-session publisher and
+// routes control-plane acks to the control lane. It fails closed with
+// CodeFailedPrecondition when no session is bound, without forwarding under an
+// empty id. Stream end closes the upstream PublishEvents stream and awaits its ack.
 func (g *Gateway) Publish(
 	ctx context.Context,
 	stream *connect.ClientStream[compassv1internal.PublishFrameRequest],
@@ -34,7 +28,7 @@ func (g *Gateway) Publish(
 	// An empty session id is unbound too (mirrors Comms): never forward telemetry
 	// under an empty session id.
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForPublish)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForPublish)
 	}
 
 	if err := g.beginPublish(sessionID); err != nil {

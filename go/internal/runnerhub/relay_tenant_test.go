@@ -18,9 +18,9 @@ import (
 // resolved must not reach any relay's service under the bootstrap tenant.
 func TestRunnerRelaysFailClosedWithoutSessionTenant(t *testing.T) {
 	for name, tenantErr := range map[string]error{
-		"not found":   store.ErrNotFound,
-		"store fault": errors.New("db down"),
-		"ambiguous":   store.ErrConflict,
+		"not found":       store.ErrNotFound,
+		"store fault":     errors.New("db down"),
+		"tenant conflict": store.ErrConflict,
 	} {
 		t.Run(name, func(t *testing.T) {
 			comms := &fakeCommsCaller{postResp: &compassv1.PostMessageResponse{}}
@@ -31,6 +31,8 @@ func TestRunnerRelaysFailClosedWithoutSessionTenant(t *testing.T) {
 			hub.SetLifecycleCaller(lifecycle)
 			hub.SetBoardCaller(board)
 			hub.SetTranscriptStore(transcripts)
+			hub.SetForgeCaller(&fakeForgeCaller{})
+			hub.SetSessionBlobStore(&fakeSessionBlobStore{})
 			bindings := newFakeBindingStore()
 			bindings.seed("sess-1")
 			bindings.tenantErr = tenantErr
@@ -42,10 +44,19 @@ func TestRunnerRelaysFailClosedWithoutSessionTenant(t *testing.T) {
 			_, lifecycleErr := hub.RelayLifecycleCall(ctx, testRunnerID, relaySpawn("sess-1", "l-1", &compassv1internal.SpawnPeerRequest{}))
 			_, boardErr := hub.RelayBoardCall(ctx, testRunnerID, relaySetIssueState("sess-1", "b-1", &compassv1internal.SetIssueStateRequest{}))
 			_, commitErr := hub.CommitConversationFrame(ctx, testRunnerID, transcriptReq("sess-1", "k-1", 1, false, `{"e":1}`))
-			for relay, err := range map[string]error{"comms": commsErr, "lifecycle": lifecycleErr, "board": boardErr, "commit": commitErr} {
-				if connect.CodeOf(err) != connect.CodeNotFound {
-					t.Errorf("%s relay error = %v, want CodeNotFound", relay, err)
+			_, forgeErr := hub.RelayForgeCall(ctx, testRunnerID, relayCreateIssue("sess-1", "f-1", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+			_, blobErr := hub.RelaySessionBlob(ctx, testRunnerID, &compassv1internal.RelaySessionBlobRequest{SessionId: "sess-1"})
+			for relay, err := range map[string]error{"comms": commsErr, "lifecycle": lifecycleErr, "board": boardErr, "commit": commitErr, "forge": forgeErr, "session blob": blobErr} {
+				want := connect.CodeFailedPrecondition
+				if name == "store fault" {
+					want = connect.CodeUnavailable
 				}
+				if connect.CodeOf(err) != want {
+					t.Errorf("%s relay error = %v, want %s", relay, err, want)
+				}
+			}
+			if name == "tenant conflict" && connect.CodeOf(commsErr) != connect.CodeFailedPrecondition {
+				t.Fatalf("tenant conflict code = %v, want FailedPrecondition", connect.CodeOf(commsErr))
 			}
 			if n := len(comms.calls) + len(lifecycle.snapshot()) + len(board.snapshot()) + len(transcripts.calls); n != 0 {
 				t.Fatalf("services called %d times without a session tenant, want 0", n)

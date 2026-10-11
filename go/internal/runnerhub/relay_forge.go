@@ -5,8 +5,8 @@
 
 // Trust model (load-bearing security leg): the Runner is a pure forwarder and
 // asserts NO account. The SERVER resolves session_id -> caller account and
-// delegates to the ForgeCaller under it (it stamps the owner header). Unknown/
-// stopped/dropped session fails closed CodeNotFound — never a stale account.
+// delegates to the ForgeCaller under it. Unbound sessions fail closed with a
+// generic FailedPrecondition; unverifiable bindings are Unavailable.
 package runnerhub
 
 import (
@@ -59,17 +59,8 @@ func (h *Hub) SetForgeCaller(c ForgeCaller) {
 	h.forgeCaller = c
 }
 
-// RelayForgeCall resolves the relayed session_id to its bound agent account (the
-// CALLER) and delegates the forge call to the ForgeCaller under that caller
-// account, passing the session id through. Guard order, each fail-closed: (1) no
-// ForgeCaller wired -> CodeUnavailable, checked BEFORE session resolution; (2)
-// session_id resolves to no live binding -> CodeNotFound (never a stale account,
-// never the bootstrap admin); (3) delegate under the RESOLVED caller AccountID
-// (never request-asserted, never admin), passing the session id through. A
-// tool-level failure (unknown coordinate, rate limit, bad input) is returned
-// IN-BAND as the ForgeCallError variant of the result — the agent renders it and
-// the transport survives — exactly the RelayBoardCall split: only a resolution
-// miss / no-caller is a Connect error.
+// RelayForgeCall resolves the bound caller account and delegates the forge call.
+// Unbound sessions fail generically; unverifiable bindings are retryable.
 func (h *Hub) RelayForgeCall(
 	ctx context.Context,
 	runnerID string,
@@ -82,22 +73,11 @@ func (h *Hub) RelayForgeCall(
 		return nil, connect.NewError(connect.CodeUnavailable, errForgeUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	// Scope grants and memos are tenant rows; the Runner token carries no tenant.
-	scopedCtx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
-	var account store.AccountID
-	ok := false
-	if scoped && h.sessionTenantResolved(scopedCtx) {
-		ctx = scopedCtx
-		account, ok = h.accountForRunnerSession(ctx, runnerID, sessionID)
+	scopedCtx, account, err := h.runnerSessionAccountError(ctx, runnerID, sessionID)
+	if err != nil {
+		return nil, err
 	}
-	if !ok {
-		// Fail closed: no live session maps to this id. Never a stale account,
-		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
-		return nil, connect.NewError(
-			connect.CodeNotFound,
-			errors.New("runnerhub: no agent account bound to session"),
-		)
-	}
+	ctx = scopedCtx
 
 	call := req.GetCall()
 	callID := call.GetCallId()

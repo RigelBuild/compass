@@ -5,8 +5,8 @@
 
 // Trust model (load-bearing security leg): the Runner is a pure forwarder and
 // asserts NO account. The SERVER resolves session_id -> caller account from this
-// hub's binding and delegates under it. Unknown/stopped/dropped session fails
-// closed CodeNotFound — never a stale account. A session_id selects, never carries.
+// hub's binding and delegates under it. An unbound session fails closed with a
+// generic FailedPrecondition so unknown and foreign session ids are identical.
 package runnerhub
 
 import (
@@ -38,17 +38,9 @@ type BoardCaller interface {
 // leg is not mounted, never a silent success.
 var errBoardUnavailable = errors.New("runnerhub: no board caller wired to serve RelayBoardCall")
 
-// RelayBoardCall resolves the relayed session_id to its bound agent account (the
-// CALLER) and delegates the issue-state write to the BoardCaller under that
-// caller account. Guard order, each fail-closed: (1) no BoardCaller wired ->
-// CodeUnavailable, checked BEFORE session resolution; (2) session_id resolves to
-// no live binding -> CodeNotFound (never a stale account, never the bootstrap
-// admin); (3) delegate under the RESOLVED caller AccountID (never request-
-// asserted, never admin). A tool-level failure (unknown issue, invalid target
-// state) is returned IN-BAND as the BoardCallError variant of the result — the
-// agent renders it and the transport survives — exactly the RelayLifecycleCall
-// split: only a resolution miss / no-caller is a Connect error.
-func (h *Hub) RelayBoardCall( //nolint:dupl // deliberate structural mirror of RelayLifecycleCall (relay_lifecycle.go): the sibling relay legs each spell out the same fail-closed guard order (nil-caller CodeUnavailable, unbound-session CodeNotFound, in-band tool error) so the security-critical resolution edge reads identically per leg — collapsing them into one generic helper is the "second convention" this leg is required not to invent.
+// RelayBoardCall resolves the caller account and delegates the issue-state write.
+// Unbound sessions fail generically; unverifiable bindings are retryable.
+func (h *Hub) RelayBoardCall( //nolint:dupl // mirrored security guard order in RelayLifecycleCall.
 	ctx context.Context,
 	runnerID string,
 	req *compassv1internal.RelayBoardCallRequest,
@@ -59,14 +51,9 @@ func (h *Hub) RelayBoardCall( //nolint:dupl // deliberate structural mirror of R
 	if caller == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errBoardUnavailable)
 	}
-	ctx, account, ok := h.runnerSessionAccount(ctx, runnerID, req.GetSessionId())
-	if !ok {
-		// Fail closed: no live session maps to this id. Never a stale account,
-		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
-		return nil, connect.NewError(
-			connect.CodeNotFound,
-			errors.New("runnerhub: no agent account bound to session"),
-		)
+	ctx, account, err := h.runnerSessionAccountError(ctx, runnerID, req.GetSessionId())
+	if err != nil {
+		return nil, err
 	}
 
 	call := req.GetCall()

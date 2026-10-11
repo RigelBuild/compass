@@ -263,12 +263,8 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 }
 
 // TestE2EFailClosedBeforeStart — the socket is live from Provision, before Start
-// binds a session. Contract: a call in that window fails closed
-// CodePermissionDenied AND never reaches the Server (no forward with an empty
-// session id, no bootstrap-admin-attributed side effect). Mutation that reddens
-// it: dropping the ok/empty-session check in Session/Gateway.Comms so it forwards
-// with an empty session id — the client would then see a non-PermissionDenied
-// outcome and the Server's received slice would be non-empty.
+// binds a session. A call in that window fails with CodeFailedPrecondition and
+// never reaches the Server.
 func TestE2EFailClosedBeforeStart(t *testing.T) {
 	fake := &recordingRelay{}
 	h := newTransportFixture(t, fake)
@@ -285,10 +281,10 @@ func TestE2EFailClosedBeforeStart(t *testing.T) {
 	defer cancel()
 	_, err = client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "tc-2"}))
 	if err == nil {
-		t.Fatal("Comms before Start = nil, want CodePermissionDenied (no session bound)")
+		t.Fatal("Comms before Start = nil, want CodeFailedPrecondition (no session bound)")
 	}
-	if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
-		t.Fatalf("Comms before Start code = %v, want CodePermissionDenied", code)
+	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
+		t.Fatalf("Comms before Start code = %v, want CodeFailedPrecondition", code)
 	}
 	if got := fake.snapshot(); len(got) != 0 {
 		t.Fatalf("Server received %d relayed calls before Start, want 0 (never forward an empty session id)", len(got))

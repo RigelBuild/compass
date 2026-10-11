@@ -1587,14 +1587,10 @@ func (*PublishEventsResponse) Descriptor() ([]byte, []int) {
 	return file_compass_v1_runner_proto_rawDescGZIP(), []int{17}
 }
 
-// RelayCommsCall request: the Runner forwards one agent-initiated comms call to
-// the Server. `session_id` is the session the Runner structurally owns for this
-// call (from which per-container AgentGateway socket it arrived on — 1:1 with
-// the session, agent_gateway.proto). `call` is the agent's request verbatim.
-// The Runner asserts NO account here; the Server resolves session_id -> account
-// from its own binding (comms-tools design T2). A session_id the Server does not
-// know (never provisioned, or stopped/dropped-on-reconnect) fails closed
-// CodeNotFound — never a stale account, never the bootstrap admin.
+// RelayCommsCall request: the Runner forwards one agent-initiated comms call.
+// The Server resolves session_id from its own session binding and runs the call
+// under that account. Unknown and foreign-Runner sessions share one generic
+// FailedPrecondition; unverifiable bindings return Unavailable.
 type RelayCommsCallRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -1697,13 +1693,9 @@ func (x *RelayCommsCallResponse) GetResult() *CommsCallResult {
 }
 
 // RelayLifecycleCall request: the Runner forwards one agent-initiated lifecycle
-// call to the Server. `session_id` is the session the Runner structurally owns
-// for this call (which per-container AgentGateway socket it arrived on — 1:1
-// with the session, agent_gateway.proto). `call` is the agent's request
-// verbatim. The Runner asserts NO account here; the Server resolves
-// session_id -> account from its own binding, fail-closed CodeNotFound for an
-// unknown/stopped/dropped session — never a stale account, never the bootstrap
-// admin.
+// call. The Server resolves session_id from its own binding and runs the call
+// under that account's authority. Unknown and foreign-Runner sessions share one
+// generic FailedPrecondition; unverifiable bindings return Unavailable.
 type RelayLifecycleCallRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -1805,14 +1797,10 @@ func (x *RelayLifecycleCallResponse) GetResult() *LifecycleCallResult {
 	return nil
 }
 
-// RelayForgeCall request: the Runner forwards one agent-initiated forge call to
-// the Server. `session_id` is the session the Runner structurally owns for this
-// call (which per-container AgentGateway socket it arrived on — 1:1 with the
-// session, agent_gateway.proto). `call` is the agent's request verbatim. The
-// Runner asserts NO account here; the Server resolves session_id -> account from
-// its own binding and stamps the owner header itself, fail-closed CodeNotFound
-// for an unknown/stopped/dropped session — never a stale account, never the
-// bootstrap admin.
+// RelayForgeCall request: the Runner forwards one agent-initiated forge call.
+// The Server resolves session_id from its own binding and stamps the owner
+// header. Unknown and foreign-Runner sessions share one generic FailedPrecondition;
+// unverifiable bindings return Unavailable.
 type RelayForgeCallRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -1914,14 +1902,10 @@ func (x *RelayForgeCallResponse) GetResult() *ForgeCallResult {
 	return nil
 }
 
-// RelayBoardCall request: the Runner forwards one agent-initiated board call to
-// the Server. `session_id` is the session the Runner structurally owns for this
-// call (which per-container AgentGateway socket it arrived on — 1:1 with the
-// session, agent_gateway.proto). `call` is the agent's request verbatim. The
-// Runner asserts NO account here; the Server resolves session_id -> account from
-// its own binding and runs the transition under that caller, fail-closed
-// CodeNotFound for an unknown/stopped/dropped session — never a stale account,
-// never the bootstrap admin.
+// RelayBoardCall request: the Runner forwards one agent-initiated board call.
+// The Server resolves session_id from its own binding and runs the transition
+// under that account. Unknown and foreign-Runner sessions share one generic
+// FailedPrecondition; unverifiable bindings return Unavailable.
 type RelayBoardCallRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -2023,9 +2007,7 @@ func (x *RelayBoardCallResponse) GetResult() *BoardCallResult {
 	return nil
 }
 
-// CommitConversationFrame request: one durable conversation frame the Runner
-// forwards for commit. `session_id` is the session the Runner structurally owns
-// (resolved to an account Server-side, fail-closed — see the RPC comment).
+// forwards for commit. `session_id` is resolved server-side to an account.
 // `frame` is constrained by the agent side to a conversation_posted /
 // conversation_updated / transcript_entry AgentFrame variant (the durable lane
 // carries the RIG-1570 transcript entry too; the same C4 constraint Publish

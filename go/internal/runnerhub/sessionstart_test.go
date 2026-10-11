@@ -73,10 +73,8 @@ func TestPromoteSessionFiresStartSink(t *testing.T) {
 	}
 }
 
-// Case T6/hub (no binding): a promotion for a container with NO recorded account
-// creates no session binding and fires NO start edge — a provision that named no
-// account leaves nothing to sweep (the comms call it would later serve fails
-// closed CodeNotFound; there is no session-start sweep for a non-binding).
+// Case T6/hub (no binding): a promotion for a container with no recorded account
+// creates no session binding and fires no start edge.
 func TestPromoteSessionNoBindingFiresNothing(t *testing.T) {
 	hub := newHubOnly()
 	sink := &fakeSessionStartSink{}

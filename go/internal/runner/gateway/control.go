@@ -776,6 +776,8 @@ func (p *controlProducer) serve(ctx context.Context, sessionID string, sink cont
 // queue to the stream. A second Control call is a takeover: the stale
 // subscription is cancelled, the new one bound, and all ops past the ack cursor
 // transferred to it. Returns when the session ends or is taken over.
+// Control refuses an unbound container with FailedPrecondition before selecting
+// the control lane.
 func (g *Gateway) Control(
 	ctx context.Context,
 	_ *connect.Request[compassv1internal.ControlSubscribeRequest],
@@ -783,7 +785,7 @@ func (g *Gateway) Control(
 ) error {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return connect.NewError(connect.CodePermissionDenied, errNoSessionForContainer)
+		return connect.NewError(connect.CodeFailedPrecondition, errNoSessionForContainer)
 	}
 	lane, ok := g.control.(controlLane)
 	if !ok {

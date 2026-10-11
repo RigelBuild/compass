@@ -70,7 +70,6 @@ Mechanics:
   skips hashes that are done or already queued and enqueues the rest. The
   queue is bounded at `SESSION_BLOB_QUEUE_MAX`; it drops the oldest entry and
   counts the drop.
-- One worker reads `<blobsDir>/<hash>` and sends it, with one upload in flight.
 - A hash enters the done set only on success, `FailedPrecondition`, or
   oversize (over `MAX_SESSION_BLOB_BYTES`). `FailedPrecondition` also disables
   the uploader for the lifetime.

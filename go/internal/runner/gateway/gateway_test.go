@@ -7,12 +7,9 @@ package gateway
 // its two seams directly, sleep-free: the fakes record every fact synchronously,
 // so every assertion reads a value the in-memory call already produced.
 //
-// The load-bearing case is the fail-closed guard: a call arriving before Start
-// binds a session (the socket is live from Provision) must be REFUSED
-// CodePermissionDenied and must NEVER forward with an empty session id. That
-// case (1) is proven fail-first by the mutation recorded in the task report
-// (flip `if !ok {` to `if false {` -> the impl forwards an empty session id ->
-// the "relay never called" assertion goes RED).
+// The load-bearing case is the fail-closed guard: a call before Start binds a
+// session returns FailedPrecondition and never forwards an empty session id.
+// The relay-never-called assertion fails if the session check is bypassed.
 
 import (
 	"context"
@@ -107,23 +104,20 @@ func postCall() *compassv1internal.CommsCallRequest {
 	}
 }
 
-// Case 1. SECURITY CORE — no session bound to the container fails closed
-// CodePermissionDenied and the relay is NEVER invoked. The socket is live from
-// Provision, before Start binds the session; a call in that window must never
-// forward with an empty session id nor attribute to any account. Mutation proof
-// (task report): flip `if !ok {` to `if false {` -> the handler forwards an
-// empty session id -> the len(relay.calls) != 0 / nil-error assertions go RED.
-func TestCommsNoSessionFailsClosedPermissionDenied(t *testing.T) {
+// Case 1. No session bound to the container fails closed with FailedPrecondition
+// and never invokes the relay. The socket is live from Provision, before Start
+// binds the session, so it must never forward an empty session id.
+func TestCommsNoSessionFailsClosedFailedPrecondition(t *testing.T) {
 	sessions := &fakeSessions{ok: false}
 	relay := &fakeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
 	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
 	if err == nil {
-		t.Fatal("Comms with no session bound = nil error, want CodePermissionDenied (fail closed)")
+		t.Fatal("Comms with no session bound = nil error, want CodeFailedPrecondition (fail closed)")
 	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("no-session error code = %v, want PermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("no-session error code = %v, want FailedPrecondition", got)
 	}
 	if resp != nil {
 		t.Fatalf("Comms returned a non-nil response alongside the fail-closed error")
@@ -276,24 +270,18 @@ func TestCommsPropagatesContextToRelay(t *testing.T) {
 	}
 }
 
-// Case 7. SECURITY GUARD — a resolver that hands back an EMPTY session id with
-// ok=true is treated as unbound, exactly like the !ok case: the call fails
-// closed CodePermissionDenied and the relay is NEVER invoked. The handler
-// promises never to relay an empty session id (before this guard, ("", true)
-// forwarded an empty session id). Mutation proof: revert the guard to
-// `if !ok {` -> ("", true) forwards -> the len(relay.calls) != 0 / nil-error
-// assertions go RED.
-func TestCommsEmptySessionIDFailsClosedPermissionDenied(t *testing.T) {
+// A resolver that returns an empty id is unbound just like a missing binding.
+func TestCommsEmptySessionIDFailsClosedFailedPrecondition(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "", ok: true}
 	relay := &fakeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
 	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
 	if err == nil {
-		t.Fatal("Comms with an empty session id = nil error, want CodePermissionDenied (empty session is unbound)")
+		t.Fatal("Comms with an empty session id = nil error, want CodeFailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("empty-session error code = %v, want PermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("empty-session error code = %v, want FailedPrecondition", got)
 	}
 	if resp != nil {
 		t.Fatalf("Comms returned a non-nil response alongside the fail-closed error")

@@ -8,14 +8,8 @@ package gateway
 // fact synchronously, so every assertion reads a value the in-memory call
 // already produced.
 //
-// The load-bearing case is the fail-closed guard: a lifecycle call arriving
-// before Start binds a session (the socket is live from Provision) MUST be
-// refused CodePermissionDenied and MUST NEVER forward with an empty session id —
-// a spawn/despawn under an unbound session would be attributed by the Server to
-// no account, the exact security hole the seam exists to close. Case 1 is proven
-// fail-first by the mutation flip of the `!ok || sessionID == ""` guard (the
-// relay then forwards an empty session id, reddening the "relay never called"
-// assertion).
+// The load-bearing case is the fail-closed guard: a lifecycle call before Start
+// binds a session returns FailedPrecondition and never forwards an empty id.
 
 import (
 	"context"
@@ -66,24 +60,19 @@ func spawnCall() *compassv1internal.LifecycleCallRequest {
 	}
 }
 
-// Case 1. SECURITY CORE — no session bound to the container fails closed
-// CodePermissionDenied and the relay is NEVER invoked. The socket is live from
-// Provision, before Start binds the session; a lifecycle call in that window
-// must never forward with an empty session id nor attribute to any account.
-// Mutation proof: flip `if !ok || sessionID == "" {` to `if false {` -> the
-// handler forwards an empty session id -> the len(relay.calls) != 0 / nil-error
-// assertions go RED.
-func TestLifecycleNoSessionFailsClosedPermissionDenied(t *testing.T) {
+// No session bound to the container fails closed with FailedPrecondition and
+// never invokes the relay.
+func TestLifecycleNoSessionFailsClosedFailedPrecondition(t *testing.T) {
 	sessions := &fakeSessions{ok: false}
 	relay := &fakeLifecycleRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
 	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
 	if err == nil {
-		t.Fatal("Lifecycle with no session bound = nil error, want CodePermissionDenied (fail closed)")
+		t.Fatal("Lifecycle with no session bound = nil error, want CodeFailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("no-session error code = %v, want PermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("no-session error code = %v, want FailedPrecondition", got)
 	}
 	if resp != nil {
 		t.Fatalf("no-session response = %+v, want nil", resp)
@@ -93,23 +82,18 @@ func TestLifecycleNoSessionFailsClosedPermissionDenied(t *testing.T) {
 	}
 }
 
-// Case 1b. SECURITY CORE — a bound session whose id is empty (ok:true,
-// sessionID:"") is still unbound for attribution: it fails closed
-// CodePermissionDenied and the relay is NEVER invoked. This pins the SECOND
-// clause of the `!ok || sessionID == ""` guard, which Case 1 (ok:false) leaves
-// unexercised. Mutation proof: drop `|| sessionID == ""` -> an empty session id
-// forwards -> the len(relay.calls) != 0 / nil-error assertions go RED.
-func TestLifecycleEmptySessionIDFailsClosedPermissionDenied(t *testing.T) {
+// An empty session id is also unbound and must not reach the relay.
+func TestLifecycleEmptySessionIDFailsClosedFailedPrecondition(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "", ok: true}
 	relay := &fakeLifecycleRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
 	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
 	if err == nil {
-		t.Fatal("Lifecycle with an empty session id = nil error, want CodePermissionDenied (empty session is unbound)")
+		t.Fatal("Lifecycle with an empty session id = nil error, want CodeFailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("empty-session error code = %v, want PermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("empty-session error code = %v, want FailedPrecondition", got)
 	}
 	if resp != nil {
 		t.Fatalf("Lifecycle returned a non-nil response alongside the fail-closed error")

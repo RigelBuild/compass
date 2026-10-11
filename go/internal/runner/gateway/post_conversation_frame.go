@@ -28,8 +28,8 @@ import (
 // is a Connect error the agent retries, never a silent gapless drop. It rejects
 // a frame the durable unary does not carry with CodeInvalidArgument (the lane
 // carries conversation_posted / conversation_updated and the RIG-1570
-// transcript_entry tee variant), and fails closed
-// CodePermissionDenied when no session is bound. Dedups on idempotency_key: a
+// transcript_entry tee variant), and fails closed with CodeFailedPrecondition
+// when no session is bound. Dedups on idempotency_key: a key already committed
 // key already committed in this process returns success without re-committing
 // (advisory fast-path); the durable boundary is the store's atomic at-most-once
 // commit on the same key.
@@ -39,7 +39,7 @@ func (g *Gateway) PostConversationFrame(
 ) (*connect.Response[compassv1internal.PostConversationFrameResponse], error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForConversation)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForConversation)
 	}
 
 	frame := req.Msg.GetFrame()

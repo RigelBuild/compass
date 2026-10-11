@@ -1551,11 +1551,8 @@ func TestPublishRoutesAcksToControlRouterNotUpstream(t *testing.T) {
 
 // --- Case 8 ------------------------------------------------------------------
 
-// No session bound to the container fails closed CodePermissionDenied on BOTH
-// telemetry handlers, and nothing is forwarded upstream — a frame in the pre-Start
-// window must never forward under an empty session id.
-// RED: flip the `!ok || sessionID == ""` guard -> a frame forwards under an empty
-// session id -> the "nothing forwarded" assertion goes RED.
+// No session bound to the container fails closed with CodeFailedPrecondition on
+// both telemetry handlers. Neither frame is forwarded upstream.
 func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
@@ -1567,8 +1564,8 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 		Frame:          durableFrame("nope"),
 		IdempotencyKey: "k",
 	}))
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("PostConversationFrame code = %v, want CodePermissionDenied", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("PostConversationFrame code = %v, want CodeFailedPrecondition", got)
 	}
 	if n := committer.count(); n != 0 {
 		t.Fatalf("commit calls = %d, want 0: a frame must never commit under an unbound session", n)
@@ -1578,8 +1575,8 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 	// Send may not surface the rejection (flush timing); CloseAndReceive is
 	// authoritative.
 	_ = stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("nope")})
-	if _, perr := stream.CloseAndReceive(); connect.CodeOf(perr) != connect.CodePermissionDenied {
-		t.Fatalf("Publish code = %v, want CodePermissionDenied", connect.CodeOf(perr))
+	if _, perr := stream.CloseAndReceive(); connect.CodeOf(perr) != connect.CodeFailedPrecondition {
+		t.Fatalf("Publish code = %v, want CodeFailedPrecondition", connect.CodeOf(perr))
 	}
 
 	select {

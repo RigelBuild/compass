@@ -253,10 +253,43 @@ test("close drops queued uploads and waits only for the active request", async (
 	expect(sent).toEqual([active]);
 });
 
-test("FailedPrecondition disables uploads and clears the pending queue", async () => {
+async function assertBlobUploadRetries(code: Code): Promise<void> {
 	const dir = scratch();
-	const first = hash(40);
-	const queued = hash(41);
+	const sha = hash(40);
+	await writeBlob(dir, sha);
+	const failedBefore = counterCount(sessionBlobsFailed);
+	const uploadedBefore = counterCount(sessionBlobsUploaded);
+	const sent: string[] = [];
+	const uploader = createSessionBlobUploader({
+		blobsDir: dir,
+		put: async (req) => {
+			sent.push(req.sha256);
+			if (sent.length === 1) {
+				throw new ConnectError("session is not bound", code);
+			}
+		},
+	});
+
+	uploader.offer(line(sha));
+	await waitForCounter(sessionBlobsFailed, failedBefore, 1);
+	uploader.offer(line(sha));
+	await uploader.close();
+
+	expect(sent).toEqual([sha, sha]);
+	expect(counterCount(sessionBlobsFailed) - failedBefore).toBe(1);
+	expect(counterCount(sessionBlobsUploaded) - uploadedBefore).toBe(1);
+}
+
+test("FailedPrecondition keeps uploads retryable", () =>
+	assertBlobUploadRetries(Code.FailedPrecondition));
+
+test("Unavailable keeps uploads retryable", () =>
+	assertBlobUploadRetries(Code.Unavailable));
+
+test("Unimplemented disables uploads and clears the pending queue", async () => {
+	const dir = scratch();
+	const first = hash(42);
+	const queued = hash(43);
 	await writeBlob(dir, first);
 	await writeBlob(dir, queued);
 	const failedBefore = counterCount(sessionBlobsFailed);
@@ -269,7 +302,7 @@ test("FailedPrecondition disables uploads and clears the pending queue", async (
 			sent.push(req.sha256);
 			entered.resolve();
 			await release.promise;
-			throw new ConnectError("no blob store", Code.FailedPrecondition);
+			throw new ConnectError("no blob store", Code.Unimplemented);
 		},
 	});
 
@@ -277,6 +310,7 @@ test("FailedPrecondition disables uploads and clears the pending queue", async (
 	await entered.promise;
 	uploader.offer(line(queued));
 	release.resolve();
+	await waitForCounter(sessionBlobsFailed, failedBefore, 1);
 	await uploader.close();
 
 	expect(sent).toEqual([first]);
