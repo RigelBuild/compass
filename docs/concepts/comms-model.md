@@ -34,8 +34,15 @@ This is the departure from standard agent models most likely to trip up an
 integration or a newcomer: **there is no way to prompt an agent directly into
 its session.** The session log is a *read-only live view* — you watch the
 agent's streamed output there, but nothing you do in it reaches the agent.
-Every input to a running agent goes over comms, and there are exactly three
-ways to reach a live session:
+
+When deployment batching is turned on with Runner's `--agent-batching` option
+(`COMPASS_AGENT_BATCHING=on`), an idle agent may wait up to a minute before
+starting a turn: the window closes after 10 seconds of quiet or at a 60-second
+cap. This lets a burst of posts or CI results land in one turn. An @-mention
+still goes through at once; use one when a message must reach the agent now.
+
+Messages to an agent go over comms; there are exactly four ways to reach or
+control a live session:
 
 - **Post in a thread** — a normal comms message on the agent's home channel,
   which the agent picks up on its turn.
@@ -43,12 +50,15 @@ ways to reach a live session:
   agent, comms-originated (a channel post) and delivered over the control lane
   as a mid-turn injection, never typed into the read-only log surface.
 - **Stop the agent** — halt the running session if needed.
+- **Start now** — the agent's owner or an admin can end its open batching window
+  and start its turn immediately. It has no effect when no batching window is
+  open.
 
 Standard agent models assume a direct prompt-into-the-session REPL; Compass
 does not have one, on purpose. Every assumption a bridge or a tool carries
 about "send the user's text straight to the agent" must be re-expressed as one
-of the three above: the session log streams *out*, and communication flows
-*in* only through channels and threads.
+of the four above: the session log streams *out*, and messages flow *in* through
+channels and threads; Start now releases a waiting turn.
 
 ## Stable agents with home channels
 
