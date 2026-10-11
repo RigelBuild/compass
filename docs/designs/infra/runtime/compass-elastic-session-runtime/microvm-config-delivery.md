@@ -54,9 +54,10 @@ message InstallAgentConfigResponse {}
 
 It streams because the compressed tarball's wire cap (see (c)) exceeds the
 16 MiB per-message cap that `serveHandshake` sets (`connect.WithReadMaxBytes`,
-`go/internal/guestd/vsock.go`). The frames mirror `FetchAgentConfigResponse`
-(`proto/compass/v1/runner.proto`), and the host sends 512 KiB chunks
-(`configChunkBytes`, `go/internal/runnerhub/handler.go`). Shipping with it: the
+`go/internal/guestd/vsock.go`). The frame schema mirrors
+`FetchAgentConfigResponse` (`proto/compass/v1/runner.proto`); the direction is
+new, and client streaming follows `PublishEvents`. The host sends 512 KiB
+chunks (`configChunkBytes`, `go/internal/runnerhub/handler.go`). Shipping with it: the
 doc comments above, one file-header line, and the regenerated internal Go
 lane. The gen-fence already covers the `GuestControl` stem, so it needs no
 edit. `runner-tiers.md` does not cover config delivery.
@@ -65,9 +66,13 @@ edit. `runner-tiers.md` does not cover config delivery.
 
 guestd accepts a non-empty version matching `^[A-Za-z0-9_-]+$` other than the
 reserved `current`, or `""` with no chunks. Wire bytes are capped at
-`agentconfig.MaxWireBytes`: the 64 MiB content cap plus tar header and padding
-headroom, because the decompressed cap is the wrong bound for compressed
-bytes. `agentconfig.Tree.Install` then runs with a zero `Check`: caps,
+`agentconfig.MaxWireBytes = 2 * MaxBytes`, because the decompressed cap is the
+wrong bound for compressed bytes. That is a coarse ceiling, not a tight tar
+bound: PAX headers and gzip expansion make a tight bound fragile. The Runner
+checks `len(tarball) <= MaxWireBytes` before the push, so an oversized bundle
+fails on the host with a named error rather than mid-stream. The Server's own
+caps (4,096 regular files, 64 MiB) sit far below it. `agentconfig.Tree.Install`
+then runs with a zero `Check`: caps,
 traversal and containment, dir/regular types only, pinned 0755/0644 modes,
 and the writer. A `configMu` lock, separate from `s.mu`, serializes installs.
 The boundary has three legs:
@@ -180,8 +185,8 @@ ships inert code.
 - **Interfaces:** produces the following:
 
   ```go
-  const MaxBytes = 64 << 20; const MaxFiles = 10_000
-  const MaxWireBytes = MaxBytes + MaxFiles<<10 // tar header + padding headroom
+  const MaxBytes = 64 << 20; const MaxFiles = 10_000 // the Runner's caps today; MaxFiles counts every member
+  const MaxWireBytes = 2 * MaxBytes                  // coarse compressed-bytes ceiling
   var ErrUnsafeBundle = errors.New("agentconfig: unsafe bundle")
   type Check struct {
       Member  func(clean string, typeflag byte) error  // before the member's bytes are read
@@ -205,7 +210,8 @@ ships inert code.
   "")`, then `EnsureRoot` (keeping the `gateway.ErrOperatorConfig` wrap), then
   `Install(…, bundleSchema, relabel hook iff mcsLabel != "")`.
 - **Test cycle:** in `agentconfig`, the kernel with a zero `Check`
-  (traversal, absolute, symlink, hardlink, both caps), a `Check` error
+  (traversal, absolute, symlink, hardlink; `MaxFiles` and `MaxBytes` each at
+  the limit and one over), a `Check` error
   stopping the unpack, an idempotent `Install`, a `beforeFlip` error leaving
   `current` unflipped, and a prune that keeps dot-prefixed entries. The runner
   suites pass under the parity constraint.
@@ -236,7 +242,8 @@ ships inert code.
   - The call is refused before Provision.
   - A chunk before the version, a second version, `current`, `../x`, or empty
     with chunks returns `CodeInvalidArgument`.
-  - A wire overrun returns `CodeResourceExhausted`.
+  - Exactly `MaxWireBytes` is accepted past the wire check; one byte more
+    returns `CodeResourceExhausted`.
   - A traversal member returns `CodeInvalidArgument`, with no flip.
   - An unknown top dir installs (the guest is schema-agnostic).
   - `""` leaves no `current`.
@@ -275,7 +282,8 @@ ships inert code.
     the "no config version was seeded" block in
     `TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts`:
     - Provision installs (name, v-1), seeds v-1, and has no config mount.
-    - A bad-schema bundle fails Provision with no `create` call.
+    - A bad-schema bundle, or one over `MaxWireBytes`, fails Provision with no
+      `create` call.
     - An install failure closes the socket, records stop and remove, and
       errs.
     - Refresh from v-1 to v-2 installs v-2 and reaches `exec_streaming` == 2.
