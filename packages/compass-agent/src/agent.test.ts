@@ -2278,9 +2278,8 @@ describe("formatForgeNotifications — per-kind render (RIG-2732 W3)", () => {
 // span reading context.active() (so runWithParent makes the remote context its PARENT) and fires onSpanStart.
 
 // The idle-steer-parent test canaries the MODELED contract: it pins runWithParent wraps the
-// modeled synchronous prompt so the remote context is the turn span's PARENT. It does NOT guard
-// the REAL SDK's synchronicity (the fake starts the span synchronously by construction); that
-// belongs to a separate real-prompt() integration assertion.
+// modeled synchronous prompt so the remote context is the turn span's PARENT. The REAL loop's
+// span start is guarded by real-loop-trace.test.ts.
 
 const TP_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
 const TP_SPAN_ID = "b7ad6b7169203331";
