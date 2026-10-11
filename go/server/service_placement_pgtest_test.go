@@ -510,6 +510,13 @@ func connectPG(t *testing.T, ctx context.Context, dsn string) *pgx.Conn {
 // fake Runner, runs its Sessions loop, and returns once the router is live.
 func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withholdStop bool) *recordingRunner {
 	t.Helper()
+	return attachRecordingRunner(t, st, hub, &recordingRunner{attached: make(chan struct{}), withholdStop: withholdStop})
+}
+
+// attachRecordingRunner is attachFakeRunner for a rec configured before its
+// stream opens, so a gate is in place before the ready hook can drive a command.
+func attachRecordingRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, rec *recordingRunner) *recordingRunner {
+	t.Helper()
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
@@ -542,7 +549,6 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withhol
 		t.Fatalf("Enroll = %v, want success", err)
 	}
 
-	rec := &recordingRunner{attached: make(chan struct{}), withholdStop: withholdStop}
 	stream := rc.Sessions(ctx)
 	loopDone := make(chan error, 1)
 	go rec.serve(stream, loopDone)

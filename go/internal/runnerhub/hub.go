@@ -439,6 +439,12 @@ type Hub struct {
 	// off: Provision/Start need a stream that attaches AFTER Enroll — firing on enroll
 	// would race it. Idempotent. Nil until SetRunnerReadyHook; read under mu.
 	runnerReadyHook func()
+	// hookMu guards the hook gate: once StopReadyHooks closes it, a late stream
+	// attach starts no new hook, and the last running hook closes hooksDone itself.
+	hookMu       sync.Mutex
+	hooksClosed  bool
+	hooksRunning int
+	hooksDone    chan struct{}
 
 	// bindingWriteMu serializes whole enrolls (map-clear through reap) with promotion
 	// writes and cache updates. Lock it before mu; never hold mu across a store call.
@@ -857,10 +863,25 @@ func (h *Hub) RunnerEnrolled() bool {
 	return router.sender != nil
 }
 
+// StopReadyHooks stops further runner-ready hooks and returns a channel closed
+// once running ones return, so Serve's drain can join seed work before the store closes.
+func (h *Hub) StopReadyHooks() <-chan struct{} {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	if !h.hooksClosed {
+		h.hooksClosed = true
+		h.hooksDone = make(chan struct{})
+		if h.hooksRunning == 0 {
+			close(h.hooksDone)
+		}
+	}
+	return h.hooksDone
+}
+
 // fireRunnerReady invokes the runner-ready hook, if wired, on its OWN goroutine.
 // The goroutine is load-bearing: the seed drives Provision→Start back through this
 // hub's router down the very stream calling this, so running it inline would deadlock.
-// The body recovers a panic; fire-and-forget under the server's Serve ctx.
+// The body recovers a panic; StopReadyHooks joins it at shutdown.
 func (h *Hub) fireRunnerReady() {
 	h.mu.Lock()
 	hook := h.runnerReadyHook
@@ -872,7 +893,15 @@ func (h *Hub) fireRunnerReady() {
 	if hook == nil {
 		return
 	}
+	h.hookMu.Lock()
+	if h.hooksClosed {
+		h.hookMu.Unlock()
+		return
+	}
+	h.hooksRunning++
+	h.hookMu.Unlock()
 	go func() {
+		defer h.hookReturned()
 		defer func() {
 			if r := recover(); r != nil {
 				h.log.Error("runner-ready hook panicked; recovered (server stays up)",
@@ -881,6 +910,17 @@ func (h *Hub) fireRunnerReady() {
 		}()
 		hook()
 	}()
+}
+
+// hookReturned closes the drain's join channel when the last hook returns after
+// StopReadyHooks, with no separate waiter whose scheduling could lag the deadline.
+func (h *Hub) hookReturned() {
+	h.hookMu.Lock()
+	defer h.hookMu.Unlock()
+	h.hooksRunning--
+	if h.hooksClosed && h.hooksRunning == 0 {
+		close(h.hooksDone)
+	}
 }
 
 // deliverSession routes session frames to the observation pane, publishes lifecycle

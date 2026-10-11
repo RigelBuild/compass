@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -93,5 +94,48 @@ func TestDrainDoorsOverrunCancelsWedgedHandlers(t *testing.T) {
 				t.Fatal("client request never returned after the doors closed")
 			}
 		})
+	}
+}
+
+// TestAwaitReadyHooksOverrunStillJoins: past the drain deadline the seed is
+// reported as an overrun, but the drain must keep waiting for it, or Serve's
+// deferred store close would race the seed's store calls.
+func TestAwaitReadyHooksOverrunStillJoins(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), drainTimeout)
+		defer cancel()
+		hooksDone := make(chan struct{})
+		var got error
+		returned := make(chan struct{})
+		go func() {
+			got = awaitReadyHooks(ctx, hooksDone)
+			close(returned)
+		}()
+		time.Sleep(drainTimeout) //nolint:forbidigo // synctest advance: fake clock passes the deadline
+		synctest.Wait()
+		select {
+		case <-returned:
+			t.Fatal("awaitReadyHooks returned past the deadline while the seed was still running")
+		default:
+		}
+		close(hooksDone)
+		<-returned
+		if !errors.Is(got, context.DeadlineExceeded) {
+			t.Fatalf("awaitReadyHooks = %v, want the overrun reported", got)
+		}
+	})
+}
+
+// TestAwaitReadyHooksFinishedSeedIsNotOverrun: a seed that finished by the time
+// the deadline passed is clean, even though both select cases are ready.
+func TestAwaitReadyHooksFinishedSeedIsNotOverrun(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	hooksDone := make(chan struct{})
+	close(hooksDone)
+	for range 100 { // select picks a ready case at random
+		if err := awaitReadyHooks(ctx, hooksDone); err != nil {
+			t.Fatalf("awaitReadyHooks with the seed finished = %v, want nil", err)
+		}
 	}
 }

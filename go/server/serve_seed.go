@@ -13,6 +13,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/comms"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -59,6 +60,32 @@ const setupTopicName = "Setup"
 //
 //go:embed setup_thread.md
 var setupThreadBody string
+
+// seedDeps is what the root-supervisor seed needs from Serve's wiring.
+type seedDeps struct {
+	st                                 *store.Store
+	svc                                *service
+	cm                                 *comms.Comms
+	adminID, compassID, linearBridgeID store.AccountID
+	log                                *slog.Logger
+}
+
+// wireSeed sets hub's runner-ready hook to the seed and returns its cancel.
+func wireSeed(ctx context.Context, hub *runnerhub.Hub, d seedDeps) context.CancelFunc {
+	hook, cancel := rootSupervisorSeed(ctx, d)
+	hub.SetRunnerReadyHook(hook)
+	return cancel
+}
+
+// rootSupervisorSeed builds the runner-ready hook that runs the seed under its own
+// ctx, derived from Serve's. The cancel lets the drain stop the seed when a door
+// error, not the parent, ends Serve; Serve also defers it.
+func rootSupervisorSeed(ctx context.Context, d seedDeps) (hook func(), cancel context.CancelFunc) {
+	seedCtx, cancel := context.WithCancel(ctx)
+	return func() {
+		seedRootSupervisor(seedCtx, d.st, d.svc, d.cm, d.adminID, d.compassID, d.linearBridgeID, d.log)
+	}, cancel
+}
 
 // seedRootSupervisor brings up the root supervisor on first launch: on
 // an empty agent tree it creates one root agent under the bootstrap admin, then

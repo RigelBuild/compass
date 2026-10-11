@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"log/slog"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +43,8 @@ type seedHarness struct {
 	adminID   store.AccountID
 	compassID store.AccountID
 	seedDone  chan struct{}
+	// cancelSeed cancels the seed's ctx, as Serve's drain does via drainSet.
+	cancelSeed context.CancelFunc
 	// seedOnce guards the seedDone close: fireRunnerReady fires on EVERY Sessions
 	// attach, and close() on an already-closed channel panics, so the harness
 	// tolerates a second hook fire (the re-fire idempotency the feature is built
@@ -98,8 +101,19 @@ func newSeedHarness(t *testing.T) *seedHarness {
 		compassID: system.ID,
 		seedDone:  make(chan struct{}),
 	}
+	// Serve's own hook builder, so the drain test exercises the production ctx wiring.
+	seed, cancelSeed := rootSupervisorSeed(t.Context(), seedDeps{
+		st:        st,
+		svc:       svc,
+		cm:        commsSvc,
+		adminID:   admin.ID,
+		compassID: system.ID,
+		log:       slog.New(slog.DiscardHandler),
+	})
+	t.Cleanup(cancelSeed)
+	h.cancelSeed = cancelSeed
 	hub.SetRunnerReadyHook(func() {
-		seedRootSupervisor(context.Background(), st, svc, commsSvc, admin.ID, system.ID, "", slog.New(slog.DiscardHandler))
+		seed()
 		h.seedOnce.Do(func() { close(h.seedDone) })
 	})
 	return h
@@ -113,6 +127,35 @@ func (h *seedHarness) awaitSeed(t *testing.T) {
 	case <-h.seedDone:
 	case <-time.After(30 * time.Second):
 		t.Fatal("seed never completed after the Runner command stream attached")
+	}
+}
+
+// TestDrainDoorsCancelsAndJoinsInFlightSeed: with the seed blocked mid-spawn and
+// its parent ctx still live, the drain cancels the seed's ctx and returns only
+// after the seed has.
+func TestDrainDoorsCancelsAndJoinsInFlightSeed(t *testing.T) {
+	h := newSeedHarness(t)
+	gate := make(chan struct{})
+	rec := &recordingRunner{attached: make(chan struct{}), startGate: gate}
+	attachRecordingRunner(t, h.store, h.hub, rec)
+	t.Cleanup(func() { close(gate) }) // runs first: frees the loop before teardown
+	waitForStartCount(t, rec, 1)      // the seed is now blocked on the Runner's Start
+
+	err := drainDoors(drainSet{
+		bus:         events.NewBus[busPayload](),
+		commsBus:    events.NewBus[*compassv1.SubscribeCommsResponse](),
+		uds:         &http.Server{ReadHeaderTimeout: time.Second},
+		hub:         h.hub,
+		log:         slog.New(slog.DiscardHandler),
+		cancelHooks: h.cancelSeed,
+	})
+	if err != nil {
+		t.Fatalf("drainDoors with a cancellable seed in flight = %v, want nil", err)
+	}
+	select {
+	case <-h.seedDone:
+	default:
+		t.Fatal("drainDoors returned while the seed was still running")
 	}
 }
 

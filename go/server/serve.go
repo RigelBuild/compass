@@ -870,13 +870,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	// Seed the root Manager "supervisor" on first launch (RIG-1820). The seed
 	// needs a Runner command stream, not up at boot, so it hangs off the hub's
-	// runner-ready hook, fired once a Runner's Sessions stream attaches.
-	// Idempotent, so a reconnect re-fire is safe. adminID owns the supervisor.
-	// Set after the forge wiring, which decides whether the Linear routing channel is seeded.
-	seedLog := slog.Default()
-	hub.SetRunnerReadyHook(func() {
-		seedRootSupervisor(ctx, st, svc, commsSvc, admin.ID, systemAccount.ID, linearRoutingBridge(forgeWiring.linearTokens, linearBridge.ID), seedLog)
-	})
+	// runner-ready hook; a reconnect re-fire is safe. Set after the forge wiring,
+	// which decides whether the Linear routing channel is seeded.
+	cancelSeed := wireSeed(ctx, hub, seedDeps{st: st, svc: svc, cm: commsSvc, log: slog.Default(), adminID: admin.ID,
+		compassID: systemAccount.ID, linearBridgeID: linearRoutingBridge(forgeWiring.linearTokens, linearBridge.ID)})
+	defer cancelSeed()
 
 	// Assemble the three compass.v1 doors (shipped socket, optional dev loopback,
 	// optional authenticated network) plus the Linear notify lane and session
@@ -935,13 +933,14 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	g.Go(func() error {
 		<-gctx.Done()
 		return drainDoors(drainSet{ //nolint:contextcheck // drainDoors deliberately takes no ctx: the inherited one is already cancelled (that cancellation is what woke this drain), so a bounded shutdown needs the fresh ctx drainDoors makes internally, not the dead one
-			bus:      bus,
-			commsBus: commsBus,
-			uds:      doors.uds,
-			dev:      doors.dev,
-			net:      doors.net,
-			hub:      hub,
-			log:      hubLog,
+			bus:         bus,
+			commsBus:    commsBus,
+			uds:         doors.uds,
+			dev:         doors.dev,
+			net:         doors.net,
+			hub:         hub,
+			log:         hubLog,
+			cancelHooks: cancelSeed,
 		})
 	})
 
@@ -1141,6 +1140,8 @@ type drainSet struct {
 	net      *http.Server
 	hub      *runnerhub.Hub
 	log      *slog.Logger
+	// cancelHooks cancels the runner-ready seed's ctx; nil when none was derived.
+	cancelHooks context.CancelFunc
 }
 
 // drainTimeout bounds the graceful drain of every door. A package var rather
@@ -1158,6 +1159,12 @@ func drainDoors(d drainSet) error {
 	// (Shutdown does not cancel its ctx), stalling the drain. Both closes idempotent.
 	d.bus.Close()
 	d.commsBus.Close()
+	// Stop the runner-ready seed first: bar new fires and cancel its ctx, so it
+	// unwinds while the doors drain. A drain woken by a group error has a live parent ctx.
+	hooksDone := d.hub.StopReadyHooks()
+	if d.cancelHooks != nil {
+		d.cancelHooks()
+	}
 	// Fresh ctx is deliberate: the parent is already cancelled (that woke this
 	// drain), so the bounded drain needs a live ctx, not the dead inherited one.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
@@ -1181,6 +1188,9 @@ func drainDoors(d drainSet) error {
 			_ = srv.Close() // best-effort: the overrun is already the reported error
 		}
 	}
+	if err := awaitReadyHooks(shutdownCtx, hooksDone); err != nil && drainErr == nil {
+		drainErr = err
+	}
 	// After a clean drain no further frame can arrive, so the hub's counters are
 	// final; after an overrun they are a best-effort snapshot. This is the only
 	// non-test reader of the frame-loss accounting, so a run that committed none
@@ -1190,6 +1200,24 @@ func drainDoors(d drainSet) error {
 		return fmt.Errorf("draining compass.v1 servers on shutdown: %w", drainErr)
 	}
 	return nil
+}
+
+// awaitReadyHooks joins the runner-ready seed. Past the drain deadline it reports
+// the overrun but still waits: the seed's ctx is cancelled, and its store calls
+// must finish before Serve's deferred store close.
+func awaitReadyHooks(shutdownCtx context.Context, hooksDone <-chan struct{}) error {
+	select {
+	case <-hooksDone:
+		return nil
+	case <-shutdownCtx.Done():
+	}
+	select { // both may be ready at once; a finished seed is not an overrun
+	case <-hooksDone:
+		return nil
+	default:
+	}
+	<-hooksDone
+	return fmt.Errorf("runner-ready seed still running: %w", shutdownCtx.Err())
 }
 
 // publishReady stamps the initial ServerStatus{Ready} onto the bus.

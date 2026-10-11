@@ -12,7 +12,9 @@ package runnerhub
 import (
 	"context"
 	"runtime"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -380,4 +382,52 @@ func TestRunnerReadyHookPanicDoesNotCrash(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("hub did not fire a later hook after an earlier hook panicked")
 	}
+}
+
+// TestStopReadyHooksJoinsRunningHookAndBarsLateFires pins the drain contract:
+// the join channel stays open while a hook runs and closes once it returns, and
+// a fire after the stop starts no hook.
+func TestStopReadyHooksJoinsRunningHookAndBarsLateFires(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hub := newHubOnly()
+		release := make(chan struct{})
+		var fires atomic.Int32
+		hub.SetRunnerReadyHook(func() {
+			if fires.Add(1) == 1 {
+				<-release
+			}
+		})
+		hub.fireRunnerReady()
+		synctest.Wait() // the hook is durably blocked on release
+
+		done := hub.StopReadyHooks()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("StopReadyHooks join closed while a hook was still running")
+		default:
+		}
+
+		hub.fireRunnerReady() // a stream attach racing shutdown
+		close(release)
+		<-done
+		synctest.Wait()
+		if n := fires.Load(); n != 1 {
+			t.Fatalf("hook ran %d times, want 1: a fire after StopReadyHooks must start no hook", n)
+		}
+	})
+}
+
+// TestStopReadyHooksWithNoHookClosesAtOnce: a hub that never fired joins
+// immediately, so a drain with no seed in flight never waits.
+func TestStopReadyHooksWithNoHookClosesAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		done := newHubOnly().StopReadyHooks()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("StopReadyHooks join still open with no hook running")
+		}
+	})
 }
