@@ -2,8 +2,8 @@
 
 Tracking: RIG-5080 (decision), RIG-4350 (work; parent RIG-1715). Ruling: Matt,
 2026-10-10, on RIG-5080: "We can just modify the gateway to suit our model."
-The rest of this record follows Mintaka's reading of that ruling, posted on
-RIG-5080 on 2026-10-11 and not yet confirmed (§Open Questions Q1).
+Matt confirmed Mintaka's reading of that ruling on 2026-10-11 (§Open
+Questions Q1: A, no door call with no request behind it).
 
 Addendum to the merged record
 [`compass-server-llm-gateway`](./compass-server-llm-gateway/design.md)
@@ -116,7 +116,7 @@ job keeps that token. Rules:
 1. **No scope, no door call.** A list or reload with no token in scope is
    skipped; the store keeps its current view. A write with no token in scope
    is parked as `unsynced`, and the next request's poll resends it. No timer
-   ever calls the door (the posted reading, Q1).
+   ever calls the door (Q1, ruled A).
 2. **A revoked token parks the write.** Agent tokens rotate on re-placement
    and are revoked on stop (`TokenMinter.Mint` and `Revoke`), so a token can
    die between admission and the door call. The door then answers
@@ -406,24 +406,14 @@ Test cycle, in `packages/ai/test/compass-credential-store.test.ts`:
 
 ## Open Questions
 
-**Q1 (load-bearing): does the ruling forbid a door call with no request
-behind it?** Matt wrote only "We can just modify the gateway to suit our
-model." Rule 1, the LRU pin and the accepted residual follow from Mintaka's
-reading on RIG-5080 ("There is no background refresh with no request behind
-it … If this reading is wrong, say so."), which Matt has not confirmed.
+**Q1 (resolved, Matt, 2026-10-11): A.** No door call with no request behind
+it. Rule 1, the LRU pin and the parked-write residual stand as written.
 
-- **A — confirm the reading.** The record stands as written. Residual: a write
-  parked after the owner's last agent stops waits for that owner's next
-  request, which needs the LRU pin, and a gateway restart loses it. A lost
-  rotated refresh token means the owner must enrol again.
-- **B — the ruling means only "no new token type".** The store keeps the last
-  admitted token per owner and uses it for a background refresh and resend.
-  This removes the parked-write residual, but holds agent tokens in
-  long-lived gateway state, and a refresh still fails once that token is
-  revoked.
-
-**Recommendation: A.** A write is parked only when the agent's token is
-revoked during that agent's own in-flight request, or when no request is in
-scope, which needs an owner with no running agent. B adds long-lived token
-state for the same narrow window. Decision needed from Matt on RIG-5080: A
-or B.
+Matt asked whether this costs a door call per gateway request. It does not.
+On `rigel-release`, `pollExternalChanges` calls `#maybeBackgroundRefresh`,
+which returns early when
+`Date.now() - this.#lastRefreshStartMs < this.#refreshIntervalMs` (default
+`DEFAULT_REFRESH_INTERVAL_MS = 5_000`). The reload runs in the background, so
+a request does not wait for it. This record keeps that limit and adds only the
+token. List traffic stays at most one call per owner store per 5 s, plus one
+call per write. Matt chose to ship this and measure it on dev after T3.
