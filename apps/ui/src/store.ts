@@ -71,7 +71,11 @@ import {
 	saveReduceMotion,
 } from "./preferences";
 import { joinAgents } from "./roster";
-import type { AgentSession, SessionEvent } from "./session-events";
+import type {
+	AgentSession,
+	BatchPending,
+	SessionEvent,
+} from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import {
 	type Agent,
@@ -566,6 +570,12 @@ export interface AppStore {
 	 *  `onCommsError` rather than rejected — there is no user text to preserve,
 	 *  unlike a failed post. */
 	stopAgent: () => Promise<void>;
+	/** Fire the focused session's batching window now. */
+	skipBatchWindow: () => Promise<void>;
+	/** The last refusal from skipBatchWindow, cleared on the next attempt. */
+	skipError: Accessor<string | undefined>;
+	/** Pending window state for the focused session. */
+	batchPending: Accessor<BatchPending | undefined>;
 	/** The message from the last REFUSED stop — a server refusal
 	 *  (`Unavailable`), a fixture-sourced session, or a store with no compass
 	 *  client — or undefined when the last attempt was not refused. Reactive, so
@@ -682,6 +692,7 @@ export interface AppStoreOptions {
 interface SessionTrace {
 	readonly events: SessionEvent[];
 	readonly state?: AgentSessionState;
+	readonly batchPending?: BatchPending;
 	readonly notFound?: true;
 }
 
@@ -727,12 +738,20 @@ function createLiveSessions(
 			return next;
 		});
 	};
+	const clearBatchPending = (sessionId: string): void => {
+		if (!untrack(traces).get(sessionId)?.batchPending) return;
+		updateTrace(sessionId, (trace) => ({ ...trace, batchPending: undefined }));
+	};
 	const appendFrame = (sessionId: string, frame: SessionFrameUpdate): void => {
 		updateTrace(sessionId, (trace) => ({
 			events: frame.event
 				? appendSessionEvent(trace.events, frame.event)
 				: trace.events,
 			state: frame.state ?? trace.state,
+			batchPending:
+				frame.batchPending === null
+					? undefined
+					: (frame.batchPending ?? trace.batchPending),
 		}));
 	};
 	// Bumped on every changed status per session; a NotFound only parks the tail
@@ -843,6 +862,7 @@ function createLiveSessions(
 		for (const [sessionId, abort] of tails) {
 			if (sessionIds.includes(sessionId)) continue;
 			abort.abort();
+			clearBatchPending(sessionId);
 			tails.delete(sessionId);
 		}
 		for (const sessionId of sessionIds) {
@@ -880,6 +900,7 @@ function createLiveSessions(
 				agentAccountId: agentId,
 				running: isRunning(status.state, trace?.state),
 				events: trace?.events ?? [],
+				...(trace?.batchPending ? { batchPending: trace.batchPending } : {}),
 			};
 			cached.set(status.sessionId, { trace, state: status.state, session });
 			return session;
@@ -1459,6 +1480,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const fixtureSessions = options.sessions ?? STUB_SESSION_EVENTS;
 	const agentSessionById = (agentId: string): AgentSession | undefined =>
 		live ? live.sessionFor(agentId) : fixtureSessions[agentId];
+	const batchPending = (): BatchPending | undefined => {
+		const pending = focusedView().agentSession()?.batchPending;
+		return pending && pending.count > 0 ? pending : undefined;
+	};
 
 	// ── View scopes (record A1): one per view instance in the layout, keyed by
 	// view id, so a view keeps its workspace state while its path moves. ──
@@ -2032,6 +2057,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		setStopError(error instanceof Error ? error.message : String(error));
 		options.onCommsError?.(error);
 	};
+	const [skipError, setSkipError] = createSignal<string | undefined>(undefined);
+	const refuseSkip = (error: unknown) => {
+		setSkipError(error instanceof Error ? error.message : String(error));
+		options.onCommsError?.(error);
+	};
 	// The observation pane's stop control (the one non-observational control; steering
 	// happens in the channel). StopAgentSession's whole request is the server-minted
 	// `session_id`, so this stops the OBSERVED session. CompassClient-backed, NOT comms.
@@ -2071,6 +2101,34 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			await client.stopAgentSession({ sessionId: session.sessionId });
 		} catch (error) {
 			refuseStop(error);
+		}
+	};
+	const skipBatchWindow = async (): Promise<void> => {
+		setSkipError(undefined);
+		if (isDemoId(selectedAgentId())) return;
+		const session = focusedView().agentSession();
+		if (!session) return;
+		if (session.fixture) {
+			refuseSkip(
+				new Error(
+					"cannot start now: this session is fixture data, not a server-minted session",
+				),
+			);
+			return;
+		}
+		const client = options.compass;
+		if (!client) {
+			refuseSkip(
+				new Error(
+					"cannot start now: this store has no compass client (offline construction)",
+				),
+			);
+			return;
+		}
+		try {
+			await client.skipBatchWindow({ sessionId: session.sessionId });
+		} catch (error) {
+			refuseSkip(error);
 		}
 	};
 	// Keyboard-shortcuts overlay (RIG-2482): the open signal + its show/hide/
@@ -2498,6 +2556,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		newTerminalPane,
 		stopAgent,
 		stopError,
+		skipBatchWindow,
+		skipError,
+		batchPending,
 		logOpen,
 		toggleLog,
 		isSectionCollapsed,
