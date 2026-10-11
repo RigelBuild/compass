@@ -1108,11 +1108,13 @@ the credential cleanly.
 
 With `--token-out <file>`, the binary SHALL write the raw token (no trailing
 newline) atomically at mode `0600`: write a temp file, sync it, then rename it
-over the target. It SHALL write the file before committing the hash. If the
-commit fails, it SHALL remove the file, so a failure never leaves either a
-committed hash with no file or a file the store does not know. When the file
-already exists and `--force` is not given, the binary SHALL decide by the
-existing token's state in the store:
+over the target. The parent directory must already exist. It SHALL write the
+file before committing the new hash, and SHALL remove the file if that commit
+fails, so a failed mint never leaves a new hash with no file. A failed rotation
+of an existing file removes the file but does not revoke the earlier hash. When
+the file already exists and `--force` is not given, the binary SHALL decide by
+the existing token's state in the store, and SHALL leave the file's mode as it
+found it:
 
 | Existing token in the store | Action |
 | -- | -- |
@@ -1140,12 +1142,13 @@ serves as the Server's `--tls-cert` and the Runner's `--ca`. Its SANs come from
 `--hosts` (comma-separated; default `127.0.0.1,::1,localhost`; IP literals
 become IP SANs, other values DNS SANs; at least one entry is required). It is
 valid for `--validity` (default one year; a non-positive value uses the
-default), backdated one hour for clock skew. Both output flags are required.
-The key SHALL be written at `0600` and the certificate at `0644`, as it is a
-public trust anchor. Each file is written atomically, and the key first, so a
-write failure never leaves a new certificate beside a missing key. When both
-files already exist the binary SHALL skip generation unless `--force` is given.
-When only one exists, it SHALL regenerate both.
+default), backdated one hour for clock skew. Both output flags are required,
+and their parent directories must already exist. The key SHALL be written at
+`0600` and the certificate at `0644`, as it is a public trust anchor. Each file
+is written atomically, and the key first, so a write failure never leaves a new
+certificate beside a missing key. When both files already exist the binary
+SHALL skip generation unless `--force` is given, and SHALL leave both files'
+modes as it found them. When only one exists, it SHALL regenerate both.
 
 #### Scenario: A re-run keeps a live keypair
 
@@ -1158,9 +1161,10 @@ When only one exists, it SHALL regenerate both.
 
 `compass-runner --ca <pem>` (default `$COMPASS_RUNNER_CA`) SHALL trust only
 the certificates in that PEM file for the Server's TLS connection, in place of
-the system roots, with a minimum of TLS 1.3. A file that cannot be read, or
-that holds no PEM certificate, SHALL stop startup with an error. When `--ca` is
-unset, the Runner SHALL use the system roots.
+the system roots, with a minimum of TLS 1.3. The Runner reads the file after
+its backend preflight. A file that cannot be read, or that holds no PEM
+certificate, SHALL then stop startup with an error. When `--ca` is unset, the
+Runner SHALL use the system roots.
 
 #### Scenario: A Runner trusting a different certificate is refused
 
