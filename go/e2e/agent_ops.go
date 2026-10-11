@@ -290,8 +290,8 @@ func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequ
 // The observable enrollment signal available to the cross-process fixture is a
 // lightweight enrollment-gated probe. StopAgentSession relays through the hub's
 // routerFor exactly as Provision does, so it returns the CodeUnavailable
-// `no runner enrolled` error until a Runner has enrolled — and once one has, a
-// Stop of a synthetic never-started session id is
+// not-ready error (no runner enrolled, or no sessions stream yet) until a Runner
+// is ready — and once one is, a Stop of a synthetic never-started session id is
 // an idempotent Runner-side no-op (host.Stop returns success for an unknown
 // session; the session-end transcript flush is skipped since the id has no
 // entries), so the probe has NO container or session side effect. ONLY that
@@ -319,13 +319,8 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 	}
 }
 
-// rootSupervisorHandle is the fixed handle the server seeds the first-launch
-// root supervisor under (server/serve_seed.go rootSupervisorHandle). A
-// load-bearing cross-package coupling to that unexported const — the e2e package
-// cannot import server internals, so it mirrors the literal. If
-// the server ever renames the seed handle, waitSeedSettled stops resolving the
-// supervisor and its budget-timeout fires legibly rather than silently skipping
-// the gate.
+// rootSupervisorHandle mirrors server/serve_seed.go's unexported seed handle; a
+// rename there makes waitSeedSettled time out legibly rather than skip the gate.
 const rootSupervisorHandle = "supervisor"
 
 // bootstrapAdminHandle mirrors the server's default bootstrap-admin handle
@@ -608,8 +603,8 @@ const enrollProbeSessionID = "e2e-enroll-probe-nonexistent-session"
 // runnerEnrolledProbe runs one lightweight enrollment-gated probe. It reports
 // ready=true once the Runner is enrolled (the Stop relay no longer returns the
 // no-runner error), ready=false while enrollment is still pending (the specific
-// CodeUnavailable `no runner enrolled` condition), and a non-nil error for any
-// other failure — which waitRunnerEnrolled surfaces immediately rather than
+// CodeUnavailable not-ready conditions classifyEnrollProbe retries), and a
+// non-nil error for any other failure — which waitRunnerEnrolled surfaces immediately rather than
 // polling through.
 func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (ready bool, err error) {
 	perProbe := rpcTimeout
@@ -633,12 +628,8 @@ func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (
 	return ready, cerr
 }
 
-// classifyEnrollProbe classifies a StopAgentSession probe result into the
-// enrollment-readiness signal, as a pure function so its branches are unit
-// testable without a live client. A nil error means the Runner is enrolled. Only
-// a CodeUnavailable carrying one of runnerhub's not-ready messages is retried; any
-// other CodeUnavailable (a transport flap) is fatal, which suits a deterministic
-// gate. Any other error is a real failure surfaced immediately.
+// classifyEnrollProbe retries only a CodeUnavailable carrying a runnerhub not-ready
+// message; any other error, a transport flap included, fails the gate at once.
 func classifyEnrollProbe(err error) (ready bool, retry bool, cerr error) {
 	if err == nil {
 		return true, false, nil
