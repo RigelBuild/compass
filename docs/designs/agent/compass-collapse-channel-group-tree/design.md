@@ -42,7 +42,7 @@ Three server-written homes live in groups today. Each one is found by owner and 
 
 The group adds nothing that two columns cannot hold. Add `channels.system_namespace` (0 none, 1 DM, 2 coordination, 3 Linear routing) and `channels.namespace_owner_id` (the owning user). A partial unique index `(namespace_owner_id, system_namespace, name) WHERE system_namespace <> 0` replaces `channels_group_name_key` for these rows. The upserts keep their `ON CONFLICT … DO NOTHING` shape. Only the conflict target changes, so the "never poisons the outer tx" property in `UpsertCoordinationChannelTx` still holds by construction.
 
-This also removes a class of defense. Today a caller could plant a top-level group named `__dm__` at SHARED visibility, so every get-half is "VISIBILITY-DISCRIMINATED" (`GetOwnerDMGroup` filters `visibility = $3`), and `CreateChannel` refuses a reserved group through `isReservedGroupTx`. With the namespace on the channel, no RPC input can write `system_namespace`. `NewChannel` has no such field and no proto field maps to it. So the squat path is gone by construction. `isReservedGroupTx`, `isReservedGroupName`, `GetGroupNameVisibility`, and the visibility discriminators are deleted. The DM resume belt (`verifyReconcileDMTx`) and the Linear wrong-kind refusal (`linearRoutingChannelID`) stay. They defend against drift, not against the group plant.
+This also removes a class of defense. Today a caller could plant a top-level group named `__dm__` at SHARED visibility, so every get-half is "VISIBILITY-DISCRIMINATED" (`GetOwnerDMGroup` filters `visibility = $3`). `CreateChannel` refuses only the DM and Linear groups through `isReservedGroupTx` (`reservedName := row.Name == dmGroupName || row.Name == linearRoutingGroupName`). A user can still create a channel in their own `__coordination__` group, and the coordination suffix loop defends against that. With the namespace on the channel, no RPC input can write `system_namespace`. `NewChannel` has no such field and no proto field maps to it. So all three squat paths are gone by construction, including the coordination one. `isReservedGroupTx`, `isReservedGroupName`, `GetGroupNameVisibility`, and the visibility discriminators are deleted. The DM resume belt (`verifyReconcileDMTx`) and the Linear wrong-kind refusal (`linearRoutingChannelID`) stay. They defend against drift, not against the group plant.
 
 What does not change:
 
@@ -52,7 +52,7 @@ What does not change:
 - DM convert (DL-296): `ConvertDMChannel` now clears `system_namespace` and `namespace_owner_id` instead of `group_id`. The channel leaves the reserved namespace and frees its name, as before.
 - Visibility: a system channel gets no non-member grant. A row in an OWNER group got none either, because the channel predicates grant non-members nothing through an OWNER group. Readers stay exactly the members.
 
-A CHECK keeps system channels off the tree and out of the shared set: `system_namespace = 0 OR (parent_agent_id IS NULL AND NOT shared)`. Another CHECK ties the two columns together: `(system_namespace = 0) = (namespace_owner_id IS NULL)`.
+A CHECK keeps system channels off the tree and out of the shared set: `system_namespace = 0 OR (parent_agent_id IS NULL AND NOT shared)`. Another CHECK ties the two columns together: `(system_namespace = 0) = (namespace_owner_id IS NULL)`. `ReparentChannel` today refuses every grouped channel (`if row.GroupID.Valid`), which covers coordination and Linear channels. After the change it refuses `system_namespace <> 0` with `ErrInvalidArgument`, before the CHECK can fire. Without that refusal, an owner who reparents their coordination channel would hit the CHECK and get an internal error.
 
 ### D3. SHARED spaces become a `shared` flag on a root channel
 
@@ -60,7 +60,7 @@ No server code mints a SHARED group. The producers are the `CreateChannelGroup` 
 
 Add `channels.shared BOOLEAN NOT NULL DEFAULT FALSE`. A shared channel is a root channel: `CHECK (NOT shared OR (parent_agent_id IS NULL AND kind = 0))`. This CHECK takes over the job DL-397 gave `channels_group_xor_agent`: user trees never cross. Shared names are unique per tenant through `channels_shared_name_key ON channels (tenant_id, name) WHERE shared`, the flat analogue of a SHARED group's `(group_id, name)` key. Root non-shared channels stay unkeyed, as today. `ChannelByNameForViewer` still resolves ambiguity by participant and then refuses with "address it by id".
 
-The four channel predicates replace the SHARED-group arm with `OR (c.kind = 0 AND c.shared)`. The copies stay textually identical, per the header rule in `channels.sql`. `ReparentChannel` refuses a shared channel where it refused a grouped one (`row.GroupID.Valid` today). The subscribe filter needs no change for channels: `ChannelVisibleTo` already gates `ChannelChanged`.
+The four channel predicates replace the SHARED-group arm with `OR (c.kind = 0 AND c.shared)`. The header rule in `channels.sql` says the copies "MUST stay textually identical", but nothing enforces it, and `OwnerSetLostChannelVisibility` already spells the viewer as `cand.account_id`. So T1 adds a parity test across the copies. `ReparentChannel` refuses a shared channel where it refused a grouped one. The subscribe filter needs no change for channels: `ChannelVisibleTo` already gates `ChannelChanged`.
 
 ### D4. Agents organize channels through the agent tree
 
@@ -68,11 +68,13 @@ Matt ruled "B then A" on RIG-2673 (2026-08-25). B gave agents `comms_create_chan
 
 ### D5. Wire: remove, do not reserve
 
-DL-186 (Active, Matt, 2026-08-07) strips pre-dogfood wire compat: "all `reserved` markers removed across compass/v1… safe because zero clients are deployed and nothing on disk is proto-encoded." That still holds. Postgres is the only store, and `EventRef` in `go/internal/fabric/eventref.go` is JSON `{kind, row id, tenant}`, never a payload copy. So removed fields are deleted without `reserved`, as `comms.proto` already does for F9 ("REMOVED, not reserved (F9: pre-dogfood, zero stored payloads); field 2 is reused as topic_id").
+DL-186 (Active, Matt, 2026-08-07) strips pre-dogfood wire compat: "all `reserved` markers removed across compass/v1… safe because zero clients are deployed and nothing on disk is proto-encoded." The storage half still holds. Postgres is the only store, and `EventRef` in `go/internal/fabric/eventref.go` is JSON `{kind, row id, tenant}`, never a payload copy. So removed fields are deleted without `reserved`.
 
-- `Channel.group_id = 3` becomes `bool shared = 3`. The number is reused, as F9 did.
-- `CreateChannelRequest.group_id = 2` becomes `bool shared = 2`. `group_name = 7` is the last field and is deleted.
-- `SubscribeCommsResponse.channel_group_changed = 13`, `CommsCallRequest.create_channel_group = 9`, and `CommsCallResult.create_channel_group = 10` are deleted. Their numbers are left as holes, with no renumbering. Open PRs add arms 13–17 to the same oneofs (#2078, #2139, #2153), and renumbering would collide with each of them (OQ4).
+Schema versions can still mix during a rollout. The agent image is pinned by digest apart from the server (`guest-image/agent-oci.lock`, `"tag": "git-7d22c69390cb"`), and an open UI tab keeps its old bundle across a server restart. Deleting a field is safe under mixing: an old decoder reads the absent field as its default, and a new decoder skips the unknown one. Reusing a number at a different wire type is not safe. An old decoder would read a `bool` varint at field 3 as a string length and misparse the rest of `Channel`. The F9 precedent does not cover a type change. It reused field 2 at the same type: "field 2 is reused as topic_id, same `string` wire type". So `shared` takes fresh numbers.
+
+- `Channel.group_id = 3` is deleted. `bool shared = 13` is added (the next free number after `membership_mode = 12`).
+- `CreateChannelRequest.group_id = 2` and `group_name = 7` are deleted. `bool shared = 8` is added. Field 7 is not reused, because it held a `string`. An old agent that still sends `group_name` gets a root channel; the server skips the unknown field.
+- `SubscribeCommsResponse.channel_group_changed = 13`, `CommsCallRequest.create_channel_group = 9`, and `CommsCallResult.create_channel_group = 10` are deleted. Their numbers stay unused for good. `agent_gateway.proto` already holds this policy: "numbers stay in place, renamed never renumbered (OQ-1b)". Oneof arm numbers there already skip: `ForgeCallRequest` uses "oneof arms 2-11 and 14-15", and `CommsCallRequest` jumps from arm 9 to `open_dm = 11`. Renumbering later would break the pinned agent and stale tabs. In `CommsCallRequest` it cannot even be built, because field 10 is the message-level `trigger_traceparent` (OQ4).
 - Deleted messages: `ChannelGroup`, `ChannelGroupVisibility`, `ChannelGroupChanged`, `CreateChannelGroupRequest`/`Response`, and `ListChannelGroupsRequest`/`Response`.
 
 ### D6. Migration: edit `0001_init.sql` in place
@@ -86,16 +88,16 @@ From the prior record (`docs/designs/ui/compass-channels-in-agent-tree/design.md
 - **Superseded:** §1 *What replaces `ChannelGroup`* ("`ChannelGroup` is NOT deleted"). The Global Constraints "Additive wire change only. No proto field is removed or renumbered" and "Reserved namespaces are untouchable." DL-397's clause "the `channels_group_xor_agent` CHECK is permanent". `channels_shared_root_only` replaces the CHECK and keeps the ruling's substance.
 - **Kept:** §2's owner-set grant (DL-345), §3's membership modes and participant probe (DL-344, except its last clause), §4's no-data-migration posture, §5's single tree, DL-397's other rulings, and DL-416 (TREE re-entry replay).
 
-Ledger rows. New rows: DL-487 (D1), DL-488 (D3), DL-489 (D2), DL-490 (D4, D5). All are `Active (proposed, pending Matt, 2026-10-11)`.
+Ledger rows. New rows: DL-487 (D1), DL-488 (D3), DL-489 (D2), DL-490 (D4, D5). All are `Active (proposed, pending Matt, 2026-10-11)`. This PR is freeze-gated. The flips take effect for every agent that reads the ledger once it merges, so it must not merge before Matt rules. At ratification, all eight touched statuses are rewritten to `(Matt, <date>)`.
 
 | Row | Action | Why |
 |---|---|---|
-| DL-344 | Superseded by DL-487 | Its last clause keeps `ChannelGroup`. DL-487 keeps the rest of DL-344. |
+| DL-344 | Clause superseded by DL-487 | Only its last clause ("`ChannelGroup` is NOT deleted") is replaced. The membership-mode ruling stays Active. The status uses the clause-level form that DL-097 uses. |
 | DL-397 | Superseded by DL-488 | It names `channels_group_xor_agent` permanent. DL-488 restates its rulings with the new CHECK. |
 | DL-295 | Superseded by DL-489 | Its guard is "`CreateChannel` refuses any create targeting it". D2 makes the guard structural. |
 | DL-395 | Superseded by DL-489 | It homes `xdm:` "in the lower owner id's `__dm__` group". DL-489 keeps the name and the lower-owner rule. |
-| DL-294, DL-296 | Kept, refined | Their "reserved DM group" now means the DM system namespace. The rest stands. DL-395 refined DL-294 the same way. |
-| DL-345 | Kept | The owner-set decision stands. Its query citations describe the pre-change code. |
+| DL-294, DL-296 | Kept, refined by DL-489 | Their "reserved DM group" now means the DM system namespace. DL-489 says so in its text, as DL-395 did when it refined DL-294. |
+| DL-345 | Kept | The owner-set ruling stands. Its text cites the SHARED-group arm. DL-487 records that the arm is now `c.kind = 0 AND c.shared`. |
 | DL-136, DL-190 | Kept | Neither row's text names a group. The coordination home ("always provisioned GROUPED") is record prose, not a row. |
 | DL-135 | Kept | Roster scopes already walk the agent tree. |
 
@@ -105,6 +107,7 @@ Ledger rows. New rows: DL-487 (D1), DL-488 (D3), DL-489 (D2), DL-490 (D4, D5). A
 - **Hang reserved homes on the agent tree.** For example, coordination under the manager (`parent_agent_id`) as EXPLICIT. This fails for two of the three homes. A DM has two agent parties and no natural anchor. The anchor's owner set (DL-345) would also get read access to a private pair DM, and a cross-owner DM has two owners. The Linear routing channel belongs to the admin user, not to an agent. The tree is the wrong axis for system homes.
 - **Keep SHARED groups as the one surviving group use.** This keeps the lattice, the group RPCs, and the UI group headers for one feature that no server path mints. See OQ2.
 - **Deprecate the wire instead of removing it** (`[deprecated = true]`, as `CHANNEL_KIND_GROUP_DM` did). DL-186 makes removal safe pre-dogfood. A deprecated RPC with no store behind it is dead weight. See OQ3.
+- **Land in two PRs: add, then delete.** PR1 would add `shared` and `system_namespace` and move every caller; PR2 would delete the group surface. Both PRs would do real work, so neither is inert. But PR1 must either keep SHARED groups and the `shared` flag both live, with both arms in all four predicates, or stop the UI reading groups while the `CreateChannelGroup` RPC can still create them. The first path is transitional code that PR2 deletes. The second hides live data for one PR. The plan lands one PR instead (see *Landing*).
 
 ## Plan
 
@@ -113,16 +116,21 @@ Ledger rows. New rows: DL-487 (D1), DL-488 (D3), DL-489 (D2), DL-490 (D4, D5). A
 - Public repo. Name no private repo or path inside one.
 - Migration policy: edit `go/internal/store/migrations/0001_init.sql` in place (RIG-4927). Add no migration file. No backfill.
 - After any query or schema edit, run `sqlc generate` from `go/`. `compass-go:sqlc-drift` must pass.
-- After any proto edit, run `moon run compass-proto:gen`. `compass-proto:drift` must pass. DL-186 holds: remove fields and add no `reserved`.
-- Do not renumber any surviving field or oneof arm. Leave holes at `SubscribeCommsResponse` 13 and `CommsCallRequest`/`CommsCallResult` 9/10 (OQ4).
-- The four channel-visibility predicates in `channels.sql` stay textually identical (the file header rule).
+- After any proto edit, run `moon run compass-proto:gen`. It regenerates all four trees. `compass-proto:drift` must pass. DL-186 holds: remove fields and add no `reserved`.
+- Never reuse a field number at a different wire type. New fields take fresh numbers. Re-check the next free number in `Channel` and `CreateChannelRequest` at rebase.
+- Never renumber a surviving field or oneof arm. Removed numbers stay unused.
+- The four channel-visibility predicates in `channels.sql` keep one shape. The T1 parity test enforces it.
 - Advisory lock keys keep their domains: `'dm:'`, `'coordination:'`, `'linear-routing:'`.
 - No RPC input may set `system_namespace` or `namespace_owner_id`. `NewChannel` gets no such field.
-- Error contract: a shared-name collision is `ErrConflict`. Reparenting a shared channel is `ErrInvalidArgument`.
+- Error contract: a shared-name collision is `ErrConflict`. Reparenting a shared channel or a system channel is `ErrInvalidArgument`.
 
-### T1. Schema and store (lands in one PR with T2, because the generated code moves together)
+### Landing
 
-Files: `0001_init.sql`, `queries/{channels,accounts,authz,coordination,dm,linear_routing}.sql`, `store/{channels,coordination,dm,linear_routing,authz,types,inputs}.go`, and their tests.
+T1–T6 land as one PR, with one commit per task so a reviewer can read it by surface. No smaller PR can be green. One proto regen deletes `ChannelGroup`, `ChannelGroupVisibility` and `CreateChannelGroupRequestSchema` from the TS trees, and the agent tools, the UI adapter and the client index import them. The e2e fixture (`//go:build podman`) calls `CreateChannelGroupRequest` and `ChannelGroupVisibility_…`. So the store, proto, agent, UI and e2e edits must merge together. The split into add-then-delete is rejected in *Alternatives considered*. Most of the diff is deletion.
+
+### T1. Schema and store
+
+Files: `0001_init.sql`, `queries/{channels,accounts,authz,coordination,dm,linear_routing}.sql`, `store/{channels,coordination,dm,linear_routing,authz,types,inputs}.go`, and these tests: `store/{channels_test,store_test,channel_tree_pgtest_test,channel_by_name_pgtest_test,coordination_pgtest_test,dm_pgtest_test,linear_routing_pgtest_test,rls_pgtest_test,authz_test}.go`, plus `comms/dm_open_pgtest_test.go`.
 
 Interfaces:
 
@@ -171,50 +179,61 @@ type Channel struct { /* GroupID removed */ Shared bool; /* other fields unchang
 ```
 
 - Delete: `ChannelGroup`, `ChannelGroupID`, `ChannelGroupVisibility`, `NewChannelGroup`, `CreateChannelGroup`, `ListChannelGroups`, `ChannelGroupVisibleTo`, `ChannelGroupByRefForViewer`, `resolveGroupRef`, `groupRefHints`, `requireGroupCreateAuthz`, `isReservedGroupTx`, `isReservedGroupName`, `EnsureOwnerDMGroupTx`, `EnsureOwnerCoordinationGroupTx`, `ensureLinearRoutingGroupTx`.
-- `validateNewChannel` refuses `Shared` with a `ParentAgentID` or a non-CHANNEL kind (`ErrInvalidArgument`). `ReparentChannel` refuses `row.Shared`. A `channels_shared_name_key` violation maps to `ErrConflict`.
+- `validateNewChannel` refuses `Shared` with a `ParentAgentID` or a non-CHANNEL kind (`ErrInvalidArgument`). `LockChannelForReparent` selects `shared` and `system_namespace` in place of `group_id`. `ReparentChannel` refuses `row.Shared` and `row.SystemNamespace <> 0` with `ErrInvalidArgument`. A `channels_shared_name_key` violation maps to `ErrConflict`.
 
 Tests (each fails before the change):
 
+- Visibility parity: over a fixture of member, shared, owner-set, system and stranger channels, `ListChannels`, `ChannelVisibleTo` and `ChannelsByNameForViewer` agree for every viewer, and `OwnerSetLostChannelVisibility` returns exactly the owner-set accounts the other three deny.
 - A shared channel is visible to a non-member of another owner. A non-shared root channel is not.
 - Two shared channels with one name in one tenant: the second create is `ErrConflict`.
 - `CreateChannel` with `Shared` and a parent agent is `ErrInvalidArgument`. `ReparentChannel` of a shared channel is `ErrInvalidArgument`.
+- `ReparentChannel` of the owner's coordination channel is `ErrInvalidArgument`, not an internal error.
 - Two concurrent `OpenDM` calls for one pair return one channel. DM convert frees the name, and the next open mints a new DM.
-- An existing coordination channel with a different `owner_account_id` (a reclaimed handle) makes the reconcile pick the `-2` name. This replaces the user-squat test, which can no longer happen.
-- A raw insert of a system channel with `parent_agent_id` set fails `channels_system_off_tree`.
+- `TestOpenDMRevokeWaitsForOpenDMCommit` keeps its gate. Its holder `holdDMGroupLock` locks `channel_groups … FOR UPDATE` and relies on "The channel FK takes KEY SHARE". The rework locks `SELECT 1 FROM user_accounts WHERE account_id = $host FOR UPDATE`, because the new `namespace_owner_id` FK takes KEY SHARE on that row at the channel insert. [INFERENCE] Nothing earlier in `openDMTx` locks that row: the peering check locks `user_peers` rows. The test's own red-before run confirms this.
+- An existing coordination channel with a different `owner_account_id` (a reclaimed handle) makes the reconcile pick the `-2` name.
+- The plant tests become raw-insert tests of the new constraints. A system channel with `parent_agent_id` set fails `channels_system_off_tree`. A second system row with the same `(namespace_owner_id, system_namespace, name)` fails `channels_system_name_key`. This replaces the SHARED `__coordination__` plant in `coordination_pgtest_test.go` and the `JOIN channel_groups` assertions in `dm_pgtest_test.go` and `linear_routing_pgtest_test.go`.
+- `TestRestartDurabilityReadsBackFullGraph` in `store_test.go` builds a shared channel in place of the SHARED group `proj`. `channels_test.go` and `channel_tree_pgtest_test.go` drop their `channel_groups` inserts and `GroupID` cases.
 - Delete `channel_groups_reserved_pgtest_test.go` and `group_ref_test.go`. They test removed code.
 
-### T2. Proto and comms service (same PR as T1)
+### T2. Proto and comms service
 
-Files: `proto/compass/v1/comms.proto`, `proto/compass/v1/agent_gateway.proto`, the regenerated trees, `go/internal/comms/{comms,agent_caller,mapping,subscribe}.go`, `go/internal/runnerhub/{hub,relay_comms}.go`, `go/internal/auth/admin_gate.go`, `go/internal/fabric/{eventref.go,SUBJECTS.md}`.
+Files: `proto/compass/v1/comms.proto`, `proto/compass/v1/agent_gateway.proto`, the regenerated trees, `go/internal/comms/{comms,agent_caller,mapping,subscribe}.go`, `go/internal/runnerhub/{hub,relay_comms}.go`, `go/internal/auth/admin_gate.go`, `go/internal/fabric/{eventref.go,SUBJECTS.md}`, and these tests: `comms/{org_mgmt_pgtest_test,visibility_filter_test,subscribe_failclosed_test,channel_attach_wire_test}.go`, `runnerhub/{relay_org_mgmt_test,relay_arm_coverage_test,helpers_test}.go`, `auth/interceptor_pgtest_test.go`, `fabric/{event_fabric_test,subjects_test}.go`, `go/server/{comms_actor_pgtest_test,linear_responder_pgtest_test}.go`.
 
 Interfaces:
 
 ```proto
 message Channel {
+  // group_id = 3 removed; the number stays unused.
+  // fields 1-2 and 4-12 unchanged
   // Visible to every account in the tenant. Only a root CHANNEL can be shared.
-  bool shared = 3;
-  // other fields unchanged
+  bool shared = 13;
 }
 message CreateChannelRequest {
   string name = 1;
-  bool shared = 2;            // was group_id
+  // group_id = 2 removed; the number stays unused.
   ChannelKind kind = 3;
   repeated string member_handles = 4;
   string parent_agent_handle = 5;
   ChannelMembershipMode membership_mode = 6;
-  // group_name = 7 removed
+  // group_name = 7 removed; the number stays unused.
+  bool shared = 8;
 }
 ```
 
 - Delete the RPCs `CreateChannelGroup` and `ListChannelGroups`, the messages listed in D5, the `channel_group_changed = 13` arm, and the agent arms `create_channel_group = 9` and `= 10`. Rewrite two comments: `AgentAccount.parent_agent_id` loses "Mirrors ChannelGroup.parent_group_id", and `Channel.parent_agent_id`'s "Never set on a SHARED-group channel" becomes "Never set on a shared channel".
-- Delete `Comms.CreateChannelGroup`, `Comms.ListChannelGroups`, `CreateChannelGroupAsAccount`, `resolveAgentGroupRef`, `groupToWire`, `groupVisibilityToWire`, `groupVisibilityFromWire`, `publishChannelGroupChanged`, the `ChannelGroupVisibleTo` method of the subscribe visibility interface, `CommsCaller.CreateChannelGroupAsAccount`, the relay case, `KindChannelGroupChanged`, and the two `admin_gate.go` procedure entries.
+- Delete `Comms.CreateChannelGroup`, `Comms.ListChannelGroups`, `CreateChannelGroupAsAccount`, `resolveAgentGroupRef`, `groupToWire`, `groupVisibilityToWire`, `groupVisibilityFromWire`, `publishChannelGroupChanged`, the `ChannelGroupVisibleTo` method of the subscribe visibility interface, `CommsCaller.CreateChannelGroupAsAccount`, the relay case, `KindChannelGroupChanged`, and the two `admin_gate.go` procedure entries. Remove `create_channel_group` from the relay's "no recognized variant set" error text.
 - `CreateChannelAsAccount` no longer resolves a group. It passes `parent_agent_handle` and `shared` through.
 
-Tests: `org_mgmt_pgtest_test.go` and `relay_org_mgmt_test.go` lose the group cases. They gain one agent create of a shared channel and one agent create under a parent handle. `channel_attach_wire_test.go` pins `CreateChannelRequest.shared` at 2. `relay_arm_coverage_test.go` drops arm 9.
+Tests:
+
+- `org_mgmt_pgtest_test.go` and `relay_org_mgmt_test.go` lose the group cases. They gain one agent create of a shared channel and one agent create under a parent handle.
+- The actor-threading probes in `auth/interceptor_pgtest_test.go` and `go/server/comms_actor_pgtest_test.go` use `CreateChannelGroup` today. They switch to `CreateChannel` and assert that the caller is in `member_account_ids`, since the store makes the actor a founding member.
+- `visibility_filter_test.go` drops `TestSubscribeCommsChannelGroupChangedScoping`. `subscribe_failclosed_test.go` drops its `ChannelGroupVisibleTo` fake. `subjects_test.go` drops `KindChannelGroupChanged`.
+- `channel_attach_wire_test.go` pins `Channel.shared` at 13 and `CreateChannelRequest.shared` at 8. `relay_arm_coverage_test.go` drops arm 9.
 
 ### T3. Agent tools
 
-Files: `packages/compass-agent/src/comms.ts`, `comms.test.ts`, `compassv1.ts`.
+Files: `packages/compass-agent/src/comms.ts`, `comms.test.ts`, `compassv1.ts`, and `packages/compass-agent/AGENTS.md` (its tool list names `comms_create_channel_group`).
 
 Interfaces:
 
@@ -249,16 +268,19 @@ File: `go/e2e/fixture.go`. Replace `createSharedGroup` with a `CreateChannel` ca
 - `docs/specs/product/compass.md`: rewrite the channel-group text as "agent tree plus shared root channels".
 - Leave the prior record §1 and `docs/designs/agent/compass-manager-comms-substrate/design.md` ("always provisioned GROUPED") as history. The flipped rows point here.
 - Code-comment sweep for the flipped ids: `grep -rn "DL-344\|DL-395\|DL-397\|DL-295" go apps packages proto` has no hits on main today. Re-run it after rebase. Remove the comments in `store/coordination.go` that cite "design.md:570-573" (the GROUPED home).
-- Done check: `grep -rn "channel_groups\|ChannelGroup\|parent_group_id\|__dm__\|__coordination__\|__linear__" go apps packages proto`, excluding generated trees, returns nothing.
+- Done check: `grep -rn "channel_groups\|ChannelGroup\|parent_group_id\|group_id\|GroupID\|groupId\|channels_group_\|SHARED-group\|GROUPED\|grouped channel\|__dm__\|__coordination__\|__linear__" go apps packages proto docs/specs`, excluding generated trees (`*/gen/`, `go/internal/store/db/`), returns nothing. A bare `grouped` is left out: `apps/ui/src/board.ts` uses it for PR rows "grouped by `issue.assignee`".
 
 ## Tasks
 
-- [ ] T1 + T2: schema, queries, store, proto, comms, runnerhub, auth gate, fabric kind; sqlc and buf regen.
-- [ ] T3: agent tools (`comms_create_channel` gains `parent`/`shared`; `comms_create_channel_group` deleted).
-- [ ] T4: UI and compass-client drop groups; a Shared section over `shared` channels.
-- [ ] T5: e2e fixture creates shared channels.
-- [ ] T6: product spec rewrite and citation sweep.
-- [ ] Dev DB recreate per RIG-4927 after T1 merges.
+- [ ] One PR (see *Landing*), one commit per task:
+  - [ ] T1: schema, queries, store, store tests; sqlc regen.
+  - [ ] T2: proto, comms, runnerhub, auth gate, fabric kind, their tests; buf regen.
+  - [ ] T3: agent tools and AGENTS.md (`comms_create_channel` gains `parent`/`shared`; `comms_create_channel_group` deleted).
+  - [ ] T4: UI and compass-client drop groups; a Shared section over `shared` channels.
+  - [ ] T5: e2e fixture creates shared channels.
+  - [ ] T6: product spec rewrite and citation sweep.
+- [ ] Hold the merge until Matt rules on DL-487..490; then rewrite the eight statuses to `(Matt, <date>)`.
+- [ ] Dev DB recreate per RIG-4927 after the PR merges.
 
 ## Open Questions
 
@@ -277,22 +299,26 @@ File: `go/e2e/fixture.go`. Replace `createSharedGroup` with a `CreateChannel` ca
 
 **Recommendation:** (a). It keeps a product affordance Matt ruled on (DL-397) for the cost of one column. Delta for (b): drop `shared`, `channels_shared_*`, and the predicate arm; T3 drops `shared?`; T4 drops the Shared section; T5 uses explicit cross-owner members. Delta for (c): this record shrinks to OQ1, and DL-397 stays Active.
 
-### OQ3. Remove proto `ChannelGroup`, or deprecate it?
+### OQ3. How does the group wire go?
 
-- (a) Remove with no `reserved` (DL-186 and the F9 precedent). Reuse `Channel` 3 and `CreateChannelRequest` 2 for `shared`.
-- (b) Remove, but add `reserved` lines, as `agent_gateway.proto` still does for `initial_prompt`.
+- (a) Remove without `reserved` (DL-186) and add `shared` at fresh numbers (`Channel.shared = 13`, `CreateChannelRequest.shared = 8`).
+- (b) The same, plus `reserved` lines for each removed number and name, as `agent_gateway.proto` still does for `initial_prompt`.
 - (c) Mark the surface `[deprecated = true]` and stub the RPCs as `Unimplemented`.
 
-**Recommendation:** (a). Delta for (b): add `shared` at new numbers (`Channel.shared = 13`, `CreateChannelRequest.shared = 8`) and add `reserved` for each removed number and name. Delta for (c): T2 keeps the messages and returns `CodeUnimplemented`; T3 and T4 still drop their callers.
+Reusing `Channel` 3 and `CreateChannelRequest` 2 as `bool` is not an option. It changes the wire type at a reused number, and the pinned agent image and stale UI tabs would misdecode it (D5).
 
-### OQ4. Leave oneof holes, or renumber?
+**Recommendation:** (a). Delta for (b): T2 adds `reserved 3; reserved "group_id";` to `Channel`, the matching lines for 2, 7, `group_id` and `group_name` to `CreateChannelRequest`, and `reserved` lines for the removed oneof arms. Delta for (c): T2 keeps the messages and returns `CodeUnimplemented`; T3 and T4 still drop their callers.
 
-DL-186 says live fields are "densely renumbered (no holes)". Open PRs #2078, #2139 and #2153 add arms 13–17 to the same oneofs, so renumbering now collides with each of them.
+### OQ4. Do removed oneof arms stay as permanent holes?
 
-- (a) Leave holes at 13 and 9/10 now. Renumber after those PRs land.
-- (b) Renumber densely now and rebase the open PRs.
+The removed arms are `SubscribeCommsResponse` 13 and `CommsCallRequest`/`CommsCallResult` 9/10. DL-186's one-time pass renumbered densely ("no holes"). Since then, `agent_gateway.proto` has adopted "renamed never renumbered (OQ-1b)", and its oneof arm numbers skip (`ForgeCallRequest` "oneof arms 2-11 and 14-15"). What is new here is a number no field uses at all.
 
-**Recommendation:** (a). It deviates from DL-186's "no holes", so it needs Matt's sign-off. Delta for (b): T2 moves `SubscribeCommsResponse` arms 14+ down by one and `CommsCallRequest`/`CommsCallResult` arms 10+/11+ down by one; each open PR rebases.
+- (a) Permanent holes, never renumbered, under OQ-1b.
+- (b) Renumber later, at a planned break such as GA.
+
+A renumber now is not an option. It breaks the pinned agent image and stale UI tabs. In `CommsCallRequest` it puts `open_dm` on 10, which is `trigger_traceparent`.
+
+**Recommendation:** (a). Matt only needs to confirm that OQ-1b also covers the public `comms.proto` oneof. Delta for (b): none now; the Global Constraint "Never renumber" gains "until GA", and the GA plan owns the renumber.
 
 ### OQ5. Remove the RIG-2673 B arm?
 
