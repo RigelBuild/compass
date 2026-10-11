@@ -274,13 +274,17 @@ runner and is never cross-compiled. Developer ID signing, notarization and the
 app's homebrew cask are not live yet. They wait on the Apple Developer Program
 enrollment.
 
-**Homebrew.** After `release-assets` publishes a semver release, it renders
-`Formula/compass-cli.rb` with `tools/homebrew-tap` from the tag and
-`SHA256SUMS`, then commits it to `RigelBuild/homebrew-tap` with an App token
-scoped to that repo. `brew install rigelbuild/tap/compass-cli` installs the
-`compass` CLI on Apple-silicon macOS and on x86_64 Linux. Prerelease tags
-never reach this step, because only release-please's semver release runs
-`release-assets`, and the renderer rejects any tag that is not `vX.Y.Z`.
+**Homebrew.** After `release-assets` publishes a semver release, the
+`bump-homebrew-tap` job renders `Formula/compass-cli.rb` with
+`tools/homebrew-tap` from the tag and the published `SHA256SUMS`, then commits
+it to `RigelBuild/homebrew-tap` with an App token scoped to that repo.
+`brew install rigelbuild/tap/compass-cli` installs the `compass` CLI on
+Apple-silicon macOS and on x86_64 Linux. Prerelease tags never reach the job,
+and the renderer rejects any tag that is not `vX.Y.Z`. The job skips the write
+when the tap already pins the same or a newer version, so an out-of-order
+release cannot downgrade it. If the job fails, re-run that job alone: it reads
+only the published release, while re-running `release-assets` would try to
+re-upload to the published release.
 
 **Nix flake.** `flake.nix` exposes `compass`, `compass-server`,
 `compass-runner`, `compass-stack`, `compass-app`, `compass-ui` and

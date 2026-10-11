@@ -1003,8 +1003,40 @@ jobs:
           # upload above: publication locks the assets and the tag for good.
           gh release edit "$TAG" --draft=false --notes-file "$notes"
 
-      # Runs after publish, so the formula only ever points at public assets.
-      # The token is scoped to the tap repo alone; the App is installed there by IaC.
+  # Its own job so a tap failure re-runs alone: re-running release-assets after
+  # publish would re-upload to an immutable release. Inputs come from the
+  # published release, and the group serializes writes so releases land in order.
+  bump-homebrew-tap:
+    name: bump-homebrew-tap
+    runs-on: ubuntu-latest
+    needs: [release-pr, release-assets]
+    if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
+    concurrency:
+      group: bump-homebrew-tap
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-pr.outputs.sha }}
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned bun on PATH
+        # Same pinned toolchain as release-assets, never a setup-* action.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs | jq -r '.[].store')
+          [ -n "$stores" ] || { echo "::error::gate-tools.nix langs produced no store paths"; exit 1; }
+          nix build --no-link $stores
+          for store in $stores; do echo "$store/bin" >>"$GITHUB_PATH"; done
+
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: tap-token
         with:
@@ -1015,21 +1047,37 @@ jobs:
 
       - name: Bump the homebrew-tap compass-cli formula
         env:
+          TAG: ${{ needs.release-pr.outputs.tag_name }}
           GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          formula="$RUNNER_TEMP/compass-cli.rb"
-          bun run tools/homebrew-tap/index.ts "$TAG" SHA256SUMS "$formula"
+          GH_TOKEN="$RELEASE_TOKEN" gh release download "$TAG" -p SHA256SUMS -D "$RUNNER_TEMP"
           path="Formula/compass-cli.rb"
           api="repos/RigelBuild/homebrew-tap/contents/$path"
-          # An update needs the current blob sha. Only a 404 means "create";
-          # any other lookup failure fails the step.
-          args=(-X PUT "$api" -f "message=compass-cli $TAG" -f "content=$(base64 -w0 "$formula")")
+          current="$RUNNER_TEMP/current.rb"
+          # Only a 404 means the formula does not exist yet; any other lookup
+          # failure fails the step.
+          blob=""
           if lookup="$(gh api "$api" -q .sha 2>&1)"; then
-            args+=(-f "sha=$lookup")
+            blob="$lookup"
+            gh api "$api" -H "Accept: application/vnd.github.raw" > "$current"
           elif [[ "$lookup" != *"HTTP 404"* ]]; then
             echo "::error::reading $path from the tap failed: $lookup" >&2
             exit 1
+          fi
+          formula="$RUNNER_TEMP/compass-cli.rb"
+          bun run tools/homebrew-tap/index.ts "$TAG" "$RUNNER_TEMP/SHA256SUMS" "$formula" \
+            ${blob:+"$current"}
+          # The renderer writes nothing when the tap already holds a newer
+          # version, so an out-of-order or re-run release never downgrades it.
+          if [ ! -s "$formula" ]; then
+            echo "the tap already carries a newer compass-cli; leaving it"
+            exit 0
+          fi
+          args=(-X PUT "$api" -f "message=compass-cli $TAG" -f "content=$(base64 -w0 "$formula")")
+          if [ -n "$blob" ]; then
+            args+=(-f "sha=$blob")
           fi
           gh api "${args[@]}" -q .commit.html_url
 
