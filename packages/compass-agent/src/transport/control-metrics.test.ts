@@ -154,6 +154,7 @@ const noopImmediate = {
 	steer: (): void => {},
 	deliver: (): void => {},
 	forgeNotification: (): void => {},
+	startNow: (): void => {},
 };
 
 function promptOp(seq: bigint, input: string): WireAgentControl {

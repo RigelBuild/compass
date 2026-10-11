@@ -140,6 +140,7 @@ export interface ImmediateControl {
 	// to the flush (a decode-ack would discard retain-until-acked durability). The
 	// source hands an ackRail thunk the agent calls at flush to retire the op.
 	forgeNotification(notification: ForgeNotification, ackRail: () => void): void;
+	startNow(): void;
 }
 
 // Decode the immediate-op payload into the comms Message the immediate handle applies.
@@ -381,6 +382,18 @@ export function createSocketControlSource(
 				}
 				// Applied (counted or dispatched) at decode → ack now, ahead of any
 				// queued iterator op (invariant 2 → applied_above_ranges).
+				acks.markApplied(seq);
+				return;
+			}
+			case "startNow": {
+				if (!replayComplete) {
+					count(
+						`control:${kind}`,
+						"live start-now before ReplayComplete — refused by replay barrier",
+					);
+				} else {
+					immediate.startNow();
+				}
 				acks.markApplied(seq);
 				return;
 			}
