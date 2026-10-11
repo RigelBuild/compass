@@ -72,7 +72,7 @@ func TestChannelParticipantTreeArm(t *testing.T) {
 		t.Fatalf("ListTopics by a subtree agent: %v", err)
 	}
 	if len(topics) != 1 || topics[0].Name != testTopic {
-		t.Fatalf("ListTopics by a subtree agent = %+v, want the general topic", topics)
+		t.Fatalf("ListTopics by a subtree agent = %+v, want the %q topic", topics, testTopic)
 	}
 	_, err = s.ListTopics(t.Context(), string(f.sibling.ID), string(f.channel.ID), false)
 	sentinelIs(t, err, ErrNotFound, "ListTopics by an agent outside the subtree")

@@ -131,7 +131,7 @@ func TestListTopicsChannelMembershipGated(t *testing.T) {
 		t.Fatalf("ListTopics(member): %v", err)
 	}
 	if len(topics) != 1 || topics[0].Name != testTopic {
-		t.Fatalf("member ListTopics = %+v, want one general topic", topics)
+		t.Fatalf("member ListTopics = %+v, want one %q topic", topics, testTopic)
 	}
 	if topics[0].Stats != nil {
 		t.Fatalf("ListTopics populated stats = %+v, want nil", topics[0].Stats)
