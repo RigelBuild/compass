@@ -67,13 +67,40 @@ type Store struct {
 	bootstrapTenantID TenantID
 }
 
+// defaultPoolMaxConns caps the pool when the DSN sets no pool_max_conns. pgx's
+// own default is max(4, NumCPU), which ties a deploy's connection budget to the host.
+const defaultPoolMaxConns int32 = 10
+
+// poolConfig parses dsn, keeping an explicit pool_max_conns and otherwise
+// applying defaultPoolMaxConns.
+func poolConfig(dsn string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("store: parse dsn: %w", err)
+	}
+	// pgxpool.ParseConfig consumes pool_max_conns, so read the raw params to
+	// tell an explicit value from pgx's host-derived default.
+	raw, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("store: parse dsn: %w", err)
+	}
+	if _, set := raw.RuntimeParams["pool_max_conns"]; !set {
+		cfg.MaxConns = defaultPoolMaxConns
+	}
+	return cfg, nil
+}
+
 // Open connects to Postgres at dsn (a pgx pool), applies any pending embedded
 // migrations under an advisory lock, and verifies the resulting schema version
 // matches what this binary expects — refusing to serve on a failed migration
 // or a version mismatch (design.md:1136-1137, 1145-1146). A returned Store is
 // ready to serve; a returned error means the caller must not serve.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := poolConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("store: connect: %w", err)
 	}

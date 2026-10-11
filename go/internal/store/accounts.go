@@ -169,6 +169,10 @@ func (s *Store) BootstrapAdmin(ctx context.Context, u NewUser) (Account, error) 
 	// bootstrapped (restart): fetch and return the existing admin.
 	if err := insertAccountHandle(ctx, qtx, id, u.Handle, ""); err != nil {
 		if errors.Is(err, ErrConflict) {
+			// Release the tx's connection before re-reading through the pool.
+			if err := tx.Rollback(ctx); err != nil {
+				return Account{}, fmt.Errorf("store: roll back bootstrap admin: %w", err)
+			}
 			return s.adminByHandle(ctx, u.Handle)
 		}
 		return Account{}, err
@@ -261,6 +265,10 @@ func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayN
 	// return the existing system account.
 	if err := insertAccountHandle(ctx, qtx, id, handle, ""); err != nil {
 		if errors.Is(err, ErrConflict) {
+			// Release the tx's connection before re-reading through the pool.
+			if err := tx.Rollback(ctx); err != nil {
+				return Account{}, fmt.Errorf("store: roll back ensure system account: %w", err)
+			}
 			return s.systemByHandle(ctx, handle)
 		}
 		return Account{}, err

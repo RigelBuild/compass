@@ -259,6 +259,11 @@ With `--database-external` the stack only connects to the `--database` DSN you
 name; it never starts, stops, or owns that instance's lifecycle. The flag is the
 opt-out switch and `--database` (or `$COMPASS_DATABASE_DSN`) carries the DSN.
 
+By default each Compass process opens at most 10 connections to the database.
+To fit several instances inside the server's `max_connections`, set
+`pool_max_conns=<n>` in the DSN to override that cap (for example
+`postgres://user:pass@db.internal:5432/compass?pool_max_conns=5`).
+
 The server keeps each raw token-usage event (one row per upstream model call)
 for 90 days by default, and deletes older events once a day. Set the window with
 `--usage-event-retention` (or `$COMPASS_USAGE_EVENT_RETENTION`) as a Go duration
