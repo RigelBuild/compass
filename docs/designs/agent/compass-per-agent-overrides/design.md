@@ -16,6 +16,13 @@ extensions/MCPs axis will resolve). Builds on: RIG-2673
 (`compass-agent-spawn-despawn/design.md`), and the model-eval suite
 (RIG-2562) whose per-role recommendations this rollout mechanism deploys.
 
+> **Update (2026-10-11, RIG-2978):** the model-eval suite (RIG-2562) was
+> retired. Per-role recommendations now come from a qualitative vetting rubric
+> that emits no scores and no profile names. A profile is hand-authored from
+> that read, as the RIG-2935 record specifies. Read the "eval emits a profile
+> NAME" lines in §Problem / Intent and §T10 as historical; the name-based
+> handoff itself is unchanged.
+
 ## Problem / Intent
 
 Naming note: the record path and issue title ("per-agent overrides") describe
