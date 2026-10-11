@@ -239,7 +239,7 @@ be public, so the user decides where it may go (OQ-8).
 - **Lost responses.** A POST can succeed while its response is lost. A
   per-row lease lets only one drive work a row at a time.
   - **Linear** is exact: `commentCreate` takes a client UUID (`id` on
-    `CommentCreateInput`), derived from the row id, so a retry cannot create
+    `CommentCreateInput`, a UUID v4) stored on the row, so a retry cannot create
     a second comment.
   - **GitHub** has no idempotency key, so delivery is at-least-once with a
     bounded residue. Every body ends with a hidden marker naming the row id.
@@ -1162,6 +1162,7 @@ CREATE TABLE forge_mirrors (
     last_error        TEXT     NOT NULL DEFAULT '',
     first_attempt_at  TIMESTAMPTZ,  -- set by the first POST; bounds the marker search
     last_attempt_at   TIMESTAMPTZ,  -- the latest POST; a GitHub retry waits 2 minutes past it
+    client_comment_id UUID     NOT NULL DEFAULT gen_random_uuid(),  -- v4; Linear's CommentCreateInput.id
     lease_until       TIMESTAMPTZ,  -- a Drive holds the row until then
     lease_token       TEXT     NOT NULL DEFAULT '',  -- fences a stale holder
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1179,7 +1180,7 @@ CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE st
 // go/internal/store
 type ForgeMirrorMode int16 // ForgeMirrorOff = 0 (no row), ForgeMirrorManual = 1, ForgeMirrorAuto = 2
 type ForgeMirrorSetting struct { Provider ForgeProvider; Host, Repo string; Mode ForgeMirrorMode }
-type ForgeMirrorRow struct { ID string; Source int16; AskID, SourceKey string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string; FirstAttemptAt, LastAttemptAt *time.Time }
+type ForgeMirrorRow struct { ID string; Source int16; AskID, SourceKey string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string; FirstAttemptAt, LastAttemptAt *time.Time; ClientCommentID string }
 func (s *Store) ForgeMirrorMode(ctx context.Context, p ForgeProvider, host, repo string) (ForgeMirrorMode, error)
 func (s *Store) ListForgeMirrorSettings(ctx context.Context) ([]ForgeMirrorSetting, error) // every enabled subscription; off when no row
 func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set ForgeMirrorSetting) error // off deletes the row
@@ -1203,7 +1204,7 @@ EditComment(ctx context.Context, repo, commentKey, body string) (Comment, error)
 // DeleteComment removes a duplicate marked comment (GitHub only).
 DeleteComment(ctx context.Context, repo, commentKey string) error
 // CommentOnIssue and CommentOnPullRequest gain an optional clientID; Linear sends it as
-// CommentCreateInput.id (a UUID v5 of the row id), GitHub ignores it.
+// CommentCreateInput.id (the row's client_comment_id, a UUID v4), GitHub ignores it.
 // ListCommentsSince pages every comment on an issue or PR created at or after
 // since (GitHub `since`; Linear `comments(filter: {createdAt: {gte}})`).
 ListCommentsSince(ctx context.Context, repo string, number uint64, since time.Time) ([]Comment, error)
@@ -1284,7 +1285,8 @@ Tests:
   `failed`; a board write re-drives a failed row.
 - A POST that succeeds with a lost response is adopted on retry by its marker,
   even after 60 later comments; the forge sees one comment.
-- Linear: a retried create with the same row id yields one comment.
+- Linear: a retried create with the same `client_comment_id` yields one
+  comment.
 - GitHub: a comment that becomes visible after the retry's scan is found on
   the next drive, the newer duplicate is deleted, and the row keeps the
   oldest.
