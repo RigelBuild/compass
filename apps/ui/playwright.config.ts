@@ -71,6 +71,9 @@ export default defineConfig({
 	outputDir: "./e2e/.output",
 	fullyParallel: false,
 	reporter: [["list"]],
+	// On a GitHub PR, Playwright's diff capture runs `git fetch --depth=1` of the PR
+	// base into this checkout, making it shallow for every later history-reading gate.
+	captureGitInfo: { commit: false, diff: false },
 	snapshotPathTemplate: "{testDir}/__screens__/{arg}{ext}",
 	expect: {
 		toHaveScreenshot: {
