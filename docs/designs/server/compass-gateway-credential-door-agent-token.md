@@ -409,11 +409,17 @@ Test cycle, in `packages/ai/test/compass-credential-store.test.ts`:
 **Q1 (resolved, Matt, 2026-10-11): A.** No door call with no request behind
 it. Rule 1, the LRU pin and the parked-write residual stand as written.
 
-Matt asked whether this costs a door call per gateway request. It does not.
-On `rigel-release`, `pollExternalChanges` calls `#maybeBackgroundRefresh`,
-which returns early when
+Matt asked whether this costs a door call per gateway request. On an open
+store it does not. On `rigel-release`, `pollExternalChanges` calls
+`#maybeBackgroundRefresh`, which returns early when
 `Date.now() - this.#lastRefreshStartMs < this.#refreshIntervalMs` (default
-`DEFAULT_REFRESH_INTERVAL_MS = 5_000`). The reload runs in the background, so
-a request does not wait for it. This record keeps that limit and adds only the
-token. List traffic stays at most one call per owner store per 5 s, plus one
-call per write. Matt chose to ship this and measure it on dev after T3.
+`DEFAULT_REFRESH_INTERVAL_MS = 5_000`), and the reload runs in the
+background. Other door calls skip that limit:
+
+- A cold open (`open()` awaits `refreshSnapshot()`) lists once, and the
+  request waits for it.
+- Each write sends one `UpdateCredentialOAuth` or disable call.
+- A write conflict or own-commit adoption adds a list.
+
+This record keeps those paths as they are and adds only the token. Matt chose
+to ship this and measure the rate on dev after T3.
