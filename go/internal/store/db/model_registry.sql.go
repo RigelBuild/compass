@@ -27,16 +27,20 @@ func (q *Queries) CurrentModelRegistry(ctx context.Context) (CurrentModelRegistr
 	return i, err
 }
 
-const deleteModelRegistry = `-- name: DeleteModelRegistry :exec
+const deleteModelRegistry = `-- name: DeleteModelRegistry :execrows
 UPDATE model_registry
    SET registry = 'null'::jsonb, version = version + 1
- WHERE singleton = TRUE AND registry <> 'null'::jsonb
+ WHERE singleton = TRUE AND registry <> 'null'::jsonb AND version = $1
 `
 
 // Delete marks the row as unconfigured while retaining its monotonic version.
-func (q *Queries) DeleteModelRegistry(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, deleteModelRegistry)
-	return err
+// It matches only the version the orphan check read, so a racing Put conflicts.
+func (q *Queries) DeleteModelRegistry(ctx context.Context, version int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteModelRegistry, version)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertModelRegistry = `-- name: InsertModelRegistry :one

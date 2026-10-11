@@ -248,6 +248,28 @@ func TestModelRegistryVersionNeverReusesDeletedVersion(t *testing.T) {
 	}
 }
 
+// A Put landing between Delete's orphan check and its tombstone must not be
+// discarded: the tombstone matches only the version that check read.
+func TestDeleteModelRegistryTombstoneRequiresCheckedVersion(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	actor := mustUser(t, s, "registry-delete-race-operator")
+	checked, err := s.PutModelRegistry(ctx, actor.ID, reg1("opus"), 0)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := s.PutModelRegistry(ctx, actor.ID, reg1("sonnet"), checked); err != nil {
+		t.Fatalf("racing update: %v", err)
+	}
+	n, err := s.q.DeleteModelRegistry(ctx, checked)
+	if err != nil || n != 0 {
+		t.Fatalf("tombstone at stale version = (%d rows, %v), want (0, nil)", n, err)
+	}
+	if _, reg, err := s.CurrentModelRegistry(ctx); err != nil || reg.Entries["sonnet"].DisplayName == "" {
+		t.Fatalf("racing update lost: registry = %+v, err = %v", reg, err)
+	}
+}
+
 // TestDeleteModelRegistryIdempotent: deleting an already-unconfigured registry is
 // a no-op success.
 func TestDeleteModelRegistryIdempotent(t *testing.T) {

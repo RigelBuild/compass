@@ -83,8 +83,9 @@ A failed or interrupted fetch sends an empty or truncated body, which the
 Server rejects. From a repository checkout, `docs/model-registry/day-1.json`
 is the same file.
 
-`expectedVersion` is a compare-and-set guard. `0` writes the first registry
-only. To update a registry that already exists, read its current version with
+`expectedVersion` is a compare-and-set guard. `0` writes the first registry,
+or a new one after `DeleteModelRegistry`; versions keep counting up across a
+delete, so they never repeat. To update a registry that already exists, read its current version with
 `GetModelRegistry` (body `{}`), set `expectedVersion` to that value, and send
 the edited body. A stale version fails with `aborted`: read again and retry.
 The Server rejects a write that removes a stable name a published profile

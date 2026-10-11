@@ -228,7 +228,8 @@ func (s *Store) CurrentModelRegistry(ctx context.Context) (version int64, reg Mo
 	return row.Version, reg, nil
 }
 
-// GatewayModelRegistry returns a tombstone version with an empty registry.
+// GatewayModelRegistry returns version 0 when never seeded, and the retained
+// version with an empty registry after a delete.
 func (s *Store) GatewayModelRegistry(ctx context.Context) (version int64, reg ModelRegistry, err error) {
 	row, err := s.q.CurrentModelRegistry(ctx)
 	if err != nil {
@@ -339,10 +340,10 @@ func (s *Store) PutModelRegistry(ctx context.Context, actor AccountID, reg Model
 	return version, nil
 }
 
-// DeleteModelRegistry tombstones the registry while retaining its version.
-// Fails closed if a current stable name is still referenced by a profile.
+// DeleteModelRegistry tombstones the registry while retaining its version. It
+// fails closed on a referenced stable name, and conflicts if a write lands mid-delete.
 func (s *Store) DeleteModelRegistry(ctx context.Context) error {
-	_, reg, err := s.CurrentModelRegistry(ctx)
+	version, reg, err := s.CurrentModelRegistry(ctx)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -356,8 +357,12 @@ func (s *Store) DeleteModelRegistry(ctx context.Context) error {
 	if err := s.checkNoOrphanedProfileRefs(ctx, names); err != nil {
 		return err
 	}
-	if err := s.q.DeleteModelRegistry(ctx); err != nil {
+	n, err := s.q.DeleteModelRegistry(ctx, version)
+	if err != nil {
 		return fmt.Errorf("store: delete model registry: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: model registry changed during delete", ErrVersionConflict)
 	}
 	return nil
 }

@@ -24,7 +24,8 @@ UPDATE model_registry
 RETURNING version;
 
 -- Delete marks the row as unconfigured while retaining its monotonic version.
--- name: DeleteModelRegistry :exec
+-- It matches only the version the orphan check read, so a racing Put conflicts.
+-- name: DeleteModelRegistry :execrows
 UPDATE model_registry
    SET registry = 'null'::jsonb, version = version + 1
- WHERE singleton = TRUE AND registry <> 'null'::jsonb;
+ WHERE singleton = TRUE AND registry <> 'null'::jsonb AND version = $1;

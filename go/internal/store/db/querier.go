@@ -140,7 +140,8 @@ type Querier interface {
 	// DeleteComputeUsageRollupsFrom clears rows the rebuild can reconstruct.
 	DeleteComputeUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	// Delete marks the row as unconfigured while retaining its monotonic version.
-	DeleteModelRegistry(ctx context.Context) error
+	// It matches only the version the orphan check read, so a racing Put conflicts.
+	DeleteModelRegistry(ctx context.Context, version int64) (int64, error)
 	// DeleteSecret addresses one scope coordinate — a name alone no longer
 	// identifies a row (composite PK).
 	DeleteSecret(ctx context.Context, arg DeleteSecretParams) (int64, error)

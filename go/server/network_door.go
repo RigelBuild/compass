@@ -401,7 +401,12 @@ type gatewayServices struct {
 	registry    *gatewayRegistryService
 }
 
-func mountGatewayServices(netMux *http.ServeMux, services gatewayServices, otelIC *otelconnect.Interceptor, runnerResolve runnerhub.TokenResolver) {
+func mountGatewayServices(
+	netMux *http.ServeMux,
+	services gatewayServices,
+	otelIC *otelconnect.Interceptor,
+	runnerResolve runnerhub.TokenResolver,
+) {
 	if services.credentials == nil && services.registry == nil {
 		return
 	}
