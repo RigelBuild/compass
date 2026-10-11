@@ -1,0 +1,143 @@
+#!/usr/bin/env bun
+
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import {
+	buildTag,
+	digestRef,
+	EXIT,
+	layoutDigest,
+	tagDisposition,
+} from "./core.ts";
+
+const USAGE = "usage: publish.ts --repo <repo> --sha <sha12> [--out <dir>]";
+const workspaceRoot = resolve(import.meta.dir, "..", "..");
+const laneDir = import.meta.dir;
+
+function fail(code: number, message: string): never {
+	console.error(`gateway-image publish: ${message}`);
+	process.exit(code);
+}
+
+function parseArgs(argv: readonly string[]): {
+	repo: string;
+	sha: string;
+	out: string;
+} {
+	const values: Partial<Record<"--repo" | "--sha" | "--out", string>> = {};
+	for (let index = 0; index < argv.length; index += 1) {
+		const name = argv[index];
+		const value = argv[index + 1];
+		if (
+			(name !== "--repo" && name !== "--sha" && name !== "--out") ||
+			value === undefined ||
+			value === "" ||
+			value.startsWith("--") ||
+			values[name] !== undefined
+		) {
+			fail(EXIT.usage, USAGE);
+		}
+		values[name] = value;
+		index += 1;
+	}
+	const repo = values["--repo"];
+	const sha = values["--sha"];
+	if (repo === undefined || sha === undefined) fail(EXIT.usage, USAGE);
+	if (!/^[0-9a-f]{12}$/.test(sha)) {
+		fail(EXIT.usage, `--sha must be 12 lowercase hex characters, got ${sha}`);
+	}
+	return {
+		repo,
+		sha,
+		out: resolve(workspaceRoot, values["--out"] ?? join(laneDir, "out")),
+	};
+}
+
+type CommandResult = { ok: boolean; stdout: Buffer; stderr: Buffer };
+
+function run(command: string, args: readonly string[]): CommandResult {
+	const result = spawnSync(command, [...args], {
+		cwd: workspaceRoot,
+		maxBuffer: 64 * 1024 * 1024,
+	});
+	if (result.error) {
+		return {
+			ok: false,
+			stdout: Buffer.alloc(0),
+			stderr: Buffer.from(`${command}: ${result.error.message}`),
+		};
+	}
+	return {
+		ok: result.status === 0,
+		stdout: result.stdout ?? Buffer.alloc(0),
+		stderr: result.stderr ?? Buffer.alloc(0),
+	};
+}
+
+const { repo, sha, out } = parseArgs(process.argv.slice(2));
+const indexPath = join(out, "oci", "index.json");
+let localDigest: string;
+try {
+	localDigest = layoutDigest(readFileSync(indexPath, "utf8"));
+} catch (error) {
+	fail(EXIT.badLayout, `reading ${indexPath} failed: ${String(error)}`);
+}
+
+const tag = buildTag(repo, sha);
+const authFile = process.env.REGISTRY_AUTH_FILE;
+const auth = authFile === undefined ? [] : ["--authfile", authFile];
+const probe = run("skopeo", ["inspect", ...auth, "--raw", `docker://${tag}`]);
+const disposition = tagDisposition(
+	{
+		exitCode: probe.ok ? 0 : 1,
+		stdout: probe.stdout.toString("utf8"),
+		stderr: probe.stderr.toString("utf8"),
+	},
+	localDigest,
+);
+if (disposition.action === "abort") {
+	fail(EXIT.pushFailed, disposition.reason ?? "refusing to publish");
+}
+if (disposition.action === "skip") {
+	console.error(`gateway-image publish: ${tag} already holds this artifact`);
+	console.log(digestRef(repo, localDigest));
+	process.exit(0);
+}
+
+const layoutDir = join(out, "oci");
+const pushed = run("skopeo", [
+	"copy",
+	...auth,
+	"--preserve-digests",
+	`oci:${layoutDir}`,
+	`docker://${tag}`,
+]);
+if (!pushed.ok) {
+	fail(
+		EXIT.pushFailed,
+		`pushing ${tag} failed: ${pushed.stderr.toString("utf8").trim()}`,
+	);
+}
+
+const resolved = run("skopeo", [
+	"inspect",
+	...auth,
+	"--raw",
+	`docker://${tag}`,
+]);
+if (!resolved.ok) {
+	fail(
+		EXIT.pushFailed,
+		`re-reading ${tag} failed: ${resolved.stderr.toString("utf8").trim()}`,
+	);
+}
+const remoteDigest = `sha256:${new Bun.CryptoHasher("sha256").update(resolved.stdout).digest("hex")}`;
+if (remoteDigest !== localDigest) {
+	fail(
+		EXIT.digestMismatch,
+		`registry resolved ${remoteDigest}, built ${localDigest}`,
+	);
+}
+
+console.log(digestRef(repo, remoteDigest));
