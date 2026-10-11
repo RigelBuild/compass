@@ -1,0 +1,151 @@
+{
+	"$comment": "Shared ref grammar cases for go/internal/refs and apps/ui/src/refs. Accepted cases give the canonical string and parts; an absent key, owner or repo is the empty string. Numbers are at most 2^53-1. Scan text is ASCII, so start/end are both byte and UTF-16 offsets; end is exclusive. A span's ref is the canonical form, not the matched text.",
+	"accepted": [
+		{
+			"input": "RIG-12",
+			"canonical": "RIG-12",
+			"kind": "tracker",
+			"key": "RIG",
+			"number": 12
+		},
+		{
+			"input": "AB-1",
+			"canonical": "AB-1",
+			"kind": "tracker",
+			"key": "AB",
+			"number": 1
+		},
+		{
+			"input": "A1B2C3D4E5-7",
+			"canonical": "A1B2C3D4E5-7",
+			"kind": "tracker",
+			"key": "A1B2C3D4E5",
+			"number": 7
+		},
+		{
+			"input": "RIG-0",
+			"canonical": "RIG-0",
+			"kind": "tracker",
+			"key": "RIG",
+			"number": 0
+		},
+		{
+			"input": "RIG-007",
+			"canonical": "RIG-7",
+			"kind": "tracker",
+			"key": "RIG",
+			"number": 7
+		},
+		{
+			"input": "RIG-9007199254740991",
+			"canonical": "RIG-9007199254740991",
+			"kind": "tracker",
+			"key": "RIG",
+			"number": 9007199254740991
+		},
+		{
+			"input": "RigelBuild/compass#2141",
+			"canonical": "rigelbuild/compass#2141",
+			"kind": "forge",
+			"owner": "rigelbuild",
+			"repo": "compass",
+			"number": 2141
+		},
+		{
+			"input": "owner/repo#1",
+			"canonical": "owner/repo#1",
+			"kind": "forge",
+			"owner": "owner",
+			"repo": "repo",
+			"number": 1
+		},
+		{
+			"input": "My_Org.x/Repo-Name.js#42",
+			"canonical": "my_org.x/repo-name.js#42",
+			"kind": "forge",
+			"owner": "my_org.x",
+			"repo": "repo-name.js",
+			"number": 42
+		},
+		{
+			"input": "RIG-1/RIG-2#3",
+			"canonical": "rig-1/rig-2#3",
+			"kind": "forge",
+			"owner": "rig-1",
+			"repo": "rig-2",
+			"number": 3
+		}
+	],
+	"rejected": [
+		"",
+		"#12",
+		"rig-12",
+		"R-12",
+		"ABCDEFGHIJK-1",
+		"1RIG-12",
+		"RIG-",
+		"RIG12",
+		"RIG-12a",
+		"RIG-12 ",
+		" RIG-12",
+		"RIG--12",
+		"RIG-+12",
+		"RIG-9007199254740992",
+		"RIG-18446744073709551616",
+		"owner/repo",
+		"owner/repo#",
+		"/repo#1",
+		"owner/#1",
+		"owner/repo#1x",
+		"owner/sub/repo#1",
+		"owner repo#1",
+		"owner/repo#-1",
+		"https://github.com/owner/repo/pull/1"
+	],
+	"scan": [
+		{ "text": "", "spans": [] },
+		{ "text": "no refs here", "spans": [] },
+		{
+			"text": "Fixes RIG-12 and Owner/Repo#7.",
+			"spans": [
+				{ "start": 6, "end": 12, "ref": "RIG-12" },
+				{ "start": 17, "end": 29, "ref": "owner/repo#7" }
+			]
+		},
+		{
+			"text": "(RIG-1),[a/b#2]; \"RIG-3\"",
+			"spans": [
+				{ "start": 1, "end": 6, "ref": "RIG-1" },
+				{ "start": 9, "end": 14, "ref": "a/b#2" },
+				{ "start": 18, "end": 23, "ref": "RIG-3" }
+			]
+		},
+		{ "text": "see #12 and rig-12", "spans": [] },
+		{ "text": "xRIG-12 RIG-12x RIG-12-3 RIG-12/a RIG-12#4", "spans": [] },
+		{
+			"text": "https://github.com/owner/repo#12 and path/owner/repo#3",
+			"spans": []
+		},
+		{
+			"text": "RIG-12\nRIG-13",
+			"spans": [
+				{ "start": 0, "end": 6, "ref": "RIG-12" },
+				{ "start": 7, "end": 13, "ref": "RIG-13" }
+			]
+		},
+		{ "text": "ABCDEFGHIJK-1 is too long", "spans": [] },
+		{ "text": "#RIG-1 fix-RIG-2 a.RIG-3 b/RIG-4 a/b#RIG-5", "spans": [] },
+		{
+			"text": "see https://linear.app/x?q=RIG-12 and http://h/a?b=o/r#3 then RIG-4",
+			"spans": [{ "start": 62, "end": 67, "ref": "RIG-4" }]
+		},
+		{
+			"text": "q=RIG-12 &RIG-13",
+			"spans": [
+				{ "start": 2, "end": 8, "ref": "RIG-12" },
+				{ "start": 10, "end": 16, "ref": "RIG-13" }
+			]
+		},
+		{ "text": "end RIG-9", "spans": [{ "start": 4, "end": 9, "ref": "RIG-9" }] }
+	]
+}
