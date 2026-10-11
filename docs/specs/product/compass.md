@@ -1078,6 +1078,97 @@ SHALL NOT be reflected.
 - **Then** the server does not reflect it, and the configured origin's preflight
   is answered with exactly that origin (never `*`) and without credentialed CORS.
 
+## Runner enrollment CLI
+
+Two operator binaries provision the credentials a Runner needs to enroll over
+the network door, and `compass-runner --ca` lets a Runner trust a locally
+generated certificate. Both binaries log to stderr only and print their version
+with `--version`.
+
+### Requirement: `compass-mint-runner-token` mints a Runner-subject token
+
+`compass-mint-runner-token --runner-id <id>` SHALL mint a random 32-byte
+bearer token (base64url, unpadded) whose subject is the Runner `<id>`. It
+SHALL store only the token's SHA-256 hash, in the store named by `--database`
+(default `$COMPASS_DATABASE_DSN`; it fails when neither is set). It is a
+dedicated Runner-subject mint path, not the account door's `IssueToken`.
+`--runner-id` is required and SHALL NOT contain `/`. Without `--token-out`,
+every run mints a new token and writes the plaintext to stdout exactly once,
+with a trailing newline. Nothing else goes to stdout, so a redirect captures
+the credential cleanly.
+
+#### Scenario: A stdout mint emits the token once
+
+- **Given** a reachable store
+- **When** an operator runs `compass-mint-runner-token --runner-id r1`
+- **Then** stdout holds exactly one token line, and the store resolves that
+  token to the Runner subject `r1`.
+
+### Requirement: `--token-out` writes the token file idempotently against the store
+
+With `--token-out <file>`, the binary SHALL write the raw token (no trailing
+newline) atomically at mode `0600`: write a temp file, sync it, then rename it
+over the target. It SHALL write the file before committing the hash. If the
+commit fails, it SHALL remove the file, so a failure never leaves either a
+committed hash with no file or a file the store does not know. When the file
+already exists and `--force` is not given, the binary SHALL decide by the
+existing token's state in the store:
+
+| Existing token in the store | Action |
+| -- | -- |
+| Registered to this `--runner-id` | No-op |
+| Revoked | No-op; the file is left in place |
+| Unknown (the store was replaced) | Re-register that same token; the file is unchanged |
+| Registered to another subject | Rotate: mint a new token and overwrite the file; log the prior subject |
+
+`--force` SHALL always mint and overwrite. It has no effect without
+`--token-out`.
+
+#### Scenario: A replaced store heals without rotating the Runner's credential
+
+- **Given** a token file from an earlier `--token-out` run, and a store that no
+  longer holds its hash
+- **When** the operator runs the same command again
+- **Then** the file's bytes are unchanged, and the store again resolves that
+  token to the Runner subject.
+
+### Requirement: `compass-gen-cert` writes a self-signed network-door keypair
+
+`compass-gen-cert --cert-out <file> --key-out <file>` SHALL generate an
+ECDSA P-256 certificate that is self-signed and marked as a CA, so the same PEM
+serves as the Server's `--tls-cert` and the Runner's `--ca`. Its SANs come from
+`--hosts` (comma-separated; default `127.0.0.1,::1,localhost`; IP literals
+become IP SANs, other values DNS SANs; at least one entry is required). It is
+valid for `--validity` (default one year; a non-positive value uses the
+default), backdated one hour for clock skew. Both output flags are required.
+The key SHALL be written at `0600` and the certificate at `0644`, as it is a
+public trust anchor. Each file is written atomically, and the key first, so a
+write failure never leaves a new certificate beside a missing key. When both
+files already exist the binary SHALL skip generation unless `--force` is given.
+When only one exists, it SHALL regenerate both.
+
+#### Scenario: A re-run keeps a live keypair
+
+- **Given** a certificate and key written by an earlier run
+- **When** `compass-gen-cert` runs again without `--force`
+- **Then** both files are unchanged, so a running Server and Runner need not
+  re-enroll.
+
+### Requirement: `compass-runner --ca` trusts a named certificate instead of the system roots
+
+`compass-runner --ca <pem>` (default `$COMPASS_RUNNER_CA`) SHALL trust only
+the certificates in that PEM file for the Server's TLS connection, in place of
+the system roots, with a minimum of TLS 1.3. A file that cannot be read, or
+that holds no PEM certificate, SHALL stop startup with an error. When `--ca` is
+unset, the Runner SHALL use the system roots.
+
+#### Scenario: A Runner trusting a different certificate is refused
+
+- **Given** a network door serving a certificate from `compass-gen-cert`
+- **When** a Runner's `--ca` names a different certificate
+- **Then** its `Enroll` call fails at the TLS handshake with an
+  unknown-authority error, and it never enrolls.
+
 ## Not yet specified
 
 These surfaces are designed (see the design record) but not yet implemented, and
