@@ -7,7 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { AgentRegistry, createAgentSession } from "@oh-my-pi/pi-coding-agent";
+import {
+	AgentRegistry,
+	type CustomTool,
+	createAgentSession,
+} from "@oh-my-pi/pi-coding-agent";
 import { nativeAsCustomTool } from "./native-tools";
 
 const scratchDirs: string[] = [];
@@ -58,10 +62,12 @@ test("the SDK invokes a native with its signal and onUpdate in AgentTool order",
 		additionalExtensionPaths: [],
 		disableExtensionDiscovery: true,
 		enableMCP: false,
-		customTools: natives.map((tool) => ({
-			...nativeAsCustomTool(tool),
-			loadMode: "essential" as const,
-		})),
+		customTools: natives.map(
+			(tool): CustomTool => ({
+				...nativeAsCustomTool(tool),
+				loadMode: "essential",
+			}),
+		),
 	});
 	try {
 		const registered = session.agent.state.tools.find(

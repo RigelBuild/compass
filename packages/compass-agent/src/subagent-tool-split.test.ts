@@ -106,10 +106,12 @@ function compassNativeTools(): CustomTool[] {
 		...createLifecycleTools(new LifecycleBroker(lifecycleTransport)),
 		...createForgeTools(new ForgeBroker(forgeTransport)),
 		...createBoardTools(new BoardBroker(boardTransport)),
-	].map((tool) => ({
-		...nativeAsCustomTool(tool),
-		loadMode: "essential" as const,
-	}));
+	].map(
+		(tool): CustomTool => ({
+			...nativeAsCustomTool(tool),
+			loadMode: "essential",
+		}),
+	);
 }
 
 function compassNativeToolNames(): Set<string> {

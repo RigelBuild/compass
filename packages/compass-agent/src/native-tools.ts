@@ -8,8 +8,9 @@ import type { CustomTool } from "@oh-my-pi/pi-coding-agent";
  * Adapts a native `AgentTool` to the SDK's `CustomTool` shape. The SDK calls a
  * CustomTool as `(id, params, onUpdate, ctx, signal)`; this restores the
  * AgentTool order `(id, params, signal, onUpdate)`, so a native may use both.
- * Fields the CustomTool arm has no slot for (render hooks, concurrency,
- * intent, matcher hooks) are not carried; the SDK would drop them anyway.
+ * Render hooks are not carried: AgentTool types them over an unknown theme, which
+ * CustomTool cannot accept, and natives run headless. Nor are concurrency, intent
+ * or matcher hooks, which CustomTool has no field for.
  */
 export function nativeAsCustomTool<TParams extends TSchema, TDetails>(
 	tool: AgentTool<TParams, TDetails>,
