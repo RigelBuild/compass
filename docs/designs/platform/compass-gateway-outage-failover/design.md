@@ -26,10 +26,14 @@ marks that upstream down. Mid-stream failover is out of scope.
 ## Global Constraints
 
 - Prerequisites: F1 and F2 need nothing new. C1 needs v1 P1
-  (`StableNameResolver`, the dry-run peek) and the gateway record's T3 caller
-  identity. Neither is in the fork: `ModelResolver` in
+  (`StableNameResolver`, the dry-run peek), the gateway record's T3 caller
+  identity, and RIG-5152. None is in the fork: `ModelResolver` in
   `packages/ai/src/auth-gateway/dispatch.ts` is still
   `(modelId: string) => Model<Api> | undefined`.
+- Each attempt's session-state key must carry the caller identity. Today
+  `sessionKeys` in `packages/ai/src/auth-gateway/session-state.ts` keys only on
+  provider, model, and a client key or context hash, so two callers can share
+  retained provider state. That gap predates this record; RIG-5152 tracks it.
 - One routing-core change, opt-in behind the `candidateFailover` boot option.
   Without it every route behaves as today. The fork interface names no compass
   type, so it stays offerable upstream.
@@ -47,12 +51,12 @@ marks that upstream down. Mid-stream failover is out of scope.
 ## Approach
 
 ```text
-resolve ─▶ attempt: credential, lease, streamSimple or completeSimple
+next candidate ─▶ route prechecks ─▶ credential, lease ─▶ streamSimple
   hold events until the first meaningful event
     committed            ─▶ respond from this candidate
-    failed before commit ─▶ classifyUpstreamFailure
+    failed before commit ─▶ abort cause, else classifyUpstreamFailure
       stop          ─▶ return the failure
-      failover kind ─▶ onFailure, release lease, next candidate
+      failover kind ─▶ onFailure, next candidate
 ```
 
 ### Commit point
@@ -60,74 +64,84 @@ resolve ─▶ attempt: credential, lease, streamSimple or completeSimple
 An attempt commits at its first event for which `isMeaningfulCompletionEvent`
 (`packages/ai/src/utils/empty-completion-retry.ts`) is true: a non-empty text,
 thinking, or tool-call delta, or an image. `withReplaySafeStreamRetry` commits
-on the same predicate, so the package keeps one meaning of "committed". `start`
-does not count: the Anthropic provider pushes it just above
-`// Retry loop for transient errors from the stream.`, before any upstream byte.
+on the same predicate. `start` does not count: the Anthropic provider pushes it
+just above `// Retry loop for transient errors from the stream.`, before any
+upstream byte.
 
-Until commit, a relay `AssistantMessageEventStream` buffers events; at commit
-it replays them and forwards the rest. A committed attempt is final: a later
-error reaches the client as today, and no follower is tried.
+Streaming: a relay `AssistantMessageEventStream` buffers events until commit,
+then replays them and forwards the rest. A committed attempt is final: a later
+error reaches the client as today, and no follower is tried. The response sends
+200 and the SSE headers once the first attempt's `streamSimple` returns, then a
+`: keepalive` comment every 15 s until commit (OQ-3). SSE parsers skip comment
+lines (`readSseEvents` in `packages/utils/src/stream.ts`). At commit the route
+runs `encodeStream` on the relay. On these streams `x-litellm-model-id` names
+the requested model and `x-litellm-model-api-base` is omitted; the log and
+usage event name the backend that answered.
 
-A streaming response sends 200 and the SSE headers when its first attempt's
-`streamSimple` returns, where today's handlers return their `Response`. It then
-writes a `: keepalive` comment every 15 s until commit (OQ-3). SSE parsers skip
-comment lines (`readSseEvents` in `packages/utils/src/stream.ts`), so this
-works for all four formats. At commit the route runs `encodeStream` on the
-relay. On these streams `x-litellm-model-id` names the requested model and
-`x-litellm-model-api-base` is omitted; the log and usage event name the backend
-that answered.
+Non-streaming: the attempt runs `streamSimple` and drains it as
+`completeSimple` does, through `resolveWithThinkingLoopRetries`
+(`packages/ai/src/stream.ts`, exported unchanged). The first meaningful event
+lifts the budget; the drain then runs without it, so a slow but healthy
+completion is not cut. Thinking-loop re-dispatches stay inside the attempt, on
+the same candidate, after the lift. The client sees nothing until the drain
+ends, so any classified failure fails over, whatever partial content it holds.
 
-Setup failures (no credential, or a synchronous `streamSimple` throw) are
-failed attempts, classified like upstream failures. A failure reaches the
-client only when no follower remains: as today's HTTP error `Response` if
-headers are not sent yet, else as an error `AssistantMessage` that ends the
-relay, which `encodeStream` writes as the format's SSE error.
+A failure reaches the client only when no follower remains: as today's HTTP
+error `Response` if headers are not sent yet, else as an error
+`AssistantMessage` that ends the relay, which `encodeStream` writes as the
+format's SSE error.
 
-Non-streaming has no commit point: the client gets nothing until
-`completeSimple` settles, so any classified failure fails over, whatever
-partial content the message holds.
+### Setup failures
+
+Before credential setup, each candidate runs the route's model prechecks:
+`chatRouteRejection`, and on `/v1/responses` the OpenAI image-file-reference
+check. The first candidate fails as today. An incompatible follower is skipped:
+no mark, no `onFailure`.
+
+Setup failures are not upstream failures and never set a mark. No credential
+(`resolveGatewayApiKey`'s 401) gives `credential_exhausted`. A thrown credential
+store call (`classifyGatewayError`, usually 502) or a synchronous
+`streamSimple` throw gives `setup_error`. Both fail over.
 
 ### Which failures fail over
 
-`classifyUpstreamFailure` in `packages/ai/src/error/gateway.ts` composes the
-existing classifiers. Its text is `errorClassificationMessage ?? errorMessage`,
-as both handlers already pass to `classifyGatewayError`. Rows apply in order;
-"reason" is `parseRateLimitReason(text)`.
+The loop decides aborts first (Bounds). `classifyUpstreamFailure` in
+`packages/ai/src/error/gateway.ts` sees only the rest. Its text is
+`errorClassificationMessage ?? errorMessage`, as both handlers pass to
+`classifyGatewayError`. Rows apply in order; "reason" is
+`parseRateLimitReason(text)`.
 
-| Failure before commit | Result |
+| Upstream failure before commit | Result |
 | --- | --- |
-| Request aborted by the client | stop |
-| Attempt aborted by the loop at its budget | `transport` |
 | Usage limit (`AIError.isUsageLimit` or `isUsageLimitOutcome`) | `credential_exhausted` |
 | 401, or 403 that is not a concurrency cap | `credential_exhausted` |
 | 403 concurrency cap (`isConcurrencyCapExclusion`), or 429 | `rate_limited` |
 | 404 | `not_served` |
-| Any other 4xx except 408 | stop |
+| Any other status below 500 except 408 | stop |
 | 408 or 5xx | `server_error` |
+| No status, and `isProviderRetryableError` is false | stop |
 | No status; reason `RATE_LIMIT_EXCEEDED` or `CONCURRENT_LIMIT` | `rate_limited` |
 | No status; reason `MODEL_CAPACITY_EXHAUSTED` or `SERVER_ERROR` | `server_error` |
-| No status; `isProviderRetryableError` (connect, DNS, TLS, socket close) | `transport` |
-| Anything else | stop |
+| No status; any other reason (connect, DNS, TLS, socket close) | `transport` |
 
-A usage limit, 401, or credential 403 reaches the gateway only after rotation
-is exhausted: `refreshGatewayApiKeyAfterAuthError` in `dispatch.ts` records it
-(`markReached` or `invalidateMatching`), which v1's peek honors, so no mark is
-needed. A 403 concurrency cap is never rotated (`isRetryableUpstreamError` in
-`packages/ai/src/stream.ts` excludes it), so it is marked as `rate_limited`. A
-404 can be request-specific, so `not_served` sets no mark; later requests try
-the candidate again and pay one fast failure, since providers do not retry 4xx.
+The retryable gate stops `parseRateLimitReason`'s substring matches (such as
+`500` inside `205000`) from turning a deterministic error into a mark.
 
-`retryAfterMs` is `getRetryAfterMsFromHeaders(getHeadersFromError(error))`,
-else `extractProviderRetryHint(provider, text)`
-(`packages/ai/src/utils/retry-after.ts`).
+A usage limit, 401, or credential 403 arrives only after rotation is exhausted:
+`refreshGatewayApiKeyAfterAuthError` in `dispatch.ts` records it, and v1's peek
+honors that. A 403 concurrency cap is never rotated (`isRetryableUpstreamError`
+in `packages/ai/src/stream.ts`), so it is marked as `rate_limited`. A 404 can
+be request-specific, so `not_served` sets no mark.
+
+`retryAfterMs` comes from headers (`getRetryAfterMsFromHeaders`) only for a
+thrown error. An error `AssistantMessage` carries no headers, so there it comes
+only from text (`extractProviderRetryHint`, `packages/ai/src/utils/retry-after.ts`).
 
 ### The provider-down mark
 
-`transport`, `server_error`, and `rate_limited` set a mark;
-`credential_exhausted` and `not_served` do not. `transport` keys on provider
-and `baseUrl`, since a host that refuses connections is down for every model.
-`server_error` and `rate_limited` also key on model id, since overload errors
-are often per model.
+Only `transport`, `server_error`, and `rate_limited` set a mark. `transport`
+keys on provider and `baseUrl`, since a host that refuses connections is down
+for every model. `server_error` and `rate_limited` also key on model id.
 
 TTL starts at `calculateRateLimitBackoffMs("SERVER_ERROR")` (20 s), or
 `calculateRateLimitBackoffMs("RATE_LIMIT_EXCEEDED")` (30 s) for `rate_limited`
@@ -135,59 +149,54 @@ TTL starts at `calculateRateLimitBackoffMs("SERVER_ERROR")` (20 s), or
 20, 40, 80, 160, then a 300 s cap. It is never shorter than `retryAfterMs`
 (also capped at 300 s). Strikes reset when the last mark expired over 300 s ago.
 
-Marks are per tenant only (OQ-4): a mark set by one tenant's request never
-affects another tenant.
-
-Marks live in memory in the compass boot entrypoint: one map per gateway
-process. A self-hosted stack runs one process; with several replicas, each
-learns an outage on its own. Both shapes run the same code, per
+Marks are per tenant only (OQ-4), in memory in the compass boot entrypoint, one
+map per gateway process. With several replicas, each learns an outage on its
+own. Both deployment shapes run the same code, per
 `docs/concepts/self-host-and-managed.md` and
 `docs/designs/meta/oss-core-managed-boundary/design.md`. Until a mark exists,
 each request that reaches the down candidate stalls for up to its attempt
-budget. That repeats per tenant, per replica, per TTL.
+budget, per tenant, per replica, per TTL.
 
 v1's `StableNameResolver` walks the chain in order, skips candidates in `tried`,
 and defers marked ones. A marked candidate wins only when no unmarked one has a
-usable credential, so marks never remove the last usable candidate and a
-single-candidate chain ignores its mark.
+usable credential, so a single-candidate chain ignores its mark.
 
 ### Bounds
 
 - **Attempts.** One per distinct candidate. The first comes from
   `bootOpts.resolveModel` as today; each follower from the side-effect-free
   `candidateFailover.next`. `undefined` from `next` means no follower, never a
-  404. Compass returns `undefined` for a direct `provider/id` selector, so
-  those get one attempt.
-- **Attempt budget (OQ-2).** Only when a follower exists; the last attempt runs
-  as today. The budget is a hard deadline through the first meaningful event:
-  half the time left before `deadlineMs` (default 120 000 ms). It covers the
-  provider's in-flight retries. When it expires the loop aborts the attempt,
-  even after a 2xx, and classifies it `transport`. The attempt also gets
-  `maxRetryDelayMs: 10_000`. Anthropic then fails fast on a longer retry-after
-  hint (`maxRetryDelayMs` in `packages/ai/src/types.ts`); other providers only
-  cap their sleep or ignore it, as the OpenAI-family transport does. The
-  deadline covers all of them.
+  404. Compass returns `undefined` for a direct `provider/id` selector.
+- **Attempt budget (OQ-2).** Only when a follower exists. A hard deadline
+  through the first meaningful event: half the time left before `deadlineMs`
+  (default 120 000 ms), covering the provider's in-flight retries. When it
+  expires the loop aborts the attempt, even after a 2xx. The attempt also gets
+  `maxRetryDelayMs: 10_000`; provider behavior varies, and the hard deadline
+  bounds every route.
 - **Deadline.** No attempt starts after `deadlineMs`.
 - **Abort.** Each attempt has its own `AbortController`, linked to the request
-  controller from `mirrorRequestAbort`. A budget abort stops only that attempt,
-  so its follower still runs. A request abort stops every attempt. Cancelling
-  the hold body aborts the request, as `encodeStream`'s `onCancel` does today.
-- **Leases.** Keyed by provider and model (`sessionKeys` in
-  `session-state.ts`), so each attempt acquires its own. A failed attempt's
-  lease is released before the next starts.
+  controller from `mirrorRequestAbort`. Cancelling the hold body aborts the
+  request, as `encodeStream`'s `onCancel` does today. After a failure the loop
+  checks the request signal first: if aborted, it stops (499 as today). Next,
+  if the budget fired, the failure is a timeout: `server_error` if the upstream
+  responded (an `onResponse` chained on the attempt's options, or any event
+  besides `start`), else `transport`. Only other failures reach the classifier.
+- **Leases.** Each attempt acquires its own lease and releases it when that
+  attempt's stream or result settles, as today's `events.result().finally`
+  does. The next candidate does not wait for it.
 - **Usage (OQ-5).** Every attempt goes through `recordGatewayUsage`, which
   skips zero usage. An attempt that did not answer uses request id
   `${requestId}:a${n}` and outcome `error`, because `onUsage` consumers dedupe
-  on request id. A failed attempt can carry input usage: Anthropic sets
-  `output.usage.input` at `message_start`.
+  on request id.
 
 ### Observability
 
-- **Log.** `logger.warn("auth-gateway candidate failover", …)` per classified
-  failure, with the `auth-gateway request` log's keys (`requestId`, `format`,
-  `model`, `resolvedProvider`, `resolvedModel`, `peer`) plus `attempt`,
-  `failure`, `status`, `retryAfterMs`, `elapsedMs`, `outcome` (`retrying`,
-  `exhausted`, `deadline`, `budget`), and the next candidate.
+- **Log.** `logger.warn("auth-gateway candidate failover", …)` per failed or
+  skipped attempt, with the `auth-gateway request` log's keys (`requestId`,
+  `format`, `model`, `resolvedProvider`, `resolvedModel`, `peer`) plus
+  `attempt`, `failure`, `status`, `retryAfterMs`, `elapsedMs`, `outcome`
+  (`retrying`, `skipped`, `exhausted`, `deadline`, `budget`), and the next
+  candidate.
 - **Counter.** Compass's `onFailure` increments the OpenTelemetry counter
   `compass.gateway.candidate_failures` (attributes `provider`, `failure`; no
   tenant). `packages/ai` has no OpenTelemetry dependency.
@@ -204,8 +213,7 @@ Non-chat routes behave as today.
   candidates. Rejected: the route resolves a credential for the synthetic model
   first, so `resolveGatewayApiKey` returns 401; the session-state store is
   private to `startAuthGateway`; and headers would name the synthetic model.
-- **Provider retries only.** They retry the same upstream and cannot change
-  candidate.
+- **Provider retries only.** They retry the same upstream.
 - **Commit on `start`.** Anthropic emits `start` before its first upstream
   call, so an outage would commit.
 - **Marks in the Server store.** Shared across replicas, but adds RPC work to
@@ -214,8 +222,7 @@ Non-chat routes behave as today.
 ## Plan
 
 Order: F1 → F2a → F2b → F2c land on fork `main` against today's resolver. C1
-waits for v1 P1, gateway T3, and the compass boot entrypoint. Lane: compass-obs
-for every task.
+waits for its prerequisites. Lane: compass-obs for every task.
 
 ### F1 — Fork: `classifyUpstreamFailure`
 
@@ -232,7 +239,8 @@ export type UpstreamFailureKind =
   | "server_error"
   | "rate_limited"
   | "credential_exhausted"
-  | "not_served";
+  | "not_served"
+  | "setup_error";
 
 export interface UpstreamFailure {
   readonly kind: UpstreamFailureKind;
@@ -241,7 +249,7 @@ export interface UpstreamFailure {
   readonly message: string;
 }
 
-/** `undefined` means stop. `message` is `errorClassificationMessage ?? errorMessage`. */
+/** Non-abort failures only. `undefined` means stop. `message` is `errorClassificationMessage ?? errorMessage`. */
 export function classifyUpstreamFailure(
   model: Model<Api>,
   error: unknown,
@@ -255,30 +263,44 @@ Test cycle (`packages/ai/test/auth-gateway-classify-error.test.ts`):
 - `usage_limit_reached`, an opaque 429, 401, and a credential 403 give
   `credential_exhausted`.
 - A 403 concurrency cap, and 429 `Too many requests`, give `rate_limited`.
-- 404 gives `not_served`; 503 gives `server_error`.
-- Status-less Anthropic stream errors, as `createAnthropicSseStreamError` in
+- 404 gives `not_served`; 503 gives `server_error`; 400 stops.
+- Status-less, as `createAnthropicSseStreamError` in
   `packages/ai/src/providers/anthropic.ts` builds them:
   `Anthropic stream error (rate_limit_error): Rate limit exceeded` gives
   `rate_limited`; `Anthropic stream error (overloaded_error): Overloaded` gives
-  `server_error`. Neither carries a status.
+  `server_error`.
 - Status-less `fetch failed` gives `transport`.
+- Status-less `invalid_request_error: prompt is too long: 205000 tokens` stops.
 - A status-less error whose `errorMessage` reads as a socket failure but whose
   `errorClassificationMessage` reads `Too many requests` gives `rate_limited`.
-- 400 and `AbortError` stop.
 
 ### F2a — Fork: extract the per-attempt body
 
-Move each handler's per-attempt setup (credential, lease, stream options) into
-one function per route. It takes the attempt's signal and returns a
-`GatewayErrorClassification` on failure, which the handler formats as today.
-No behavior change: the existing `auth-gateway-*.test.ts` suite stays green
-unchanged.
+Move each handler's per-candidate work (prechecks, credential, lease, stream
+options) into one function per route. No behavior change: the existing
+`auth-gateway-*.test.ts` suite stays green unchanged. `resolveGatewayApiKey`
+tags its error result; existing callers read only `status`, `type`, and
+`message`.
 
-Interfaces (module-private in `server.ts`):
+Interfaces:
 
 ```ts
+// dispatch.ts
+export interface GatewaySetupFailure extends GatewayErrorClassification {
+  readonly setupReason: "no_credential" | "store_error";
+}
+export async function resolveGatewayApiKey(
+  storage: AuthStorage,
+  model: Model<Api>,
+  sessionId: string,
+  signal: AbortSignal,
+  peer: string,
+): Promise<ResolvedApiKey | GatewaySetupFailure>;
+
+// server.ts, module-private
 type AttemptStart =
-  | { readonly ok: false; readonly failure: GatewayErrorClassification }
+  | { readonly ok: false; readonly reason: "incompatible"; readonly failure: GatewayErrorClassification }
+  | { readonly ok: false; readonly reason: "no_credential" | "store_error"; readonly failure: GatewayErrorClassification }
   | {
       readonly ok: true;
       readonly streamOpts: SimpleStreamOptions;
@@ -311,22 +333,39 @@ function preparePiNativeAttempt(
 
 ### F2b — Fork: hold primitives
 
-Add `packages/ai/src/auth-gateway/failover.ts` and export
-`isMeaningfulCompletionEvent`.
+Add `packages/ai/src/auth-gateway/failover.ts`. Export
+`isMeaningfulCompletionEvent` and `resolveWithThinkingLoopRetries` unchanged.
 
 Interfaces:
 
 ```ts
+export interface AttemptBudget {
+  /** Feed every event: any but `start` marks a response; a meaningful one lifts the budget for good. */
+  observe(event: AssistantMessageEvent): void;
+  /** Chained into the attempt's `onResponse`. */
+  responded(): void;
+  /** After a failure: `undefined` if the timer did not fire, else the timeout's kind. */
+  timeoutKind(): "server_error" | "transport" | undefined;
+  dispose(): void;
+}
+
+/** Aborts `attempt` at `endsAt` unless lifted first. `undefined` never fires. */
+export function armBudget(attempt: AbortController, endsAt: number | undefined): AttemptBudget;
+
 export type HeldAttempt =
   | { readonly kind: "committed"; readonly relay: AssistantMessageEventStream }
-  | { readonly kind: "failed"; readonly relay: AssistantMessageEventStream; readonly error: AssistantMessage }
-  | { readonly kind: "budget"; readonly relay: AssistantMessageEventStream };
+  | { readonly kind: "failed"; readonly relay: AssistantMessageEventStream; readonly error: AssistantMessage };
 
-/** Buffers until a meaningful event or `done` (committed), an `error` (failed), or `budgetEndsAt` (budget). */
-export function holdUntilCommit(
-  events: AssistantMessageEventStream,
-  budgetEndsAt: number | undefined,
-): Promise<HeldAttempt>;
+/** Streaming: buffers until a meaningful event or `done` (committed) or an `error` (failed). */
+export function holdUntilCommit(events: AssistantMessageEventStream, budget: AttemptBudget): Promise<HeldAttempt>;
+
+/** Non-streaming: `completeSimple`'s drain, feeding `budget` from every dispatch. */
+export function completeAttempt(
+  model: Model<Api>,
+  context: Context,
+  options: SimpleStreamOptions,
+  budget: AttemptBudget,
+): Promise<AssistantMessage>;
 
 /** Ends `relay` with an `error` event carrying `failure`; used once headers are sent. */
 export function endWithFailure(
@@ -342,11 +381,12 @@ export function sseHoldBody(
 ): ReadableStream<Uint8Array>;
 ```
 
-Test cycle, on a hand-driven `AssistantMessageEventStream`: `start` then a
+Test cycle, on hand-driven `AssistantMessageEventStream`s: `start` then a
 `text_delta` commits and replays both in order; a committed relay forwards a
-later `error` unchanged; `start`, an empty `text_start`, then `error` fails;
-silence past the budget gives `budget`. `sseHoldBody` writes comments before
-the body bytes, and `cancel` calls `onCancel`.
+later `error` unchanged; `start`, an empty `text_start`, then `error` fails.
+The budget fires with `timeoutKind()` `transport` after silence, `server_error`
+after `responded()`, and never after a meaningful event. `sseHoldBody` writes
+comments before the body bytes, and `cancel` calls `onCancel`.
 
 ### F2c — Fork: the loop and boot option
 
@@ -360,14 +400,14 @@ Interfaces:
 export interface FailoverContext {
   /** The inbound request, as an opaque token; the fork reads no identity from it. */
   readonly req: Request;
-  /** `candidateKey` of every candidate tried so far, including the current one. */
+  /** `candidateKey` of every candidate tried or skipped so far, including the current one. */
   readonly tried: ReadonlySet<string>;
 }
 
 export interface CandidateFailoverOptions {
   /** The candidate after `ctx.tried`, without side effects; `undefined` if none. */
   next(modelId: string, ctx: FailoverContext): Promise<Model<Api> | undefined>;
-  /** Called once per classified failure. Must not throw. */
+  /** Called once per failed attempt, never for a skipped one. Must not throw. */
   onFailure(model: Model<Api>, failure: UpstreamFailure, ctx: FailoverContext): void;
   /** No attempt starts after this many ms from request start. Default 120_000. */
   deadlineMs?: number;
@@ -384,29 +424,35 @@ today: with A down, the client gets a 200 carrying an error. Green:
 
 - A fails (`fetch failed`, then 503): all four routes, streaming and not,
   answer from B; `onFailure` fires once, with A.
-- A's `fetch` never resolves, or A answers 200 and then sends nothing: A is
-  aborted at its budget, the request signal stays live, and B answers.
-- A emits a `text_delta`, then errors: B is never tried, and the client gets
-  A's text and A's error.
-- A returns a usage limit with one credential: B answers; the failure is
-  `credential_exhausted`.
+- A's `fetch` never resolves: A's budget fires, the failure is `transport`,
+  the request signal stays live, and B answers.
+- A answers 200 and then sends nothing: the failure is `server_error`, and B
+  answers.
+- The client aborts while A is held: no follower starts, and the route
+  returns 499.
+- Non-streaming, A sends its first delta before the budget and finishes after
+  it: A answers, with no failover.
+- A emits a `text_delta`, then errors: B is never tried; the client gets A's
+  text and A's error.
+- A returns a usage limit with one credential: B answers (`credential_exhausted`).
+- `storage.keys.getWithCredential` throws for A: B answers, and the failure is
+  `setup_error`.
 - Streaming, B has no credential after headers are sent: the client gets an
   SSE error in the open 200 body.
-- A answers 400: no failover.
-- A direct selector fails: one attempt, the original error.
-- Both down: the last error as today.
-- The client disconnects during the hold: no further attempt starts.
+- `/v1/responses` with an OpenAI file id, where the follower is not a
+  Responses model: it is skipped without `onFailure`, and the third candidate
+  answers.
+- A answers 400: no failover. A direct selector fails: one attempt.
 - `onUsage` fires once per nonzero attempt, with distinct request ids.
-- Every attempt's lease is released: as in
-  `auth-gateway-provider-session-state.test.ts`, a probe put in each attempt's
+- Every attempt's lease is released: a probe in each attempt's
   `providerSessionState` is closed once the store fills to
   `AUTH_GATEWAY_MAX_SESSION_STATES`.
 
 ### C1 — Compass: marks, resolver, counter
 
-Prerequisites: v1 P1, gateway T3, and the compass boot entrypoint. The
-gateway-image record names `packages/coding-agent/src/cli/gateway-boot.ts`; the
-fork today wires `startAuthGateway` in `cli/auth-gateway-cli.ts`.
+Prerequisites: v1 P1, gateway T3, RIG-5152, and the compass boot entrypoint.
+The gateway-image record names `packages/coding-agent/src/cli/gateway-boot.ts`;
+the fork today wires `startAuthGateway` in `cli/auth-gateway-cli.ts`.
 
 Bump `tools/gateway-image/fork-pin.json` to F2c's commit. Add one
 `ProviderDownMarks`. Make `StableNameResolver` skip `tried` and defer marked
@@ -419,7 +465,7 @@ Interfaces:
 ```ts
 export class ProviderDownMarks {
   constructor(now?: () => number);
-  /** Sets or extends a tenant's mark; ignores `credential_exhausted` and `not_served`. Returns the TTL in ms. */
+  /** Sets or extends a tenant's mark for `transport`, `server_error`, or `rate_limited`; ignores other kinds. Returns the TTL in ms, or 0. */
   mark(tenant: UserId, model: Model<Api>, failure: UpstreamFailure): number;
   /** True if this tenant's mark covers (provider, baseUrl) or (provider, baseUrl, id). */
   isDown(tenant: UserId, model: Model<Api>): boolean;
@@ -431,18 +477,21 @@ resolve(callerUser: UserId, modelId: string, tried?: ReadonlySet<string>): Promi
 
 Test cycle: with an injected clock, TTLs run 20, 40, 80, 160, 300;
 `retryAfterMs` raises the TTL; strikes reset after 300 s. A `transport` mark
-covers every model on its `baseUrl`; a `server_error` mark covers only its
-model. A mark set for one tenant never affects another. Resolver: a marked
-first candidate is deferred; when all are marked the first wins; a single
-candidate ignores its mark; `tried` is skipped; a direct selector gets no
-follower. Smoke: the gateway image smoke passes at the new pin.
+covers every model on its `baseUrl`. A `server_error` mark, including a budget
+timeout after a response, covers only its model, so a sibling model on the same
+`baseUrl` is not deferred. `credential_exhausted`, `not_served`, and
+`setup_error` set no mark. A mark for one tenant never affects another.
+Resolver: a marked first candidate is deferred; when all are marked the first
+wins; a single candidate ignores its mark; `tried` is skipped; a direct
+selector gets no follower. Smoke: the gateway image smoke passes at the new pin.
 
 ## Tasks
 
 - [ ] F1 — `classifyUpstreamFailure` and table tests (compass-obs).
-- [ ] F2a — Per-attempt extraction, no behavior change (compass-obs).
-- [ ] F2b — `holdUntilCommit`, `endWithFailure`, `sseHoldBody`, exported
-      commit predicate (compass-obs).
+- [ ] F2a — Per-candidate extraction and tagged setup failures, no behavior
+      change (compass-obs).
+- [ ] F2b — `armBudget`, `holdUntilCommit`, `completeAttempt`,
+      `endWithFailure`, `sseHoldBody` (compass-obs).
 - [ ] F2c — Loop, `candidateFailover`, log, `auth-gateway-failover.test.ts`
       (compass-obs).
 - [ ] C1 — Pin bump, `ProviderDownMarks`, resolver change, counter, wiring
