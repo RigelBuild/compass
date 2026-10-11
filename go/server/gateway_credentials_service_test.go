@@ -51,11 +51,11 @@ type recordingGatewayStore struct {
 	calls          int
 }
 
-func (s *recordingGatewayStore) UpdateOAuth(ctx context.Context, agent store.AccountID, id string, token gatewaycred.OAuthToken, expected int64) (int64, error) {
+func (s *recordingGatewayStore) UpdateOAuth(ctx context.Context, agent store.AccountID, id string, token gatewaycred.OAuthToken, expected int64, clearFields []string) (int64, error) {
 	tenant, _ := store.TenantFromContext(ctx)
 	s.updateTenants = append(s.updateTenants, tenant)
 	s.calls++
-	return s.CredentialStore.UpdateOAuth(ctx, agent, id, token, expected)
+	return s.CredentialStore.UpdateOAuth(ctx, agent, id, token, expected, clearFields)
 }
 
 func (s *recordingGatewayStore) Disable(ctx context.Context, agent store.AccountID, id, cause string, expected int64) error {
@@ -174,6 +174,14 @@ func TestGatewayCredentialsServiceInvalidArguments(t *testing.T) {
 		}},
 		{name: "update missing access", call: func(s *gatewayCredentialsService, ctx context.Context) error {
 			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Refresh: "refresh"}}))
+			return err
+		}},
+		{name: "update unknown clear field", call: func(s *gatewayCredentialsService, ctx context.Context) error {
+			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"org_id", "nope"}}))
+			return err
+		}},
+		{name: "update clears grant field", call: func(s *gatewayCredentialsService, ctx context.Context) error {
+			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"refresh"}}))
 			return err
 		}},
 		{name: "disable empty agent", call: func(s *gatewayCredentialsService, ctx context.Context) error {
@@ -398,6 +406,28 @@ func TestGatewayCredentialsServiceWriteTenantAndAuditLog(t *testing.T) {
 	}
 	if got := logs.String(); strings.Count(got, "gateway credential door: cross-tenant agent lookup") != 1 || !strings.Contains(got, "service=llm-gateway") || !strings.Contains(got, "agent="+string(gatewayTestAgent)) || !strings.Contains(got, "tenant=tenant-resolved") || !strings.Contains(got, "procedure=UpdateCredentialOAuth") {
 		t.Fatalf("audit log missing required lookup fields or count: %s", got)
+	}
+}
+
+func TestGatewayCredentialsServiceUpdateClearsNamedFields(t *testing.T) {
+	fixture := newGatewayServiceFixture(t)
+	ctx := store.WithTenant(gatewayServiceContext(t), fixture.scope.tenant)
+	credential, err := fixture.memory.Create(ctx, gatewaycred.NewOAuthCredential(gatewaycred.Credential{Provider: "openai", Scope: gatewaycred.ScopeOwn, OwnerUserID: gatewayTestOwner}, gatewaycred.OAuthToken{Access: "old", OrgID: "org", Region: "region"}))
+	if err != nil {
+		t.Fatalf("create OAuth credential: %v", err)
+	}
+	if _, err := fixture.svc.UpdateCredentialOAuth(gatewayServiceContext(t), connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{
+		Id: credential.ID, AgentAccountId: string(gatewayTestAgent), ExpectedVersion: 1,
+		Token: &compassv1internal.GatewayOAuthToken{Access: "new"}, ClearFields: []string{"org_id"},
+	})); err != nil {
+		t.Fatalf("UpdateCredentialOAuth: %v", err)
+	}
+	got, err := fixture.memory.List(ctx, gatewayTestOwner, "openai")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if tok, ok := got[0].OAuth(); !ok || tok.OrgID != "" || tok.Region != "region" {
+		t.Fatalf("token after clear = %#v, want org_id cleared and region kept", tok)
 	}
 }
 

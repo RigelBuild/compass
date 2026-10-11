@@ -457,8 +457,12 @@ type UpdateCredentialOAuthRequest struct {
 	// The agent the gateway is serving. The Server checks id against this agent's pool
 	// before the CAS; a miss is the same NOT_FOUND as a missing row, so ids cannot be probed.
 	AgentAccountId string `protobuf:"bytes,4,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Optional token fields to clear, since an empty field keeps the stored value.
+	// Names are GatewayOAuthToken metadata fields (not access, refresh or expires_unix_ms);
+	// any other name is INVALID_ARGUMENT.
+	ClearFields   []string `protobuf:"bytes,5,rep,name=clear_fields,json=clearFields,proto3" json:"clear_fields,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateCredentialOAuthRequest) Reset() {
@@ -517,6 +521,13 @@ func (x *UpdateCredentialOAuthRequest) GetAgentAccountId() string {
 		return x.AgentAccountId
 	}
 	return ""
+}
+
+func (x *UpdateCredentialOAuthRequest) GetClearFields() []string {
+	if x != nil {
+		return x.ClearFields
+	}
+	return nil
 }
 
 type UpdateCredentialOAuthResponse struct {
@@ -709,12 +720,13 @@ const file_compass_v1_gateway_credentials_proto_rawDesc = "" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\"]\n" +
 	"\x1aListCredentialPoolResponse\x12?\n" +
-	"\vcredentials\x18\x01 \x03(\v2\x1d.compass.v1.GatewayCredentialR\vcredentials\"\xb8\x01\n" +
+	"\vcredentials\x18\x01 \x03(\v2\x1d.compass.v1.GatewayCredentialR\vcredentials\"\xdb\x01\n" +
 	"\x1cUpdateCredentialOAuthRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x123\n" +
 	"\x05token\x18\x02 \x01(\v2\x1d.compass.v1.GatewayOAuthTokenR\x05token\x12)\n" +
 	"\x10expected_version\x18\x03 \x01(\x03R\x0fexpectedVersion\x12(\n" +
-	"\x10agent_account_id\x18\x04 \x01(\tR\x0eagentAccountId\"9\n" +
+	"\x10agent_account_id\x18\x04 \x01(\tR\x0eagentAccountId\x12!\n" +
+	"\fclear_fields\x18\x05 \x03(\tR\vclearFields\"9\n" +
 	"\x1dUpdateCredentialOAuthResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\"\x95\x01\n" +
 	"\x18DisableCredentialRequest\x12\x0e\n" +

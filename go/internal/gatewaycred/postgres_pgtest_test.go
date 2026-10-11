@@ -160,7 +160,7 @@ func TestGatewayCredentialsUpdateVersionPredicate(t *testing.T) {
 	credential := mustCreate(t, ctx, creds, gatewaycred.NewOAuthCredential(gatewaycred.Credential{
 		Provider: "anthropic", Scope: gatewaycred.ScopeOwn, OwnerUserID: owner,
 	}, gatewaycred.OAuthToken{Access: "initial-access"}))
-	if _, err := creds.UpdateOAuth(ctx, agent, credential.ID, gatewaycred.OAuthToken{Access: "current-access"}, credential.Version); err != nil {
+	if _, err := creds.UpdateOAuth(ctx, agent, credential.ID, gatewaycred.OAuthToken{Access: "current-access"}, credential.Version, nil); err != nil {
 		t.Fatalf("UpdateOAuth: %v", err)
 	}
 	if err := st.WithTx(ctx, func(tx pgx.Tx) error {
@@ -256,7 +256,7 @@ func TestGatewayCredentialsPoolSkipsUnreadableRow(t *testing.T) {
 			t.Fatalf("log carried more than the failure class: found %q", leak)
 		}
 	}
-	if _, err := creds.UpdateOAuth(ctx, agent, bad.ID, gatewaycred.OAuthToken{Access: "new"}, bad.Version); !errors.Is(err, envelope.ErrDecrypt) {
+	if _, err := creds.UpdateOAuth(ctx, agent, bad.ID, gatewaycred.OAuthToken{Access: "new"}, bad.Version, nil); !errors.Is(err, envelope.ErrDecrypt) {
 		t.Fatalf("UpdateOAuth on unreadable row = %v, want ErrDecrypt", err)
 	}
 }
@@ -310,7 +310,7 @@ func TestGatewayCredentialsRefreshWritesFreshNonce(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT value_nonce FROM gateway_credentials WHERE id = $1", credential.ID).Scan(&before); err != nil {
 		t.Fatalf("read initial nonce: %v", err)
 	}
-	if _, err := creds.UpdateOAuth(ctx, agent, credential.ID, gatewaycred.OAuthToken{Access: "new-access"}, credential.Version); err != nil {
+	if _, err := creds.UpdateOAuth(ctx, agent, credential.ID, gatewaycred.OAuthToken{Access: "new-access"}, credential.Version, nil); err != nil {
 		t.Fatalf("UpdateOAuth: %v", err)
 	}
 	var after []byte
@@ -355,7 +355,7 @@ func TestGatewayCredentialsRedactSecrets(t *testing.T) {
 		}
 		assertRedacted(t, buf.String())
 	}
-	if _, err := creds.UpdateOAuth(ctx, store.AccountID("unknown"), credential.ID, gatewaycred.OAuthToken{Access: "next"}, credential.Version); !errors.Is(err, gatewaycred.ErrNotFound) {
+	if _, err := creds.UpdateOAuth(ctx, store.AccountID("unknown"), credential.ID, gatewaycred.OAuthToken{Access: "next"}, credential.Version, nil); !errors.Is(err, gatewaycred.ErrNotFound) {
 		t.Fatalf("not-found guard: %v", err)
 	}
 	assertRawCredentialRowHasNoSecrets(t, ctx, pool, credential.ID, "redact-access-secret", "redact-refresh-secret")

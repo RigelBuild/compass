@@ -96,7 +96,7 @@ func (p *Postgres) List(ctx context.Context, owner store.AccountID, provider str
 }
 
 // UpdateOAuth replaces an OAuth grant in the agent's active pool.
-func (p *Postgres) UpdateOAuth(ctx context.Context, agent store.AccountID, id string, tok OAuthToken, expected int64) (int64, error) {
+func (p *Postgres) UpdateOAuth(ctx context.Context, agent store.AccountID, id string, tok OAuthToken, expected int64, clearFields []string) (int64, error) {
 	if id == "" || agent == "" || expected == 0 || tok.Access == "" {
 		return 0, fmt.Errorf("%w: id, agent, expected version, and access token are required", ErrInvalidArgument)
 	}
@@ -146,7 +146,7 @@ func (p *Postgres) UpdateOAuth(ctx context.Context, agent store.AccountID, id st
 		if !ok {
 			return ErrFailedPrecondition
 		}
-		updatedCredential := NewOAuthCredential(old, mergeOAuth(oldToken, tok))
+		updatedCredential := NewOAuthCredential(old, mergeOAuth(oldToken, tok, clearFields))
 		nonce, ciphertext, err := p.seal(ctx, updatedCredential)
 		if err != nil {
 			return fmt.Errorf("gatewaycred: seal updated credential: %w", err)

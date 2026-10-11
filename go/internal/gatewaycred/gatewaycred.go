@@ -127,8 +127,8 @@ type CredentialStore interface {
 	List(ctx context.Context, ownerUserID store.AccountID, provider string) ([]Credential, error)
 	// UpdateOAuth replaces the grant of an OAuth credential in agentAccountID's
 	// pool when its version is expectedVersion; an empty field keeps the stored
-	// value. It returns the new version.
-	UpdateOAuth(ctx context.Context, agentAccountID store.AccountID, id string, tok OAuthToken, expectedVersion int64) (int64, error)
+	// value unless clear names it. It returns the new version.
+	UpdateOAuth(ctx context.Context, agentAccountID store.AccountID, id string, tok OAuthToken, expectedVersion int64, clearFields []string) (int64, error)
 	// Disable removes a credential in agentAccountID's pool from every pool when
 	// its version is expectedVersion, recording cause for its owner.
 	Disable(ctx context.Context, agentAccountID store.AccountID, id, cause string, expectedVersion int64) error
@@ -139,4 +139,36 @@ type PoolResolver interface {
 	// Pool returns, per provider, the agent owner's own enabled credentials, or
 	// the shared ones when the owner has none. An unknown agent is ErrNotFound.
 	Pool(ctx context.Context, agentAccountID store.AccountID) ([]Credential, error)
+}
+
+// oauthClearable maps each clearable token metadata field to its zeroing. The
+// grant itself (access, refresh, expiry) is never cleared by a write.
+var oauthClearable = map[string]func(*OAuthToken){
+	"enterprise_url":         func(t *OAuthToken) { t.EnterpriseURL = "" },
+	"project_id":             func(t *OAuthToken) { t.ProjectID = "" },
+	"email":                  func(t *OAuthToken) { t.Email = "" },
+	"account_id":             func(t *OAuthToken) { t.AccountID = "" },
+	"api_endpoint":           func(t *OAuthToken) { t.APIEndpoint = "" },
+	"org_id":                 func(t *OAuthToken) { t.OrgID = "" },
+	"org_name":               func(t *OAuthToken) { t.OrgName = "" },
+	"authorized_at_unix_ms":  func(t *OAuthToken) { t.AuthorizedAtUnixMs = 0 },
+	"region":                 func(t *OAuthToken) { t.Region = "" },
+	"inference_region":       func(t *OAuthToken) { t.InferenceRegion = "" },
+	"active_organization_id": func(t *OAuthToken) { t.ActiveOrganizationID = "" },
+}
+
+// ValidOAuthClearFields reports whether every name is a clearable token field.
+func ValidOAuthClearFields(names []string) bool {
+	for _, name := range names {
+		if _, ok := oauthClearable[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func clearOAuthField(t *OAuthToken, name string) {
+	if zero, ok := oauthClearable[name]; ok {
+		zero(t)
+	}
 }

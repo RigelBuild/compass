@@ -38,6 +38,7 @@ func Run(t *testing.T, h Harness) {
 	t.Run("invalid_arguments_are_rejected", invalidArguments(h))
 	t.Run("api_key_update_is_precondition_failure", apiKeyUpdate(h))
 	t.Run("oauth_update_keeps_unset_fields", oauthMerge(h))
+	t.Run("oauth_update_clears_named_fields", oauthClear(h))
 	t.Run("disable_removes_credential", disable(h))
 	t.Run("tenants_are_isolated", tenantsAreIsolated(h))
 }
@@ -107,8 +108,8 @@ func crossAgentWritesAreNotFound(h Harness) func(*testing.T) {
 		cred := create(t, ctx, s, own("anthropic", owner, gatewaycred.OAuthToken{Access: "secret"}))
 		randomID := "no-such-credential"
 
-		_, foreignUpdate := s.UpdateOAuth(ctx, secondAgent, cred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version)
-		_, randomUpdate := s.UpdateOAuth(ctx, secondAgent, randomID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version)
+		_, foreignUpdate := s.UpdateOAuth(ctx, secondAgent, cred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version, nil)
+		_, randomUpdate := s.UpdateOAuth(ctx, secondAgent, randomID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version, nil)
 		if !errors.Is(foreignUpdate, gatewaycred.ErrNotFound) || foreignUpdate.Error() != randomUpdate.Error() {
 			t.Fatalf("foreign UpdateOAuth error = %v, random id = %v", foreignUpdate, randomUpdate)
 		}
@@ -117,7 +118,7 @@ func crossAgentWritesAreNotFound(h Harness) func(*testing.T) {
 		if !errors.Is(foreignDisable, gatewaycred.ErrNotFound) || foreignDisable.Error() != randomDisable.Error() {
 			t.Fatalf("foreign Disable error = %v, random id = %v", foreignDisable, randomDisable)
 		}
-		if _, err := s.UpdateOAuth(ctx, firstAgent, cred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version); err != nil {
+		if _, err := s.UpdateOAuth(ctx, firstAgent, cred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version, nil); err != nil {
 			t.Fatalf("owner update after rejected probes: %v", err)
 		}
 	}
@@ -143,13 +144,13 @@ func shadowedSharedWriteIsNotFound(h Harness) func(*testing.T) {
 		if sharedID == "" {
 			t.Fatal("List did not expose shared credential")
 		}
-		if _, err := s.UpdateOAuth(ctx, agent, sharedID, gatewaycred.OAuthToken{Access: replacementAccessToken}, 1); !errors.Is(err, gatewaycred.ErrNotFound) {
+		if _, err := s.UpdateOAuth(ctx, agent, sharedID, gatewaycred.OAuthToken{Access: replacementAccessToken}, 1, nil); !errors.Is(err, gatewaycred.ErrNotFound) {
 			t.Fatalf("UpdateOAuth shadowed shared: %v", err)
 		}
 		if err := s.Disable(ctx, agent, sharedID, "x", 1); !errors.Is(err, gatewaycred.ErrNotFound) {
 			t.Fatalf("Disable shadowed shared: %v", err)
 		}
-		if _, err := s.UpdateOAuth(ctx, agent, ownCred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, ownCred.Version); err != nil {
+		if _, err := s.UpdateOAuth(ctx, agent, ownCred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, ownCred.Version, nil); err != nil {
 			t.Fatalf("update own credential: %v", err)
 		}
 	}
@@ -165,13 +166,13 @@ func unknownAgentIsNotFound(h Harness) func(*testing.T) {
 		if _, err := pool.Pool(ctx, unknown); !errors.Is(err, gatewaycred.ErrNotFound) {
 			t.Fatalf("Pool unknown agent: %v", err)
 		}
-		if _, err := s.UpdateOAuth(ctx, unknown, credential.ID, gatewaycred.OAuthToken{Access: "x"}, credential.Version); !errors.Is(err, gatewaycred.ErrNotFound) {
+		if _, err := s.UpdateOAuth(ctx, unknown, credential.ID, gatewaycred.OAuthToken{Access: "x"}, credential.Version, nil); !errors.Is(err, gatewaycred.ErrNotFound) {
 			t.Fatalf("UpdateOAuth unknown agent: %v", err)
 		}
 		if err := s.Disable(ctx, unknown, credential.ID, "x", credential.Version); !errors.Is(err, gatewaycred.ErrNotFound) {
 			t.Fatalf("Disable unknown agent: %v", err)
 		}
-		if _, err := s.UpdateOAuth(ctx, agent, credential.ID, gatewaycred.OAuthToken{Access: "x"}, credential.Version); err != nil {
+		if _, err := s.UpdateOAuth(ctx, agent, credential.ID, gatewaycred.OAuthToken{Access: "x"}, credential.Version, nil); err != nil {
 			t.Fatalf("UpdateOAuth known agent: %v", err)
 		}
 	}
@@ -191,7 +192,7 @@ func casRace(h Harness) func(*testing.T) {
 			go func(access string) {
 				defer wg.Done()
 				<-start
-				_, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: access}, cred.Version)
+				_, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: access}, cred.Version, nil)
 				results <- err
 			}(access)
 		}
@@ -228,7 +229,7 @@ func staleVersion(h Harness) func(*testing.T) {
 		ctx := h.Ctx(t, 0)
 		agent, owner := h.Agent(t, ctx, "owner")
 		cred := create(t, ctx, s, own("anthropic", owner, gatewaycred.OAuthToken{Access: oldAccessToken}))
-		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: "new"}, cred.Version+1); !errors.Is(err, gatewaycred.ErrVersionConflict) {
+		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: "new"}, cred.Version+1, nil); !errors.Is(err, gatewaycred.ErrVersionConflict) {
 			t.Fatalf("stale UpdateOAuth: %v", err)
 		}
 	}
@@ -253,7 +254,7 @@ func invalidArguments(h Harness) func(*testing.T) {
 			{name: "empty access", agent: agent, id: cred.ID, version: 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				if _, err := s.UpdateOAuth(ctx, tc.agent, tc.id, tc.token, tc.version); !errors.Is(err, gatewaycred.ErrInvalidArgument) {
+				if _, err := s.UpdateOAuth(ctx, tc.agent, tc.id, tc.token, tc.version, nil); !errors.Is(err, gatewaycred.ErrInvalidArgument) {
 					t.Fatalf("UpdateOAuth: %v", err)
 				}
 			})
@@ -283,7 +284,7 @@ func apiKeyUpdate(h Harness) func(*testing.T) {
 		ctx := h.Ctx(t, 0)
 		agent, owner := h.Agent(t, ctx, "owner")
 		cred := create(t, ctx, s, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{Provider: "anthropic", Scope: gatewaycred.ScopeOwn, OwnerUserID: owner}, "secret"))
-		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version); !errors.Is(err, gatewaycred.ErrFailedPrecondition) {
+		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: replacementAccessToken}, cred.Version, nil); !errors.Is(err, gatewaycred.ErrFailedPrecondition) {
 			t.Fatalf("UpdateOAuth api key: %v", err)
 		}
 	}
@@ -300,7 +301,7 @@ func oauthMerge(h Harness) func(*testing.T) {
 			AccountID: "account", APIEndpoint: "https://api", OrgID: "org", OrgName: "organization",
 			AuthorizedAtUnixMs: 44, Region: "region", InferenceRegion: "inference", ActiveOrganizationID: "active-org",
 		}))
-		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: "new-access"}, cred.Version); err != nil {
+		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: "new-access"}, cred.Version, nil); err != nil {
 			t.Fatalf("UpdateOAuth: %v", err)
 		}
 		got, err := s.List(ctx, owner, "anthropic")
@@ -310,6 +311,31 @@ func oauthMerge(h Harness) func(*testing.T) {
 		tok, ok := got[0].OAuth()
 		if !ok || tok.Access != "new-access" || tok.Refresh != "old-refresh" || tok.ExpiresUnixMs != 55 || tok.EnterpriseURL != "https://enterprise" || tok.ProjectID != "project" || tok.Email != "user@example.test" || tok.AccountID != "account" || tok.APIEndpoint != "https://api" || tok.OrgID != "org" || tok.OrgName != "organization" || tok.AuthorizedAtUnixMs != 44 || tok.Region != "region" || tok.InferenceRegion != "inference" || tok.ActiveOrganizationID != "active-org" {
 			t.Fatalf("merged OAuth token = %#v", tok)
+		}
+	}
+}
+
+func oauthClear(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, _ := h.New(t)
+		ctx := h.Ctx(t, 0)
+		agent, owner := h.Agent(t, ctx, "owner")
+		cred := create(t, ctx, s, own("anthropic", owner, gatewaycred.OAuthToken{
+			Access: "stored-access", Refresh: "kept-refresh", Email: "kept@example.test",
+			OrgID: "stale-org", OrgName: "stale-organization", Region: "kept-region", InferenceRegion: "stale-inference", AuthorizedAtUnixMs: 44,
+		}))
+		clearFields := []string{"org_id", "org_name", "inference_region", "authorized_at_unix_ms"}
+		if _, err := s.UpdateOAuth(ctx, agent, cred.ID, gatewaycred.OAuthToken{Access: "rotated-access", OrgName: "ignored"}, cred.Version, clearFields); err != nil {
+			t.Fatalf("UpdateOAuth: %v", err)
+		}
+		got, err := s.List(ctx, owner, "anthropic")
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		tok, ok := got[0].OAuth()
+		if !ok || tok.Access != "rotated-access" || tok.Refresh != "kept-refresh" || tok.Email != "kept@example.test" ||
+			tok.OrgID != "" || tok.OrgName != "" || tok.Region != "kept-region" || tok.InferenceRegion != "" || tok.AuthorizedAtUnixMs != 0 {
+			t.Fatalf("cleared OAuth token = %#v", tok)
 		}
 	}
 }
@@ -374,7 +400,7 @@ func tenantsAreIsolated(h Harness) func(*testing.T) {
 		if values := accesses(gotB); !values["tenant-b"] || !values["tenant-b-shared"] || values["tenant-a"] || values["tenant-a-shared"] {
 			t.Fatalf("tenant B pool crossed tenants: %v", values)
 		}
-		if _, err := s.UpdateOAuth(ctxA, agentA, credentialB.ID, gatewaycred.OAuthToken{Access: "cross-tenant"}, credentialB.Version); !errors.Is(err, gatewaycred.ErrNotFound) {
+		if _, err := s.UpdateOAuth(ctxA, agentA, credentialB.ID, gatewaycred.OAuthToken{Access: "cross-tenant"}, credentialB.Version, nil); !errors.Is(err, gatewaycred.ErrNotFound) {
 			t.Fatalf("UpdateOAuth tenant A with tenant B credential: %v", err)
 		}
 		if err := s.Disable(ctxA, agentA, credentialB.ID, "cross-tenant", credentialB.Version); !errors.Is(err, gatewaycred.ErrNotFound) {
