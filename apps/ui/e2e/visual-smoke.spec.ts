@@ -205,6 +205,15 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		// The tab seg must not move when the PRs tab hides the grouping seg, or
 		// the control slides out from under the pointer.
 		const tabSeg = page.locator('[aria-label="Board view"]');
+		// Measure only once the board data and the fonts settle. fonts.ready can
+		// resolve before a swap face is even requested, so load every face.
+		await page
+			.locator(".bridge-grid .cx-card")
+			.first()
+			.waitFor({ state: "visible" });
+		await page.evaluate(() =>
+			Promise.all([...document.fonts].map((f) => f.load())),
+		);
 		const onIssues = await tabSeg.boundingBox();
 		// The PRs seg button — label "PRs · N", matched on its stable prefix so
 		// the live count doesn't perturb the selector.
