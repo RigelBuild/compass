@@ -146,9 +146,12 @@ nix profile install \
 
 ### Release binaries
 
-Each release attaches the linux-amd64 binaries and a `SHA256SUMS` file.
-Download the three stack binaries for a tag, check them, and place them on
-`PATH`:
+Each release attaches the linux-amd64 binaries and a `SHA256SUMS` file, and
+every checksummed asset carries a build-provenance attestation signed by the
+release workflow. `SHA256SUMS` only proves the download matches the release;
+`gh attestation verify` proves the release workflow built it on `main`.
+Download the three stack binaries for a tag, check and verify them, and place
+them on `PATH`:
 
 ```console
 $ tag=vX.Y.Z   # a release that ships compass-stack
@@ -157,6 +160,11 @@ $ for b in compass-stack compass-server compass-runner; do
     curl -fsSLO "$base/${b}_${tag}_linux-amd64"
   done
 $ curl -fsSL "$base/SHA256SUMS" | sha256sum --check --ignore-missing
+$ for b in compass-stack compass-server compass-runner; do
+    gh attestation verify "${b}_${tag}_linux-amd64" --repo RigelBuild/compass \
+      --signer-workflow RigelBuild/compass/.github/workflows/release.yml \
+      --source-ref refs/heads/main
+  done
 $ for b in compass-stack compass-server compass-runner; do
     sudo install -m 0755 "${b}_${tag}_linux-amd64" "/usr/local/bin/$b"
   done
