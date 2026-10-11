@@ -2378,9 +2378,9 @@ jobs:
             -f tools/toolchain/secretspec-env.nix secretspec)
           echo "$secretspec/bin" >>"$GITHUB_PATH"
 
-      - name: Detect whether this PR changes the compass-agent image
+      - name: Detect whether this change touches the compass-agent image
         id: image_affected
-        # PRs only. Whether the e2e gate must test a LOCALLY-BUILT image or the
+        # PRs and pushes to main. Whether the e2e gate must test a LOCALLY-BUILT image or the
         # published `:latest` turns on one question — does this PR change the
         # image's inputs? — and the answer already lives in one place: the
         # `compass-agent-image` build task's `inputs` globs (agent-image/moon.yml),
@@ -2419,14 +2419,23 @@ jobs:
         # never test a stale image — set image_affected=true unconditionally
         # (the re-point is rare, so always paying the build is the fail-safe
         # trade). moon's affected query has no base ref on a dispatch anyway.
+        # On a push to main the merge commit is compared with its parent
+        # (MOON_BASE), so an image-changing merge tests the tree-built image
+        # rather than a `:latest` that release may not have republished yet.
         if: >-
           github.event_name == 'pull_request' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
           (github.event_name == 'workflow_dispatch' &&
           github.event.inputs.pr != '')
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             echo "image_affected=true" >>"$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            MOON_BASE=$(git rev-parse HEAD^)
+            MOON_HEAD=$(git rev-parse HEAD)
+            export MOON_BASE MOON_HEAD
           fi
           if ! moon_out=$(moon query tasks --affected --project compass-agent-image); then
             echo "::error::moon query for compass-agent-image affected-detection failed; cannot trust the image-affected signal, so failing rather than testing a possibly-stale published image"
@@ -2466,9 +2475,8 @@ jobs:
         #   namespace via newuidmap, avoiding the bare host unshare the GitHub
         #   runner denies a non-root uid (see the run body).
         #
-        #   otherwise → pull the published image. On a PR that leaves the image
-        #   untouched (and on every push to main, where the detection step does
-        #   not run and image_affected is unset), test the last-published
+        #   otherwise → pull the published image. On a PR or main push that
+        #   leaves the image untouched, test the last-published
         #   `:latest`. The image is public (RIG-1690; Matt-ruled public), so this
         #   pulls with no login, no credential, and no `packages: read`. The
         #   mutable `:latest` tag is intentional (Matt-ruled always-fresh) — do
