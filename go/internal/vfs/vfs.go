@@ -120,7 +120,8 @@ type VolumeManager interface {
 	// new life. The returned path depends only on the session id and the base
 	// dir, which is what makes it stable across every launch (P2-GC-d).
 	Attach(ctx context.Context, v Volume) (path string, err error)
-	// Snapshot captures a stable tree so commit-complete callers can promote it later.
+	// Snapshot copies the volume without freezing the agent, so the copy can be torn by concurrent writes.
+	// Callers must verify the copied tree (e.g. git-clean) before PromoteSnapshot makes it current.
 	Snapshot(ctx context.Context, v Volume) (VolumeSnapshotID, error)
 	// Archive moves the volume to cold object storage and returns its opaque
 	// reference. Reserved at P2 (OQ-2): the backend returns
