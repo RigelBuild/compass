@@ -14,33 +14,28 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-type agentTenantResolver interface {
-	GatewayAgentTenant(ctx context.Context, agent store.AccountID) (store.TenantID, error)
-}
-
 type gatewayCredentialsService struct {
 	compassv1internalconnect.UnimplementedGatewayCredentialsHandler
-	scope agentTenantResolver
-	creds gatewaycred.CredentialStore
-	pool  gatewaycred.PoolResolver
-	log   *slog.Logger
+	tokens gatewayTokenVerifier
+	creds  gatewaycred.CredentialStore
+	pool   gatewaycred.PoolResolver
+	log    *slog.Logger
 }
 
 var _ compassv1internalconnect.GatewayCredentialsHandler = (*gatewayCredentialsService)(nil)
 
-func newGatewayCredentialsService(scope agentTenantResolver, creds gatewaycred.CredentialStore, pool gatewaycred.PoolResolver, log *slog.Logger) *gatewayCredentialsService {
+func newGatewayCredentialsService(tokens gatewayTokenVerifier, creds gatewaycred.CredentialStore, pool gatewaycred.PoolResolver, log *slog.Logger) *gatewayCredentialsService {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &gatewayCredentialsService{scope: scope, creds: creds, pool: pool, log: log}
+	return &gatewayCredentialsService{tokens: tokens, creds: creds, pool: pool, log: log}
 }
 
 func (s *gatewayCredentialsService) ListCredentialPool(ctx context.Context, req *connect.Request[compassv1internal.ListCredentialPoolRequest]) (*connect.Response[compassv1internal.ListCredentialPoolResponse], error) {
-	if req == nil || req.Msg == nil || req.Msg.GetAgentAccountId() == "" {
-		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "agent_account_id is required")
+	if req == nil || req.Msg == nil || req.Msg.GetAgentToken() == "" {
+		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "agent_token is required")
 	}
-	agent := store.AccountID(req.Msg.GetAgentAccountId())
-	ctx, err := s.resolveTenant(ctx, agent, "ListCredentialPool")
+	ctx, agent, err := s.resolveCaller(ctx, req.Msg.GetAgentToken(), "ListCredentialPool")
 	if err != nil {
 		return nil, err
 	}
@@ -60,14 +55,13 @@ func (s *gatewayCredentialsService) ListCredentialPool(ctx context.Context, req 
 }
 
 func (s *gatewayCredentialsService) UpdateCredentialOAuth(ctx context.Context, req *connect.Request[compassv1internal.UpdateCredentialOAuthRequest]) (*connect.Response[compassv1internal.UpdateCredentialOAuthResponse], error) {
-	if req == nil || req.Msg == nil || req.Msg.GetAgentAccountId() == "" || req.Msg.GetId() == "" || req.Msg.GetExpectedVersion() == 0 || req.Msg.GetToken() == nil || req.Msg.GetToken().GetAccess() == "" {
-		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "id, agent_account_id, expected_version, and token access are required")
+	if req == nil || req.Msg == nil || req.Msg.GetAgentToken() == "" || req.Msg.GetId() == "" || req.Msg.GetExpectedVersion() == 0 || req.Msg.GetToken() == nil || req.Msg.GetToken().GetAccess() == "" {
+		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "id, agent_token, expected_version, and token access are required")
 	}
 	if !gatewaycred.ValidOAuthClearFields(req.Msg.GetClearFields()) {
 		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "clear_fields names a field that cannot be cleared")
 	}
-	agent := store.AccountID(req.Msg.GetAgentAccountId())
-	ctx, err := s.resolveTenant(ctx, agent, "UpdateCredentialOAuth")
+	ctx, agent, err := s.resolveCaller(ctx, req.Msg.GetAgentToken(), "UpdateCredentialOAuth")
 	if err != nil {
 		return nil, err
 	}
@@ -79,11 +73,10 @@ func (s *gatewayCredentialsService) UpdateCredentialOAuth(ctx context.Context, r
 }
 
 func (s *gatewayCredentialsService) DisableCredential(ctx context.Context, req *connect.Request[compassv1internal.DisableCredentialRequest]) (*connect.Response[compassv1internal.DisableCredentialResponse], error) {
-	if req == nil || req.Msg == nil || req.Msg.GetAgentAccountId() == "" || req.Msg.GetId() == "" || req.Msg.GetExpectedVersion() == 0 {
-		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "id, agent_account_id, and expected_version are required")
+	if req == nil || req.Msg == nil || req.Msg.GetAgentToken() == "" || req.Msg.GetId() == "" || req.Msg.GetExpectedVersion() == 0 {
+		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "id, agent_token, and expected_version are required")
 	}
-	agent := store.AccountID(req.Msg.GetAgentAccountId())
-	ctx, err := s.resolveTenant(ctx, agent, "DisableCredential")
+	ctx, agent, err := s.resolveCaller(ctx, req.Msg.GetAgentToken(), "DisableCredential")
 	if err != nil {
 		return nil, err
 	}
@@ -93,22 +86,22 @@ func (s *gatewayCredentialsService) DisableCredential(ctx context.Context, req *
 	return connect.NewResponse(&compassv1internal.DisableCredentialResponse{}), nil
 }
 
-func (s *gatewayCredentialsService) resolveTenant(ctx context.Context, agent store.AccountID, procedure string) (context.Context, error) {
+func (s *gatewayCredentialsService) resolveCaller(ctx context.Context, agentToken, procedure string) (context.Context, store.AccountID, error) {
 	subj, ok := auth.ServiceSubjectFrom(ctx)
 	if !ok || subj.Kind != store.SubjectService || subj.ID != auth.LLMGatewayServiceID {
-		return nil, gatewayCredentialsError(connect.CodeUnauthenticated, "unauthenticated")
+		return nil, "", gatewayCredentialsError(connect.CodeUnauthenticated, "unauthenticated")
 	}
-	tenant, err := s.scope.GatewayAgentTenant(ctx, agent)
+	caller, err := s.tokens.Verify(ctx, agentToken)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, errGatewayCredentialNotFound
+		if errors.Is(err, auth.ErrGatewayTokenInvalid) {
+			return nil, "", gatewayCredentialsError(connect.CodeUnauthenticated, "invalid agent token")
 		}
-		s.log.ErrorContext(ctx, "gateway credential agent tenant lookup failed", "operation", procedure, "error", err)
-		return nil, gatewayCredentialsError(connect.CodeInternal, "gateway credentials unavailable")
+		s.log.ErrorContext(ctx, "gateway credential caller verification failed", "operation", procedure, "error", err)
+		return nil, "", gatewayCredentialsError(connect.CodeInternal, "gateway credentials unavailable")
 	}
-	s.log.InfoContext(ctx, "gateway credential door: cross-tenant agent lookup",
-		"service", subj.ID, "agent", agent, "tenant", tenant, "procedure", procedure)
-	return store.WithTenant(store.WithoutSystemRole(ctx), tenant), nil
+	s.log.InfoContext(ctx, "gateway credential door: caller resolved",
+		"service", subj.ID, "agent", caller.AgentAccountID, "owner", caller.OwnerUserID, "tenant", caller.TenantID, "procedure", procedure)
+	return store.WithTenant(store.WithoutSystemRole(ctx), caller.TenantID), caller.AgentAccountID, nil
 }
 
 func (s *gatewayCredentialsService) mapStoreError(ctx context.Context, operation string, err error) error {
@@ -127,8 +120,7 @@ func (s *gatewayCredentialsService) mapStoreError(ctx context.Context, operation
 	}
 }
 
-// errGatewayCredentialNotFound is shared by an unknown agent and a missing or
-// out-of-pool credential, so a caller cannot tell which ids exist.
+// errGatewayCredentialNotFound hides whether a credential is missing or out of pool.
 var errGatewayCredentialNotFound = gatewayCredentialsError(connect.CodeNotFound, "not found")
 
 func gatewayCredentialsError(code connect.Code, message string) error {

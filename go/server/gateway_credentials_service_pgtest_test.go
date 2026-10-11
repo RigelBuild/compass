@@ -8,87 +8,153 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
+
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/envelope"
 	"github.com/RigelBuild/compass/go/internal/gatewaycred"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestGatewayCredentialsDoorServiceBearerAllowlist(t *testing.T) {
+// gatewayDoorFixture is the tenant-B world the door test drives over the real mount.
+type gatewayDoorFixture struct {
+	client                               compassv1internalconnect.GatewayCredentialsClient
+	tokens                               *auth.GatewayTokens
+	tenantCtx                            context.Context
+	agentID                              store.AccountID
+	agentToken, accountToken             string
+	ownCredentialID, foreignCredentialID string
+}
+
+const (
+	gatewayDoorServiceToken      = "gateway-door-service-token"
+	gatewayDoorOtherServiceToken = "gateway-door-other-service-token"
+	gatewayDoorRunnerToken       = "gateway-door-runner-token"
+)
+
+func newGatewayDoorFixture(t *testing.T) gatewayDoorFixture {
+	t.Helper()
 	ctx := t.Context()
-	st, err := store.Open(ctx, pgtest.RequireDSN(t))
+	dsn := pgtest.RequireDSN(t)
+	st, err := store.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("store Open: %v", err)
 	}
 	t.Cleanup(st.Close)
-	owner, err := st.CreateUser(ctx, store.NewUser{Handle: "gateway-door-owner", DisplayName: "Gateway Door Owner"})
+	rootOwner, err := st.CreateUser(ctx, store.NewUser{Handle: "gateway-door-root-owner", DisplayName: "Gateway Door Root Owner"})
 	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
+		t.Fatalf("CreateUser(root owner): %v", err)
 	}
-	agent, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "gateway-door-agent", DisplayName: "Gateway Door Agent"})
-	if err != nil {
-		t.Fatalf("CreateAgent: %v", err)
-	}
-	accountToken, err := auth.IssueAccountToken(ctx, st, owner.ID)
+	accountToken, err := auth.IssueAccountToken(ctx, st, rootOwner.ID)
 	if err != nil {
 		t.Fatalf("IssueAccountToken: %v", err)
 	}
-	const serviceToken = "gateway-door-service-token"
-	if err := st.PutTokenHash(ctx, sha256.Sum256([]byte(serviceToken)), store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID}); err != nil {
+	const tenantB store.TenantID = "gateway-door-tenant-b"
+	tenantPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(tenantPool.Close)
+	if _, err := tenantPool.Exec(ctx,
+		"INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ($1, $2, $3, $4)",
+		string(tenantB), string(tenantB), "Gateway Door Tenant B", time.Now().UnixMilli(),
+	); err != nil {
+		t.Fatalf("insert tenant B: %v", err)
+	}
+	tenantCtx := store.WithTenant(ctx, tenantB)
+	ownerX, err := st.CreateUser(tenantCtx, store.NewUser{Handle: "gateway-door-owner-x", DisplayName: "Gateway Door Owner X"})
+	if err != nil {
+		t.Fatalf("CreateUser(owner X): %v", err)
+	}
+	agentX, err := st.CreateAgent(tenantCtx, ownerX.ID, store.NewAgent{Handle: "gateway-door-agent-x", DisplayName: "Gateway Door Agent X"})
+	if err != nil {
+		t.Fatalf("CreateAgent(owner X): %v", err)
+	}
+	ownerY, err := st.CreateUser(tenantCtx, store.NewUser{Handle: "gateway-door-owner-y", DisplayName: "Gateway Door Owner Y"})
+	if err != nil {
+		t.Fatalf("CreateUser(owner Y): %v", err)
+	}
+	tokens := auth.NewGatewayTokens(st)
+	agentToken, err := tokens.Mint(tenantCtx, string(agentX.ID))
+	if err != nil {
+		t.Fatalf("Mint gateway token: %v", err)
+	}
+	if err := st.PutTokenHash(ctx, sha256.Sum256([]byte(gatewayDoorServiceToken)), store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID}); err != nil {
 		t.Fatalf("PutTokenHash(gateway service): %v", err)
 	}
-	const otherServiceToken = "gateway-door-other-service-token"
-	if err := st.PutTokenHash(ctx, sha256.Sum256([]byte(otherServiceToken)), store.Subject{Kind: store.SubjectService, ID: "other-service"}); err != nil {
+	if err := st.PutTokenHash(ctx, sha256.Sum256([]byte(gatewayDoorOtherServiceToken)), store.Subject{Kind: store.SubjectService, ID: "other-service"}); err != nil {
 		t.Fatalf("PutTokenHash(other service): %v", err)
 	}
-	const runnerToken = "gateway-door-runner-token"
-	if err := st.PutTokenHash(ctx, sha256.Sum256([]byte(runnerToken)), store.Subject{Kind: store.SubjectRunner, ID: "gateway-door-runner"}); err != nil {
+	if err := st.PutTokenHash(ctx, sha256.Sum256([]byte(gatewayDoorRunnerToken)), store.Subject{Kind: store.SubjectRunner, ID: "gateway-door-runner"}); err != nil {
 		t.Fatalf("PutTokenHash(runner): %v", err)
 	}
-
-	memory := gatewaycred.NewMemory()
-	memory.SetAgentOwner(agent.ID, owner.ID)
-	if _, err := memory.Create(store.WithTenant(ctx, st.EffectiveTenant(ctx)), gatewaycred.NewAPIKeyCredential(
-		gatewaycred.Credential{Provider: "anthropic", Scope: gatewaycred.ScopeOwn, OwnerUserID: owner.ID}, "door-key")); err != nil {
-		t.Fatalf("seed credential: %v", err)
+	key, err := envelope.NewKey(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("envelope.NewKey: %v", err)
 	}
-	svc := newGatewayCredentialsService(st, memory, memory, nil)
+	credentials := gatewaycred.NewPostgres(st, key, 1)
+	ownCredential, err := credentials.Create(tenantCtx, gatewaycred.NewAPIKeyCredential(
+		gatewaycred.Credential{Provider: "anthropic", Scope: gatewaycred.ScopeOwn, OwnerUserID: ownerX.ID}, "door-key-x"))
+	if err != nil {
+		t.Fatalf("seed owner X credential: %v", err)
+	}
+	foreignCredential, err := credentials.Create(tenantCtx, gatewaycred.NewAPIKeyCredential(
+		gatewaycred.Credential{Provider: "openai", Scope: gatewaycred.ScopeOwn, OwnerUserID: ownerY.ID}, "door-key-y"))
+	if err != nil {
+		t.Fatalf("seed owner Y credential: %v", err)
+	}
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
 	resolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)
 	}
-	path, handler := compassv1internalconnect.NewGatewayCredentialsHandler(svc,
-		connect.WithInterceptors(auth.ServiceBearerInterceptor(resolve, auth.LLMGatewayServiceID)))
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	mountGatewayServices(mux, newGatewayServices(st, key, 1), otelIC, newRunnerResolve(resolve, nil))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := compassv1internalconnect.NewGatewayCredentialsClient(http.DefaultClient, server.URL)
+	return gatewayDoorFixture{
+		client: compassv1internalconnect.NewGatewayCredentialsClient(http.DefaultClient, server.URL),
+		tokens: tokens, tenantCtx: tenantCtx, agentID: agentX.ID,
+		agentToken: agentToken, accountToken: accountToken,
+		ownCredentialID: ownCredential.ID, foreignCredentialID: foreignCredential.ID,
+	}
+}
+
+func TestGatewayCredentialsDoorServiceBearerAllowlist(t *testing.T) {
+	ctx := t.Context()
+	f := newGatewayDoorFixture(t)
+	client, agentToken, serviceToken := f.client, f.agentToken, gatewayDoorServiceToken
 
 	for _, tt := range []struct {
 		name     string
-		token    string
+		bearer   string
 		wantCode connect.Code
 		wantOK   bool
 	}{
-		{name: "allowlisted service token", token: serviceToken, wantOK: true},
-		{name: "different service id", token: otherServiceToken, wantCode: connect.CodeUnauthenticated},
-		{name: "account token", token: accountToken, wantCode: connect.CodeUnauthenticated},
-		{name: "runner token", token: runnerToken, wantCode: connect.CodeUnauthenticated},
+		{name: "allowlisted service token", bearer: serviceToken, wantOK: true},
+		{name: "different service id", bearer: gatewayDoorOtherServiceToken, wantCode: connect.CodeUnauthenticated},
+		{name: "runner token", bearer: gatewayDoorRunnerToken, wantCode: connect.CodeUnauthenticated},
+		{name: "account bearer", bearer: f.accountToken, wantCode: connect.CodeUnauthenticated},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentAccountId: string(agent.ID)})
-			req.Header().Set("Authorization", "Bearer "+tt.token)
+			req := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken})
+			req.Header().Set("Authorization", "Bearer "+tt.bearer)
 			response, err := client.ListCredentialPool(ctx, req)
 			if tt.wantOK {
 				if err != nil {
 					t.Fatalf("allowlisted service token rejected: %v", err)
 				}
-				if got := response.Msg.GetCredentials(); len(got) != 1 || got[0].GetApiKey() != "door-key" {
-					t.Fatalf("pool = %v, want the seeded own credential", got)
+				if got := response.Msg.GetCredentials(); len(got) != 1 || got[0].GetId() != f.ownCredentialID || got[0].GetApiKey() != "door-key-x" {
+					t.Fatalf("pool = %v, want tenant B owner's credential", got)
 				}
 				return
 			}
@@ -97,4 +163,33 @@ func TestGatewayCredentialsDoorServiceBearerAllowlist(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("agent token is not the service bearer", func(t *testing.T) {
+		req := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken})
+		req.Header().Set("Authorization", "Bearer "+agentToken)
+		if _, err := client.ListCredentialPool(ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
+			t.Fatalf("agent token as bearer error = %v, want Unauthenticated", err)
+		}
+	})
+
+	t.Run("owner token cannot access another owner's credential", func(t *testing.T) {
+		req := connect.NewRequest(&compassv1internal.DisableCredentialRequest{
+			Id: f.foreignCredentialID, AgentToken: agentToken, ExpectedVersion: 1,
+		})
+		req.Header().Set("Authorization", "Bearer "+serviceToken)
+		if _, err := client.DisableCredential(ctx, req); connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("foreign credential error = %v, want NotFound", err)
+		}
+	})
+
+	if err := f.tokens.Revoke(f.tenantCtx, string(f.agentID)); err != nil {
+		t.Fatalf("Revoke gateway token: %v", err)
+	}
+	t.Run("revoked agent token is unauthenticated", func(t *testing.T) {
+		req := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken})
+		req.Header().Set("Authorization", "Bearer "+serviceToken)
+		if _, err := client.ListCredentialPool(ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
+			t.Fatalf("revoked token error = %v, want Unauthenticated", err)
+		}
+	})
 }

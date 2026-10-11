@@ -54,7 +54,3 @@ SET disabled_at = sqlc.arg(disabled_at), disabled_cause = sqlc.arg(disabled_caus
     version = version + 1
 WHERE id = sqlc.arg(id) AND version = sqlc.arg(version) AND disabled_at IS NULL;
 
--- name: GatewayAgentTenant :one
-SELECT tenant_id
-FROM agent_accounts
-WHERE account_id = sqlc.arg(account_id);

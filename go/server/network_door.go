@@ -411,10 +411,11 @@ type gatewayServices struct {
 // newGatewayServices builds every service the LLM gateway calls on the network door.
 func newGatewayServices(st *store.Store, masterKey envelope.Key, keyVersion int16) gatewayServices {
 	creds := gatewaycred.NewPostgres(st, masterKey, keyVersion)
+	tokens := auth.NewGatewayTokens(st)
 	return gatewayServices{
-		credentials: newGatewayCredentialsService(st, creds, creds, slog.Default()),
+		credentials: newGatewayCredentialsService(tokens, creds, creds, slog.Default()),
 		registry:    newGatewayRegistryService(st, slog.Default()),
-		auth:        newGatewayAuthService(auth.NewGatewayTokens(st)),
+		auth:        newGatewayAuthService(tokens),
 	}
 }
 

@@ -17,7 +17,7 @@ var ErrGatewayTokenInvalid = errors.New("auth: invalid gateway token")
 type TokenMinter interface {
 	// Mint returns a fresh token for the agent and revokes its previous one.
 	Mint(ctx context.Context, agentAccountID string) (token string, err error)
-	// Verify resolves a live token to its agent and that agent's owner.
+	// Verify resolves a live token to its agent, owner, and tenant.
 	Verify(ctx context.Context, token string) (store.GatewayCaller, error)
 	// Revoke withdraws the agent's live token; it is a no-op when none is live.
 	Revoke(ctx context.Context, agentAccountID string) error

@@ -195,7 +195,6 @@ type Querier interface {
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
 	// EXISTS guard leaves it in place if any other agent still subscribes).
 	GCForgeArtifactCursorIfUnsubscribed(ctx context.Context, arg GCForgeArtifactCursorIfUnsubscribedParams) error
-	GatewayAgentTenant(ctx context.Context, accountID string) (string, error)
 	GatewayCredentialOwnerExists(ctx context.Context, ownerUserID string) (bool, error)
 	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)

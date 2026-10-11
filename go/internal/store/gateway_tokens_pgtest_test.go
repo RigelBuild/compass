@@ -31,8 +31,8 @@ func TestGatewayTokenRotateResolveRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveGatewayToken(first): %v", err)
 	}
-	if got.AgentAccountID != agent.ID || got.OwnerUserID != owner.ID {
-		t.Fatalf("resolved %+v, want agent %q owner %q", got, agent.ID, owner.ID)
+	if got.AgentAccountID != agent.ID || got.OwnerUserID != owner.ID || got.TenantID != s.EffectiveTenant(ctx) {
+		t.Fatalf("resolved %+v, want agent %q owner %q tenant %q", got, agent.ID, owner.ID, s.EffectiveTenant(ctx))
 	}
 
 	second := sha256.Sum256([]byte("second"))
@@ -95,8 +95,8 @@ func TestGatewayTokenTenantScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve tenant-b token from a bootstrap ctx: %v", err)
 	}
-	if got.AgentAccountID != agentB.ID || got.OwnerUserID != ownerB.ID {
-		t.Fatalf("resolved %+v, want agent %q owner %q", got, agentB.ID, ownerB.ID)
+	if got.AgentAccountID != agentB.ID || got.OwnerUserID != ownerB.ID || got.TenantID != tenantB {
+		t.Fatalf("resolved %+v, want agent %q owner %q tenant %q", got, agentB.ID, ownerB.ID, tenantB)
 	}
 }
 

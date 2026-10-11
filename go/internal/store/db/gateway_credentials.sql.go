@@ -38,19 +38,6 @@ func (q *Queries) DisableGatewayCredential(ctx context.Context, arg DisableGatew
 	return result.RowsAffected(), nil
 }
 
-const gatewayAgentTenant = `-- name: GatewayAgentTenant :one
-SELECT tenant_id
-FROM agent_accounts
-WHERE account_id = $1
-`
-
-func (q *Queries) GatewayAgentTenant(ctx context.Context, accountID string) (string, error) {
-	row := q.db.QueryRow(ctx, gatewayAgentTenant, accountID)
-	var tenant_id string
-	err := row.Scan(&tenant_id)
-	return tenant_id, err
-}
-
 const gatewayCredentialOwnerExists = `-- name: GatewayCredentialOwnerExists :one
 SELECT EXISTS (
     SELECT 1 FROM user_accounts WHERE account_id = $1
