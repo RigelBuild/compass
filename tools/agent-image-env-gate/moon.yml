@@ -30,13 +30,23 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    # The pure core (env-check.ts) over fixtures for each wrong-image defect.
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    # The pure core (env-check.ts) over fixtures for each wrong-image defect,
+    # and scheduling.test.ts, which asks moon whether each image-build input
+    # still schedules `check`; both moon.yml files are the subject it reads.
+    inputs:
+      - '*.ts'
+      - 'moon.yml'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/agent-image/moon.yml'
   check:
     # The real gate: build the exact spec the publish lane ships, inspect its
     # OCI config, and assert env-cleanliness + platform. Depends on
-    # compass-agent-image:build so the realise is ordered first and this task is
-    # scheduled by the SAME affected-detection (a closure change reds both); the
+    # compass-agent-image:build so the realise is ordered first; the
+    # ci-matrix task-level closure schedules both on any shared input
+    # (scheduling.test.ts pins that). The
     # index.ts `nix run … container build` is then a store cache hit. Run from
     # the workspace root (index.ts cd's into agent-image/ itself so `devenv
     # container build` resolves the image's devenv.yaml/devenv.lock).
