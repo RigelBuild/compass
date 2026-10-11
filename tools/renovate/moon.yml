@@ -58,7 +58,30 @@ tasks:
       runInCI: true
       # Never cache: the answer depends on the network and the fork's history.
       cache: false
+  agent-fod:
+    # Realise only agent-image/entrypoint.nix's node_modules FOD, so a stale
+    # outputHash fails here in about a minute, not at the end of the image build.
+    command: 'bun tools/renovate/check-agent-fod.ts'
+    deps: ['install']
+    inputs:
+      - 'check-agent-fod.ts'
+      - 'refresh-fod-hashes.ts'
+      - 'agent-image-fod-vehicle.nix'
+      - '/agent-image/entrypoint.nix'
+      - '/agent-image/devenv.lock'
+      - '/tools/toolchain/versions/bun.nix'
+      - '/tools/toolchain/toolchain-tools.nix'
+      - '/bun.lock'
+      - '/package.json'
+      - '/packages/*/package.json'
+      - '/apps/*/package.json'
+      - '/tools/*/package.json'
+    options:
+      runFromWorkspaceRoot: true
+      # nix owns the caching; a cached green from another checkout is the
+      # false green this check exists to stop.
+      cache: false
   ci:
-    deps: ['typecheck', 'test', 'lock-integrity']
+    deps: ['typecheck', 'test', 'lock-integrity', 'agent-fod']
     options:
       cache: false

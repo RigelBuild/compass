@@ -180,6 +180,9 @@ in
 # The bundle is a STANDALONE compiled binary, so the wrapper execs it directly —
 # no `bun run` at runtime. It carries its own bun runtime and finds its native
 # addon from the `.node` siblings beside it in the same store dir.
-pkgs.writeShellScriptBin "compass-agent" ''
-  exec ${bundle}/compass-agent "$@"
-''
+# `nodeModules` is exposed (drv unchanged) so a fast check can realise the FOD alone.
+lib.extendDerivation true { inherit nodeModules; } (
+  pkgs.writeShellScriptBin "compass-agent" ''
+    exec ${bundle}/compass-agent "$@"
+  ''
+)
