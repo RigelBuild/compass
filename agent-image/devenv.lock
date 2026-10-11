@@ -66,17 +66,18 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1791171308,
-        "narHash": "sha256-1fOBIpvgyjbBDDA3j1H0o9tJwQDNd6APqeNMKJekzaw=",
+        "lastModified": 1791752884,
+        "narHash": "sha256-bE93D6OGrcrQJsdTSdTunI0hEGVEWS4b8FJ+uUc+vwM=",
         "owner": "RigelBuild",
         "repo": "devenv",
-        "rev": "a9d9df8e82c2034c51cd3e8797cd19439b072def",
+        "rev": "cc3aaad845cf2d37631225e006ef8a8e2555ccd1",
         "type": "github"
       },
       "original": {
         "owner": "RigelBuild",
         "repo": "devenv",
-        "type": "github"
+        "type": "github",
+        "ref": "rigel-release"
       }
     },
     "flake-compat": {

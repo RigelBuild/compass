@@ -50,7 +50,7 @@ inputs:
   # renovate.yml's devenv-CLI-on-PATH step reads this lock's devenv node with no
   # edit, so the CLI that writes root relocks tracks whatever source this names.
   devenv:
-    url: github:RigelBuild/devenv
+    url: github:RigelBuild/devenv/rigel-release
     inputs:
       nixpkgs:
         follows: nixpkgs

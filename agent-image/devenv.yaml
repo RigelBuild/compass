@@ -43,7 +43,7 @@ inputs:
   # The fork keeps upstream's values as DEFAULTS, so a consumer setting none of
   # the new options is byte-identical.
   devenv:
-    url: github:RigelBuild/devenv
+    url: github:RigelBuild/devenv/rigel-release
     inputs:
       nixpkgs:
         follows: nixpkgs

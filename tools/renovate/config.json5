@@ -194,9 +194,9 @@
     {
       // ── devenv fork rev: root dev shell ──
       // Both compass devenv scopes resolve the shared canonical fork
-      // `github:RigelBuild/devenv` at its default branch (no ref, no rev), so
-      // this manager surfaces the root lock's rev and the sibling manager
-      // surfaces the agent-image lock's rev. The shared rule relocks both.
+      // `github:RigelBuild/devenv/rigel-release`, so this manager surfaces the
+      // root lock's rev and the sibling manager surfaces the agent-image lock's
+      // rev. The shared rule relocks both.
       //
       // WHY A REGEX MANAGER + A postUpgradeTask, NOT `lockFileMaintenance` —
       // DO NOT "SIMPLIFY" THIS. Source-verified against the pinned
@@ -232,7 +232,7 @@
       ],
       depNameTemplate: "RigelBuild/devenv",
       packageNameTemplate: "https://github.com/RigelBuild/devenv",
-      currentValueTemplate: "main",
+      currentValueTemplate: "rigel-release",
       datasourceTemplate: "git-refs",
     },
     {
@@ -248,7 +248,7 @@
       ],
       depNameTemplate: "RigelBuild/devenv-agent-image",
       packageNameTemplate: "https://github.com/RigelBuild/devenv",
-      currentValueTemplate: "main",
+      currentValueTemplate: "rigel-release",
       datasourceTemplate: "git-refs",
     },
     {
@@ -805,7 +805,7 @@
       },
       groupName: "devenv fork",
       // Daily, on the workflow cron's cadence, like the devenv-nixpkgs rule.
-      // Both locks resolve the moving fork `main` by default branch.
+      // Both locks resolve the moving fork `rigel-release` branch.
       // A git-refs digest has no release timestamp, so the repo-wide strict
       // cooldown would keep it pending forever. Human review remains required.
       minimumReleaseAge: null,
