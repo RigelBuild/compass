@@ -1,0 +1,11 @@
+{
+	"name": "@compass/bun-audit-gate",
+	"private": true,
+	"type": "module",
+	"description": "Fail CI for unapproved Bun dependency advisories.",
+	"module": "index.ts",
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
