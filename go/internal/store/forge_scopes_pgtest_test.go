@@ -375,4 +375,18 @@ func TestCreateAgentCopiesForgeScopesFromParent(t *testing.T) {
 	if err != nil || len(rootRepos) != 0 {
 		t.Fatalf("root own repos = (%v, %v), want ([], nil)", rootRepos, err)
 	}
+	otherOwner, err := s.CreateUser(ctx, NewUser{Handle: "copy-agent-scope-other-owner", DisplayName: "Other Owner"})
+	if err != nil {
+		t.Fatalf("CreateUser other owner: %v", err)
+	}
+	foreignChild, err := s.CreateAgent(ctx, otherOwner.ID, NewAgent{
+		Handle: "copy-agent-scope-foreign-child", DisplayName: "Foreign Child", ParentAgentID: parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent with foreign parent: %v", err)
+	}
+	foreignChildRepos, err := s.ListAgentForgeScopeRepos(ctx, foreignChild.ID, ForgeProviderGitHub, "github.com")
+	if err != nil || len(foreignChildRepos) != 0 {
+		t.Fatalf("foreign child own repos = (%v, %v), want ([], nil)", foreignChildRepos, err)
+	}
 }
