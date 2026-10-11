@@ -126,7 +126,9 @@ failure mode this file exists to prevent.
 The sections from Environment to S6 below record the first run, on a
 nested-KVM VM. The [real-KVM rerun](#real-kvm-rerun) repeated every item on a
 bare-metal node and agrees with it on S1, S2, S4, S5, and S6. It could not test
-AppArmor or the node sysctl, and S3 stayed inconclusive. Both runs disproved
+AppArmor or the node sysctl. The [strict-device rerun](#strict-device-rerun)
+settled S3 for host-user-namespace pods, but found the gid gate does not hold
+under `hostUsers: false`. Both runs disproved
 the opening hypothesis that every answer costs at most a grant the record
 already names: S1 needs grants and a node setting outside §Privilege shape,
 and one of them conflicts with the S3 grant. The design record adopts that
@@ -288,3 +290,30 @@ the harness used an `emptyDir` runtime dir and is not the Runner binary.
 
 The S5 fill step's trailing `grep` was missing from the guest (exit 127), but
 `dd` wrote all 943718400 bytes first, so the 900 MiB figure stands.
+
+### Strict-device rerun
+
+The same node and image, with a second device-plugin resource,
+`devic.es/kvm-strict`. It injects a node device created `crw-rw---- 0:302`
+(the same `10:232` major:minor) at the pod's `/dev/kvm`. Host `/dev/kvm`
+stayed `crw-rw-rw-`.
+
+| Item | Observed |
+| --- | --- |
+| S1 full set | `TestFullBoot` PASS: `Health OK (net_provisioned && workspace_mounted)` in 1.53 s |
+| S1 with `hostUsers` unset | virtiofsd: `Error entering sandbox: MountProc(... Operation not permitted)` |
+| S1 with `procMount: Default` | Same `MountProc` failure |
+| S1 with `RuntimeDefault` seccomp | virtiofsd: `Error entering sandbox: Unshare(... Operation not permitted)` |
+| S3 with the kvm gid | Device `crw-rw---- 0:302` in the pod; opens |
+| S3 control, without it | Same device; fails `EACCES` (`Permission denied`) |
+| S3 under `hostUsers: false` | Device shows `crw-rw-rw- 65534:65534` in the pod; opens |
+| S5 | Booted: `current=227MiB shmem=204MiB`; after writing 900 MiB: `current=1087MiB shmem=1059MiB` |
+| S6 | pid 1 exits without `Shutdown`; 4 VMM processes drop to 0 within one 20 s sample |
+
+S3 now agrees with the VM run for a pod in the host user namespace: the gid
+grant is necessary under a `0660` device. Under `hostUsers: false`, the pod
+saw the strict device as `0666` and opened it. S1 requires that user
+namespace, so a gid-gated node device is no access boundary for the runner
+pod. This matches the record, which drops the gid grant and relies on node
+mode `0666` (OQ-4). Why the pod sees `0666` is **not verified**; the matching
+mode suggests the runtime takes it from host `/dev/kvm`.
