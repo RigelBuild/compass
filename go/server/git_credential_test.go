@@ -339,7 +339,11 @@ func TestGitCredentialBrokerTransientWidenedMintServesLastOwnerToken(t *testing.
 	grants.setRepos("agent-id", []string{"owner/base"})
 	minter := &fakeGitCredentialMinter{
 		tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour),
-		errByCall: []error{nil, &forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"}},
+		errByCall: []error{
+			nil,
+			&forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"},
+			&forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"},
+		},
 	}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 
@@ -347,11 +351,28 @@ func TestGitCredentialBrokerTransientWidenedMintServesLastOwnerToken(t *testing.
 		t.Fatalf("initial credential = (%q, %v), want owner-set token", tok, ok)
 	}
 	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
-	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_owner" {
-		t.Fatalf("credential after widened-set 429 = (%q, %v), want last owner token", tok, ok)
+	for attempt := range 2 {
+		if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_owner" {
+			t.Fatalf("credential after widened-set 429 #%d = (%q, %v), want last owner token", attempt+1, tok, ok)
+		}
 	}
-	if minter.callCount() != 2 {
-		t.Fatalf("mint calls = %d, want initial mint and one widened-set attempt", minter.callCount())
+	if minter.callCount() != 3 {
+		t.Fatalf("mint calls = %d, want initial mint and two widened-set attempts", minter.callCount())
+	}
+}
+
+func TestGitCredentialBrokerRefreshPrunesExpiredNegativeEntries(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	broker := newGitCredentialTestBroker(nil, nil, &now, nil)
+	broker.negative["owner/expired"] = gitCredentialNegativeEntry{expiresAt: now}
+	broker.negative["owner/live"] = gitCredentialNegativeEntry{expiresAt: now.Add(time.Nanosecond)}
+
+	broker.refreshDue(context.Background())
+	if _, exists := broker.negative["owner/expired"]; exists {
+		t.Fatal("expired negative entry remains after refresh")
+	}
+	if _, exists := broker.negative["owner/live"]; !exists {
+		t.Fatal("unexpired negative entry pruned")
 	}
 }
 
