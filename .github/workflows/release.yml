@@ -1044,6 +1044,7 @@ jobs:
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: RigelBuild
           repositories: homebrew-tap
+          permission-contents: write
 
       - name: Bump the homebrew-tap compass-cli formula
         env:
