@@ -64,10 +64,10 @@ func capEffOf(t *testing.T, ctx context.Context, cli *PodmanCLI, id WorkloadID, 
 // that drops the --user on an agent exec makes the two masks equal and fails
 // here.
 func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	cli := NewPodmanCLI()
 
 	// A NET_ADMIN container remapped to the baked agent uid, mirroring a real
@@ -83,8 +83,9 @@ func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
 	// Bring the NET_ADMIN container up, mirroring createStartExec's
 	// create/start/force-rm-teardown (userns_remap_test.go) but holding the id so
 	// we can exec against it twice with different identities.
-	_ = exec.Command("podman", "rm", "--force", spec.Name).Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", spec.Name).Run() })
+	cleanupCtx := context.WithoutCancel(ctx)
+	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", spec.Name).Run()
+	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", spec.Name).Run() })
 	cid, err := cli.Create(ctx, spec)
 	if err != nil {
 		t.Fatalf("create container: %v", err)

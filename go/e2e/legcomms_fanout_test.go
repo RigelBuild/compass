@@ -101,7 +101,7 @@ func registerFanoutFixtureOptions() {
 // the per-event D9 filter runs against each stream's account — an all-seeing
 // admin stream could not carry a negative visibility claim at all.
 func TestCommsFanOutAndIsolation(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

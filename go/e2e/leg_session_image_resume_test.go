@@ -35,7 +35,7 @@ const (
 var sessionImageRefPattern = regexp.MustCompile(`blob:sha256:([a-f0-9]{64})`)
 
 func TestLegSessionImageResume(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here")
 	}
 	ctx := context.Background()
@@ -54,7 +54,7 @@ func TestLegSessionImageResume(t *testing.T) {
 
 func runSessionImageResume(t *testing.T, ctx context.Context, withObjectStore bool) {
 	t.Helper()
-	f := NewFixture(ctx, t, sessionImageFixtureOptions(t, withObjectStore)...)
+	f := NewFixture(ctx, t, sessionImageFixtureOptions(ctx, t, withObjectStore)...)
 	accountID, err := f.CreateAgent(ctx, sessionImageResumeHandle, "Session image resume")
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
@@ -182,7 +182,7 @@ func sessionImageSVG() string {
 	return svg.String()
 }
 
-func sessionImageFixtureOptions(t *testing.T, withObjectStore bool) []fixtureOption {
+func sessionImageFixtureOptions(ctx context.Context, t *testing.T, withObjectStore bool) []fixtureOption {
 	t.Helper()
 	writeArgs, err := json.Marshal(map[string]string{
 		"path":    "resume-image.svg",
@@ -207,7 +207,7 @@ func sessionImageFixtureOptions(t *testing.T, withObjectStore bool) []fixtureOpt
 		),
 	}
 	if withObjectStore {
-		options = append(options, WithObjectStore(startGarageFixture(t)))
+		options = append(options, WithObjectStore(startGarageFixture(ctx, t)))
 	}
 	return options
 }

@@ -56,8 +56,8 @@ const agentImage = "compass-agent:latest"
 // agentImageExists reports whether the real agent image is present in local
 // storage. A missing image means skip, not fail — the E2E is meaningless without
 // the real reader.
-func agentImageExists() bool {
-	return exec.Command("podman", "image", "exists", agentImage).Run() == nil
+func agentImageExists(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "podman", "image", "exists", agentImage).Run() == nil
 }
 
 // agentBootResult is the outcome of the agent-image boot probe. Present is not
@@ -91,8 +91,8 @@ const (
 // than for a drifted-marker probe, so neither a present-but-unbootable image nor
 // a stale probe ever reads as a config-delivery failure — but neither is a
 // silent pass either.
-func probeAgentBoot() agentBootResult {
-	out, _ := exec.Command(
+func probeAgentBoot(ctx context.Context) agentBootResult {
+	out, _ := exec.CommandContext(ctx,
 		"podman", "run", "--rm", "--network=none",
 		"--env", "PI_DEBUG_STARTUP=1",
 		agentImage, "compass-agent",
@@ -113,8 +113,8 @@ func probeAgentBoot() agentBootResult {
 // podmanUsable reports whether rootless podman can run a container here. A
 // missing binary or broken rootless setup means skip, not fail — mirrors the
 // sibling guard in runtime/lifecycle_test.go and gateway/socket_podman_test.go.
-func podmanUsable() bool {
-	return exec.Command("podman", "run", "--rm", "docker.io/library/alpine:latest", "true").Run() == nil
+func podmanUsable(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "podman", "run", "--rm", "docker.io/library/alpine:latest", "true").Run() == nil
 }
 
 // collectingLog is a mutex-guarded slice-collecting slog.Handler: it records
@@ -228,13 +228,13 @@ func (b e2eSpecBuilder) BuildSpec(*compassv1.ProvisionAgentWorkspaceRequest, str
 // re-booted agent reads the flipped config and emits the NEW version hash. The
 // load-bearing assertion is the SECOND agent-stderr line carrying the v2 hash.
 func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	if !agentImageExists() {
+	if !agentImageExists(t.Context()) {
 		t.Skip(agentImage + " not present in local storage")
 	}
-	switch probeAgentBoot() {
+	switch probeAgentBoot(t.Context()) {
 	case agentUnbootable:
 		// LOUD skip, never a silent pass: the image is present but its agent
 		// process cannot start (the recipe ships no loadable pi_natives addon),
@@ -285,8 +285,9 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	// the agent stream; the container itself is torn down here.
 	// t.Cleanup discards are deliberate: best-effort teardown of a real container
 	// has no actionable error path (the run is already ending).
-	_ = exec.Command("podman", "rm", "--force", name).Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", name).Run() })
+	cleanupCtx := context.WithoutCancel(t.Context())
+	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run()
+	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run() })
 
 	cfg := AgentHostConfig{RuntimeDir: shortRuntimeDir(t)}
 	host := NewSessionHost(link, rt, registry, engine, e2eSpecBuilder{name: name}, cfg, log.logger()).(*agentHost)
@@ -294,13 +295,12 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	// Provision opens, which neither Stop (agent stream only) nor the container
 	// force-remove reaches. Mirrors e2e_transport_test.go.
 	t.Cleanup(func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
 		defer cancel()
 		host.Close(closeCtx)
 	})
 
-	// context.Background() as the test root — the rule's explicit test exemption.
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// 1. Seed the fleet at v1 and bring the container + agent online.
 	pub.setConfigBundle(AgentConfigBundle{Version: v1hash, Tarball: buildConfigTarball(t, validBundle())})
@@ -313,7 +313,7 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+	t.Cleanup(func() { _ = host.Stop(context.WithoutCancel(t.Context()), sessionID) })
 
 	// 2. The first boot must emit the v1 hash — proves the real reader ran on
 	// construction and read the initially materialized bundle.

@@ -13,7 +13,7 @@ import (
 // TestAgentImageVCSTools checks the agent image ships jj and jj-vine, the
 // version-control tools every Rigel lane uses. Each binary must run, not only exist.
 func TestAgentImageVCSTools(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the image toolchain check")
 	}
 	for _, tool := range []struct{ bin, want string }{
@@ -21,7 +21,7 @@ func TestAgentImageVCSTools(t *testing.T) {
 		{"jj-vine", "jj-vine "},
 	} {
 		t.Run(tool.bin, func(t *testing.T) {
-			out, err := exec.Command("podman", "run", "--rm", agentImage, tool.bin, "--version").CombinedOutput()
+			out, err := exec.CommandContext(t.Context(), "podman", "run", "--rm", agentImage, tool.bin, "--version").CombinedOutput()
 			if err != nil {
 				t.Fatalf("%s --version in %s: %v\n%s", tool.bin, agentImage, err, out)
 			}
@@ -35,7 +35,7 @@ func TestAgentImageVCSTools(t *testing.T) {
 // TestAgentImageGHTokenAuth installs tokens with the production GHHostsScript and
 // checks Git and jj-vine get only the requested host's token, never another's.
 func TestAgentImageGHTokenAuth(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the image toolchain check")
 	}
 	const tok = "ghs_fixture"
@@ -85,7 +85,7 @@ case "$out" in *"tokenCommand failed"*) ;; *) echo "jj-vine status: $out"; exit 
 			if err != nil {
 				t.Fatalf("GHHostsScript: %v", err)
 			}
-			cmd := exec.Command("podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", agentImage, "sh", "-s")
+			cmd := exec.CommandContext(t.Context(), "podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", agentImage, "sh", "-s")
 			cmd.Stdin = strings.NewReader(install + "set -eu\n" + tc.check)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("GitHub token auth smoke in %s: %v\n%s", agentImage, err, out)

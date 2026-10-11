@@ -74,7 +74,7 @@ const (
 // Every wait is event-gated and ctx-bounded (AwaitDelivery, comms_ops.go:132;
 // awaitSubscriptionLive below) — no sleeps, no polling, no retry loops.
 func TestCommsTenantVisibilityTransport(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

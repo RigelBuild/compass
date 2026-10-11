@@ -69,7 +69,7 @@ type peeringScene struct {
 }
 
 func TestCommsPeerLifecycleTransport(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 	s := newPeeringScene(t)

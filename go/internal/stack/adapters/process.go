@@ -49,7 +49,7 @@ func componentBinary(c stack.Component) (string, error) {
 // child inherits it plus the supplied secrets, which stay out of the arg vector.
 // Stdout/stderr are wired to the parent's shared streams. The child is placed in
 // its own process group (Setpgid) so Signal can target the group.
-func (s *ProcessSupervisor) Start(_ context.Context, spec stack.ProcessSpec) (stack.Process, error) {
+func (s *ProcessSupervisor) Start(ctx context.Context, spec stack.ProcessSpec) (stack.Process, error) {
 	binary, err := componentBinary(spec.Component)
 	if err != nil {
 		return nil, err
@@ -60,7 +60,8 @@ func (s *ProcessSupervisor) Start(_ context.Context, spec stack.ProcessSpec) (st
 		return nil, fmt.Errorf("resolving %s binary %q on PATH: %w", spec.Component, binary, err)
 	}
 
-	cmd := exec.Command(path, spec.Args...) //nolint:gosec // G204: the process-supervisor seam — path is a LookPath-resolved deployment binary and Args are Stack-built, neither user-controlled
+	// Children are stopped through Signal/Wait, after the start call returns.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), path, spec.Args...) //nolint:gosec // G204: the process-supervisor seam — path is a LookPath-resolved deployment binary and Args are Stack-built, neither user-controlled
 	cmd.Env = append(os.Environ(), spec.Env...)
 	cmd.ExtraFiles = spec.ExtraFiles
 	cmd.Stdout = os.Stdout

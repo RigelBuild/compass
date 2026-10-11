@@ -53,8 +53,9 @@ func newTestHandler(t *testing.T, secret []byte) (http.Handler, *recordingSink) 
 	return h, sink
 }
 
-func doPost(h http.Handler, event, delivery, sig string, body []byte) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, githubWebhookPath, strings.NewReader(string(body)))
+func doPost(t *testing.T, h http.Handler, event, delivery, sig string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, githubWebhookPath, strings.NewReader(string(body)))
 	if event != "" {
 		req.Header.Set(githubEventHeader, event)
 	}
@@ -74,7 +75,7 @@ func TestGitHubWebhookHandler_ValidEnqueues(t *testing.T) {
 	h, sink := newTestHandler(t, secret)
 	body := []byte(`{"action":"opened","issue":{"number":1,"html_url":"u"},"repository":{"full_name":"o/r"}}`)
 
-	rec := doPost(h, "issues", "d1", ghSign(secret, body), body)
+	rec := doPost(t, h, "issues", "d1", ghSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}
@@ -91,7 +92,7 @@ func TestGitHubWebhookHandler_BadSignature(t *testing.T) {
 	h, sink := newTestHandler(t, secret)
 	body := []byte(`{"action":"opened","issue":{"number":1},"repository":{"full_name":"o/r"}}`)
 
-	rec := doPost(h, "issues", "d1", "sha256=deadbeef", body)
+	rec := doPost(t, h, "issues", "d1", "sha256=deadbeef", body)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d, want 400", rec.Code)
 	}
@@ -110,7 +111,7 @@ func TestGitHubWebhookHandler_OversizedBody(t *testing.T) {
 	h := base.(*githubWebhookHandler)
 	h.maxBody = 16
 	big := []byte(`{"action":"opened","issue":{"number":1},"repository":{"full_name":"o/r"}}`)
-	rec := doPost(h, "issues", "d1", ghSign(secret, big), big)
+	rec := doPost(t, h, "issues", "d1", ghSign(secret, big), big)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("code = %d, want 413", rec.Code)
 	}
@@ -125,8 +126,8 @@ func TestGitHubWebhookHandler_Dedup(t *testing.T) {
 	body := []byte(`{"action":"opened","issue":{"number":1,"html_url":"u"},"repository":{"full_name":"o/r"}}`)
 	sig := ghSign(secret, body)
 
-	first := doPost(h, "issues", "dup", sig, body)
-	second := doPost(h, "issues", "dup", sig, body)
+	first := doPost(t, h, "issues", "dup", sig, body)
+	second := doPost(t, h, "issues", "dup", sig, body)
 	if first.Code != http.StatusOK || second.Code != http.StatusOK {
 		t.Fatalf("codes = %d,%d, want 200,200", first.Code, second.Code)
 	}
@@ -140,7 +141,7 @@ func TestGitHubWebhookHandler_IgnoredEventAcks(t *testing.T) {
 	h, sink := newTestHandler(t, secret)
 	body := []byte(`{"ref":"refs/heads/main"}`)
 
-	rec := doPost(h, "push", "d1", ghSign(secret, body), body)
+	rec := doPost(t, h, "push", "d1", ghSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}
@@ -156,7 +157,7 @@ func TestGitHubWebhookHandler_VerifiedMalformedAcksAndDrops(t *testing.T) {
 	// unparseable, so it is ack'd and dropped (never enqueued).
 	body := []byte(`{"action":"opened","issue":`)
 
-	rec := doPost(h, "issues", "d1", ghSign(secret, body), body)
+	rec := doPost(t, h, "issues", "d1", ghSign(secret, body), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}
@@ -170,7 +171,7 @@ func TestGitHubWebhookHandler_MissingSignature(t *testing.T) {
 	h, sink := newTestHandler(t, secret)
 	body := []byte(`{"action":"opened","issue":{"number":1,"html_url":"u"},"repository":{"full_name":"o/r"}}`)
 
-	rec := doPost(h, "issues", "d1", "", body)
+	rec := doPost(t, h, "issues", "d1", "", body)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d, want 400", rec.Code)
 	}
@@ -190,7 +191,7 @@ func TestGitHubWebhookHandler_SecretError(t *testing.T) {
 	)
 	body := []byte(`{"action":"opened","issue":{"number":1,"html_url":"u"},"repository":{"full_name":"o/r"}}`)
 
-	rec := doPost(h, "issues", "d1", ghSign(secret, body), body)
+	rec := doPost(t, h, "issues", "d1", ghSign(secret, body), body)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code = %d, want 503", rec.Code)
 	}
@@ -201,7 +202,7 @@ func TestGitHubWebhookHandler_SecretError(t *testing.T) {
 
 func TestGitHubWebhookHandler_RejectsGET(t *testing.T) {
 	h, _ := newTestHandler(t, []byte("shh"))
-	req := httptest.NewRequest(http.MethodGet, githubWebhookPath, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, githubWebhookPath, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {

@@ -115,11 +115,11 @@ const teardownConfirmBudget = 30 * time.Second
 //  7. A second `compass-stack down` after full teardown → exit 0 (idempotent
 //     "no stack" branch), proving a retried down is safe.
 func TestCrossProcessTeardown(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
 	}
 
-	ctx := context.Background() // test root context (rule://go-thread-context exemption for a _test.go root)
+	ctx := t.Context()
 
 	// 1. Build the three stack child binaries AND the compass-stack binary itself
 	// into one dir. The subprocesses resolve the children via exec.LookPath, so
@@ -142,7 +142,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 	// fresh `compass-stack down`, exactly as the app's teardown path does; its
 	// result is best-effort (the happy path asserts each down's exit explicitly).
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), downBudget)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), downBudget)
 		defer cancel()
 		// Best-effort teardown guard. It runs runStack directly (not mustRunStack)
 		// so a harness/infra hiccup or a non-zero down here is only LOGGED, never
@@ -271,7 +271,7 @@ func buildStackBinary(t *testing.T, binDir string) string {
 	}
 	moduleRoot := filepath.Join(wd, "..", "..") // go/cmd/compass-stack -> go
 	out := filepath.Join(binDir, "compass-stack")
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/compass-stack")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", out, "./cmd/compass-stack")
 	cmd.Dir = moduleRoot
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build compass-stack: %v\n%s", err, b)
@@ -378,7 +378,7 @@ func mustRunStack(ctx context.Context, t *testing.T, stackBin string, env []stri
 // reachable across the process boundary rather than waiting for it to become so.
 func waitServerAnswering(t *testing.T, deps stack.Deps, socketPath string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), probeTimeout)
 	defer cancel()
 	ticker := time.NewTicker(answerPollInterval)
 	defer ticker.Stop()

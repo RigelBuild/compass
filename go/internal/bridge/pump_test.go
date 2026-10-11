@@ -25,7 +25,7 @@ const testTimeout = 5 * time.Second
 func stubServer(t *testing.T, handler http.HandlerFunc) (socketPath string) {
 	t.Helper()
 	socketPath = filepath.Join(t.TempDir(), "daemon.sock")
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}

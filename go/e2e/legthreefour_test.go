@@ -49,7 +49,7 @@ const mentionMarker = "e2e-route-leg34-mention"
 // container-less sandbox. Every wait it makes is ctx-bounded (AwaitTurnSettled /
 // AwaitDelivery) — no sleeps, no polling, no retries.
 func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -179,7 +179,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// tells "spawn minted the account AND its container came up" apart from
 	// "account minted, container never started" — the name derivation asserted
 	// above cannot distinguish those.
-	if exec.Command("podman", "container", "exists", peerContainer).Run() != nil {
+	if exec.CommandContext(t.Context(), "podman", "container", "exists", peerContainer).Run() != nil {
 		t.Fatalf("peer container %q is not present in podman's runtime set — the scripted spawn minted the account but its container did not come up (design.md:655-659)", peerContainer)
 	}
 

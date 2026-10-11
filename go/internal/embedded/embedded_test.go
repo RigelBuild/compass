@@ -82,7 +82,7 @@ func (s *stubWhoAmIServer) WhoAmI(
 func serveWhoAmI(t *testing.T, srv *stubWhoAmIServer) string {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "server.sock")
-	ln, err := net.Listen("unix", socket)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}

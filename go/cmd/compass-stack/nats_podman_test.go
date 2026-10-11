@@ -56,16 +56,16 @@ const natsHealthyBudget = 30 * time.Second
 
 // TestNatsUpDown drives the bundled-NATS path end to end.
 func TestNatsUpDown(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background() // test root context (rule://go-thread-context exemption for a _test.go root)
+	ctx := t.Context()
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
 	env := stackEnv(t, binDir)
 
-	fx := newContainerFixture(t, shortRoot(t, "-nats"))
+	fx := newContainerFixture(ctx, t, shortRoot(t, "-nats"))
 	cfg := fx.cfg
 	recordPath := filepath.Join(cfg.StateDir, pgidRecordName)
 	pgName := derivedContainerName(cfg.StateDir)
@@ -76,7 +76,7 @@ func TestNatsUpDown(t *testing.T) {
 	// would have created, by their exact unique names (never a scan). Both
 	// best-effort: a guard failure must not fail an already-finished test.
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), downBudget)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), downBudget)
 		defer cancel()
 		if out, runErr, infraErr := runStack(cctx, t, stackBin, env, cfg.args("down")...); infraErr != nil {
 			t.Logf("cleanup guard: down harness error (ignored): %v", infraErr)
@@ -84,7 +84,7 @@ func TestNatsUpDown(t *testing.T) {
 			t.Logf("cleanup guard: down exited non-zero (ignored): %v\n%s", runErr, out)
 		}
 		for _, n := range []string{natsName, pgName} {
-			if out, err := exec.Command("podman", "rm", "--force", "--volumes", n).CombinedOutput(); err != nil {
+			if out, err := exec.CommandContext(cctx, "podman", "rm", "--force", "--volumes", n).CombinedOutput(); err != nil {
 				t.Logf("cleanup guard: podman rm %s (ignored): %v\n%s", n, err, out)
 			}
 		}
@@ -130,16 +130,16 @@ func TestNatsUpDown(t *testing.T) {
 // negative sibling of TestNatsUpDown, mirroring the collector's
 // TestExternalOTLPUpDown.
 func TestExternalNatsUpDown(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background() // test root context (rule://go-thread-context exemption for a _test.go root)
+	ctx := t.Context()
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
 	env := stackEnv(t, binDir)
 
-	fx := newContainerFixture(t, shortRoot(t, "-extnats"))
+	fx := newContainerFixture(ctx, t, shortRoot(t, "-extnats"))
 	cfg := fx.cfg
 	pgName := derivedContainerName(cfg.StateDir)
 	natsName := derivedNatsName(cfg.StateDir)
@@ -148,7 +148,7 @@ func TestExternalNatsUpDown(t *testing.T) {
 	brokerURL := startTestNats(t)
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), downBudget)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), downBudget)
 		defer cancel()
 		if out, runErr, infraErr := runStack(cctx, t, stackBin, env, cfg.args("down")...); infraErr != nil {
 			t.Logf("cleanup guard: down harness error (ignored): %v", infraErr)
@@ -156,7 +156,7 @@ func TestExternalNatsUpDown(t *testing.T) {
 			t.Logf("cleanup guard: down exited non-zero (ignored): %v\n%s", runErr, out)
 		}
 		for _, n := range []string{natsName, pgName} {
-			if out, err := exec.Command("podman", "rm", "--force", "--volumes", n).CombinedOutput(); err != nil {
+			if out, err := exec.CommandContext(cctx, "podman", "rm", "--force", "--volumes", n).CombinedOutput(); err != nil {
 				t.Logf("cleanup guard: podman rm %s (ignored): %v\n%s", n, err, out)
 			}
 		}
@@ -218,7 +218,7 @@ func waitNatsHealthy(t *testing.T, url string, budget time.Duration) {
 	deadline := time.Now().Add(budget)
 	client := &http.Client{Timeout: 3 * time.Second}
 	for {
-		if collectorHealthOK(client, url) {
+		if collectorHealthOK(t.Context(), client, url) {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -232,7 +232,11 @@ func waitNatsHealthy(t *testing.T, url string, budget time.Duration) {
 func assertNatsJetStreamPosture(t *testing.T, varzURL string) {
 	t.Helper()
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(varzURL)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, varzURL, nil)
+	if err != nil {
+		t.Fatalf("GET NATS varz %q: %v", varzURL, err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET NATS varz %q: %v", varzURL, err)
 	}

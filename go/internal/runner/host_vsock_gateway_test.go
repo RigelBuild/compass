@@ -217,7 +217,7 @@ func TestVsockProvisionTeardownClosesListener(t *testing.T) {
 	assertRecorded(t, engine.calls, "stop")
 	assertRecorded(t, engine.calls, "remove")
 	// The socket file is gone — a fresh bind at the path succeeds.
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("re-binding the suffixed path after Remove = %v; the socket file must be removed", err)
 	}

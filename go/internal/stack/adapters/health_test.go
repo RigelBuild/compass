@@ -32,7 +32,7 @@ func (s *infoService) GetServerInfo(_ context.Context, _ *connect.Request[compas
 func serveInfo(t *testing.T, version string, enrolledRunners ...*compassv1.EnrolledRunner) string {
 	t.Helper()
 	sockPath := filepath.Join(t.TempDir(), "server.sock")
-	listener, err := net.Listen("unix", sockPath)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", sockPath)
 	if err != nil {
 		t.Fatalf("net.Listen unix = %v", err)
 	}

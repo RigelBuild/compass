@@ -221,6 +221,7 @@ func containerCLI() string {
 // green suite, which would hide a broken local container runtime.
 func startContainer(t *testing.T, cli string) string {
 	t.Helper()
+	ctx := t.Context()
 	name := "compass-test-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	const (
 		password = "compass-test"
@@ -229,7 +230,7 @@ func startContainer(t *testing.T, cli string) string {
 
 	// -P publishes to an ephemeral host port so parallel runs don't collide.
 	//nolint:gosec // G204: containerCLI LookPath-resolves the runtime; all arguments are fixture-generated.
-	out, err := exec.Command(cli, "run", "-d", "--rm",
+	out, err := exec.CommandContext(ctx, cli, "run", "-d", "--rm",
 		"--name", name,
 		"-e", "POSTGRES_PASSWORD="+password,
 		"-e", "POSTGRES_DB=compass",
@@ -243,13 +244,13 @@ func startContainer(t *testing.T, cli string) string {
 	// is removed with it (see removeContainerArgs for why a bare rm --force
 	// leaks).
 	t.Cleanup(func() {
+		// t.Context() is canceled before cleanup runs; the removal must still complete.
 		//nolint:gosec // G204: runtime is LookPath-resolved; this removes only the fixture-minted container name.
-		_ = exec.Command(cli, removeContainerArgs(name)...).Run()
+		_ = exec.CommandContext(context.WithoutCancel(ctx), cli, removeContainerArgs(name)...).Run()
 	})
-
-	hostPort := publishedPort(t, cli, name, port)
+	hostPort := publishedPort(t, ctx, cli, name, port)
 	dsn := fmt.Sprintf("postgres://postgres:%s@127.0.0.1:%s/compass?sslmode=disable", password, hostPort)
-	waitReady(t, dsn)
+	waitReady(t, ctx, dsn)
 	return dsn
 }
 
@@ -271,10 +272,10 @@ func removeContainerArgs(name string) []string {
 
 // publishedPort reads the ephemeral host port the container's Postgres port maps
 // to.
-func publishedPort(t *testing.T, cli, name, containerPort string) string {
+func publishedPort(t *testing.T, ctx context.Context, cli, name, containerPort string) string {
 	t.Helper()
 	//nolint:gosec // G204: containerCLI LookPath-resolves the runtime; the name and port are fixture-generated.
-	out, err := exec.Command(cli, "port", name, containerPort).CombinedOutput()
+	out, err := exec.CommandContext(ctx, cli, "port", name, containerPort).CombinedOutput()
 	if err != nil {
 		t.Fatalf("pgtest: read published port: %v\n%s", err, out)
 	}
@@ -289,9 +290,8 @@ func publishedPort(t *testing.T, cli, name, containerPort string) string {
 }
 
 // waitReady polls until Postgres accepts a connection or the deadline passes.
-func waitReady(t *testing.T, dsn string) {
+func waitReady(t *testing.T, ctx context.Context, dsn string) {
 	t.Helper()
-	ctx := context.Background()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		conn, err := pgx.Connect(ctx, dsn)
@@ -336,7 +336,7 @@ const (
 // use StartSuitePostgresMain, which returns the error instead.
 func StartSuitePostgres(tb testing.TB, stateDir, sockDir string, port int) (dsn string, stop func()) {
 	tb.Helper()
-	dsn, stop, err := startSuitePostgres(stateDir, sockDir, port)
+	dsn, stop, err := startSuitePostgres(tb.Context(), stateDir, sockDir, port)
 	if err != nil {
 		tb.Fatalf("pgshare: start suite postgres: %v", err)
 	}
@@ -349,8 +349,8 @@ func StartSuitePostgres(tb testing.TB, stateDir, sockDir string, port int) (dsn 
 // the base DSN and a stop that SIGTERMs the child and waits it; on failure it
 // returns a non-nil error and a nil stop, having already reaped any child it
 // started.
-func StartSuitePostgresMain(stateDir, sockDir string, port int) (string, func(), error) {
-	return startSuitePostgres(stateDir, sockDir, port)
+func StartSuitePostgresMain(ctx context.Context, stateDir, sockDir string, port int) (string, func(), error) {
+	return startSuitePostgres(ctx, stateDir, sockDir, port)
 }
 
 // startSuitePostgres is the shared bring-up body behind the TB and TB-free
@@ -360,7 +360,7 @@ func StartSuitePostgresMain(stateDir, sockDir string, port int) (string, func(),
 // exec's the wrapper with the supervisor's argv, and gates readiness on a bounded
 // connect poll that also short-circuits if the child exits first. On any failure
 // it reaps a started child and returns a nil stop.
-func startSuitePostgres(stateDir, sockDir string, port int) (string, func(), error) {
+func startSuitePostgres(ctx context.Context, stateDir, sockDir string, port int) (string, func(), error) {
 	if stateDir == "" {
 		return "", nil, errors.New("pgshare: a state directory is required")
 	}
@@ -377,8 +377,10 @@ func startSuitePostgres(stateDir, sockDir string, port int) (string, func(), err
 	// <sockDir>/.s.PGSQL.<port>.
 	dsn := fmt.Sprintf("host=%s port=%d dbname=compass sslmode=disable", sockDir, port)
 
+	// The wrapper outlives this startup call and is stopped explicitly by its owner.
+	// Preserve caller values while detaching its lifetime from the startup context.
 	//nolint:gosec // G204: the wrapper is LookPath-resolved; arguments are suite-fixture paths and a constructed DSN.
-	cmd := exec.Command(bin, "--state-dir", stateDir, "--database", dsn)
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), bin, "--state-dir", stateDir, "--database", dsn)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return "", nil, fmt.Errorf("pgshare: start %s: %w", suitePGBinary, err)
@@ -399,7 +401,7 @@ func startSuitePostgres(stateDir, sockDir string, port int) (string, func(), err
 		<-done
 	}
 
-	if err := waitSuiteReady(dsn, done, &waitErr); err != nil {
+	if err := waitSuiteReady(ctx, dsn, done, &waitErr); err != nil {
 		stop() // idempotent SIGTERM; the child is already gone on the exit path
 		return "", nil, err
 	}
@@ -413,8 +415,7 @@ func startSuitePostgres(stateDir, sockDir string, port int) (string, func(), err
 // the failure). It never fails a test; it returns the error so both variants can
 // route it. done closing signals the child exited; *waitErr carries its status
 // and is read only after done is observed closed.
-func waitSuiteReady(dsn string, done <-chan struct{}, waitErr *error) error {
-	ctx := context.Background()
+func waitSuiteReady(ctx context.Context, dsn string, done <-chan struct{}, waitErr *error) error {
 	deadline := time.Now().Add(suiteReadyBudget)
 	for {
 		conn, err := pgx.Connect(ctx, dsn)

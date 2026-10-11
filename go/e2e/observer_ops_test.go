@@ -45,7 +45,7 @@ import (
 // than passing the absence. Only the CROSS-OWNER case is deferred to T4; this
 // same-owner smoke is T1's.
 func TestObserverAndSetupPrimitives(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -151,7 +151,7 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 // silently-admin client. AsObserver passes an unresolvable ref through unchanged
 // precisely so the server stays the authority on the code.
 func TestAsObserverUnknownHandleIsNotFound(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

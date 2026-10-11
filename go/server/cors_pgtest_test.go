@@ -71,8 +71,9 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 // Access-Control-Request-Method, the two headers rs/cors keys the preflight
 // path on) from origin to a real procedure path on handler and returns the
 // recorded response headers.
-func preflight(handler http.Handler, origin string) http.Header {
-	req := httptest.NewRequest(http.MethodOptions, compassv1connect.CompassServiceGetServerInfoProcedure, nil)
+func preflight(t *testing.T, handler http.Handler, origin string) http.Header {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, compassv1connect.CompassServiceGetServerInfoProcedure, nil)
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
 	rec := httptest.NewRecorder()
@@ -92,7 +93,7 @@ func TestNetworkDoorCORSPolicy(t *testing.T) {
 
 	t.Run("configured origin preflight is answered with exactly that origin, no wildcard", func(t *testing.T) {
 		h := buildDoorHandler(t, configured)
-		got := preflight(h, configured)
+		got := preflight(t, h, configured)
 
 		if origin := got.Get(corsAllowOrigin); origin != configured {
 			t.Fatalf("Access-Control-Allow-Origin = %q, want exactly %q (never a wildcard)", origin, configured)
@@ -112,7 +113,7 @@ func TestNetworkDoorCORSPolicy(t *testing.T) {
 
 	t.Run("credentialed CORS is never enabled", func(t *testing.T) {
 		h := buildDoorHandler(t, configured)
-		got := preflight(h, configured)
+		got := preflight(t, h, configured)
 
 		if creds := got.Get(corsAllowCredentials); creds != "" {
 			t.Fatalf("Access-Control-Allow-Credentials = %q, want unset (the door must not enable cookie CORS)", creds)
@@ -121,7 +122,7 @@ func TestNetworkDoorCORSPolicy(t *testing.T) {
 
 	t.Run("foreign origin preflight is not reflected", func(t *testing.T) {
 		h := buildDoorHandler(t, configured)
-		got := preflight(h, foreign)
+		got := preflight(t, h, foreign)
 
 		if origin := got.Get(corsAllowOrigin); origin != "" {
 			t.Fatalf("foreign-origin preflight got Access-Control-Allow-Origin = %q, want none (must not reflect a foreign origin)", origin)
@@ -130,7 +131,7 @@ func TestNetworkDoorCORSPolicy(t *testing.T) {
 
 	t.Run("empty config adds no CORS headers at all", func(t *testing.T) {
 		h := buildDoorHandler(t, "")
-		got := preflight(h, configured)
+		got := preflight(t, h, configured)
 
 		// The guard leaves netRoot as the bare mux when no origin is configured, so
 		// the CORS middleware is entirely absent. Its fingerprint (allow-origin,
@@ -170,7 +171,7 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "https://compass.example.com/l/session/session-123", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://compass.example.com/l/session/session-123", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound {

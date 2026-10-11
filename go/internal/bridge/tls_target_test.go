@@ -95,7 +95,11 @@ func TestTLSTargetDialUntrustedCA(t *testing.T) {
 
 	// The pump surfaces the transport error's string; drive the same dial
 	// directly to assert the typed cause via errors.AsType.
-	resp, err := tlsTarget(t, srv, nil).client.Get(srv.URL)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := tlsTarget(t, srv, nil).client.Do(req)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
@@ -269,7 +273,11 @@ func TestTLSTargetClientCloseIdleConnections(t *testing.T) {
 	target := tlsTarget(t, srv, certPEM)
 	client, _ := target.Client()
 
-	resp, err := client.Get(srv.URL)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET server: %v", err)
 	}

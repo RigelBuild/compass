@@ -81,7 +81,7 @@ func startDeadlineDoor(t *testing.T, timeout time.Duration) (*httptest.Server, <
 func driveDrip(t *testing.T, srv *httptest.Server, path string) *io.PipeWriter {
 	t.Helper()
 	pr, pw := io.Pipe()
-	req, err := http.NewRequest(http.MethodPost, srv.URL+path, pr)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+path, pr)
 	if err != nil {
 		t.Fatalf("build drip request for %q: %v", path, err)
 	}

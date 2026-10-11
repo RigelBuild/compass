@@ -22,7 +22,7 @@ import (
 // wait status rather than a hand-built one.
 func sigkilledExitError(t *testing.T) error {
 	t.Helper()
-	cmd := exec.Command("sleep", "60")
+	cmd := exec.CommandContext(t.Context(), "sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting child: %v", err)
 	}

@@ -229,7 +229,7 @@ func TestInGuestEgressGatewayDoesNotReachHost(t *testing.T) {
 	if !hostHasDefaultGateway(t) {
 		t.Skip("host has no IPv4 default-route gateway: passt would not map the gateway even without --no-map-gw, so this test cannot discriminate here")
 	}
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("host listener: %v", err)
 	}

@@ -81,11 +81,11 @@ func flipCurrentSymlink(t *testing.T, root, version string) {
 // It detects SELinux *enabled* (not specifically enforcing) on purpose: podman
 // labels mounts in permissive mode too, so "enabled" is the right predicate for
 // the MountLabel assertion.
-func selinuxLabelsMounts() bool {
+func selinuxLabelsMounts(ctx context.Context) bool {
 	if _, err := os.Stat("/sys/fs/selinux"); err != nil {
 		return false
 	}
-	out, err := exec.Command("podman", "info", "--format", "{{.Host.Security.SELinuxEnabled}}").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "podman", "info", "--format", "{{.Host.Security.SELinuxEnabled}}").CombinedOutput()
 	if err != nil {
 		return false
 	}
@@ -96,11 +96,11 @@ func selinuxLabelsMounts() bool {
 // substrate against a real container: read-only mount at the production path,
 // current resolution inside, and a live current flip visible with no remount.
 func TestConfigMountIsReadOnlyAndFlipVisibleLive(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
 
-	buildImage(t, t.TempDir())
+	buildImage(t, t.Context(), t.TempDir())
 
 	// Two versions, current -> v1 to start. root is the PARENT dir the Runner
 	// bind-mounts (config_materialize.go: mounting the parent keeps a later
@@ -109,13 +109,14 @@ func TestConfigMountIsReadOnlyAndFlipVisibleLive(t *testing.T) {
 
 	name := "compass-configmount-" + strconv.Itoa(os.Getpid())
 	facade := NewAgentRuntime(NewPodmanCLI())
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Force-remove any leftover from a crashed run so the name is free, and
 	// guard teardown (Go has no Drop): a failure before Teardown must not leak a
 	// container that collides with the next run.
-	_ = exec.Command("podman", "rm", "--force", name).Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", name).Run() })
+	cleanupCtx := context.WithoutCancel(ctx)
+	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run()
+	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run() })
 
 	// The exact production mount contract (host.go:152-168): parent root ->
 	// agentConfigMountPath, read-only. Keep this literal in sync with
@@ -168,7 +169,7 @@ func TestConfigMountIsReadOnlyAndFlipVisibleLive(t *testing.T) {
 	// disabled (e.g. this NixOS box) MountLabel is empty and :Z a no-op, so skip
 	// with a note. The runtime path (MountLabel read + non-empty check) is
 	// unverified pending an SELinux host.
-	if selinuxLabelsMounts() {
+	if selinuxLabelsMounts(ctx) {
 		label, err := NewPodmanCLI().MountLabel(ctx, handle.ID())
 		if err != nil {
 			t.Fatalf("read MountLabel on an SELinux host: %v", err)
@@ -184,7 +185,7 @@ func TestConfigMountIsReadOnlyAndFlipVisibleLive(t *testing.T) {
 	if err := facade.Teardown(ctx, handle); err != nil {
 		t.Fatalf("teardown: %v", err)
 	}
-	if runtimeExists(name) {
+	if runtimeExists(t.Context(), name) {
 		t.Fatal("container must be gone after teardown")
 	}
 }

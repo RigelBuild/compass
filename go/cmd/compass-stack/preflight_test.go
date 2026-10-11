@@ -85,7 +85,7 @@ func TestRunPreflightRuntimeBackendPrecedence(t *testing.T) {
 			t.Setenv("PATH", t.TempDir())
 			t.Setenv("COMPASS_RUNTIME_BACKEND", tt.envBackend)
 
-			err := runPreflight(tt.args)
+			err := runPreflight(t.Context(), tt.args)
 			if err == nil {
 				t.Fatal("expected required podman and secretspec checks to fail with an empty PATH")
 			}
@@ -142,7 +142,7 @@ func TestRunPreflightBackendValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("PATH", t.TempDir())
-			err := runPreflight([]string{"--runtime-backend", tt.backend})
+			err := runPreflight(t.Context(), []string{"--runtime-backend", tt.backend})
 			if err == nil {
 				t.Fatal("expected preflight error with an empty PATH or unknown backend")
 			}
@@ -241,7 +241,7 @@ func preflightTestResults(failures ...string) []preflightCheck {
 func TestPreflightReportsSecretSpec(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	err := runPreflight([]string{"--runtime-backend", "microvm"})
+	err := runPreflight(t.Context(), []string{"--runtime-backend", "microvm"})
 	if err == nil {
 		t.Fatal("expected preflight to fail with an empty PATH, got nil")
 	}

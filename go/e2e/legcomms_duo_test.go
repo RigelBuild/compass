@@ -119,7 +119,7 @@ func registerDuoFixtureOptions() {
 // leg. Every wait is event-gated and ctx-bounded (AwaitTurnSettled /
 // AwaitDelivery / AwaitControlDispatchOn) — no sleeps, no polling, no retries.
 func TestCommsTwoAgentConversation(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

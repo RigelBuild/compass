@@ -17,13 +17,13 @@ import (
 // Every fixture here takes WithForgeStub: the server declares the forge secrets
 // as required, and only the stub seeds them when the leg runs without the shared stack.
 func TestLegS3ArchiveRestartResume(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here")
 	}
 	ctx := context.Background()
 	t.Run("flush", func(t *testing.T) {
 		const reply = "s3 flush turn complete"
-		objectStore := WithObjectStore(startGarageFixture(t))
+		objectStore := WithObjectStore(startGarageFixture(ctx, t))
 		f := NewFixture(ctx, t, objectStore, WithForgeStub(), WithCannedScript(CannedText(reply)))
 		accountID, err := f.CreateAgent(ctx, "s3-flush", "S3 flush")
 		if err != nil {
@@ -77,8 +77,8 @@ func TestLegS3ArchiveRestartResume(t *testing.T) {
 func runS3Resume(t *testing.T, ctx context.Context, wholeStack bool) {
 	t.Helper()
 	const handle, reply1, reply2 = "s3-resume", "s3 first reply", "s3 second reply"
-	objectStore := WithObjectStore(startGarageFixture(t))
-	site := newPersistentSite(t)
+	objectStore := WithObjectStore(startGarageFixture(ctx, t))
+	site := newPersistentSite(ctx, t)
 	f := NewFixture(ctx, t, objectStore, WithForgeStub(), WithSite(site), WithCannedScript(CannedText("s3 unrouted turn")), WithCannedMarkerScript(s3Marker, CannedText(reply1), CannedText(reply2)))
 	accountID, err := f.CreateAgent(ctx, handle, "S3 resume")
 	if err != nil {

@@ -3,6 +3,7 @@
 package pgshare
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -116,7 +117,8 @@ func TestThrowawayContainerLeavesNoDanglingVolume(t *testing.T) {
 	}
 
 	name := "compass-voltest-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	out, err := exec.Command(cli, "run", "-d", "--rm",
+	ctx := t.Context()
+	out, err := exec.CommandContext(ctx, cli, "run", "-d", "--rm",
 		"--name", name,
 		"-e", "POSTGRES_PASSWORD=compass-test",
 		"-e", "POSTGRES_DB=compass",
@@ -129,7 +131,7 @@ func TestThrowawayContainerLeavesNoDanglingVolume(t *testing.T) {
 	// Belt-and-suspenders: if an assertion below t.Fatal's before the explicit
 	// removal, still reap the container and its volume so the test never leaks
 	// the very thing it defends against.
-	t.Cleanup(func() { _ = exec.Command(cli, removeContainerArgs(name)...).Run() })
+	t.Cleanup(func() { _ = exec.CommandContext(context.WithoutCancel(ctx), cli, removeContainerArgs(name)...).Run() })
 
 	vol := anonymousVolumeName(t, cli, name)
 	if vol == "" {
@@ -140,7 +142,7 @@ func TestThrowawayContainerLeavesNoDanglingVolume(t *testing.T) {
 	}
 
 	// The production removal path, verbatim.
-	if out, err := exec.Command(cli, removeContainerArgs(name)...).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, cli, removeContainerArgs(name)...).CombinedOutput(); err != nil {
 		t.Fatalf("remove container: %v\n%s", err, out)
 	}
 
@@ -153,7 +155,7 @@ func TestThrowawayContainerLeavesNoDanglingVolume(t *testing.T) {
 // or "" if it has none.
 func anonymousVolumeName(t *testing.T, cli, name string) string {
 	t.Helper()
-	out, err := exec.Command(cli, "inspect", name,
+	out, err := exec.CommandContext(t.Context(), cli, "inspect", name,
 		"-f", `{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}`,
 	).CombinedOutput()
 	if err != nil {
@@ -180,7 +182,7 @@ func anonymousVolumeName(t *testing.T, cli, name string) string {
 // failure to launch the CLI at all, is a real error and fails the test loudly.
 func volumeExists(t *testing.T, cli, vol string) bool {
 	t.Helper()
-	out, err := exec.Command(cli, "volume", "inspect", vol).CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), cli, "volume", "inspect", vol).CombinedOutput()
 	if err == nil {
 		return true
 	}
@@ -203,7 +205,7 @@ func volumeExists(t *testing.T, cli, vol string) bool {
 // they need no live Postgres and no container runtime.
 func TestStartSuitePostgresMainErrors(t *testing.T) {
 	t.Run("empty state dir errors", func(t *testing.T) {
-		dsn, stop, err := StartSuitePostgresMain("", t.TempDir(), 5432)
+		dsn, stop, err := StartSuitePostgresMain(t.Context(), "", t.TempDir(), 5432)
 		if err == nil {
 			t.Fatal("StartSuitePostgresMain with empty state dir: want error, got nil")
 		}
@@ -219,7 +221,7 @@ func TestStartSuitePostgresMainErrors(t *testing.T) {
 		// Shadow PATH with a dir that holds no compass-postgres so LookPath fails
 		// deterministically regardless of what is installed on the box.
 		t.Setenv("PATH", t.TempDir())
-		dsn, stop, err := StartSuitePostgresMain(t.TempDir(), t.TempDir(), 5432)
+		dsn, stop, err := StartSuitePostgresMain(t.Context(), t.TempDir(), t.TempDir(), 5432)
 		if err == nil {
 			t.Fatal("StartSuitePostgresMain with no compass-postgres on PATH: want error, got nil")
 		}
@@ -254,7 +256,7 @@ func TestStartSuitePostgresMainChildExitShortCircuits(t *testing.T) {
 	t.Setenv("PATH", binDir)
 
 	start := time.Now()
-	dsn, stop, err := StartSuitePostgresMain(t.TempDir(), t.TempDir(), 5432)
+	dsn, stop, err := StartSuitePostgresMain(t.Context(), t.TempDir(), t.TempDir(), 5432)
 	elapsed := time.Since(start)
 
 	if err == nil {

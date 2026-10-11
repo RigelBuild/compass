@@ -193,10 +193,9 @@ func serve(ctx context.Context, cfg pgConfig) error {
 	// unix_socket_directories to the DSN host so compass-server's DSN resolves to
 	// this exact socket.
 
-	// The child is NOT started with the signal-cancelled ctx: we forward signals to
-	// it explicitly below so we control shutdown ordering (CommandContext would
-	// SIGKILL it, the abrupt shutdown we want to avoid).
-	cmd := exec.Command(postgresBin, //nolint:gosec // G204: the embedded-postgres seam — postgresBin is LookPath-resolved and the args are wrapper-built from pgConfig, neither user-controlled
+	// This child outlives the signal context because signals are forwarded to it
+	// explicitly below; CommandContext would kill it before graceful shutdown.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), postgresBin, //nolint:gosec // G204: the embedded-postgres seam — postgresBin is LookPath-resolved and the args are wrapper-built from pgConfig, neither user-controlled
 		"-D", cfg.DataDir,
 		"-k", cfg.SocketDir,
 		"-p", cfg.Port,

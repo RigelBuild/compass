@@ -307,7 +307,7 @@ func (s *supervisor) Exec(
 		defer cancel()
 	}
 
-	cmd, err := s.buildChild(m.GetCommand(), uid, m.Workdir, m.GetEnv())
+	cmd, err := s.buildChild(ctx, m.GetCommand(), uid, m.Workdir, m.GetEnv())
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +383,7 @@ func (s *supervisor) ExecStream(
 	if err != nil {
 		return err
 	}
-	cmd, err := s.buildChild(start.GetCommand(), uid, start.Workdir, start.GetEnv())
+	cmd, err := s.buildChild(ctx, start.GetCommand(), uid, start.Workdir, start.GetEnv())
 	if err != nil {
 		return err
 	}
@@ -586,7 +586,7 @@ func (s *supervisor) mergeEnv(execEnv map[string]string) []string {
 // group (Setpgid), run under the resolved uid's credential with an empty cap
 // set. stdin/stdout/stderr are the caller's to wire — this only fixes the
 // spawn-shape invariants common to one-shot and streaming exec.
-func (s *supervisor) buildChild(argv []string, uid uint32, workdir *string, env map[string]string) (*exec.Cmd, error) {
+func (s *supervisor) buildChild(ctx context.Context, argv []string, uid uint32, workdir *string, env map[string]string) (*exec.Cmd, error) {
 	if len(argv) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("exec command is empty: command[0] is the program"))
@@ -600,7 +600,9 @@ func (s *supervisor) buildChild(argv []string, uid uint32, workdir *string, env 
 	// exec.Command resolves a bare argv[0] against guestd's OWN process $PATH,
 	// but guestd is PID 1 with no PATH; override Path with the session-env
 	// resolution above and clear the (now-irrelevant) process-PATH lookup error.
-	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv is the caller's command by design — this IS the exec surface
+	// The exec belongs to the provisioned guest session and is stopped explicitly,
+	// so it must survive the RPC context that starts it.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...) //nolint:gosec // argv is the caller's command by design — this IS the exec surface
 	cmd.Path = prog
 	cmd.Err = nil
 	if workdir != nil {

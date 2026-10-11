@@ -22,7 +22,7 @@ import (
 )
 
 func TestLegS3DurabilityValves(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here")
 	}
 	ctx := context.Background() // test root context
@@ -52,13 +52,13 @@ func runS3RunnerRestart(t *testing.T, ctx context.Context) {
 
 func runS3DurabilityBase(t *testing.T, ctx context.Context, handle string, site *fixtureSite) (*Fixture, *store.Store, string, string, string) {
 	t.Helper()
-	g := startGarageFixture(t)
+	g := startGarageFixture(ctx, t)
 	toolScript := []CannedTurn{CannedToolCall("compass_set_status", `{"activity":"durability driving"}`), CannedText("durability first reply")}
 	secondScript := []CannedTurn{CannedToolCall("compass_set_status", `{"activity":"durability resumed"}`), CannedText("durability second reply")}
 	// The second marker registers first: a resumed request still carries the first turn's text, and the first registered match wins.
 	options := []fixtureOption{WithObjectStore(g), WithSafetyValveCap(100), WithForgeStub(), WithCannedScript(CannedText("durability fallback")), WithCannedMarkerScript("durability-second", secondScript...), WithCannedMarkerScript("durability-first", toolScript...)}
 	if site != nil {
-		*site = newPersistentSite(t)
+		*site = newPersistentSite(ctx, t)
 		options = append(options, WithSite(*site))
 	}
 	f := NewFixture(ctx, t, options...)

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"slices"
@@ -27,14 +28,14 @@ func TestExecStreamingStopKillsInContainerProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecStreaming: %v", err)
 	}
-	waitForTop(t, name, func(procs []string) bool {
+	waitForTop(t, t.Context(), name, func(procs []string) bool {
 		return hasProcess(procs, "sleep 3000") && hasProcess(procs, "sleep 3001")
 	})
 
 	if err := stream.Process.Terminate(); err != nil && !isClientKill(err) {
 		t.Fatalf("Terminate: unexpected error %v", err)
 	}
-	waitForTop(t, name, func(procs []string) bool {
+	waitForTop(t, t.Context(), name, func(procs []string) bool {
 		return !hasProcess(procs, "sleep 3000") && !hasProcess(procs, "sleep 3001")
 	})
 }
@@ -50,14 +51,14 @@ func TestExecStreamingStopSweepsDetachedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecStreaming: %v", err)
 	}
-	waitForTop(t, name, func(procs []string) bool {
+	waitForTop(t, t.Context(), name, func(procs []string) bool {
 		return hasProcess(procs, "sleep 3000") && hasProcess(procs, "hold-3002")
 	})
 
 	if err := stream.Process.Terminate(); err != nil && !isClientKill(err) {
 		t.Fatalf("Terminate: unexpected error %v", err)
 	}
-	waitForTop(t, name, func(procs []string) bool {
+	waitForTop(t, t.Context(), name, func(procs []string) bool {
 		return !hasProcess(procs, "sleep 3000") && hasProcess(procs, "hold-3002")
 	})
 
@@ -68,7 +69,7 @@ func TestExecStreamingStopSweepsDetachedSession(t *testing.T) {
 	if err := sweeper.SweepExecSessions(t.Context(), id, strconv.FormatUint(uint64(agentuid.AgentUID), 10)); err != nil {
 		t.Fatalf("SweepExecSessions: %v", err)
 	}
-	waitForTop(t, name, func(procs []string) bool {
+	waitForTop(t, t.Context(), name, func(procs []string) bool {
 		return !hasProcess(procs, "sleep 3000") && !hasProcess(procs, "hold-3002") && hasProcess(procs, "sleep infinity")
 	})
 	running, err := cli.Running(t.Context(), name)
@@ -110,13 +111,15 @@ func agentExecSpec(command ...string) runtime.StreamingExecSpec {
 // `sleep infinity` keep-alive and removes it at cleanup.
 func startKeepAlive(t *testing.T) (*runtime.PodmanCLI, runtime.WorkloadID, string) {
 	t.Helper()
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 	cli := runtime.NewPodmanCLI()
 	name := "compass-e2e-exec-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	t.Cleanup(func() {
-		if out, err := exec.Command("podman", "rm", "--force", "--time", "0", name).CombinedOutput(); err != nil {
+		// The fixture container must be removed after t.Context is canceled.
+		cleanupCtx := context.WithoutCancel(t.Context())
+		if out, err := exec.CommandContext(cleanupCtx, "podman", "rm", "--force", "--time", "0", name).CombinedOutput(); err != nil {
 			t.Logf("cleanup podman rm %s: %v: %s", name, err, out)
 		}
 	})
@@ -151,11 +154,11 @@ const listProcs = `for d in /proc/[0-9]*; do read -r s < "$d/stat" || continue; 
 
 // waitForTop polls the container's process list until done accepts the live
 // processes. Zombies are excluded: the keep-alive never reaps an orphan.
-func waitForTop(t *testing.T, name string, done func([]string) bool) {
+func waitForTop(t *testing.T, ctx context.Context, name string, done func([]string) bool) {
 	t.Helper()
 	var procs []string
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-		out, err := exec.Command("podman", "exec", name, "sh", "-c", listProcs).CombinedOutput()
+		out, err := exec.CommandContext(ctx, "podman", "exec", name, "sh", "-c", listProcs).CombinedOutput()
 		if err != nil {
 			t.Fatalf("list processes in %s: %v: %s", name, err, out)
 		}

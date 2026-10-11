@@ -41,7 +41,6 @@ linters:
     - exhaustruct_v5 # successor to exhaustruct (golangci-lint 2.13), same idiom fight
     - varnamelen # short names (i, g, ok, ul) are idiomatic Go, not a defect
     - ireturn # returning interfaces (constructors, test helpers) is idiomatic Go
-    - noctx # process-lifetime listeners, fixture subprocesses and a stale-socket probe have no caller ctx; enabling it needs per-site triage, tracked separately
     - gochecknoglobals # sentinel errors are package-level vars by design (errors.Is/%w, F-oops)
     - err113 # demands a sentinel var per dynamic error; inline fmt.Errorf leaf errors are idiomatic
     - noinlineerr # `if err := f(); err != nil` is THE idiomatic Go form

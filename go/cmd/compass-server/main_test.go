@@ -193,7 +193,7 @@ func TestBuildServeConfigClosesAdoptedListenerOnLaterError(t *testing.T) {
 	if err == nil {
 		t.Fatal("buildServeConfig with a wildcard origin = nil, want error")
 	}
-	if conn, err := net.Dial("tcp", addr); err == nil {
+	if conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr); err == nil {
 		_ = conn.Close()
 		t.Fatal("adopted listener still accepts after a config error")
 	}

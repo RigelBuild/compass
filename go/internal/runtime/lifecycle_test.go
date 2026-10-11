@@ -53,20 +53,18 @@ RUN apk add --no-cache git nftables \
 
 // podmanUsable reports whether rootless podman can run a container here. A
 // missing binary or broken rootless setup means skip, not fail.
-func podmanUsable() bool {
-	out, err := exec.Command("podman", "run", "--rm", "docker.io/library/alpine:latest", "true").CombinedOutput()
-	_ = out
-	return err == nil
+func podmanUsable(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "podman", "run", "--rm", "docker.io/library/alpine:latest", "true").Run() == nil
 }
 
 // buildImage builds the agent image from containerfile into local storage.
-func buildImage(t *testing.T, dir string) {
+func buildImage(t *testing.T, ctx context.Context, dir string) {
 	t.Helper()
 	file := filepath.Join(dir, "Containerfile")
 	if err := os.WriteFile(file, []byte(containerfile), 0o644); err != nil {
 		t.Fatalf("write Containerfile: %v", err)
 	}
-	out, err := exec.Command("podman", "build", "-t", imageTag, "-f", file, dir).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "podman", "build", "-t", imageTag, "-f", file, dir).CombinedOutput()
 	if err != nil {
 		t.Fatalf("podman build failed: %v\n%s", err, out)
 	}
@@ -74,27 +72,28 @@ func buildImage(t *testing.T, dir string) {
 
 // runtimeExists is a direct `podman container exists` check for the
 // post-teardown assertion, independent of the runtime under test.
-func runtimeExists(name string) bool {
-	return exec.Command("podman", "container", "exists", name).Run() == nil
+func runtimeExists(ctx context.Context, name string) bool {
+	return exec.CommandContext(ctx, "podman", "container", "exists", name).Run() == nil
 }
 
 func TestPerAgentContainerLifecycle(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
 
 	tmp := t.TempDir()
-	buildImage(t, tmp)
+	buildImage(t, t.Context(), tmp)
 
 	name := "compass-lifecycle-" + strconv.Itoa(os.Getpid())
 	facade := NewAgentRuntime(NewPodmanCLI())
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Force-remove any leftover from a previous crashed run so the name is free,
 	// and register a cleanup guard (Go has no Drop): a panic/failure before
 	// teardown must never leak a container that collides with the next run.
-	_ = exec.Command("podman", "rm", "--force", name).Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", name).Run() })
+	cleanupCtx := context.WithoutCancel(t.Context())
+	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run()
+	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run() })
 
 	spec := AgentSpec{
 		Name:  name,
@@ -169,7 +168,7 @@ func TestPerAgentContainerLifecycle(t *testing.T) {
 	if err := facade.Teardown(ctx, handle); err != nil {
 		t.Fatalf("teardown: %v", err)
 	}
-	if runtimeExists(name) {
+	if runtimeExists(t.Context(), name) {
 		t.Fatal("container must be gone after teardown")
 	}
 }

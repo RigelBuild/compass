@@ -87,7 +87,7 @@ func (b boundListeners) close() {
 // inherited network listener arrives already bound. On any error it closes
 // every listener it holds, so the caller never sees a half-bound value. The dev
 // endpoint must be loopback and the network door requires TLS.
-func bindListeners(cfg ServeConfig) (boundListeners, error) {
+func bindListeners(ctx context.Context, cfg ServeConfig) (boundListeners, error) {
 	var b boundListeners
 	if cfg.DevHTTP != nil {
 		if !cfg.DevHTTP.Addr().IsLoopback() {
@@ -96,7 +96,7 @@ func bindListeners(cfg ServeConfig) (boundListeners, error) {
 			}
 			return boundListeners{}, fmt.Errorf("dev_http must be a loopback address (127.0.0.1 or ::1), got %s", cfg.DevHTTP)
 		}
-		l, err := net.Listen("tcp", cfg.DevHTTP.String())
+		l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.DevHTTP.String())
 		if err != nil {
 			if cfg.ListenListener != nil {
 				_ = cfg.ListenListener.Close()
@@ -109,7 +109,7 @@ func bindListeners(cfg ServeConfig) (boundListeners, error) {
 		l := cfg.ListenListener
 		if l == nil {
 			var err error
-			l, err = net.Listen("tcp", cfg.Listen)
+			l, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Listen)
 			if err != nil {
 				b.close()
 				return boundListeners{}, fmt.Errorf("binding network door at %s: %w", cfg.Listen, err)

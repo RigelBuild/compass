@@ -90,8 +90,9 @@ var podmanProbeLog sync.Once
 // podmanUsable reports whether rootless podman can run a container here. A
 // missing binary or broken rootless setup means skip, not fail — mirrors
 // internal/runtime/lifecycle_test.go:56-60.
-func podmanUsable() bool {
-	out, err := exec.Command("podman", "run", "--rm", agentImage, "true").CombinedOutput()
+func podmanUsable(t *testing.T) bool {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), "podman", "run", "--rm", agentImage, "true").CombinedOutput()
 	if err != nil {
 		// The skip message alone cannot tell a missing image from a broken userns.
 		podmanProbeLog.Do(func() {
@@ -115,7 +116,7 @@ func buildBinariesFromModuleRoot(t *testing.T) string {
 	moduleRoot := filepath.Join(wd, "..", "..") // go/cmd/compass-stack -> go
 	binDir := t.TempDir()
 	for _, name := range []string{"compass-postgres", "compass-server", "compass-runner"} {
-		cmd := exec.Command("go", "build", "-o", filepath.Join(binDir, name), "./cmd/"+name)
+		cmd := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(binDir, name), "./cmd/"+name)
 		cmd.Dir = moduleRoot
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("build %s: %v\n%s", name, err, out)
@@ -129,12 +130,12 @@ func buildBinariesFromModuleRoot(t *testing.T) string {
 // and the only way to a fixed port the config accepts (Config.Validate rejects
 // :0; there is no bound-address discovery API). All listeners are held open
 // until every port is read so the kernel cannot hand the same port twice.
-func freePorts(t *testing.T, n int) []int {
+func freePorts(ctx context.Context, t *testing.T, n int) []int {
 	t.Helper()
 	lns := make([]net.Listener, 0, n)
 	ports := make([]int, 0, n)
 	for range n {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("reserve port: %v", err)
 		}
@@ -178,7 +179,7 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 		t.Fatalf("mkdir runtime dir: %v", err)
 	}
 
-	ports := freePorts(t, 2)
+	ports := freePorts(t.Context(), t, 2)
 	listenPort, pgPort := ports[0], ports[1]
 
 	// The DSN host is the socket DIRECTORY postgres -k listens on (libpq unix
@@ -264,7 +265,7 @@ func assertServerGone(t *testing.T, ctx context.Context, deps stack.Deps, socket
 // fail — proof the postgres child is gone after Down.
 func assertPostgresGone(t *testing.T, pgSock string) {
 	t.Helper()
-	conn, err := net.DialTimeout("unix", pgSock, probeTimeout)
+	conn, err := (&net.Dialer{Timeout: probeTimeout}).DialContext(t.Context(), "unix", pgSock)
 	if err == nil {
 		_ = conn.Close() // reachable socket means the child is still up — closing is only tidiness before we fail
 		t.Fatal("postgres still accepting on its socket after Down; the postgres child was not stopped")
@@ -272,7 +273,7 @@ func assertPostgresGone(t *testing.T, pgSock string) {
 }
 
 func TestStackIntegration(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
 	}
 

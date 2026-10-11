@@ -90,7 +90,7 @@ func registerToolsFixtureOptions() {
 // ordered marker script. Every turn is marker-routed so none races the shared
 // stack's positional counter, and every wait is event-gated.
 func TestCommsNativeToolsThroughRelay(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

@@ -37,8 +37,8 @@ const agentRemapImage = "compass-agent:latest"
 
 // agentRemapImageExists reports whether the real agent image is present in
 // local storage, mirroring config_delivery_e2e_test.go's agentImageExists.
-func agentRemapImageExists() bool {
-	return exec.Command("podman", "image", "exists", agentRemapImage).Run() == nil
+func agentRemapImageExists(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "podman", "image", "exists", agentRemapImage).Run() == nil
 }
 
 // createStartExec creates + starts a container from spec, execs command inside
@@ -51,8 +51,9 @@ func createStartExec(t *testing.T, ctx context.Context, cli *PodmanCLI, spec Wor
 	// guard teardown (Go has no Drop). Deferred-cleanup discards in test code:
 	// the rm is best-effort — a failure means nothing to clean, not a test
 	// failure.
-	_ = exec.Command("podman", "rm", "--force", spec.Name).Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", spec.Name).Run() })
+	cleanupCtx := context.WithoutCancel(ctx)
+	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", spec.Name).Run()
+	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", spec.Name).Run() })
 
 	id, err := cli.Create(ctx, spec)
 	if err != nil {
@@ -77,10 +78,10 @@ func createStartExec(t *testing.T, ctx context.Context, cli *PodmanCLI, spec Wor
 // --userns=keep-id (in-container uid == host uid); GREEN once createArgs emits
 // keep-id:uid=<UID>.
 func TestKeepIDRemapMapsHostUIDToSpecUID(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	hostUID := os.Getuid()
 	// A target distinct from the host uid so the mapping is observable. 2000 is
@@ -112,10 +113,10 @@ func TestKeepIDRemapMapsHostUIDToSpecUID(t *testing.T) {
 // user to container uid N, so container-N writes still round-trip back to the
 // invoker on the host.
 func TestKeepIDRemapBindMountRoundTrip(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	dir := t.TempDir()
 	spec := WorkloadSpec{
@@ -148,13 +149,13 @@ func TestKeepIDRemapBindMountRoundTrip(t *testing.T) {
 // the baked agent uid (1000). Skipped when the image is absent (it is the heavy
 // dogfood nix build, not an in-test one), mirroring config_delivery_e2e_test.
 func TestKeepIDRemapAgentOwnsNix(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	if !agentRemapImageExists() {
+	if !agentRemapImageExists(t.Context()) {
 		t.Skip(agentRemapImage + " not present in local storage")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	spec := WorkloadSpec{
 		Image:   agentRemapImage,

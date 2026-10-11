@@ -20,7 +20,7 @@ import (
 // primitive derives its own deterministic per-call deadline internally from the
 // passed-in ctx via the fixture clients; the outer ctx is the test root.
 func TestLegTwoPrimitives(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
@@ -77,7 +77,7 @@ func TestLegTwoPrimitives(t *testing.T) {
 // primitives have no hermetic unit shape (they need a live settling session), so
 // their proof rides this scenario — deliberately NOT faking a frame stream.
 func TestLegTwoRealTurn(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

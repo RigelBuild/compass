@@ -100,7 +100,7 @@ func TestSeededRootRoleIsSpawnable(t *testing.T) {
 // store, so the dead DSN is never dialed, and failStartup unlinks the socket.
 func TestServeFailsWithoutReachableNats(t *testing.T) {
 	// A port that was free a moment ago, with no listener now.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve port: %v", err)
 	}

@@ -23,10 +23,10 @@ import (
 // with containers created from that image running `sleep infinity` as uid 1000
 // — the production keep-alive-plus-exec shape (lifecycle_test.go).
 func TestContractSuite_Podman(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	buildImage(t, t.TempDir())
+	buildImage(t, t.Context(), t.TempDir())
 
 	caps := backendCaps{
 		name: "podman",

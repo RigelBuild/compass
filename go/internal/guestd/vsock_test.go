@@ -21,7 +21,7 @@ import (
 )
 
 func TestServeHandshakeHealthOverH2C(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestServeHandshakeReportsServeFault(t *testing.T) {
 	// A listener closed out from under the server makes Serve return a non-
 	// ErrServerClosed error before ctx is cancelled — the fail-closed serve
 	// fault: the handshake is no longer answered and run must surface it.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

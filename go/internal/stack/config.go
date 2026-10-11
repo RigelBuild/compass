@@ -3,6 +3,7 @@
 package stack
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -221,7 +222,7 @@ func loopbackEndpoint(field string, port int) (string, error) {
 
 // checkBundledPortsDistinct refuses two host binds of one spawn sharing a port
 // before any child starts. It is not in Validate: attach and down use no ports.
-func (c Config) checkBundledPortsDistinct() error {
+func (c Config) checkBundledPortsDistinct(ctx context.Context) error {
 	type port struct {
 		field string
 		port  int
@@ -230,7 +231,7 @@ func (c Config) checkBundledPortsDistinct() error {
 	add := func(field, addr string) {
 		// LookupPort also maps a service name such as "http", which net.Listen accepts.
 		if _, p, ok := splitPort(addr); ok {
-			if n, err := net.LookupPort("tcp", p); err == nil {
+			if n, err := net.DefaultResolver.LookupPort(ctx, "tcp", p); err == nil {
 				ports = append(ports, port{field, n})
 			}
 		}

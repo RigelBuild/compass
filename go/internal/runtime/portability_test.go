@@ -82,11 +82,11 @@ func resolveRealImage() string {
 // single-user profile's absolute bin path. Either hit counts; both misses mean
 // no nix. Skip-not-fail semantics stay (a false skip disables the whole proof),
 // so the probe is deliberately generous about where nix may live.
-func imageHasNix(ref string) bool {
-	if exec.Command("podman", "image", "exists", ref).Run() != nil {
+func imageHasNix(ctx context.Context, ref string) bool {
+	if exec.CommandContext(ctx, "podman", "image", "exists", ref).Run() != nil {
 		return false
 	}
-	out, err := exec.Command(
+	out, err := exec.CommandContext(ctx,
 		"podman", "run", "--rm", "--entrypoint=", ref,
 		"sh", "-c", "command -v nix || test -x /nix/var/nix/profiles/default/bin/nix && echo nix",
 	).CombinedOutput()
@@ -96,10 +96,10 @@ func imageHasNix(ref string) bool {
 // requireRealImage skips unless a real, nix-carrying agent image is available.
 // A missing/stand-in image is a skip (the proof cannot run here), never a fail —
 // but it will NOT silently accept an image without nix as if it proved anything.
-func requireRealImage(t *testing.T) string {
+func requireRealImage(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	ref := resolveRealImage()
-	if !imageHasNix(ref) {
+	if !imageHasNix(ctx, ref) {
 		t.Skipf(
 			"no real agent image with an in-image nix at %q (set %s to a built "+
 				"compass-agent image); portability proof cannot run here",
@@ -114,19 +114,20 @@ func requireRealImage(t *testing.T) string {
 // in-image store is agent-owned and self-sufficient and that direnv activates a
 // workspace .envrc against it — with no host /nix mount.
 func TestRealImagePortability(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	image := requireRealImage(t)
+	image := requireRealImage(t, t.Context())
 
 	name := "compass-portability-" + strconv.Itoa(os.Getpid())
 	facade := NewAgentRuntime(NewPodmanCLI())
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Free the name from any crashed prior run, and guard against leaking a
 	// container on a mid-test failure (Go has no Drop).
-	_ = exec.Command("podman", "rm", "--force", name).Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", name).Run() })
+	cleanupCtx := context.WithoutCancel(ctx)
+	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run()
+	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run() })
 
 	spec := AgentSpec{
 		Name:  name,

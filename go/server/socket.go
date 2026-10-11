@@ -5,6 +5,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -60,10 +61,10 @@ func parentDir(socketPath string) string {
 // unconditional remover that would defeat the identity-guarded cleanupSocket and
 // delete a successor server's rebound socket when this server drains, so removal
 // is left solely to cleanupSocket here.
-func listenUnixPrivate(path string) (net.Listener, error) {
+func listenUnixPrivate(ctx context.Context, path string) (net.Listener, error) {
 	prev := syscall.Umask(0o177)
 	defer syscall.Umask(prev)
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +132,7 @@ func ensurePrivateDir(dir string) error {
 //
 // This serializes correctly against a sequential restart but not against two
 // servers racing to start on the same path at once.
-func clearStaleSocket(socketPath string) error {
+func clearStaleSocket(ctx context.Context, socketPath string) error {
 	info, err := os.Lstat(socketPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil // nothing to do
@@ -147,7 +148,7 @@ func clearStaleSocket(socketPath string) error {
 	// already-gone connect proves staleness — any other probe error (timeout,
 	// permission, descriptor exhaustion) is propagated, so a transient failure never
 	// unlinks a live server's socket.
-	conn, err := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
+	conn, err := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "unix", socketPath)
 	if err == nil {
 		conn.Close() //nolint:errcheck,gosec // the probe dial succeeded; closing the probe conn, its result is irrelevant to the liveness check (errcheck + its gosec G104 twin)
 		return fmt.Errorf("refusing to start: another compass-server is already serving at %s", socketPath)

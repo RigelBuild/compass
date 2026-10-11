@@ -325,7 +325,7 @@ func TestSunPathMaxMatchesTheKernel(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatalf("mkdir %q: %v", filepath.Dir(path), err)
 		}
-		ln, err := net.Listen("unix", path)
+		ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 		if err != nil {
 			return path, err
 		}

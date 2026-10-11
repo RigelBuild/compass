@@ -33,7 +33,7 @@ import (
 // podmanUsable-guarded so a container-less sandbox SKIPS rather than fails. The
 // only wait is NewFixture's own event-gated readiness; this test adds none.
 func TestSeedSettledBeforeFixtureReturns(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

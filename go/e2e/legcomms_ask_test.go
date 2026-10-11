@@ -86,7 +86,7 @@ func registerAskFixtureOptions() {
 // evidence is independent: the DELIVER injection the agent's own session
 // dispatched, and the answer's render in its durable transcript.
 func TestCommsAskRoundTripThroughAgentLoop(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 

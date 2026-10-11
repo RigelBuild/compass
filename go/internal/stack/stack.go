@@ -339,7 +339,7 @@ func (s *Stack) startRunner(ctx context.Context) error {
 // recorded on the Stack before the next step, so drainChildren can reverse
 // exactly what started.
 func (s *Stack) spawnChain(ctx context.Context) error {
-	if err := s.cfg.checkBundledPortsDistinct(); err != nil {
+	if err := s.cfg.checkBundledPortsDistinct(ctx); err != nil {
 		return err
 	}
 	// 0. Bind the network door before any child starts, so no other process can

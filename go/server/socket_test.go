@@ -222,7 +222,7 @@ func TestListenUnixPrivateBirthsSocket0600UnderPermissiveUmask(t *testing.T) {
 	defer syscall.Umask(prev)
 
 	path := filepath.Join(t.TempDir(), "compass.sock")
-	l, err := listenUnixPrivate(path)
+	l, err := listenUnixPrivate(t.Context(), path)
 	if err != nil {
 		t.Fatalf("listenUnixPrivate: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestListenUnixPrivateRetainsSocketOnClose(t *testing.T) {
 	// true, Close() would unconditionally delete the path and clobber a successor
 	// server's rebound socket when this server drains, defeating the identity guard.
 	path := filepath.Join(t.TempDir(), "s.sock")
-	l, err := listenUnixPrivate(path)
+	l, err := listenUnixPrivate(t.Context(), path)
 	if err != nil {
 		t.Fatalf("listenUnixPrivate: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestListenUnixPrivateRetainsSocketOnClose(t *testing.T) {
 
 func TestClearStaleSocketNoopWhenNothingAtPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "compass.sock")
-	if err := clearStaleSocket(path); err != nil {
+	if err := clearStaleSocket(t.Context(), path); err != nil {
 		t.Fatalf("clearStaleSocket on missing path = %v, want nil", err)
 	}
 }
@@ -280,7 +280,7 @@ func TestClearStaleSocketRefusesNonSocketFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("regular file"), 0o600); err != nil {
 		t.Fatalf("write regular file: %v", err)
 	}
-	if err := clearStaleSocket(path); err == nil {
+	if err := clearStaleSocket(t.Context(), path); err == nil {
 		t.Fatal("clearStaleSocket on a regular file = nil, want refusal error")
 	}
 	// It refused rather than deleted: the file must survive.
@@ -298,7 +298,7 @@ func TestClearStaleSocketRemovesStaleSocket(t *testing.T) {
 	// unlink-on-close, which would usually remove the file and leave this
 	// test's removal path unexercised; SetUnlinkOnClose(false) pins the stale
 	// state so the assertion always runs.
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestClearStaleSocketRemovesStaleSocket(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("stale socket not retained after close (%v); SetUnlinkOnClose(false) should keep it", err)
 	}
-	if err := clearStaleSocket(path); err != nil {
+	if err := clearStaleSocket(t.Context(), path); err != nil {
 		t.Fatalf("clearStaleSocket on stale socket = %v, want nil", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -322,7 +322,7 @@ func TestClearStaleSocketRefusesLivePeer(t *testing.T) {
 	path := filepath.Join(dir, "compass.sock")
 	// A real listener answering connects: clearStaleSocket must refuse to start
 	// on top of it and must NOT remove it.
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestClearStaleSocketRefusesLivePeer(t *testing.T) {
 		}
 	}()
 
-	if err := clearStaleSocket(path); err == nil {
+	if err := clearStaleSocket(t.Context(), path); err == nil {
 		t.Fatal("clearStaleSocket over a live peer = nil, want refusal error")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -359,7 +359,7 @@ func TestClearStaleSocketPropagatesNonRefusedProbeError(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "compass.sock")
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -371,14 +371,14 @@ func TestClearStaleSocketPropagatesNonRefusedProbeError(t *testing.T) {
 	// Confirm the environment actually denies connect with a non-refused error;
 	// if some kernel/uid still permits it, the contract under test cannot be
 	// exercised, so skip rather than assert a false result.
-	if c, derr := net.DialTimeout("unix", path, 250*time.Millisecond); derr == nil {
+	if c, derr := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(t.Context(), "unix", path); derr == nil {
 		c.Close()
 		t.Skip("connect to 0000 socket unexpectedly succeeded; cannot induce a non-refused probe error here")
 	} else if errors.Is(derr, syscall.ECONNREFUSED) || errors.Is(derr, syscall.ENOENT) {
 		t.Skipf("connect to 0000 socket gave a stale-signaling error (%v); cannot induce a non-refused probe error here", derr)
 	}
 
-	if err := clearStaleSocket(path); err == nil {
+	if err := clearStaleSocket(t.Context(), path); err == nil {
 		t.Fatal("clearStaleSocket over a non-refused probe error = nil, want the probe error propagated")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -389,7 +389,7 @@ func TestClearStaleSocketPropagatesNonRefusedProbeError(t *testing.T) {
 func TestCleanupSocketRemovesOwnSocket(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "compass.sock")
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestCleanupSocketLeavesSuccessorRebindIntact(t *testing.T) {
 
 	// Bind, record the identity, then simulate our socket disappearing and a
 	// successor server rebinding the same path, possibly on the same inode number.
-	l1, err := net.Listen("unix", path)
+	l1, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind #1: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestCleanupSocketLeavesSuccessorRebindIntact(t *testing.T) {
 		t.Fatalf("remove #1: %v", err)
 	}
 
-	l2, err := net.Listen("unix", path)
+	l2, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind #2 (successor): %v", err)
 	}
@@ -450,7 +450,7 @@ func TestCleanupSocketLeavesSuccessorRebindIntact(t *testing.T) {
 // modelled by changing the mtime under a pinned identity. Cleanup must not delete it.
 func TestCleanupSocketLeavesReusedInodeNumberIntact(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "compass.sock")
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestCleanupSocketLeavesReusedInodeNumberIntact(t *testing.T) {
 func TestCleanupSocketNoopWhenInodeNeverPinned(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "compass.sock")
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}

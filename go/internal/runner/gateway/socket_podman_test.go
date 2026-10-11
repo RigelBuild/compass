@@ -24,6 +24,7 @@ package gateway
 // the structure below fixes the shape so filling it in is mechanical.
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 )
@@ -31,8 +32,8 @@ import (
 // podmanUsable reports whether rootless podman can run a container here. A
 // missing binary or broken rootless setup means skip, not fail — same guard as
 // internal/runtime/lifecycle_test.go.
-func podmanUsable() bool {
-	return exec.Command("podman", "run", "--rm", "docker.io/library/alpine:latest", "true").Run() == nil
+func podmanUsable(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "podman", "run", "--rm", "docker.io/library/alpine:latest", "true").Run() == nil
 }
 
 // TestSocketOwnedAndConnectableInContainer asserts the design's agent-owns +
@@ -47,7 +48,7 @@ func podmanUsable() bool {
 // see but not own it), either of which silently breaks the local agent->Runner
 // hop on production hosts while every hermetic test stays green.
 func TestSocketOwnedAndConnectableInContainer(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
 	}
 	t.Skip("SKELETON: in-container connect()-after-relabel round-trip not yet wired (needs an image with a unix-socket client probe); Mount fields + :Z relabel are covered hermetically in socket_test.go and internal/runtime/podman_test.go")

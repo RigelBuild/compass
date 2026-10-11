@@ -64,16 +64,16 @@ const containerGoneBudget = 30 * time.Second
 
 // TestContainerPostgresUpDown drives the S4 container path end to end.
 func TestContainerPostgresUpDown(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background() // test root context (rule://go-thread-context exemption for a _test.go root)
+	ctx := t.Context()
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
 	env := stackEnv(t, binDir)
 
-	fx := newContainerFixture(t, shortRoot(t, "-ctr"))
+	fx := newContainerFixture(ctx, t, shortRoot(t, "-ctr"))
 	cfg := fx.cfg
 	recordPath := filepath.Join(cfg.StateDir, pgidRecordName)
 	name := derivedContainerName(cfg.StateDir)
@@ -83,14 +83,14 @@ func TestContainerPostgresUpDown(t *testing.T) {
 	// would have created, by its exact unique name (never a scan). Both
 	// best-effort: a guard failure must not fail an already-finished test.
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), downBudget)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), downBudget)
 		defer cancel()
 		if out, runErr, infraErr := runStack(cctx, t, stackBin, env, cfg.args("down")...); infraErr != nil {
 			t.Logf("cleanup guard: down harness error (ignored): %v", infraErr)
 		} else if runErr != nil {
 			t.Logf("cleanup guard: down exited non-zero (ignored): %v\n%s", runErr, out)
 		}
-		if out, err := exec.Command("podman", "rm", "--force", "--volumes", name).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(cctx, "podman", "rm", "--force", "--volumes", name).CombinedOutput(); err != nil {
 			t.Logf("cleanup guard: podman rm %s (ignored): %v\n%s", name, err, out)
 		}
 	})
@@ -137,10 +137,10 @@ func TestContainerPostgresUpDown(t *testing.T) {
 // TestExternalDatabaseUpDown drives the S4 external-DB opt-out against a
 // throwaway host postgres container standing in for the operator's own DB.
 func TestExternalDatabaseUpDown(t *testing.T) {
-	if !podmanUsable() {
+	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
 	}
-	ctx := context.Background() // test root context (rule://go-thread-context exemption for a _test.go root)
+	ctx := t.Context()
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
@@ -149,13 +149,13 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 	// The "external" postgres: a throwaway TCP-published container the test owns.
 	externalDSN := startExternalPostgres(t)
 
-	fx := newContainerFixture(t, shortRoot(t, "-ext"))
+	fx := newContainerFixture(ctx, t, shortRoot(t, "-ext"))
 	cfg := fx.cfg
 	cfg.DatabaseDSN = externalDSN // the stack probes THIS as-is; no compass postgres starts
 	recordPath := filepath.Join(cfg.StateDir, pgidRecordName)
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), downBudget)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), downBudget)
 		defer cancel()
 		if out, runErr, infraErr := runStack(cctx, t, stackBin, env, cfg.args("down")...); infraErr != nil {
 			t.Logf("cleanup guard: down harness error (ignored): %v", infraErr)
@@ -185,7 +185,7 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 
 	// The external postgres is UNTOUCHED by the stack's teardown — still up.
-	if !externalPostgresReachable(externalDSN) {
+	if !externalPostgresReachable(t.Context(), externalDSN) {
 		t.Fatal("external postgres unreachable after stack down; the stack must never tear down a DB it did not start")
 	}
 }
@@ -236,7 +236,7 @@ func (c containerCfg) args(sub string, extra ...string) []string {
 // (podman bind-mounts PGDATA and initdb refuses a non-empty PGDATA, so a nested
 // socket dir would break it). StateDir is the same short root so the whole stack
 // lives under one unique per-pid dir.
-func newContainerFixture(t *testing.T, root string) containerFixture {
+func newContainerFixture(ctx context.Context, t *testing.T, root string) containerFixture {
 	t.Helper()
 	pgSockDir := filepath.Join(root, "pgsock")
 	runtimeDir := filepath.Join(root, "rt")
@@ -248,7 +248,7 @@ func newContainerFixture(t *testing.T, root string) containerFixture {
 		}
 	}
 
-	ports := freePorts(t, 2)
+	ports := freePorts(ctx, t, 2)
 	listenPort, pgPort := ports[0], ports[1]
 	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 
@@ -292,7 +292,7 @@ func waitDSNReachable(t *testing.T, dsn string, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
 	for {
-		if externalPostgresReachable(dsn) {
+		if externalPostgresReachable(t.Context(), dsn) {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -307,7 +307,7 @@ func waitDSNReachable(t *testing.T, dsn string, budget time.Duration) {
 // engine failure and fails the test.
 func containerExists(t *testing.T, name string) bool {
 	t.Helper()
-	err := exec.Command("podman", "container", "exists", name).Run()
+	err := exec.CommandContext(t.Context(), "podman", "container", "exists", name).Run()
 	if err == nil {
 		return true
 	}
@@ -393,9 +393,9 @@ func recordLines(t *testing.T, recordPath string) [][]string {
 func startExternalPostgres(t *testing.T) string {
 	t.Helper()
 	name := "compass-ext-pg-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	hostPort := freePorts(t, 1)[0]
+	hostPort := freePorts(t.Context(), t, 1)[0]
 	password := "external-test"
-	out, err := exec.Command("podman", "run", "-d", "--name", name,
+	out, err := exec.CommandContext(t.Context(), "podman", "run", "-d", "--name", name,
 		"-e", "POSTGRES_PASSWORD="+password,
 		"-e", "POSTGRES_DB=compass",
 		"-p", strconv.Itoa(hostPort)+":5432",
@@ -405,7 +405,9 @@ func startExternalPostgres(t *testing.T) string {
 		t.Fatalf("start external postgres: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		if out, err := exec.Command("podman", "rm", "--force", "--volumes", name).CombinedOutput(); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), downBudget)
+		defer cancel()
+		if out, err := exec.CommandContext(cleanupCtx, "podman", "rm", "--force", "--volumes", name).CombinedOutput(); err != nil {
 			t.Logf("cleanup: podman rm external postgres %s (ignored): %v\n%s", name, err, out)
 		}
 	})
@@ -415,8 +417,8 @@ func startExternalPostgres(t *testing.T) string {
 }
 
 // externalPostgresReachable reports whether a pgx connection to dsn pings clean.
-func externalPostgresReachable(dsn string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+func externalPostgresReachable(ctx context.Context, dsn string) bool {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
