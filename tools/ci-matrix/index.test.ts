@@ -6,10 +6,14 @@
 // all four affected-flag rules, a null-ciTarget member being skipped from
 // targets, and an empty affected closure still yielding a non-empty matrix.
 //
-// Only the PURE core is exercised — the edge (moon query / $GITHUB_OUTPUT) is
-// import.meta.main-guarded, so importing index.ts never runs it.
+// Pure-core behavior and the isolated PR changed-path helper are covered here;
+// importing index.ts never runs main() or its moon/$GITHUB_OUTPUT edge.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { $ } from "bun";
 import {
 	type GenInput,
 	generate,
@@ -17,6 +21,7 @@ import {
 	type ProjectInput,
 	parseAffectedTaskTargets,
 	parseTaskAffectedIds,
+	prChangedPaths,
 	unionAffectedIds,
 } from "./index.ts";
 
@@ -1056,5 +1061,61 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 			);
 		expect(line(["renovate:agent-fod"])).toBe("agent_fod_affected=true");
 		expect(line(["renovate:test"])).toBe("agent_fod_affected=false");
+	});
+});
+
+describe("prChangedPaths", () => {
+	const tempRepos: string[] = [];
+	afterEach(async () => {
+		await Promise.all(
+			tempRepos
+				.splice(0)
+				.map((repo) => rm(repo, { recursive: true, force: true })),
+		);
+	});
+
+	test("lists PR files only when the base has drifted", async () => {
+		const repo = await mkdtemp(join(tmpdir(), "ci-matrix-pr-paths-"));
+		tempRepos.push(repo);
+		// Identity per call: CI runners have no global git user.
+		const git = (args: string[]) =>
+			$`git -c user.name=t -c user.email=t@t ${args}`.cwd(repo).quiet();
+		const commit = async (message: string) => {
+			await git(["add", "-A"]);
+			await git(["commit", "-m", message]);
+		};
+
+		await git(["init", "-q", "-b", "main"]);
+		await writeFile(join(repo, "a.txt"), "base\n");
+		await commit("base");
+		const prBase = (await git(["rev-parse", "HEAD"]).text()).trim();
+
+		await git(["switch", "-q", "-c", "pr"]);
+		await writeFile(join(repo, "pr.txt"), "pr\n");
+		await commit("pr");
+		await git(["switch", "-q", "main"]);
+		await writeFile(join(repo, "b.txt"), "main drift\n");
+		await mkdir(join(repo, "go/internal/forge"), { recursive: true });
+		await writeFile(join(repo, "go/internal/forge/x.go"), "package forge\n");
+		await commit("main drift");
+		await git(["merge", "--no-ff", "-q", "pr", "-m", "merge pr"]);
+
+		expect((await git(["rev-parse", "HEAD^1"]).text()).trim()).not.toBe(prBase);
+		expect(await prChangedPaths(repo)).toEqual(["pr.txt"]);
+	});
+
+	test("rejects a checkout without a merge parent", async () => {
+		const repo = await mkdtemp(join(tmpdir(), "ci-matrix-not-merge-"));
+		tempRepos.push(repo);
+		await $`git init -q -b main`.cwd(repo).quiet();
+		await writeFile(join(repo, "a.txt"), "base\n");
+		await $`git add -A`.cwd(repo).quiet();
+		await $`git -c user.name=t -c user.email=t@t commit -q -m base`
+			.cwd(repo)
+			.quiet();
+
+		await expect(prChangedPaths(repo)).rejects.toThrow(
+			"HEAD^2 does not resolve",
+		);
 	});
 });
