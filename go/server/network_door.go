@@ -257,12 +257,11 @@ func withBodyReadDeadline(next http.Handler, timeout time.Duration) http.Handler
 // enrolls over — behind its own Runner-subject bearer interceptor, sharing the
 // same auth.ResolveToken resolver but Kind-gated to a Runner token (an account
 // token is Unauthenticated there, and a Runner token is Unauthenticated on the
-// account/comms doors: the OQ7 cross-door rule). The GatewayCredentials door is
-// mounted when its service is non-nil, behind a SubjectService bearer allowlisted
-// to the LLM gateway. Optionally wrapped in the
-// single-origin network CORS policy. It does not bind or serve — the listener is
-// already bound (boundListeners) — so on a token error the caller owns listener
-// cleanup.
+// account/comms doors: the OQ7 cross-door rule). The credential and registry
+// gateway services mount independently behind their service-bearer allowlist.
+// Optionally wrapped in the single-origin network CORS policy. It does not bind
+// or serve — the listener is already bound (boundListeners) — so on a token error
+// the caller owns listener cleanup.
 func buildNetworkServer(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -281,7 +280,7 @@ func buildNetworkServer(
 	linearWebhookHandler http.Handler,
 	linearSessionLinkHandler http.Handler,
 	runnerVerifier *auth.RunnerVerifier,
-	gatewayCredentials *gatewayCredentialsService,
+	gateway gatewayServices,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -351,14 +350,7 @@ func buildNetworkServer(
 	// is the outermost interceptor (it creates the RelayCommsCall origin span).
 	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st, otelIC)
 	netMux.Handle(runnerPath, runnerHandler)
-	if gatewayCredentials != nil {
-		// The gateway uses a service subject, not the account/admin chain; kind-gating
-		// and the service-ID allowlist are the authorization boundary.
-		gatewayPath, gatewayHandler := compassv1internalconnect.NewGatewayCredentialsHandler(gatewayCredentials,
-			connect.WithInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID)),
-			connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-		netMux.Handle(gatewayPath, gatewayHandler)
-	}
+	mountGatewayServices(netMux, gateway, otelIC, runnerResolve)
 
 	// The internet-facing GitHub App webhook ingress (RIG-2883 T5), mounted only
 	// when the board lane is on. It sits on the TLS door and OUTSIDE the bearer +
@@ -401,6 +393,33 @@ func buildNetworkServer(
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}, nil
+}
+
+// gatewayServices are the LLM gateway's doors; a nil service is not mounted.
+type gatewayServices struct {
+	credentials *gatewayCredentialsService
+	registry    *gatewayRegistryService
+}
+
+func mountGatewayServices(
+	netMux *http.ServeMux,
+	services gatewayServices,
+	otelIC *otelconnect.Interceptor,
+	runnerResolve runnerhub.TokenResolver,
+) {
+	if services.credentials == nil && services.registry == nil {
+		return
+	}
+	interceptors := connect.WithInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID))
+	options := []connect.HandlerOption{interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes)}
+	if services.credentials != nil {
+		path, handler := compassv1internalconnect.NewGatewayCredentialsHandler(services.credentials, options...)
+		netMux.Handle(path, handler)
+	}
+	if services.registry != nil {
+		path, handler := compassv1internalconnect.NewGatewayRegistryHandler(services.registry, options...)
+		netMux.Handle(path, handler)
+	}
 }
 
 // runnerTokenVerifier authenticates a projected ServiceAccount token to a Runner

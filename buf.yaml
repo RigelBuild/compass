@@ -35,6 +35,8 @@ lint:
   #   `GatewayCredentials` door serves one internal tier, the LLM gateway.
   # gateway_auth.proto carves out SERVICE_SUFFIX the same way: the
   #   `GatewayAuth` door serves one internal tier, the LLM gateway.
+  # gateway_registry.proto carves out SERVICE_SUFFIX the same way: the
+  #   `GatewayRegistry` door serves one internal tier, the LLM gateway.
   ignore_only:
     ENUM_ZERO_VALUE_SUFFIX:
       - proto/compass/v1/comms.proto
@@ -43,6 +45,7 @@ lint:
       - proto/compass/v1/guest_control.proto
       - proto/compass/v1/gateway_credentials.proto
       - proto/compass/v1/gateway_auth.proto
+      - proto/compass/v1/gateway_registry.proto
     RPC_REQUEST_STANDARD_NAME:
       - proto/compass/v1/agent_gateway.proto
     RPC_RESPONSE_STANDARD_NAME:

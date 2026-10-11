@@ -119,12 +119,7 @@ type Querier interface {
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
 	CountRunnerTokenIDsWithSlash(ctx context.Context) (int64, error)
 	CurrentAgentConfig(ctx context.Context) (CurrentAgentConfigRow, error)
-	// Model-registry queries (RIG-3122 P2). Back the hand-written Store methods in
-	// internal/store/model_registry.go, which own the fail-closed payload
-	// validation (ValidateModelRegistry), the JSONB marshal/unmarshal, and the
-	// ErrVersionConflict/ErrNotFound mapping. The registry is a fleet-wide singleton
-	// row (singleton = TRUE) with a monotonic version supplying the CAS substrate:
-	// a write only lands if the row still holds the version the caller read.
+	// Model-registry queries preserve a monotonic singleton version.
 	CurrentModelRegistry(ctx context.Context) (CurrentModelRegistryRow, error)
 	// DeclaredSecrets is the names-only view the SERVER SpecResolver's declarations
 	// interface still consumes (value-free, all scopes).
@@ -144,7 +139,9 @@ type Querier interface {
 	DeleteComputeUsageIntervalsBefore(ctx context.Context, arg DeleteComputeUsageIntervalsBeforeParams) (int64, error)
 	// DeleteComputeUsageRollupsFrom clears rows the rebuild can reconstruct.
 	DeleteComputeUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
-	DeleteModelRegistry(ctx context.Context) error
+	// Delete marks the row as unconfigured while retaining its monotonic version.
+	// It matches only the version the orphan check read, so a racing Put conflicts.
+	DeleteModelRegistry(ctx context.Context, version int64) (int64, error)
 	// DeleteSecret addresses one scope coordinate — a name alone no longer
 	// identifies a row (composite PK).
 	DeleteSecret(ctx context.Context, arg DeleteSecretParams) (int64, error)
@@ -334,10 +331,8 @@ type Querier interface {
 	InsertLinearRoutingChannel(ctx context.Context, arg InsertLinearRoutingChannelParams) (string, error)
 	InsertLinearRoutingGroup(ctx context.Context, arg InsertLinearRoutingGroupParams) error
 	InsertMessage(ctx context.Context, arg InsertMessageParams) (InsertMessageRow, error)
-	// InsertModelRegistry seeds the FIRST registry (the caller read no row, expected
-	// version 0). ON CONFLICT DO NOTHING makes it a CAS: it lands only when the
-	// singleton is still absent, so a racing seed loses (zero rows, ErrNoRows via
-	// RETURNING) rather than clobbering the winner. The seeded version is 1.
+	// InsertModelRegistry seeds or revives the singleton. A tombstone retains its
+	// version, so reseeding after delete increments instead of reusing it.
 	InsertModelRegistry(ctx context.Context, registry []byte) (int64, error)
 	InsertOwnerDMGroup(ctx context.Context, arg InsertOwnerDMGroupParams) error
 	// The create path's write: a webhook-hydrated row already present always wins.
@@ -516,6 +511,7 @@ type Querier interface {
 	MessageChannel(ctx context.Context, id string) (string, error)
 	MessageInChannel(ctx context.Context, arg MessageInChannelParams) (int32, error)
 	MessagesHeadSeq(ctx context.Context) (int64, error)
+	ModelRegistryVersion(ctx context.Context) (int64, error)
 	MoveMessagesToTopic(ctx context.Context, arg MoveMessagesToTopicParams) error
 	// The accounts still owed a mention: a wake that failed before any Runner could
 	// serve it is retried for these once one attaches.
@@ -720,11 +716,7 @@ type Querier interface {
 	UpdateGatewayOAuthCredential(ctx context.Context, arg UpdateGatewayOAuthCredentialParams) (int64, error)
 	UpdateMessageBlocks(ctx context.Context, arg UpdateMessageBlocksParams) (int64, error)
 	UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMessageBlocksAsAuthorParams) (UpdateMessageBlocksAsAuthorRow, error)
-	// UpdateModelRegistry is the compare-and-set write over an existing row: it
-	// lands only when the row still holds $2 (the version the caller read), bumping
-	// to version + 1 and returning the new version. A stale/racing expected version
-	// matches no row (ErrNoRows via RETURNING) — the caller maps that to
-	// ErrVersionConflict.
+	// UpdateModelRegistry applies a compare-and-set only to a live row.
 	UpdateModelRegistry(ctx context.Context, arg UpdateModelRegistryParams) (int64, error)
 	UpdateTopicLastSeq(ctx context.Context, arg UpdateTopicLastSeqParams) error
 	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error

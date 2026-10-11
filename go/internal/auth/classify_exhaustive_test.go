@@ -48,6 +48,7 @@ func ungatedFileDescriptors() []protoreflect.FileDescriptor {
 		compassv1internal.File_compass_v1_guest_control_proto,
 		compassv1internal.File_compass_v1_gateway_credentials_proto,
 		compassv1internal.File_compass_v1_gateway_auth_proto,
+		compassv1internal.File_compass_v1_gateway_registry_proto,
 	}
 }
 

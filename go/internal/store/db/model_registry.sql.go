@@ -19,12 +19,7 @@ type CurrentModelRegistryRow struct {
 	Registry []byte
 }
 
-// Model-registry queries (RIG-3122 P2). Back the hand-written Store methods in
-// internal/store/model_registry.go, which own the fail-closed payload
-// validation (ValidateModelRegistry), the JSONB marshal/unmarshal, and the
-// ErrVersionConflict/ErrNotFound mapping. The registry is a fleet-wide singleton
-// row (singleton = TRUE) with a monotonic version supplying the CAS substrate:
-// a write only lands if the row still holds the version the caller read.
+// Model-registry queries preserve a monotonic singleton version.
 func (q *Queries) CurrentModelRegistry(ctx context.Context) (CurrentModelRegistryRow, error) {
 	row := q.db.QueryRow(ctx, currentModelRegistry)
 	var i CurrentModelRegistryRow
@@ -32,28 +27,46 @@ func (q *Queries) CurrentModelRegistry(ctx context.Context) (CurrentModelRegistr
 	return i, err
 }
 
-const deleteModelRegistry = `-- name: DeleteModelRegistry :exec
-DELETE FROM model_registry WHERE singleton = TRUE
+const deleteModelRegistry = `-- name: DeleteModelRegistry :execrows
+UPDATE model_registry
+   SET registry = 'null'::jsonb, version = version + 1
+ WHERE singleton = TRUE AND registry <> 'null'::jsonb AND version = $1
 `
 
-func (q *Queries) DeleteModelRegistry(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, deleteModelRegistry)
-	return err
+// Delete marks the row as unconfigured while retaining its monotonic version.
+// It matches only the version the orphan check read, so a racing Put conflicts.
+func (q *Queries) DeleteModelRegistry(ctx context.Context, version int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteModelRegistry, version)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertModelRegistry = `-- name: InsertModelRegistry :one
 INSERT INTO model_registry (singleton, version, registry)
 VALUES (TRUE, 1, $1)
-ON CONFLICT (singleton) DO NOTHING
+ON CONFLICT (singleton) DO UPDATE
+   SET registry = EXCLUDED.registry, version = model_registry.version + 1
+ WHERE model_registry.registry = 'null'::jsonb
 RETURNING version
 `
 
-// InsertModelRegistry seeds the FIRST registry (the caller read no row, expected
-// version 0). ON CONFLICT DO NOTHING makes it a CAS: it lands only when the
-// singleton is still absent, so a racing seed loses (zero rows, ErrNoRows via
-// RETURNING) rather than clobbering the winner. The seeded version is 1.
+// InsertModelRegistry seeds or revives the singleton. A tombstone retains its
+// version, so reseeding after delete increments instead of reusing it.
 func (q *Queries) InsertModelRegistry(ctx context.Context, registry []byte) (int64, error) {
 	row := q.db.QueryRow(ctx, insertModelRegistry, registry)
+	var version int64
+	err := row.Scan(&version)
+	return version, err
+}
+
+const modelRegistryVersion = `-- name: ModelRegistryVersion :one
+SELECT version FROM model_registry WHERE singleton = TRUE
+`
+
+func (q *Queries) ModelRegistryVersion(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, modelRegistryVersion)
 	var version int64
 	err := row.Scan(&version)
 	return version, err
@@ -62,7 +75,7 @@ func (q *Queries) InsertModelRegistry(ctx context.Context, registry []byte) (int
 const updateModelRegistry = `-- name: UpdateModelRegistry :one
 UPDATE model_registry
    SET registry = $1, version = version + 1
- WHERE singleton = TRUE AND version = $2
+ WHERE singleton = TRUE AND registry <> 'null'::jsonb AND version = $2
 RETURNING version
 `
 
@@ -71,11 +84,7 @@ type UpdateModelRegistryParams struct {
 	Version  int64
 }
 
-// UpdateModelRegistry is the compare-and-set write over an existing row: it
-// lands only when the row still holds $2 (the version the caller read), bumping
-// to version + 1 and returning the new version. A stale/racing expected version
-// matches no row (ErrNoRows via RETURNING) — the caller maps that to
-// ErrVersionConflict.
+// UpdateModelRegistry applies a compare-and-set only to a live row.
 func (q *Queries) UpdateModelRegistry(ctx context.Context, arg UpdateModelRegistryParams) (int64, error) {
 	row := q.db.QueryRow(ctx, updateModelRegistry, arg.Registry, arg.Version)
 	var version int64

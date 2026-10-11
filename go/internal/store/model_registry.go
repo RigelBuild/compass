@@ -16,10 +16,9 @@ import (
 // candidate chain of {provider, model_id}, and listing metadata. The gateway
 // resolver reads it to route a request's modelId.
 
-// UNLIKE agent_config_bundle (a content-hash current-only upsert), the write is
-// COMPARE-AND-SET on a monotonic whole-registry version: a Put carries the
-// version it read and only lands if the row still holds it, so a racing
-// operator write is never clobbered. ErrVersionConflict is its sentinel.
+// COMPARE-AND-SET on a monotonic version: a Put carries the version it read and
+// only lands if the row still holds it. Delete retains the version so a later
+// seed cannot reuse a cached version. ErrVersionConflict is its sentinel.
 
 // The payload is validated fail-closed at the RPC boundary; the orphan
 // cross-check (a removal stranding a published profile's models.* reference)
@@ -211,11 +210,7 @@ func validateCandidateField(name string, idx int, field, value string) error {
 	return nil
 }
 
-// CurrentModelRegistry returns the current registry and its monotonic version.
-// ErrNotFound when no registry has been declared — a valid state downstream (the
-// gateway resolver treats an absent registry as an empty one), but the store
-// still reports the absence; the caller decides empty-is-ok, mirroring
-// CurrentAgentConfig.
+// CurrentModelRegistry returns live registries; tombstones are ErrNotFound.
 func (s *Store) CurrentModelRegistry(ctx context.Context) (version int64, reg ModelRegistry, err error) {
 	row, err := s.q.CurrentModelRegistry(ctx)
 	if err != nil {
@@ -224,10 +219,45 @@ func (s *Store) CurrentModelRegistry(ctx context.Context) (version int64, reg Mo
 		}
 		return 0, ModelRegistry{}, fmt.Errorf("store: read model registry: %w", err)
 	}
+	if string(row.Registry) == "null" {
+		return 0, ModelRegistry{}, fmt.Errorf("%w: no model registry declared", ErrNotFound)
+	}
 	if err := json.Unmarshal(row.Registry, &reg); err != nil {
 		return 0, ModelRegistry{}, fmt.Errorf("store: unmarshal model registry: %w", err)
 	}
 	return row.Version, reg, nil
+}
+
+// GatewayModelRegistry returns version 0 when never seeded, and the retained
+// version with an empty registry after a delete.
+func (s *Store) GatewayModelRegistry(ctx context.Context) (version int64, reg ModelRegistry, err error) {
+	row, err := s.q.CurrentModelRegistry(ctx)
+	if err != nil {
+		if noRows(err) {
+			return 0, ModelRegistry{}, nil
+		}
+		return 0, ModelRegistry{}, fmt.Errorf("store: read gateway model registry: %w", err)
+	}
+	if string(row.Registry) == "null" {
+		return row.Version, ModelRegistry{}, nil
+	}
+	if err := json.Unmarshal(row.Registry, &reg); err != nil {
+		return 0, ModelRegistry{}, fmt.Errorf("store: unmarshal gateway model registry: %w", err)
+	}
+	return row.Version, reg, nil
+}
+
+// ModelRegistryVersion reads the retained version without loading the payload.
+// It returns 0 only when the singleton has never been seeded.
+func (s *Store) ModelRegistryVersion(ctx context.Context) (int64, error) {
+	version, err := s.q.ModelRegistryVersion(ctx)
+	if err != nil {
+		if noRows(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("store: read model registry version: %w", err)
+	}
+	return version, nil
 }
 
 // PutModelRegistry declares the fleet model registry under a compare-and-set on
@@ -239,10 +269,10 @@ func (s *Store) CurrentModelRegistry(ctx context.Context) (version int64, reg Mo
 // documents the operator-scoped write and matches the record.
 //
 // CAS semantics keyed on expectedVersion:
-//   - 0 seeds the FIRST registry — lands only if the singleton is still absent
-//     (ON CONFLICT DO NOTHING); a racing seed that lost gets ErrVersionConflict.
-//   - N>0 replaces an existing registry — lands only if the row still holds N,
-//     bumping to N+1; a stale/racing version gets ErrVersionConflict.
+//   - 0 seeds a never-created registry at 1, or revives a tombstone at its
+//     retained version + 1. A live row returns ErrVersionConflict.
+//   - N>0 replaces a live registry only when the row still holds N, bumping it
+//     to N+1; a stale or deleted version returns ErrVersionConflict.
 func (s *Store) PutModelRegistry(ctx context.Context, actor AccountID, reg ModelRegistry, expectedVersion int64) (version int64, err error) {
 	if actor == "" {
 		return 0, fmt.Errorf("%w: model-registry writer account id is required", ErrInvalidArgument)
@@ -286,8 +316,7 @@ func (s *Store) PutModelRegistry(ctx context.Context, actor AccountID, reg Model
 		version, err = s.q.InsertModelRegistry(ctx, payload)
 		if err != nil {
 			if noRows(err) {
-				// ON CONFLICT DO NOTHING matched an existing row: a registry
-				// already exists, so a seed (expected 0) is a stale CAS.
+				// A live-row conflict or stale concurrent seed returns no version.
 				return 0, fmt.Errorf("%w: a model registry already exists (seed expected none)", ErrVersionConflict)
 			}
 			return 0, fmt.Errorf("store: seed model registry: %w", err)
@@ -311,16 +340,13 @@ func (s *Store) PutModelRegistry(ctx context.Context, actor AccountID, reg Model
 	return version, nil
 }
 
-// DeleteModelRegistry clears the fleet model registry, returning to the
-// unconfigured state. Fails closed if any stable name in the registry being
-// cleared is still referenced by a published profile (clearing it would strand
-// that reference). Idempotent: deleting an already-absent registry is a no-op
-// success (mirroring DeleteAgentConfig), and there is nothing to orphan.
+// DeleteModelRegistry tombstones the registry while retaining its version. It
+// fails closed on a referenced stable name, and conflicts if a write lands mid-delete.
 func (s *Store) DeleteModelRegistry(ctx context.Context) error {
-	_, reg, err := s.CurrentModelRegistry(ctx)
+	version, reg, err := s.CurrentModelRegistry(ctx)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return nil // already unconfigured — idempotent, nothing to orphan
+			return nil
 		}
 		return err
 	}
@@ -331,10 +357,23 @@ func (s *Store) DeleteModelRegistry(ctx context.Context) error {
 	if err := s.checkNoOrphanedProfileRefs(ctx, names); err != nil {
 		return err
 	}
-	if err := s.q.DeleteModelRegistry(ctx); err != nil {
+	return s.tombstoneModelRegistry(ctx, version)
+}
+
+// tombstoneModelRegistry marks the registry deleted only if it still holds
+// version. A concurrent delete that already landed counts as success.
+func (s *Store) tombstoneModelRegistry(ctx context.Context, version int64) error {
+	n, err := s.q.DeleteModelRegistry(ctx, version)
+	if err != nil {
 		return fmt.Errorf("store: delete model registry: %w", err)
 	}
-	return nil
+	if n > 0 {
+		return nil
+	}
+	if _, _, err := s.CurrentModelRegistry(ctx); errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return fmt.Errorf("%w: model registry changed during delete", ErrVersionConflict)
 }
 
 // checkBundleProfileRefsAgainstRegistry is the REVERSE orphan guard mandated by
