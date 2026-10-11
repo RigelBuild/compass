@@ -27,7 +27,7 @@ lane makes six decisions.
    `{ "repo": "https://github.com/RigelBuild/oh-my-pi.git", "commit": "<40-hex>" }`.
    A bump is a reviewed compass PR that edits this file. The fork is public, so
    CI fetches it with no credential. Fork `main` mirrors upstream; Rigel patches
-   land on the protected `rigel-release` branch (RIG-5024):
+   land on the protected `rigel-release` branch (RIG-5024, DL-492):
    - Delete and recreate `<out>/src`, run `git init` there, and add the pin's
      `repo` as remote `origin`. Every build starts from an empty checkout, so
      a repeat run never reuses stale state.
