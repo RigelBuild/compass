@@ -34,30 +34,36 @@ need the `secretspec` CLI, at or above 0.20.0.
   arm64). Prebuilt tarballs per platform are also published on each
   [upstream release](https://github.com/cachix/secretspec/releases).
 
-Run the preflight check before your first bring-up to surface any missing
-prerequisite at install time rather than mid-`up`:
+Run the preflight check before your first bring-up to surface missing
+prerequisites at install time rather than mid-`up`. KVM and the microVM tools
+are advisory on the default container tier; select the microVM tier with
+`--runtime-backend microvm` or `$COMPASS_RUNTIME_BACKEND=microvm` to make those
+checks hard failures. Rootless podman and `secretspec` are always required.
 
 ```console
 $ compass-stack preflight
-[PASS] kvm              /dev/kvm present and openable
+[WARN] kvm              /dev/kvm not openable: open /dev/kvm: no such file or directory (host must expose KVM; add the invoking user to the kvm group)
 [PASS] podman           podman present and rootless-capable
-[PASS] cloud-hypervisor reported "cloud-hypervisor v53.0.0" at/above floor 53.0.0
-[PASS] virtiofsd        reported "virtiofsd 1.14.0" at/above floor 1.14.0
-[PASS] passt            reported "passt 2025_09_19.623dbf6" at/above floor 2025_09_19
+[WARN] cloud-hypervisor cloud-hypervisor not found on PATH: exec: "cloud-hypervisor": executable file not found in $PATH
+[WARN] virtiofsd        virtiofsd not found on PATH: exec: "virtiofsd": executable file not found in $PATH
+[WARN] passt            passt not found on PATH: exec: "passt": executable file not found in $PATH
 [PASS] secretspec       reported "secretspec 0.20.0" at/above floor 0.20.0
 ```
 
-A failing check prints a `[FAIL]` line naming the missing or below-floor
-dependency and exits non-zero. On the microVM tier, this is a useful install
-gate before `up`.
+A failed required check prints a `[FAIL]` line naming the missing or
+below-floor dependency and exits non-zero. On the microVM tier, KVM and each
+microVM tool are required too. On the default container tier, their failures
+print `[WARN]` and do not fail preflight.
 
-The check includes microVM-specific probes even on the container tier. Missing
-`/dev/kvm` or microVM userspace is expected there; rootless podman and
-`secretspec` are still required for either tier.
-
-> **Note:** `compass-stack preflight` ships its own minimal checks. Once the
-> runtime lane's microVM support gate lands, these host-level checks defer to it;
-> until then they are the install-time prerequisite surface.
+```console
+$ compass-stack preflight --runtime-backend microvm
+[FAIL] kvm              /dev/kvm not openable: open /dev/kvm: no such file or directory (host must expose KVM; add the invoking user to the kvm group)
+[PASS] podman           podman present and rootless-capable
+[FAIL] cloud-hypervisor cloud-hypervisor not found on PATH: exec: "cloud-hypervisor": executable file not found in $PATH
+[FAIL] virtiofsd        virtiofsd not found on PATH: exec: "virtiofsd": executable file not found in $PATH
+[FAIL] passt            passt not found on PATH: exec: "passt": executable file not found in $PATH
+[PASS] secretspec       reported "secretspec 0.20.0" at/above floor 0.20.0
+```
 
 ## Deployment shapes
 
