@@ -3167,6 +3167,25 @@
 	color: var(--cx-text-dim);
 }
 
+.obs-start {
+	flex: 0 0 auto;
+	font-size: 11px;
+	padding: 3px 9px;
+	border: 1px solid var(--cx-border-strong);
+	background: transparent;
+	color: var(--cx-text-dim);
+}
+
+.obs-start:not(:disabled):hover {
+	border-color: var(--cx-st-working);
+	color: var(--cx-st-working);
+}
+
+.obs-start:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
 .obs-stop:not(:disabled):hover {
 	border-color: var(--cx-error);
 	color: var(--cx-error);

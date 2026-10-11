@@ -47,6 +47,17 @@ function toolCall(id: string): WireSessionEvent {
 	});
 }
 
+function batchPending(count: number, firesAtUnixMs: bigint): WireSessionEvent {
+	return create(SessionEventSchema, {
+		eventId: `batch-${count}-${firesAtUnixMs}`,
+		atUnixMs: 3n,
+		event: {
+			case: "batchPending",
+			value: { count, firesAtUnixMs },
+		},
+	});
+}
+
 async function settle(
 	until: () => boolean = () => false,
 	hops = 200,
@@ -172,6 +183,130 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			expect(store.focusedView().agentSession()?.running).toBe(false);
 			await settle(() => fake.openSessionTails().length === 0);
 			expect(fake.openSessionTails()).toEqual([]);
+		} finally {
+			dispose();
+		}
+	});
+	test("terminal session state clears pending without another batch event", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(
+				AGENT,
+				"sess-terminal-batch",
+				AgentSessionState.WORKING,
+			);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() =>
+				fake.openSessionTails().includes("sess-terminal-batch"),
+			);
+			fake.pushSessionFrame("sess-terminal-batch", {
+				event: batchPending(2, 1_700_000_030_000n),
+			});
+			await settle(
+				() => store.focusedView().agentSession()?.batchPending !== undefined,
+			);
+
+			fake.pushSessionFrame("sess-terminal-batch", {
+				state: AgentSessionState.STOPPED,
+			});
+			await settle(() => store.focusedView().agentSession()?.running === false);
+			expect(store.focusedView().agentSession()?.batchPending).toBeUndefined();
+		} finally {
+			dispose();
+		}
+	});
+
+	test("a terminal account status clears pending without another batch event", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(
+				AGENT,
+				"sess-status-batch",
+				AgentSessionState.WORKING,
+			);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-status-batch"));
+			fake.pushSessionFrame("sess-status-batch", {
+				event: batchPending(2, 1_700_000_030_000n),
+			});
+			await settle(
+				() => store.focusedView().agentSession()?.batchPending !== undefined,
+			);
+
+			fake.pushSessionStatus(
+				AGENT,
+				"sess-status-batch",
+				AgentSessionState.STOPPED,
+			);
+			await settle(() => store.focusedView().agentSession()?.running === false);
+			expect(store.focusedView().agentSession()?.batchPending).toBeUndefined();
+		} finally {
+			dispose();
+		}
+	});
+
+	test("hide and refocus clears pending state without another batch event", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(
+				AGENT,
+				"sess-hidden-batch",
+				AgentSessionState.WORKING,
+			);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-hidden-batch"));
+			fake.pushSessionFrame("sess-hidden-batch", {
+				event: batchPending(2, 1_700_000_030_000n),
+			});
+			await settle(
+				() => store.focusedView().agentSession()?.batchPending !== undefined,
+			);
+
+			store.showBacklog();
+			await settle(() => fake.openSessionTails().length === 0);
+			expect(store.agentSessionById(AGENT)?.batchPending).toBeUndefined();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-hidden-batch"));
+			expect(store.focusedView().agentSession()?.batchPending).toBeUndefined();
+		} finally {
+			dispose();
+		}
+	});
+	test("reload with a reused session id clears pending without another batch event", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(
+				AGENT,
+				"sess-reused-batch",
+				AgentSessionState.WORKING,
+			);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-reused-batch"));
+			fake.pushSessionFrame("sess-reused-batch", {
+				event: batchPending(2, 1_700_000_030_000n),
+			});
+			await settle(
+				() => store.focusedView().agentSession()?.batchPending !== undefined,
+			);
+
+			fake.pushResync();
+			await settle(() => store.focusedView().agentSession() === undefined);
+			fake.pushSessionStatus(
+				AGENT,
+				"sess-reused-batch",
+				AgentSessionState.WORKING,
+			);
+			await settle(() => fake.sessionSubscribes.length >= 2);
+			expect(fake.sessionSubscribes).toHaveLength(2);
+			expect(store.focusedView().agentSession()?.batchPending).toBeUndefined();
 		} finally {
 			dispose();
 		}
@@ -330,6 +465,38 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			release.resolve();
 			await settle(() => fake.sessionSubscribes.length >= 2);
 			expect(fake.sessionSubscribes.length).toBe(2);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("batchPending updates session control state, not the trace", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(AGENT, "sess-batch", AgentSessionState.WORKING);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-batch"));
+
+			fake.pushSessionFrame("sess-batch", {
+				event: batchPending(2, 1_700_000_030_000n),
+			});
+			await settle(
+				() => store.focusedView().agentSession()?.batchPending !== undefined,
+			);
+			expect(store.focusedView().agentSession()?.batchPending).toEqual({
+				count: 2,
+				firesAtMs: 1_700_000_030_000,
+			});
+			expect(store.focusedView().agentSession()?.events).toEqual([]);
+
+			fake.pushSessionFrame("sess-batch", { event: batchPending(0, 0n) });
+			await settle(
+				() => store.focusedView().agentSession()?.batchPending === undefined,
+			);
+			expect(store.focusedView().agentSession()?.batchPending).toBeUndefined();
+			expect(store.focusedView().agentSession()?.events).toEqual([]);
 		} finally {
 			dispose();
 		}
