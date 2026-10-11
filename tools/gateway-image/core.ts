@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 // The pure core of the gateway-image lane: no I/O, so every mapping and
 // fail-closed edge is unit-testable without buildkitd, podman, or a registry.
 // GHCR has no server-side tag immutability, so the deployed reference is
@@ -5,7 +7,7 @@
 
 /** Exit codes, numbered as in the runner and guest lanes so a failed run names
  * its own fault in CI. 7 and 8 are this lane's own: a failed pre-push smoke,
- * and a pin that is malformed or not on fork main. */
+ * and a pin that is malformed or not on the fork's release branch. */
 export const EXIT = {
 	usage: 2,
 	secretFound: 3,
@@ -17,6 +19,7 @@ export const EXIT = {
 } as const;
 
 export const FORK_REPO = "https://github.com/RigelBuild/oh-my-pi.git";
+export const FORK_BRANCH = "rigel-release";
 
 /** Must equal the default of `ARG PI_BASE` in the fork's `Dockerfile.gateway`:
  * stage 2 resolves its base through a named context of this exact name. */
@@ -25,6 +28,10 @@ export const PLATFORM = "linux/amd64";
 export const SOURCE_DATE_EPOCH = 1;
 
 export type ForkPin = { repo: string; commit: string };
+export type ImageConfigEntries = {
+	env: string[];
+	labels: Record<string, string>;
+};
 
 const PIN_KEYS: Record<string, true> = { repo: true, commit: true };
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -134,6 +141,141 @@ export function layoutDigest(indexJson: string): string {
 		);
 	}
 	return digest;
+}
+
+/** Read the digest the OCI exporter records in its metadata file. */
+export function metadataDigest(metadataJson: string): string {
+	const metadata: unknown = JSON.parse(metadataJson);
+	if (
+		typeof metadata !== "object" ||
+		metadata === null ||
+		Array.isArray(metadata)
+	) {
+		throw new Error("BuildKit metadata must be a JSON object");
+	}
+	const digest =
+		"containerimage.digest" in metadata
+			? metadata["containerimage.digest"]
+			: undefined;
+	if (typeof digest !== "string" || !DIGEST_PATTERN.test(digest)) {
+		throw new Error(
+			`BuildKit metadata digest is not sha256: ${String(digest)}`,
+		);
+	}
+	return digest;
+}
+
+/** Read the config descriptor from an OCI image manifest. */
+export function manifestConfigDigest(manifestJson: string): string {
+	const manifest: unknown = JSON.parse(manifestJson);
+	if (
+		typeof manifest !== "object" ||
+		manifest === null ||
+		Array.isArray(manifest) ||
+		!("schemaVersion" in manifest) ||
+		manifest.schemaVersion !== 2 ||
+		!("mediaType" in manifest) ||
+		typeof manifest.mediaType !== "string" ||
+		!("config" in manifest) ||
+		!("layers" in manifest) ||
+		!Array.isArray(manifest.layers)
+	) {
+		throw new Error("OCI manifest has an invalid shape");
+	}
+	const digest = descriptorDigest(manifest.config);
+	if (
+		digest === undefined ||
+		!manifest.layers.every(
+			(layer: unknown) => descriptorDigest(layer) !== undefined,
+		)
+	) {
+		throw new Error("OCI manifest has an invalid config or layer descriptor");
+	}
+	return digest;
+}
+
+function descriptorDigest(value: unknown): string | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	if (!("mediaType" in value) || typeof value.mediaType !== "string") {
+		return undefined;
+	}
+	if (
+		!("size" in value) ||
+		typeof value.size !== "number" ||
+		!Number.isSafeInteger(value.size) ||
+		value.size < 0
+	) {
+		return undefined;
+	}
+	if (
+		"digest" in value &&
+		typeof value.digest === "string" &&
+		DIGEST_PATTERN.test(value.digest)
+	) {
+		return value.digest;
+	}
+	return undefined;
+}
+
+function imageConfigDocument(configJson: string): object {
+	const document: unknown = JSON.parse(configJson);
+	if (
+		typeof document !== "object" ||
+		document === null ||
+		Array.isArray(document)
+	) {
+		throw new Error("OCI image config must be a JSON object");
+	}
+	const config = "config" in document ? document.config : undefined;
+	if (typeof config !== "object" || config === null || Array.isArray(config)) {
+		throw new Error("OCI image config has no config object");
+	}
+	return config;
+}
+
+/** Extract the OCI image config's environment and labels for secret scanning. */
+export function imageConfigEntries(configJson: string): ImageConfigEntries {
+	const config = imageConfigDocument(configJson);
+	return {
+		env: parseImageEnv("Env" in config ? config.Env : undefined),
+		labels: parseImageLabels("Labels" in config ? config.Labels : undefined),
+	};
+}
+
+function parseImageEnv(value: unknown): string[] {
+	if (value === undefined) return [];
+	if (
+		!Array.isArray(value) ||
+		!value.every((entry: unknown) => typeof entry === "string")
+	) {
+		throw new Error("OCI image config Env must be an array of strings");
+	}
+	return value;
+}
+
+function parseImageLabels(value: unknown): Record<string, string> {
+	if (value === undefined) return {};
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error("OCI image config Labels must be an object of strings");
+	}
+	const entries: [string, string][] = [];
+	for (const [name, entry] of Object.entries(value)) {
+		if (typeof entry !== "string") {
+			throw new Error("OCI image config Labels must be an object of strings");
+		}
+		entries.push([name, entry]);
+	}
+	return Object.fromEntries(entries);
+}
+
+/** Return the OCI layout path for a sha256 blob. */
+export function blobPath(layoutDir: string, digest: string): string {
+	if (!DIGEST_PATTERN.test(digest)) {
+		throw new Error(`digest must be sha256:<64 hex>, got ${digest}`);
+	}
+	return join(layoutDir, "blobs", "sha256", digest.slice("sha256:".length));
 }
 
 /** Benign names the gateway config ships: a public-key fingerprint the

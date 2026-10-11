@@ -1,26 +1,29 @@
 # gateway-image
 
-Pure core for building and publishing the LLM gateway image from the commit
-pinned in `fork-pin.json`. It decides whether a digest-addressed publish goes
-ahead, is skipped, or aborts. The `build`, `smoke`, and `publish` scripts that
-`moon.yml` names are not on main yet, so only the core and its tests run today.
+Builds and smokes the LLM gateway image from the commit pinned in
+`fork-pin.json`. The build exports a local OCI layout and blocks images whose
+config contains credential-shaped names.
 
 ## Run
 
+From the repository root:
+
 ```sh
-moon run gateway-image:ci
+BUILDKIT_HOST=<rootless-buildkitd-address> bun tools/gateway-image/build.ts
+bun tools/gateway-image/smoke.ts
 ```
 
-`ci` runs typecheck and tests. `.github/workflows/ci.yml` runs it in its
-`moon (bun)` job. `build`, `smoke`, and `publish` are `runInCI: false` and need
-their scripts before they can run.
+Both commands accept `--out <dir>`; the default is `tools/gateway-image/out`.
+The build needs a reachable rootless BuildKit daemon and `BUILDKIT_HOST`. The
+smoke needs `skopeo` and `podman`.
+
+`moon run gateway-image:ci` runs the lane's typecheck and tests. The build and
+smoke tasks are not part of CI.
 
 ## Credentials
 
-None today. The core reads only `fork-pin.json` and its inputs. `moon.yml`
-states that the future publish lane needs GHCR credentials; no workflow
-provides them yet.
+None. The fork is public, so the build fetches it without a credential. The smoke mints a throwaway gateway token per run and deletes it on exit.
 
 ## Rotate
 
-Nothing to rotate yet.
+Nothing to rotate.

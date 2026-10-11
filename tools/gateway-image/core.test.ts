@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
 	baseBuildArgs,
+	blobPath,
 	buildTag,
 	digestRef,
+	FORK_BRANCH,
 	FORK_REPO,
 	gatewayBuildArgs,
 	healthzOk,
+	imageConfigEntries,
 	layoutDigest,
+	manifestConfigDigest,
+	metadataDigest,
 	modelsListOk,
 	parseForkPin,
 	secretConfigViolations,
@@ -15,6 +20,10 @@ import {
 
 const COMMIT = "76015c2d80691c8a9f46fb84a00cad652d4455c6";
 const DIGEST = `sha256:${"a".repeat(64)}`;
+
+test("uses the protected fork release branch", () => {
+	expect(FORK_BRANCH).toBe("rigel-release");
+});
 
 describe("parseForkPin", () => {
 	test("accepts the committed pin file", async () => {
@@ -83,7 +92,7 @@ describe("buildctl argv", () => {
 			"pibase=/base",
 			"--opt",
 			"filename=Dockerfile.gateway",
-			"--opt",
+			`--opt`,
 			`context:oh-my-pi/pi:dev=oci-layout://pibase@${DIGEST}`,
 			"--opt",
 			"platform=linux/amd64",
@@ -118,6 +127,107 @@ describe("layoutDigest", () => {
 	])("rejects %s", (_, index) => {
 		expect(() => layoutDigest(JSON.stringify(index))).toThrow();
 	});
+});
+
+describe("metadataDigest", () => {
+	test("reads the BuildKit containerimage.digest field", () => {
+		expect(
+			metadataDigest(JSON.stringify({ "containerimage.digest": DIGEST })),
+		).toBe(DIGEST);
+	});
+
+	test.each([
+		["a non-object metadata", "[]"],
+		["a missing digest", "{}"],
+		["a non-string digest", '{"containerimage.digest":7}'],
+		["an invalid digest", '{"containerimage.digest":"sha512:abc"}'],
+	])("rejects %s", (_, metadata) => {
+		expect(() => metadataDigest(metadata)).toThrow();
+	});
+});
+
+describe("manifestConfigDigest", () => {
+	const descriptor = (digest: unknown) => ({
+		mediaType: "application/vnd.oci.image.config.v1+json",
+		size: 1,
+		digest,
+	});
+	const manifest = (config: unknown, layers: unknown[] = []) =>
+		JSON.stringify({
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.manifest.v1+json",
+			config,
+			layers,
+		});
+
+	test("reads the OCI config descriptor digest", () => {
+		expect(manifestConfigDigest(manifest(descriptor(DIGEST)))).toBe(DIGEST);
+	});
+
+	test.each([
+		["a non-object manifest", "[]"],
+		["a missing config descriptor", manifest(undefined)],
+		["a non-object config descriptor", manifest(null)],
+		[
+			"a missing digest",
+			manifest({
+				mediaType: "application/vnd.oci.image.config.v1+json",
+				size: 1,
+			}),
+		],
+		["a non-string digest", manifest(descriptor(7))],
+		["an invalid digest", manifest(descriptor("sha512:abc"))],
+		["an invalid layer descriptor", manifest(descriptor(DIGEST), [{}])],
+		[
+			"an invalid manifest shape",
+			JSON.stringify({ schemaVersion: 2, config: descriptor(DIGEST) }),
+		],
+	])("rejects %s", (_, value) => {
+		expect(() => manifestConfigDigest(value)).toThrow();
+	});
+});
+
+describe("imageConfigEntries", () => {
+	test("returns env and labels from image config", () => {
+		expect(
+			imageConfigEntries(
+				JSON.stringify({
+					config: { Env: ["PATH=/bin"], Labels: { version: "1" } },
+				}),
+			),
+		).toEqual({ env: ["PATH=/bin"], labels: { version: "1" } });
+	});
+
+	test("defaults absent env and labels to empty", () => {
+		expect(imageConfigEntries('{"config":{}}')).toEqual({
+			env: [],
+			labels: {},
+		});
+	});
+
+	test.each([
+		["a non-object document", "[]"],
+		["a missing config", "{}"],
+		["a non-object config", '{"config":[]}'],
+		["a non-array Env", '{"config":{"Env":"PATH=/bin"}}'],
+		["a non-string Env entry", '{"config":{"Env":[1]}}'],
+		["a non-object Labels", '{"config":{"Labels":[]}}'],
+		["a non-string label value", '{"config":{"Labels":{"version":1}}}'],
+	])("rejects %s", (_, config) => {
+		expect(() => imageConfigEntries(config)).toThrow();
+	});
+});
+describe("blobPath", () => {
+	test("returns the sha256 OCI blob path", () => {
+		expect(blobPath("/out/oci", DIGEST)).toBe(
+			`/out/oci/blobs/sha256/${"a".repeat(64)}`,
+		);
+	});
+
+	test.each(["sha512:abc", `sha256:${"A".repeat(64)}`, "sha256:short"])(
+		"rejects invalid digest %s",
+		(digest) => expect(() => blobPath("/out/oci", digest)).toThrow(),
+	);
 });
 
 describe("secretConfigViolations", () => {
@@ -169,7 +279,6 @@ describe("secretConfigViolations", () => {
 	});
 
 	test("passes every env name of the built gateway image", () => {
-		// The full Config.Env of the image built from the gateway boot change.
 		const env = [
 			"LANG=C.UTF-8",
 			"GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
@@ -213,8 +322,6 @@ describe("tags and refs", () => {
 });
 
 describe("tagDisposition", () => {
-	// Non-canonical raw bytes and their independently computed sha256: a
-	// parse-and-reserialize regression hashes different bytes.
 	const manifest = '{\n  "schemaVersion": 2 }';
 	const manifestDigest =
 		"sha256:e36b365ae05ced79e2d32ee8d290cc999fe07aff11ce21bb2caf1f69428e93f9";

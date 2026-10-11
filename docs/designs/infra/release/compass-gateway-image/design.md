@@ -26,14 +26,15 @@ lane makes six decisions.
 1. **Fork pin.** `tools/gateway-image/fork-pin.json` holds
    `{ "repo": "https://github.com/RigelBuild/oh-my-pi.git", "commit": "<40-hex>" }`.
    A bump is a reviewed compass PR that edits this file. The fork is public, so
-   CI fetches it with no credential:
+   CI fetches it with no credential. Fork `main` mirrors upstream; Rigel patches
+   land on the protected `rigel-release` branch (RIG-5024):
    - Delete and recreate `<out>/src`, run `git init` there, and add the pin's
      `repo` as remote `origin`. Every build starts from an empty checkout, so
      a repeat run never reuses stale state.
    - `git fetch --depth=1 origin <commit>`, then check out `FETCH_HEAD`.
-   - Fetch fork `main` with `--filter=tree:0` and run
+   - Fetch fork `rigel-release` with `--filter=tree:0` and run
      `git merge-base --is-ancestor`. Together they assert that the commit is
-     on fork `main`.
+     on fork `rigel-release`.
 
    The ancestry check refuses a pin on an unmerged PR branch. That branch could
    be force-pushed away, and its code has no fork review. The fork has no LFS
@@ -161,15 +162,14 @@ result in compass (RIG-4209 option A). Matt ruled for option B.
   `--short`).
 - Repo: `ghcr.io/rigelbuild/compass-gateway` (an assumption, OQ-1).
 - `fork-pin.json` `commit` is 40 lowercase hex characters and an ancestor of
-  RigelBuild/oh-my-pi `main`.
+  RigelBuild/oh-my-pi `rigel-release`.
 - Exit codes, numbered as in the runner and guest lanes: usage 2,
   secretFound 3, pushFailed 4, digestMismatch 5, badLayout 6, plus smokeFailed
   7 and badPin 8.
 - No retries anywhere. A fault before the push fails the step, and the remedy
   is a re-run. A fault after the push is recovered by a new compass commit,
   never by overwriting the tag (Approach item 3).
-- Prerequisite: fork PR #108 and its base PR are merged to fork `main`.
-  Until then no commit satisfies the ancestry rule.
+- Prerequisite: #108 is merged to `rigel-release`, including its base PR.
 - compass is public. Cite only compass, the public fork, and Linear IDs.
 
 ### T1 — Lane scaffold and pure core
@@ -227,7 +227,7 @@ Interfaces:
 - `bun tools/gateway-image/build.ts [--out <dir>]` (default
   `tools/gateway-image/out`). It needs `BUILDKIT_HOST`. It reads
   `fork-pin.json`, recreates `<out>/src`, and fetches the commit there
-  (Approach item 1). It asserts ancestry against fork `main` and exits 8 if
+  (Approach item 1). It asserts ancestry against fork `rigel-release` and exits 8 if
   the commit is not an ancestor. Then it runs stage 1 into `<out>/base-oci`
   and stage 2 into `<out>/oci`. It asserts that `containerimage.digest` in the
   metadata equals `layoutDigest(<out>/oci/index.json)` and exits 6 if they
