@@ -1184,7 +1184,7 @@ jobs:
         # the two must stay in step.
         #
         # GitHub exposes no changed-paths primitive to a step `if:`, so — exactly
-        # as the dogfood job resolves image_affected into $GITHUB_OUTPUT for its
+        # as the e2e job resolves image_affected into $GITHUB_OUTPUT for its
         # own `if:` to read — this step computes the boolean and the oracle's
         # `if:` reads steps.forge_affected.outputs.forge_affected. The checkout is
         # fetch-depth 0 (see the checkout step), so the base branch's history is
@@ -1299,7 +1299,7 @@ jobs:
           # -race needs cgo, matching go/moon.yml's race lane (§431-436). Without
           # it `go test -race` refuses to build.
           CGO_ENABLED: '1'
-        # Same capture-replay-exit shape as the pgtest and dogfood suites above:
+        # Same capture-replay-exit shape as the pgtest and e2e suites above:
         # the redirect — not a `| tee` pipeline, whose exit status is tee's 0 and
         # would swallow a FAIL — then replay the log, then exit on go test's own
         # status. `|| rc=$?` because the step runs under `bash -e`, which would
@@ -2281,7 +2281,7 @@ jobs:
         # them back), so the next step hands them to podman — the same
         # root-creates / podman-writes handoff the checkout uses.
         #
-        # Key shape: scoped to this job (`dogfood-e2e-`) so it never collides with
+        # Key shape: scoped to this job (`e2e-`) so it never collides with
         # a future cache in another job, pinned to the go minor (`go1.26.0`,
         # matching go/go.mod) so a toolchain bump starts fresh, and hashed on
         # go/go.sum (the module root is go/) so any dependency change invalidates
@@ -2295,9 +2295,9 @@ jobs:
           path: |
             /home/podman/.cache/go-build
             /home/podman/go/pkg/mod
-          key: dogfood-e2e-go-${{ runner.os }}-go1.26.0-${{ hashFiles('go/go.sum') }}
+          key: e2e-go-${{ runner.os }}-go1.26.0-${{ hashFiles('go/go.sum') }}
           restore-keys: |
-            dogfood-e2e-go-${{ runner.os }}-go1.26.0-
+            e2e-go-${{ runner.os }}-go1.26.0-
 
       - name: Hand the Go caches to the podman user (as root)
         # The cache restore above ran as root, so it created GOCACHE
@@ -2369,7 +2369,7 @@ jobs:
           echo "/home/podman/.nix-profile/bin" >>"$GITHUB_PATH"
 
       - name: Put the language toolchains on PATH
-        # The dogfood seed's `moon query tasks --affected` and the e2e `go test`
+        # The e2e seed's `moon query tasks --affected` and the e2e `go test`
         # need the same nix-pinned toolchain the moon job builds. Phase one:
         # bun/node/moon/go from gate-tools.nix's `langs` (see the moon job for
         # the two-phase rationale). Duplicated here because this is a separate
@@ -2483,7 +2483,7 @@ jobs:
           fi
 
       - name: Seed the compass-agent image into local containers-storage
-        # The dogfood e2e fixture resolves its agent image as the bare ref
+        # The e2e fixture resolves its agent image as the bare ref
         # `compass-agent:latest` (go/e2e/fixture.go's agentImage const), and its
         # EnsureImage present-checks the LOCAL containers-storage
         # (internal/stack/adapters/image.go) — it does not pull at test time. So
@@ -2617,7 +2617,7 @@ jobs:
           # --- PASS lines, so -count=1 above is the only thing preventing a
           # cached replay. Do not remove it.
           if ! grep -qE "^[[:space:]]*--- PASS: TestHarnessCore[[:space:]]" /tmp/e2e.log; then
-            echo "::error::the dogfood e2e package did not report a passing TestHarnessCore"
+            echo "::error::the e2e package did not report a passing TestHarnessCore"
             exit 1
           fi
           if ! grep -qE "^[[:space:]]*--- PASS: TestStackIntegration[[:space:]]" /tmp/e2e.log; then
@@ -2625,7 +2625,7 @@ jobs:
             exit 1
           fi
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
-            echo "::error::the dogfood e2e package did not report ok — it failed, skipped, or never ran"
+            echo "::error::the e2e package did not report ok — it failed, skipped, or never ran"
             exit 1
           fi
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/cmd/compass-stack[[:space:]]" /tmp/e2e.log; then
@@ -2645,7 +2645,7 @@ jobs:
               exit 1
             fi
           done <<< "$test_names"
-          echo "dogfood e2e: every source-derived TestComms* leg reported PASS"
+          echo "e2e: every source-derived TestComms* leg reported PASS"
 
       - name: Save the Go build + module caches
         # Never on workflow_dispatch: a `pr` dispatch runs PR code under main's

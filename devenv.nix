@@ -93,7 +93,7 @@ in
     # cross-platform — harmless on macOS where the app links system WebKit.
     pkg-config
 
-    # postgresql: the dogfood e2e harness's private postgres shells out to
+    # postgresql: the e2e harness's private postgres shells out to
     # `initdb`/`postgres`/`createdb` via exec.LookPath. In the dev shell those
     # arrive from `services.postgres`, but CI's gate-tools builds its PATH ONLY
     # from `packages` — service binaries never reach a CI runner — so the prereq
