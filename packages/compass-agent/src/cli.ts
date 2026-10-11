@@ -26,7 +26,6 @@ import {
 	type IndexedSessionStorage,
 	SessionManager,
 	Settings,
-	type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/capability";
 import {
@@ -57,6 +56,7 @@ import {
 import { createForgeTools, ForgeBroker } from "./forge";
 import type { FrameSink } from "./frame";
 import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
+import { nativeAsCustomTool } from "./native-tools";
 import { createSessionBlobUploader } from "./session-blobs";
 import {
 	createTeeSessionStorage,
@@ -1015,16 +1015,13 @@ export async function main(
 	const lifecycleBroker = new LifecycleBroker(transport);
 	const forgeBroker = new ForgeBroker(transport);
 	const boardBroker = new BoardBroker(transport);
-	// The comms/lifecycle natives are AgentTool, registered via customTools with one
-	// type-sound assertion to ToolDefinition. RUNTIME invariant (do NOT simplify): the
-	// SDK runs them as CustomTools, so execute receives args 3-5 SHUFFLED — safe ONLY
-	// because every native reads solely (id, params); cli.test.ts pins execute.length===2.
+	// The natives are AgentTools; the adapter gives them the CustomTool call order.
 	const nativeTools = [
 		...createCommsTools(commsBroker, turnSequence),
 		...createLifecycleTools(lifecycleBroker),
 		...createForgeTools(forgeBroker),
 		...createBoardTools(boardBroker),
-	] as ToolDefinition[];
+	].map(nativeAsCustomTool);
 
 	// Keep the SDK's session model restoration and fallback logic authoritative.
 	const modelPattern = resolveModelSelector(env);

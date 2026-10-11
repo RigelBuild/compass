@@ -50,8 +50,8 @@ import { join } from "node:path";
 import {
 	AgentRegistry,
 	type CreateAgentSessionOptions,
+	type CustomTool,
 	createAgentSession,
-	type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import { BoardBroker, type BoardTransport, createBoardTools } from "./board";
 import { CommsBroker, type CommsTransport, createCommsTools } from "./comms";
@@ -68,6 +68,7 @@ import {
 	LifecycleBroker,
 	type LifecycleTransport,
 } from "./lifecycle";
+import { nativeAsCustomTool } from "./native-tools";
 
 // This test reads tool NAMES + registration only — never invokes a tool — so
 // every transport method rejects: reaching one is a test bug, not a code path.
@@ -95,27 +96,22 @@ const lifecycleTransport: LifecycleTransport = {
 // Built from the same four factories over real brokers, so the expected set can
 // never drift from what ships: a new native tool is automatically part of the
 // pinned split.
-function compassNativeTools(): ToolDefinition[] {
-	// Mirrors the cli.ts registration seam: the factories return `AgentTool[]`,
-	// which the entrypoint widens to `ToolDefinition[]` for the `customTools`
-	// option (`customTools?: (CustomTool | ToolDefinition)[]`). The two are
-	// structurally compatible for registration but inference will not unify
-	// them, so this is the same widening the production callsite uses.
-	//
-	// `loadMode: "essential"` mirrors the same stamp cli.ts applies to the whole
-	// merged `customTools` array (natives + mounted MCP). SDK 18.x defaults an
-	// omitted `loadMode` at an adapter boundary to `"discoverable"` (registered
-	// but not top-level), so without it these tools would not be active and this
-	// file would be measuring the wrong surface.
+function compassNativeTools(): CustomTool[] {
+	// Mirrors the cli.ts registration seam: natives go through `nativeAsCustomTool`,
+	// and `loadMode: "essential"` mirrors cli.ts's stamp on the whole `customTools`
+	// array. SDK 18.x defaults an omitted `loadMode` to `"discoverable"`, which
+	// would leave these tools inactive and measure the wrong surface.
 	return [
 		...createCommsTools(new CommsBroker(commsTransport)),
 		...createLifecycleTools(new LifecycleBroker(lifecycleTransport)),
 		...createForgeTools(new ForgeBroker(forgeTransport)),
 		...createBoardTools(new BoardBroker(boardTransport)),
-	].map((tool) => ({
-		...tool,
-		loadMode: "essential" as const,
-	})) as ToolDefinition[];
+	].map(
+		(tool): CustomTool => ({
+			...nativeAsCustomTool(tool),
+			loadMode: "essential",
+		}),
+	);
 }
 
 function compassNativeToolNames(): Set<string> {

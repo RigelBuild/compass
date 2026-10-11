@@ -3088,37 +3088,6 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].autoApprove).toBe(true);
 	});
 
-	test("every native's execute keeps arity 2 — tripwire on the customToolToDefinition arg-shuffle", () => {
-		// RIG-1741 seam invariant. The natives are AgentTools registered through customTools; the SDK
-		// classifies a marker-less AgentTool as a CustomTool and runs it through customToolToDefinition,
-		// which invokes execute with the CustomTool arg order — NOT the AgentTool order — so args 3-5
-		// arrive SHUFFLED, and the wiring is sound ONLY while no native reads past params.
-
-		// This is a TRIPWIRE, not a total guard: pinning execute.length === 2 reddens the likely
-		// regression (a plain positional 3rd param). It does NOT catch a rest/defaulted param; the
-		// load-bearing guard is the invariant itself (see cli.ts). A native needing its signal cannot
-		// go through this seam.
-		const fakeTransport = {
-			comms: async () => ({}) as never,
-			lifecycle: async () => ({}) as never,
-			forge: async () => ({}) as never,
-			board: async () => ({}) as never,
-		};
-		const natives = [
-			...createCommsTools(new CommsBroker(fakeTransport)),
-			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
-			...createForgeTools(new ForgeBroker(fakeTransport)),
-			...createBoardTools(new BoardBroker(fakeTransport)),
-		];
-		expect(natives).toHaveLength(27);
-		for (const tool of natives) {
-			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
-				name: tool.name,
-				arity: 2,
-			});
-		}
-	});
-
 	test("an UNCONFIGURED mount → skills [], no extension paths, no MCP tools, and main resolves", async () => {
 		// A present-but-empty mount root (no current/). The default connectMcp runs
 		// (empty configs → no dial, empty tools), so this exercises the real
