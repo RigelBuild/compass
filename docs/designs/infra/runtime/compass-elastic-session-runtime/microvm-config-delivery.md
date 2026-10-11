@@ -15,8 +15,9 @@ Tracking: RIG-3093
 A microVM agent runs with empty fleet config. `provisionVsockGateway`
 (`go/internal/runner/host.go`) launches with no config mount and no
 `configVersions` seed, because the backend accepts exactly one read-write
-mount (`workspaceShare`, `UnsupportedMountError`,
-`go/internal/runtime/microvm_lifecycle.go`). `refreshOneContainer` then skips
+mount (`workspaceShare`, `go/internal/runtime/microvm_lifecycle.go`:
+`if mounts[0].ReadOnly { return Mount{}, &UnsupportedMountError{...} }`, and
+the same for any `ContainerPath != workspaceMountPath`). `refreshOneContainer` then skips
 the session with `if _, ok := h.engine.(vsockGatewayEngine); ok { return nil }`.
 Intent: config parity with podman, including live refresh on a ConfigVersion
 publish, with that gate and the Provision skip both removed.
@@ -74,7 +75,9 @@ wrong bound for compressed bytes. That is a coarse ceiling, not a tight tar
 bound: PAX headers and gzip expansion make a tight bound fragile. The Runner
 checks `len(tarball) <= MaxWireBytes` before the push, so an oversized bundle
 fails on the host with a named error rather than mid-stream. The Server's own
-caps (4,096 regular files, 64 MiB) sit far below it. `agentconfig.Tree.Install`
+caps sit far below it (`go/internal/store/agent_config.go`:
+`maxFileCount = 4096`, regular files only; `maxDecompressedBytes int64 = 64 << 20`).
+`agentconfig.Tree.Install`
 then runs with a zero `Check`: caps,
 traversal and containment, dir/regular types only, pinned 0755/0644 modes,
 and the writer. A `configMu` lock, separate from `s.mu`, serializes installs.
@@ -163,7 +166,8 @@ unchanged.
   `config_materialize_test.go`, `config_refresh_test.go`, `host_test.go`,
   `host_gateway_test.go`, and `config_delivery_e2e_test.go` keep every
   assertion and error string. The only edits rename moved constants
-  (`maxConfigFiles` → `agentconfig.MaxFiles`, `maxConfigBytes` →
+  (`go/internal/runner/config_materialize.go`: `maxConfigFiles = 10_000`,
+  every member, → `agentconfig.MaxFiles`; `maxConfigBytes = 64 << 20` →
   `agentconfig.MaxBytes`).
 - **The guest image ships with or before the Runner.** An older guest answers
   `CodeUnimplemented`. That maps to `microvm.ErrGuestImageTooOld` and fails
@@ -296,6 +300,8 @@ ships inert code.
     - An install failure closes the socket, records stop and remove, and
       errs.
     - Refresh from v-1 to v-2 installs v-2 and reaches `exec_streaming` == 2.
+    - Refresh with lastVersion v-1 against a version-only v-1 fetch makes no
+      install call, no reload, and keeps `exec_streaming` at 1.
     - An install failure on refresh neither reloads nor advances the version.
   - The parity suites are green.
 
