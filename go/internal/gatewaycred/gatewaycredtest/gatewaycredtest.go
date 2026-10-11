@@ -359,7 +359,11 @@ func oauthClear(h Harness) func(*testing.T) {
 				want := seeded
 				want.Access, want.OrgName, want.Region = "rotated-access", "sent-organization", "sent-region"
 				zero(&want)
-				if tok, ok := got[0].OAuth(); !ok || tok != want {
+				tok, ok := got[0].OAuth()
+				if !ok {
+					t.Fatalf("credential after clearing %s is not OAuth", name)
+				}
+				if tok != want {
 					t.Fatalf("token after clearing %s: metadata %q, want %q (grant equal: %t)", name, oauthMetadata(tok), oauthMetadata(want),
 						tok.Access == want.Access && tok.Refresh == want.Refresh && tok.ExpiresUnixMs == want.ExpiresUnixMs)
 				}
