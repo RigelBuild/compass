@@ -104,7 +104,7 @@ Ledger rows. New rows: DL-487 (D1), DL-488 (D3), DL-489 (D2), DL-490 (D4, D5). A
 
 ## Alternatives considered
 
-- **Keep a flat reserved-namespace table** (`channel_groups` minus `parent_group_id` and the lattice). This is a smaller change. But it keeps a second container type for three server-only homes, and it keeps the guards that type needs today: the top-level name refusal in `CreateChannelGroup`, `isReservedGroupTx` (which must also learn `__coordination__`), and the visibility discriminators. Two columns on `channels` do the same job, with a real unique key and no RPC that can write them. See OQ1.
+- **Keep a flat reserved-namespace table** (`channel_groups` minus `parent_group_id` and the lattice). This is a smaller change. But it keeps a second container type for three server-only homes, and it keeps the guards that type needs (D2, *Squats*). Two columns on `channels` do the same job, with a real unique key and no RPC that can write them. See OQ1.
 - **Hang reserved homes on the agent tree.** For example, coordination under the manager (`parent_agent_id`) as EXPLICIT. This fails for two of the three homes. A DM has two agent parties and no natural anchor. The anchor's owner set (DL-345) would also get read access to a private pair DM, and a cross-owner DM has two owners. The Linear routing channel belongs to the admin user, not to an agent. The tree is the wrong axis for system homes.
 - **Keep SHARED groups as the one surviving group use.** This keeps the lattice, the group RPCs, and the UI group headers for one feature that no server path mints. See OQ2.
 - **Deprecate the wire instead of removing it** (`[deprecated = true]`, as `CHANNEL_KIND_GROUP_DM` did). DL-186 makes removal safe pre-dogfood. A deprecated RPC with no store behind it is dead weight. See OQ3.
@@ -127,7 +127,7 @@ Ledger rows. New rows: DL-487 (D1), DL-488 (D3), DL-489 (D2), DL-490 (D4, D5). A
 
 ### Landing
 
-T1–T6 land as one PR, with one commit per task so a reviewer can read it by surface. No smaller PR can be green. One proto regen deletes `ChannelGroup`, `ChannelGroupVisibility` and `CreateChannelGroupRequestSchema` from the TS trees, and the agent tools, the UI adapter and the client index import them. The e2e fixture (`//go:build podman`) calls `CreateChannelGroupRequest` and `ChannelGroupVisibility_…`. So the store, proto, agent, UI and e2e edits must merge together. The split into add-then-delete is rejected in *Alternatives considered*. Most of the diff is deletion.
+T1–T6 land as one PR, with one commit per task so a reviewer can read it by surface. The commits are review slices, not bisectable: only the PR head builds. No smaller PR can be green. One proto regen deletes `ChannelGroup`, `ChannelGroupVisibility` and `CreateChannelGroupRequestSchema` from the TS trees, and the agent tools, the UI adapter and the client index import them. The e2e fixture (`//go:build podman`) calls `CreateChannelGroupRequest` and `ChannelGroupVisibility_…`. So the store, proto, agent, UI and e2e edits must merge together. The split into add-then-delete is rejected in *Alternatives considered*. Most of the diff is deletion.
 
 ### T1. Schema and store
 
@@ -238,7 +238,7 @@ Tests:
 
 - `org_mgmt_pgtest_test.go` and `relay_org_mgmt_test.go` lose the group cases. They gain one agent create of a shared channel and one agent create under a parent handle.
 - The actor-threading probes in `auth/interceptor_pgtest_test.go` and `go/server/comms_actor_pgtest_test.go` use `CreateChannelGroup` today. They switch to `CreateChannel` and assert that the caller is in `member_account_ids`, since the store makes the actor a founding member.
-- `visibility_filter_test.go` drops `TestSubscribeCommsChannelGroupChangedScoping`. `subscribe_failclosed_test.go` drops its `ChannelGroupVisibleTo` fake. `subjects_test.go` drops `KindChannelGroupChanged`.
+- `visibility_filter_test.go` drops `TestSubscribeCommsChannelGroupChangedScoping`, and rewrites `TestSubscribeCommsChannelChangedSharedVisibleToNonMember` to build its channel with `CreateChannel{shared: true}`, keeping the non-member-receives and private-leak assertions. `subscribe_failclosed_test.go` drops its `ChannelGroupVisibleTo` fake. `subjects_test.go` drops `KindChannelGroupChanged`.
 - `channel_attach_wire_test.go` pins `Channel.shared` at 13 and `CreateChannelRequest.shared` at 8. `relay_arm_coverage_test.go` drops arm 9.
 
 ### T3. Agent tools
@@ -253,7 +253,7 @@ export const createChannelParameters = type({
   "members?": /* unchanged */,
   "parent?": type("string")
     .narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
-    .describe("Agent handle to attach the channel under; omit for a root channel"),
+    .describe("Agent handle to attach the channel under (must not be blank); omit for a root channel; not allowed with shared"),
   "shared?": type("boolean").describe("Visible to every account; root channels only"),
 }).narrow(
   (p, ctx) => !(p.shared && p.parent !== undefined) || ctx.mustBe("a root channel when shared"),
@@ -275,7 +275,7 @@ Tests: `comms-state.test.ts` and `stream.test.ts` drop the group cases. A member
 
 ### T5. e2e fixture
 
-File: `go/e2e/fixture.go`. Replace `createSharedGroup` with a `CreateChannel` call that sets `shared: true`. Keep each test's cross-owner visibility assertion.
+Files: `go/e2e/fixture.go` and `go/e2e/legcomms_tenant_test.go`. Replace `createSharedGroup` with a `CreateChannel` call that sets `shared: true`, and rewrite the group-arm prose in `legcomms_tenant_test.go`. Keep each test's cross-owner visibility assertion.
 
 ### T6. Docs and citation sweep
 
@@ -283,7 +283,7 @@ File: `go/e2e/fixture.go`. Replace `createSharedGroup` with a `CreateChannel` ca
 - Leave the prior record §1 and `docs/designs/agent/compass-manager-comms-substrate/design.md` ("always provisioned GROUPED") as history. The flipped rows point here.
 - Code-comment sweep for the flipped ids: `grep -rn "DL-344\|DL-395\|DL-397\|DL-295" go apps packages proto` has no hits on main today. Re-run it after rebase. Remove the comments in `store/coordination.go` that cite "design.md:570-573" (the GROUPED home).
 - `go/internal/store/presence_reads.go`: rewrite the "SHARED-grouped channels" comment.
-- Done check: run `grep -rlE --exclude-dir=gen --exclude-dir=db --exclude-dir=node_modules --exclude=spine.test.ts "channel_groups|ChannelGroup|parent_group_id|group_id|GroupID|groupId|channels_group_|SHARED-group|grouped channel|__dm__|__coordination__|__linear__|create_channel_group|group_name|reserved DM group|reserved group" go apps packages proto docs/specs docs/concepts config`. It returns nothing when the work is done. On main it lists 72 files, all group code or group prose. The excludes cover generated trees (`gen/`, `go/internal/store/db/`), installed packages, and the one false positive: `apps/ui/src/keyboard/spine.test.ts` uses `groupId` for keyboard roving groups. The pattern has no `GROUPED` or bare `grouped`, because `packages/compass-agent` ("GROUPED per topic") and `apps/ui/src/board.ts` ("grouped by `issue.assignee`") use them for other things.
+- Done check: run `grep -rlE --exclude-dir=gen --exclude-dir=db --exclude-dir=node_modules --exclude=spine.test.ts "channel_groups|ChannelGroup|parent_group_id|group_id|GroupID|groupId|channels_group_|SHARED-group|SHARED group|grouped channel|__dm__|__coordination__|__linear__|create_channel_group|group_name|reserved DM group|reserved group" go apps packages proto docs/specs docs/concepts config`. It returns nothing when the work is done. On main it lists 73 git-tracked files (run it on a clean checkout), all group code or group prose. The excludes cover generated trees (`gen/`, `go/internal/store/db/`), installed packages, and the one false positive: `apps/ui/src/keyboard/spine.test.ts` uses `groupId` for keyboard roving groups. The pattern has no `GROUPED` or bare `grouped`, because `packages/compass-agent` ("GROUPED per topic") and `apps/ui/src/board.ts` ("grouped by `issue.assignee`") use them for other things.
 
 ## Tasks
 
@@ -302,7 +302,7 @@ File: `go/e2e/fixture.go`. Replace `createSharedGroup` with a `CreateChannel` ca
 ### OQ1. Drop `channel_groups` entirely, or keep a flat reserved-namespace table?
 
 - (a) Drop it. System homes become `channels.system_namespace` + `namespace_owner_id`. No RPC can write those columns, so the reserved-name guards go, and the homes get a real unique key. Cost: three upserts are rekeyed.
-- (b) Keep a flat `channel_groups` (no `parent_group_id`, no visibility) for the three homes only. The diff is smaller. But a second container type stays, and so do the guards it needs: the top-level name refusal, `isReservedGroupTx` (which must also learn `__coordination__` to close today's user-create path), and the visibility discriminators.
+- (b) Keep a flat `channel_groups` (no `parent_group_id`, no visibility) for the three homes only. The diff is smaller. But a second container type stays, and so do the guards listed in D2 *Squats*.
 
 **Recommendation:** (a). The Plan builds (a). Delta for (b): T1 keeps `channel_groups (id, name, owner_user_id, tenant_id)` with a unique `(owner_user_id, name)` key, keeps `channels.group_id` for system rows only, keeps `EnsureOwner*GroupTx` and `isReservedGroupTx` with `coordinationGroupName` added, and drops only nesting, visibility, and the lattice. DL-295 stays Active.
 
