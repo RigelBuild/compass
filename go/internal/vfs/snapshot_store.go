@@ -106,15 +106,16 @@ func (m *LocalManager) snapshotLocked(ctx context.Context, v Volume) (id VolumeS
 	if err := m.cloner.cloneTree(ctx, v.HostRoot, staging); err != nil {
 		return "", errors.Join(fmt.Errorf("vfs: cloning volume %q to snapshot %q: %w", v.HostRoot, id, err), removeSnapshotPath(staging))
 	}
+	// Fresh mtime before publish, so a sweep never sees the source root's old time on a committed tree.
+	now := time.Now()
+	if err := os.Chtimes(staging, now, now); err != nil {
+		return "", errors.Join(fmt.Errorf("vfs: refreshing snapshot tree time %q: %w", id, err), removeSnapshotPath(staging))
+	}
 	if err := syncTree(staging); err != nil {
 		return "", errors.Join(fmt.Errorf("vfs: syncing snapshot staging tree %q: %w", id, err), removeSnapshotPath(staging))
 	}
 	if err := os.Rename(staging, tree); err != nil { //nolint:gosec // both paths use fixed store directories and a cryptographic snapshot ID
 		return "", errors.Join(fmt.Errorf("vfs: committing snapshot %q: %w", id, err), removeSnapshotPath(staging))
-	}
-	now := time.Now()
-	if err := os.Chtimes(tree, now, now); err != nil {
-		return "", errors.Join(fmt.Errorf("vfs: refreshing snapshot tree time %q: %w", id, err), removeSnapshotPath(tree))
 	}
 	if err := syncDir(filepath.Dir(tree)); err != nil {
 		return "", errors.Join(err, removeSnapshotPath(tree))
@@ -276,9 +277,12 @@ func (m *LocalManager) restoreSnapshotLocked(ctx context.Context, id VolumeSnaps
 	if err := m.cloner.cloneTree(ctx, tree, v.HostRoot); err != nil {
 		cleanupErr := clearDirectory(v.HostRoot)
 		if cleanupErr == nil {
-			cleanupErr = removeSnapshotPath(marker)
+			// Keep the marker unless the cleared root is durable, so a crash cannot leave unmarked leftovers.
+			cleanupErr = syncTree(v.HostRoot)
 		}
-		cleanupErr = errors.Join(cleanupErr, syncDir(filepath.Dir(marker)))
+		if cleanupErr == nil {
+			cleanupErr = errors.Join(removeSnapshotPath(marker), syncDir(filepath.Dir(marker)))
+		}
 		return errors.Join(fmt.Errorf("vfs: restoring snapshot %q into %q: %w", id, v.HostRoot, err), cleanupErr)
 	}
 	if err := syncTree(v.HostRoot); err != nil {

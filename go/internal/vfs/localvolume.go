@@ -181,10 +181,10 @@ func createLocked(root string) error {
 			return err
 		}
 	}
-	if err := os.MkdirAll(metaDir(root), volumeDirMode); err != nil { //nolint:gosec // G703: sidecar path uses a traversal-checked session ID under the configured base
+	if err := os.MkdirAll(metaDir(root), volumeDirMode); err != nil { //nolint:gosec,nolintlint // G703 fires only in some tag sets; the sidecar path uses a traversal-checked session ID under the configured base
 		return fmt.Errorf("vfs: creating volume metadata dir %q: %w", metaDir(root), err)
 	}
-	if err := os.MkdirAll(root, volumeDirMode); err != nil { //nolint:gosec // G703: root path uses a traversal-checked session ID under the configured base
+	if err := os.MkdirAll(root, volumeDirMode); err != nil { //nolint:gosec,nolintlint // G703 fires only in some tag sets; the root path uses a traversal-checked session ID under the configured base
 		return fmt.Errorf("vfs: creating volume root %q: %w", root, err)
 	}
 	return nil
