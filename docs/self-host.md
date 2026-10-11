@@ -135,17 +135,25 @@ nix profile install \
     github:RigelBuild/compass#compass-stack-env
 ```
 
-### Release tarball
+### Release binaries
 
-Each release publishes a platform tarball of the same binaries. Download,
-extract, and place them on `PATH`:
+Each release attaches the linux-amd64 binaries and a `SHA256SUMS` file.
+Download the three stack binaries for a tag, check them, and place them on
+`PATH`:
 
 ```console
-$ curl -fsSL https://github.com/RigelBuild/compass/releases/latest/download/compass-stack-linux-amd64.tar.gz \
-    | tar -xz -C /usr/local/bin
+$ tag=vX.Y.Z   # a release that ships compass-stack
+$ base=https://github.com/RigelBuild/compass/releases/download/$tag
+$ for b in compass-stack compass-server compass-runner; do
+    curl -fsSLO "$base/${b}_${tag}_linux-amd64"
+  done
+$ curl -fsSL "$base/SHA256SUMS" | sha256sum --check --ignore-missing
+$ for b in compass-stack compass-server compass-runner; do
+    sudo install -m 0755 "${b}_${tag}_linux-amd64" "/usr/local/bin/$b"
+  done
 ```
 
-The tarball does not carry the microVM userspace trio; install cloud-hypervisor,
+The release does not carry the microVM userspace trio; install cloud-hypervisor,
 virtiofsd, and passt from your distribution and confirm the floors with
 `compass-stack preflight`.
 
