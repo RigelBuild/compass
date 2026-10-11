@@ -517,14 +517,14 @@ console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(roo
 		);
 	});
 
-	test("a shallow clone is deepened before add order is read", async () => {
+	test("a shallow clone fails closed instead of guessing add order", async () => {
 		const dir = "go/internal/store/migrations";
 		await withRepo(
 			{ [`${dir}/0001_init.sql`]: "SELECT 1;\n" },
 			async (upstream) => {
 				const git = (cwd: string, args: string[]) =>
 					Bun.$`git ${args}`.cwd(cwd).quiet();
-				// Added later but sorts first, so tree order would pick the wrong file.
+				// Added later but sorts first: a shallow read would pick the wrong file.
 				for (const name of ["0002_early", "0002_a_late"]) {
 					writeFileSync(
 						join(upstream, `${dir}/${name}.sql`),
@@ -550,8 +550,15 @@ console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(roo
 					const result = await checkMigrationImmutability(clone, {
 						GATE_BASE_REF: "origin/HEAD",
 					});
-					expect(result.output).toBe("");
-					expect(result.code).toBe(0);
+					expect(result.code).toBe(2);
+					expect(result.output).toContain("shallow clone");
+					expect(
+						(
+							await Bun.$`git rev-parse --is-shallow-repository`
+								.cwd(clone)
+								.text()
+						).trim(),
+					).toBe("true");
 				} finally {
 					rmSync(clone, { recursive: true, force: true });
 				}
