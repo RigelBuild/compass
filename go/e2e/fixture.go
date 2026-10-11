@@ -136,6 +136,8 @@ type Fixture struct {
 	// forwarded to the runner as --runtime-dir. Exposed so a process-table
 	// assertion can scope its match to this fixture's own runner.
 	runtimeDir string
+	// stateDir holds the stack's TLS anchor, postgres data and pgid record.
+	stateDir string
 	// stub is the canned model backend when the fixture was built with
 	// WithCannedModel, else nil. Its lifecycle rides a t.Cleanup registered at
 	// startup, so a consumer never closes it directly.
@@ -183,6 +185,8 @@ type fixtureConfig struct {
 	// externalDSN, when set, points the stack at an already-running postgres
 	// (ExternalDatabase) instead of spawning its own.
 	externalDSN string
+	// embeddedPostgres pins the stack-owned postgres arm (WithEmbeddedPostgres).
+	embeddedPostgres bool
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
@@ -297,6 +301,13 @@ func withExternalDatabase(dsn string) fixtureOption {
 	return func(fc *fixtureConfig) { fc.externalDSN = dsn }
 }
 
+// WithEmbeddedPostgres states that a leg needs the stack-owned postgres. Plain
+// NewFixture already takes that wrapper-process arm; this option sets nothing on
+// stack.Config and only fails the test if an external DSN is also set.
+func WithEmbeddedPostgres() fixtureOption {
+	return func(fc *fixtureConfig) { fc.embeddedPostgres = true }
+}
+
 // WithForgeStub makes NewFixture stand up the deterministic forge stub backend.
 func WithForgeStub() fixtureOption {
 	return func(fc *fixtureConfig) { fc.forge = true }
@@ -318,10 +329,7 @@ func WithForgeStub() fixtureOption {
 func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixture {
 	tb.Helper()
 
-	var fc fixtureConfig
-	for _, opt := range opts {
-		opt(&fc)
-	}
+	fc := buildFixtureConfig(tb, opts)
 	// The three stack child binaries are built once per run by TestMain and
 	// exported on PATH there (see main_test.go); the ProcessSupervisor resolves
 	// each Component to a bare binary name via exec.LookPath against that entry.
@@ -459,6 +467,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 		serverURL:   serverURL,
 		adminToken:  adminToken,
 		runtimeDir:  runtimeDir,
+		stateDir:    stateDir,
 		stub:        stub,
 		forgeStub:   forgeStub,
 		agentModel:  cfg.AgentModel,
@@ -498,6 +507,19 @@ func fixtureDSN(fc fixtureConfig, pgSockDir string, pgPort int) string {
 		return fc.externalDSN
 	}
 	return "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
+}
+
+// buildFixtureConfig applies opts and rejects a contradictory set.
+func buildFixtureConfig(tb testing.TB, opts []fixtureOption) fixtureConfig {
+	tb.Helper()
+	var fc fixtureConfig
+	for _, opt := range opts {
+		opt(&fc)
+	}
+	if fc.embeddedPostgres && fc.externalDSN != "" {
+		tb.Fatalf("NewFixture: WithEmbeddedPostgres conflicts with an external database DSN")
+	}
+	return fc
 }
 
 func acquireFixtureRoot(tb testing.TB, ctx context.Context, fc fixtureConfig) (root, stateDir string, pgPort int) {
@@ -580,6 +602,9 @@ func (f *Fixture) ForgeStub() *forgeStub { return f.forgeStub }
 // so a process-hygiene assertion can scope its /proc scan to this fixture's own
 // child processes rather than matching unrelated host processes.
 func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
+
+// StateDir is the stack's state dir: TLS anchor, postgres data and pgid record.
+func (f *Fixture) StateDir() string { return f.stateDir }
 
 // AsObserver mints a NON-ADMIN bearer for an existing account and returns the
 // two Connect clients scoped to it, so a leg can assert what that account CAN

@@ -162,7 +162,7 @@ func assertRunnerHasConfiguredFlags(t *testing.T, f *Fixture) {
 // binds, so the data dir is a lasting trace even if the process has exited.
 func assertNoStackPostgres(t *testing.T, f *Fixture) {
 	t.Helper()
-	dataDir := filepath.Join(filepath.Dir(f.caPath), "postgres")
+	dataDir := filepath.Join(f.StateDir(), "postgres")
 	if _, err := os.Stat(dataDir); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("the shared stack ran its own postgres: %s exists (stat err %v)", dataDir, err)
 	}

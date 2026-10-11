@@ -491,8 +491,7 @@ docs.
       (depends T1).
 - [x] T3 — `WithOwnStack()` + leg migration + shared canned-stub
       `LoadScript`. Satisfied on main by `sharedFixture`; see T3 errata.
-- [ ] T4 — `TestEmbeddedPostgresSmoke` + `WithEmbeddedPostgres()`. Owner:
-      implement lane (depends T3).
+- [x] T4 — `TestEmbeddedPostgresSmoke` + `WithEmbeddedPostgres()`.
 - [x] T5 — forge-injection convergence (`mountForgeForTest`). Satisfied on
       main by `newForgeE2EWire`; see T5 errata.
 - [ ] T6 — tier-pyramid contributor doc. Owner: implement lane (depends
