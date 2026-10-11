@@ -70,21 +70,20 @@ upstream byte.
 
 Streaming: a relay `AssistantMessageEventStream` buffers events until commit,
 then replays them and forwards the rest. A committed attempt is final: a later
-error reaches the client as today, and no follower is tried. The response sends
-200 and the SSE headers once the first attempt's `streamSimple` returns, then a
-`: keepalive` comment every 15 s until commit (OQ-3). SSE parsers skip comment
-lines (`readSseEvents` in `packages/utils/src/stream.ts`). At commit the route
-runs `encodeStream` on the relay. On these streams `x-litellm-model-id` names
-the requested model and `x-litellm-model-api-base` is omitted; the log and
-usage event name the backend that answered.
+error reaches the client as today. The response sends 200 and the SSE headers
+once the first attempt's `streamSimple` returns, then a `: keepalive` comment
+every 15 s until commit (OQ-3); SSE parsers skip comment lines (`readSseEvents`
+in `packages/utils/src/stream.ts`). At commit the route runs `encodeStream` on
+the relay. `x-litellm-model-id` names the requested model and
+`x-litellm-model-api-base` is omitted; the log and usage event name the backend
+that answered.
 
-Non-streaming: the attempt runs `streamSimple` and drains it as
-`completeSimple` does, through `resolveWithThinkingLoopRetries`
-(`packages/ai/src/stream.ts`, exported unchanged). The first meaningful event
-lifts the budget; the drain then runs without it, so a slow but healthy
-completion is not cut. Thinking-loop re-dispatches stay inside the attempt, on
-the same candidate, after the lift. The client sees nothing until the drain
-ends, so any classified failure fails over, whatever partial content it holds.
+Non-streaming: the attempt drains `streamSimple` as `completeSimple` does,
+through `resolveWithThinkingLoopRetries` (`packages/ai/src/stream.ts`,
+exported unchanged). The first meaningful event lifts the budget, so a slow but
+healthy completion is not cut, and thinking-loop re-dispatches stay on the same
+candidate. The client sees nothing until the drain ends, so any classified
+failure fails over, whatever partial content it holds.
 
 A failure reaches the client only when no follower remains: as today's HTTP
 error `Response` if headers are not sent yet, else as an error
@@ -93,15 +92,16 @@ format's SSE error.
 
 ### Setup failures
 
-Before credential setup, each candidate runs the route's model prechecks:
-`chatRouteRejection`, and on `/v1/responses` the OpenAI image-file-reference
-check. The first candidate fails as today. An incompatible follower is skipped:
-no mark, no `onFailure`.
+Each candidate first runs the route's model prechecks: `chatRouteRejection`,
+and on `/v1/responses` the OpenAI image-file-reference check. The first
+candidate fails as today; an incompatible follower is skipped with no mark and
+no `onFailure`.
 
-Setup failures are not upstream failures and never set a mark. No credential
-(`resolveGatewayApiKey`'s 401) gives `credential_exhausted`. A thrown credential
-store call (`classifyGatewayError`, usually 502) or a synchronous
-`streamSimple` throw gives `setup_error`. Both fail over.
+Credential setup runs on the attempt signal, before the budget is armed. Setup
+failures never set a mark. No credential (`resolveGatewayApiKey`'s 401) gives
+`credential_exhausted`. A thrown credential store call (`classifyGatewayError`,
+usually 502), a synchronous `streamSimple` throw, or a setup still running at
+`deadlineMs` gives `setup_error`. All fail over.
 
 ### Which failures fail over
 
@@ -141,7 +141,8 @@ only from text (`extractProviderRetryHint`, `packages/ai/src/utils/retry-after.t
 
 Only `transport`, `server_error`, and `rate_limited` set a mark. `transport`
 keys on provider and `baseUrl`, since a host that refuses connections is down
-for every model. `server_error` and `rate_limited` also key on model id.
+for every model. `server_error` (including every budget timeout) and
+`rate_limited` also key on model id.
 
 TTL starts at `calculateRateLimitBackoffMs("SERVER_ERROR")` (20 s), or
 `calculateRateLimitBackoffMs("RATE_LIMIT_EXCEEDED")` (30 s) for `rate_limited`
@@ -167,20 +168,25 @@ usable credential, so a single-candidate chain ignores its mark.
   `bootOpts.resolveModel` as today; each follower from the side-effect-free
   `candidateFailover.next`. `undefined` from `next` means no follower, never a
   404. Compass returns `undefined` for a direct `provider/id` selector.
-- **Attempt budget (OQ-2).** Only when a follower exists. A hard deadline
-  through the first meaningful event: half the time left before `deadlineMs`
-  (default 120 000 ms), covering the provider's in-flight retries. When it
-  expires the loop aborts the attempt, even after a 2xx. The attempt also gets
+- **Attempt budget (OQ-2).** Only when a follower exists. Armed immediately
+  before `streamSimple`: half the time left before `deadlineMs` (default
+  120 000 ms), a hard deadline through the first meaningful event, covering
+  in-flight provider retries. On expiry the loop aborts the attempt, even
+  after a 2xx. A `done` or `error` event, or the attempt settling, disarms it,
+  so a timeout counts only if its abort came first. The attempt also gets
   `maxRetryDelayMs: 10_000`; provider behavior varies, and the hard deadline
   bounds every route.
-- **Deadline.** No attempt starts after `deadlineMs`.
+- **Deadline.** No attempt starts after `deadlineMs`; a credential setup still
+  running then is aborted.
 - **Abort.** Each attempt has its own `AbortController`, linked to the request
   controller from `mirrorRequestAbort`. Cancelling the hold body aborts the
   request, as `encodeStream`'s `onCancel` does today. After a failure the loop
-  checks the request signal first: if aborted, it stops (499 as today). Next,
-  if the budget fired, the failure is a timeout: `server_error` if the upstream
-  responded (an `onResponse` chained on the attempt's options, or any event
-  besides `start`), else `transport`. Only other failures reach the classifier.
+  checks the request signal first: if aborted, it stops (499 as today). A
+  budget timeout is next and is always `server_error`: the gateway cannot tell
+  a stalled 200 from a 503 in provider retries, and several providers never
+  call `onResponse`. With no response evidence, `start` versus other events no
+  longer matters. Only other failures reach the classifier, the sole source of
+  `transport` (connection-level errors).
 - **Leases.** Each attempt acquires its own lease and releases it when that
   attempt's stream or result settles, as today's `events.result().finally`
   does. The next candidate does not wait for it.
@@ -340,16 +346,15 @@ Interfaces:
 
 ```ts
 export interface AttemptBudget {
-  /** Feed every event: any but `start` marks a response; a meaningful one lifts the budget for good. */
+  /** Feed every event. A meaningful event lifts the budget; `done` or `error` disarms it. */
   observe(event: AssistantMessageEvent): void;
-  /** Chained into the attempt's `onResponse`. */
-  responded(): void;
-  /** After a failure: `undefined` if the timer did not fire, else the timeout's kind. */
-  timeoutKind(): "server_error" | "transport" | undefined;
-  dispose(): void;
+  /** Disarms the budget and clears its timer. Call when the attempt settles or throws. */
+  settle(): void;
+  /** True only if the budget abort fired before any lift, terminal event, or `settle()`. */
+  timedOut(): boolean;
 }
 
-/** Aborts `attempt` at `endsAt` unless lifted first. `undefined` never fires. */
+/** Armed by the loop immediately before `streamSimple`. Aborts `attempt` at `endsAt` unless lifted or disarmed first. `undefined` never fires. */
 export function armBudget(attempt: AbortController, endsAt: number | undefined): AttemptBudget;
 
 export type HeldAttempt =
@@ -384,9 +389,10 @@ export function sseHoldBody(
 Test cycle, on hand-driven `AssistantMessageEventStream`s: `start` then a
 `text_delta` commits and replays both in order; a committed relay forwards a
 later `error` unchanged; `start`, an empty `text_start`, then `error` fails.
-The budget fires with `timeoutKind()` `transport` after silence, `server_error`
-after `responded()`, and never after a meaningful event. `sseHoldBody` writes
-comments before the body bytes, and `cancel` calls `onCancel`.
+The budget fires after silence, and `timedOut()` is then true. It never fires
+after a meaningful event. After a `done` or `error` event, or `settle()`, a
+late timer leaves `timedOut()` false. `sseHoldBody` writes comments before the
+body bytes, and `cancel` calls `onCancel`.
 
 ### F2c — Fork: the loop and boot option
 
@@ -424,10 +430,10 @@ today: with A down, the client gets a 200 carrying an error. Green:
 
 - A fails (`fetch failed`, then 503): all four routes, streaming and not,
   answer from B; `onFailure` fires once, with A.
-- A's `fetch` never resolves: A's budget fires, the failure is `transport`,
-  the request signal stays live, and B answers.
-- A answers 200 and then sends nothing: the failure is `server_error`, and B
-  answers.
+- A's budget fires when its `fetch` never resolves, when a Google model (its
+  provider never calls `onResponse`) answers 200 and then stalls, and when
+  Anthropic is still retrying a 503. Each gives `server_error`, the request
+  signal stays live, and B answers.
 - The client aborts while A is held: no follower starts, and the route
   returns 499.
 - Non-streaming, A sends its first delta before the budget and finishes after
@@ -435,13 +441,17 @@ today: with A down, the client gets a 200 carrying an error. Green:
 - A emits a `text_delta`, then errors: B is never tried; the client gets A's
   text and A's error.
 - A returns a usage limit with one credential: B answers (`credential_exhausted`).
-- `storage.keys.getWithCredential` throws for A: B answers, and the failure is
-  `setup_error`.
+- `storage.keys.getWithCredential` throws for A, or `streamSimple` throws
+  synchronously for A: B answers, and `onFailure` gets `setup_error`, which
+  sets no mark (C1).
+- A's credential lookup outlasts the budget A would get: it is not cut, and A
+  answers. A lookup still running at `deadlineMs` ends as `setup_error`.
 - Streaming, B has no credential after headers are sent: the client gets an
   SSE error in the open 200 body.
-- `/v1/responses` with an OpenAI file id, where the follower is not a
-  Responses model: it is skipped without `onFailure`, and the third candidate
-  answers.
+- A fails with 503, then the follower fails a precheck and a third chat
+  candidate answers. The follower is skipped without `onFailure` in two
+  variants: it is an embedding model (`chatRouteRejection`), or it is not a
+  Responses model on `/v1/responses` with an OpenAI file id.
 - A answers 400: no failover. A direct selector fails: one attempt.
 - `onUsage` fires once per nonzero attempt, with distinct request ids.
 - Every attempt's lease is released: a probe in each attempt's
@@ -477,8 +487,8 @@ resolve(callerUser: UserId, modelId: string, tried?: ReadonlySet<string>): Promi
 
 Test cycle: with an injected clock, TTLs run 20, 40, 80, 160, 300;
 `retryAfterMs` raises the TTL; strikes reset after 300 s. A `transport` mark
-covers every model on its `baseUrl`. A `server_error` mark, including a budget
-timeout after a response, covers only its model, so a sibling model on the same
+covers every model on its `baseUrl`. A `server_error` mark, including one from
+a budget timeout, covers only its model, so a sibling model on the same
 `baseUrl` is not deferred. `credential_exhausted`, `not_served`, and
 `setup_error` set no mark. A mark for one tenant never affects another.
 Resolver: a marked first candidate is deferred; when all are marked the first
