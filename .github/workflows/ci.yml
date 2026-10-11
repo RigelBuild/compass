@@ -164,6 +164,11 @@ concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}-${{ github.event.action }}
   cancel-in-progress: true
 
+# Same toolchain contract as the devenv shell: moon runs the nix tools on PATH,
+# never a ~/.proto shim, even if a runner image ever ships one.
+env:
+  MOON_TOOLCHAIN_FORCE_GLOBALS: 'true'
+
 permissions:
   contents: read
 

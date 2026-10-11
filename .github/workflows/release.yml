@@ -87,6 +87,9 @@ env:
     go/internal/**
     devenv.lock
     .github/workflows/release.yml
+  # Same toolchain contract as the devenv shell: moon runs the nix tools on
+  # PATH, never a ~/.proto shim, even if a runner image ever ships one.
+  MOON_TOOLCHAIN_FORCE_GLOBALS: 'true'
 
 jobs:
   release-pr:
