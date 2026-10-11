@@ -1,7 +1,7 @@
 package runtime
 
 // The microVM backend-selection suite: hermetic, no subprocess, no build tag.
-// It pins the backend-selection contract (the transitional podman default, the
+// It pins the backend-selection contract (the podman default, the
 // microVM opt-in, the loud rejection of an unknown backend) — the part of the
 // microVM seam that must type-check and run on any platform. The lifecycle
 // method behavior (spec→BootConfig, spec→ExecCall, the session table, mount
@@ -14,9 +14,8 @@ import (
 )
 
 // SelectBackend defaults to podman: an empty or explicit "podman" backend must
-// return the container path (a *PodmanCLI), never the unfinished microVM path.
-// This is the transitional kill switch — an unset backend stays on the proven
-// runtime. Surrounding whitespace (stray from env/CI wiring) is tolerated.
+// return the container path (a *PodmanCLI), so an unset backend never moves an
+// operator onto microVM. Surrounding whitespace (stray from env/CI wiring) is tolerated.
 func TestSelectBackendDefaultsToPodman(t *testing.T) {
 	for _, backend := range []string{"", "podman", "  podman  ", "\tpodman\n"} {
 		rt, err := SelectBackend(BackendConfig{Backend: backend})

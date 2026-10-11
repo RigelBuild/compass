@@ -71,27 +71,26 @@ bringing an agent back is a **reconstruct-into-a-fresh-sandbox** operation, not 
 The agent never notices it is running on different hardware. The identity was
 never in the box; it was always in the Server. (ledger DL-087)
 
-## The compute substrate is moving: container → microVM
+## The compute substrate: container or microVM, by trust model
 
-Today an agent's sandbox is a **rootless-podman container**, one per agent, for
-blast-radius isolation (ledger DL-024). The end-state substrate is a
-**hardware-virtualized microVM** — the same disposable-compute role, hardened to
-a VM-class boundary around model-written code. The migration path is: container
-through Dogfood and trusted-tenant Beta, microVM in the end state; a host without
-KVM degrades to the container runtime with an explicit capability log, never
-silently.
+An agent's sandbox is a **rootless-podman container**, one per agent, for
+blast-radius isolation (ledger DL-024), or a **hardware-virtualized microVM** —
+the same disposable-compute role, hardened to a VM-class boundary around
+model-written code. Which one runs follows the trust model (ledger DL-325):
+untrusted multi-tenant operation requires the microVM; a single-tenant
+self-host keeps podman as a permanent, supported entry tier that needs no KVM,
+with the microVM recommended. Selecting the microVM on a host without KVM fails
+at startup rather than falling back to a container.
 
-This move **does not change the durability contract on this page** — that is the
+The choice **does not change the durability contract on this page** — that is the
 whole point of the split. Whether the sandbox is a container or a microVM, it is
 still disposable, still custodies no durable state, and the agent still resumes
-by the Server reconstructing its transcript into a fresh one. The substrate
-change is an isolation upgrade (see [isolation and
+by the Server reconstructing its transcript into a fresh one. The microVM is an
+isolation upgrade (see [isolation and
 egress](./isolation-and-egress.md)), not a change to what persists.
 
-The direction is already load-bearing in shipped decisions — the microVM's KVM
-floor is what retired local agent execution and made the native app a thin client
-against a headless, KVM-capable stack (ledger DL-235), and the self-host stack is
-a host-level bring-up on a KVM-capable Linux machine (ledger DL-259). The microVM
+The native app runs a local podman-backed stack in embedded mode for onboarding
+and connects to an always-on stack in client mode (ledger DL-319). The microVM
 Runner backend itself is designed in
 [`microvm-runner.md`](../designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md)
 (RIG-2394), under the hosted-platform end-state record

@@ -8,6 +8,22 @@ disposition of DL-107..112, DL-183, DL-214..217. Refines nothing in
 `compass-native-client-mode/design.md` — that record's client surface is
 carried forward whole.
 
+> **Superseded by the embedded-mode revival
+> ([`../compass-native-embedded-revival/design.md`](../compass-native-embedded-revival/design.md),
+> DL-319, Matt 2026-09-01).** This record's premise is falsified: podman is a
+> permanent supported tier for single-tenant self-host (DL-325), so the
+> upstream constraint that forced the app to drop embedded mode no longer holds.
+> The frozen prose below is left intact as the record of what was ratified.
+>
+> - **DL-235** (client is the only mode) — `Superseded by DL-319`; the client
+>   surface survives whole.
+> - **DL-236** — split: its app-never-spawns half is superseded by DL-319; its
+>   standalone `compass-stack` CLI half stays Active.
+> - **DL-237** (app.toml is client-only) — `Superseded by DL-320`, itself later
+>   superseded by DL-406 (first-run chooser).
+> - **DL-238** (thin-client bundle, no sidecars) — `Superseded by DL-321`; the
+>   sidecars return.
+
 ## Problem / Intent
 
 Matt ruled (2026-08-23): **the Compass native app retires embedded mode and

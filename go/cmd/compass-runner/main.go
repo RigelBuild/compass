@@ -428,7 +428,7 @@ type backendFlags struct {
 func registerBackendFlags() backendFlags {
 	return backendFlags{
 		backend: flag.String("backend", "",
-			"Container runtime backend: 'podman' (default, transitional), "+
+			"Container runtime backend: 'podman' (default; the permanent self-host entry tier), "+
 				"'microvm' or 'apple-container'. Defaults to $COMPASS_RUNTIME_BACKEND."),
 		vmm: flag.String("microvm-vmm", "",
 			"Path to the microVM monitor binary (microvm backend). Defaults to $COMPASS_MICROVM_VMM."),

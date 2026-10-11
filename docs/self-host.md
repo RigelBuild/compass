@@ -452,3 +452,38 @@ Every `compass` command needs `--server-addr` (or `$COMPASS_SERVER_ADDR`) and
 the admin bearer token in `$COMPASS_ADMIN_TOKEN` or a `--token-file`. The token
 is never a flag. For the self-signed one-box door, pass its certificate with
 `--ca`.
+
+## Graduating from the local app
+
+The desktop app's embedded mode runs a local stack for onboarding and local
+development. A laptop is not an always-on host, so for a stack that keeps
+running, move to client mode: run `compass-stack up` on an always-on box (one
+of the [deployment shapes](#deployment-shapes)) and point the app at it.
+
+Graduation is a config edit, not an in-app flow. The app never rewrites an
+existing `app.toml`, so edit it yourself. The file is
+`$XDG_CONFIG_HOME/compass/app.toml`, or `~/.config/compass/app.toml` when
+`XDG_CONFIG_HOME` is unset. Quit the app, then replace its contents with:
+
+```toml
+mode = "client"
+server_url = "https://compass.example.com"
+# Only for a private-CA or self-signed door; an absolute path to the PEM.
+ca_cert = "/home/you/.config/compass/server-ca.pem"
+```
+
+`server_url` must be an `https` origin. Omit `ca_cert` when the server's
+certificate chains to the system roots. Unknown keys are rejected, so a typo
+fails at launch with a config error. Reopen the app: with no stored bearer for
+that server, it shows the token screen, and the accepted token is kept in the
+OS keychain (or a 0600-file fallback).
+
+The local stack's sessions and database stay on the laptop and are not
+migrated to the server. To return to embedded mode, set `mode = "embedded"` and
+remove `server_url` and `ca_cert`, since embedded mode rejects both. Once the
+file is in client mode, `--mode embedded` or `COMPASS_APP_MODE=embedded` runs
+the local stack for one launch without editing it again.
+
+The embedded-to-client end-to-end test that drives the app against a live
+stack is still pending, so this path is documented but not yet covered by the
+app's e2e suite.
