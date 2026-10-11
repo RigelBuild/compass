@@ -271,8 +271,16 @@ published before its assets exist could never get them.
 
 The macOS app links the system WebKit framework, so it builds only on a mac
 runner and is never cross-compiled. Developer ID signing, notarization and the
-homebrew tap are not live yet. They wait on the Apple Developer Program
+app's homebrew cask are not live yet. They wait on the Apple Developer Program
 enrollment.
+
+**Homebrew.** After `release-assets` publishes a semver release, it renders
+`Formula/compass-cli.rb` with `tools/homebrew-tap` from the tag and
+`SHA256SUMS`, then commits it to `RigelBuild/homebrew-tap` with an App token
+scoped to that repo. `brew install rigelbuild/tap/compass-cli` installs the
+`compass` CLI on Apple-silicon macOS and on x86_64 Linux. Prerelease tags
+never reach this step, because only release-please's semver release runs
+`release-assets`, and the renderer rejects any tag that is not `vX.Y.Z`.
 
 **Nix flake.** `flake.nix` exposes `compass`, `compass-server`,
 `compass-runner`, `compass-stack`, `compass-app`, `compass-ui` and
