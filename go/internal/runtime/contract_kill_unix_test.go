@@ -19,6 +19,8 @@ func TestDeliberateKillPodmanBranchRequiresSIGKILL(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := cmd.Process.Signal(sig); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 			t.Fatal(err)
 		}
 		return cmd.Wait()
