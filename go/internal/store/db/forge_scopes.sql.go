@@ -11,9 +11,12 @@ import (
 
 const copyAgentForgeScopes = `-- name: CopyAgentForgeScopes :exec
 INSERT INTO account_forge_scopes (account_id, forge_provider, forge_host, repo)
-SELECT $1, scope.forge_provider, scope.forge_host, scope.repo
+SELECT child.account_id, scope.forge_provider, scope.forge_host, scope.repo
 FROM account_forge_scopes AS scope
-WHERE scope.account_id = $2
+JOIN agent_accounts AS parent ON parent.account_id = scope.account_id
+JOIN agent_accounts AS child ON child.account_id = $1
+WHERE parent.account_id = $2
+  AND parent.owner_user_id = child.owner_user_id
 ON CONFLICT DO NOTHING
 `
 
