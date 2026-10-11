@@ -1156,6 +1156,7 @@ CREATE TABLE forge_mirrors (
     last_error        TEXT     NOT NULL DEFAULT '',
     first_attempt_at  TIMESTAMPTZ,  -- set by the first POST; bounds the marker search
     lease_until       TIMESTAMPTZ,  -- a Drive holds the row until then
+    lease_token       TEXT     NOT NULL DEFAULT '',  -- fences a stale holder
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id         TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
@@ -1177,10 +1178,13 @@ func (s *Store) ListForgeMirrorSettings(ctx context.Context) ([]ForgeMirrorSetti
 func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set ForgeMirrorSetting) error // off deletes the row
 func (s *Store) ClaimForgeMirror(ctx context.Context, m ForgeMirrorRow) (row ForgeMirrorRow, created bool, err error) // a key conflict returns the stored row
 func (s *Store) OpenForgeMirrors(ctx context.Context, agent AccountID) ([]ForgeMirrorRow, error)
-// LeaseForgeMirror claims a row for one Drive: UPDATE ... SET lease_until = now() + ttl
-// WHERE id = @id AND state <> 2 AND (lease_until IS NULL OR lease_until < now()) RETURNING the row.
-func (s *Store) LeaseForgeMirror(ctx context.Context, id string, ttl time.Duration) (row ForgeMirrorRow, ok bool, err error)
-func (s *Store) MarkForgeMirror(ctx context.Context, id string, postedRev, state int16, commentID uint64, commentKey, url, errText string) error
+// LeaseForgeMirror claims a row for one Drive: UPDATE ... SET lease_until = now() + ttl,
+// lease_token = @token WHERE id = @id AND state <> 2 AND (lease_until IS NULL OR lease_until < now()).
+func (s *Store) LeaseForgeMirror(ctx context.Context, id, token string, ttl time.Duration) (row ForgeMirrorRow, ok bool, err error)
+// RenewForgeMirror extends the lease only while lease_token still matches.
+func (s *Store) RenewForgeMirror(ctx context.Context, id, token string, ttl time.Duration) (ok bool, err error)
+// MarkForgeMirror writes only when lease_token matches, then clears the lease.
+func (s *Store) MarkForgeMirror(ctx context.Context, id, token string, postedRev, state int16, commentID uint64, commentKey, url, errText string) error
 // Ask gains RefCoord *ForgeCoord: set by the comms edge from refs.Parse and the configured forges; not stored.
 // private, in AppendMessage's transaction: one row per ask whose RefCoord is in auto mode
 func insertAskMirrors(ctx context.Context, q *db.Queries, msg Message) error
@@ -1221,11 +1225,18 @@ type Mirrorer interface {
   `client_request_id`, or by (`source_key`, `target_ref`). Mirroring the same
   topic or message set to the same ref again bumps `body_rev` on that row, so
   the drive edits one comment, whatever the request key.
-- `mirror.Drive` takes each row with `LeaseForgeMirror` (ttl 2 minutes)
-  before it scans or posts, and skips a row it cannot lease. Only one caller
-  works a row at a time, so the post-commit drive and a board-write re-drive
-  never post together. `MarkForgeMirror` clears the lease. A crashed holder's
-  lease expires, and the next caller scans for the marker before it posts.
+- `mirror.Drive` takes each row with `LeaseForgeMirror` (a fresh random
+  token, ttl 2 minutes) before it scans or posts, and skips a row it cannot
+  lease. It renews every 30 seconds while it works, and checks the renewal
+  right before each POST: a lost lease stops the drive with no post. Only one
+  caller works a row at a time, so the post-commit drive and a board-write
+  re-drive never post together. `MarkForgeMirror` matches the token, so a
+  stale holder cannot overwrite a newer one. A crashed holder's lease expires,
+  and the next caller scans for the marker before it posts. A POST cannot
+  outlive its lease: the forge clients' 30-second HTTP timeout
+  (`forgeHTTPClient` and the `forge.NewGitHub`/`forge.NewLinear` defaults) ends
+  it well inside the 2-minute
+  ttl that the last renewal granted.
 - `forge_mirrors` gains `first_attempt_at TIMESTAMPTZ`, set by the first
   POST attempt. `mirror.Drive`, before a POST on a row with no `comment_key`
   and a set `first_attempt_at`, calls `ListCommentsSince` from that time
@@ -1261,6 +1272,9 @@ Tests:
   even after 60 later comments; the forge sees one comment.
 - Two concurrent `Drive` calls on one pending row make one POST; an expired
   lease lets a later call adopt the comment by its marker.
+- A drive that runs past the first ttl keeps its lease by renewal; a second
+  caller cannot lease the row, and a stale token's `MarkForgeMirror` writes
+  nothing.
 - A mode turned off before the post marks the row `failed` and posts nothing.
 - A scope refusal marks `failed` without retry, and nothing is posted.
 - A non-admin `SetForgeMirrorSetting` gets `permission_denied`.
