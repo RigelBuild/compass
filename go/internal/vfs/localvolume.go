@@ -747,7 +747,7 @@ func writeStamp(root string, stamp closeStamp) error {
 		}
 		return fmt.Errorf("vfs: committing close stamp for %q: %w", root, err)
 	}
-	return syncDir(dir)
+	return syncDirFn(dir)
 }
 
 // syncDir makes a committed rename durable. The file bytes are synced by
@@ -766,6 +766,12 @@ func syncDir(dir string) error {
 	}
 	return errors.Join(errs...)
 }
+
+// Test seams: failure injection for the dir fsync and the lock release.
+var (
+	syncDirFn = syncDir
+	unlockFn  = syscall.Flock
+)
 
 // writeAndClose applies owner-only mode, syncs the staged file, and reports
 // write, sync, and close failures so an incomplete stamp cannot be mistaken as durable.
@@ -809,7 +815,7 @@ func clearStamp(root string) error {
 		}
 		return fmt.Errorf("vfs: clearing close stamp %q: %w", path, err)
 	}
-	return syncDir(filepath.Dir(path))
+	return syncDirFn(filepath.Dir(path))
 }
 
 // volumeLock is a held per-volume advisory file lock. It owns the open fd the
@@ -962,7 +968,7 @@ func (l *volumeLock) release() error {
 	f := l.f
 	l.f = nil
 	var errs []error
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+	if err := unlockFn(int(f.Fd()), syscall.LOCK_UN); err != nil {
 		errs = append(errs, fmt.Errorf("vfs: unlocking volume lock %q: %w", f.Name(), err))
 	}
 	if err := f.Close(); err != nil {
