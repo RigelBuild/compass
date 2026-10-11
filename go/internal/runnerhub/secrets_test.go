@@ -428,3 +428,43 @@ func parseUint(s string) (uint64, error) {
 	}
 	return n, nil
 }
+
+// failingTenantBinder is a LifetimeBinder whose tenant lookup always fails.
+type failingTenantBinder struct{ recordingBinder }
+
+func (*failingTenantBinder) AccountTenant(context.Context, store.AccountID) (store.TenantID, error) {
+	return "", errors.New("tenant lookup down")
+}
+
+// FetchSecrets never resolves without the agent tenant: no tenant source is
+// Unavailable, a failed lookup is Internal, and neither reaches the resolver.
+func TestFetchSecretsWithoutAgentTenantNeverResolves(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		binder LifetimeBinder
+		want   connect.Code
+	}{
+		{name: "no binder", want: connect.CodeUnavailable},
+		{name: "tenant lookup fails", binder: &failingTenantBinder{}, want: connect.CodeInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := newHubOnly()
+			hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+			bindSession(hub, "sess-1")
+			if tc.binder != nil {
+				hub.SetLifetimeBinder(tc.binder)
+			}
+			resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
+			url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+			client := newRawRunnerClient(t, url, "runner-tok")
+
+			_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}))
+			if got := connect.CodeOf(err); got != tc.want {
+				t.Fatalf("FetchSecrets code = %v (%v), want %v", got, err, tc.want)
+			}
+			if resolver.resolveCalls != 0 {
+				t.Fatalf("resolver called %d times without a tenant, want 0", resolver.resolveCalls)
+			}
+		})
+	}
+}
