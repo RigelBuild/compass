@@ -1,5 +1,7 @@
 // Package vfs manages persistent session volumes and immutable snapshots.
 // It owns the local volume lifecycle and account-scoped snapshot index.
+// virtualfs.go defines the session tree materialization interface.
+// checkout.go prepares local volume and snapshot destinations.
 package vfs
 
 import (
