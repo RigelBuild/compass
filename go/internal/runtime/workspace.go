@@ -48,9 +48,13 @@ const (
 	SourceVolume
 )
 
-// ErrVolumeMountMissing reports a SourceVolume spec with no writable mount at
-// its checkout dir; launching it would put the agent's work outside the volume.
+// ErrVolumeMountMissing reports a SourceVolume spec whose checkout dir is not a
+// writable mount the backend applies; launching it would put the agent's work
+// outside the volume.
 var ErrVolumeMountMissing = errors.New("runtime: volume workspace needs a writable mount at its checkout dir")
+
+// ErrUnknownWorkspaceSource reports a WorkspaceSource this runtime does not know.
+var ErrUnknownWorkspaceSource = errors.New("runtime: unknown workspace source")
 
 // Workspace is a per-agent workspace: the in-container checkout dir, the scoped
 // $HOME, the unprivileged uid the agent runs as, and optional forge credentials.
@@ -70,11 +74,19 @@ type Workspace struct {
 	Credentials *Credentials
 }
 
-// checkVolumeMount enforces that a volume workspace's checkout dir is the
-// writable mount, so the in-container path and the volume cannot drift apart.
-func checkVolumeMount(spec AgentSpec) error {
-	if spec.Workspace.Source != SourceVolume {
+// checkWorkspaceSource fails closed on an unknown source, and requires a volume
+// workspace's checkout dir to be a writable mount on a backend that applies
+// mounts, so the in-container path and the volume cannot drift apart.
+func checkWorkspaceSource(spec AgentSpec, tier WorkloadTier) error {
+	switch spec.Workspace.Source {
+	case SourceCloneDir:
 		return nil
+	case SourceVolume:
+	default:
+		return fmt.Errorf("%w: %d", ErrUnknownWorkspaceSource, spec.Workspace.Source)
+	}
+	if tier == WorkloadTierHost {
+		return fmt.Errorf("%w: the host tier applies no mounts", ErrVolumeMountMissing)
 	}
 	if slices.ContainsFunc(spec.Mounts, func(m Mount) bool {
 		return !m.ReadOnly && m.ContainerPath == spec.Workspace.CheckoutDir

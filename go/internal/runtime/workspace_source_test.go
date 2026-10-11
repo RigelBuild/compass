@@ -72,3 +72,30 @@ func TestLaunchZeroSourceIsCloneDir(t *testing.T) {
 		t.Fatalf("Launch error = %v", err)
 	}
 }
+
+// hostTierFakeRuntime reports the host tier, whose backend ignores mounts.
+type hostTierFakeRuntime struct{ *fakeRuntime }
+
+func (hostTierFakeRuntime) Tier() WorkloadTier { return WorkloadTierHost }
+
+func TestLaunchSourceVolumeRefusedOnHostTier(t *testing.T) {
+	fake := hostTierFakeRuntime{newFakeRuntime(t)}
+	rt := NewAgentRuntime(fake)
+	spec := volumeSpec(Mount{HostPath: "/v", ContainerPath: "/work/repo"})
+	if _, err := rt.Launch(t.Context(), spec); !errors.Is(err, ErrVolumeMountMissing) {
+		t.Fatalf("Launch error = %v, want ErrVolumeMountMissing: a host process cannot see the mount", err)
+	}
+	if calls := fake.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("calls = %v, want none", calls)
+	}
+}
+
+func TestLaunchUnknownSourceRefused(t *testing.T) {
+	fake := newFakeRuntime(t)
+	rt := NewAgentRuntime(fake)
+	spec := specWithCreds(false)
+	spec.Workspace.Source = SourceVolume + 1
+	if _, err := rt.Launch(t.Context(), spec); !errors.Is(err, ErrUnknownWorkspaceSource) {
+		t.Fatalf("Launch error = %v, want ErrUnknownWorkspaceSource", err)
+	}
+}
