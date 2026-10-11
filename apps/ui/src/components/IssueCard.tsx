@@ -115,7 +115,11 @@ export const IssueCard: Component<{
 				<span class="cx-tour-demo-badge">Demo</span>
 			</Show>
 			<span class="card-title">
-				<RefText text={props.issue.title} inControl />
+				<RefText
+					text={props.issue.title}
+					inControl
+					inRovingGroup={props.inRovingGroup}
+				/>
 			</span>
 			<span class="card-foot">
 				<span class="card-author">

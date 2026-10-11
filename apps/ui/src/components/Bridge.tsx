@@ -195,7 +195,11 @@ const PrCard: Component<{
 				</span>
 			</span>
 			<span class="card-title">
-				<RefText text={pr().title} inControl />
+				<RefText
+					text={pr().title}
+					inControl
+					inRovingGroup={props.inRovingGroup}
+				/>
 			</span>
 			<span class="card-foot">
 				<span class="card-author">

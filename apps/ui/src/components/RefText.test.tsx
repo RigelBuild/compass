@@ -110,4 +110,46 @@ describe("RefText inside a button", () => {
 			opener.mockRestore();
 		}
 	});
+
+	for (const key of ["Enter", " "]) {
+		test(`${JSON.stringify(key)} on the ref opens it without activating the button`, () => {
+			const opener = spyOn(window, "open").mockImplementation(() => null);
+			let clicks = 0;
+			try {
+				const { container } = render(() => (
+					<RefLinkRulesContext value={LINEAR_RIG}>
+						<button type="button" onClick={() => clicks++}>
+							<RefText text="Fix RIG-12" inControl />
+						</button>
+					</RefLinkRulesContext>
+				));
+				const ref = container.querySelector<HTMLElement>("button [role=link]");
+				if (!ref) throw new Error("reference did not render");
+				expect(ref.tabIndex).toBe(0);
+				const press = new KeyboardEvent("keydown", {
+					key,
+					bubbles: true,
+					cancelable: true,
+				});
+				ref.dispatchEvent(press);
+				expect(press.defaultPrevented).toBe(true);
+				expect(opener).toHaveBeenCalledTimes(1);
+				expect(clicks).toBe(0);
+			} finally {
+				opener.mockRestore();
+			}
+		});
+	}
+
+	test("leaves the tab order inside the board roving group", () => {
+		const { container } = render(() => (
+			<RefLinkRulesContext value={LINEAR_RIG}>
+				<button type="button">
+					<RefText text="Fix RIG-12" inControl inRovingGroup />
+				</button>
+			</RefLinkRulesContext>
+		));
+		const ref = container.querySelector<HTMLElement>("button [role=link]");
+		expect(ref?.tabIndex).toBe(-1);
+	});
 });

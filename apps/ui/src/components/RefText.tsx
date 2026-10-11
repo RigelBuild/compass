@@ -8,9 +8,11 @@ type RefTextProps = {
 	text: string;
 	/** Set inside a <button>, where an <a> is not allowed. */
 	inControl?: boolean;
+	/** Inside the board roving group, which owns Tab; the ref leaves the tab order. */
+	inRovingGroup?: boolean;
 };
 
-const RefLink: Component<{ token: RefToken; inControl?: boolean }> = (
+const RefLink: Component<{ token: RefToken } & Omit<RefTextProps, "text">> = (
 	props,
 ) => {
 	const refLinkRules = useRefLinkRules();
@@ -39,18 +41,26 @@ const RefLink: Component<{ token: RefToken; inControl?: boolean }> = (
 						</a>
 					}
 				>
-					{/* biome-ignore-start lint/a11y/useSemanticElements lint/a11y/useFocusableInteractive lint/a11y/useKeyWithClickEvents: an <a>
-					   cannot nest in the card <button>, which is the tab stop (as the PR chip). */}
+					{/* biome-ignore lint/a11y/useSemanticElements: an <a> cannot nest in the card
+					   <button>; a role="link" span is the PR chip compromise (DL-097).
+					   biome-ignore lint/a11y/useFocusableInteractive: the lowercase Solid 2 `tabindex`
+					   below makes it focusable; the rule does not recognize it. */}
 					<span
 						class="ref-link"
 						role="link"
+						tabindex={props.inRovingGroup ? -1 : 0}
 						title={safe()}
 						onClick={(event) => open(event, safe())}
 						onDblClick={swallow}
+						onKeyDown={(event) => {
+							if (event.key !== "Enter" && event.key !== " ") return;
+							event.preventDefault();
+							event.stopPropagation();
+							openExternal(safe());
+						}}
 					>
 						{props.token.text}
 					</span>
-					{/* biome-ignore-end lint/a11y/useSemanticElements lint/a11y/useFocusableInteractive lint/a11y/useKeyWithClickEvents: see above */}
 				</Show>
 			)}
 		</Show>
@@ -63,7 +73,11 @@ export const RefText: Component<RefTextProps> = (props) => (
 			typeof token === "string" ? (
 				token
 			) : (
-				<RefLink token={token} inControl={props.inControl} />
+				<RefLink
+					token={token}
+					inControl={props.inControl}
+					inRovingGroup={props.inRovingGroup}
+				/>
 			)
 		}
 	</For>
