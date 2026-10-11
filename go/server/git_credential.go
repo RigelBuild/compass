@@ -215,7 +215,7 @@ func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent stor
 		if tok = b.staleCredential(key); tok != "" {
 			return tok, key, false
 		}
-		tok, servedKey = b.credentialForLastKey(agent)
+		tok, servedKey = b.credentialForLastKey(agent, key)
 		return tok, servedKey, false
 	}
 	result, validResult := value.(gitCredentialFlightResult)
@@ -325,16 +325,34 @@ func (b *gitCredentialBroker) lastCredential(agent store.AccountID) string {
 	return b.last[agent]
 }
 
-// credentialForLastKey returns the stale token of the agent's last served key, and that key.
-func (b *gitCredentialBroker) credentialForLastKey(agent store.AccountID) (string, string) {
+// credentialForLastKey returns the stale token of the agent's last served key, and that key,
+// only when that key grants no repository outside the requested key.
+func (b *gitCredentialBroker) credentialForLastKey(agent store.AccountID, requested string) (string, string) {
 	key := b.lastCredential(agent)
-	if key == "" {
+	if key == "" || !gitCredentialScopeWithin(key, requested) {
 		return "", ""
 	}
 	if tok := b.staleCredential(key); tok != "" {
 		return tok, key
 	}
 	return "", ""
+}
+
+// gitCredentialScopeWithin reports whether every repository in scope key inner is in key outer.
+func gitCredentialScopeWithin(inner, outer string) bool {
+	if outer == "*" {
+		return true
+	}
+	if inner == "*" {
+		return false
+	}
+	granted := strings.Split(outer, ",")
+	for qualified := range strings.SplitSeq(inner, ",") {
+		if !slices.Contains(granted, qualified) {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []string) (string, bool, error) {

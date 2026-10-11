@@ -376,6 +376,35 @@ func TestGitCredentialBrokerRefreshPrunesExpiredNegativeEntries(t *testing.T) {
 	}
 }
 
+func TestGitCredentialBrokerTransientNarrowedMintDoesNotServeRevokedWiderToken(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_wide", "unused", "ghs_remint"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, &forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"}},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	start := now
+	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_wide" {
+		t.Fatalf("initial credential = (%q, %v), want widened-set token", tok, ok)
+	}
+
+	grants.setRepos("agent-id", []string{"owner/base"})
+	now = start.Add(40 * time.Minute)
+	if tok, ok := broker.credential(context.Background(), "agent-id"); ok || tok != "" {
+		t.Fatalf("credential after revoke and narrowed-set 429 = (%q, %v), want none", tok, ok)
+	}
+	now = start.Add(gitCredentialMaxAge + time.Nanosecond)
+	broker.refreshDue(context.Background())
+	if _, exists := broker.entries["owner/base,owner/workstream"]; exists {
+		t.Fatal("revoked widened-set entry kept alive past its idle window")
+	}
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls = %d, want no re-mint of the revoked widened set", minter.callCount())
+	}
+}
+
 func TestGitCredentialBrokerScopeRejectedWidenedMintUsesOwnerFallback(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
