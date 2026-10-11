@@ -9,6 +9,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -45,18 +46,25 @@ const socketReadyTimeout = 60 * time.Second
 // binds, only how often to re-probe.
 func waitListening(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.After(socketReadyTimeout)
-	tick := time.NewTicker(5 * time.Millisecond)
+	if err := waitConnectable(t.Context(), path, socketReadyTimeout); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitConnectable is waitListening's poll with the budget as a parameter, so the
+// timeout path is testable without driving the 60s production budget.
+func waitConnectable(ctx context.Context, path string, budget time.Duration) error {
+	deadline := time.After(budget)
+	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		conn, err := (&net.Dialer{}).DialContext(t.Context(), "unix", path)
+		conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
 		if err == nil {
-			conn.Close()
-			return
+			return conn.Close()
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("socket %s never became connectable within %s", path, socketReadyTimeout)
+			return fmt.Errorf("socket %s never became connectable within %s", path, budget)
 		case <-tick.C:
 		}
 	}
