@@ -16,7 +16,9 @@ tasks:
     inputs: ['*.ts', '*.json', '/tsconfig.base.json', '/bun.lock']
   test:
     # The pure core: pin validation, buildctl argv, layout digest, secret
-    # scan, and the fail-closed tag disposition.
+    # scan, and the fail-closed tag disposition. Named so `out/src` (the fork
+    # checkout a build leaves behind) is never collected as tests.
+    args: ['./core.test.ts']
     inputs: ['*.ts', '*.json', '/tsconfig.base.json', '/bun.lock']
   # ci-matrix emits a target only for a project with a `ci` task.
   ci:
