@@ -148,7 +148,7 @@ The cap is `agentmsg.MaxAttachmentBytes = MaxBytes - 1<<20` (15 MiB), the same v
 
 - `siblingServiceMaxReadBytes = 16 << 20` on the network door's Comms handler;
 - `maxAgentMessageBytes = agentmsg.MaxBytes` on the Runner gateway;
-- `runnerMaxReadBytes = agentmsg.MaxBytes + 1<<20` in `go/internal/runnerhub/handler.go`.
+- `runnerMaxReadBytes = agentmsg.MaxBytes + 1<<20` in `go/internal/runnerhub/handler.go`, which T2 moves to `agentmsg.RunnerMaxReadBytes`.
 
 1 MiB of headroom covers the envelope.
 
@@ -161,12 +161,12 @@ One file per upload, unary bytes, no streaming, no chunking. This keeps `S3Objec
 T2 gives three paths a size-scaled deadline: `CommsService/UploadAttachment`; `RunnerService/RelayCommsCall`, which carries an agent's upload from the Runner; and `RunnerService/RelaySessionBlob`, which carries the same 15 MiB size.
 
 - The deadline is 30 s plus 1 s per 64 KiB of the request's `Content-Length`, never above 10 minutes.
-- When the length is unknown or above the path's read cap, it uses the read cap: 16 MiB gives 286 s, and 17 MiB (`runnerMaxReadBytes`) gives 302 s.
-- A small call on either path keeps about 30 s. After the first 30 s, the effective floor is 64 KiB/s (512 kbit/s).
+- When the length is unknown or above the path's read cap, it uses the read cap: 16 MiB gives 286 s, and 17 MiB (`agentmsg.RunnerMaxReadBytes`) gives 302 s.
+- A small call on any of the three paths keeps about 30 s. After the first 30 s, the effective floor is 64 KiB/s (512 kbit/s).
 
 Why not state 30 s as a limit: 15 MiB is a legal size, so a legal upload should not depend on link speed above a stated floor. Why not a full exemption: the exempt-set comment records that an unauthenticated drip on an exempt path has no deadline at all. A scaled deadline keeps that window bounded.
 
-The residual risk is the same class as the RIG-1298 follow-up in that comment. The deadline arms before auth, so an unauthenticated client can hold one stream on these paths for up to about 5 minutes. `RelaySessionBlob` carries up to 15 MiB too, so T2 adds it to the same map; the agent's `SESSION_BLOB_PUT_TIMEOUT_MS` (30 s) is a separate client bound that this record leaves unchanged.
+The residual risk is the same class as the RIG-1298 follow-up in that comment. The deadline arms before auth, so an unauthenticated client can hold one stream on these paths for up to about 5 minutes. For `RelaySessionBlob` the server entry only bounds that drip: the agent's `SESSION_BLOB_PUT_TIMEOUT_MS` (30 s) rides the request context through the Runner gateway, so a legitimate session-blob upload stays capped at 30 s end to end. This record leaves that client bound unchanged; attachment relays set no client timeout, so they get the full scaled deadline.
 
 **Unbound-upload bound.** Every failed post after a successful upload leaves an unbound row and an object. Examples: a topic name-miss, a #2120 hold that is never confirmed, a #2136 stale refusal, a non-member channel. The per-file cap does not bound the total. So:
 
@@ -371,7 +371,7 @@ Make the `comms.proto` changes and regenerate the Go and public TS outputs. Add:
 - the `blocksFromWire` and `blocksToWire` cases, and the update-edge check unless #2139 has landed;
 - an `edgeError` case `store.ErrResourceExhausted → connect.CodeResourceExhausted`;
 - the read cap on the socket and dev Comms mount in `serve.go` (D4);
-- the size-scaled body deadline in `go/server/network_door.go` (D4);
+- the size-scaled body deadline in `go/server/network_door.go` (D4), and the move of `runnerMaxReadBytes` to `agentmsg.RunnerMaxReadBytes`, including its use in `go/internal/runnerhub/read_cap_test.go`;
 - the `AdminGate` entries.
 
 Interfaces:
@@ -427,7 +427,7 @@ Interfaces: the `CommsCaller` methods match the T2 `*AsAccount` signatures.
 Tests:
 
 - `requireEveryArmCovered` is green;
-- a 15 MiB upload passes through `executeCall` within `runnerMaxReadBytes`.
+- a 15 MiB upload passes through `executeCall` within `agentmsg.RunnerMaxReadBytes`.
 
 ### T4 Agent tools and renderers
 
