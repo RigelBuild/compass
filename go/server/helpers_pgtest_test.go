@@ -29,42 +29,31 @@ import (
 // that is merely under load. This budget fails only a genuinely wedged bind.
 const socketReadyTimeout = 60 * time.Second
 
-// waitListening blocks until the Unix socket at path is connectable, or fails
-// the test at socketReadyTimeout. net.Listen makes a stream socket connectable
-// the instant it returns (the kernel accepts into the backlog before the server
-// calls Accept), so this gates precisely on "Serve has bound" — a monotonic,
-// deterministic readiness signal, not a flaky retry: it advances the moment the
-// socket is bound and fails loud if it never binds.
-//
-// The poll is ticker-gated, not a busy-spin: each miss blocks on <-tick.C,
-// yielding the CPU to the Serve goroutine this wait depends on. A tight
-// runtime.Gosched loop here instead starves that goroutine under full-suite
-// -race load — N parallel readiness loops hot-spinning across the runner's cores
-// keep the bind goroutine off-CPU, so readiness overshoots its budget on healthy
-// code (the load-dependent flake this replaces). <-tick.C is a bounded poll, not
-// a wall-clock sleep: it never encodes a timing assumption about when the socket
-// binds, only how often to re-probe.
+// waitListening fails the test unless the Unix socket at path becomes connectable
+// within socketReadyTimeout; a bound stream socket accepts before Serve calls Accept.
 func waitListening(t *testing.T, path string) {
 	t.Helper()
-	if err := waitConnectable(t.Context(), path, socketReadyTimeout); err != nil {
+	if err := waitConnectable(t.Context(), path, socketReadyTimeout, (&net.Dialer{}).DialContext); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// waitConnectable is waitListening's poll with the budget as a parameter, so the
-// timeout path is testable without driving the 60s production budget.
-func waitConnectable(ctx context.Context, path string, budget time.Duration) error {
+// waitConnectable takes budget and dial so tests can drive the timeout and see misses.
+// Each miss blocks on the ticker, not a spin, so the binding goroutine gets CPU.
+func waitConnectable(ctx context.Context, path string, budget time.Duration, dial func(context.Context, string, string) (net.Conn, error)) error {
 	deadline := time.After(budget)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
+		conn, err := dial(ctx, "unix", path)
 		if err == nil {
 			return conn.Close()
 		}
 		select {
 		case <-deadline:
 			return fmt.Errorf("socket %s never became connectable within %s", path, budget)
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for socket %s: %w", path, ctx.Err())
 		case <-tick.C:
 		}
 	}
