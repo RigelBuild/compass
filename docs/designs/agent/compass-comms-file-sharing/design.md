@@ -35,7 +35,7 @@ Every launcher of `compass-server` gets storage as follows:
 | Launcher | Storage |
 | --- | --- |
 | `serverSpec` (`go/internal/stack/spec.go`), used by `compass-stack` and so by the compass-app embedded mode | S3 env when `cfg.S3Endpoint != ""`; otherwise T0 adds `--object-dir <StateDir>/objects` |
-| e2e fixture (`go/e2e/fixture.go`) | builds a `stack.Config`, so `serverSpec` applies: garage S3 when `fc.objectStore != nil`, otherwise the object dir |
+| e2e fixture (`go/e2e/fixture.go`) | builds a `stack.Config`, so `serverSpec` applies: garage S3 when `fc.objectStore != nil`, otherwise the object dir; the new `WithoutObjectStore()` option sets `cfg.NoObjectStore` for no-store tests |
 | devenv dogfood process (`devenv.nix`, `exec "$bin" --socket …`) | passes no S3 today; T0 adds `--object-dir "${config.devenv.state}/compass/objects"` |
 | flake boot check (`tools/flake-gate/compass-server-secretspec.nix`) | none; it only checks that boot resolves secrets, and it uploads nothing |
 | a self-hosted release binary run by hand | the operator passes S3 flags or `--object-dir`; with neither, upload is FailedPrecondition |
@@ -158,7 +158,7 @@ One file per upload, unary bytes, no streaming, no chunking. This keeps `S3Objec
 
 **Body-read deadline.** The network door cuts any request body that takes longer than `networkBodyReadTimeout = 30 * time.Second` to arrive. Only the two Runner streams in `bodyDeadlineExempt` are exempt, because the comment assumes every other RPC "carries a small control-plane protobuf". At 30 s, a 15 MiB upload needs about 4 Mbit/s, so a legal upload from a slow link would fail mid-body.
 
-T2 gives two paths a size-scaled deadline: `CommsService/UploadAttachment`, and `RunnerService/RelayCommsCall`, which carries an agent's upload from the Runner.
+T2 gives three paths a size-scaled deadline: `CommsService/UploadAttachment`; `RunnerService/RelayCommsCall`, which carries an agent's upload from the Runner; and `RunnerService/RelaySessionBlob`, which carries the same 15 MiB size.
 
 - The deadline is 30 s plus 1 s per 64 KiB of the request's `Content-Length`, never above 10 minutes.
 - When the length is unknown or above the path's read cap, it uses the read cap: 16 MiB gives 286 s, and 17 MiB (`runnerMaxReadBytes`) gives 302 s.
@@ -166,7 +166,7 @@ T2 gives two paths a size-scaled deadline: `CommsService/UploadAttachment`, and 
 
 Why not state 30 s as a limit: 15 MiB is a legal size, so a legal upload should not depend on link speed above a stated floor. Why not a full exemption: the exempt-set comment records that an unauthenticated drip on an exempt path has no deadline at all. A scaled deadline keeps that window bounded.
 
-The residual risk is the same class as the RIG-1298 follow-up in that comment. The deadline arms before auth, so an unauthenticated client can hold one stream on these paths for up to about 5 minutes. `RelaySessionBlob` already carries 15 MiB under the plain 30 s deadline, and this record leaves it unchanged.
+The residual risk is the same class as the RIG-1298 follow-up in that comment. The deadline arms before auth, so an unauthenticated client can hold one stream on these paths for up to about 5 minutes. `RelaySessionBlob` carries up to 15 MiB too, so T2 adds it to the same map; the agent's `SESSION_BLOB_PUT_TIMEOUT_MS` (30 s) is a separate client bound that this record leaves unchanged.
 
 **Unbound-upload bound.** Every failed post after a successful upload leaves an unbound row and an object. Examples: a topic name-miss, a #2120 hold that is never confirmed, a #2136 stale refusal, a non-member channel. The per-file cap does not bound the total. So:
 
@@ -290,6 +290,7 @@ Add `store.DirObjectStore`, the `--object-dir` flag, the `openStore` branch, the
 - A key that is absolute or contains `..` is an error.
 - `PutSegment` writes a temp file in the target directory, then renames it, so a reader never sees a partial file.
 - S3 wins when both S3 and the object dir are configured.
+- `stack.Config.NoObjectStore` suppresses the default, so tests can still run a server with no store. The existing `TestLegSessionImageResume/without_object_store` moves to the fixture's `WithoutObjectStore()` option; without that it would start persisting blobs and fail.
 
 Interfaces:
 
@@ -299,7 +300,8 @@ func NewDirObjectStore(root string) (*DirObjectStore, error) // creates root 070
 func (d *DirObjectStore) PutSegment(ctx context.Context, key string, body []byte) error
 func (d *DirObjectStore) GetSegment(ctx context.Context, key string) ([]byte, error)
 // server: ServeConfig.ObjectDir string — --object-dir / COMPASS_OBJECT_DIR; ignored when S3 is set
-// stack: serverSpec appends "--object-dir", filepath.Join(cfg.StateDir, "objects") when cfg.S3Endpoint == ""
+// stack: Config.NoObjectStore bool; serverSpec appends "--object-dir", filepath.Join(cfg.StateDir, "objects") when cfg.S3Endpoint == "" && !cfg.NoObjectStore
+// e2e: func WithoutObjectStore() fixtureOption — sets cfg.NoObjectStore
 // devenv.nix compass-server exec: --object-dir "${config.devenv.state}/compass/objects"
 ```
 
@@ -395,7 +397,8 @@ func (c *Comms) GetAttachmentAsAccount(ctx context.Context, account store.Accoun
 ```go
 // go/server/network_door.go
 const maxScaledBodyReadTimeout = 10 * time.Minute
-// path → read cap in bytes: UploadAttachment → siblingServiceMaxReadBytes; RelayCommsCall → agentmsg.MaxBytes + 1<<20
+// path → read cap in bytes: UploadAttachment → siblingServiceMaxReadBytes; RelayCommsCall and RelaySessionBlob → agentmsg.RunnerMaxReadBytes
+// (runnerhub's runnerMaxReadBytes moves to agentmsg.RunnerMaxReadBytes so both read one constant)
 var bodyDeadlineScaled map[string]int64
 func bodyReadTimeout(path string, contentLength int64, base time.Duration) time.Duration
 ```
@@ -521,7 +524,7 @@ An e2e test on the garage fixture:
 - An agent runs `comms_attach_file` into a channel.
 - A member operator runs `compass message get` and gets the same bytes.
 - A non-member gets NotFound.
-- A server with neither S3 nor `--object-dir` returns FailedPrecondition on upload.
+- A server started with `WithoutObjectStore()` returns FailedPrecondition on upload.
 
 ## Tasks
 
