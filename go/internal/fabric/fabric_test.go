@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,7 +29,7 @@ const gate = 10 * time.Second
 
 // testServer runs an in-process NATS with JetStream for one test, and returns
 // its client URL. Hermetic by construction: Port -1 picks a free port, so
-// parallel tests never collide, and StoreDir under t.TempDir means the stream's
+// parallel tests never collide, and StoreDir from storeDir means the stream's
 // file storage is discarded with the test.
 //
 // SyncInterval is the record's `sync_interval: 100ms`. It is a SERVER option,
@@ -39,13 +40,31 @@ func testServer(t *testing.T) string {
 	srv := natsserver.RunServer(&server.Options{
 		Port:         -1,
 		JetStream:    true,
-		StoreDir:     t.TempDir(),
+		StoreDir:     storeDir(t),
 		SyncInterval: 100 * time.Millisecond,
 		NoLog:        true,
 		NoSigs:       true,
 	})
 	t.Cleanup(srv.Shutdown)
 	return srv.ClientURL()
+}
+
+// storeDir is a JetStream store dir removed after the server's Shutdown cleanup.
+// nats-server's consumer store Stop waits only 100ms for its untracked flusher, so a
+// late state write can land after Shutdown returns; that upstream race is not under
+// test here, so a failed removal is logged rather than failing the test.
+func storeDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "fabric-js-") //nolint:usetesting // t.TempDir fails the test on a removal error; see above
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("leaving JetStream store dir %s: %v", dir, err)
+		}
+	})
+	return dir
 }
 
 // newFabric returns a Fabric against a fresh in-process server, closed at test
@@ -336,7 +355,7 @@ func TestOnReconnectAfterServerRestart(t *testing.T) {
 	logs := &capturingLogger{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	srv := natsserver.RunServer(&server.Options{
-		Port: -1, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
+		Port: -1, JetStream: true, StoreDir: storeDir(t), NoLog: true, NoSigs: true,
 	})
 	port := srv.Addr().(*net.TCPAddr).Port
 	url := fmt.Sprintf("nats://127.0.0.1:%d", port)
@@ -362,7 +381,7 @@ func TestOnReconnectAfterServerRestart(t *testing.T) {
 	defer unsub()
 	srv.Shutdown()
 	restarted := natsserver.RunServer(&server.Options{
-		Port: port, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
+		Port: port, JetStream: true, StoreDir: storeDir(t), NoLog: true, NoSigs: true,
 	})
 	defer restarted.Shutdown()
 	for what, ch := range map[string]chan struct{}{"OnReconnect hook": reconnected, "caller ReconnectHandler": callerReconnected} {
