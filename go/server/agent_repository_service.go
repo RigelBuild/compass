@@ -42,7 +42,7 @@ var _ compassv1connect.AgentRepositoryServiceHandler = (*agentRepositoryService)
 func agentRepository(raw string) (string, error) {
 	repo := strings.ToLower(raw)
 	org, name, ok := strings.Cut(repo, "/")
-	if !ok || org == "" || name == "" || strings.Contains(name, "/") || repo == "*" {
+	if !ok || org == "" || name == "" || strings.Contains(org, "*") || strings.Contains(name, "*") || strings.Contains(name, "/") || repo == "*" {
 		return "", fmt.Errorf("%w: repository must be an exact org/name", store.ErrInvalidArgument)
 	}
 	return repo, nil
