@@ -19,7 +19,7 @@ const SH = execFileSync("sh", ["-c", "command -v sh"]).toString().trim();
 // Shell builtins only — PATH holds no coreutils, so `cat` is unavailable.
 const STUB_NIX = `#!/bin/sh
 for a in "$@"; do
-  case "$a" in langs|meissa|identity)
+  case "$a" in langs|goAnalysis|meissa|identity)
     while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line"; done <"$STUB_JSON/$a.json"
     exit 0 ;;
   esac
@@ -61,6 +61,14 @@ async function runParity(pathDirs: readonly string[]) {
 	return { exitCode, output };
 }
 
+// The four tools gate-tools.nix's goAnalysis output exposes.
+const GO_ANALYSIS_TOOLS = [
+	"golangci-lint",
+	"govulncheck",
+	"go-licenses",
+	"nilaway",
+] as const;
+
 let goodPath: string[];
 
 beforeEach(async () => {
@@ -87,8 +95,15 @@ beforeEach(async () => {
 	const biome = await derivation("meissa-biome", "biome");
 	await writeSet("identity", { buf });
 	await writeSet("langs", { bun });
+	const battery: Record<string, Identity> = {};
+	for (const tool of GO_ANALYSIS_TOOLS) {
+		battery[tool] = await derivation(tool, tool);
+	}
+	await writeSet("goAnalysis", battery);
 	await writeSet("meissa", { rumdl, biome });
-	goodPath = [buf, bun, rumdl, biome].map((d) => join(d.store, "bin"));
+	goodPath = [buf, bun, ...Object.values(battery), rumdl, biome].map((d) =>
+		join(d.store, "bin"),
+	);
 });
 
 afterEach(async () => {
@@ -99,7 +114,7 @@ describe("parity.ts Meissa linters", () => {
 	// Control: the harness must be able to pass, or the red cases prove nothing.
 	test("passes when PATH resolves Meissa's rumdl and biome", async () => {
 		const res = await runParity(goodPath);
-		expect(res.output).toContain("All 4 pinned tools match");
+		expect(res.output).toContain("All 8 pinned tools match");
 		expect(res.exitCode).toBe(0);
 	});
 
@@ -123,5 +138,33 @@ describe("parity.ts Meissa linters", () => {
 		const res = await runParity(goodPath);
 		expect(res.exitCode).toBe(1);
 		expect(res.output).toContain("0 Meissa tools");
+	});
+});
+
+describe("parity.ts Go analysis battery", () => {
+	for (const tool of GO_ANALYSIS_TOOLS) {
+		test(`fails when the battery's ${tool} is absent from PATH`, async () => {
+			const res = await runParity(
+				goodPath.filter((d) => !d.includes(`/store/${tool}/`)),
+			);
+			expect(res.exitCode).toBe(1);
+			expect(res.output).toMatch(
+				new RegExp(`UNVERIFIABLE ${tool}\\s+-\\s+not on PATH`),
+			);
+		});
+	}
+
+	test("fails when PATH resolves a different golangci-lint derivation", async () => {
+		const foreign = await derivation("nixpkgs-golangci-lint", "golangci-lint");
+		const res = await runParity([join(foreign.store, "bin"), ...goodPath]);
+		expect(res.exitCode).toBe(1);
+		expect(res.output).toContain("MISMATCH     golangci-lint");
+	});
+
+	test("refuses a pass when the goAnalysis identity set is empty", async () => {
+		await writeSet("goAnalysis", {});
+		const res = await runParity(goodPath);
+		expect(res.exitCode).toBe(1);
+		expect(res.output).toContain("0 Go analysis tools");
 	});
 });

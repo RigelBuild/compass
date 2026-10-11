@@ -397,6 +397,23 @@ jobs:
             echo "$store/bin" >>"$GITHUB_PATH"
           done
 
+      - name: Put the Go analysis battery on PATH
+        if: matrix.run == 'true'
+        # golangci-lint/govulncheck/go-licenses/nilaway, rebuilt with the dev
+        # shell's go toolchain. No cache holds them, so only the jobs that run
+        # them build them.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix goAnalysis \
+            | jq -r '.[].store')
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix goAnalysis produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
       - name: Put the dev shell's nixpkgs tools on PATH
         if: matrix.run == 'true'
         # Phase two. buf, protoc, biome and rumdl have no `setup-*` action
@@ -405,9 +422,8 @@ jobs:
         # derivations the dev shell does: the nixpkgs attrs from the revision
         # devenv.lock pins, plus biome and rumdl from the Meissa flake at the
         # rev devenv.lock pins (gate-tools.nix `env` carries both). (The Go
-        # analysis battery — golangci-lint/govulncheck/go-licenses/nilaway — is
-        # NOT here: it is rebuilt against the go toolchain and rides phase one
-        # via gate-tools.nix `langs`, not this nixpkgs-attrs step.)
+        # analysis battery is NOT here: it is rebuilt against the go toolchain
+        # and comes from gate-tools.nix `goAnalysis` in the step above.)
         #
         # The attribute list comes from the parity script's own parse of
         # devenv.nix (run under the bun that phase one just put on PATH), so what
@@ -1441,6 +1457,22 @@ jobs:
           # default package if one existed, so an empty `langs` must error here.
           [ -n "$stores" ] || {
             echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Put the Go analysis battery on PATH
+        # golangci-lint/govulncheck/go-licenses/nilaway, rebuilt with the dev
+        # shell's go toolchain. No cache holds them, so only the jobs that run
+        # them build them.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix goAnalysis \
+            | jq -r '.[].store')
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix goAnalysis produced no store paths"
             exit 1
           }
           nix build --no-link $stores

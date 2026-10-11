@@ -85,12 +85,14 @@ function nixIdentities(attrs: readonly string[]): Record<string, NixIdentity> {
 }
 
 /**
- * Resolve a closed toolchain set — gate-tools.nix's `langs` (bun/node/moon/go)
- * or `meissa` (rumdl/biome) — to derivations and command lists. Same identity
+ * Resolve a closed toolchain set — gate-tools.nix's `langs` (bun/node/moon/go),
+ * `goAnalysis` (the Go battery) or `meissa` (rumdl/biome) — to derivations and command lists. Same identity
  * shape as nixIdentities; closed sets need no `--arg attrs` (the head there
  * defaults `attrs` to `[ ]`).
  */
-function nixClosedSet(output: "langs" | "meissa"): Record<string, NixIdentity> {
+function nixClosedSet(
+	output: "langs" | "goAnalysis" | "meissa",
+): Record<string, NixIdentity> {
 	const out = execFileSync(
 		"nix",
 		[
@@ -110,21 +112,23 @@ const devenvAttrs = parseDevenvPackages(
 );
 
 // Resolve the closed sets up front so the refusal below can guard on them too:
-// an empty `langs` or `meissa` identity set means gate-tools.nix's shape moved
+// an empty `langs`, `goAnalysis` or `meissa` identity set means gate-tools.nix's shape moved
 // out from under the gate, the same false-green risk as an empty devenv parse.
 const langs = nixClosedSet("langs");
+const goAnalysis = nixClosedSet("goAnalysis");
 const meissa = nixClosedSet("meissa");
 
 if (
 	devenvAttrs.length === 0 ||
 	Object.keys(langs).length === 0 ||
+	Object.keys(goAnalysis).length === 0 ||
 	Object.keys(meissa).length === 0
 ) {
 	// Any coming back empty means a source the gate parses moved out from
 	// under it. Silently checking nothing is the exact false green this exists to
 	// stop, so refuse rather than report a vacuous pass.
 	console.error(
-		`toolchain parity: parsed ${devenvAttrs.length} devenv.nix packages, ${Object.keys(langs).length} language toolchains and ${Object.keys(meissa).length} Meissa tools — ` +
+		`toolchain parity: parsed ${devenvAttrs.length} devenv.nix packages, ${Object.keys(langs).length} language toolchains, ${Object.keys(goAnalysis).length} Go analysis tools and ${Object.keys(meissa).length} Meissa tools — ` +
 			"one of those sources no longer has the shape the gate parses. Refusing to report a pass over nothing.",
 	);
 	process.exit(1);
@@ -176,6 +180,17 @@ const verdicts: Verdict[] = [];
 for (const [name, identity] of Object.entries(langs)) {
 	verdicts.push(
 		...storePathVerdicts(name, identity, "not built by gate-tools.nix langs"),
+	);
+}
+
+// The Go analysis battery, rebuilt with the dev shell's go-overlay toolchain.
+for (const [name, identity] of Object.entries(goAnalysis)) {
+	verdicts.push(
+		...storePathVerdicts(
+			name,
+			identity,
+			"not built by gate-tools.nix goAnalysis",
+		),
 	);
 }
 

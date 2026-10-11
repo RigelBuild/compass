@@ -96,8 +96,8 @@ describe("parseDevenvPackages", () => {
 		expect(parseDevenvPackages(devenv)).not.toContain("enterShell");
 	});
 
-	// The appended `++ [ … ]` language list is covered by the store-path `langs`
-	// verdict alone; it must NEVER reach this parser. Its dotted references would
+	// The appended `++ [ … ]` list is covered by the store-path `langs` and
+	// `goAnalysis` verdicts alone; it must NEVER reach this parser. Its dotted references would
 	// each throw (see the throw cases below), so a shape that let them leak in
 	// would fail loudly rather than silently — but the contract is that the
 	// parser stops at the `])` before them.
