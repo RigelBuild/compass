@@ -29,7 +29,7 @@ const gate = 10 * time.Second
 
 // testServer runs an in-process NATS with JetStream for one test, and returns
 // its client URL. Hermetic by construction: Port -1 picks a free port, so
-// parallel tests never collide, and StoreDir under t.TempDir means the stream's
+// parallel tests never collide, and StoreDir from storeDir means the stream's
 // file storage is discarded with the test.
 //
 // SyncInterval is the record's `sync_interval: 100ms`. It is a SERVER option,
