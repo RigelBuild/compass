@@ -14,6 +14,8 @@
 
 // The schema builder rides the SDK's own schema stack via its `/ark` compat facade — one
 // schema implementation in the graph, so there is no two-copy mismatch to catch.
+// biome-ignore lint/style/noRestrictedImports: classify the status returned by the Runner transport
+import { Code, ConnectError } from "@connectrpc/connect";
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
@@ -57,8 +59,48 @@ export class LifecycleBroker {
 		return `${this.#idempotencyNonce}:${toolCallId}`;
 	}
 
-	call(req: LifecycleCallRequest): Promise<LifecycleCallResult> {
-		return this.#transport.lifecycle(req);
+	/**
+	 * Forwards `req`. A transport `NotFound` / `PermissionDenied` means the caller's own
+	 * session has no binding (Runner reconnect, or before Start); the target was never
+	 * looked up, so it is rethrown as {@link UnboundSessionError} for the tool to name.
+	 */
+	async call(req: LifecycleCallRequest): Promise<LifecycleCallResult> {
+		try {
+			return await this.#transport.lifecycle(req);
+		} catch (err) {
+			const code = ConnectError.from(err).code;
+			if (code === Code.NotFound || code === Code.PermissionDenied) {
+				throw new UnboundSessionError({ cause: err });
+			}
+			throw err;
+		}
+	}
+}
+
+/** The caller's own session is unbound; distinct from an in-band target `not_found`. */
+export class UnboundSessionError extends Error {
+	constructor(options: ErrorOptions) {
+		super(
+			"your own session is not bound to an agent account (Runner reconnect or not yet started); the target was not checked",
+			options,
+		);
+		this.name = "UnboundSessionError";
+	}
+}
+
+// Prefixes an unbound-session failure with the tool name, the same shape as an in-band
+// failure, so the model reads which tool failed and why.
+async function callNamed(
+	broker: LifecycleBroker,
+	toolName: string,
+	req: LifecycleCallRequest,
+): Promise<LifecycleCallResult> {
+	try {
+		return await broker.call(req);
+	} catch (err) {
+		if (err instanceof UnboundSessionError)
+			throw new Error(`${toolName} failed: ${err.message}`, { cause: err });
+		throw err;
 	}
 }
 
@@ -144,7 +186,9 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 			"a role, and a persona; optionally a display name.",
 		parameters: spawnParameters,
 		execute: async (toolCallId, params) => {
-			const result = await broker.call(
+			const result = await callNamed(
+				broker,
+				"agents_spawn_peer",
 				create(LifecycleCallRequestSchema, {
 					callId: toolCallId,
 					call: {
@@ -193,7 +237,9 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 			"Idempotent: despawning an already-absent peer succeeds.",
 		parameters: despawnParameters,
 		execute: async (toolCallId, params) => {
-			const result = await broker.call(
+			const result = await callNamed(
+				broker,
+				"agents_despawn_peer",
 				create(LifecycleCallRequestSchema, {
 					callId: toolCallId,
 					call: {

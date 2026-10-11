@@ -11,6 +11,8 @@
 // result out, and the captured request asserted verbatim.
 
 import { describe, expect, test } from "bun:test";
+// biome-ignore lint/style/noRestrictedImports: build the Runner transport status a real call rejects with
+import { Code, ConnectError } from "@connectrpc/connect";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
@@ -547,5 +549,44 @@ describe("lifecycle parameter schemas", () => {
 		expect(rejects(despawnParameters, { agent_handle: "" })).toBe(true);
 		expect(rejects(despawnParameters, { agent_handle: "  " })).toBe(true);
 		expect(rejects(despawnParameters, { agent_handle: "acct-3" })).toBe(false);
+	});
+});
+
+describe("an unbound caller session", () => {
+	class RejectingTransport implements LifecycleTransport {
+		constructor(private readonly err: Error) {}
+		async lifecycle(): Promise<LifecycleCallResult> {
+			throw this.err;
+		}
+	}
+
+	// The Server's hub answers NotFound when a Runner reconnect dropped the binding; the
+	// Runner's gateway answers PermissionDenied before Start binds one. Neither looked at
+	// the target, so the model must not read either as "target not found".
+	for (const [label, code] of [
+		["hub NotFound", Code.NotFound],
+		["gateway PermissionDenied", Code.PermissionDenied],
+	] as const) {
+		for (const [name, params] of [
+			["agents_despawn_peer", { agent_handle: "acct-3" }],
+			["agents_spawn_peer", { handle: "w", role: "manager", persona: "p" }],
+		] as const) {
+			test(`${name}: ${label} names the caller session, not the target`, async () => {
+				const err = new ConnectError("no agent account bound to session", code);
+				const t = tool(new LifecycleBroker(new RejectingTransport(err)), name);
+				await expect(exec(t, "tc-1", params)).rejects.toThrow(
+					`${name} failed: your own session is not bound to an agent account (Runner reconnect or not yet started); the target was not checked`,
+				);
+			});
+		}
+	}
+
+	test("any other transport failure propagates unchanged", async () => {
+		const err = new ConnectError("server unreachable", Code.Unavailable);
+		const t = tool(
+			new LifecycleBroker(new RejectingTransport(err)),
+			"agents_despawn_peer",
+		);
+		await expect(exec(t, "tc-1", { agent_handle: "acct-3" })).rejects.toBe(err);
 	});
 });
