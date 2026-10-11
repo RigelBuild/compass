@@ -136,6 +136,10 @@ func runVirtualFSContract(t *testing.T, newFS func(t *testing.T) VirtualFS) {
 		}
 	})
 
+	t.Run("warm root satisfies a missing snapshot", func(t *testing.T) {
+		contractWarmBeatsMissingSnapshot(t, newFS(t), newSource())
+	})
+
 	t.Run("customer mount does not rebind the destination", func(t *testing.T) {
 		contractMountKeepsBinding(t, newFS(t), newSource())
 	})
@@ -176,9 +180,11 @@ func (f *fakeVirtualFS) Materialize(_ context.Context, src TreeSource) (string, 
 	if src.CustomerMount == "" && src.Snapshot == "" && src.Repo == "" {
 		return "", ErrInvalidTreeSource
 	}
-	// The fake stores no snapshots, so an empty root with no repo has no cold path.
+	// The fake stores no snapshots: a warm root satisfies the source, an empty one needs a repo.
 	if src.Snapshot != "" && src.Repo == "" {
-		return "", ErrSnapshotNotFound
+		if entries, _ := os.ReadDir(f.root); len(entries) == 0 {
+			return "", ErrSnapshotNotFound
+		}
 	}
 	if f.active != "" {
 		return "", ErrAlreadyMaterialized
@@ -199,4 +205,22 @@ func (f *fakeVirtualFS) Release(_ context.Context, root string) error {
 	}
 	f.active = ""
 	return nil
+}
+
+func contractWarmBeatsMissingSnapshot(t *testing.T, fs VirtualFS, source TreeSource) {
+	t.Helper()
+	root, err := fs.Materialize(t.Context(), source)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "warm.txt"), []byte("warm"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Release(t.Context(), root); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	again, err := fs.Materialize(t.Context(), TreeSource{Snapshot: "missing"})
+	if err != nil || again != root {
+		t.Fatalf("Materialize(missing snapshot) = %q, %v; want warm root %q", again, err, root)
+	}
 }

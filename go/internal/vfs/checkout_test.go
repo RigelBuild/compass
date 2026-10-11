@@ -240,22 +240,6 @@ func TestCheckoutFSSnapshotOnlyMissingSnapshotFails(t *testing.T) {
 	}
 }
 
-// A warm tree satisfies a snapshot-only source even when the snapshot is gone.
-func TestCheckoutFSSnapshotOnlyMissingSnapshotKeepsWarmTree(t *testing.T) {
-	checkout := newCheckoutForTest(t)
-	warm := filepath.Join(checkout.root, "warm.txt")
-	if err := os.WriteFile(warm, []byte("warm"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	root, err := checkout.Materialize(t.Context(), TreeSource{Snapshot: "unknown"})
-	if err != nil || root != checkout.root {
-		t.Fatalf("Materialize = %q, %v; want warm root %q", root, err, checkout.root)
-	}
-	if data, err := os.ReadFile(warm); err != nil || string(data) != "warm" {
-		t.Fatalf("warm file = %q, %v; want kept", data, err)
-	}
-}
-
 func TestCheckoutFSRejectsInvalidCustomerMounts(t *testing.T) {
 	unclean := filepath.Join(t.TempDir(), "mount") + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "mount"
 	symlinked := filepath.Join(t.TempDir(), "link")
