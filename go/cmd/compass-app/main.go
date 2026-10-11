@@ -40,13 +40,13 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(context.Background()); err != nil {
 		slog.Error("compass-app exited with an error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	if handled, err := printVersionIfRequested(os.Args[1:], os.Stdout); handled {
 		return err
 	}
@@ -98,7 +98,7 @@ func run() error {
 			return err
 		}
 	} else {
-		svc, quitter, err = launch(cfg, socket, stateDir, embedded.ResolveImage(*imageFlag), stackBinFlag)
+		svc, quitter, err = launch(ctx, cfg, socket, stateDir, embedded.ResolveImage(*imageFlag), stackBinFlag)
 		if err != nil {
 			return err
 		}
@@ -144,10 +144,8 @@ func run() error {
 		quitter.quit = app.Quit
 		fileMenu := menu.AddSubmenu("File")
 		fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
-			// A UI-event callback has no inherited context.Context, so this is
-			// the legitimate main-entrypoint root; stopStackAndQuit derives its
-			// bounded teardown deadline from it.
-			quitter.stopStackAndQuit(context.Background())
+			// stopStackAndQuit derives its bounded teardown deadline from the run root.
+			quitter.stopStackAndQuit(ctx)
 		})
 	}
 	windowMenu := menu.AddSubmenu("Window")
@@ -261,7 +259,7 @@ func newSetupServices(stateDir, image string) (*bridgeService, *setupService, *d
 // controller; a client-only install has neither a compass-stack binary nor a
 // stack to stop, so those effects must not gate a client launch (design §T5.6).
 func launch(
-	cfg appconfig.Config, socket, stateDir, image string, stackBinFlag *string,
+	ctx context.Context, cfg appconfig.Config, socket, stateDir, image string, stackBinFlag *string,
 ) (*bridgeService, *quitController, error) {
 	switch cfg.Mode {
 	case appconfig.ModeEmbedded:
@@ -276,14 +274,14 @@ func launch(
 		}
 		params := embedded.Params{Socket: socket, StateDir: stateDir, Image: image}
 
-		// The embedded bring-up (preflight → stack up → WhoAmI) runs BEFORE the
-		// window opens, under a bounded context. launch() is invoked once from run()
-		// with no context upstream, so this context.Background() is the sanctioned
-		// root of the bring-up pipeline, not a mid-tree re-root.
-		bringUpCtx, cancel := context.WithTimeout(context.Background(), embedded.BringUpTimeout)
+		// The embedded bring-up runs before a window opens, under its own bounded context.
+		bringUpCtx, cancel := context.WithTimeout(ctx, embedded.BringUpTimeout)
 		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, embedded.RunStackDown(stackBin))
 		cancel()
 		if err != nil {
+			if errors.Is(err, embedded.ErrStackVersionMismatch) {
+				return nil, nil, restartOlderStack(ctx, params, embedded.RunStackDown(stackBin))
+			}
 			return nil, nil, err
 		}
 

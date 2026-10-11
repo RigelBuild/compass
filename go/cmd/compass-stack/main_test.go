@@ -3,6 +3,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -535,4 +537,23 @@ func TestRunDispatch(t *testing.T) {
 			t.Fatalf("run --version: %v", err)
 		}
 	})
+}
+
+func TestExitCode(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "stack version mismatch", err: errStackVersionMismatch, want: stack.VersionMismatchExitCode},
+		{name: "wrapped stack version mismatch", err: fmt.Errorf("up failed: %w", errStackVersionMismatch), want: stack.VersionMismatchExitCode},
+		{name: "other error", err: errors.New("up failed"), want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCode(tt.err); got != tt.want {
+				t.Errorf("exitCode(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
+	}
 }

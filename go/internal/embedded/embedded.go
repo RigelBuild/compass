@@ -6,11 +6,10 @@
 // probes, the compass-stack exec, the h2c-UDS WhoAmI dial) behind small injected
 // seams, so the orchestration is unit-testable without a real stack.
 //
-// It supervises the stack through the compass-stack BINARY, not by
-// importing go/internal/stack: `compass-stack up` brings the stack to Ready and
-// exits 0 while the children keep running (fire-and-return), so the pipeline
-// runs it, waits for exit 0, and then dials the same socket it passed as
-// --socket.
+// It supervises the stack through the compass-stack binary, not by using the
+// stack package directly. The shared process exit code is the only dependency.
+// compass-stack up exits 0 when its children reach Ready, then the pipeline
+// dials the socket it passed as --socket to learn the caller account ID.
 package embedded
 
 import (
@@ -33,7 +32,11 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/preflight"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
+
+// ErrStackVersionMismatch marks an up failure caused by a live stack version mismatch.
+var ErrStackVersionMismatch = errors.New("embedded stack version mismatch")
 
 // DefaultAgentImage is the canonical agent image ref the embedded stack runs
 // when no --image/$COMPASS_AGENT_IMAGE is supplied. The ref is locked
@@ -180,6 +183,12 @@ func RunStackUp(bin string) func(ctx context.Context, args []string) error {
 					"(a cold first run pulls three images from their registries — the agent "+
 					"image from GHCR, the postgres and collector images from their stock "+
 					"registries — which can take longer): %w", BringUpTimeout, err)
+			}
+			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == stack.VersionMismatchExitCode {
+				if msg := stderr(); msg != "" {
+					return fmt.Errorf("compass-stack up failed: %w: %s", ErrStackVersionMismatch, msg)
+				}
+				return fmt.Errorf("compass-stack up failed: %w", ErrStackVersionMismatch)
 			}
 			if msg := stderr(); msg != "" {
 				return fmt.Errorf("compass-stack up failed: %w: %s", err, msg)
