@@ -130,19 +130,22 @@ describe("agent-image scope geometry", () => {
 		}
 	});
 
-	// This lock resolves the bun the OCI image build uses, so the outputHash must
-	// be realised through a vehicle from this lock. The vehicle file must exist
-	// too — a deleted file would fail at realise time, not here.
-	test("a FOD entry realises entrypoint.nix through this lock's own pkgs", () => {
+	// This lock resolves the bun the OCI image build uses, so every system's
+	// outputHash must be realised through a vehicle from this lock. The vehicle
+	// file must exist too — a deleted file would fail at realise time, not here.
+	test("each system pin in entrypoint.nix is realised through this lock's own pkgs", () => {
 		const viaThisLock = FOD_ENTRIES.filter(
 			(e) =>
 				e.file === "agent-image/entrypoint.nix" &&
 				e.vehicleChannelLock === AGENT_IMAGE_LOCK,
 		);
-		expect(viaThisLock.length).toBe(1);
-		const [entry] = viaThisLock;
-		if (!entry) throw new Error("expected exactly one entry via this lock");
-		expect(existsSync(join(repoRoot, entry.buildFile))).toBe(true);
+		expect(viaThisLock.map((e) => e.id).sort()).toEqual([
+			"agent-node-modules-aarch64-linux",
+			"agent-node-modules-x86_64-linux",
+		]);
+		for (const entry of viaThisLock) {
+			expect(existsSync(join(repoRoot, entry.buildFile))).toBe(true);
+		}
 	});
 });
 
@@ -285,7 +288,7 @@ async function buildEntryRepo(): Promise<string> {
 	// fragment, which is what recompute parses the real value out of.
 	await Bun.write(
 		join(repo, "agent-image", "entrypoint.nix"),
-		`{ pkgs, lib }:\n  outputHash = "${STUB_SRI}";\n`,
+		`{ pkgs, lib }:\n  "x86_64-linux" = "${STUB_SRI}";\n  "aarch64-linux" = "${STUB_SRI}";\n`,
 	);
 	for (const entry of FOD_ENTRIES) {
 		await mkdir(join(repo, entry.buildFile, ".."), { recursive: true });

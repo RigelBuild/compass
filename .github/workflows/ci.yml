@@ -206,6 +206,7 @@ jobs:
       forge_affected: ${{ steps.gen.outputs.forge_affected }}
       gtk4_affected: ${{ steps.gen.outputs.gtk4_affected }}
       darwin_affected: ${{ steps.gen.outputs.darwin_affected }}
+      agent_fod_affected: ${{ steps.gen.outputs.agent_fod_affected }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1719,6 +1720,43 @@ jobs:
             exit 1
           fi
 
+  agent-fod-arm64:
+    name: agent-fod-arm64
+    runs-on: ubuntu-24.04-arm
+    needs: setup
+    # The moon battery realises only the x86_64-linux agent node_modules pin, so
+    # this native arm runner checks the aarch64-linux one before merge.
+    if: >-
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.agent_fod_affected == 'true')
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          # Same reviewed substituter set as setup; never `accept-flake-config`.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put bun on PATH
+        # The check is a bun script that shells `nix build`; bun is the pinned one.
+        run: |
+          bun=$(nix eval --raw -f tools/toolchain/gate-tools.nix langs.bun.store)
+          nix build --no-link "$bun"
+          echo "$bun/bin" >>"$GITHUB_PATH"
+
+      - name: Check the aarch64-linux node_modules FOD pin
+        run: bun tools/renovate/check-agent-fod.ts
+
   darwin:
     name: darwin
     runs-on: macos-14
@@ -2657,7 +2695,7 @@ jobs:
     # `!cancelled()` must be parenthesized against the dispatch OR group: `&&`
     # binds tighter than `||`, so without the parens the trailing
     # `|| inputs.pr != ''` would detach from the AND.
-    needs: [setup, moon, e2e, pgtest, microvm, forge-oracle, gtk4-e2e, darwin]
+    needs: [setup, moon, e2e, pgtest, microvm, forge-oracle, gtk4-e2e, darwin, agent-fod-arm64]
     if: >-
       !cancelled() &&
       (github.event_name != 'workflow_dispatch' ||
@@ -2695,13 +2733,15 @@ jobs:
           forge='${{ needs.forge-oracle.result }}'
           gtk4='${{ needs.gtk4-e2e.result }}'
           darwin='${{ needs.darwin.result }}'
+          agent_fod='${{ needs.agent-fod-arm64.result }}'
           pgtest_flag='${{ needs.setup.outputs.pgtest_affected }}'
           microvm_flag='${{ needs.setup.outputs.microvm_affected }}'
           forge_flag='${{ needs.setup.outputs.forge_affected }}'
           gtk4_flag='${{ needs.setup.outputs.gtk4_affected }}'
           darwin_flag='${{ needs.setup.outputs.darwin_affected }}'
-          echo "setup=$setup moon=$moon e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4 darwin=$darwin"
-          echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag darwin=$darwin_flag"
+          agent_fod_flag='${{ needs.setup.outputs.agent_fod_affected }}'
+          echo "setup=$setup moon=$moon e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4 darwin=$darwin agent-fod-arm64=$agent_fod"
+          echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag darwin=$darwin_flag agent-fod=$agent_fod_flag"
           rc=0
           # setup and moon must plainly succeed.
           if [ "$setup" != "success" ]; then
@@ -2736,6 +2776,7 @@ jobs:
           require_gated forge-oracle "$forge" "$forge_flag"
           require_gated gtk4-e2e "$gtk4" "$gtk4_flag"
           require_gated darwin "$darwin" "$darwin_flag"
+          require_gated agent-fod-arm64 "$agent_fod" "$agent_fod_flag"
           if [ "$rc" != 0 ]; then
             exit 1
           fi

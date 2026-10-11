@@ -34,6 +34,8 @@ export type GenInput = {
 	affectedIds: string[];
 	/** PR changed paths (for forge/gtk4 detection); [] on push/schedule */
 	changedPaths: string[];
+	/** `<project>:<task>` targets from `moon query tasks --affected` (PR); unused on push/schedule */
+	affectedTasks?: string[];
 	event: "pull_request" | "push" | "schedule";
 };
 
@@ -59,6 +61,8 @@ export type GenOutput = {
 	gtk4Affected: boolean;
 	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell), the macos-bundle tool, or the sidecar surface (four sidecars plus shared go/internal/) */
 	darwinAffected: boolean;
+	/** push/schedule OR the PR affects AGENT_FOD_TASK (its declared inputs changed) */
+	agentFodAffected: boolean;
 };
 
 // ── Pure-core constants ────────────────────────────────────────────────────
@@ -93,6 +97,13 @@ const GUEST_IMAGE_PROJECT = "compass-guest-image";
  * closed here.
  */
 export const ALWAYS_RUN_ON_PR = "design-ledger-gate";
+
+/**
+ * The FOD check the arm64 leg reruns natively for the aarch64-linux pin. Keyed on
+ * moon's task-affected set, so the leg tracks the task's declared inputs with no
+ * second path list.
+ */
+export const AGENT_FOD_TASK = "renovate:agent-fod";
 
 /**
  * forge trigger (PR): a changed path under go/internal/forge/ — the forge
@@ -321,6 +332,8 @@ export function generate(input: GenInput): GenOutput {
 				p.startsWith(MACOS_BUNDLE_PATH_PREFIX) ||
 				DARWIN_SIDECAR_PREFIXES.some((prefix) => p.startsWith(prefix)),
 		);
+	const agentFodAffected =
+		isFullSweep || (input.affectedTasks ?? []).includes(AGENT_FOD_TASK);
 
 	return {
 		matrix,
@@ -329,6 +342,7 @@ export function generate(input: GenInput): GenOutput {
 		forgeAffected,
 		gtk4Affected,
 		darwinAffected,
+		agentFodAffected,
 	};
 }
 
@@ -403,6 +417,16 @@ export function parseTaskAffectedIds(json: string): string[] {
 	return ids;
 }
 
+/** The `<project>:<task>` targets in a `moon query tasks --affected` payload. */
+export function parseAffectedTaskTargets(json: string): string[] {
+	const parsed = JSON.parse(json) as {
+		tasks?: Record<string, Record<string, unknown>> | null;
+	};
+	return Object.entries(parsed.tasks ?? {}).flatMap(([project, tasks]) =>
+		Object.keys(tasks).map((task) => `${project}:${task}`),
+	);
+}
+
 /** Return the project closure plus known projects with affected tasks. */
 export function unionAffectedIds(
 	projectIds: readonly string[],
@@ -432,6 +456,7 @@ export function outputLines(out: GenOutput): string[] {
 		`forge_affected=${out.forgeAffected ? "true" : "false"}`,
 		`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
 		`darwin_affected=${out.darwinAffected ? "true" : "false"}`,
+		`agent_fod_affected=${out.agentFodAffected ? "true" : "false"}`,
 	];
 }
 
@@ -453,6 +478,7 @@ async function main(): Promise<void> {
 		// task-level closure (see parseTaskAffectedIds for why the project walk
 		// alone misses cross-tree gates); else the full set.
 		let affectedIds: string[];
+		let affectedTasks: string[] = [];
 		if (event === "pull_request") {
 			const [affectedJson, taskJson] = await Promise.all([
 				$`moon query projects --affected --upstream deep --downstream direct`
@@ -469,6 +495,7 @@ async function main(): Promise<void> {
 				parseTaskAffectedIds(taskJson),
 				known,
 			);
+			affectedTasks = parseAffectedTaskTargets(taskJson);
 		} else {
 			affectedIds = projects.map((p) => p.id);
 		}
@@ -490,7 +517,13 @@ async function main(): Promise<void> {
 			}
 		}
 
-		const out = generate({ projects, affectedIds, changedPaths, event });
+		const out = generate({
+			projects,
+			affectedIds,
+			changedPaths,
+			affectedTasks,
+			event,
+		});
 
 		const lines = outputLines(out);
 
@@ -515,7 +548,7 @@ async function main(): Promise<void> {
 			);
 		}
 		console.log(
-			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected} darwin=${out.darwinAffected}`,
+			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected} darwin=${out.darwinAffected} agent-fod=${out.agentFodAffected}`,
 		);
 	} catch (err) {
 		// A failed `moon query` throws a Bun ShellError whose `message` is only

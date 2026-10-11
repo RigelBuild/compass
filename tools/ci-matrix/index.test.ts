@@ -15,6 +15,7 @@ import {
 	generate,
 	outputLines,
 	type ProjectInput,
+	parseAffectedTaskTargets,
 	parseTaskAffectedIds,
 	unionAffectedIds,
 } from "./index.ts";
@@ -470,6 +471,7 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		expect(out.forgeAffected).toBe(true);
 		expect(out.gtk4Affected).toBe(true);
 		expect(out.darwinAffected).toBe(true);
+		expect(out.agentFodAffected).toBe(true);
 	});
 
 	test("schedule: forge + gtk4 + darwin unconditionally true", () => {
@@ -482,6 +484,7 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		expect(out.forgeAffected).toBe(true);
 		expect(out.gtk4Affected).toBe(true);
 		expect(out.darwinAffected).toBe(true);
+		expect(out.agentFodAffected).toBe(true);
 	});
 
 	test("push: every non-empty group runs (full sweep)", () => {
@@ -496,6 +499,15 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		}
 		expect(out.pgtestAffected).toBe(true);
 		expect(out.microvmAffected).toBe(true);
+	});
+
+	test("agentFodAffected tracks renovate:agent-fod in the affected task set", () => {
+		const flag = (affectedTasks: string[]) =>
+			generate(prInput({ affectedIds: [], affectedTasks })).agentFodAffected;
+		expect(flag(["renovate:agent-fod", "renovate:test"])).toBe(true);
+		// A sibling task of the same project is not the FOD check.
+		expect(flag(["renovate:test", "renovate:typecheck"])).toBe(false);
+		expect(flag([])).toBe(false);
 	});
 });
 
@@ -753,6 +765,19 @@ describe("empty affected closure — matrix still non-empty (fromJSON safe)", ()
 	});
 });
 
+describe("parseAffectedTaskTargets — task-level targets", () => {
+	test("flattens the payload to project:task targets", () => {
+		const json = JSON.stringify({
+			tasks: { renovate: { "agent-fod": {}, test: {} }, root: { lint: {} } },
+		});
+		expect(parseAffectedTaskTargets(json).sort()).toEqual([
+			"renovate:agent-fod",
+			"renovate:test",
+			"root:lint",
+		]);
+	});
+});
+
 describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 	test("returns the project ids that have affected tasks", () => {
 		const json = JSON.stringify({
@@ -904,6 +929,7 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		"forge_affected",
 		"gtk4_affected",
 		"darwin_affected",
+		"agent_fod_affected",
 	] as const;
 
 	function linesFor(): string[] {

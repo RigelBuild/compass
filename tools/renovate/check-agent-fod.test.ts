@@ -34,6 +34,8 @@ beforeEach(async () => {
 afterEach(async () => {
 	await rm(bin, { recursive: true, force: true });
 });
+// The arm64 PR job runs this same script, so the expected pin follows the host.
+const HOST_SYSTEM = process.arch === "arm64" ? "aarch64-linux" : "x86_64-linux";
 
 describe("check-agent-fod.ts", () => {
 	test("passes when the FOD builds", async () => {
@@ -53,7 +55,7 @@ exit 1`);
 		const res = await runCheck();
 		expect(res.exitCode).toBe(1);
 		expect(res.stderr).toContain(
-			"agent-image/entrypoint.nix outputHash is stale",
+			`agent-image/entrypoint.nix ${HOST_SYSTEM} outputHash is stale`,
 		);
 		expect(res.stderr).toContain("bun.lock");
 		expect(res.stderr).toContain("sha256-new=");
@@ -69,12 +71,12 @@ exit 1`);
 		expect(res.stderr).not.toContain("is stale");
 	});
 
-	test("builds only the node_modules FOD, not the image", async () => {
+	test("builds only this host's node_modules FOD, not the image", async () => {
 		await stubNix('echo "$@" > "$(dirname "$0")/args"; exit 0');
 		await runCheck();
 		const args = await Bun.file(join(bin, "args")).text();
 		expect(args).toContain(
-			"agent-image-fod-vehicle.nix compass-agent.nodeModules",
+			`agent-image-fod-vehicle.nix compass-agent.nodeModulesBySystem.${HOST_SYSTEM} `,
 		);
 	});
 });
