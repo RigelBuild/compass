@@ -8,7 +8,7 @@ type RefTextProps = {
 	text: string;
 	/** Set inside a <button>, where an <a> is not allowed. */
 	inControl?: boolean;
-	/** Inside the board roving group, which owns Tab; the ref leaves the tab order. */
+	/** In the board roving group the ref leaves the tab order, as the PR chip does. */
 	inRovingGroup?: boolean;
 };
 
