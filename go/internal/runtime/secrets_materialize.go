@@ -182,7 +182,8 @@ func ProviderSeedScript(homeDir string, seed ProviderSeed) (string, error) {
 }
 
 // GHHostsScript builds the setup script that writes ALL gh forge credentials
-// into a single ~/.config/gh/hosts.yml (0600) under the agent's scoped $HOME.
+// into a single ~/.config/gh/hosts.yml (0600) under the agent's scoped $HOME,
+// and creates gh's default config.yml when absent.
 // gh keys hosts.yml by host, so github.com and any custom forge coexist as
 // sibling host blocks in one file; writing every host in ONE atomic replace
 // (rather than one truncate-replace per host) is what lets a multi-forge
@@ -227,6 +228,10 @@ func GHHostsScript(homeDir string, creds []GHCredentials) (string, error) {
 	b.WriteString("umask 077\n")
 	b.WriteString("h=" + home + "\n")
 	b.WriteString(`mkdir -p "$h/.config/gh"` + "\n")
+	b.WriteString(`c="$h/.config/gh/config.yml"` + "\n")
+	// gh migrates version-less config by calling /user, which App tokens cannot;
+	// write it before the token lands and never through a symlink.
+	b.WriteString(`if [ ! -e "$c" ] && [ ! -L "$c" ]; then (set -C; printf 'version: "1"\n' > "$c"); fi` + "\n")
 	b.WriteString(`f="$h/.config/gh/hosts.yml"` + "\n")
 	b.WriteString(`t="$f.tmp.$$"` + "\n")
 	writeBase64ToFile(&b, b64)

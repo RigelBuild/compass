@@ -13,7 +13,8 @@
 #     The image also bakes a direnvrc loading devenv's `use devenv` stdlib and
 #     points DIRENV_CONFIG at it (`direnvConfig` below).
 #   * bun — runs `compass-agent`, a TypeScript entrypoint.
-#   * git + gh — the agent clones its own repos and drives forge work.
+#   * git + gh — the agent clones and drives forge work; git credentials and
+#     jj-vine's GitHub token come from gh.
 #   * jj + jj-vine — the version-control and stacked-PR tools Rigel lanes use;
 #     jj-vine is the RigelBuild fork, built from the devenv.lock-pinned source.
 #   * nftables/getent/gawk — required in-image by the egress arm. getent is its
@@ -127,6 +128,21 @@ pkgs.buildEnv {
     pkgs.cacert
 
     nixConf
+    # jj-vine asks gh for the resolved host's token; a host gh lacks fails closed.
+    (pkgs.writeTextDir "etc/jj/conf.d/compass-agent.toml" ''
+      [jj-vine]
+      forge = "github"
+      openAsDraft = true
+      [jj-vine.github]
+      host = "https://api.github.com"
+      tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "{host}"]
+    '')
+    # Git asks gh for any host's token; gh answers only for hosts it holds.
+    (pkgs.writeTextDir "etc/gitconfig" ''
+      [credential]
+          helper =
+          helper = !${pkgs.gh}/bin/gh auth git-credential
+    '')
     caCertificates
     direnvConfig
     # /etc/compass-agent/source-fingerprint: the e2e fixture's stale-image check.
