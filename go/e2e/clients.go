@@ -1,6 +1,6 @@
 //go:build podman
 
-// Package e2e is the dogfood end-to-end harness substrate: it stands up the real
+// Package e2e is the end-to-end harness substrate: it stands up the real
 // embedded Compass stack over stack.Up (the same composition the compass-stack
 // CLI drives) and hands the harness's later legs (RIG-1785 H2-H6) a Fixture with
 // authenticated Connect clients and the store DSN. It is podman-build-tagged —
