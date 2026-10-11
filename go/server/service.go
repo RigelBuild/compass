@@ -22,6 +22,7 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/board"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -216,6 +217,42 @@ func (s *service) StopAgentSession(
 	// never convert a successful Stop into a failure.
 	archiveSessionEnd(ctx, s.store, req.Msg.GetSessionId())
 	return connect.NewResponse(resp), nil
+}
+
+// SkipBatchWindow fires the agent's pending idle batch immediately. The owner
+// or an admin must authorize before the control is relayed.
+func (s *service) SkipBatchWindow(
+	ctx context.Context,
+	req *connect.Request[compassv1.SkipBatchWindowRequest],
+) (*connect.Response[compassv1.SkipBatchWindowResponse], error) {
+	if s.hub == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+	}
+	caller, ok := auth.CallerFrom(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+	}
+	sessionID := req.Msg.GetSessionId()
+	if sessionID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("session_id is required"))
+	}
+	if err := s.store.RequireAgentSessionOwner(ctx, caller, sessionID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", sessionID))
+		}
+		if errors.Is(err, store.ErrInvalidArgument) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := s.hub.DispatchControl(ctx, sessionID, &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_StartNow{
+			StartNow: &compassv1internal.StartNowControl{},
+		},
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+	return connect.NewResponse(&compassv1.SkipBatchWindowResponse{}), nil
 }
 
 // ReloadAgentSession tears down the current agent exec and starts a fresh one
