@@ -15,7 +15,9 @@ permissions: {}
 jobs:
   prune:
     if: github.ref == 'refs/heads/main'
-    # Serializes with publish-image-manifest and release-image, the other writers of this package.
+    # Serializes with publish-image-manifest and release-image. The per-arch
+    # publishers stay outside so both arches build in parallel; a per-arch tag
+    # lost to a recheck-then-delete race fails the index publish loudly.
     concurrency:
       group: publish-agent-image
       cancel-in-progress: false
@@ -24,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
-      # Deletion needs the repository's admin role on the package, which GitHub grants to the publishing repository.
+      # Deletion needs the admin role on the package, which GitHub grants the
+      # repository whose workflows publish it.
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

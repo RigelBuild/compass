@@ -267,13 +267,6 @@ async function readPins(): Promise<Pins> {
 	return { digests, tag: lock.tag };
 }
 
-function gitRevList(args: readonly string[]): string[] {
-	const result = Bun.spawnSync(["git", "rev-list", ...args]);
-	if (result.exitCode !== 0)
-		throw new Error(`git rev-list failed: ${result.stderr.toString()}`);
-	return result.stdout.toString().split("\n").filter(Boolean);
-}
-
 async function indexChildrenFor(
 	versions: readonly PackageVersion[],
 	windowSha12: ReadonlySet<string>,
@@ -339,64 +332,6 @@ function printPlan(plan: RetentionPlan): void {
 		console.log(`DELETE ${entry.version.name} [${tags}] — ${entry.reason}`);
 	}
 }
-function parseReleaseRuns(value: unknown, status: string): unknown[] {
-	const body = parseJsonRecord(value, `GitHub ${status} release runs`);
-	if (!Array.isArray(body.workflow_runs)) {
-		throw new Error(
-			`GitHub ${status} release runs response had no workflow_runs`,
-		);
-	}
-	return body.workflow_runs;
-}
-
-function collectReleaseRunSha12(
-	value: unknown,
-	status: string,
-	index: number,
-	releaseHeadShas: Set<string>,
-	sha12s: Set<string>,
-): void {
-	if (!isRecord(value) || typeof value.head_sha !== "string") {
-		throw new Error(`GitHub ${status} workflow run ${index} had no head_sha`);
-	}
-	if (releaseHeadShas.has(value.head_sha)) return;
-	releaseHeadShas.add(value.head_sha);
-	for (const commit of gitRevList([
-		"--first-parent",
-		"--max-count=50",
-		value.head_sha,
-	])) {
-		sha12s.add(commit.slice(0, 12));
-	}
-}
-
-async function queuedReleaseSha12(token: string): Promise<Set<string>> {
-	const releaseHeadShas = new Set<string>();
-	const sha12s = new Set<string>();
-	for (const status of ["queued", "in_progress", "waiting", "pending"]) {
-		const response = await fetch(
-			`${API}/repos/RigelBuild/compass/actions/workflows/release.yml/runs?status=${status}&per_page=100`,
-			{
-				headers: {
-					Authorization: `Bearer ${token}`,
-					Accept: "application/vnd.github+json",
-					"X-GitHub-Api-Version": "2022-11-28",
-				},
-			},
-		);
-		if (response.status !== 200)
-			throw new Error(
-				`GitHub release runs request failed for ${status}: ${response.status}`,
-			);
-		for (const [index, run] of parseReleaseRuns(
-			await response.json(),
-			status,
-		).entries()) {
-			collectReleaseRunSha12(run, status, index, releaseHeadShas, sha12s);
-		}
-	}
-	return sha12s;
-}
 
 function assertHasWindowIndexTag(
 	plan: RetentionPlan,
@@ -413,6 +348,31 @@ function assertHasWindowIndexTag(
 			"no kept version carries an in-window git index tag; refusing to prune",
 		);
 	}
+}
+
+export function recheckSkipReason(
+	planned: PackageVersion,
+	current: PackageVersion,
+	windowSha12: ReadonlySet<string>,
+	mainSha12: ReadonlySet<string>,
+	pins: Pins,
+	indexChildren: ReadonlyMap<string, ReadonlySet<string>>,
+	now: Date,
+): string | undefined {
+	const plannedTags = [...planned.metadata.container.tags].sort();
+	const currentTags = [...current.metadata.container.tags].sort();
+	if (plannedTags.join("\0") !== currentTags.join("\0")) {
+		return "tag list changed";
+	}
+	const freshPlan = planRetention(
+		[current],
+		windowSha12,
+		mainSha12,
+		pins,
+		indexChildren,
+		now,
+	);
+	return freshPlan.keep[0]?.reason;
 }
 
 async function deleteEligibleVersions(
@@ -447,22 +407,17 @@ async function deleteEligibleVersions(
 			await latest.json(),
 			planned.version.id,
 		);
-		const freshPlan = planRetention(
-			[current],
+		const skipReason = recheckSkipReason(
+			planned.version,
+			current,
 			windowSha12,
 			mainSha12,
 			pins,
 			indexChildren,
 			now,
 		);
-		const changedTags =
-			[...current.metadata.container.tags].sort().join("\0") !==
-			[...planned.version.metadata.container.tags].sort().join("\0");
-		if (changedTags || freshPlan.delete.length === 0) {
-			const reason = changedTags
-				? "tag list changed"
-				: (freshPlan.keep[0]?.reason ?? "no longer eligible for deletion");
-			console.log(`SKIP ${current.name} — ${reason}`);
+		if (skipReason !== undefined) {
+			console.log(`SKIP ${current.name} — ${skipReason}`);
 			continue;
 		}
 		const response = await fetch(versionUrl, {
@@ -483,9 +438,52 @@ async function deleteEligibleVersions(
 	return deleted;
 }
 
-function gitWindow(head: string, limit: number): Set<string> {
-	const commits = gitRevList(["--first-parent", `--max-count=${limit}`, head]);
-	return new Set(commits.map((commit) => commit.slice(0, 12)));
+interface MainCommit {
+	readonly sha: string;
+	readonly committedAt: number;
+}
+
+export function retentionWindow(
+	commits: readonly MainCommit[],
+	now: Date,
+	minimum: number,
+): Set<string> {
+	let recentCount = 0;
+	const threshold = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+	while (recentCount < commits.length) {
+		const commit = commits[recentCount];
+		if (!commit || commit.committedAt < threshold) break;
+		recentCount++;
+	}
+	return new Set(
+		commits
+			.slice(0, Math.max(minimum, recentCount + 50))
+			.map((commit) => commit.sha.slice(0, 12)),
+	);
+}
+
+function firstParentCommits(): MainCommit[] {
+	const result = Bun.spawnSync([
+		"git",
+		"log",
+		"--first-parent",
+		"--format=%H %ct",
+		"HEAD",
+	]);
+	if (result.exitCode !== 0) {
+		throw new Error(`git log failed: ${result.stderr.toString()}`);
+	}
+	return result.stdout
+		.toString()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => {
+			const [sha, timestamp] = line.split(" ");
+			if (!sha || !timestamp || !/^\d+$/.test(timestamp)) {
+				throw new Error("git log returned an invalid first-parent commit row");
+			}
+			return { sha, committedAt: Number(timestamp) * 1000 };
+		});
 }
 
 async function run(): Promise<void> {
@@ -494,20 +492,18 @@ async function run(): Promise<void> {
 	const githubToken = process.env.GITHUB_TOKEN;
 	if (!githubToken) throw new Error("GITHUB_TOKEN is required");
 
-	const windowSha12 = gitWindow("HEAD", window);
-	if (windowSha12.size < window) {
+	const mainCommits = firstParentCommits();
+	if (mainCommits.length < window) {
 		throw new Error(
-			`git history has ${windowSha12.size} first-parent commits; WINDOW=${window}, refusing a shallow/incomplete checkout`,
+			`git history has ${mainCommits.length} first-parent commits; WINDOW=${window}, refusing a shallow/incomplete checkout`,
 		);
 	}
+	const now = new Date();
+	// release-image walks 50 ancestors of its release sha, and a failed release can be re-run for 30 days.
+	const windowSha12 = retentionWindow(mainCommits, now, window);
 	const mainSha12 = new Set(
-		gitRevList(["--first-parent", "HEAD"]).map((commit) => commit.slice(0, 12)),
+		mainCommits.map((commit) => commit.sha.slice(0, 12)),
 	);
-	const mainWindowSha12 = new Set(windowSha12);
-	// release-image walks 50 ancestors of its release sha, so a delayed release keeps its walk.
-	for (const sha12 of await queuedReleaseSha12(githubToken)) {
-		windowSha12.add(sha12);
-	}
 	const [versions, pins, registryToken] = await Promise.all([
 		listVersions(githubToken),
 		readPins(),
@@ -520,7 +516,6 @@ async function run(): Promise<void> {
 		pins,
 		registryToken,
 	);
-	const now = new Date();
 	const plan = planRetention(
 		versions,
 		windowSha12,
@@ -529,7 +524,7 @@ async function run(): Promise<void> {
 		indexChildren,
 		now,
 	);
-	assertHasWindowIndexTag(plan, mainWindowSha12);
+	assertHasWindowIndexTag(plan, windowSha12);
 	if (plan.delete.length > maxDelete) {
 		throw new Error(
 			`planned delete count ${plan.delete.length} exceeds MAX_DELETE=${maxDelete}; refusing to prune`,

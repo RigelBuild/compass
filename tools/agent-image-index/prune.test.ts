@@ -3,6 +3,8 @@ import {
 	type PackageVersion,
 	planRetention,
 	type RetentionPlan,
+	recheckSkipReason,
+	retentionWindow,
 } from "./prune.ts";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
@@ -206,5 +208,110 @@ describe("planRetention", () => {
 
 		expect(plan.keep.map(({ version: item }) => item.id)).toEqual([40]);
 		expect(plan.delete).toHaveLength(0);
+	});
+});
+
+describe("retentionWindow", () => {
+	test("uses the minimum when fewer commits are recent", () => {
+		const commits = Array.from({ length: 300 }, (_, index) => ({
+			sha: `${index.toString(16).padStart(12, "0")}${"a".repeat(28)}`,
+			committedAt: NOW.getTime() - (index < 10 ? 1 : 31 * 24 * 60 * 60 * 1000),
+		}));
+		expect(retentionWindow(commits, NOW, 200)).toHaveLength(200);
+	});
+
+	test("adds 50 commits after 300 recent commits", () => {
+		const commits = Array.from({ length: 400 }, (_, index) => ({
+			sha: `${index.toString(16).padStart(12, "0")}${"b".repeat(28)}`,
+			committedAt: NOW.getTime() - (index < 300 ? 0 : 31 * 24 * 60 * 60 * 1000),
+		}));
+		expect(retentionWindow(commits, NOW, 200)).toHaveLength(350);
+	});
+
+	test("includes commits exactly on the 30-day boundary", () => {
+		const boundary = NOW.getTime() - 30 * 24 * 60 * 60 * 1000;
+		const commits = Array.from({ length: 251 }, (_, index) => ({
+			sha: `${index.toString(16).padStart(12, "0")}${"c".repeat(28)}`,
+			committedAt: index < 151 ? boundary : boundary - 1,
+		}));
+		const window = retentionWindow(commits, NOW, 200);
+		const boundaryCommit = commits[150];
+		expect(window).toHaveLength(201);
+		expect(boundaryCommit && window.has(boundaryCommit.sha.slice(0, 12))).toBe(
+			true,
+		);
+	});
+});
+
+describe("recheckSkipReason", () => {
+	const pins = { digests: new Set([DIGEST_PIN]), tag: LOCK_TAG };
+	const mainSha12 = new Set([WINDOW_SHA, OLD_MAIN_SHA]);
+
+	test("reports a changed tag list", () => {
+		const planned = version({ id: 50, name: `sha256:${"5".repeat(64)}` });
+		const current = version({
+			id: 50,
+			name: planned.name,
+			tags: [`git-${OLD_MAIN_SHA}`],
+		});
+		expect(
+			recheckSkipReason(
+				planned,
+				current,
+				new Set([WINDOW_SHA]),
+				mainSha12,
+				pins,
+				new Map(),
+				NOW,
+			),
+		).toBe("tag list changed");
+	});
+
+	test("returns the keep reason when unchanged tags enter the window", () => {
+		const current = version({
+			id: 51,
+			name: `sha256:${"6".repeat(64)}`,
+			tags: [`git-${OLD_MAIN_SHA}`],
+		});
+		const planned = version({
+			id: 51,
+			name: current.name,
+			tags: [`git-${OLD_MAIN_SHA}`],
+		});
+		expect(
+			recheckSkipReason(
+				planned,
+				current,
+				new Set([WINDOW_SHA, OLD_MAIN_SHA]),
+				mainSha12,
+				pins,
+				new Map(),
+				NOW,
+			),
+		).toBe(`window tag git-${OLD_MAIN_SHA}`);
+	});
+
+	test("allows deletion when tags are unchanged and still out of policy", () => {
+		const current = version({
+			id: 52,
+			name: `sha256:${"7".repeat(64)}`,
+			tags: [`git-${OLD_MAIN_SHA}`],
+		});
+		const planned = version({
+			id: 52,
+			name: current.name,
+			tags: [`git-${OLD_MAIN_SHA}`],
+		});
+		expect(
+			recheckSkipReason(
+				planned,
+				current,
+				new Set([WINDOW_SHA]),
+				mainSha12,
+				pins,
+				new Map(),
+				NOW,
+			),
+		).toBeUndefined();
 	});
 });
