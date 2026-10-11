@@ -15,7 +15,7 @@ func appendAsParticipant(t *testing.T, s *Store, author AccountID, channel Chann
 	t.Helper()
 	m, _, err := s.AppendMessage(t.Context(), Message{
 		AuthorAccountID: author, Blocks: []MessageBlock{textBlock(text)},
-	}, string(channel), TopicRef{Name: "general", Create: true}, "")
+	}, string(channel), TopicRef{Name: testTopic, Create: true}, "")
 	return m, err
 }
 
@@ -71,8 +71,8 @@ func TestChannelParticipantTreeArm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTopics by a subtree agent: %v", err)
 	}
-	if len(topics) != 1 || topics[0].Name != "general" {
-		t.Fatalf("ListTopics by a subtree agent = %+v, want the general topic", topics)
+	if len(topics) != 1 || topics[0].Name != testTopic {
+		t.Fatalf("ListTopics by a subtree agent = %+v, want the %q topic", topics, testTopic)
 	}
 	_, err = s.ListTopics(t.Context(), string(f.sibling.ID), string(f.channel.ID), false)
 	sentinelIs(t, err, ErrNotFound, "ListTopics by an agent outside the subtree")

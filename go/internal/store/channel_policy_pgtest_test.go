@@ -43,7 +43,7 @@ func TestPostMessageOwnerOnlyRejectsNonOwnerInBand(t *testing.T) {
 	}, other.ID)
 	_, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: other.ID, Blocks: []MessageBlock{textBlock("not allowed")},
-	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	sentinelIs(t, err, ErrPermissionDenied, "non-owner post on OWNER_ONLY channel")
 	want := "store: permission denied: channel \"locked\" is owner-only: only its owner can post"
 	if err.Error() != want {
@@ -64,7 +64,7 @@ func TestPostMessageOwnerOnlyOwnerPostLands(t *testing.T) {
 
 	m, inserted, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: owner.ID, Blocks: []MessageBlock{textBlock("owner speaks")},
-	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(owner): %v", err)
 	}

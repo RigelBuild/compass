@@ -65,11 +65,11 @@ func TestMessageReadsKeepAuthorWithoutHandleRow(t *testing.T) {
 
 	// A replayed client_request_id returns the stored row via the request-id read.
 	msg := Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock("replayed")}}
-	first, _, err := s.AppendMessage(ctx, msg, string(ch), TopicRef{Name: "general"}, "crid-1")
+	first, _, err := s.AppendMessage(ctx, msg, string(ch), TopicRef{Name: testTopic}, "crid-1")
 	if err != nil {
 		t.Fatalf("AppendMessage(first): %v", err)
 	}
-	again, inserted, err := s.AppendMessage(ctx, msg, string(ch), TopicRef{Name: "general"}, "crid-1")
+	again, inserted, err := s.AppendMessage(ctx, msg, string(ch), TopicRef{Name: testTopic}, "crid-1")
 	if err != nil || inserted || again.ID != first.ID || again.AuthorHandle != "" {
 		t.Fatalf("AppendMessage(replay) = %+v inserted=%v err=%v, want %s replayed with an empty handle", again, inserted, err, first.ID)
 	}
@@ -91,7 +91,7 @@ func TestMessageAuthorHandleOwnerQualification(t *testing.T) {
 	agentMessage, inserted, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID,
 		Blocks:          []MessageBlock{textBlock("agent note")},
-	}, string(ch), TopicRef{Name: "general", Create: true}, requestID)
+	}, string(ch), TopicRef{Name: testTopic, Create: true}, requestID)
 	if err != nil {
 		t.Fatalf("AppendMessage(agent): %v", err)
 	}
@@ -106,7 +106,7 @@ func TestMessageAuthorHandleOwnerQualification(t *testing.T) {
 	userMessage, inserted, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: owner.ID,
 		Blocks:          []MessageBlock{textBlock("user note")},
-	}, string(ch), TopicRef{Name: "general"}, "")
+	}, string(ch), TopicRef{Name: testTopic}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(user): %v", err)
 	}
@@ -122,7 +122,7 @@ func TestMessageAuthorHandleOwnerQualification(t *testing.T) {
 	askPosted, inserted, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID,
 		Blocks:          []MessageBlock{pendingAsk("owner-qualified-ask", false)},
-	}, string(ch), TopicRef{Name: "general"}, "")
+	}, string(ch), TopicRef{Name: testTopic}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(ask): %v", err)
 	}
@@ -210,7 +210,7 @@ func authorHandleReaders(ctx context.Context, s *Store, owner, author AccountID,
 				message, inserted, err := s.AppendMessage(ctx, Message{
 					AuthorAccountID: author,
 					Blocks:          []MessageBlock{textBlock("agent note")},
-				}, string(ch), TopicRef{Name: "general"}, requestID)
+				}, string(ch), TopicRef{Name: testTopic}, requestID)
 				if err == nil && inserted {
 					return Message{}, errors.New("AppendMessage replay inserted a new row")
 				}
@@ -294,7 +294,7 @@ func TestMessageAuthorHandleEmptyWhenOwnerHandleMissing(t *testing.T) {
 	message, inserted, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: agent.ID,
 		Blocks:          []MessageBlock{textBlock("owner handle unresolved")},
-	}, string(agent.Agent.HomeChannelID), TopicRef{Name: "general", Create: true}, "")
+	}, string(agent.Agent.HomeChannelID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(agent): %v", err)
 	}

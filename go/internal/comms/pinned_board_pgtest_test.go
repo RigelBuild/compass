@@ -16,14 +16,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// pinnableMessage posts a real message under (ch, "general") as author through
+// pinnableMessage posts a real message under (ch, testTopic) as author through
 // the store and returns its id — a valid pin target living in ch. Pins point at
 // existing messages, so the handler tests need genuine message rows.
 func pinnableMessage(t *testing.T, st *store.Store, ch store.ChannelID, author store.AccountID, body string) string {
 	t.Helper()
 	msg, _, err := st.AppendMessage(context.Background(),
 		store.Message{AuthorAccountID: author, Blocks: []store.MessageBlock{{Text: &body}}},
-		string(ch), store.TopicRef{Name: "general", Create: true}, "")
+		string(ch), store.TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%q): %v", body, err)
 	}

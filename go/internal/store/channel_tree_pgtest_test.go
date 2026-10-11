@@ -333,7 +333,7 @@ func TestChannelTreeMembershipModeDoesNotChangeAfterCreate(t *testing.T) {
 	}
 	message, _, err := s.AppendMessage(t.Context(), Message{
 		AuthorAccountID: owner.ID, Blocks: []MessageBlock{textBlock("pin target")},
-	}, string(explicit.ID), TopicRef{Name: "general", Create: true}, "")
+	}, string(explicit.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(explicit): %v", err)
 	}

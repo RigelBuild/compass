@@ -16,6 +16,10 @@ import (
 	"testing"
 )
 
+// testTopic is the topic tests post under when the topic itself is not under
+// test. A test that needs a second topic uses another name, never this literal.
+const testTopic = "general"
+
 // Shared setup helpers, defined once for the package's tests. They fail fast so
 // a test body reads as the behavior under test, not its scaffolding.
 
@@ -83,7 +87,7 @@ func TestRestartDurabilityReadsBackFullGraph(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	wantBlocks := sampleBlocks()
-	msg, _, err := s1.AppendMessage(ctx, Message{AuthorAccountID: user.ID, Blocks: wantBlocks}, string(channel.ID), TopicRef{Name: "general", Create: true}, "req-durable")
+	msg, _, err := s1.AppendMessage(ctx, Message{AuthorAccountID: user.ID, Blocks: wantBlocks}, string(channel.ID), TopicRef{Name: testTopic, Create: true}, "req-durable")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}

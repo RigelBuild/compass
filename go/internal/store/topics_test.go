@@ -122,7 +122,7 @@ func TestListTopicsChannelMembershipGated(t *testing.T) {
 
 	if _, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("hi")},
-	}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -130,8 +130,8 @@ func TestListTopicsChannelMembershipGated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTopics(member): %v", err)
 	}
-	if len(topics) != 1 || topics[0].Name != "general" {
-		t.Fatalf("member ListTopics = %+v, want one general topic", topics)
+	if len(topics) != 1 || topics[0].Name != testTopic {
+		t.Fatalf("member ListTopics = %+v, want one %q topic", topics, testTopic)
 	}
 	if topics[0].Stats != nil {
 		t.Fatalf("ListTopics populated stats = %+v, want nil", topics[0].Stats)
@@ -330,7 +330,7 @@ func TestUpdateTopicUnknownOrNonMemberNotFound(t *testing.T) {
 
 	post, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("hi")},
-	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}

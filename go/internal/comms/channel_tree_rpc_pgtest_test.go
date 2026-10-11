@@ -18,7 +18,7 @@ import (
 func textPost(channelID, text string) *compassv1.PostMessageRequest {
 	return &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
 	}

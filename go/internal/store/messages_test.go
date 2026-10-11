@@ -52,7 +52,7 @@ func TestAppendMessageAssignsIDAndTimestamp(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hello")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hello")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestMessageTurnSequence(t *testing.T) {
 		AuthorAccountID: author.ID,
 		TurnSequence:    7,
 		Blocks:          []MessageBlock{textBlock("turn seven")},
-	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestAppendMessageRejectsTurnSequenceBeyondSignedBigint(t *testing.T) {
 	_, _, err := s.AppendMessage(context.Background(), Message{
 		TurnSequence: uint64(math.MaxInt64) + 1,
 		Blocks:       []MessageBlock{textBlock("out of range")},
-	}, "channel", TopicRef{Name: "general", Create: true}, "")
+	}, "channel", TopicRef{Name: testTopic, Create: true}, "")
 	sentinelIs(t, err, ErrInvalidArgument, "AppendMessage with out-of-range turn sequence")
 }
 
@@ -117,7 +117,7 @@ func TestAppendMessageNoBlocksInvalid(t *testing.T) {
 	s := newTestStore(t)
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
-	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	sentinelIs(t, err, ErrInvalidArgument, "message with no blocks")
 }
 
@@ -129,7 +129,7 @@ func TestAppendMessageUnknownChannelNotFound(t *testing.T) {
 	// and an unknown channel has no members — so both collapse to ErrNotFound
 	// (not-found/forbidden merge), never a hint the channel exists. Pre-gate this
 	// reached the insert and the FK surfaced ErrInvalidArgument.
-	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hi")}}, string("ghost"), TopicRef{Name: "general", Create: true}, "")
+	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hi")}}, string("ghost"), TopicRef{Name: testTopic, Create: true}, "")
 	sentinelIs(t, err, ErrNotFound, "unknown channel")
 }
 
@@ -140,11 +140,11 @@ func TestAppendMessageIdempotency(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// Same non-empty request id + author → the same stored message, no duplicate.
-	first, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("only once")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "req-idem")
+	first, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("only once")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "req-idem")
 	if err != nil {
 		t.Fatalf("AppendMessage(first): %v", err)
 	}
-	second, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("different body, same key")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "req-idem")
+	second, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("different body, same key")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "req-idem")
 	if err != nil {
 		t.Fatalf("AppendMessage(retry): %v", err)
 	}
@@ -160,10 +160,10 @@ func TestAppendMessageIdempotency(t *testing.T) {
 	}
 
 	// An empty request id never dedups: two empty-key appends are two messages.
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("a")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("a")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage(empty key a): %v", err)
 	}
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("b")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("b")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage(empty key b): %v", err)
 	}
 	if got := messageCount(t, ctx, s, ch.ID); got != 3 {
@@ -182,7 +182,7 @@ func TestAppendMessageInsertedFlag(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	_, inserted, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("first")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "req-inserted")
+	_, inserted, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("first")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "req-inserted")
 	if err != nil {
 		t.Fatalf("AppendMessage(first): %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAppendMessageInsertedFlag(t *testing.T) {
 
 	// A retry with the SAME key writes no row: inserted=false, so the handler
 	// suppresses a duplicate MessagePosted.
-	_, inserted, err = s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("retry, same key")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "req-inserted")
+	_, inserted, err = s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("retry, same key")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "req-inserted")
 	if err != nil {
 		t.Fatalf("AppendMessage(retry): %v", err)
 	}
@@ -201,7 +201,7 @@ func TestAppendMessageInsertedFlag(t *testing.T) {
 	}
 
 	// An empty key never dedups: it is always a genuine insert.
-	_, inserted, err = s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("empty key")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	_, inserted, err = s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("empty key")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(empty key): %v", err)
 	}
@@ -300,7 +300,7 @@ func TestAppendMessageMintsAskID(t *testing.T) {
 	// owns the ask_id (comms.proto:278-280); a caller-supplied empty id must be
 	// filled so the ask is addressable by RespondToAsk.
 	empty := askBlockID("")
-	appended, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("choose one"), empty}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "req-mint")
+	appended, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("choose one"), empty}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "req-mint")
 	if err != nil {
 		t.Fatalf("AppendMessage(empty ask id): %v", err)
 	}
@@ -330,7 +330,7 @@ func TestAppendMessageMintsAskID(t *testing.T) {
 	}
 
 	// Case 3: a caller-supplied ask_id is preserved verbatim, never overwritten.
-	supplied, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{askBlockID("ask-fixed-123")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "req-fixed")
+	supplied, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{askBlockID("ask-fixed-123")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "req-fixed")
 	if err != nil {
 		t.Fatalf("AppendMessage(fixed ask id): %v", err)
 	}
@@ -356,7 +356,7 @@ func TestListMessagesNewestFirstAndPaging(t *testing.T) {
 	bodies := []string{"m0", "m1", "m2", "m3"}
 	ids := make([]MessageID, 0, len(bodies))
 	for _, body := range bodies {
-		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}
@@ -405,7 +405,7 @@ func TestListMessagesUnknownCursorInvalid(t *testing.T) {
 	s := newTestStore(t)
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("m")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("m")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	_, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{BeforeMessageID: "not-a-real-id"}})
@@ -500,7 +500,7 @@ func TestUpdateMessageBlocksReplaces(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("original")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("original")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestUpdateMessageBlocksRejectsEmptyAskID(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("original")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("original")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestMessageBlocksRoundTrip(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	want := sampleBlocks()
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: want}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: want}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
@@ -600,15 +600,15 @@ func TestSearchMessages(t *testing.T) {
 	chB := mustNamedChannel(t, s, bob.ID, "room-b")
 
 	// alice posts a matching and a non-matching message in chA.
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: alice.ID, Blocks: []MessageBlock{textBlock("the peregrine falcon dives fast")}}, string(chA.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: alice.ID, Blocks: []MessageBlock{textBlock("the peregrine falcon dives fast")}}, string(chA.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("append match: %v", err)
 	}
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: alice.ID, Blocks: []MessageBlock{textBlock("an unrelated grocery list")}}, string(chA.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: alice.ID, Blocks: []MessageBlock{textBlock("an unrelated grocery list")}}, string(chA.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("append nonmatch: %v", err)
 	}
 	// bob posts a message that also contains "falcon" but in chB, which alice
 	// is not a member of.
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: bob.ID, Blocks: []MessageBlock{textBlock("falcon heavy launch scheduled")}}, string(chB.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: bob.ID, Blocks: []MessageBlock{textBlock("falcon heavy launch scheduled")}}, string(chB.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("append bob: %v", err)
 	}
 
@@ -748,7 +748,7 @@ func TestAnswerAskHappyPath(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -774,7 +774,7 @@ func TestAnswerAskVisibilityCollapse(t *testing.T) {
 
 	// alice posts an ask in a channel bob is not a member of.
 	chA := mustNamedChannel(t, s, actorA.ID, "alice-room")
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: actorA.ID, Blocks: []MessageBlock{pendingAsk("ask-secret", false)}}, string(chA.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: actorA.ID, Blocks: []MessageBlock{pendingAsk("ask-secret", false)}}, string(chA.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -810,7 +810,7 @@ func TestAnswerAskNonexistentNotFound(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 	// A real member with a real message, but no ask carries this id.
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("no ask here")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("no ask here")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	_, _, err := s.AnswerAsk(ctx, author.ID, "ask-ghost", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
@@ -833,7 +833,7 @@ func TestAnswerAskValidation(t *testing.T) {
 	// A single-select ask, a multi-select ask, and a two-question ask, one
 	// message each.
 	for _, b := range []MessageBlock{pendingAsk("ask-single", false), pendingAsk("ask-multi", true), pendingMultiQ("ask-mq")} {
-		if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{b}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+		if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{b}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 			t.Fatalf("AppendMessage(%s): %v", b.Ask.AskID, err)
 		}
 	}
@@ -896,7 +896,7 @@ func TestAnswerAskEmptySkipSatisfiesCoverage(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingMultiQ("ask-mq")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingMultiQ("ask-mq")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -938,7 +938,7 @@ func TestAnswerAskRejectsReAnswer(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -975,7 +975,7 @@ func TestAnswerAskRejectsReAnswerAfterSkip(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-skip", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-skip", false)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1005,7 +1005,7 @@ func TestAnswerAskMultiSelect(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-multi", true)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-multi", true)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1029,7 +1029,7 @@ func TestAnswerAskRejectsDuplicateOption(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-dup", true)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-dup", true)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1066,7 +1066,7 @@ func TestAnswerAskConcurrentDistinctAsksSerialize(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// One message carrying two independent pending asks.
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-x", false), pendingAsk("ask-y", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-x", false), pendingAsk("ask-y", false)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1116,7 +1116,7 @@ func TestAnswerAskConcurrentSameAskOneConflict(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// One message carrying one pending single-select ask (q1: opt-a / opt-b).
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-race", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-race", false)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1201,7 +1201,7 @@ func TestAppendMessageRejectsMalformedAsk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{{Ask: tc.ask}}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+			_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{{Ask: tc.ask}}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 			sentinelIs(t, err, ErrInvalidArgument, tc.name)
 		})
 	}
@@ -1230,7 +1230,7 @@ func TestListMessagesFailsLoudOnZeroQuestionAsk(t *testing.T) {
 	// question/options keys and no "questions" array. marshalBlocks would reject
 	// this, so it is inserted straight into the table to simulate a legacy row.
 	const staleBlocks = `[{"kind":"ask","ask":{"ask_id":"stale-1","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]}}]`
-	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
+	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, testTopic)
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
 		newID(), topicID, string(author.ID), int64(1), staleBlocks, string(s.resolveTenant(ctx)),
@@ -1268,7 +1268,7 @@ func TestListMessagesFailsLoudOnEmptyQuestionID(t *testing.T) {
 	// A stored ask with one question whose question_id is "". Everything else is
 	// valid, so the empty id is the sole corruption.
 	const blankQIDBlocks = `[{"kind":"ask","ask":{"ask_id":"blank-qid-1","questions":[{"question_id":"","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]}]}}]`
-	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
+	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, testTopic)
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
 		newID(), topicID, string(author.ID), int64(1), blankQIDBlocks, string(s.resolveTenant(ctx)),
@@ -1303,7 +1303,7 @@ func TestListMessagesFailsLoudOnDuplicateQuestionID(t *testing.T) {
 	// A stored ask with two questions sharing question_id "dup-1"; each is
 	// otherwise valid, so the shared id is the sole corruption.
 	const dupQIDBlocks = `[{"kind":"ask","ask":{"ask_id":"dup-qid-1","questions":[{"question_id":"dup-1","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]},{"question_id":"dup-1","question":"Which region?","options":[{"id":"opt-b","label":"us-east"}]}]}}]`
-	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
+	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, testTopic)
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
 		newID(), topicID, string(author.ID), int64(1), dupQIDBlocks, string(s.resolveTenant(ctx)),
@@ -1354,7 +1354,7 @@ func TestAnswerAskRecordsCustomText(t *testing.T) {
 			},
 		},
 	}}
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{freeTextAsk}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{freeTextAsk}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1396,7 +1396,7 @@ func TestAnswerAskRejectsOptionPlusCustomTextOnSingleSelect(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// A single-select ask: q1 offers opt-a/opt-b, AllowMultiple=false.
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-single", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-single", false)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1448,7 +1448,7 @@ func TestAppendMessageRejectsRecommendedOutOfRange(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{{Ask: &Ask{AskID: "ask-oob", Questions: []AskQuestion{{
 				QuestionID: "q1", Question: "Which environment?", Options: twoOpts, Recommended: tc.recommended,
-			}}}}}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+			}}}}}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 			sentinelIs(t, err, ErrInvalidArgument, tc.name)
 			if err == nil || !strings.Contains(err.Error(), "recommended index") || !strings.Contains(err.Error(), "out of range") {
 				t.Fatalf("AppendMessage error = %v, want it to name the out-of-range recommended index", err)
@@ -1465,7 +1465,7 @@ func TestAppendMessageRejectsRecommendedOutOfRange(t *testing.T) {
 	// accepted and persists a row.
 	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{{Ask: &Ask{AskID: "ask-in-range", Questions: []AskQuestion{{
 		QuestionID: "q1", Question: "Which environment?", Options: twoOpts, Recommended: ptr(int32(1)),
-	}}}}}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	}}}}}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage(in-range recommended): %v", err)
 	}
 	if n := messageCount(t, ctx, s, ch.ID); n != 1 {

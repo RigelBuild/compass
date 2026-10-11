@@ -100,7 +100,7 @@ func TestPostMessageOwnerOnlyNonOwnerIsPermissionDenied(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-	_, err = svc.PostMessage(WithActor(ctx, other.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
+	_, err = svc.PostMessage(WithActor(ctx, other.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
 	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner post on OWNER_ONLY channel")
 	if got, want := err.Error(), "permission_denied: store: permission denied: channel \"room\" is owner-only: only its owner can post"; !strings.Contains(got, want) {
 		t.Fatalf("error = %q, want message %q", got, want)
@@ -121,7 +121,7 @@ func TestPostMessageOwnerOnlyNonMemberIsNotFound(t *testing.T) {
 	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY, OwnerHandle: owner.Handle})); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-	_, err = svc.PostMessage(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
+	_, err = svc.PostMessage(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
 	connectCodeIs(t, err, connect.CodeNotFound, "non-member post on OWNER_ONLY channel")
 }
 

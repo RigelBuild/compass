@@ -37,7 +37,7 @@ func TestPostAsAccountByNameResolvesVisibleChannel(t *testing.T) {
 
 	resp, err := svc.PostAsAccountByName(ctx, agent.ID, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: "war-room"},
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("named post"),
 	})
@@ -86,7 +86,7 @@ func TestPostAsAccountByNamePreservesTurnSequence(t *testing.T) {
 
 	resp, err := svc.PostAsAccountByName(ctx, agent.ID, &compassv1.PostMessageRequest{
 		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: "war-room"},
-		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic:  true,
 		TurnSequence: 7,
 		Blocks:       textBlocks("turn seven"),
@@ -118,7 +118,7 @@ func TestPostAsAccountByNameUnknownChannelIsNotFound(t *testing.T) {
 
 	_, err := svc.PostAsAccountByName(ctx, agent.ID, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: "no-such-channel"},
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("into the void"),
 	})
@@ -141,7 +141,7 @@ func TestPostAsAccountByNameInvisibleChannelIsNotFound(t *testing.T) {
 
 	_, err := svc.PostAsAccountByName(ctx, agent.ID, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: "private"},
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("sneaking in by name"),
 	})
@@ -170,7 +170,7 @@ func TestPostAsAccountByNameAmbiguousChannelIsInvalidArgument(t *testing.T) {
 
 	_, err := svc.PostAsAccountByName(ctx, agent.ID, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: "dupe"},
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("which dupe?"),
 	})
@@ -191,7 +191,7 @@ func TestPostAsAccountByNameEmptyChannelHasNoHomeDefault(t *testing.T) {
 
 	_, err := svc.PostAsAccountByName(ctx, agent.ID, &compassv1.PostMessageRequest{
 		// No channel name — under R2 this is NOT a home post; it is a miss.
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("no channel named"),
 	})
@@ -222,7 +222,7 @@ func TestListAsAccountByNameEmptyChannelKeepsHomeDefault(t *testing.T) {
 	// Seed one message in the agent's home channel (id-typed post — internal).
 	seed, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(agent.Agent.HomeChannelID)},
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("home seed"),
 	})

@@ -18,14 +18,14 @@ import (
 	"testing"
 )
 
-// mustPinnableMessage appends a real message under (ch, "general") and returns
+// mustPinnableMessage appends a real message under (ch, testTopic) and returns
 // its id — a valid pin target living in ch. Pins point at existing messages, so
 // the tests need genuine message rows (not fabricated ids).
 func mustPinnableMessage(t *testing.T, s *Store, ch ChannelID, author AccountID, body string) MessageID {
 	t.Helper()
 	msg, _, err := s.AppendMessage(context.Background(),
 		Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(body)}},
-		string(ch), TopicRef{Name: "general", Create: true}, "")
+		string(ch), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%q): %v", body, err)
 	}
