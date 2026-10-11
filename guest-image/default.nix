@@ -67,6 +67,9 @@ let
         "Authorization: Bearer QQ=="
       ];
       hash = digest;
+      # A nix-built image's layers embed /nix/store paths, which a fixed-output
+      # fetch may not reference; the blob is opaque bytes here.
+      derivationArgs.unsafeDiscardReferences.out = true;
     }
   ) lockedLayers;
 
