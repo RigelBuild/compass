@@ -233,13 +233,17 @@ func (l *Linear) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 
 // CommentOnIssue posts a comment on issue number in the team keyed by repo. body
 // is PRE-stamped. It resolves the issue UUID from (team, number), then runs
-// commentCreate with createAsUser gated on the actor probe.
-func (l *Linear) CommentOnIssue(ctx context.Context, repo string, number uint64, body string) (Comment, error) {
+// commentCreate with createAsUser gated on the actor probe. A non-empty clientID
+// is sent as the comment id, so a retried create cannot post twice.
+func (l *Linear) CommentOnIssue(ctx context.Context, repo string, number uint64, body, clientID string) (Comment, error) {
 	issueID, err := l.resolveIssueID(ctx, repo, number)
 	if err != nil {
 		return Comment{}, fmt.Errorf("forge: linear comment on issue %q#%d: %w", repo, number, err)
 	}
 	input := map[string]any{"issueId": issueID, "body": body}
+	if clientID != "" {
+		input["id"] = clientID
+	}
 	l.applyAttribution(ctx, input)
 
 	const query = `mutation CompassCommentCreate($input: CommentCreateInput!) {
@@ -256,6 +260,80 @@ func (l *Linear) CommentOnIssue(ctx context.Context, repo string, number uint64,
 		return Comment{}, fmt.Errorf("forge: linear comment on issue %q#%d: %w", repo, number, err)
 	}
 	return out.CommentCreate.Comment.toComment(), nil
+}
+
+// EditComment replaces the body of a Linear comment without create attribution.
+func (l *Linear) EditComment(ctx context.Context, repo, commentKey, body string) (Comment, error) {
+	if commentKey == "" {
+		return Comment{}, fmt.Errorf("forge: linear edit comment %q: %w", commentKey, ErrBadCommentKey)
+	}
+	const query = `mutation CompassCommentUpdate($id: String!, $input: CommentUpdateInput!) {
+  commentUpdate(id: $id, input: $input) {
+    comment { id url body user { displayName } }
+  }
+}`
+	var out struct {
+		CommentUpdate struct {
+			Comment linearComment `json:"comment"`
+		} `json:"commentUpdate"`
+	}
+	vars := map[string]any{"id": commentKey, gqlInputKey: map[string]any{"body": body}}
+	if err := l.doGraphQL(ctx, query, vars, &out); err != nil {
+		return Comment{}, fmt.Errorf("forge: linear edit comment %q: %w", commentKey, err)
+	}
+	return out.CommentUpdate.Comment.toComment(), nil
+}
+
+// DeleteComment is unsupported: a Linear retry reuses its client id, so no
+// duplicate exists to remove.
+func (l *Linear) DeleteComment(context.Context, string, string) error {
+	return ErrUnsupported
+}
+
+// ListCommentsSince returns issue comments created at or after since.
+func (l *Linear) ListCommentsSince(ctx context.Context, repo string, number uint64, since time.Time) ([]Comment, error) {
+	issueID, err := l.resolveIssueID(ctx, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("forge: linear list comments since %q#%d: %w", repo, number, err)
+	}
+	const query = `query CompassCommentsSince($id: String!, $after: String, $since: DateTimeOrDuration!) {
+  issue(id: $id) {
+    comments(first: 50, after: $after, filter: { createdAt: { gte: $since } }) {
+      nodes { id url body user { displayName } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`
+	var all []Comment
+	after := ""
+	for {
+		vars := map[string]any{"id": issueID, "since": since.UTC().Format(time.RFC3339)}
+		if after != "" {
+			vars["after"] = after
+		}
+		var out struct {
+			Issue struct {
+				Comments struct {
+					Nodes    []linearComment `json:"nodes"`
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
+				} `json:"comments"`
+			} `json:"issue"`
+		}
+		if err := l.doGraphQL(ctx, query, vars, &out); err != nil {
+			return nil, fmt.Errorf("forge: linear list comments since %q#%d: %w", repo, number, err)
+		}
+		for _, comment := range out.Issue.Comments.Nodes {
+			all = append(all, comment.toComment())
+		}
+		next := out.Issue.Comments.PageInfo.EndCursor
+		if !out.Issue.Comments.PageInfo.HasNextPage || next == "" {
+			return all, nil
+		}
+		after = next
+	}
 }
 
 // GetIssue fetches one issue by its per-team number in the team keyed by repo.
@@ -405,7 +483,7 @@ func (l *Linear) CreatePullRequest(ctx context.Context, repo string, in CreatePR
 }
 
 // CommentOnPullRequest is unsupported (Linear has no PRs).
-func (l *Linear) CommentOnPullRequest(ctx context.Context, repo string, number uint64, body string) (Comment, error) {
+func (l *Linear) CommentOnPullRequest(ctx context.Context, repo string, number uint64, body, clientID string) (Comment, error) {
 	return Comment{}, ErrUnsupported
 }
 

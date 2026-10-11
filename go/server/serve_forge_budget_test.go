@@ -158,7 +158,7 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 	if resolved.author != forge.Provider(client) {
 		t.Fatal("author role is not the shared primary client (a fresh client would carry a separate budget gate)")
 	}
-	_, err = resolved.author.CommentOnIssue(ctx, "owner/repo", 1, "body")
+	_, err = resolved.author.CommentOnIssue(ctx, "owner/repo", 1, "body", "")
 	if err == nil {
 		t.Fatal("author write after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
 	}

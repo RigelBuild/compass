@@ -830,7 +830,7 @@ func TestCommentOnIssueRequestAndDecode(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
-	got, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "a reply")
+	got, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "a reply", "ignored-client-id")
 	if err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
 	}
@@ -848,6 +848,93 @@ func TestCommentOnIssueRequestAndDecode(t *testing.T) {
 	if got.ID != 555 || got.Body != "a reply" || got.ForgeAccount != "octocat" ||
 		got.URL != "https://github.com/org/repo/issues/7#issuecomment-555" {
 		t.Errorf("decoded Comment = %+v", got)
+	}
+}
+
+func TestGitHubEditComment(t *testing.T) {
+	const response = `{"id":555,"html_url":"https://github.com/org/repo/issues/7#issuecomment-555","body":"edited","user":{"login":"octocat"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: http.StatusOK, body: response}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.EditComment(context.Background(), "org/repo", "555", "edited")
+	if err != nil {
+		t.Fatalf("EditComment: %v", err)
+	}
+	req := rt.requests[0]
+	if req.Method != http.MethodPatch || req.URL.String() != "https://api.github.com/repos/org/repo/issues/comments/555" {
+		t.Fatalf("request = %s %s, want PATCH to comment 555", req.Method, req.URL)
+	}
+	if body := readReqBody(t, req); body != `{"body":"edited"}` {
+		t.Errorf("request body = %q, want edited body", body)
+	}
+	if got.ID != 555 || got.Body != "edited" || got.ForgeAccount != "octocat" {
+		t.Errorf("decoded Comment = %+v", got)
+	}
+}
+
+func TestGitHubDeleteComment(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: http.StatusNoContent}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	if err := g.DeleteComment(context.Background(), "org/repo", "555"); err != nil {
+		t.Fatalf("DeleteComment: %v", err)
+	}
+	req := rt.requests[0]
+	if req.Method != http.MethodDelete || req.URL.String() != "https://api.github.com/repos/org/repo/issues/comments/555" {
+		t.Fatalf("request = %s %s, want DELETE to comment 555", req.Method, req.URL)
+	}
+	if req.Body != nil || req.ContentLength != 0 || req.Header.Get("Content-Type") != "" {
+		t.Errorf("DELETE request body = %v, content length = %d, content type = %q; want no body or Content-Type", req.Body, req.ContentLength, req.Header.Get("Content-Type"))
+	}
+}
+
+func TestGitHubCommentBadKeyDoesNotRequest(t *testing.T) {
+	for _, key := range []string{"abc", "", "1/../x"} {
+		t.Run(key, func(t *testing.T) {
+			for _, operation := range []string{"edit", "delete"} {
+				t.Run(operation, func(t *testing.T) {
+					rt := &scriptedRoundTripper{}
+					g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+					var err error
+					if operation == "edit" {
+						_, err = g.EditComment(context.Background(), "org/repo", key, "body")
+					} else {
+						err = g.DeleteComment(context.Background(), "org/repo", key)
+					}
+					if !errors.Is(err, ErrBadCommentKey) {
+						t.Fatalf("%s comment key %q: err = %v, want ErrBadCommentKey", operation, key, err)
+					}
+					if rt.calls != 0 {
+						t.Fatalf("%s comment key %q issued %d requests, want zero", operation, key, rt.calls)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestGitHubListCommentsSinceWalksPages(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusOK, body: `[{"id":1,"html_url":"one","body":"first","user":{"login":"a"}}]`, headers: map[string]string{
+			"Link": `<https://api.github.com/repos/org/repo/issues/7/comments?page=2>; rel="next"`,
+		}},
+		{status: http.StatusOK, body: `[{"id":2,"html_url":"two","body":"second","user":{"login":"b"}}]`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	since := time.Date(2026, 10, 11, 12, 0, 0, 0, time.FixedZone("offset", 2*60*60))
+
+	got, err := g.ListCommentsSince(context.Background(), "org/repo", 7, since)
+	if err != nil {
+		t.Fatalf("ListCommentsSince: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != 1 || got[0].Body != "first" || got[1].ID != 2 || got[1].Body != "second" {
+		t.Fatalf("comments = %+v, want first then second from both pages", got)
+	}
+	if rt.calls != 2 {
+		t.Fatalf("requests = %d, want both pages", rt.calls)
+	}
+	if value := rt.requests[0].URL.Query().Get("since"); value != "2026-10-11T10:00:00Z" {
+		t.Errorf("since query = %q, want UTC timestamp", value)
 	}
 }
 
@@ -892,7 +979,7 @@ func TestCommentOnPullRequestTargetsIssueComments(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
-	got, err := g.CommentOnPullRequest(context.Background(), "org/repo", 13, "pr note")
+	got, err := g.CommentOnPullRequest(context.Background(), "org/repo", 13, "pr note", "")
 	if err != nil {
 		t.Fatalf("CommentOnPullRequest: %v", err)
 	}
@@ -928,7 +1015,7 @@ func TestWriteErrorMapping(t *testing.T) {
 		}}
 		ts := &fakeTokenSource{token: "t"}
 		g := newTestGitHub(rt, ts)
-		_, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "x")
+		_, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "x", "")
 		se, ok := errors.AsType[*StatusError](err)
 		if !ok || se.Status != 403 {
 			t.Fatalf("err = %v, want *StatusError 403", err)
@@ -977,7 +1064,7 @@ func TestWriteBudgetGateFailFast(t *testing.T) {
 		t.Fatalf("call 1: %v", err)
 	}
 	// Call 2, still before the reset, must fail fast WITHOUT issuing a request.
-	_, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "x")
+	_, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "x", "")
 	if !errors.Is(err, ErrBudgetExhausted) {
 		t.Fatalf("call 2 err = %v, want ErrBudgetExhausted", err)
 	}
@@ -1123,7 +1210,7 @@ func TestGitHubGateConcurrentAccess(t *testing.T) {
 		wg.Go(func() {
 			for range iters {
 				_, _ = g.CreateIssue(ctx, "org/repo", CreateIssue{Title: "x"})
-				_, _ = g.CommentOnIssue(ctx, "org/repo", 7, "x")
+				_, _ = g.CommentOnIssue(ctx, "org/repo", 7, "x", "")
 			}
 		})
 	}

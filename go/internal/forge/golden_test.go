@@ -302,7 +302,7 @@ func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTok
 		case "create_issue":
 			return g.CreateIssue(ctx, req.Repo, CreateIssue{Title: in.Title, Body: in.Body, Labels: in.Labels})
 		case "comment_on_issue":
-			return g.CommentOnIssue(ctx, req.Repo, req.Number, in.Body)
+			return g.CommentOnIssue(ctx, req.Repo, req.Number, in.Body, "")
 		case "get_issue":
 			return g.GetIssue(ctx, req.Repo, req.Number)
 		case "list_issues":
@@ -322,7 +322,7 @@ func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTok
 		case "create_issue":
 			return l.CreateIssue(ctx, req.Repo, CreateIssue{Title: in.Title, Body: in.Body, Labels: in.Labels})
 		case "comment_on_issue":
-			return l.CommentOnIssue(ctx, req.Repo, req.Number, in.Body)
+			return l.CommentOnIssue(ctx, req.Repo, req.Number, in.Body, "")
 		case "get_issue":
 			return l.GetIssue(ctx, req.Repo, req.Number)
 		case "list_issues":

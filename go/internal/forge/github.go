@@ -371,7 +371,8 @@ func (g *GitHub) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 }
 
 // CommentOnIssue posts a comment on issue number in repo. body is PRE-stamped.
-func (g *GitHub) CommentOnIssue(ctx context.Context, repo string, number uint64, body string) (Comment, error) {
+// clientID is ignored: GitHub's comment API has no create-time idempotency key.
+func (g *GitHub) CommentOnIssue(ctx context.Context, repo string, number uint64, body, _ string) (Comment, error) {
 	in := struct {
 		Body string `json:"body"`
 	}{Body: body}
@@ -401,8 +402,8 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR
 
 // CommentOnPullRequest posts a conversation comment on PR number in repo. GitHub
 // models PR conversation comments as issue comments, so this targets the issues
-// comments endpoint. body is PRE-stamped.
-func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number uint64, body string) (Comment, error) {
+// comments endpoint. body is PRE-stamped; clientID is ignored, as above.
+func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number uint64, body, _ string) (Comment, error) {
 	in := struct {
 		Body string `json:"body"`
 	}{Body: body}
@@ -412,6 +413,53 @@ func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number u
 		return Comment{}, fmt.Errorf("forge: github comment on pull request %q#%d: %w", repo, number, err)
 	}
 	return out.toComment(), nil
+}
+
+// EditComment replaces the body of a GitHub issue or pull-request comment.
+func (g *GitHub) EditComment(ctx context.Context, repo, commentKey, body string) (Comment, error) {
+	id, err := strconv.ParseUint(commentKey, 10, 64)
+	if err != nil {
+		return Comment{}, fmt.Errorf("forge: github edit comment %q: %w", commentKey, ErrBadCommentKey)
+	}
+	url := g.apiBase() + "/repos/" + repo + "/issues/comments/" + strconv.FormatUint(id, 10)
+	in := struct {
+		Body string `json:"body"`
+	}{Body: body}
+	var out ghComment
+	if err := g.doJSON(ctx, http.MethodPatch, url, in, &out); err != nil {
+		return Comment{}, fmt.Errorf("forge: github edit comment %q: %w", commentKey, err)
+	}
+	return out.toComment(), nil
+}
+
+// DeleteComment removes a GitHub issue or pull-request comment.
+func (g *GitHub) DeleteComment(ctx context.Context, repo, commentKey string) error {
+	id, err := strconv.ParseUint(commentKey, 10, 64)
+	if err != nil {
+		return fmt.Errorf("forge: github delete comment %q: %w", commentKey, ErrBadCommentKey)
+	}
+	url := g.apiBase() + "/repos/" + repo + "/issues/comments/" + strconv.FormatUint(id, 10)
+	if err := g.doJSON(ctx, http.MethodDelete, url, nil, nil); err != nil {
+		return fmt.Errorf("forge: github delete comment %q: %w", commentKey, err)
+	}
+	return nil
+}
+
+// ListCommentsSince returns every comment on an issue or PR updated at or after
+// since. GitHub filters on updated_at, so this is a superset of those created since.
+func (g *GitHub) ListCommentsSince(ctx context.Context, repo string, number uint64, since time.Time) ([]Comment, error) {
+	base := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10) + "/comments?since=" + url.QueryEscape(since.UTC().Format(time.RFC3339))
+	rows, err := getAllPages[[]ghComment](ctx, g, base, func(comments []ghComment) []Comment {
+		out := make([]Comment, 0, len(comments))
+		for _, comment := range comments {
+			out = append(out, comment.toComment())
+		}
+		return out
+	})
+	if err != nil {
+		return nil, fmt.Errorf("forge: github list comments since %q#%d: %w", repo, number, err)
+	}
+	return rows, nil
 }
 
 // TransitionIssueState moves issue number in repo to in.State via
@@ -968,9 +1016,8 @@ func (g *GitHub) doJSON(ctx context.Context, method, url string, in, out any) er
 // decodes a 2xx response into out. The REST reads use getJSON instead.
 //
 // method is the HTTP verb: the create/comment/review writes and the GraphQL
-// query POST, and the state transitions PATCH. Everything else about the
-// exchange is identical — these calls are unconditional (no If-None-Match), so
-// the verb and the rate bucket are the only axes that vary.
+// query POST, the state transitions and comment edits PATCH, and comment delete
+// DELETE. A nil in sends no body and a nil out skips decoding (a 204 delete).
 func (g *GitHub) doJSONOn(ctx context.Context, resource rateResource, method, url string, in, out any) error {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
@@ -983,18 +1030,23 @@ func (g *GitHub) doJSONOn(ctx context.Context, resource rateResource, method, ur
 		return fmt.Errorf("resolve token: %w", err)
 	}
 
-	payload, err := json.Marshal(in)
-	if err != nil {
-		return fmt.Errorf("marshal request body: %w", err)
+	var body io.Reader
+	if in != nil {
+		payload, err := json.Marshal(in)
+		if err != nil {
+			return fmt.Errorf("marshal request body: %w", err)
+		}
+		body = bytes.NewReader(payload)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := g.client.Do(req)
 	if err != nil {
@@ -1011,12 +1063,14 @@ func (g *GitHub) doJSONOn(ctx context.Context, resource rateResource, method, ur
 	}
 	g.recordBudget(resp, resource)
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read body: %w", err)
-	}
-	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+	if out != nil {
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read body: %w", err)
+		}
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
 	}
 	return nil
 }
