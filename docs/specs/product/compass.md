@@ -529,6 +529,27 @@ the point it joined.
 - **Then** the server streams that frame to the caller, and ends the stream
   cleanly when the client disconnects.
 
+### Requirement: An open batch window reaches the observation pane
+
+When batching is on, the agent holds inbound items in an idle window so a burst
+lands in one turn. The agent SHALL emit a `SessionBatchPending` session event
+each time the window arms or re-arms, and when it fires or is cancelled. `count`
+SHALL be the number of items waiting and `fires_at_unix_ms` the time the window
+fires. A window that fires or is cancelled while the agent runs SHALL emit
+`count` 0 and `fires_at_unix_ms` 0. When the agent ends, its terminal session
+status closes the window instead, and no count-0 event is sent. The event SHALL
+travel the session-event path to `SubscribeAgentSession` subscribers, like any
+other relayed session event. It is live-only, so a subscriber that joins
+mid-window sees no count until the next arm or close.
+
+#### Scenario: A burst arms, re-arms, then fires the window
+
+- **Given** an idle agent with batching on, and a subscriber tailing its
+  session
+- **When** two items arrive within the window, and the window then fires
+- **Then** the subscriber receives `SessionBatchPending` events with counts 1,
+  2, then 0, and each nonzero event carries the time the window fires.
+
 ## The communication layer
 
 `CommsService` is the second `compass.v1` service: the communication layer that

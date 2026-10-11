@@ -20,6 +20,7 @@ import {
 	AgentSessionState,
 	DeliveryAckSchema,
 	ForgeNotificationAckSchema,
+	SessionBatchPendingSchema,
 	SessionErrorKind,
 	SessionErrorSchema,
 	SessionEventSchema,
@@ -692,6 +693,38 @@ test("a SessionInjection rides the Publish PRIORITY sub-lane, never the drop-old
 		event?.case === "sessionInjection" ? event.value.messageId : undefined,
 	).toBe("m-1");
 	// It never touched the loss-tolerable trace lane.
+	expect(traceFrames.length).toBe(0);
+});
+
+test("a batchPending frame rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
+	// A dropped close (count 0) would leave the UI's pending count stale, so the window event
+	// shares the injection's never-drop lane. Non-vacuity: drop the arm → priority 0, trace 1.
+	const { spine, priorityFrames, traceFrames } = spySpine();
+	const sink = createSocketFrameSink(spineTransport(spine));
+	sink.emit({
+		kind: "session",
+		value: create(SessionFrameSchema, {
+			state: AgentSessionState.UNSPECIFIED,
+			typedEvent: create(SessionEventSchema, {
+				event: {
+					case: "batchPending",
+					value: create(SessionBatchPendingSchema, {
+						count: 2,
+						firesAtUnixMs: 10_000n,
+					}),
+				},
+			}),
+		}),
+	});
+	expect(priorityFrames.length).toBe(1);
+	const inner = priorityFrames[0]?.frame?.frame;
+	expect(inner?.case).toBe("session");
+	const event =
+		inner?.case === "session" ? inner.value.typedEvent?.event : undefined;
+	expect(event?.case).toBe("batchPending");
+	expect(event?.case === "batchPending" ? event.value.count : undefined).toBe(
+		2,
+	);
 	expect(traceFrames.length).toBe(0);
 });
 
