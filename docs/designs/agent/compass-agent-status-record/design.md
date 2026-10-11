@@ -236,12 +236,18 @@ be public, so the user decides where it may go (OQ-8).
   key and URL and `done`; exhaustion stores `failed` and the error. A pending
   or failed row is re-driven on the agent's next board write, in that agent's
   tenant context. A refused check marks the row `failed` with no retry.
-- **Lost responses.** A POST can succeed while its response is lost. Every
-  body ends with a hidden marker naming the row id. Before a retry posts, the
-  drive pages every comment on the target created since the row's first
-  attempt and adopts one carrying the marker, then edits it. A per-row lease
-  lets only one drive work a row at a time. The window is
-  bounded by time, not count, so a retry never posts a second comment.
+- **Lost responses.** A POST can succeed while its response is lost. A
+  per-row lease lets only one drive work a row at a time.
+  - **Linear** is exact: `commentCreate` takes a client UUID (`id` on
+    `CommentCreateInput`), derived from the row id, so a retry cannot create
+    a second comment.
+  - **GitHub** has no idempotency key, so delivery is at-least-once with a
+    bounded residue. Every body ends with a hidden marker naming the row id.
+    A retry waits until 2 minutes after the last uncertain POST, then pages
+    every comment since the row's first attempt and adopts one with the
+    marker. A duplicate needs GitHub to make an accepted comment invisible
+    for over 2 minutes. If one appears, the drive keeps the oldest marked
+    comment and deletes the rest.
 - **Link back.** The header names the channel and topic. When `--public-url`
   (`$COMPASS_PUBLIC_URL`, `ServeConfig.PublicURL`) is set, it links the topic
   through `topicLinkFor`, beside `deepLinkFor` in `go/server/deeplink.go`
@@ -1155,6 +1161,7 @@ CREATE TABLE forge_mirrors (
     comment_url       TEXT     NOT NULL DEFAULT '',
     last_error        TEXT     NOT NULL DEFAULT '',
     first_attempt_at  TIMESTAMPTZ,  -- set by the first POST; bounds the marker search
+    last_attempt_at   TIMESTAMPTZ,  -- the latest POST; a GitHub retry waits 2 minutes past it
     lease_until       TIMESTAMPTZ,  -- a Drive holds the row until then
     lease_token       TEXT     NOT NULL DEFAULT '',  -- fences a stale holder
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1172,7 +1179,7 @@ CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE st
 // go/internal/store
 type ForgeMirrorMode int16 // ForgeMirrorOff = 0 (no row), ForgeMirrorManual = 1, ForgeMirrorAuto = 2
 type ForgeMirrorSetting struct { Provider ForgeProvider; Host, Repo string; Mode ForgeMirrorMode }
-type ForgeMirrorRow struct { ID string; Source int16; AskID, SourceKey string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string; FirstAttemptAt *time.Time }
+type ForgeMirrorRow struct { ID string; Source int16; AskID, SourceKey string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string; FirstAttemptAt, LastAttemptAt *time.Time }
 func (s *Store) ForgeMirrorMode(ctx context.Context, p ForgeProvider, host, repo string) (ForgeMirrorMode, error)
 func (s *Store) ListForgeMirrorSettings(ctx context.Context) ([]ForgeMirrorSetting, error) // every enabled subscription; off when no row
 func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set ForgeMirrorSetting) error // off deletes the row
@@ -1193,6 +1200,10 @@ func bumpAskMirror(ctx context.Context, q *db.Queries, askID string) error
 
 // go/internal/forge, Provider gains:
 EditComment(ctx context.Context, repo, commentKey, body string) (Comment, error)
+// DeleteComment removes a duplicate marked comment (GitHub only).
+DeleteComment(ctx context.Context, repo, commentKey string) error
+// CommentOnIssue and CommentOnPullRequest gain an optional clientID; Linear sends it as
+// CommentCreateInput.id (a UUID v5 of the row id), GitHub ignores it.
 // ListCommentsSince pages every comment on an issue or PR created at or after
 // since (GitHub `since`; Linear `comments(filter: {createdAt: {gte}})`).
 ListCommentsSince(ctx context.Context, repo string, number uint64, since time.Time) ([]Comment, error)
@@ -1239,9 +1250,12 @@ type Mirrorer interface {
   ttl that the last renewal granted.
 - `forge_mirrors` gains `first_attempt_at TIMESTAMPTZ`, set by the first
   POST attempt. `mirror.Drive`, before a POST on a row with no `comment_key`
-  and a set `first_attempt_at`, calls `ListCommentsSince` from that time
-  minus one minute (clock skew) and adopts a comment whose body carries
-  `<!-- compass-mirror:<row id> -->`. The renderers append that marker.
+  and a set `first_attempt_at`, waits until `last_attempt_at` plus 2 minutes
+  (GitHub only; a Linear retry reuses the client id). It then calls
+  `ListCommentsSince` from `first_attempt_at` minus one minute (clock skew)
+  and adopts a comment whose body carries `<!-- compass-mirror:<row id> -->`.
+  The renderers append that marker. A drive that finds more than one marked
+  comment keeps the oldest and deletes the rest.
 - `PostMirror` runs `mirrorAllowed`. An agent actor's body is stamped with
   `resolveIdentity` and `forge.StampOwner`; a user actor's header names the
   user. An empty key calls `CommentOnPullRequest` when a `pull_requests` row
@@ -1270,6 +1284,10 @@ Tests:
   `failed`; a board write re-drives a failed row.
 - A POST that succeeds with a lost response is adopted on retry by its marker,
   even after 60 later comments; the forge sees one comment.
+- Linear: a retried create with the same row id yields one comment.
+- GitHub: a comment that becomes visible after the retry's scan is found on
+  the next drive, the newer duplicate is deleted, and the row keeps the
+  oldest.
 - Two concurrent `Drive` calls on one pending row make one POST; an expired
   lease lets a later call adopt the comment by its marker.
 - A drive that runs past the first ttl keeps its lease by renewal; a second
