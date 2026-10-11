@@ -435,6 +435,62 @@ func (s *service) IssueToken(
 	return connect.NewResponse(&compassv1.IssueTokenResponse{Token: token}), nil
 }
 
+// RenameAccount changes an account's handle through the admin-only operator door.
+func (s *service) RenameAccount(
+	ctx context.Context,
+	req *connect.Request[compassv1.RenameAccountRequest],
+) (*connect.Response[compassv1.RenameAccountResponse], error) {
+	raw := req.Msg.GetAccountHandle()
+	newHandle := req.Msg.GetNewHandle()
+	if raw == "" || newHandle == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("account_handle and new_handle are required"))
+	}
+	qh := store.ParseQualifiedHandle(raw)
+	if qh.Malformed() {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("account_handle has invalid qualified-handle syntax"))
+	}
+	var acc store.Account
+	var err error
+	if qh.Qualified() {
+		acc, err = s.resolveQualifiedAgent(ctx, raw)
+	} else if acc, err = s.store.UserByHandle(ctx, raw); err != nil {
+		err = handleLookupError(raw, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if acc.System != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("account %q is the system account and cannot be renamed", raw))
+	}
+
+	renamed, err := s.store.RenameHandle(ctx, acc.ID, newHandle)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrInvalidArgument):
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		case errors.Is(err, store.ErrConflict):
+			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		case errors.Is(err, store.ErrNotFound):
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		default:
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	handle := renamed.Handle
+	if renamed.Agent != nil {
+		owner, err := s.store.GetAccount(ctx, renamed.Agent.OwnerUserID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		handle = owner.Handle + "/" + renamed.Handle
+	}
+	return connect.NewResponse(&compassv1.RenameAccountResponse{
+		AccountId: string(renamed.ID),
+		Handle:    handle,
+	}), nil
+}
+
 // RevokeToken withdraws a bearer token by its presented plaintext (network door,
 // admin-gated by classifyProcedure). The CLI sends the plaintext over the
 // authenticated door and this handler hashes it (auth.RevokeToken → hashToken):

@@ -842,6 +842,93 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 	})
 }
 
+func TestRenameAccountHandlerInputContract(t *testing.T) {
+	ctx := t.Context()
+	st, _, member := newNetworkStore(t)
+	owner, err := st.GetAccount(ctx, member)
+	if err != nil {
+		t.Fatalf("GetAccount(member): %v", err)
+	}
+	agent, err := st.CreateAgent(ctx, member, store.NewAgent{Handle: "rename-agent", DisplayName: "Rename Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent(member/rename-agent): %v", err)
+	}
+	_, err = st.CreateUser(ctx, store.NewUser{Handle: "rename-taken", DisplayName: "Taken"})
+	if err != nil {
+		t.Fatalf("CreateUser(rename-taken): %v", err)
+	}
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	client := newH2CClient(t, newH2CTestServer(t, newService("test", bus, st, nil, nil, nil, nil)))
+
+	resp, err := client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: owner.Handle,
+		NewHandle:     "renamed-member",
+	}))
+	if err != nil || resp.Msg.GetAccountId() != string(member) || resp.Msg.GetHandle() != "renamed-member" {
+		t.Fatalf("RenameAccount(user) = (%+v, %v), want id %q and handle renamed-member", resp, err, member)
+	}
+	resp, err = client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: "renamed-member/rename-agent",
+		NewHandle:     "renamed-agent",
+	}))
+	if err != nil || resp.Msg.GetAccountId() != string(agent.ID) || resp.Msg.GetHandle() != "renamed-member/renamed-agent" {
+		t.Fatalf("RenameAccount(agent) = (%+v, %v), want qualified renamed handle", resp, err)
+	}
+
+	tests := []struct {
+		name string
+		req  *compassv1.RenameAccountRequest
+		code connect.Code
+	}{
+		{
+			name: "conflict maps to AlreadyExists",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: "renamed-member", NewHandle: "rename-taken"},
+			code: connect.CodeAlreadyExists,
+		},
+		{
+			name: "empty handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: "", NewHandle: "valid-name"},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "invalid new handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: "renamed-member", NewHandle: "Bad Handle"},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "qualified new handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: "renamed-member", NewHandle: "other/agent"},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "malformed qualified account handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: "owner/agent/nested", NewHandle: "valid-name"},
+			code: connect.CodeInvalidArgument,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := client.RenameAccount(ctx, connect.NewRequest(tc.req))
+			if got := connect.CodeOf(err); got != tc.code {
+				t.Fatalf("RenameAccount error code = %v, want %v", got, tc.code)
+			}
+		})
+	}
+
+	system, err := st.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureSystemAccount: %v", err)
+	}
+	_, err = client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: system.Handle,
+		NewHandle:     "renamed-system",
+	}))
+	if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
+		t.Fatalf("RenameAccount(system account) = %v, want PermissionDenied", code)
+	}
+}
+
 // TestServeWithListenWritesAdminToken0600: on a --listen start, Serve mints the
 // bootstrap-admin bearer token and persists it under StateDir at mode exactly
 // 0600. The file's token must authenticate as the admin over the network door —

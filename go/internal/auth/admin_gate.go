@@ -46,8 +46,8 @@ func (authenticatedOpen) isPrivilege() {}
 // method as open.
 func classifyProcedure(procedure string) (privilege, bool) {
 	switch procedure {
-	// Privileged CompassService agent-session RPCs + token issuance + container
-	// teardown + fleet config writes: admin only. RemoveAgentWorkspace, PutAgentConfig,
+	// Privileged CompassService agent-session RPCs + token issuance + account rename +
+	// container teardown + fleet config writes: admin only. RemoveAgentWorkspace, PutAgentConfig,
 	// DeleteAgentConfig are operator-scoped; SpawnAgent (composite Provision+Start) is
 	// strictly more powerful, so admin-gated like them (DL-171).
 	case compassv1connect.CompassServiceProvisionAgentWorkspaceProcedure,
@@ -58,6 +58,7 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceReloadAgentSessionProcedure,
 		compassv1connect.CompassServiceGetAgentStatusProcedure,
 		compassv1connect.CompassServiceIssueTokenProcedure,
+		compassv1connect.CompassServiceRenameAccountProcedure,
 		compassv1connect.CompassServiceRevokeTokenProcedure,
 		compassv1connect.CompassServicePutAgentConfigProcedure,
 		compassv1connect.CompassServicePutModelRegistryProcedure,

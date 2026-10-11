@@ -61,6 +61,8 @@ accounts, channels, messages, and their event stream), described in turn below.
   account (the sole public-contract path to a non-bootstrap account's
   credential). Its admin-gated enforcement and token semantics are served by the
   network door (see [The network door](#the-network-door)).
+- **`RenameAccount`** — an admin-only RPC that renames a user or agent in place.
+  Agents keep their owner; a freed handle may be reclaimed.
 
 The event payload is an extensible `oneof` — `ServerStatus` and `ResyncRequired`
 plus the agent-session payloads (`AgentSessionStatus`, `AgentMessageChunk`,
@@ -100,6 +102,39 @@ the only path by which the server pushes state to a UI.
 - **When** the Runner enrolls again and a client calls `GetServerInfo`
 - **Then** the server reports the same Runner id with a higher per-server
   enrollment sequence.
+
+### Requirement: An admin renames a user or agent account in place
+
+`RenameAccount` SHALL resolve a bare user handle or an owner-qualified agent
+handle without viewer-scoped filtering. It SHALL rename the account's resolution
+handle and display copy in one store transaction. The new handle MUST be
+valid and bare; an agent's owner does not change. Unknown accounts return
+`NotFound`, invalid input returns `InvalidArgument`, and a collision in the
+account's handle tier returns `AlreadyExists`. The system account cannot be
+renamed. The response returns the account id and its current address, qualified
+by the owner's current handle for agents. A freed handle is immediately
+available for reuse.
+
+#### Scenario: Rename an account at either handle tier
+
+- **Given** an existing user or an agent addressed as `owner/agent`
+- **When** an admin renames it to a valid bare handle
+- **Then** both handle records change together, the old handle becomes
+  available, and the response returns the new address
+
+#### Scenario: Reject a rename that cannot be applied
+
+- **Given** an admin rename request with an unknown account, invalid new handle,
+  or a handle already taken in that tier
+- **When** the server handles it
+- **Then** it returns `NotFound`, `InvalidArgument`, or `AlreadyExists` as
+  appropriate and leaves both stored handles unchanged
+
+#### Scenario: The admin cannot rename the system account
+
+- **Given** the system account
+- **When** an admin requests a rename
+- **Then** the server returns `PermissionDenied` and retains its handle
 
 ### Requirement: A generated client is the only door to the server
 
@@ -1022,8 +1057,8 @@ webview or a native client).
 ### Requirement: The dev endpoint denies admin-only RPCs
 
 The dev endpoint mounts no bearer interceptor, so it never carries an
-authenticated caller. Its admin-only RPCs (`IssueToken` and the agent-session
-lifecycle RPCs) SHALL therefore fail closed `PermissionDenied`, while the
+authenticated caller. Its admin-only RPCs (`IssueToken`, `RenameAccount`, and the
+agent-session lifecycle RPCs) SHALL therefore fail closed `PermissionDenied`, while the
 authenticated-open RPCs (`GetServerInfo`, `SubscribeEvents`) and the
 ambient-admin comms RPCs remain reachable. This prevents a browser page loaded
 against a configured dev endpoint from minting a bootstrap-admin token via
@@ -1067,9 +1102,9 @@ TLS 1.3.
 The server SHALL authenticate every network-door RPC with a bearer token: a
 request with no token or an unresolvable token SHALL be rejected
 `Unauthenticated`, on both unary and streaming RPCs. The admin-only RPCs
-(`IssueToken` and the agent-session lifecycle RPCs) SHALL additionally require
-the caller to resolve to the admin account, rejecting a non-admin
-`PermissionDenied`; the authenticated-open RPCs (`GetServerInfo`,
+(`IssueToken`, `RenameAccount`, and the agent-session lifecycle RPCs) SHALL
+additionally require the caller to resolve to the admin account, rejecting a
+non-admin `PermissionDenied`; the authenticated-open RPCs (`GetServerInfo`,
 `SubscribeEvents`) SHALL admit any valid bearer.
 
 #### Scenario: A token-less call on the network door is rejected
@@ -1081,7 +1116,7 @@ the caller to resolve to the admin account, rejecting a non-admin
 #### Scenario: A non-admin token calls an admin-only RPC
 
 - **Given** a valid non-admin bearer token
-- **When** the client calls `IssueToken` over the network door
+- **When** the client calls `IssueToken` or `RenameAccount` over the network door
 - **Then** the server rejects it `PermissionDenied`, while the same token on
   `GetServerInfo` succeeds.
 

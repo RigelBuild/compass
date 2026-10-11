@@ -582,6 +582,8 @@ type Querier interface {
 	// even when the previous one was already consumed.
 	RecordStateTransition(ctx context.Context, arg RecordStateTransitionParams) error
 	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
+	RenameAccountDisplayHandle(ctx context.Context, arg RenameAccountDisplayHandleParams) (int64, error)
+	RenameAccountHandle(ctx context.Context, arg RenameAccountHandleParams) (int64, error)
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
 	RequireAgentSessionOwner(ctx context.Context, arg RequireAgentSessionOwnerParams) (bool, error)
 	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)

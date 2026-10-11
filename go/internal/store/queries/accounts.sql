@@ -34,6 +34,16 @@ VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''));
 INSERT INTO account_handles (account_id, handle, owner_user_id)
 VALUES ($1, $2, NULLIF($3, ''));
 
+-- name: RenameAccountHandle :execrows
+UPDATE account_handles
+SET handle = $2
+WHERE account_id = $1;
+
+-- name: RenameAccountDisplayHandle :execrows
+UPDATE accounts
+SET handle = $2
+WHERE id = $1;
+
 -- name: InsertHomeChannel :exec
 INSERT INTO channels (id, name, group_id, kind)
 VALUES ($1, $2, NULL, $3);

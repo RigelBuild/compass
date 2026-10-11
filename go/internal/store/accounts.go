@@ -64,10 +64,18 @@ func insertAccountHandle(ctx context.Context, q *db.Queries, accountID, handle s
 		Handle:    handle,
 		Column3:   string(ownerUserID),
 	}); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			return fmt.Errorf("%w: handle %q already taken", ErrConflict, handle)
+		if mapped := mapAccountHandleUniqueViolation(err, handle); mapped != nil {
+			return mapped
 		}
 		return fmt.Errorf("store: insert account_handle: %w", err)
+	}
+	return nil
+}
+
+// mapAccountHandleUniqueViolation turns a handle unique violation into ErrConflict; nil otherwise.
+func mapAccountHandleUniqueViolation(err error, handle string) error {
+	if pgErrIs(err, pgUniqueViolation) {
+		return fmt.Errorf("%w: handle %q already taken", ErrConflict, handle)
 	}
 	return nil
 }
@@ -507,6 +515,53 @@ func (s *Store) AccountHandle(ctx context.Context, id AccountID) (string, error)
 		return "", fmt.Errorf("store: get account handle: %w", err)
 	}
 	return handle, nil
+}
+
+// RenameHandle changes an account's resolution and display handles atomically.
+// A handle freed by the rename is immediately available for reuse.
+func (s *Store) RenameHandle(ctx context.Context, id AccountID, newHandle string) (Account, error) {
+	if err := validateHandle(newHandle); err != nil {
+		return Account{}, err
+	}
+
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return Account{}, fmt.Errorf("store: begin rename handle: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+
+	currentHandle, err := qtx.GetAccountHandle(ctx, string(id))
+	if err != nil {
+		if noRows(err) {
+			return Account{}, fmt.Errorf("%w: account %q", ErrNotFound, id)
+		}
+		return Account{}, fmt.Errorf("store: get handle before rename: %w", err)
+	}
+	if currentHandle != newHandle {
+		rows, err := qtx.RenameAccountHandle(ctx, db.RenameAccountHandleParams{AccountID: string(id), Handle: newHandle})
+		if err != nil {
+			if mapped := mapAccountHandleUniqueViolation(err, newHandle); mapped != nil {
+				return Account{}, mapped
+			}
+			return Account{}, fmt.Errorf("store: update account handle: %w", err)
+		}
+		if rows == 0 {
+			return Account{}, fmt.Errorf("%w: account %q", ErrNotFound, id)
+		}
+		rows, err = qtx.RenameAccountDisplayHandle(ctx, db.RenameAccountDisplayHandleParams{ID: string(id), Handle: newHandle})
+		if err != nil {
+			return Account{}, fmt.Errorf("store: update account display handle: %w", err)
+		}
+		if rows == 0 {
+			return Account{}, fmt.Errorf("%w: account %q", ErrNotFound, id)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Account{}, fmt.Errorf("store: commit rename handle: %w", err)
+	}
+	return s.GetAccount(ctx, id)
 }
 
 // ResolveOwner resolves a caller to the user account it acts under. It mirrors

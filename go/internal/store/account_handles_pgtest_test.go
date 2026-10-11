@@ -8,9 +8,8 @@ package store
 // are globally unique, agent handles are unique only per owner, an agent handle
 // may overlap a global user handle, and both tiers rename-in-place and reclaim.
 // The uniqueness is enforced by the two partial-unique indexes authored into
-// 0001_init.sql; CreateUser/CreateAgent write the rows, and a rename/reclaim is a
-// direct UPDATE/DELETE against the row (no store rename API exists yet — the
-// forward-looking write path is the index-level UPDATE these tests exercise).
+// 0001_init.sql; CreateUser/CreateAgent write the rows and RenameHandle renames
+// them in place.
 //
 // T2 — AccountsByHandles: owner-qualified and bare resolution, disambiguation by
 // owner, bare-agent defaulting to callerOwner, the atomic all-or-nothing miss
@@ -111,54 +110,52 @@ func TestAgentHandleMayOverlapUserHandle(t *testing.T) {
 	}
 }
 
-// TestHandleRenameInPlaceBothTiers: an in-place rename (UPDATE account_handles)
-// frees the old handle and claims the new one, for both a user (global index)
-// and an agent (per-owner index). Simulates the forward-looking rename write path
-// (no store rename API exists yet) against the resolution index directly.
+// TestHandleRenameInPlaceBothTiers: rename updates both the resolution key and
+// the accounts.handle display copy, while freeing the previous handle.
 func TestHandleRenameInPlaceBothTiers(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 	user := mustUser(t, s, "oldname")
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "old-agent")
 
 	// User rename (global tier).
-	if _, err := s.pool.Exec(ctx,
-		"UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(user.ID), "newname"); err != nil {
-		t.Fatalf("rename user handle: %v", err)
+	got, err := s.RenameHandle(ctx, user.ID, "newname")
+	if err != nil || got.Handle != "newname" {
+		t.Fatalf("RenameHandle(user, newname) = (%+v, %v), want handle newname", got, err)
 	}
 	if _, err := s.UserByHandle(ctx, "oldname"); err == nil {
 		t.Fatal("old user handle still resolves after rename")
 	}
-	got, err := s.UserByHandle(ctx, "newname")
+	got, err = s.UserByHandle(ctx, "newname")
 	if err != nil || got.ID != user.ID {
 		t.Fatalf("UserByHandle(newname) = (%v, %v), want %q", got.ID, err, user.ID)
 	}
+	assertAccountDisplayHandle(t, ctx, s, user.ID, "newname")
 
 	// Agent rename (per-owner tier).
-	if _, err := s.pool.Exec(ctx,
-		"UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(agent.ID), "new-agent"); err != nil {
-		t.Fatalf("rename agent handle: %v", err)
+	gotA, err := s.RenameHandle(ctx, agent.ID, "new-agent")
+	if err != nil || gotA.Handle != "new-agent" {
+		t.Fatalf("RenameHandle(agent, new-agent) = (%+v, %v), want handle new-agent", gotA, err)
 	}
 	if _, err := s.AgentByHandle(ctx, owner.ID, "old-agent"); err == nil {
 		t.Fatal("old agent handle still resolves after rename")
 	}
-	gotA, err := s.AgentByHandle(ctx, owner.ID, "new-agent")
+	gotA, err = s.AgentByHandle(ctx, owner.ID, "new-agent")
 	if err != nil || gotA.ID != agent.ID {
 		t.Fatalf("AgentByHandle(owner, new-agent) = (%v, %v), want %q", gotA.ID, err, agent.ID)
 	}
+	assertAccountDisplayHandle(t, ctx, s, agent.ID, "new-agent")
 }
 
-// TestHandleReclaimBothTiers: a freed handle (rename away) may be re-registered
-// by a NEW account, for both tiers — no tombstone, no reservation.
+// TestHandleReclaimBothTiers: a freed handle may be re-registered at either tier.
 func TestHandleReclaimBothTiers(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 	user := mustUser(t, s, "matt")
 	// Free the user handle by renaming it away, then a new user reclaims "matt".
-	if _, err := s.pool.Exec(ctx,
-		"UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(user.ID), "matt-old"); err != nil {
-		t.Fatalf("rename away: %v", err)
+	if _, err := s.RenameHandle(ctx, user.ID, "matt-old"); err != nil {
+		t.Fatalf("rename user away: %v", err)
 	}
 	reclaimer, err := s.CreateUser(ctx, NewUser{Handle: "matt", DisplayName: "New Matt"})
 	if err != nil {
@@ -168,12 +165,12 @@ func TestHandleReclaimBothTiers(t *testing.T) {
 	if err != nil || got.ID != reclaimer.ID {
 		t.Fatalf("UserByHandle(matt) after reclaim = (%v, %v), want %q", got.ID, err, reclaimer.ID)
 	}
+	assertAccountDisplayHandle(t, ctx, s, user.ID, "matt-old")
 
 	// Agent tier: free `owner/ux`, a new agent reclaims it under the same owner.
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "ux")
-	if _, err := s.pool.Exec(ctx,
-		"UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(agent.ID), "ux-old"); err != nil {
+	if _, err := s.RenameHandle(ctx, agent.ID, "ux-old"); err != nil {
 		t.Fatalf("rename agent away: %v", err)
 	}
 	reAgent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "ux", DisplayName: "New UX"})
@@ -183,6 +180,119 @@ func TestHandleReclaimBothTiers(t *testing.T) {
 	gotA, err := s.AgentByHandle(ctx, owner.ID, "ux")
 	if err != nil || gotA.ID != reAgent.ID {
 		t.Fatalf("AgentByHandle(owner, ux) after reclaim = (%v, %v), want %q", gotA.ID, err, reAgent.ID)
+	}
+	assertAccountDisplayHandle(t, ctx, s, agent.ID, "ux-old")
+}
+
+// TestRenameHandleCollisionsRespectHandleTiers proves conflicts remain local to
+// each namespace and a failed update leaves both accounts unchanged.
+func TestRenameHandleCollisionsRespectHandleTiers(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	createUser := func(handle string) Account {
+		t.Helper()
+		account, err := s.CreateUser(ctx, NewUser{Handle: handle, DisplayName: handle})
+		if err != nil {
+			t.Fatalf("CreateUser(%q): %v", handle, err)
+		}
+		return account
+	}
+	createAgent := func(owner AccountID, handle string) Account {
+		t.Helper()
+		account, err := s.CreateAgent(ctx, owner, NewAgent{Handle: handle, DisplayName: handle})
+		if err != nil {
+			t.Fatalf("CreateAgent(%q): %v", handle, err)
+		}
+		return account
+	}
+	assertBothHandles := func(account Account, want string) {
+		t.Helper()
+		if got, err := s.AccountHandle(ctx, account.ID); err != nil || got != want {
+			t.Fatalf("AccountHandle(%q) = (%q, %v), want %q", account.ID, got, err, want)
+		}
+		assertAccountDisplayHandle(t, ctx, s, account.ID, want)
+	}
+
+	t.Run("user collision rolls back", func(t *testing.T) {
+		user := createUser("user-before")
+		taken := createUser("user-taken")
+		if _, err := s.RenameHandle(ctx, user.ID, taken.Handle); !errors.Is(err, ErrConflict) {
+			t.Fatalf("RenameHandle(user, taken) = %v, want ErrConflict", err)
+		}
+		assertBothHandles(user, "user-before")
+		assertBothHandles(taken, "user-taken")
+	})
+
+	t.Run("same owner agent collision rolls back", func(t *testing.T) {
+		owner := createUser("same-owner")
+		agent := createAgent(owner.ID, "agent-before")
+		sibling := createAgent(owner.ID, "agent-taken")
+		if _, err := s.RenameHandle(ctx, agent.ID, sibling.Handle); !errors.Is(err, ErrConflict) {
+			t.Fatalf("RenameHandle(agent, sibling handle) = %v, want ErrConflict", err)
+		}
+		assertBothHandles(agent, "agent-before")
+		assertBothHandles(sibling, "agent-taken")
+	})
+
+	t.Run("different owner agent handle succeeds", func(t *testing.T) {
+		ownerA := createUser("owner-a")
+		ownerB := createUser("owner-b")
+		agent := createAgent(ownerA.ID, "agent-a")
+		other := createAgent(ownerB.ID, "agent-b")
+		got, err := s.RenameHandle(ctx, agent.ID, other.Handle)
+		if err != nil || got.Handle != other.Handle {
+			t.Fatalf("RenameHandle(agent, different owner handle) = (%+v, %v)", got, err)
+		}
+		assertBothHandles(agent, "agent-b")
+		assertBothHandles(other, "agent-b")
+	})
+
+	t.Run("agent may use user handle", func(t *testing.T) {
+		user := createUser("shared-name")
+		owner := createUser("agent-owner")
+		agent := createAgent(owner.ID, "agent-name")
+		got, err := s.RenameHandle(ctx, agent.ID, user.Handle)
+		if err != nil || got.Handle != user.Handle {
+			t.Fatalf("RenameHandle(agent, user handle) = (%+v, %v)", got, err)
+		}
+		assertBothHandles(user, "shared-name")
+		assertBothHandles(agent, "shared-name")
+	})
+}
+
+// TestRenameHandleRejectsInvalidHandleAndUnknownID checks validation precedes
+// the lookup and valid renames still report missing accounts.
+func TestRenameHandleRejectsInvalidHandleAndUnknownID(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	user := mustUser(t, s, "rename-target")
+	if _, err := s.RenameHandle(ctx, user.ID, "owner/agent"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("RenameHandle(qualified handle) = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := s.RenameHandle(ctx, "missing-account", "valid-name"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("RenameHandle(unknown id) = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRenameHandleCurrentHandleIsNoop(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	user := mustUser(t, s, "same-name")
+	got, err := s.RenameHandle(ctx, user.ID, user.Handle)
+	if err != nil || got.ID != user.ID || got.Handle != user.Handle {
+		t.Fatalf("RenameHandle(current handle) = (%+v, %v), want unchanged account", got, err)
+	}
+	assertAccountDisplayHandle(t, ctx, s, user.ID, user.Handle)
+}
+
+func assertAccountDisplayHandle(t *testing.T, ctx context.Context, s *Store, id AccountID, want string) {
+	t.Helper()
+	var got string
+	if err := s.pool.QueryRow(ctx, "SELECT handle FROM accounts WHERE id = $1", string(id)).Scan(&got); err != nil {
+		t.Fatalf("read accounts.handle for %q: %v", id, err)
+	}
+	if got != want {
+		t.Fatalf("accounts.handle for %q = %q, want %q", id, got, want)
 	}
 }
 

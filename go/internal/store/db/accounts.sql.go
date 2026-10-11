@@ -459,6 +459,44 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, id string) ([]ListVis
 	return items, nil
 }
 
+const renameAccountDisplayHandle = `-- name: RenameAccountDisplayHandle :execrows
+UPDATE accounts
+SET handle = $2
+WHERE id = $1
+`
+
+type RenameAccountDisplayHandleParams struct {
+	ID     string
+	Handle string
+}
+
+func (q *Queries) RenameAccountDisplayHandle(ctx context.Context, arg RenameAccountDisplayHandleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameAccountDisplayHandle, arg.ID, arg.Handle)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renameAccountHandle = `-- name: RenameAccountHandle :execrows
+UPDATE account_handles
+SET handle = $2
+WHERE account_id = $1
+`
+
+type RenameAccountHandleParams struct {
+	AccountID string
+	Handle    string
+}
+
+func (q *Queries) RenameAccountHandle(ctx context.Context, arg RenameAccountHandleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameAccountHandle, arg.AccountID, arg.Handle)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const resolveGlobalHandles = `-- name: ResolveGlobalHandles :many
 SELECT ah.handle, ah.account_id
 FROM account_handles ah
