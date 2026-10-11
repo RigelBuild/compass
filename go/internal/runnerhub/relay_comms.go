@@ -644,7 +644,7 @@ func (h *Hub) RelayCommsCall(
 	if h.comms == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
 	}
-	account, ok := h.accountForRunnerSession(ctx, runnerID, req.GetSessionId())
+	ctx, account, ok := h.runnerSessionAccount(ctx, runnerID, req.GetSessionId())
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
@@ -719,7 +719,8 @@ func (h *Hub) CommitConversationFrame(
 		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	if _, ok := h.accountForRunnerSession(ctx, runnerID, sessionID); !ok {
+	ctx, _, ok := h.runnerSessionAccount(ctx, runnerID, sessionID)
+	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
 		return nil, connect.NewError(
@@ -1025,6 +1026,17 @@ func sameBinding(a, b sessionBinding) bool {
 		return a.version == b.version
 	}
 	return a.lifetime == b.lifetime
+}
+
+// runnerSessionAccount resolves the account bound to sessionID on runnerID under
+// that session's tenant, which the caller must use for every later store call.
+func (h *Hub) runnerSessionAccount(ctx context.Context, runnerID, sessionID string) (context.Context, store.AccountID, bool) {
+	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
+	if !scoped {
+		return ctx, "", false
+	}
+	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
+	return ctx, account, ok
 }
 
 // runnerSessionCtx scopes a Runner-originated ctx to the tenant that binds
