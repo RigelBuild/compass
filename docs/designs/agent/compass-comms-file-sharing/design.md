@@ -28,7 +28,17 @@ Bytes go through the existing `ObjectStore` seam under the content-addressed key
 
 **Local stacks.** Today `openStore` in `go/server/serve.go` sets an object store only for S3: "When the S3 config is ABSENT (no endpoint/bucket) the seam is left nil". `compass-stack` exposes no S3 flags. `serverSpec` in `go/internal/stack/spec.go` passes S3 env to the server only `if cfg.S3Endpoint != ""`. So the default desktop stack has no object store and could not store an attachment.
 
-This record adds `store.DirObjectStore`, a second implementation of the same two-method seam that writes files under a root directory. `compass-server` gains `--object-dir` / `COMPASS_OBJECT_DIR`, used only when S3 is not configured. `serverSpec` passes `--object-dir <StateDir>/objects` when `S3Endpoint` is empty. Session blobs and the transcript archive flush use the same seam, so they also start to work on a local stack. This is OQ-1 option (b); OQ-1 states what changes if Matt picks another option.
+This record adds `store.DirObjectStore`, a second implementation of the same two-method seam that writes files under a root directory. `compass-server` gains `--object-dir` / `COMPASS_OBJECT_DIR`, used only when S3 is not configured. Session blobs and the transcript archive flush use the same seam, so they also start to work on a local stack. This is OQ-1 option (b); OQ-1 states what changes if Matt picks another option.
+
+Every launcher of `compass-server` gets storage as follows:
+
+| Launcher | Storage |
+| --- | --- |
+| `serverSpec` (`go/internal/stack/spec.go`), used by `compass-stack` and so by the compass-app embedded mode | S3 env when `cfg.S3Endpoint != ""`; otherwise T0 adds `--object-dir <StateDir>/objects` |
+| e2e fixture (`go/e2e/fixture.go`) | builds a `stack.Config`, so `serverSpec` applies: garage S3 when `fc.objectStore != nil`, otherwise the object dir |
+| devenv dogfood process (`devenv.nix`, `exec "$bin" --socket …`) | passes no S3 today; T0 adds `--object-dir "${config.devenv.state}/compass/objects"` |
+| flake boot check (`tools/flake-gate/compass-server-secretspec.nix`) | none; it only checks that boot resolves secrets, and it uploads nothing |
+| a self-hosted release binary run by hand | the operator passes S3 flags or `--object-dir`; with neither, upload is FailedPrecondition |
 
 The index is a new table, `comms_attachments`. `agent_session_blobs` cannot carry it: its key is `(session_id, sha256)`, and `session_id REFERENCES agent_sessions ON DELETE RESTRICT`. A UI or CLI upload has no session. The new table:
 
@@ -93,6 +103,8 @@ The bind is the single gate. It has two consequences:
 
 A held post (#2120) or a stale-post refusal (#2136) inserts nothing. The row stays unbound, and a later confirm or re-post binds it.
 
+Fill and bind run inside `AppendMessage`, and fill rewrites the blocks in memory before `insertMessageTx`. So the record adds no block writer. #2139's `TestNoNewMessageBlockWriters` allowlists "exactly `AppendMessage`" among `*Store` methods that take a block-bearing type, and "exactly `InsertMessage` and `UpdateMessageBlocks`" among `db.Querier` methods with a `Blocks` param field. The new store methods take no `Message`, `MessageBlock`, `Ask` or `AskAnswerBlock` parameter, and no new sqlc params struct has a `Blocks` field. If #2139 has landed, the test stays green with both allowlists unchanged. An implementation that seems to need a new block-taking method is out of this record's scope. #2139 states that "a new block-rewrite path needs its own design record".
+
 **Write-path edges** in `go/internal/comms/mapping.go`:
 
 - `blocksFromWire` accepts the arm on POST.
@@ -144,6 +156,18 @@ The socket and dev Comms mount in `go/server/serve.go` sets no read cap: `compas
 
 One file per upload, unary bytes, no streaming, no chunking. This keeps `S3ObjectStore.GetSegment`, which reads the whole object into memory, within a known bound.
 
+**Body-read deadline.** The network door cuts any request body that takes longer than `networkBodyReadTimeout = 30 * time.Second` to arrive. Only the two Runner streams in `bodyDeadlineExempt` are exempt, because the comment assumes every other RPC "carries a small control-plane protobuf". At 30 s, a 15 MiB upload needs about 4 Mbit/s, so a legal upload from a slow link would fail mid-body.
+
+T2 gives two paths a size-scaled deadline: `CommsService/UploadAttachment`, and `RunnerService/RelayCommsCall`, which carries an agent's upload from the Runner.
+
+- The deadline is 30 s plus 1 s per 64 KiB of the request's `Content-Length`, never above 10 minutes.
+- When the length is unknown or above the path's read cap, it uses the read cap: 16 MiB gives 286 s, and 17 MiB (`runnerMaxReadBytes`) gives 302 s.
+- A small call on either path keeps about 30 s. After the first 30 s, the effective floor is 64 KiB/s (512 kbit/s).
+
+Why not state 30 s as a limit: 15 MiB is a legal size, so a legal upload should not depend on link speed above a stated floor. Why not a full exemption: the exempt-set comment records that an unauthenticated drip on an exempt path has no deadline at all. A scaled deadline keeps that window bounded.
+
+The residual risk is the same class as the RIG-1298 follow-up in that comment. The deadline arms before auth, so an unauthenticated client can hold one stream on these paths for up to about 5 minutes. `RelaySessionBlob` already carries 15 MiB under the plain 30 s deadline, and this record leaves it unchanged.
+
 **Unbound-upload bound.** Every failed post after a successful upload leaves an unbound row and an object. Examples: a topic name-miss, a #2120 hold that is never confirmed, a #2136 stale refusal, a non-member channel. The per-file cap does not bound the total. So:
 
 - `UploadAttachment` returns ResourceExhausted when the uploader already holds `maxUnboundAttachments` (8) unbound rows created within `unboundAttachmentWindow` (24 h).
@@ -164,7 +188,8 @@ Per-tenant storage quotas and billing are product policy and are out of scope he
 
 - It resolves a relative `path` against `workdir`. It reads the file, refuses an empty file or one above `MAX_ATTACHMENT_BYTES`, and hashes it.
 - **Id reuse.** A session-local map goes from (absolute path, sha256) to an unbound attachment id, with at most 32 entries (oldest evicted). On a hit, the tool skips the upload. The entry is removed when its post succeeds. If the server reports a cached id as "attachment already posted", the tool drops the entry and uploads once more.
-- On a miss, it sends `upload_attachment`. Then it sends the existing `post` arm with an `attachment` block, plus a `text` block when `text` is set.
+- On a miss, it sends `upload_attachment`. Then it sends the existing `post` arm. With `text` set, the blocks are `[text, attachment]` in that order; otherwise `[attachment]`.
+- The caption is an ordinary text block, so it behaves like any post's text. `mentionHandles` in `go/internal/delivery/consumer.go` parses only `b.GetText()`, so a mention in the caption routes and the filename never mentions anyone. #2120's length cap counts text bytes through `textContent` in `go/internal/store/blocks.go` ("Text bytes cover text blocks and ask question and option text (`textContent` …)"). D2 appends the filename to `textContent`, so the cap counts the caption plus at most 255 filename bytes, and never the file's bytes.
 - The post step uses the same result handling as `comms_post_message`. A #2120 held result stores the request, with the attachment id, under a confirm handle. `compass_message_confirm` re-sends it and binds the same row. A #2136 stale refusal renders the unseen messages and never retries on its own. Without this, a hold reads as "protocol violation — post result carried no message".
 - Post keeps its rules: `channel` and `topic` are required names, there is no home default, and a new topic needs `create_topic: true`.
 - `content_type` defaults from the file extension, else `application/octet-stream`.
@@ -193,6 +218,7 @@ UI:
 - **Browser.** The UI calls `GetAttachment` and always builds the `Blob` as `application/octet-stream`, never the declared type. It clicks a temporary `<a download>` and revokes the object URL right after. It never navigates to or opens a blob URL. A blob URL has the app's origin, so an uploaded `text/html` or `image/svg+xml` opened in place would run script in that origin.
 - **Native.** The WebView has no download support. The compass-app shell gains `fileService.SaveAttachment(attachmentID) (string, error)`.
   - It fetches with `GetAttachment` over the bridge's current connection target (`Target.Client()` "exposes the target's underlying *http.Client and base URL"). The bytes go from Go to disk and never cross the JS bridge.
+  - Embedded mode has no target today: `launch` in `main.go` builds `&connection{mode: cfg.Mode.String(), pump: bridge.NewPump(bridge.NewUnixTarget(socket))}`. T5 keeps `t := bridge.NewUnixTarget(socket)` and stores it as `target: t, pump: bridge.NewPump(t)`. `Connect` stays unavailable in embedded mode: its guard is `conn.target == nil || s.tokens == nil`, and embedded passes nil tokens (`newBridgeService(conn, nil, nil)`).
   - It then opens `app.Dialog.SaveFile()` with the filename and writes the file. It returns `""` when the user cancels.
   - It is registered in every non-setup mode, embedded and client. Today `main.go` adds extra services only `if setup != nil`, and embedded is the default desktop setup.
   - Its file carries the build tag of `dialog_service.go`, `//go:build (linux && gtk4) || darwin`.
@@ -253,12 +279,12 @@ CLI, under `newMessageCmd` in `go/cmd/compass/message.go`:
 
 - **Within this record:** T0 → T1 → T2 → T3 → T4. T5 and T6 need T2. T7 runs last.
 - **#2120 and #2136:** T4 lands after both merge. It reuses their held and stale handling for the attach post. The tool count is two above whatever has landed.
-- **#2139:** if it merges before T2, T2 drops the update-edge check (the path is gone). If not, T2 adds it (D2).
+- **#2139:** if it merges before T2, T2 drops the update-edge check (the path is gone). If not, T2 adds it (D2). Either way, T1 keeps `TestNoNewMessageBlockWriters` green with its allowlists unchanged (D2).
 - **#2078 and #2139:** they own agent arms 13–15. This record's 16 and 17 do not depend on their order.
 
 ### T0 Directory ObjectStore
 
-Add `store.DirObjectStore`, the `--object-dir` flag, the `openStore` branch and the `serverSpec` argument (D1).
+Add `store.DirObjectStore`, the `--object-dir` flag, the `openStore` branch, the `serverSpec` argument, and the devenv.nix argument (D1).
 
 - Keys map to paths under the root.
 - A key that is absolute or contains `..` is an error.
@@ -274,6 +300,7 @@ func (d *DirObjectStore) PutSegment(ctx context.Context, key string, body []byte
 func (d *DirObjectStore) GetSegment(ctx context.Context, key string) ([]byte, error)
 // server: ServeConfig.ObjectDir string — --object-dir / COMPASS_OBJECT_DIR; ignored when S3 is set
 // stack: serverSpec appends "--object-dir", filepath.Join(cfg.StateDir, "objects") when cfg.S3Endpoint == ""
+// devenv.nix compass-server exec: --object-dir "${config.devenv.state}/compass/objects"
 ```
 
 Tests:
@@ -282,7 +309,8 @@ Tests:
 - a traversal key is rejected;
 - putting the same key twice returns the same bytes;
 - `openStore` prefers S3;
-- `serverSpec` adds the flag only without S3.
+- `serverSpec` adds the flag only without S3;
+- the devenv dogfood stack uploads and reads an attachment (a manual smoke check, as devenv has no CI lane).
 
 ### T1 Store
 
@@ -331,6 +359,7 @@ Tests (pgtest):
 - **Setup:**
   - a nil object store → FailedPrecondition;
   - the row is stamped with the caller's tenant.
+- **#2139 pin:** if #2139 has landed, `TestNoNewMessageBlockWriters` passes with its allowlists unchanged.
 
 ### T2 Proto and comms service
 
@@ -340,6 +369,7 @@ Make the `comms.proto` changes and regenerate the Go and public TS outputs. Add:
 - the `blocksFromWire` and `blocksToWire` cases, and the update-edge check unless #2139 has landed;
 - an `edgeError` case `store.ErrResourceExhausted → connect.CodeResourceExhausted`;
 - the read cap on the socket and dev Comms mount in `serve.go` (D4);
+- the size-scaled body deadline in `go/server/network_door.go` (D4);
 - the `AdminGate` entries.
 
 Interfaces:
@@ -362,12 +392,23 @@ func (c *Comms) UploadAttachmentAsAccount(ctx context.Context, account store.Acc
 func (c *Comms) GetAttachmentAsAccount(ctx context.Context, account store.AccountID, req *compassv1.GetAttachmentRequest) (*compassv1.GetAttachmentResponse, error)
 ```
 
+```go
+// go/server/network_door.go
+const maxScaledBodyReadTimeout = 10 * time.Minute
+// path → read cap in bytes: UploadAttachment → siblingServiceMaxReadBytes; RelayCommsCall → agentmsg.MaxBytes + 1<<20
+var bodyDeadlineScaled map[string]int64
+func bodyReadTimeout(path string, contentLength int64, base time.Duration) time.Duration
+```
+
 Tests:
 
 - client-supplied size or type is replaced by the row's values;
 - while the update path exists: an update that adds, drops or changes an attachment id → InvalidArgument, and an unchanged set passes;
 - `TestClassifyProcedureCoversEveryGeneratedProcedure` is green;
-- a socket-door test, like `TestRunnerDoorCapsInboundMessageSize`, shows that a 17 MiB `UploadAttachment` is refused before the handler runs.
+- a socket-door test, like `TestRunnerDoorCapsInboundMessageSize`, shows that a 17 MiB `UploadAttachment` is refused before the handler runs;
+- `bodyReadTimeout` table: a non-scaled path gets the base; a scaled path gets base + 1 s per 64 KiB; unknown length uses the cap; the result never exceeds 10 minutes;
+- a drip test in `network_door_deadline_test.go`, with a 200 ms base: a 1 MiB body dripped over 2 s completes on `UploadAttachment` and is cut on a non-scaled path;
+- a post of `[text "@peer see this", attachment named "@other.log"]` routes a mention to `peer` only.
 
 ### T3 Runner relay
 
@@ -408,6 +449,7 @@ Tests (bun:test, fake broker):
 
 - **Attach:**
   - it sends upload, then post with the returned id;
+  - with `text`, the post's blocks are `[text, attachment]` in that order;
   - an oversize or empty file fails before any call;
   - a retry after a failed post reuses the id and does not upload again;
   - a held result stores the request with the attachment id.
@@ -428,7 +470,8 @@ Add:
 - the `ChannelView` chip;
 - the browser download helper;
 - the native call on the native boot path;
-- `fileService` in `go/cmd/compass-app`, registered in every non-setup mode, with `app` set after `application.New` as `dialog.app` is.
+- `fileService` in `go/cmd/compass-app`, registered in every non-setup mode, with `app` set after `application.New` as `dialog.app` is;
+- `target: t` on the embedded connection in `launch` (D6).
 
 Interfaces:
 
@@ -449,6 +492,8 @@ Tests:
 - a component test that the chip renders;
 - a `text/html` attachment downloads as a `Blob` of type `application/octet-stream`, with no navigation;
 - a Go test for `SaveAttachment` fetches through a fake target and writes 15 MiB through an injected dialog;
+- a Go test for `SaveAttachment` on an embedded-mode connection, built as `launch` builds it, against an h2c test server on a Unix socket;
+- in that embedded test, `Connect` still returns "Connect is not available";
 - a cancel returns `""`.
 
 ### T6 CLI verbs
@@ -480,9 +525,9 @@ An e2e test on the garage fixture:
 
 ## Tasks
 
-- [ ] T0 Directory `ObjectStore`, `--object-dir`, `serverSpec` default.
+- [ ] T0 Directory `ObjectStore`, `--object-dir`, `serverSpec` and devenv.nix defaults.
 - [ ] T1 Store: table, index, RLS, attachment rules, fill/insert/bind, unbound bound, read with `IsTopicChannelMember`, parity test.
-- [ ] T2 Proto and comms service: `AttachmentBlock`, two RPCs, mapping, update edge, `edgeError`, socket read cap, `AdminGate`.
+- [ ] T2 Proto and comms service: `AttachmentBlock`, two RPCs, mapping, update edge, `edgeError`, socket read cap, size-scaled body deadline, `AdminGate`.
 - [ ] T3 Runner relay: arms 16 and 17, `CommsCaller`, `executeCall`, coverage table, fakes.
 - [ ] T4 Agent: two tools, id reuse, held/stale handling, sniffer, fenced markers, docs and counts (after #2120 and #2136).
 - [ ] T5 UI: attachment chip, octet-stream download, native `fileService.SaveAttachment`.
@@ -495,5 +540,5 @@ An e2e test on the garage fixture:
   - **(a) S3 only.** Drop T0. On `compass-stack` and the embedded desktop, every upload returns FailedPrecondition until a follow-up adds storage. Session blobs stay off locally.
   - **(c) Postgres `bytea`.** Replace T0 with a bytes table and a store branch for attachments only. The database grows by every file. Session blobs and the transcript archive stay off locally.
 - **OQ-2, retention and erasure.** Nothing deletes attachments. Unbound rows older than the D4 window stay. **Recommendation:** one follow-up issue that owns GC of unbound rows, erasure and the shared-key sweep, for attachments and session blobs together (DL-426 OQ-1).
-- **OQ-3, UI upload.** This record downloads in the UI but does not upload from it. The issue asks only for operator download. **Recommendation:** keep upload out. Add a composer attach button later if Matt wants it.
-- **OQ-4, files over 15 MiB.** These need streaming or chunking on every hop. **Recommendation:** out of scope until a real case appears.
+- **OQ-3, UI upload.** This record downloads in the UI but does not upload from it. The issue asks for operator download from the UI and the CLI. D6 covers both, and `compass message attach` and `compass message get` give the CLI both directions. **Recommendation:** keep UI upload out. Add a composer attach button later if Matt wants it.
+- **OQ-4, files over 15 MiB.** These need streaming or chunking on every hop. A size-scaled body deadline (D4) also assumes the read caps. **Recommendation:** out of scope until a real case appears.
