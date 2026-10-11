@@ -180,6 +180,8 @@ func TestAgentRepositoryServiceRejectsInvalidRepositories(t *testing.T) {
 	f := newAgentRepositoryFixture(t)
 	for _, tc := range []struct{ name, repository string }{
 		{name: "wildcard", repository: "*"},
+		{name: "wildcard organization", repository: "*/name"},
+		{name: "wildcard repository", repository: "org/*"},
 		{name: "missing slash", repository: "org"},
 		{name: "empty repository", repository: "org/"},
 		{name: "nested path", repository: "a/b/c"},
