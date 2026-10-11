@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -321,8 +322,7 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 // rootSupervisorHandle is the fixed handle the server seeds the first-launch
 // root supervisor under (server/serve_seed.go rootSupervisorHandle). A
 // load-bearing cross-package coupling to that unexported const — the e2e package
-// cannot import server internals, so it mirrors the literal, exactly as
-// classifyEnrollProbe couples to the runnerhub "no runner enrolled" string. If
+// cannot import server internals, so it mirrors the literal. If
 // the server ever renames the seed handle, waitSeedSettled stops resolving the
 // supervisor and its budget-timeout fires legibly rather than silently skipping
 // the gate.
@@ -635,13 +635,10 @@ func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (
 
 // classifyEnrollProbe classifies a StopAgentSession probe result into the
 // enrollment-readiness signal, as a pure function so its branches are unit
-// testable without a live client. A nil error means the Runner is enrolled. The
-// substring "no runner enrolled" is a load-bearing cross-package coupling to the
-// production error raised by routerFor at go/internal/runnerhub/hub.go; only that specific
-// CodeUnavailable condition is treated as not-yet-ready (retry). A CodeUnavailable
-// that does NOT carry that message — a transient transport flap — is intentionally
-// surfaced as fatal rather than retried, which is acceptable for a deterministic
-// e2e readiness gate. Any other error is a real failure surfaced immediately.
+// testable without a live client. A nil error means the Runner is enrolled. Only
+// a CodeUnavailable carrying one of runnerhub's not-ready messages is retried; any
+// other CodeUnavailable (a transport flap) is fatal, which suits a deterministic
+// gate. Any other error is a real failure surfaced immediately.
 func classifyEnrollProbe(err error) (ready bool, retry bool, cerr error) {
 	if err == nil {
 		return true, false, nil
@@ -649,7 +646,7 @@ func classifyEnrollProbe(err error) (ready bool, retry bool, cerr error) {
 	// A runner that enrolled but has not attached its sessions stream yet (or is
 	// reattaching after a restart) is still not ready.
 	if connect.CodeOf(err) == connect.CodeUnavailable &&
-		(strings.Contains(err.Error(), "no runner enrolled") || strings.Contains(err.Error(), "no live runner sessions stream")) {
+		(strings.Contains(err.Error(), runnerhub.ErrMsgNoRunnerEnrolled) || strings.Contains(err.Error(), runnerhub.ErrMsgNoSessionsStream)) {
 		return false, true, nil
 	}
 	return false, false, fmt.Errorf("runner enrollment probe (StopAgentSession): %w", err)

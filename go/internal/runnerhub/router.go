@@ -275,7 +275,7 @@ func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.Ses
 	}
 	if r.sender == nil {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("no live runner sessions stream for command %q", id)
+		return nil, fmt.Errorf("%s for command %q", ErrMsgNoSessionsStream, id)
 	}
 	call := &pendingCall{done: make(chan struct{})}
 	r.inflight[id] = call
@@ -342,7 +342,7 @@ func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sender == nil {
-		return fmt.Errorf("no live runner sessions stream for deliver %q", id)
+		return fmt.Errorf("%s for deliver %q", ErrMsgNoSessionsStream, id)
 	}
 	// Add returns whether it evicted an LRU victim (a bool, not an error); not
 	// actionable — an evicted id is a long-past successful deliver that will
