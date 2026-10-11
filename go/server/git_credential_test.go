@@ -405,6 +405,30 @@ func TestGitCredentialBrokerTransientNarrowedMintDoesNotServeRevokedWiderToken(t
 	}
 }
 
+func TestGitCredentialBrokerTransientNarrowedMintDoesNotServeWildcardToken(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"*"})
+	grants.setRepos("agent-id", []string{"*"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_wildcard", "unused"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, &forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"}},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_wildcard" {
+		t.Fatalf("initial credential = (%q, %v), want wildcard token", tok, ok)
+	}
+
+	grants.setRepos("owner-id", []string{"owner/base"})
+	grants.setRepos("agent-id", []string{"owner/base"})
+	if tok, ok := broker.credential(context.Background(), "agent-id"); ok || tok != "" {
+		t.Fatalf("credential after narrowing and 429 = (%q, %v), want none", tok, ok)
+	}
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls = %d, want wildcard mint and one narrowed attempt", minter.callCount())
+	}
+}
+
 func TestGitCredentialBrokerScopeRejectedWidenedMintUsesOwnerFallback(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
