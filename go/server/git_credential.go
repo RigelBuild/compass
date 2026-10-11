@@ -31,7 +31,10 @@ const (
 	gitCredentialMismatchCache = 5 * time.Minute
 )
 
-var errGitCredentialScopeMismatch = errors.New("GitHub granted repository scope differs from requested scope")
+var (
+	errGitCredentialScopeMismatch = errors.New("GitHub granted repository scope differs from requested scope")
+	errGitCredentialScopeCached   = errors.New("GitHub repository scope recently rejected")
+)
 
 var gitCredentialPermissions = map[string]string{
 	"contents":      "write",
@@ -50,7 +53,7 @@ type gitCredentialStore interface {
 
 // gitCredentialScopeRejected reports a mint failure that repeats for the same set.
 func gitCredentialScopeRejected(err error) bool {
-	if errors.Is(err, errGitCredentialScopeMismatch) {
+	if errors.Is(err, errGitCredentialScopeMismatch) || errors.Is(err, errGitCredentialScopeCached) {
 		return true
 	}
 	if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
@@ -185,7 +188,7 @@ func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent stor
 
 	value, err, _ := b.group.Do(key, func() (any, error) {
 		if b.negativeCredential(key) {
-			return gitCredentialFlightResult{}, nil
+			return gitCredentialFlightResult{}, errGitCredentialScopeCached
 		}
 		if tok, ok := b.cachedCredential(key); ok {
 			return gitCredentialFlightResult{token: tok}, nil
@@ -383,7 +386,7 @@ func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string
 func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previous string) bool {
 	value, err, _ := b.group.Do(key, func() (any, error) {
 		if b.negativeCredential(key) {
-			return gitCredentialFlightResult{}, nil
+			return gitCredentialFlightResult{}, errGitCredentialScopeCached
 		}
 		b.mu.Lock()
 		entry, ok := b.entries[key]
