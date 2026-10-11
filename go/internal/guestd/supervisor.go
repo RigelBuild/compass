@@ -111,7 +111,7 @@ type childExec struct {
 // "signal on an exited exec is a no-op success" case — not actionable, so the
 // error is intentionally dropped.
 func (c *childExec) signalGroup(sig syscall.Signal) {
-	if c.cmd.Process == nil {
+	if c == nil || c.cmd == nil || c.cmd.Process == nil {
 		return
 	}
 	// ESRCH (already-reaped group) is the documented no-op-success case; any
@@ -280,12 +280,7 @@ func (s *supervisor) Provision(
 	return connect.NewResponse(&compassv1internal.ProvisionResponse{}), nil
 }
 
-// Exec runs one command to completion and returns its captured output (§(b)).
-// A non-zero child exit is a SUCCESSFUL response with a non-zero ExitCode, never
-// a handler error; a handler error means the exec could not be attempted or
-// completed (gate closed, uid 0, spawn failure, timeout, or capture overflow).
-// stdin bytes are fed to the child's stdin pipe, never argv, so a script's body
-// never appears in the guest process list.
+// Exec returns 127 for missing programs and 126 when a program cannot execute.
 func (s *supervisor) Exec(
 	ctx context.Context,
 	req *connect.Request[compassv1internal.ExecRequest],
@@ -307,7 +302,17 @@ func (s *supervisor) Exec(
 		defer cancel()
 	}
 
-	cmd, err := s.buildChild(ctx, m.GetCommand(), uid, m.Workdir, m.GetEnv())
+	command := m.GetCommand()
+	if len(command) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("exec command is empty: command[0] is the program"))
+	}
+	mergedEnv := s.mergeEnv(m.GetEnv())
+	if code, stderr, ok := guestExecPrecheck(command, m.Workdir, mergedEnv); ok {
+		return connect.NewResponse(&compassv1internal.ExecResponse{
+			Stderr: []byte(stderr), ExitCode: int32(code), //nolint:gosec // G115: code is the bounded 126/127 exec-start status
+		}), nil
+	}
+	cmd, err := s.buildChild(ctx, command, uid, m.Workdir, m.GetEnv())
 	if err != nil {
 		return nil, err
 	}
@@ -319,6 +324,11 @@ func (s *supervisor) Exec(
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
+		if code, stderr, ok := guestExecStartFailure(command[0], m.Workdir, cmd.Path, err); ok {
+			return connect.NewResponse(&compassv1internal.ExecResponse{
+				Stderr: []byte(stderr), ExitCode: int32(code), //nolint:gosec // G115: code is the bounded 126/127 exec-start status
+			}), nil
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("spawning exec: %w", err))
 	}
 
@@ -355,12 +365,8 @@ func (s *supervisor) Exec(
 	}
 }
 
-// ExecStream runs a long-lived command over one bidi stream (§(b)): the first
-// frame MUST be StartExec; the response stream is ExecStarted first, interleaved
-// stdout/stderr, then exactly one terminal ExecExit emitted from guestd's own
-// reap. stdin frames feed the child's stdin pipe; StdinClose half-closes it.
-// The child is bound to the stream context: if the stream breaks (host
-// disconnect / cancel), guestd SIGKILLs and reaps it so no orphan survives.
+// ExecStream sends 126/127 start failures after ExecStarted. Workdir and
+// interpreter faults are Connect errors before ExecStarted.
 func (s *supervisor) ExecStream(
 	ctx context.Context,
 	stream *connect.BidiStream[compassv1internal.ExecStreamRequest, compassv1internal.ExecStreamResponse],
@@ -383,7 +389,16 @@ func (s *supervisor) ExecStream(
 	if err != nil {
 		return err
 	}
-	cmd, err := s.buildChild(ctx, start.GetCommand(), uid, start.Workdir, start.GetEnv())
+	sendMu := &sync.Mutex{}
+	command := start.GetCommand()
+	if len(command) == 0 {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("exec command is empty: command[0] is the program"))
+	}
+	mergedEnv := s.mergeEnv(start.GetEnv())
+	if code, stderr, ok := guestExecPrecheck(command, start.Workdir, mergedEnv); ok {
+		return s.sendStartFailure(stream, sendMu, nil, code, stderr)
+	}
+	cmd, err := s.buildChild(ctx, command, uid, start.Workdir, start.GetEnv())
 	if err != nil {
 		return err
 	}
@@ -392,17 +407,16 @@ func (s *supervisor) ExecStream(
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("opening stdin pipe: %w", err))
 	}
-	var sendMu sync.Mutex
-	cmd.Stdout = &streamWriter{stream: stream, mu: &sendMu, stdout: true}
-	cmd.Stderr = &streamWriter{stream: stream, mu: &sendMu, stdout: false}
+	cmd.Stdout = &streamWriter{stream: stream, mu: sendMu, stdout: true}
+	cmd.Stderr = &streamWriter{stream: stream, mu: sendMu, stdout: false}
 
-	// Acquire the shared send mutex BEFORE cmd.Start so the child's stdout/stderr
-	// copier goroutines cannot emit an output frame ahead of the mandatory first
-	// ExecStarted frame (§(b)). A fast child (e.g. `echo`) can otherwise win the
-	// mutex first; streamWriter.Write blocks on it until Started has gone out.
+	// The send lock keeps a fast child's output behind its mandatory ExecStarted frame.
 	sendMu.Lock()
 	if err := cmd.Start(); err != nil {
 		sendMu.Unlock()
+		if code, stderr, ok := guestExecStartFailure(command[0], start.Workdir, cmd.Path, err); ok {
+			return s.sendStartFailure(stream, sendMu, cmd, code, stderr)
+		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("spawning exec: %w", err))
 	}
 
@@ -591,18 +605,17 @@ func (s *supervisor) buildChild(ctx context.Context, argv []string, uid uint32, 
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("exec command is empty: command[0] is the program"))
 	}
-	merged := s.mergeEnv(env)
-	prog, resolveErr := resolveProgram(argv[0], merged)
-	if resolveErr != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("resolving exec program %q: %w", argv[0], resolveErr))
-	}
-	// exec.Command resolves a bare argv[0] against guestd's OWN process $PATH,
-	// but guestd is PID 1 with no PATH; override Path with the session-env
-	// resolution above and clear the (now-irrelevant) process-PATH lookup error.
 	// The exec belongs to the provisioned guest session and is stopped explicitly,
 	// so it must survive the RPC context that starts it.
 	cmd := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...) //nolint:gosec // argv is the caller's command by design — this IS the exec surface
+	merged := s.mergeEnv(env)
+	prog, resolveErr := resolveProgram(argv[0], merged, workdir)
+	if resolveErr != nil {
+		return cmd, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("resolving exec program %q: %w", argv[0], resolveErr))
+	}
+	// guestd is PID 1 with no PATH, so use the session-env resolution above and
+	// clear exec.Command's process-PATH lookup error.
 	cmd.Path = prog
 	cmd.Err = nil
 	if workdir != nil {
@@ -624,14 +637,8 @@ func (s *supervisor) buildChild(ctx context.Context, argv []string, uid uint32, 
 // without every caller having to spell out a PATH.
 const defaultGuestPATH = "/bin:/usr/bin:/sbin:/usr/sbin"
 
-// resolveProgram finds the executable for a bare argv[0] using the search PATH
-// carried in the merged session env, NOT guestd's own process env. guestd runs
-// as PID 1 with no PATH, so Go's exec.LookPath (which reads os.Environ) can
-// never resolve a bare command — resolution must honor the session env, the
-// same PATH the child runs with (§(b), the container-image-PATH analog). A name
-// containing a slash is used as given. Returns the resolved path, or an error
-// if no executable is found on the session PATH.
-func resolveProgram(file string, env []string) (string, error) {
+// resolveProgram selects a regular executable from PATH, matching shell lookup.
+func resolveProgram(file string, env []string, workdir *string) (string, error) {
 	if strings.ContainsRune(file, '/') {
 		return file, nil
 	}
@@ -642,21 +649,136 @@ func resolveProgram(file string, env []string) (string, error) {
 			break
 		}
 	}
+	var notExecutable bool
 	for _, dir := range filepath.SplitList(pathEnv) {
 		if dir == "" {
 			dir = "."
 		}
-		if candidate := filepath.Join(dir, file); isExecutable(candidate) {
-			return candidate, nil
+		candidate := filepath.Join(dir, file)
+		if candidate == file {
+			candidate = "." + string(filepath.Separator) + candidate
 		}
+		lookupPath := pathAtGuestWorkdir(candidate, workdir)
+		info, err := os.Stat(lookupPath)
+		// Like a shell PATH search: unreadable entries and directories are skipped.
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			notExecutable = true
+			continue
+		}
+		return candidate, nil
 	}
-	return "", fmt.Errorf("executable file %q not found in $PATH", file)
+	if notExecutable {
+		return "", &os.PathError{Op: "exec", Path: file, Err: syscall.EACCES}
+	}
+	return "", &exec.Error{Name: file, Err: exec.ErrNotFound}
 }
 
-// isExecutable reports whether path is a regular file with an execute bit set.
-func isExecutable(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info != nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+func pathAtGuestWorkdir(path string, workdir *string) string {
+	if workdir != nil && !filepath.IsAbs(path) {
+		return filepath.Join(*workdir, path)
+	}
+	return path
+}
+
+func guestExecPrecheck(argv []string, workdir *string, env []string) (int, string, bool) {
+	if len(argv) == 0 {
+		return 0, "", false
+	}
+	if workdir != nil {
+		if info, err := os.Stat(*workdir); err != nil || !info.IsDir() {
+			return 0, "", false
+		}
+	}
+	program := argv[0]
+	explicit := strings.ContainsRune(program, '/')
+	if explicit {
+		info, err := os.Stat(pathAtGuestWorkdir(program, workdir))
+		if errors.Is(err, syscall.ENOENT) {
+			return guestMissingProgram(program, true)
+		}
+		if err != nil {
+			return 0, "", false
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			return guestNonExecutableProgram(program)
+		}
+		return 0, "", false
+	}
+	if _, err := resolveProgram(program, env, workdir); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return guestMissingProgram(program, false)
+		}
+		if errors.Is(err, syscall.EACCES) || errors.Is(err, os.ErrPermission) {
+			return guestNonExecutableProgram(program)
+		}
+	}
+	return 0, "", false
+}
+
+func guestMissingProgram(program string, explicit bool) (int, string, bool) {
+	if explicit {
+		return 127, fmt.Sprintf("%q: no such file or directory\n", program), true
+	}
+	return 127, fmt.Sprintf("executable file %q not found in $PATH\n", program), true
+}
+
+func guestNonExecutableProgram(program string) (int, string, bool) {
+	return 126, fmt.Sprintf("%q: permission denied / not executable\n", program), true
+}
+
+func guestExecStartFailure(program string, workdir *string, executablePath string, err error) (int, string, bool) {
+	path, ok := errors.AsType[*os.PathError](err)
+	if !ok || path.Op != "fork/exec" || path.Path != executablePath {
+		return 0, "", false
+	}
+	switch {
+	case errors.Is(path.Err, syscall.ENOENT):
+		if workdir != nil {
+			if _, err := os.Stat(*workdir); err != nil {
+				return 0, "", false
+			}
+		}
+		if _, err := os.Stat(pathAtGuestWorkdir(executablePath, workdir)); errors.Is(err, syscall.ENOENT) {
+			return guestMissingProgram(program, strings.ContainsRune(program, '/'))
+		}
+		return 0, "", false
+	case errors.Is(path.Err, syscall.ENOEXEC), errors.Is(path.Err, syscall.EACCES), errors.Is(path.Err, syscall.EPERM):
+		return guestNonExecutableProgram(program)
+	default:
+		return 0, "", false
+	}
+}
+
+func (s *supervisor) sendStartFailure(
+	stream *connect.BidiStream[compassv1internal.ExecStreamRequest, compassv1internal.ExecStreamResponse],
+	sendMu *sync.Mutex,
+	cmd *exec.Cmd,
+	code int,
+	stderr string,
+) error {
+	id := s.register(cmd)
+	defer s.unregister(id)
+	sendMu.Lock()
+	defer sendMu.Unlock()
+	if err := stream.Send(&compassv1internal.ExecStreamResponse{
+		Frame: &compassv1internal.ExecStreamResponse_Started{Started: &compassv1internal.ExecStarted{ExecId: id}},
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending started frame: %w", err))
+	}
+	if err := stream.Send(&compassv1internal.ExecStreamResponse{
+		Frame: &compassv1internal.ExecStreamResponse_Stderr{Stderr: []byte(stderr)},
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending start failure stderr: %w", err))
+	}
+	if err := stream.Send(&compassv1internal.ExecStreamResponse{
+		Frame: &compassv1internal.ExecStreamResponse_Exit{Exit: &compassv1internal.ExecExit{ExitCode: int32(code)}}, //nolint:gosec // G115: code is the bounded 126/127 exec-start status
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending start failure exit: %w", err))
+	}
+	return nil
 }
 
 // initiateStop is the RPC-driven shutdown trigger (§(d)): it SIGTERMs every

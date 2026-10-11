@@ -360,22 +360,16 @@ type WorkloadRuntime interface {
 	// Start starts a created workload.
 	Start(ctx context.Context, id WorkloadID) error
 
-	// Exec runs a command in a running workload, capturing its output. A
-	// non-zero exit is a successful runtime call returning a failed command
-	// (ExecOutput.ExitCode), not an error; only a spawn failure or timeout is an
-	// error.
+	// Missing programs return exit 127; present programs that cannot execute
+	// return 126. Workdir and interpreter faults are backend-specific.
 	Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (ExecOutput, error)
 
-	// ExecStreaming starts a long-lived streaming command in a running
-	// workload, returning its live stdio pipes plus a kill/wait handle rather
-	// than awaiting completion. The transport for the long-running agent
-	// process: its stdout/stderr stay open and are drained as diagnostics for
-	// the process's life (the agent's protocol rides the per-workload socket).
-	// Unlike Exec there is no wall-clock timeout — the process is meant to run
-	// indefinitely — but the exec is still bound to ctx, so cancelling it
-	// terminates the process.
+	// ExecStreaming starts a long-lived streaming command in a running workload,
+	// returning its live stdio pipes and kill/wait handle. Missing programs and
+	// non-executable programs return an exited stream with code 127 or 126.
+	// Other runtime faults return errors.
+	// Cancelling ctx terminates the process.
 	ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error)
-
 	// Stop stops a running workload, allowing timeout for graceful exit before
 	// the backend kills it.
 	Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error

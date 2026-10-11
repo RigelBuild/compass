@@ -457,6 +457,23 @@ func TestGuestExec_Stream_FirstFrameNotStartedIsError(t *testing.T) {
 	}
 }
 
+func TestGuestExec_Stream_EmptyExecIDIsProtocolError(t *testing.T) {
+	ge := serveFakeGuest(t, &fakeGuest{
+		execStreamFn: func(_ context.Context, stream *connect.BidiStream[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse]) error {
+			if _, err := stream.Receive(); err != nil {
+				return err
+			}
+			return stream.Send(&compassv1.ExecStreamResponse{
+				Frame: &compassv1.ExecStreamResponse_Started{Started: &compassv1.ExecStarted{}},
+			})
+		},
+	})
+	gs, err := ge.ExecStream(context.Background(), StreamCall{Command: []string{"true"}})
+	if err == nil || gs != nil {
+		t.Fatalf("ExecStream with empty exec_id returned stream %v and error %v, want protocol error", gs, err)
+	}
+}
+
 // blockingBidiStream is a fake bidiStream whose Receive returns one ExecStarted
 // frame and then blocks until CloseResponse is called. It models the reap-hang
 // preconditions exactly: a guest child that emits nothing (so no exit frame
