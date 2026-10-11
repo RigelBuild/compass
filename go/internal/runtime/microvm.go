@@ -129,27 +129,43 @@ func (m *MicroVMRuntime) AgentImageIrrelevant() bool {
 	return true
 }
 
+// ValidBackend trims and validates a runtime backend name. Empty selects the
+// podman default; the other accepted names select explicit runtime backends.
+func ValidBackend(name string) (string, error) {
+	backend := strings.TrimSpace(name)
+	switch WorkloadTier(backend) {
+	case "", WorkloadTierPodman, WorkloadTierMicroVM, WorkloadTierAppleContainer, WorkloadTierHost:
+		return backend, nil
+	default:
+		return "", fmt.Errorf("runtime: unknown backend %q: accepted values are \"podman\" (default), \"microvm\", \"apple-container\" and \"host\"", name)
+	}
+}
+
 // SelectBackend chooses the workload runtime backend from cfg. An empty or
 // "podman" backend returns the podman CLI runtime; "microvm" returns the
 // microVM runtime; "apple-container" returns the Apple `container` CLI runtime
 // (the macOS arm); "host" returns the direct-host-process runtime (the
-// single-trust-domain tier); any other value is an error naming the unknown
+// single-trust-domain tier). An unknown backend returns an error naming the
 // backend and the accepted values.
 //
 // An unset backend is podman, the permanent self-host entry tier, so it never
 // silently switches an operator onto microVM; microVM is the opt-in that
 // untrusted multi-tenant operation requires.
 func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
-	switch strings.TrimSpace(cfg.Backend) {
-	case "", "podman":
+	backend, err := ValidBackend(cfg.Backend)
+	if err != nil {
+		return nil, err
+	}
+	switch WorkloadTier(backend) {
+	case "", WorkloadTierPodman:
 		return NewPodmanCLI(), nil
-	case "microvm":
+	case WorkloadTierMicroVM:
 		return NewMicroVMRuntime(cfg.MicroVM), nil
-	case "apple-container":
+	case WorkloadTierAppleContainer:
 		return NewAppleContainerCLI(cfg.AppleContainer), nil
-	case "host":
+	case WorkloadTierHost:
 		return NewHostRuntime(defaultHostStateRoot()), nil
-	default:
-		return nil, fmt.Errorf("runtime: unknown backend %q: accepted values are \"podman\" (default), \"microvm\", \"apple-container\" and \"host\"", cfg.Backend)
+	default: // fail closed: an accepted name with no selector must not land on podman
+		return nil, fmt.Errorf("runtime: backend %q is accepted but has no selector", backend)
 	}
 }

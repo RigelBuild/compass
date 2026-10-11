@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/hostcheck"
+	runtimelib "github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // preflight is the T9 host bring-up gate: it surfaces the KVM/podman/microVM and
@@ -71,32 +72,41 @@ func checkBinaryVersion(f hostcheck.VersionFloor) hostcheck.Result {
 	return hostcheck.DecideVersion(f, nil, runErr, string(out))
 }
 
-// runPreflight runs every check, prints a legible pass/fail line per check to
-// stdout, and returns an error naming the failed checks if any failed. A failed
-// check is a legible non-zero exit, never a crash: every check catches the
-// absence of its dependency and reports it.
+// runPreflight runs every check, prints a legible result line per check to
+// stdout, and returns an error naming the hard failures. A failed check is a
+// legible non-zero exit, never a crash: every check catches a missing dependency.
 func runPreflight(args []string) error {
-	// Reject unknown flags legibly, mirroring up/down/status; preflight takes
-	// none today, so any arg is a usage error rather than a silent no-op.
 	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
+	runtimeBackend := fs.String("runtime-backend", "",
+		"Session backend the runner runs agents on ('microvm'). Empty leaves the "+
+			"runner on its own resolution — there is no implicit microVM. "+
+			"Honors $COMPASS_RUNTIME_BACKEND; the flag wins.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	checks := []hostcheck.Result{checkKVM(), checkPodman()}
-	for _, f := range hostcheck.MicroVMFloors {
-		checks = append(checks, checkBinaryVersion(f))
+	if *runtimeBackend == "" {
+		*runtimeBackend = os.Getenv("COMPASS_RUNTIME_BACKEND")
 	}
-	// After the trio so the microVM group stays contiguous and the output order
-	// is stable: secretspec is the server's secrets dependency, not a microVM
-	// userspace binary.
-	checks = append(checks, checkBinaryVersion(hostcheck.SecretSpecFloor))
+	backend, err := runtimelib.ValidBackend(*runtimeBackend)
+	if err != nil {
+		return err
+	}
 
-	var failed []string
-	for _, c := range checks {
-		printCheck(c)
-		if !c.OK {
-			failed = append(failed, c.Name)
+	checks := []preflightCheck{
+		{result: checkKVM(), microVM: true},
+		{result: checkPodman()},
+	}
+	for _, f := range hostcheck.MicroVMFloors {
+		checks = append(checks, preflightCheck{result: checkBinaryVersion(f), microVM: true})
+	}
+	// Keep secretspec after the contiguous microVM group; it is a server
+	// dependency rather than a microVM userspace binary.
+	checks = append(checks, preflightCheck{result: checkBinaryVersion(hostcheck.SecretSpecFloor)})
+
+	lines, failed := preflightLines(backend, checks)
+	for _, line := range lines {
+		if err := printCheckLine(line); err != nil {
+			return err
 		}
 	}
 	if len(failed) > 0 {
@@ -105,13 +115,36 @@ func runPreflight(args []string) error {
 	return nil
 }
 
-// printCheck writes one pass/fail line to stdout. Output is the command's own
-// result, so it goes to stdout (logs go to stderr).
-func printCheck(c hostcheck.Result) {
-	mark := "FAIL"
-	if c.OK {
-		mark = "PASS"
+type preflightCheck struct {
+	result  hostcheck.Result
+	microVM bool
+}
+
+// preflightLines applies backend policy and formats results in check order.
+// Only checks marked as microVM prerequisites become advisory off that backend.
+func preflightLines(backend string, checks []preflightCheck) ([]string, []string) {
+	lines := make([]string, 0, len(checks))
+	var failed []string
+	for _, check := range checks {
+		c := check.result
+		mark := "PASS"
+		if !c.OK {
+			mark = "FAIL"
+			if backend != string(runtimelib.WorkloadTierMicroVM) && check.microVM {
+				mark = "WARN"
+			} else {
+				failed = append(failed, c.Name)
+			}
+		}
+		lines = append(lines, fmt.Sprintf("[%s] %-16s %s", mark, c.Name, c.Detail))
 	}
-	// Best-effort CLI output; a write failure to the terminal is not actionable.
-	_, _ = fmt.Fprintf(os.Stdout, "[%s] %-16s %s\n", mark, c.Name, c.Detail)
+	return lines, failed
+}
+
+// printCheckLine writes one preformatted result to stdout.
+func printCheckLine(line string) error {
+	if _, err := fmt.Fprintln(os.Stdout, line); err != nil {
+		return fmt.Errorf("writing preflight output: %w", err)
+	}
+	return nil
 }
