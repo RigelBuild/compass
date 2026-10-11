@@ -239,7 +239,8 @@ be public, so the user decides where it may go (OQ-8).
 - **Lost responses.** A POST can succeed while its response is lost. Every
   body ends with a hidden marker naming the row id. Before a retry posts, the
   drive pages every comment on the target created since the row's first
-  attempt and adopts one carrying the marker, then edits it. The window is
+  attempt and adopts one carrying the marker, then edits it. A per-row lease
+  lets only one drive work a row at a time. The window is
   bounded by time, not count, so a retry never posts a second comment.
 - **Link back.** The header names the channel and topic. When `--public-url`
   (`$COMPASS_PUBLIC_URL`, `ServeConfig.PublicURL`) is set, it links the topic
@@ -1154,6 +1155,7 @@ CREATE TABLE forge_mirrors (
     comment_url       TEXT     NOT NULL DEFAULT '',
     last_error        TEXT     NOT NULL DEFAULT '',
     first_attempt_at  TIMESTAMPTZ,  -- set by the first POST; bounds the marker search
+    lease_until       TIMESTAMPTZ,  -- a Drive holds the row until then
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id         TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
@@ -1175,6 +1177,9 @@ func (s *Store) ListForgeMirrorSettings(ctx context.Context) ([]ForgeMirrorSetti
 func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set ForgeMirrorSetting) error // off deletes the row
 func (s *Store) ClaimForgeMirror(ctx context.Context, m ForgeMirrorRow) (row ForgeMirrorRow, created bool, err error) // a key conflict returns the stored row
 func (s *Store) OpenForgeMirrors(ctx context.Context, agent AccountID) ([]ForgeMirrorRow, error)
+// LeaseForgeMirror claims a row for one Drive: UPDATE ... SET lease_until = now() + ttl
+// WHERE id = @id AND state <> 2 AND (lease_until IS NULL OR lease_until < now()) RETURNING the row.
+func (s *Store) LeaseForgeMirror(ctx context.Context, id string, ttl time.Duration) (row ForgeMirrorRow, ok bool, err error)
 func (s *Store) MarkForgeMirror(ctx context.Context, id string, postedRev, state int16, commentID uint64, commentKey, url, errText string) error
 // Ask gains RefCoord *ForgeCoord: set by the comms edge from refs.Parse and the configured forges; not stored.
 // private, in AppendMessage's transaction: one row per ask whose RefCoord is in auto mode
@@ -1216,6 +1221,11 @@ type Mirrorer interface {
   `client_request_id`, or by (`source_key`, `target_ref`). Mirroring the same
   topic or message set to the same ref again bumps `body_rev` on that row, so
   the drive edits one comment, whatever the request key.
+- `mirror.Drive` takes each row with `LeaseForgeMirror` (ttl 2 minutes)
+  before it scans or posts, and skips a row it cannot lease. Only one caller
+  works a row at a time, so the post-commit drive and a board-write re-drive
+  never post together. `MarkForgeMirror` clears the lease. A crashed holder's
+  lease expires, and the next caller scans for the marker before it posts.
 - `forge_mirrors` gains `first_attempt_at TIMESTAMPTZ`, set by the first
   POST attempt. `mirror.Drive`, before a POST on a row with no `comment_key`
   and a set `first_attempt_at`, calls `ListCommentsSince` from that time
@@ -1249,6 +1259,8 @@ Tests:
   `failed`; a board write re-drives a failed row.
 - A POST that succeeds with a lost response is adopted on retry by its marker,
   even after 60 later comments; the forge sees one comment.
+- Two concurrent `Drive` calls on one pending row make one POST; an expired
+  lease lets a later call adopt the comment by its marker.
 - A mode turned off before the post marks the row `failed` and posts nothing.
 - A scope refusal marks `failed` without retry, and nothing is posted.
 - A non-admin `SetForgeMirrorSetting` gets `permission_denied`.
