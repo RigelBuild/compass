@@ -180,6 +180,9 @@ type fixtureConfig struct {
 	objectStore *garageFixture
 	// safetyValveCap, when positive, lowers the server's transcript hot-tail cap.
 	safetyValveCap int
+	// externalDSN, when set, points the stack at an already-running postgres
+	// (ExternalDatabase) instead of spawning its own.
+	externalDSN string
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
@@ -288,6 +291,12 @@ func WithSafetyValveCap(n int) fixtureOption {
 	return func(fc *fixtureConfig) { fc.safetyValveCap = n }
 }
 
+// withExternalDatabase points the stack at the running postgres at dsn
+// (ExternalDatabase: true), so Up spawns no postgres of its own.
+func withExternalDatabase(dsn string) fixtureOption {
+	return func(fc *fixtureConfig) { fc.externalDSN = dsn }
+}
+
 // WithForgeStub makes NewFixture stand up the deterministic forge stub backend.
 func WithForgeStub() fixtureOption {
 	return func(fc *fixtureConfig) { fc.forge = true }
@@ -320,10 +329,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	root, stateDir, pgPort := acquireFixtureRoot(tb, ctx, fc)
 	pgSockDir, runtimeDir, serverSock := makeFixtureDirs(tb, root)
 
-	// The DSN host is the socket DIRECTORY postgres -k listens on (libpq unix
-	// convention); the postgres wrapper creates it and binds
-	// SocketDir/.s.PGSQL.<port>.
-	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
+	dsn := fixtureDSN(fc, pgSockDir, pgPort)
 
 	// The server resolves the master key at boot and fails closed, so the fixture
 	// seeds its own provider instead of inheriting one. buildManifest marks every
@@ -381,6 +387,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 		cfg.S3UseTLS = false
 	}
 	cfg.TranscriptSafetyValveCapBytes = fc.safetyValveCap
+	cfg.ExternalDatabase = fc.externalDSN != ""
 
 	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a
 	// models.yml pointing the agent's custom openai-completions provider at it,
@@ -481,6 +488,16 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	}
 
 	return f
+}
+
+// fixtureDSN is the external postgres DSN when one is set. Otherwise it is the
+// stack's own postgres: the host is the socket DIRECTORY postgres -k listens on
+// (libpq unix convention), and the wrapper binds SocketDir/.s.PGSQL.<port>.
+func fixtureDSN(fc fixtureConfig, pgSockDir string, pgPort int) string {
+	if fc.externalDSN != "" {
+		return fc.externalDSN
+	}
+	return "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 }
 
 func acquireFixtureRoot(tb testing.TB, ctx context.Context, fc fixtureConfig) (root, stateDir string, pgPort int) {

@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/pgshare"
 )
 
 // TestMain compiles the three stack child binaries ONCE for the whole
@@ -64,12 +67,49 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	stopPG, err := startSuitePostgres(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e TestMain: %v\n", err)
+		_ = os.RemoveAll(binDir)
+		os.Exit(1)
+	}
+
 	code := m.Run()
 	// Down the shared fixture before exiting: its children hold this binary's
 	// stdout, so leaving them up strands the run in an I/O-incomplete wait.
+	// The suite postgres stops after it, since the shared server holds its store.
 	shutdownShared(ctx)
+	stopPG()
 	_ = os.RemoveAll(binDir)
 	os.Exit(code)
+}
+
+// startSuitePostgres starts the one postgres the shared stack attaches to and
+// records its DSN in shared.pgDSN. Own-stack legs keep their own postgres. The
+// returned stop SIGTERMs it and removes its dirs.
+func startSuitePostgres(ctx context.Context) (func(), error) {
+	stateDir, err := os.MkdirTemp("", "compass-e2e-suite-pg-")
+	if err != nil {
+		return nil, fmt.Errorf("make suite postgres state dir: %w", err)
+	}
+	// The socket path is sun_path-budgeted, so it lives under a short /tmp root.
+	sockDir := filepath.Join("/tmp", "ce"+strconv.Itoa(os.Getpid())+"pg")
+	cleanup := func() {
+		_ = os.RemoveAll(stateDir)
+		_ = os.RemoveAll(sockDir)
+	}
+	ports, err := freeSharedPorts(ctx, 1)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	dsn, stop, err := pgshare.StartSuitePostgresMain(ctx, stateDir, sockDir, ports[0])
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("start suite postgres: %w", err)
+	}
+	shared.pgDSN = dsn
+	return func() { stop(); cleanup() }, nil
 }
 
 // buildStackBinaries compiles the three stack child binaries from the module
