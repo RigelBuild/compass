@@ -115,9 +115,10 @@ resets the window to day 0, and a new window opens on the fix's pinned build:
 6. a `compass.runner.session.starts{backend=podman}` point (a fallback);
 7. a no-data day: no probe result; the day's increase in the
    `compass.microvm.boot.duration{outcome=ok}` histogram count, summed across
-   Runner restarts, below that day's `microvm session booted` lines; or fewer
-   than 15 valid memory samples among the last 20 sessions that stayed up at
-   least 60 s (V7's `pssSampleInterval`, so each saw a tick).
+   Runner restarts, below that day's `microvm session booted` lines; or, once
+   20 sessions have stayed up at least 60 s (V7's `pssSampleInterval`, so each
+   saw a tick), fewer than 15 valid memory samples among the last 20. Until
+   then memory coverage is pending and the window cannot close.
 
 **After certification** the soak keeps running on each new pinned build. A
 reset lapses certification until a window closes clean. A `devenv.lock` or
