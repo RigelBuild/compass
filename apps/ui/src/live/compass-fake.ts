@@ -55,9 +55,13 @@ export interface RecordedSessionSubscribe {
 	aborted: boolean;
 }
 
-/** One recorded StopAgentSession — the whole request is a session id, the
- *  cursor StartAgentSession minted (compass_pb.ts:831-836). */
+/** One recorded StopAgentSession request. */
 export interface RecordedStop {
+	readonly sessionId: string;
+}
+
+/** One recorded SkipBatchWindow request. */
+export interface RecordedSkip {
 	readonly sessionId: string;
 }
 
@@ -70,6 +74,10 @@ export interface FakeCompass {
 	 *  with. Thrown BEFORE the request is recorded is wrong: the UI DID issue it,
 	 *  so it is recorded first and then refused. */
 	failNextStop: (error: Error) => void;
+	/** Every SkipBatchWindow the UI issued, in order. */
+	readonly skips: RecordedSkip[];
+	/** Reject the next SkipBatchWindow after recording it. */
+	failNextSkip: (error: Error) => void;
 	/** The server info GetServerInfo returns — the boot probe reads it into the
 	 *  daemon banner. Set before constructing the store to drive the live path. */
 	serverInfo: { version: string; apiVersion: string; rev: string };
@@ -114,6 +122,8 @@ export interface FakeCompass {
 export function createFakeCompass(): FakeCompass {
 	const stops: RecordedStop[] = [];
 	let stopFailure: Error | undefined;
+	const skips: RecordedSkip[] = [];
+	let skipFailure: Error | undefined;
 	let probeFailure: Error | undefined;
 	let whoAmIFailure: Error | undefined;
 	const serverInfo = {
@@ -146,6 +156,15 @@ export function createFakeCompass(): FakeCompass {
 			if (stopFailure) {
 				const err = stopFailure;
 				stopFailure = undefined;
+				throw err;
+			}
+			return {};
+		},
+		skipBatchWindow: async (req: { sessionId: string }) => {
+			skips.push({ sessionId: req.sessionId });
+			if (skipFailure) {
+				const err = skipFailure;
+				skipFailure = undefined;
 				throw err;
 			}
 			return {};
@@ -206,6 +225,10 @@ export function createFakeCompass(): FakeCompass {
 		// mirroring comms-fake.ts's.
 		client: client as unknown as CompassClient,
 		stops,
+		skips,
+		failNextSkip: (error) => {
+			skipFailure = error;
+		},
 		failNextStop: (error) => {
 			stopFailure = error;
 		},

@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { CompassClient } from "@compass/client";
+import {
+	AgentSessionState,
+	type CompassClient,
+	create,
+	SessionEventSchema,
+	type SessionEvent as WireSessionEvent,
+} from "@compass/client";
 import { fireEvent, render } from "@solidjs/testing-library";
-import { flush, Show } from "solid-js";
+import { createRoot, flush, Show } from "solid-js";
 import { StoreContext } from "../context";
 import { createFakeCompass } from "../live/compass-fake";
 import { type AgentSession, foldSession } from "../session-events";
@@ -84,6 +90,83 @@ const served = (agentId: string, running: boolean): AgentSession => ({
 	events: STUB_SESSION_EVENTS[agentId]?.events ?? [],
 });
 
+const liveBatchPending = (
+	count: number,
+	firesAtUnixMs: bigint,
+): WireSessionEvent =>
+	create(SessionEventSchema, {
+		eventId: `batch-${count}`,
+		atUnixMs: 1n,
+		event: {
+			case: "batchPending",
+			value: { count, firesAtUnixMs },
+		},
+	});
+
+async function settle(until: () => boolean, hops = 200): Promise<void> {
+	for (let i = 0; i < hops && !until(); i++) {
+		await Promise.resolve();
+		flush();
+	}
+}
+test("live pending updates the button and never adds a trace row", async () => {
+	const compass = createFakeCompass();
+	const agentId = "acc-compass-comms";
+	let dispose!: () => void;
+	const store = createRoot((d) => {
+		dispose = d;
+		return createAppStore({
+			queryClient: testQueryClient(),
+			compass: compass.client,
+		});
+	});
+	try {
+		compass.pushSessionStatus(agentId, "sess-live", AgentSessionState.WORKING);
+		await settle(
+			() => store.agentSessionById(agentId)?.sessionId === "sess-live",
+		);
+		store.openAgent(agentId);
+		flush();
+		const { container } = render(() => (
+			<StoreContext value={store}>
+				<ViewContext value={store.focusedView()}>
+					<Show when={store.selectedAgent()} keyed>
+						{(agent) => <LogPanel agent={agent} />}
+					</Show>
+				</ViewContext>
+			</StoreContext>
+		));
+		expect(compass.openSessionTails()).toEqual(["sess-live"]);
+
+		compass.pushSessionFrame("sess-live", {
+			event: liveBatchPending(2, 1_700_000_040_000n),
+		});
+		await settle(
+			() => store.agentSessionById(agentId)?.batchPending?.count === 2,
+		);
+		expect(store.agentSessionById(agentId)?.events).toEqual([]);
+		expect(container.querySelector(".obs-start")?.textContent).toBe(
+			"Start now (2 · 22:14)",
+		);
+		// Asserts both values that should appear in the live label.
+		expect(store.agentSessionById(agentId)?.batchPending).toEqual({
+			count: 2,
+			firesAtMs: 1_700_000_040_000,
+		});
+		expect(container.querySelectorAll(".obs-trace > *")).toHaveLength(0);
+
+		compass.pushSessionFrame("sess-live", { event: liveBatchPending(0, 0n) });
+		await settle(
+			() => store.agentSessionById(agentId)?.batchPending === undefined,
+		);
+		expect(container.querySelector(".obs-start")?.textContent).toBe(
+			"Start now",
+		);
+		expect(container.querySelectorAll(".obs-trace > *")).toHaveLength(0);
+	} finally {
+		dispose();
+	}
+});
 describe("LogPanel (T-U2)", () => {
 	// Contract: an agent with a session renders its TYPED trace. The fold must
 	// have run — the ~10 one-word streaming deltas coalesce into ONE `.block-text`
@@ -253,6 +336,83 @@ describe("LogPanel (T-U2)", () => {
 		expect(alert).not.toBeNull();
 		expect(alert?.getAttribute("role")).toBe("alert");
 		expect(alert?.textContent).toMatch(/fixture data/);
+	});
+	describe("Start now", () => {
+		test("shows pending count and fire time, and stays enabled without pending state", () => {
+			const agentId = "acc-compass-server";
+			const pendingSession = {
+				...served(agentId, true),
+				batchPending: { count: 2, firesAtMs: 1_700_000_040_000 },
+			};
+			const { container } = mountLogPanel(agentId, {
+				[agentId]: pendingSession,
+			});
+			const start = container.querySelector<HTMLButtonElement>(".obs-start");
+			expect(start).not.toBeNull();
+			expect(start?.textContent).toBe("Start now (2 · 22:14)");
+			expect(start?.disabled).toBe(false);
+		});
+
+		test("issues one SkipBatchWindow for the observed session on click", async () => {
+			const compass = createFakeCompass();
+			const agentId = "acc-compass-server";
+			const { container } = mountLogPanel(
+				agentId,
+				{ [agentId]: served(agentId, true) },
+				compass.client,
+			);
+			const start = container.querySelector<HTMLButtonElement>(".obs-start");
+			if (!start) throw new Error("Start now control not rendered");
+			expect(start.disabled).toBe(false);
+
+			fireEvent.click(start);
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(compass.skips).toEqual([{ sessionId: "sess-7" }]);
+		});
+
+		test("a refused Start now renders its message beside the control", async () => {
+			const compass = createFakeCompass();
+			const agentId = "acc-compass-server";
+			const { container } = mountLogPanel(
+				agentId,
+				{ [agentId]: served(agentId, true) },
+				compass.client,
+			);
+			compass.failNextSkip(new Error("[unavailable] refused"));
+			const start = container.querySelector<HTMLButtonElement>(".obs-start");
+			if (!start) throw new Error("Start now control not rendered");
+
+			fireEvent.click(start);
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const alert = container.querySelector(".obs-head .obs-error");
+			expect(alert?.getAttribute("role")).toBe("alert");
+			expect(alert?.textContent).toContain("unavailable");
+		});
+
+		test("fixture session disables Start now with a reason", () => {
+			const { container } = mountLogPanel("acc-compass-server");
+			const start = container.querySelector<HTMLButtonElement>(".obs-start");
+			expect(start?.disabled).toBe(true);
+			expect(start?.title).toMatch(/fixture data/);
+		});
+	});
+	test("a zero pending count clears the label and the running button stays enabled", () => {
+		const agentId = "acc-compass-server";
+		const { container, store } = mountLogPanel(agentId, {
+			[agentId]: {
+				...served(agentId, true),
+				batchPending: { count: 0, firesAtMs: 0 },
+			},
+		});
+		const start = container.querySelector<HTMLButtonElement>(".obs-start");
+		expect(start?.textContent).toBe("Start now");
+		expect(start?.disabled).toBe(false);
+		store.openAgent(agentId);
+		flush();
 	});
 
 	// HARD INVARIANT (stays GREEN, design grounding line 17): the trace surface is

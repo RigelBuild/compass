@@ -645,11 +645,18 @@ function adaptFileDiff(w: WireSessionFileDiff): FileDiff {
 	return { path: w.path, oldText: w.oldText ?? null, newText: w.newText };
 }
 
-/** Map a wire SessionEvent to the domain event; an unset or unknown oneof gives
- *  undefined. Injections and session errors have no domain kind, so become notices. */
+/** Batch-window state is mapped separately from trace events. */
+export interface SessionBatchPending {
+	kind: "batch_pending";
+	count: number;
+	firesAtMs: number;
+}
+
+/** Map one wire SessionEvent to its domain event or batch state. An unset or
+ *  unknown oneof gives undefined. */
 export function adaptSessionEvent(
 	w: WireSessionEvent,
-): DomainSessionEvent | undefined {
+): DomainSessionEvent | SessionBatchPending | undefined {
 	// int64 decodes to bigint; implicit coercion on a bigint throws.
 	const base = { id: w.eventId, atUnixMs: Number(w.atUnixMs) };
 	const e = w.event;
@@ -702,6 +709,12 @@ export function adaptSessionEvent(
 				kind: "notice",
 				text: e.value.text,
 				...(e.value.link !== undefined ? { link: e.value.link } : {}),
+			};
+		case "batchPending":
+			return {
+				kind: "batch_pending",
+				count: e.value.count,
+				firesAtMs: Number(e.value.firesAtUnixMs),
 			};
 		case "sessionInjection":
 			return { ...base, kind: "notice", text: injectionText(e.value) };

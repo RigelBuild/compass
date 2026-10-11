@@ -9,14 +9,14 @@ import {
 	type CompassClient,
 	ConnectError,
 } from "@compass/client";
-import type { SessionEvent } from "../session-events";
+import type { BatchPending, SessionEvent } from "../session-events";
 import { adaptSessionEvent } from "./adapt";
 import { createReconnectBackoff, type ReconnectBackoff } from "./backoff";
 
-/** One frame's payload: the mapped trace event, the lifecycle transition, or
- *  both. A field is absent when the frame did not carry it. */
+/** One frame's payload: a trace event, batch-window state, or lifecycle update. */
 export interface SessionFrameUpdate {
 	readonly event?: SessionEvent;
+	readonly batchPending?: BatchPending | null;
 	readonly state?: AgentSessionState;
 }
 
@@ -66,15 +66,27 @@ export function appendSessionEvent(
 		: next;
 }
 
-/** Map one frame to its update, or undefined for a frame with nothing to hand
+/** Map one frame to an update, or undefined for a frame with nothing to hand
  *  on: the leading registration ack, or an event this UI has no mapping for. */
 function frameUpdate(frame: AgentSessionFrame): SessionFrameUpdate | undefined {
-	const event = frame.event ? adaptSessionEvent(frame.event) : undefined;
+	const mapped = frame.event ? adaptSessionEvent(frame.event) : undefined;
+	const event =
+		mapped && "kind" in mapped && mapped.kind !== "batch_pending"
+			? mapped
+			: undefined;
+	const batchPending =
+		mapped && "kind" in mapped && mapped.kind === "batch_pending"
+			? mapped.count === 0
+				? null
+				: { count: mapped.count, firesAtMs: mapped.firesAtMs }
+			: undefined;
 	const state =
 		frame.state === AgentSessionState.UNSPECIFIED ? undefined : frame.state;
-	if (!event && state === undefined) return undefined;
+	if (event === undefined && batchPending === undefined && state === undefined)
+		return undefined;
 	return {
 		...(event ? { event } : {}),
+		...(batchPending !== undefined ? { batchPending } : {}),
 		...(state !== undefined ? { state } : {}),
 	};
 }
