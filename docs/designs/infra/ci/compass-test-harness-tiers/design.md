@@ -422,8 +422,10 @@ closed as satisfied. Shared legs attach through `sharedFixture(t)`
 (`go/e2e/shared_fixture.go`). Plain `NewFixture` is the own-stack opt-out, so
 there is no `WithOwnStack()`. Canned routes register from `TestMain` through
 `registerSharedFixtureOption` and are fixed when the stub is built. Shared legs
-route by marker, so no `LoadScript` reset exists. T4 builds on `NewFixture`,
-and T6 documents `sharedFixture` vs `NewFixture`.
+route by marker, which is OQ2's fallback, so no `LoadScript` reset exists and
+the OQ2 reset ruling is superseded. The `-count>1` note did not ship in
+`fixture.go`; T6 carries it. T4 builds on `NewFixture`, and T6 documents
+`sharedFixture` vs `NewFixture`.
 
 ### T4 — the embedded-postgres smoke leg
 
@@ -462,8 +464,9 @@ this task is a pgtest-internal dedup, not a cross-tier API.
 
 *Errata (as shipped).* T5 is closed as satisfied. `newForgeE2EWire`
 (`go/server/forge_e2e_pgtest_test.go`) is already the one test mount of
-`hub.SetForgeCaller(newForgeService(...))`. Both forge e2e pgtest files build
-through it, so no `mountForgeForTest` exists.
+`hub.SetForgeCaller(newForgeService(...))`. `forge_e2e_pgtest_test.go` and
+`forge_subscribe_e2e_pgtest_test.go` build through it, so no
+`mountForgeForTest` exists.
 
 ### T6 — document the tier pyramid
 
@@ -481,9 +484,9 @@ docs.
 
 ## Tasks
 
-- [ ] T1 — extract `go/internal/pgshare` (acquisition + schema isolation +
+- [x] T1 — extract `go/internal/pgshare` (acquisition + schema isolation +
       `StartSuitePostgres`); pgtest keeps its API. Owner: implement lane.
-- [ ] T2 — shared stack + suite postgres in e2e `TestMain`
+- [x] T2 — shared stack + suite postgres in e2e `TestMain`
       (`ExternalDatabase: true`), gates run once. Owner: implement lane
       (depends T1).
 - [x] T3 — `WithOwnStack()` + leg migration + shared canned-stub
