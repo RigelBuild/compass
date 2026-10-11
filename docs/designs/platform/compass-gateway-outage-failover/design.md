@@ -72,7 +72,7 @@ Streaming: a relay `AssistantMessageEventStream` buffers events until commit,
 then replays them and forwards the rest. A committed attempt is final: a later
 error reaches the client as today. The response sends 200 and the SSE headers
 once the first attempt's `streamSimple` returns, then a `: keepalive` comment
-every 15 s until commit (OQ-3); SSE parsers skip comment lines (`readSseEvents`
+every 15 s until commit (RD-3); SSE parsers skip comment lines (`readSseEvents`
 in `packages/utils/src/stream.ts`). At commit the route runs `encodeStream` on
 the relay. `x-litellm-model-id` names the requested model and
 `x-litellm-model-api-base` is omitted; the log and usage event name the backend
@@ -85,7 +85,8 @@ healthy completion is not cut, and thinking-loop re-dispatches stay on the same
 candidate. The client sees nothing until the drain ends, so any classified
 failure fails over, whatever partial content it holds.
 
-A failure reaches the client only when no follower remains: as today's HTTP
+A failure reaches the client only when no follower remains or the deadline
+has passed (Bounds): as today's HTTP
 error `Response` if headers are not sent yet, else as an error
 `AssistantMessage` that ends the relay, which `encodeStream` writes as the
 format's SSE error.
@@ -100,8 +101,9 @@ no `onFailure`.
 Credential setup runs on the attempt signal, before the budget is armed. Setup
 failures never set a mark. No credential (`resolveGatewayApiKey`'s 401) gives
 `credential_exhausted`. A thrown credential store call (`classifyGatewayError`,
-usually 502), a synchronous `streamSimple` throw, or a setup still running at
-`deadlineMs` gives `setup_error`. All fail over.
+usually 502) or a synchronous `streamSimple` throw gives `setup_error`. Both
+fail over. A setup cut at `deadlineMs` also gives `setup_error`, but it ends
+the request (Bounds › Deadline).
 
 ### Which failures fail over
 
@@ -150,7 +152,7 @@ TTL starts at `calculateRateLimitBackoffMs("SERVER_ERROR")` (20 s), or
 20, 40, 80, 160, then a 300 s cap. It is never shorter than `retryAfterMs`
 (also capped at 300 s). Strikes reset when the last mark expired over 300 s ago.
 
-Marks are per tenant only (OQ-4), in memory in the compass boot entrypoint, one
+Marks are per tenant only (RD-4), in memory in the compass boot entrypoint, one
 map per gateway process. With several replicas, each learns an outage on its
 own. Both deployment shapes run the same code, per
 `docs/concepts/self-host-and-managed.md` and
@@ -168,21 +170,32 @@ usable credential, so a single-candidate chain ignores its mark.
   `bootOpts.resolveModel` as today; each follower from the side-effect-free
   `candidateFailover.next`. `undefined` from `next` means no follower, never a
   404. Compass returns `undefined` for a direct `provider/id` selector.
-- **Attempt budget (OQ-2).** Only when a follower exists. Armed immediately
+- **Attempt budget (RD-2).** Only when a follower exists. Armed immediately
   before `streamSimple`: half the time left before `deadlineMs` (default
-  120 000 ms), a hard deadline through the first meaningful event, covering
+  120 000 ms), a hard limit through the first meaningful event, covering
   in-flight provider retries. On expiry the loop aborts the attempt, even
   after a 2xx. A `done` or `error` event, or the attempt settling, disarms it,
   so a timeout counts only if its abort came first. The attempt also gets
-  `maxRetryDelayMs: 10_000`; provider behavior varies, and the hard deadline
-  bounds every route.
-- **Deadline.** No attempt starts after `deadlineMs`; a credential setup still
-  running then is aborted.
+  `maxRetryDelayMs: 10_000`; provider behavior varies, and the budget bounds
+  every route.
+- **Deadline.** Only with `candidateFailover`, with or without a follower;
+  without the option the route behaves as today. The loop arms one request
+  timer at `deadlineMs` from request start. On expiry no further attempt
+  starts, and a credential setup still running is aborted through its attempt
+  signal. The timer never cuts a started `streamSimple`: an uncommitted
+  attempt with a follower is already bounded by its budget, and a committed or
+  last-candidate stream runs as today. A setup cut this way ends as
+  `setup_error` with log outcome `deadline` and sets no mark. The client gets a
+  502 if headers are not sent yet, else an SSE error in the open body. An
+  attempt that fails after expiry, or whose follower lookup ends after it, is
+  classified, reported to `onFailure`, and marked as usual. It then reaches the
+  client as if no follower remained, with log outcome `deadline`.
 - **Abort.** Each attempt has its own `AbortController`, linked to the request
   controller from `mirrorRequestAbort`. Cancelling the hold body aborts the
   request, as `encodeStream`'s `onCancel` does today. After a failure the loop
-  checks the request signal first: if aborted, it stops (499 as today). A
-  budget timeout is next and is always `server_error`: the gateway cannot tell
+  checks causes in order. A request abort stops it (499 as today). A setup cut
+  by the deadline is next (`setup_error`, outcome `deadline`, request ends). A
+  budget timeout follows and is always `server_error`: the gateway cannot tell
   a stalled 200 from a 503 in provider retries, and several providers never
   call `onResponse`. With no response evidence, `start` versus other events no
   longer matters. Only other failures reach the classifier, the sole source of
@@ -190,7 +203,7 @@ usable credential, so a single-candidate chain ignores its mark.
 - **Leases.** Each attempt acquires its own lease and releases it when that
   attempt's stream or result settles, as today's `events.result().finally`
   does. The next candidate does not wait for it.
-- **Usage (OQ-5).** Every attempt goes through `recordGatewayUsage`, which
+- **Usage (RD-5).** Every attempt goes through `recordGatewayUsage`, which
   skips zero usage. An attempt that did not answer uses request id
   `${requestId}:a${n}` and outcome `error`, because `onUsage` consumers dedupe
   on request id.
@@ -415,7 +428,11 @@ export interface CandidateFailoverOptions {
   next(modelId: string, ctx: FailoverContext): Promise<Model<Api> | undefined>;
   /** Called once per failed attempt, never for a skipped one. Must not throw. */
   onFailure(model: Model<Api>, failure: UpstreamFailure, ctx: FailoverContext): void;
-  /** No attempt starts after this many ms from request start. Default 120_000. */
+  /**
+   * Request deadline in ms from request start; default 120_000. On expiry no
+   * attempt starts and a running credential setup is aborted (502 or SSE error),
+   * with or without a follower. A started stream is never cut by it.
+   */
   deadlineMs?: number;
 }
 
@@ -445,7 +462,12 @@ today: with A down, the client gets a 200 carrying an error. Green:
   synchronously for A: B answers, and `onFailure` gets `setup_error`, which
   sets no mark (C1).
 - A's credential lookup outlasts the budget A would get: it is not cut, and A
-  answers. A lookup still running at `deadlineMs` ends as `setup_error`.
+  answers. A lookup still running at `deadlineMs` is aborted: the client gets
+  a 502, the log outcome is `deadline`, `onFailure` gets `setup_error`, no
+  mark is set, and B never starts.
+- Non-streaming, A sends its first delta, then fails with 503 after
+  `deadlineMs`: B never starts, A is marked, and the client gets A's error
+  with log outcome `deadline`.
 - Streaming, B has no credential after headers are sent: the client gets an
   SSE error in the open 200 body.
 - A fails with 503, then the follower fails a precheck and a third chat
@@ -507,33 +529,31 @@ selector gets no follower. Smoke: the gateway image smoke passes at the new pin.
 - [ ] C1 — Pin bump, `ProviderDownMarks`, resolver change, counter, wiring
       (compass-obs).
 
-## Open Questions
+## Resolved decisions
 
-- **OQ-1 — LOAD-BEARING: fork retry loop (A) or compass wrapper hop (B).**
-  Tracked in RIG-5147. A changes the fork's routing core, which v1 avoided; B
-  costs four SSE parsers, no pool access, and a hop. **Recommendation: A**,
-  opt-in behind `candidateFailover`.
-- **OQ-2 — LOAD-BEARING: hung or slow-retrying candidates.** Tracked in
-  RIG-5147. Without a budget, a black-holed upstream or a 529 with long
-  retry-after hints never fails over. **Recommendation:** the hard attempt
-  budget in Bounds. Cost: when a follower exists, a first token slower than
-  the budget is cut, even after a 2xx.
-- **OQ-3 — LOAD-BEARING: silent hold or early headers.** Tracked in RIG-5147. A
-  silent hold names the answering backend in headers, but can trip a proxy
-  idle timeout (nginx defaults to 60 s) and drops the Anthropic route's 15 s
-  pings. **Recommendation:** early headers plus `: keepalive` comments. Cost:
-  streaming `x-litellm-model-id` names the requested model.
-  `auth-gateway-response-headers.test.ts` runs without the option and is
-  unchanged.
-- **OQ-4 — LOAD-BEARING: mark scope.** Tracked in RIG-5147.
-  **Recommendation:** per tenant only. Rejected: promoting a mark to
-  process-wide once several tenants set it, because a tenant-triggerable
-  failure would still steer other tenants. Cost: a shared outage's stall
-  repeats per active tenant.
-- **OQ-5 — LOAD-BEARING: usage for failed attempts.** Tracked in RIG-5147.
-  Dropping it hides spend that failover creates. **Recommendation:** record
-  every nonzero attempt under an attempt-qualified request id.
-- **OQ-6 — not load-bearing: marks across replicas.** Tracked in RIG-5147.
-  Revisit if a deployment runs many replicas.
-- **OQ-7 — not load-bearing: mid-stream failover and non-chat routes.** Tracked
-  in RIG-5147. Both stay out of scope.
+Matt ruled all five on 2026-10-11 (RIG-5147); each took the recommendation.
+
+- **RD-1 — a retry loop in the fork's routing core.** Opt-in behind
+  `candidateFailover`. Rejected: a compass wrapper hop, which needs four SSE
+  parsers, has no access to the pool state, and adds a hop.
+- **RD-2 — a hard attempt budget when a follower exists** (Bounds). Cost: a
+  first token slower than the budget is cut, even after a 2xx.
+- **RD-3 — early headers plus `: keepalive` comments.** Holding the response
+  silent until commit can exceed a proxy idle timeout (nginx defaults to 60 s),
+  and it suppresses the 15 s pings the Anthropic route sends today. Early
+  headers plus a `: keepalive` comment every 15 s keep the response active.
+  Cost: streaming `x-litellm-model-id` names the requested model.
+  `auth-gateway-response-headers.test.ts` runs without the option and stays
+  unchanged, which guards the default path.
+- **RD-4 — marks are per tenant only.** Rejected: process-wide promotion,
+  because a tenant-triggerable failure would steer other tenants. A stall can
+  also be specific to one tenant's account, which is a second reason not to
+  share marks. Cost: a shared outage stalls once per active tenant.
+- **RD-5 — record every attempt with nonzero usage** under an
+  attempt-qualified request id, so failover spend stays visible.
+
+## Deferred
+
+- **Marks across replicas.** Each replica keeps its own; revisit if a
+  deployment runs many replicas.
+- **Mid-stream failover and non-chat routes.** Out of scope.
