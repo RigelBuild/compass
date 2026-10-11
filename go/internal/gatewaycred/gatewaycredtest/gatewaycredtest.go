@@ -4,6 +4,7 @@ package gatewaycredtest
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -359,10 +360,19 @@ func oauthClear(h Harness) func(*testing.T) {
 				want.Access, want.OrgName, want.Region = "rotated-access", "sent-organization", "sent-region"
 				zero(&want)
 				if tok, ok := got[0].OAuth(); !ok || tok != want {
-					t.Fatalf("token after clearing %s = %#v, want %#v", name, tok, want)
+					t.Fatalf("token after clearing %s: metadata %q, want %q (grant equal: %t)", name, oauthMetadata(tok), oauthMetadata(want),
+						tok.Access == want.Access && tok.Refresh == want.Refresh && tok.ExpiresUnixMs == want.ExpiresUnixMs)
 				}
 			})
 		}
+	}
+}
+
+// oauthMetadata lists the non-secret token fields, since OAuthToken's %#v redacts them.
+func oauthMetadata(t gatewaycred.OAuthToken) []string {
+	return []string{
+		t.EnterpriseURL, t.ProjectID, t.Email, t.AccountID, t.APIEndpoint, t.OrgID, t.OrgName,
+		strconv.FormatInt(t.AuthorizedAtUnixMs, 10), t.Region, t.InferenceRegion, t.ActiveOrganizationID,
 	}
 }
 
