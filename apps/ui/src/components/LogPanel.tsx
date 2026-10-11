@@ -6,6 +6,11 @@ import { useView } from "../view-scope";
 import { Glyph } from "./Glyph";
 import { SessionTrace } from "./SessionTrace";
 
+/** UTC HH:MM for the batching deadline, matching the session log timestamps. */
+function hhmm(atUnixMs: number): string {
+	const date = new Date(atUnixMs);
+	return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
+}
 /** The trace observation pane: the view agent's typed execution trace. The
  *  raw SessionEvent stream is folded (foldSession) into render-ready TraceItems
  *  and handed to SessionTrace. Observation-only — no composer. */
@@ -72,8 +77,22 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 					<Show when={store.logOpen()}>{running() ? "running" : "idle"}</Show>
 				</span>
 				<Show when={store.logOpen()}>
-					{/* The one non-observational control: stop the running turn. You
-					    steer via the channel, not here. */}
+					{/* Start now skips the open batch window; no window is a server no-op. */}
+					<button
+						type="button"
+						class="obs-start"
+						disabled={!running() || fixture()}
+						title={
+							fixture()
+								? "Can't start now: this session is fixture data, not a server-minted session."
+								: "Start now"
+						}
+						onClick={() => void store.skipBatchWindow()}
+					>
+						{store.batchPending()
+							? `Start now (${store.batchPending()?.count} · ${hhmm(store.batchPending()?.firesAtMs ?? 0)})`
+							: "Start now"}
+					</button>
 					<button
 						type="button"
 						class="obs-stop"
@@ -97,6 +116,13 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 				    from a successful stop. Same shape as the ask block's refusal
 				    (ChannelView.tsx:193-197). */}
 				<Show when={store.stopError()}>
+					{(msg) => (
+						<span class="obs-error" role="alert">
+							{msg()}
+						</span>
+					)}
+				</Show>
+				<Show when={store.skipError()}>
 					{(msg) => (
 						<span class="obs-error" role="alert">
 							{msg()}

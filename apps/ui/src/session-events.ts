@@ -44,7 +44,7 @@ export type SessionEvent = { id: string; atUnixMs: number } & (
 	| { kind: "notice"; text: string; link?: string }
 );
 
-/** An agent's live session: whether it is running plus its ordered event stream. */
+/** An agent's live session: whether it is running, its trace, and pending batch state. */
 export interface AgentSession {
 	/** The server-minted session id — the cursor StartAgentSession returned, and
 	 *  the ONLY field StopAgentSession takes (compass_pb.ts:831-836). Carried
@@ -53,6 +53,8 @@ export interface AgentSession {
 	agentAccountId: string;
 	running: boolean;
 	events: SessionEvent[];
+	/** Items queued in the agent's open batching window, when one is reported. */
+	batchPending?: BatchPending;
 	/** Set only on hand-written fixture sessions (session-events-stub.ts). A
 	 *  fixture's `sessionId` was never minted by a server, so no live RPC may
 	 *  carry it: `StopAgentSession` treats an unknown session as an idempotent
@@ -60,6 +62,12 @@ export interface AgentSession {
 	 *  success while stopping nothing. The store refuses instead, and the Stop
 	 *  control renders disabled. Absent → the session came from the server. */
 	readonly fixture?: true;
+}
+
+/** An open idle-batching window's queued item count and fire time. */
+export interface BatchPending {
+	count: number;
+	firesAtMs: number;
 }
 
 /** A render-ready item produced by folding the event stream. */

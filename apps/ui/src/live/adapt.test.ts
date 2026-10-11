@@ -1334,6 +1334,26 @@ describe("adaptSessionEvent", () => {
 		});
 	});
 
+	test("batchPending count zero remains distinguishable for the session tail", () => {
+		expect(
+			adaptSessionEvent(
+				wire({ case: "batchPending", value: { count: 0, firesAtUnixMs: 0n } }),
+			),
+		).toEqual({ kind: "batch_pending", count: 0, firesAtMs: 0 });
+	});
+	test("batch-pending maps to control state, not a trace event", () => {
+		const pending = adaptSessionEvent(
+			wire({
+				case: "batchPending",
+				value: { count: 2, firesAtUnixMs: 1_700_000_030_000n },
+			}),
+		);
+		expect(pending).toEqual({
+			kind: "batch_pending",
+			count: 2,
+			firesAtMs: 1_700_000_030_000,
+		});
+	});
 	test("an unset oneof maps to undefined", () => {
 		expect(adaptSessionEvent(wire({ case: undefined }))).toBeUndefined();
 	});

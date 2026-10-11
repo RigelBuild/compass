@@ -1225,4 +1225,13 @@ describe("demo targets never reach the server or storage", () => {
 			expect(compass.stops).toEqual([]);
 		});
 	});
+	test("skipBatchWindow with a selected demo agent sends nothing", async () => {
+		await withLive(async ({ store, compass }) => {
+			store.openAgent(DEMO_AGENT);
+			flush();
+			expect(store.selectedAgentId()).toBe(DEMO_AGENT);
+			await store.skipBatchWindow();
+			expect(compass.skips).toEqual([]);
+		});
+	});
 });

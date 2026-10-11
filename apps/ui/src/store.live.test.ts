@@ -1242,6 +1242,128 @@ describe("store stopAgent (StopAgentSession)", () => {
 		}
 	});
 });
+describe("store skipBatchWindow (SkipBatchWindow)", () => {
+	const runningAgentId = (): string => {
+		const entry = Object.values(STUB_SESSION_EVENTS).find(
+			(session) => session.running,
+		);
+		if (!entry) throw new Error("no running session in the fixture");
+		return entry.agentAccountId;
+	};
+	const serverSession = (agentId: string): AgentSession => ({
+		sessionId: "sess-7",
+		agentAccountId: agentId,
+		running: true,
+		events: [],
+	});
+
+	test("issues SkipBatchWindow for the observed session id", async () => {
+		const compass = createFakeCompass();
+		const agentId = runningAgentId();
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				queryClient: testQueryClient(),
+				compass: compass.client,
+				sessions: { [agentId]: serverSession(agentId) },
+			});
+		});
+		try {
+			store.openAgent(agentId);
+			flush();
+
+			await store.skipBatchWindow();
+
+			expect(compass.skips).toEqual([{ sessionId: "sess-7" }]);
+			expect(store.skipError()).toBeUndefined();
+		} finally {
+			dispose();
+		}
+	});
+
+	test("refuses a fixture session locally and reports the refusal", async () => {
+		const compass = createFakeCompass();
+		const errors: unknown[] = [];
+		const agentId = runningAgentId();
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				queryClient: testQueryClient(),
+				compass: compass.client,
+				sessions: STUB_SESSION_EVENTS,
+				onCommsError: (error) => errors.push(error),
+			});
+		});
+		try {
+			store.openAgent(agentId);
+			flush();
+
+			await store.skipBatchWindow();
+
+			expect(compass.skips).toEqual([]);
+			expect(store.skipError()).toMatch(/fixture data/);
+			expect(String(errors[0])).toMatch(/fixture data/);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("refuses locally when the store has no compass client", async () => {
+		const errors: unknown[] = [];
+		const agentId = runningAgentId();
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				queryClient: testQueryClient(),
+				sessions: { [agentId]: serverSession(agentId) },
+				onCommsError: (error) => errors.push(error),
+			});
+		});
+		try {
+			store.openAgent(agentId);
+			flush();
+
+			await store.skipBatchWindow();
+
+			expect(store.skipError()).toMatch(/no compass client/);
+			expect(String(errors[0])).toMatch(/no compass client/);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("surfaces a server refusal through skipError and onCommsError", async () => {
+		const compass = createFakeCompass();
+		const errors: unknown[] = [];
+		const agentId = runningAgentId();
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				queryClient: testQueryClient(),
+				compass: compass.client,
+				sessions: { [agentId]: serverSession(agentId) },
+				onCommsError: (error) => errors.push(error),
+			});
+		});
+		try {
+			store.openAgent(agentId);
+			flush();
+			compass.failNextSkip(new Error("[unavailable] refused"));
+
+			await store.skipBatchWindow();
+
+			expect(compass.skips).toEqual([{ sessionId: "sess-7" }]);
+			expect(store.skipError()).toMatch(/unavailable/);
+			expect(String(errors[0])).toMatch(/unavailable/);
+		} finally {
+			dispose();
+		}
+	});
+});
 
 describe("daemon banner (live GetServerInfo)", () => {
 	// The top-bar banner reads LIVE: a store built with `options.compass` fires a
