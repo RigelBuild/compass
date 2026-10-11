@@ -1003,6 +1003,36 @@ jobs:
           # upload above: publication locks the assets and the tag for good.
           gh release edit "$TAG" --draft=false --notes-file "$notes"
 
+      # Runs after publish, so the formula only ever points at public assets.
+      # The token is scoped to the tap repo alone; the App is installed there by IaC.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: tap-token
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: RigelBuild
+          repositories: homebrew-tap
+
+      - name: Bump the homebrew-tap compass-cli formula
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          formula="$RUNNER_TEMP/compass-cli.rb"
+          bun run tools/homebrew-tap/index.ts "$TAG" SHA256SUMS "$formula"
+          path="Formula/compass-cli.rb"
+          api="repos/RigelBuild/homebrew-tap/contents/$path"
+          # An update needs the current blob sha. Only a 404 means "create";
+          # any other lookup failure fails the step.
+          args=(-X PUT "$api" -f "message=compass-cli $TAG" -f "content=$(base64 -w0 "$formula")")
+          if lookup="$(gh api "$api" -q .sha 2>&1)"; then
+            args+=(-f "sha=$lookup")
+          elif [[ "$lookup" != *"HTTP 404"* ]]; then
+            echo "::error::reading $path from the tap failed: $lookup" >&2
+            exit 1
+          fi
+          gh api "${args[@]}" -q .commit.html_url
+
   release-image:
     name: release-image
     runs-on: ubuntu-latest

@@ -202,6 +202,8 @@ projects:
   release-notes: 'tools/release-notes'
   # The agent-image index publisher and the e2e seed-base resolver.
   agent-image-index: 'tools/agent-image-index'
+  # The homebrew-tap formula renderer the release lane runs on a semver release.
+  homebrew-tap: 'tools/homebrew-tap'
   # The design-ledger reconciler: posts the landed DL-NNN frontier to the DL
   # counter, which must hydrate before any claim. Registered so its typecheck +
   # unit tests ride the moon-driven CI sweep.

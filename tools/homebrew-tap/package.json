@@ -1,0 +1,11 @@
+{
+	"name": "@compass/homebrew-tap",
+	"private": true,
+	"type": "module",
+	"description": "Renders the homebrew-tap compass-cli formula from a release tag and its SHA256SUMS.",
+	"module": "index.ts",
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
