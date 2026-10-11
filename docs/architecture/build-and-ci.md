@@ -189,8 +189,8 @@ failure — `workflow_dispatch` republishes any HEAD on demand.
 
 The same workflow also runs `publish-runner-image`, `publish-guest-image`, and
 `publish-gateway-image`. The gateway job builds and smoke-tests one local OCI
-layout, then publishes its immutable `:git-<sha12>` tag and records the
-`repo@sha256:…` reference in the step summary.
+layout, then publishes its write-once `:git-<sha12>` tag and records the
+`repo@sha256:…` identity to pin in the step summary.
 
 **The release-please cadence.** `release.yml` also runs release-please, which
 keeps a standing Release PR that batches conventional commits since the last

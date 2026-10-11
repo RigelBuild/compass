@@ -30,7 +30,9 @@ It refuses to overwrite an existing tag with different content.
 
 ## Credentials
 
-None. The fork is public, so the build fetches it without a credential. The smoke mints a throwaway gateway token per run and deletes it on exit.
+Build and smoke need no registry credentials: the fork is public, and the smoke
+mints a throwaway gateway token per run and deletes it on exit. Publish needs
+GHCR write access through `REGISTRY_AUTH_FILE`.
 
 ## Rotate
 

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -35,13 +36,16 @@ function stubSkopeo(body: string): void {
 }
 
 function publish(sha = SHA, env: Readonly<Record<string, string>> = {}) {
+	const childEnv: NodeJS.ProcessEnv = {
+		...process.env,
+		PATH: `${binDir}:${process.env.PATH}`,
+		...env,
+	};
+	if (!("REGISTRY_AUTH_FILE" in env)) delete childEnv.REGISTRY_AUTH_FILE;
 	const result = spawnSync(
 		"bun",
 		[cli, "--repo", REPO, "--sha", sha, "--out", outDir],
-		{
-			encoding: "utf8",
-			env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, ...env },
-		},
+		{ encoding: "utf8", env: childEnv },
 	);
 	return {
 		code: result.status ?? -1,
@@ -89,6 +93,19 @@ exit 9`);
 		);
 		expect(calls.match(/inspect/g)).toHaveLength(2);
 	});
+	test("exits badLayout without calling skopeo when the index is missing", () => {
+		stubSkopeo("exit 9");
+		rmSync(join(outDir, "oci", "index.json"));
+		expect(publish().code).toBe(EXIT.badLayout);
+		expect(existsSync(logPath)).toBe(false);
+	});
+
+	test("exits badLayout without calling skopeo when the index is invalid", () => {
+		stubSkopeo("exit 9");
+		writeFileSync(join(outDir, "oci", "index.json"), "not-json");
+		expect(publish().code).toBe(EXIT.badLayout);
+		expect(existsSync(logPath)).toBe(false);
+	});
 
 	test("skips when the tag already holds the layout digest", () => {
 		stubSkopeo(`if [ "$1" = inspect ]; then cat "${join(sandbox, "manifest")}"; exit 0; fi
@@ -129,6 +146,15 @@ fi
 if [ "$1" = copy ]; then touch "${join(sandbox, "copied")}"; exit 0; fi
 exit 9`);
 		expect(publish().code).toBe(EXIT.digestMismatch);
+	});
+	test("maps a failed post-copy inspect to exit 4", () => {
+		stubSkopeo(`if [ "$1" = inspect ]; then
+  if [ -f "${join(sandbox, "copied")}" ]; then echo "i/o timeout" >&2; exit 1; fi
+  echo "manifest unknown" >&2; exit 1
+fi
+if [ "$1" = copy ]; then touch "${join(sandbox, "copied")}"; exit 0; fi
+exit 9`);
+		expect(publish().code).toBe(EXIT.pushFailed);
 	});
 
 	test("passes the auth file to probe, copy, and re-read", () => {
