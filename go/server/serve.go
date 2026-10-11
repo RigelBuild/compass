@@ -46,7 +46,6 @@ import (
 	"github.com/RigelBuild/compass/go/internal/envelope"
 	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/forge"
-	"github.com/RigelBuild/compass/go/internal/gatewaycred"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/linearagent"
@@ -1012,10 +1011,7 @@ func buildDoors(
 		return serveDoors{}, err
 	}
 	usageSvc := newUsageService(usage.NewPostgres(st), st)
-	gatewayCredStore := gatewaycred.NewPostgres(st, masterKey, keyVersion)
-	gatewayCredSvc := newGatewayCredentialsService(st, gatewayCredStore, gatewayCredStore, slog.Default())
-	gatewayRegistrySvc := newGatewayRegistryService(st, slog.Default())
-	gatewayAuthSvc := newGatewayAuthService(auth.NewGatewayTokens(st))
+	gateway := newGatewayServices(st, masterKey, keyVersion)
 	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
 	// empty, so mounted unconditionally. otelconnect goes FIRST so the span
@@ -1097,7 +1093,7 @@ func buildDoors(
 	}
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayServices{credentials: gatewayCredSvc, registry: gatewayRegistrySvc, auth: gatewayAuthSvc})
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gateway)
 		if err != nil {
 			return serveDoors{}, err
 		}

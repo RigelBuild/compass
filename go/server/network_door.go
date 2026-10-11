@@ -26,6 +26,8 @@ import (
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/envelope"
+	"github.com/RigelBuild/compass/go/internal/gatewaycred"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -55,6 +57,10 @@ const compassServiceMaxReadBytes = 128 << 20 // 128 MiB
 // server buffers whole in memory. 16 MiB is generous over any legitimate
 // message here while closing that hole — the guestd vsock.go:94 posture.
 const siblingServiceMaxReadBytes = 16 << 20 // 16 MiB
+
+// gatewayAuthMaxReadBytes caps VerifyAgentToken bodies, which are decoded before
+// the bearer check runs; a minted token is 43 bytes.
+const gatewayAuthMaxReadBytes = 4 << 10
 
 // boundListeners holds the TCP listeners eagerly bound before any on-disk
 // state, plus the network door's validated TLS config. Binding up front means a
@@ -402,6 +408,16 @@ type gatewayServices struct {
 	auth        *gatewayAuthService
 }
 
+// newGatewayServices builds every service the LLM gateway calls on the network door.
+func newGatewayServices(st *store.Store, masterKey envelope.Key, keyVersion int16) gatewayServices {
+	creds := gatewaycred.NewPostgres(st, masterKey, keyVersion)
+	return gatewayServices{
+		credentials: newGatewayCredentialsService(st, creds, creds, slog.Default()),
+		registry:    newGatewayRegistryService(st, slog.Default()),
+		auth:        newGatewayAuthService(auth.NewGatewayTokens(st)),
+	}
+}
+
 func mountGatewayServices(
 	netMux *http.ServeMux,
 	services gatewayServices,
@@ -422,7 +438,7 @@ func mountGatewayServices(
 		netMux.Handle(path, handler)
 	}
 	if services.auth != nil {
-		path, handler := compassv1internalconnect.NewGatewayAuthHandler(services.auth, options...)
+		path, handler := compassv1internalconnect.NewGatewayAuthHandler(services.auth, interceptors, connect.WithReadMaxBytes(gatewayAuthMaxReadBytes))
 		netMux.Handle(path, handler)
 	}
 }

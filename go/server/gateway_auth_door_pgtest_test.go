@@ -7,12 +7,14 @@ import (
 	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/envelope"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
@@ -67,7 +69,11 @@ func TestGatewayAuthDoorVerifiesAgentTokens(t *testing.T) {
 		return auth.ResolveToken(ctx, st, presented, want)
 	}
 	mux := http.NewServeMux()
-	mountGatewayServices(mux, gatewayServices{auth: newGatewayAuthService(tokens)}, otelIC, newRunnerResolve(resolve, nil))
+	key, err := envelope.NewKey(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("envelope.NewKey: %v", err)
+	}
+	mountGatewayServices(mux, newGatewayServices(st, key, 1), otelIC, newRunnerResolve(resolve, nil))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := compassv1internalconnect.NewGatewayAuthClient(http.DefaultClient, server.URL)
@@ -83,6 +89,10 @@ func TestGatewayAuthDoorVerifiesAgentTokens(t *testing.T) {
 		if _, err := client.VerifyAgentToken(ctx, verifyAgentTokenRequest(bearer, agentToken)); connect.CodeOf(err) != connect.CodeUnauthenticated {
 			t.Errorf("%s: VerifyAgentToken error = %v, want Unauthenticated", name, err)
 		}
+	}
+	oversized := verifyAgentTokenRequest(serviceToken, strings.Repeat("a", gatewayAuthMaxReadBytes))
+	if _, err := client.VerifyAgentToken(ctx, oversized); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Errorf("oversized VerifyAgentToken error = %v, want ResourceExhausted", err)
 	}
 	if err := tokens.Revoke(ctx, string(agent.ID)); err != nil {
 		t.Fatalf("Revoke: %v", err)
