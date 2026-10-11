@@ -34,17 +34,29 @@ const BUILD_TAG_PATTERN = /^git-[0-9a-f]{12}$/;
 
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
-/** The agent image is a single-platform OCI manifest whose layers are gzipped
- * tarballs; the pin refuses anything else rather than guessing, because an
- * index would need a platform choice the lock has nowhere to record. */
+const INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
 const MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json";
 const LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip";
 
+export const PLATFORMS = ["linux/amd64", "linux/arm64"] as const;
+export type Platform = (typeof PLATFORMS)[number];
+export type PinMember = { manifest: string; layers: string[] };
 export type PinLock = {
 	repo: string;
 	tag: string;
 	digest: string;
-	layers: string[];
+	platforms: Record<Platform, PinMember>;
+};
+export type IndexMember = { platform: Platform; digest: string };
+
+const platformFrom = (
+	os: unknown,
+	architecture: unknown,
+): Platform | undefined => {
+	if (os !== "linux") return undefined;
+	if (architecture === "amd64") return "linux/amd64";
+	if (architecture === "arm64") return "linux/arm64";
+	return undefined;
 };
 
 /** A pin fault that carries the exit code the CLI should die with, so the
@@ -73,13 +85,73 @@ export function digestRef(lock: PinLock): string {
 	return `${lock.repo}@${lock.digest}`;
 }
 
-/**
- * Validate a lock parsed off disk, returning it narrowed.
- *
- * Throws rather than returning a partial lock: every caller (the nix eval's
- * shape re-check, the relock's consistency gate) treats a malformed lock as
- * fatal, and a lenient parse would let a half-valid lock reach a fetch.
- */
+function checkedMember(platform: Platform, value: unknown): PinMember {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new PinError(
+			`lock ${platform} member must be an object`,
+			EXIT.badLock,
+		);
+	}
+	const member = value as Record<string, unknown>;
+	if (!isImageDigest(member.manifest)) {
+		throw new PinError(
+			`lock ${platform} member manifest must be sha256:<64 hex>`,
+			EXIT.badLock,
+		);
+	}
+	if (!Array.isArray(member.layers) || member.layers.length === 0) {
+		throw new PinError(
+			`lock ${platform} member layers must be a non-empty array`,
+			EXIT.badLock,
+		);
+	}
+	const layers = member.layers.filter(isImageDigest);
+	if (layers.length !== member.layers.length) {
+		throw new PinError(
+			`lock ${platform} member layers must each be sha256:<64 hex>`,
+			EXIT.badLock,
+		);
+	}
+	return { manifest: member.manifest, layers };
+}
+
+function checkedIndexMember(value: unknown): IndexMember {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new PinError(
+			"OCI index member is not an object",
+			EXIT.registryFailed,
+		);
+	}
+	const member = value as Record<string, unknown>;
+	if (member.mediaType !== MANIFEST_MEDIA_TYPE) {
+		throw new PinError(
+			`OCI index member must be an image manifest, got ${JSON.stringify(member.mediaType)}`,
+			EXIT.registryFailed,
+		);
+	}
+	if (!isImageDigest(member.digest)) {
+		throw new PinError(
+			"OCI index member has a malformed digest",
+			EXIT.registryFailed,
+		);
+	}
+	if (
+		typeof member.platform !== "object" ||
+		member.platform === null ||
+		Array.isArray(member.platform)
+	) {
+		throw new PinError("OCI index member has no platform", EXIT.registryFailed);
+	}
+	const platformData = member.platform as Record<string, unknown>;
+	const platform = platformFrom(platformData.os, platformData.architecture);
+	if (!platform) {
+		throw new PinError(
+			`OCI index has unsupported platform ${JSON.stringify(platformData.os)}/${JSON.stringify(platformData.architecture)}`,
+			EXIT.registryFailed,
+		);
+	}
+	return { platform, digest: member.digest };
+}
 export function validatePin(value: unknown): PinLock {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new PinError("lock is not a JSON object", EXIT.badLock);
@@ -104,42 +176,127 @@ export function validatePin(value: unknown): PinLock {
 			EXIT.badLock,
 		);
 	}
-	if (!Array.isArray(lock.layers) || lock.layers.length === 0) {
+	if (
+		typeof lock.platforms !== "object" ||
+		lock.platforms === null ||
+		Array.isArray(lock.platforms)
+	) {
+		throw new PinError("lock platforms must be an object", EXIT.badLock);
+	}
+	const rawPlatforms = lock.platforms as Record<string, unknown>;
+	const keys = Object.keys(rawPlatforms);
+	if (
+		keys.length !== PLATFORMS.length ||
+		!PLATFORMS.every((platform) => Object.hasOwn(rawPlatforms, platform))
+	) {
 		throw new PinError(
-			"lock layers must be a non-empty array: they are the fixed-output fetch keys, so an empty set would fetch nothing",
+			`lock platforms must contain exactly ${PLATFORMS.join(" and ")}`,
 			EXIT.badLock,
 		);
 	}
-	const layers = lock.layers.filter(isImageDigest);
-	if (layers.length !== lock.layers.length) {
-		const bad = lock.layers.find((l) => !isImageDigest(l));
-		throw new PinError(
-			`lock layers must each be sha256:<64 hex>, got ${JSON.stringify(bad)}`,
-			EXIT.badLock,
-		);
-	}
-
-	return {
-		repo: AGENT_REPO,
-		tag: lock.tag,
-		digest: lock.digest,
-		layers,
+	const platforms: Record<Platform, PinMember> = {
+		"linux/amd64": { manifest: "", layers: [] },
+		"linux/arm64": { manifest: "", layers: [] },
 	};
+	for (const platform of PLATFORMS) {
+		platforms[platform] = checkedMember(platform, rawPlatforms[platform]);
+	}
+	return { repo: AGENT_REPO, tag: lock.tag, digest: lock.digest, platforms };
 }
 
-/**
- * Build a lock from a `skopeo inspect --raw` manifest plus the digest the
- * registry resolved for `tag`.
- *
- * The manifest digest is an INPUT, not something derived from the manifest
- * body: it is what the registry returned for the tag, and recomputing it here
- * would only re-assert our own hashing rather than what the registry serves.
- */
-export function lockFromInspect(
+/** Validate that an OCI index has exactly one image member for each platform. */
+export function indexMembers(index: unknown): IndexMember[] {
+	if (typeof index !== "object" || index === null || Array.isArray(index)) {
+		throw new PinError("OCI image index is not an object", EXIT.registryFailed);
+	}
+	const value = index as Record<string, unknown>;
+	if (value.mediaType !== INDEX_MEDIA_TYPE) {
+		throw new PinError(
+			`expected an OCI image index (${INDEX_MEDIA_TYPE}), got ${JSON.stringify(value.mediaType)}`,
+			EXIT.registryFailed,
+		);
+	}
+	if (!Array.isArray(value.manifests)) {
+		throw new PinError(
+			"OCI image index has no manifest list",
+			EXIT.registryFailed,
+		);
+	}
+	const found: Partial<Record<Platform, string>> = {};
+	for (const entry of value.manifests) {
+		const member = checkedIndexMember(entry);
+		if (Object.hasOwn(found, member.platform)) {
+			throw new PinError(
+				`OCI index has duplicate ${member.platform} member`,
+				EXIT.registryFailed,
+			);
+		}
+		found[member.platform] = member.digest;
+	}
+	if (
+		!PLATFORMS.every((platform) => found[platform] !== undefined) ||
+		value.manifests.length !== PLATFORMS.length
+	) {
+		throw new PinError(
+			`OCI index platform set must contain exactly ${PLATFORMS.join(" and ")}`,
+			EXIT.registryFailed,
+		);
+	}
+	return PLATFORMS.map((platform) => ({
+		platform,
+		digest: found[platform] ?? "",
+	}));
+}
+
+/** Check the member body digest before reading its ordered layer descriptors. */
+export function checkMember(
+	member: IndexMember,
+	bodyDigest: string,
+	manifest: unknown,
+): PinMember {
+	if (bodyDigest !== member.digest) {
+		throw new PinError(
+			`${member.platform} member body digest ${bodyDigest} does not match index descriptor ${member.digest}`,
+			EXIT.digestMismatch,
+		);
+	}
+	try {
+		return { manifest: member.digest, layers: layerDigests(manifest) };
+	} catch (error) {
+		if (error instanceof PinError) {
+			throw new PinError(
+				`${member.platform} member: ${error.message}`,
+				error.code,
+			);
+		}
+		throw error;
+	}
+}
+
+/** Confirm registry config metadata agrees with the platform descriptor. */
+export function checkMemberConfig(member: IndexMember, config: unknown): void {
+	if (typeof config !== "object" || config === null || Array.isArray(config)) {
+		throw new PinError(
+			`${member.platform} member config is not an object`,
+			EXIT.registryFailed,
+		);
+	}
+	const rawConfig = config as Record<string, unknown>;
+	const architecture = member.platform === "linux/amd64" ? "amd64" : "arm64";
+	if (rawConfig.os !== "linux" || rawConfig.architecture !== architecture) {
+		throw new PinError(
+			`${member.platform} member config reports ${JSON.stringify(rawConfig.os)}/${JSON.stringify(rawConfig.architecture)}`,
+			EXIT.registryFailed,
+		);
+	}
+}
+
+/** Build a validated v2 lock after every index member has been checked. */
+export function lockFromIndex(
 	repo: string,
 	tag: string,
-	digest: string,
-	manifest: unknown,
+	indexDigest: string,
+	members: Record<Platform, PinMember>,
 ): PinLock {
 	if (repo !== AGENT_REPO) {
 		throw new PinError(
@@ -153,19 +310,13 @@ export function lockFromInspect(
 			EXIT.provenance,
 		);
 	}
-	if (!isImageDigest(digest)) {
+	if (!isImageDigest(indexDigest)) {
 		throw new PinError(
-			`registry returned a malformed digest for ${tag}: ${JSON.stringify(digest)}`,
+			`registry returned a malformed index digest for ${tag}: ${JSON.stringify(indexDigest)}`,
 			EXIT.registryFailed,
 		);
 	}
-
-	return {
-		repo,
-		tag,
-		digest,
-		layers: layerDigests(manifest),
-	};
+	return validatePin({ repo, tag, digest: indexDigest, platforms: members });
 }
 
 /**
@@ -182,7 +333,7 @@ export function layerDigests(manifest: unknown): string[] {
 
 	if (m.mediaType !== MANIFEST_MEDIA_TYPE) {
 		throw new PinError(
-			`expected a single-platform OCI manifest (${MANIFEST_MEDIA_TYPE}), got ${JSON.stringify(m.mediaType)}: an index would need a platform choice the lock cannot record`,
+			`expected an OCI image manifest (${MANIFEST_MEDIA_TYPE}), got ${JSON.stringify(m.mediaType)}`,
 			EXIT.registryFailed,
 		);
 	}
@@ -219,20 +370,34 @@ export function locksEqual(a: PinLock, b: PinLock): boolean {
 		a.repo === b.repo &&
 		a.tag === b.tag &&
 		a.digest === b.digest &&
-		a.layers.length === b.layers.length &&
-		a.layers.every((l, i) => l === b.layers[i])
+		PLATFORMS.every((platform) => {
+			const left = a.platforms[platform];
+			const right = b.platforms[platform];
+			return (
+				left.manifest === right.manifest &&
+				left.layers.length === right.layers.length &&
+				left.layers.every((layer, i) => layer === right.layers[i])
+			);
+		})
 	);
 }
 
-/** Render a lock as the committed file body: stable key order and a trailing
- * newline, so a relock that changed nothing produces a byte-identical file. */
+/** Render a lock with stable platform and field order. */
 export function renderLock(lock: PinLock): string {
 	return `${JSON.stringify(
 		{
 			repo: lock.repo,
 			tag: lock.tag,
 			digest: lock.digest,
-			layers: lock.layers,
+			platforms: Object.fromEntries(
+				PLATFORMS.map((platform) => [
+					platform,
+					{
+						manifest: lock.platforms[platform].manifest,
+						layers: lock.platforms[platform].layers,
+					},
+				]),
+			),
 		},
 		null,
 		"\t",

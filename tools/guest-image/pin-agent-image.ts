@@ -3,25 +3,15 @@
 //
 // Two modes. `--tag git-<sha12>` pins an explicit build. `--relock` is the
 // Renovate postUpgradeTask: it re-derives the whole lock after the regex
-// manager bumped part of it.
+// manager bumps the index digest.
 //
-// WHY --relock EXISTS (do not "simplify" it to a bare regex bump). The lock
-// carries the per-layer descriptor digests the nix fixed-output fetches key
-// on, and Renovate cannot compute those: a regex manager can move the tag and
-// manifest digest, but the layer set it leaves behind still describes the OLD
-// manifest, so every fetch would fail on every Renovate PR. This is the same
-// failure class tools/renovate/refresh-devenv-lock.ts names for devenv — a
-// rev-only rewrite leaves paired fields stale — and the same remedy: a
-// customManager PLUS a postUpgradeTask that makes the lock genuinely
-// consistent. The digest-only DefaultPostgresImage pin is NOT the precedent;
-// there a regex rewrite completes the update.
+// WHY --relock EXISTS (do not simplify it to a bare regex bump). Renovate can
+// move the index digest, but cannot derive each platform's ordered layer
+// descriptors. A relock fetches every member and rewrites the complete lock.
 //
-// HOW A NEW PIN IS DISCOVERED. The pinned tag is per-commit immutable
-// (`git-<sha12>`), so no datasource can order it and Renovate tracks the
-// moving `:latest` digest instead. The relock then resolves which immutable
-// tag `:latest` currently points at. That is sound because the publish lane
-// asserts `:latest` and `:git-<sha12>` share a config digest and fails closed
-// otherwise (.github/workflows/release.yml, publish-image).
+// HOW A NEW PIN IS DISCOVERED. Renovate tracks the moving `:latest` index
+// digest. The relock finds the matching immutable git-<sha12> tag by hashing
+// each raw index body.
 //
 // Needs `skopeo` and network on PATH. Reads are anonymous (`--no-creds`): the
 // package is public, and the Renovate runner's default auth file is unreadable.
@@ -30,12 +20,17 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	AGENT_REPO,
+	checkMember,
+	checkMemberConfig,
 	EXIT,
+	indexMembers,
 	isBuildTag,
-	lockFromInspect,
+	lockFromIndex,
 	locksEqual,
 	PinError,
 	type PinLock,
+	type PinMember,
+	type Platform,
 	renderLock,
 	validatePin,
 } from "./pin-core.ts";
@@ -73,22 +68,15 @@ async function skopeo(command: string, args: string[]): Promise<string> {
 	return out;
 }
 
-/** The manifest body, plus the digest OF THAT BODY.
- *
- * One fetch, hashed locally, because a manifest digest is by definition the
- * sha256 of the manifest bytes (verified against the registry's own reported
- * digest). Asking the registry separately would be two reads of a MUTABLE tag,
- * so a publish landing between them would pair one manifest's body with
- * another's digest — and the lock would describe layers the digest disowns. */
+/** Read raw JSON and hash the exact bytes served by the registry. */
 async function inspect(reference: string): Promise<Inspected> {
 	const raw = await skopeo("inspect", ["--raw", `docker://${reference}`]);
-
 	let manifest: unknown;
 	try {
 		manifest = JSON.parse(raw);
 	} catch (err) {
 		throw new PinError(
-			`could not parse the manifest for ${reference}: ${String(err)}`,
+			`could not parse registry content for ${reference}: ${String(err)}`,
 			EXIT.registryFailed,
 		);
 	}
@@ -96,59 +84,63 @@ async function inspect(reference: string): Promise<Inspected> {
 	return { digest, manifest };
 }
 
-/** The digest a reference resolves to, without pulling the manifest body.
- * Tag discovery compares only digests, and the agent manifest is ~120 layers,
- * so fetching bodies would download a lot to read one field. */
-async function resolvedDigest(reference: string): Promise<string> {
-	const meta = await skopeo("inspect", [
-		"--format",
-		"{{.Digest}}",
-		`docker://${reference}`,
-	]);
-	const digest = meta.trim();
-	if (!digest) {
-		throw new PinError(
-			`skopeo reported no digest for ${reference}`,
-			EXIT.registryFailed,
+/** Resolve the index, both member manifests and each config from the registry. */
+async function resolveIndex(tag: string): Promise<PinLock> {
+	const { digest, manifest: index } = await inspect(`${AGENT_REPO}:${tag}`);
+	const members = indexMembers(index);
+	const pins = {} as Record<Platform, PinMember>;
+	for (const member of members) {
+		const inspected = await inspect(`${AGENT_REPO}@${member.digest}`);
+		pins[member.platform] = checkMember(
+			member,
+			inspected.digest,
+			inspected.manifest,
 		);
+		const configRaw = await skopeo("inspect", [
+			"--config",
+			`docker://${AGENT_REPO}@${member.digest}`,
+		]);
+		let config: unknown;
+		try {
+			config = JSON.parse(configRaw);
+		} catch (err) {
+			throw new PinError(
+				`could not parse ${member.platform} config: ${String(err)}`,
+				EXIT.registryFailed,
+			);
+		}
+		checkMemberConfig(member, config);
 	}
-	return digest;
+	return lockFromIndex(AGENT_REPO, tag, digest, pins);
 }
 
-/** Resolve which immutable build tag `:latest` currently points at, by
- * matching manifest digests. Fails loud rather than falling back to pinning
- * `:latest`, which would defeat the whole lock.
- *
- * Newest-first: the registry lists tags oldest-first, and the tag we want is
- * almost always the newest, so walking the list in order costs a round trip
- * per historical tag (measured: ~115 misses, two minutes) to find the one at
- * the end. Reversing makes the common case one probe. */
+/** Find the immutable build tag whose raw index bytes equal the moving tag. */
 async function discoverBuildTag(): Promise<string> {
-	const target = await resolvedDigest(`${AGENT_REPO}:${DISCOVERY_TAG}`);
+	const target = await inspect(`${AGENT_REPO}:${DISCOVERY_TAG}`);
 	const listed = await skopeo("list-tags", [`docker://${AGENT_REPO}`]);
-
-	let tags: unknown;
+	let parsed: unknown;
 	try {
-		tags = (JSON.parse(listed) as Record<string, unknown>).Tags;
+		parsed = JSON.parse(listed);
 	} catch (err) {
 		throw new PinError(
 			`could not parse tag list: ${String(err)}`,
 			EXIT.registryFailed,
 		);
 	}
-	if (!Array.isArray(tags)) {
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new PinError("registry returned no tag list", EXIT.registryFailed);
 	}
-
-	// Filter by the same predicate the lock validator enforces, not a looser
-	// `git-` prefix: a malformed `git-*` tag that matched the digest would be
-	// selected here and then hard-fail the whole relock downstream.
+	const tags = (parsed as Record<string, unknown>).Tags;
+	if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string")) {
+		throw new PinError("registry returned no tag list", EXIT.registryFailed);
+	}
 	const candidates = tags.filter(isBuildTag).reverse();
 	for (const tag of candidates) {
-		if ((await resolvedDigest(`${AGENT_REPO}:${tag}`)) === target) return tag;
+		if ((await inspect(`${AGENT_REPO}:${tag}`)).digest === target.digest)
+			return tag;
 	}
 	throw new PinError(
-		`no git-<sha12> tag resolves to the same manifest as :${DISCOVERY_TAG} (${target}) across ${candidates.length} candidate tag(s); the publish lane asserts the pair shares a digest, so this means an incoherent publish`,
+		`no git-<sha12> tag resolves to the same index as :${DISCOVERY_TAG} (${target.digest}) across ${candidates.length} candidate tag(s); the publish lane requires the pair to share an index`,
 		EXIT.digestMismatch,
 	);
 }
@@ -172,18 +164,17 @@ function readLock(): PinLock | undefined {
 }
 
 async function pin(tag: string): Promise<number> {
-	const { digest, manifest } = await inspect(`${AGENT_REPO}:${tag}`);
-	const next = lockFromInspect(AGENT_REPO, tag, digest, manifest);
-
+	const next = await resolveIndex(tag);
 	const current = readLock();
 	if (current && locksEqual(current, next)) {
-		console.log(`agent-oci.lock already pins ${tag} (${digest}) — no change`);
+		console.log(
+			`agent-oci.lock already pins ${tag} (${next.digest}) — no change`,
+		);
 		return 0;
 	}
-
 	writeFileSync(LOCK_PATH, renderLock(next));
 	console.log(
-		`pinned ${AGENT_REPO}:${tag}\n  digest: ${digest}\n  layers: ${next.layers.length}`,
+		`pinned ${AGENT_REPO}:${tag}\n  index: ${next.digest}\n  linux/amd64: ${next.platforms["linux/amd64"].manifest} (${next.platforms["linux/amd64"].layers.length} layers)\n  linux/arm64: ${next.platforms["linux/arm64"].manifest} (${next.platforms["linux/arm64"].layers.length} layers)`,
 	);
 	return 0;
 }
@@ -198,18 +189,14 @@ function usage(): number {
 
 async function main(): Promise<number> {
 	const argv = process.argv.slice(2);
-
 	if (argv.includes("--relock")) {
 		if (argv.length !== 1) return usage();
-		// Self-gate: a relock on a branch with no lock is a no-op, so the task
-		// stays cheap on every unrelated Renovate branch.
 		if (!readLock()) {
 			console.log("no agent-oci.lock on this branch — nothing to relock");
 			return 0;
 		}
 		return await pin(await discoverBuildTag());
 	}
-
 	const i = argv.indexOf("--tag");
 	const tag = i === -1 ? undefined : argv[i + 1];
 	if (tag === undefined || argv.length !== 2) return usage();

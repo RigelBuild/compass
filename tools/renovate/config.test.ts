@@ -1994,6 +1994,27 @@ describe("tools/renovate guest-rootfs agent-image pin lockstep", () => {
 	});
 });
 
+describe("tools/renovate guest-agent index digest lockstep", () => {
+	test("the committed guest pin regex matches exactly its index digest", () => {
+		const lock = JSON.parse(
+			readFileSync(join(repoRoot, "guest-image/agent-oci.lock"), "utf8"),
+		) as { digest: string };
+		const manager = cfg.customManagers?.find(
+			(entry) => entry.depNameTemplate === "compass-agent-guest",
+		);
+		const expression = manager?.matchStrings?.join("");
+		expect(expression).toBeDefined();
+		const matches = [
+			...readFileSync(
+				join(repoRoot, "guest-image/agent-oci.lock"),
+				"utf8",
+			).matchAll(new RegExp(expression ?? "", "g")),
+		];
+		expect(matches).toHaveLength(1);
+		expect(matches[0]?.[1]).toBe(lock.digest);
+	});
+});
+
 describe("tools/renovate fork prerelease rules", () => {
 	const dep = (name: string): SyntheticDep => ({
 		manager: "bun",

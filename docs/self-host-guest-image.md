@@ -237,10 +237,10 @@ A new agent image reaches deployments in four steps:
    `ghcr.io/rigelbuild/compass-agent:git-<sha12>` and moves `:latest`. See
    [Publishing the agent image](architecture/build-and-ci.md#publishing-the-agent-image).
 2. **Renovate opens the pin PR.** The `compass-agent-guest` manager tracks the
-   `:latest` digest. Its post-upgrade task runs
+   `:latest` OCI index digest. Its post-upgrade task runs
    `bun tools/guest-image/pin-agent-image.ts --relock`. That rewrites
-   `guest-image/agent-oci.lock` with the immutable tag, the manifest digest, and
-   the per-layer digests the nix fetches key on.
+   `guest-image/agent-oci.lock` with the immutable tag, the index digest, and
+   each platform's manifest and ordered layer descriptors.
 3. **The guest-image gate builds, then the artifact republishes.** The pin PR
    changes `guest-image/`, so the CI gate builds the guest from the new lock.
    After merge, `publish-guest-image` publishes a new
@@ -264,24 +264,26 @@ validate it.
 When the guest-image build fails on the agent lock, do not edit hashes. Rerun
 the pin tool and commit the refreshed lock on the same branch.
 
-The nix evaluation fails closed with one of two errors:
+The nix evaluation fails closed with these errors:
 
 - `agent-oci.lock layers do not match the manifest it pins`: the lock is valid,
-  but its layer list is stale. The usual cause is a partial bump. Run the relock
-  that Renovate's post-upgrade task runs:
+  but a platform's layer list is stale. The usual cause is a partial bump. Run
+  the relock that Renovate's post-upgrade task runs:
 
   ```console
   bun tools/guest-image/pin-agent-image.ts --relock
   ```
 
-  `--relock` re-resolves the immutable tag that `:latest` points at, and
-  rewrites every field from the registry. To keep the currently pinned build
-  instead, re-pin its tag (the `tag` field in the lock) with
+  `--relock` re-resolves the immutable tag whose index digest matches `:latest`
+  and rewrites every field from the registry. To keep the currently pinned
+  build instead, re-pin its tag from the lock with `--tag git-<sha12>`.
+- `agent-oci.lock is not a valid pin`: the lock is malformed or is still v1.
+  The pin tool validates the existing lock before it rewrites it, so both modes
+  refuse to run. Restore the lock from `main`, or delete it, then re-pin with
   `--tag git-<sha12>`.
-- `agent-oci.lock is not a valid pin`: the lock is malformed. The pin tool
-  validates the existing lock before it rewrites it, so both modes refuse to
-  run. Restore the lock from `main`, or delete it, then re-pin with
-  `--tag git-<sha12>`.
+- `no agent image member for <system>`: guest images support only
+  `x86_64-linux` and `aarch64-linux`. Use a supported system; there is no
+  single-platform fallback.
 
 Commit the rewritten `guest-image/agent-oci.lock`. The gate then rebuilds
 against digests read from the registry.
