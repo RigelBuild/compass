@@ -357,14 +357,23 @@ func (s *Store) DeleteModelRegistry(ctx context.Context) error {
 	if err := s.checkNoOrphanedProfileRefs(ctx, names); err != nil {
 		return err
 	}
+	return s.tombstoneModelRegistry(ctx, version)
+}
+
+// tombstoneModelRegistry marks the registry deleted only if it still holds
+// version. A concurrent delete that already landed counts as success.
+func (s *Store) tombstoneModelRegistry(ctx context.Context, version int64) error {
 	n, err := s.q.DeleteModelRegistry(ctx, version)
 	if err != nil {
 		return fmt.Errorf("store: delete model registry: %w", err)
 	}
-	if n == 0 {
-		return fmt.Errorf("%w: model registry changed during delete", ErrVersionConflict)
+	if n > 0 {
+		return nil
 	}
-	return nil
+	if _, _, err := s.CurrentModelRegistry(ctx); errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return fmt.Errorf("%w: model registry changed during delete", ErrVersionConflict)
 }
 
 // checkBundleProfileRefsAgainstRegistry is the REVERSE orphan guard mandated by

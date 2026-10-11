@@ -261,12 +261,22 @@ func TestDeleteModelRegistryTombstoneRequiresCheckedVersion(t *testing.T) {
 	if _, err := s.PutModelRegistry(ctx, actor.ID, reg1("sonnet"), checked); err != nil {
 		t.Fatalf("racing update: %v", err)
 	}
-	n, err := s.q.DeleteModelRegistry(ctx, checked)
-	if err != nil || n != 0 {
-		t.Fatalf("tombstone at stale version = (%d rows, %v), want (0, nil)", n, err)
+	if err := s.tombstoneModelRegistry(ctx, checked); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("tombstone at stale version = %v, want ErrVersionConflict", err)
 	}
 	if _, reg, err := s.CurrentModelRegistry(ctx); err != nil || reg.Entries["sonnet"].DisplayName == "" {
 		t.Fatalf("racing update lost: registry = %+v, err = %v", reg, err)
+	}
+	// A delete that lost to another delete has reached the requested state.
+	current, err := s.ModelRegistryVersion(ctx)
+	if err != nil {
+		t.Fatalf("ModelRegistryVersion: %v", err)
+	}
+	if err := s.tombstoneModelRegistry(ctx, current); err != nil {
+		t.Fatalf("first tombstone: %v", err)
+	}
+	if err := s.tombstoneModelRegistry(ctx, current); err != nil {
+		t.Fatalf("tombstone after a concurrent delete = %v, want nil", err)
 	}
 }
 

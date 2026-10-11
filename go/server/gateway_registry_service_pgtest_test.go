@@ -62,10 +62,12 @@ func assertGatewayRegistryVersion(t *testing.T, response *compassv1internal.GetG
 func assertGatewayRegistryQueryContext(t *testing.T, queryStore *gatewayRegistryContextStore) {
 	t.Helper()
 	if !queryStore.currentCalled || queryStore.currentUsedSystemRole {
-		t.Fatalf("GatewayModelRegistry calls = %t with system role %t; want service-bearer request context without system role", queryStore.currentCalled, queryStore.currentUsedSystemRole)
+		t.Fatalf("GatewayModelRegistry calls = %t with system role %t; want no system role",
+			queryStore.currentCalled, queryStore.currentUsedSystemRole)
 	}
 	if !queryStore.versionCalled || queryStore.versionUsedSystemRole {
-		t.Fatalf("ModelRegistryVersion calls = %t with system role %t; want service-bearer request context without system role", queryStore.versionCalled, queryStore.versionUsedSystemRole)
+		t.Fatalf("ModelRegistryVersion calls = %t with system role %t; want no system role",
+			queryStore.versionCalled, queryStore.versionUsedSystemRole)
 	}
 }
 
