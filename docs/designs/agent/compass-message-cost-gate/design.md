@@ -356,3 +356,5 @@ Matt has not seen the `fanout_tokens` unit. All options keep `turnOverhead = 200
 - (c) Threshold `250000`, his suggested start, length cap only.
 
 **Recommendation:** (b): it follows his length-only lean, and the ceiling is a separate row (DL-471) to drop. DL-461, DL-470 and DL-471 stay proposed until he rules.
+
+The Plan builds (a). For (b), drop T4 step 5, `CostGateConfig.HardLimitTokens`, `COMPASS_MESSAGE_FANOUT_HARD_LIMIT`, the `rejected_ceiling` outcome and DL-471. For (c), also set the threshold default to `250000`. The ruling is folded in before merge.
