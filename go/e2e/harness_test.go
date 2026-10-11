@@ -4,7 +4,11 @@ package e2e
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,6 +47,13 @@ func TestHarnessCore(t *testing.T) {
 	if health.State != stack.StatusReady {
 		t.Fatalf("Health state = %v (%s), want Ready", health.State, health.Detail)
 	}
+
+	// The shared stack runs on the suite postgres TestMain started, not one of
+	// its own: one database server per run, however many legs attach.
+	if shared.pgDSN == "" || f.DSN() != shared.pgDSN {
+		t.Fatalf("shared stack DSN = %q, want the suite postgres %q", f.DSN(), shared.pgDSN)
+	}
+	assertNoStackPostgres(t, f)
 
 	// 2. Authed CompassService RPC: GetServerInfo over the TLS door with the admin
 	// bearer succeeds. On the network door GetServerInfo is authenticatedOpen — it
@@ -143,5 +154,16 @@ func assertRunnerHasConfiguredFlags(t *testing.T, f *Fixture) {
 	}
 	if !strings.Contains(runnerLine, "--egress-allow "+strings.Join(f.egressAllow, ",")) {
 		t.Fatalf("runner argv missing comma-joined --egress-allow: %q", runnerLine)
+	}
+}
+
+// assertNoStackPostgres requires that the shared stack never ran its own
+// compass-postgres. That wrapper runs initdb into <stateDir>/postgres before it
+// binds, so the data dir is a lasting trace even if the process has exited.
+func assertNoStackPostgres(t *testing.T, f *Fixture) {
+	t.Helper()
+	dataDir := filepath.Join(filepath.Dir(f.caPath), "postgres")
+	if _, err := os.Stat(dataDir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the shared stack ran its own postgres: %s exists (stat err %v)", dataDir, err)
 	}
 }

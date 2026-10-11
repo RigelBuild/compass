@@ -29,6 +29,9 @@ type sharedState struct {
 	opts    []fixtureOption
 	closed  bool
 	stoodUp bool
+	// pgDSN is the suite postgres TestMain started; the shared stack attaches
+	// to it with ExternalDatabase instead of spawning its own.
+	pgDSN string
 	// env is the process environment before stand-up. The detached owner's
 	// t.Setenv cleanups never run, so shutdownShared restores it by hand.
 	env []string
@@ -124,9 +127,13 @@ func standUpShared(ctx context.Context, opts ...fixtureOption) (*Fixture, error)
 	observe := WithStackObserver(func(st *stack.Stack) { live = st })
 
 	var f *Fixture
+	opts = append([]fixtureOption{WithSite(site), observe}, opts...)
+	if shared.pgDSN != "" {
+		opts = append(opts, withExternalDatabase(shared.pgDSN))
+	}
 	tempDirs, err := runDetached(func(tb testing.TB) {
 		tb.Helper()
-		f = NewFixture(ctx, tb, append([]fixtureOption{WithSite(site), observe}, opts...)...)
+		f = NewFixture(ctx, tb, opts...)
 	})
 	if err != nil {
 		if live != nil {
