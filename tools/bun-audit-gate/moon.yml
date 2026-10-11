@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# A Bun advisory gate. Its live `gate` task runs outside the affected CI matrix.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  gate:
+    command: 'bun run tools/bun-audit-gate/index.ts'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs: ['index.ts', 'allowlist.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

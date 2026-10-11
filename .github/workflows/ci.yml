@@ -268,6 +268,42 @@ jobs:
         # that lets moon own discovery without a stale YAML enumeration.
         run: bun run tools/ci-matrix/index.ts
 
+  bun-audit:
+    name: bun-audit
+    runs-on: ubuntu-latest
+    # Run the live advisory database gate independently of Moon's affected graph.
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Audit Bun lockfile
+        run: bun run tools/bun-audit-gate/index.ts
+
   moon:
     name: moon (${{ matrix.group }})
     runs-on: ubuntu-latest
@@ -2702,7 +2738,7 @@ jobs:
     #     red required check. It differs from `always()` in the one case that
     #     matters: when the RUN is cancelled — every push to a ref supersedes the
     #     prior in-flight run via the `cancel-in-progress` concurrency above,
-    #     which cancels both work jobs — `always()` would STILL run this rollup,
+    #     which cancels every work job — `always()` would STILL run this rollup,
     #     see `needs.moon.result == 'cancelled'`, and red the required `rollup`
     #     check on that superseded commit. On a busy main that is a false red on
     #     nearly every intermediate merge. `!cancelled()` instead SKIPS the
@@ -2719,7 +2755,7 @@ jobs:
     #     against one's own gating run and is the accepted, standard `!cancelled()`
     #     tradeoff; `always()` would have red'd it instead.
     #   - the work jobs stay off a regen dispatch (exactly one regen lane runs
-    #     there, selected by `regen`, with an empty `pr` input), so both `needs` skip —
+    #     there, selected by `regen`, with an empty `pr` input), so every `needs` entry skips —
     #     this rollup must skip too, or `!cancelled()` would red the required
     #     check on `skipped != success` for a run that never gates a merge. It
     #     DOES run on a base-re-point re-trigger (workflow_dispatch with a
@@ -2727,7 +2763,7 @@ jobs:
     # `!cancelled()` must be parenthesized against the dispatch OR group: `&&`
     # binds tighter than `||`, so without the parens the trailing
     # `|| inputs.pr != ''` would detach from the AND.
-    needs: [setup, moon, e2e, pgtest, microvm, forge-oracle, gtk4-e2e, darwin, agent-fod-arm64]
+    needs: [setup, moon, bun-audit, e2e, pgtest, microvm, forge-oracle, gtk4-e2e, darwin, agent-fod-arm64]
     if: >-
       !cancelled() &&
       (github.event_name != 'workflow_dispatch' ||
@@ -2740,7 +2776,7 @@ jobs:
         # cancelled RUN skips the whole rollup, and a fixture-regen dispatch
         # skips it too.
         #
-        # `setup` and `moon` are UNCONDITIONALLY required: they run on every gate
+        # `setup`, `moon`, and `bun-audit` are UNCONDITIONALLY required: they run on every gate
         # event, so only plain `success` passes for them — a failure, a per-job
         # cancellation (timeout), or a skip all red the required check. `moon`'s
         # result is the matrix job's aggregate across its legs: any leg failing
@@ -2759,6 +2795,7 @@ jobs:
         run: |
           setup='${{ needs.setup.result }}'
           moon='${{ needs.moon.result }}'
+          bun_audit='${{ needs.bun-audit.result }}'
           e2e='${{ needs.e2e.result }}'
           pgtest='${{ needs.pgtest.result }}'
           microvm='${{ needs.microvm.result }}'
@@ -2772,16 +2809,20 @@ jobs:
           gtk4_flag='${{ needs.setup.outputs.gtk4_affected }}'
           darwin_flag='${{ needs.setup.outputs.darwin_affected }}'
           agent_fod_flag='${{ needs.setup.outputs.agent_fod_affected }}'
-          echo "setup=$setup moon=$moon e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4 darwin=$darwin agent-fod-arm64=$agent_fod"
+          echo "setup=$setup moon=$moon bun-audit=$bun_audit e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4 darwin=$darwin agent-fod-arm64=$agent_fod"
           echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag darwin=$darwin_flag agent-fod=$agent_fod_flag"
           rc=0
-          # setup and moon must plainly succeed.
+          # setup, moon, and bun-audit must plainly succeed.
           if [ "$setup" != "success" ]; then
             echo "::error::setup did not succeed (result=$setup)"
             rc=1
           fi
           if [ "$moon" != "success" ]; then
             echo "::error::the moon battery did not succeed (result=$moon)"
+            rc=1
+          fi
+          if [ "$bun_audit" != "success" ]; then
+            echo "::error::bun-audit did not succeed (result=$bun_audit)"
             rc=1
           fi
           # e2e is not affected-gated — plain success required.

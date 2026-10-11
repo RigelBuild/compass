@@ -1,0 +1,7 @@
+[
+	{
+		"id": "GHSA-vfj7-8cjw-p6xm",
+		"package": "braces",
+		"reason": "No fixed release; latest is 3.0.3, reached via micromatch → fast-glob."
+	}
+]
