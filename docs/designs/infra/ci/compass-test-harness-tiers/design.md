@@ -417,6 +417,14 @@ shared-attach handles with a per-run nonce.
 - Test cycle: full `go test -tags podman -race ./e2e/...` — the migrated legs
   are the assertion; record the wall-time delta in the PR body.
 
+*Errata (as shipped).* T3's goal shipped by a different route, and T3 is
+closed as satisfied. Shared legs attach through `sharedFixture(t)`
+(`go/e2e/shared_fixture.go`). Plain `NewFixture` is the own-stack opt-out, so
+there is no `WithOwnStack()`. Canned routes register from `TestMain` through
+`registerSharedFixtureOption` and are fixed when the stub is built. Shared legs
+route by marker, so no `LoadScript` reset exists. T4 builds on `NewFixture`,
+and T6 documents `sharedFixture` vs `NewFixture`.
+
 ### T4 — the embedded-postgres smoke leg
 
 New `go/e2e/embedded_postgres_test.go` (`//go:build podman`):
@@ -452,6 +460,11 @@ this task is a pgtest-internal dedup, not a cross-tier API.
   (`relay_forge.go:64`).
 - Test cycle: `go test -tags pgtest ./server/ -run ForgeE2E`.
 
+*Errata (as shipped).* T5 is closed as satisfied. `newForgeE2EWire`
+(`go/server/forge_e2e_pgtest_test.go`) is already the one test mount of
+`hub.SetForgeCaller(newForgeService(...))`. Both forge e2e pgtest files build
+through it, so no `mountForgeForTest` exists.
+
 ### T6 — document the tier pyramid
 
 `docs/eng/testing-tiers.md` (or the sibling location `docs/designs/repo/
@@ -473,12 +486,12 @@ docs.
 - [ ] T2 — shared stack + suite postgres in e2e `TestMain`
       (`ExternalDatabase: true`), gates run once. Owner: implement lane
       (depends T1).
-- [ ] T3 — `WithOwnStack()` + leg migration + shared canned-stub
-      `LoadScript`. Owner: implement lane (depends T2).
+- [x] T3 — `WithOwnStack()` + leg migration + shared canned-stub
+      `LoadScript`. Satisfied on main by `sharedFixture`; see T3 errata.
 - [ ] T4 — `TestEmbeddedPostgresSmoke` + `WithEmbeddedPostgres()`. Owner:
       implement lane (depends T3).
-- [ ] T5 — forge-injection convergence (`mountForgeForTest`). Owner:
-      implement lane (depends T1 only).
+- [x] T5 — forge-injection convergence (`mountForgeForTest`). Satisfied on
+      main by `newForgeE2EWire`; see T5 errata.
 - [ ] T6 — tier-pyramid contributor doc. Owner: implement lane (depends
       T3/T4 landing so the doc describes reality).
 
