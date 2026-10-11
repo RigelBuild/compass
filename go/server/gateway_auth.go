@@ -13,7 +13,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// gatewayTokenVerifier is the slice of auth.TokenMinter the verify door needs.
+// gatewayTokenVerifier is the verifier shared by the gateway auth and credential doors.
 type gatewayTokenVerifier interface {
 	Verify(ctx context.Context, token string) (store.GatewayCaller, error)
 }

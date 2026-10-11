@@ -14,6 +14,7 @@ import (
 type GatewayCaller struct {
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
+	TenantID       TenantID
 }
 
 // RotateGatewayToken stores hash as agentID's only live gateway token, revoking
@@ -89,7 +90,7 @@ func (s *Store) ResolveGatewayToken(ctx context.Context, hash [32]byte) (Gateway
 		}
 		return GatewayCaller{}, fmt.Errorf("store: resolve gateway token: %w", err)
 	}
-	return GatewayCaller{AgentAccountID: AccountID(row.AgentAccountID), OwnerUserID: AccountID(row.OwnerUserID)}, nil
+	return GatewayCaller{AgentAccountID: AccountID(row.AgentAccountID), OwnerUserID: AccountID(row.OwnerUserID), TenantID: TenantID(row.TenantID)}, nil
 }
 
 // lockGatewayTokenAgent locks the agent row so concurrent rotations serialize.

@@ -50,19 +50,20 @@ func (q *Queries) LockGatewayTokenAgent(ctx context.Context, accountID string) (
 }
 
 const resolveLiveGatewayToken = `-- name: ResolveLiveGatewayToken :one
-SELECT agent_account_id, owner_user_id FROM gateway_tokens
+SELECT agent_account_id, owner_user_id, tenant_id FROM gateway_tokens
 WHERE hash = $1 AND revoked_at IS NULL
 `
 
 type ResolveLiveGatewayTokenRow struct {
 	AgentAccountID string
 	OwnerUserID    string
+	TenantID       string
 }
 
 func (q *Queries) ResolveLiveGatewayToken(ctx context.Context, hash []byte) (ResolveLiveGatewayTokenRow, error) {
 	row := q.db.QueryRow(ctx, resolveLiveGatewayToken, hash)
 	var i ResolveLiveGatewayTokenRow
-	err := row.Scan(&i.AgentAccountID, &i.OwnerUserID)
+	err := row.Scan(&i.AgentAccountID, &i.OwnerUserID, &i.TenantID)
 	return i, err
 }
 

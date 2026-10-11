@@ -12,5 +12,5 @@ WHERE agent_account_id = $1 AND tenant_id = $2 AND revoked_at IS NULL;
 INSERT INTO gateway_tokens (hash, agent_account_id, owner_user_id, tenant_id) VALUES ($1, $2, $3, $4);
 
 -- name: ResolveLiveGatewayToken :one
-SELECT agent_account_id, owner_user_id FROM gateway_tokens
+SELECT agent_account_id, owner_user_id, tenant_id FROM gateway_tokens
 WHERE hash = $1 AND revoked_at IS NULL;
