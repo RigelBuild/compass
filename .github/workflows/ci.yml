@@ -1748,10 +1748,10 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put bun on PATH
-        # The check is a bun script that shells `nix build`; bun is the pinned one.
+        # Build the derivation, not `langs`' store-path string: the arm bun is in
+        # no cache, so only its derivation can produce it.
         run: |
-          bun=$(nix eval --raw -f tools/toolchain/gate-tools.nix langs.bun.store)
-          nix build --no-link "$bun"
+          bun=$(nix build --no-link --print-out-paths -f tools/toolchain/gate-tools.nix bun)
           echo "$bun/bin" >>"$GITHUB_PATH"
 
       - name: Check the aarch64-linux node_modules FOD pin
