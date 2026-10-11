@@ -99,9 +99,15 @@ reads only `Authorization`, and `startAuthGateway`
 (`packages/ai/src/auth-gateway/server.ts`) refuses any other admission:
 
 ```ts
-/** The bearer token from `Authorization`, or `undefined` when none (or a blank one) is presented. */
-export function presentedBearer(req: Request): string | undefined {
-// Only an `Authorization: Bearer` admission can be confined, so any other is refused.
+// presentedBearer
+const token = req.headers
+	.get("authorization")
+	?.match(/^Bearer\s+(.+)$/i)?.[1]
+	.trim();
+// startAuthGateway fetch handler
+if (!isCallerIdentity(admitted) || (bearer === undefined && admitted !== UNAUTHENTICATED_CALLER)) {
+	return withCors(json(401, { error: "unauthorized" }), req);
+}
 ```
 
 The store reads the scope when it starts a door call or queues a write; the
@@ -297,7 +303,8 @@ A streamed turn outlives `route`. `handleFormatEndpoint`
 (`packages/ai/src/auth-gateway/server.ts`) returns
 `new Response(sseStream, {`, and `streamSimpleRequest`
 (`packages/ai/src/stream.ts`) runs its producer as `void (async () => {`. On
-an upstream auth failure, that producer calls the API-key resolver again,
+an upstream auth failure, that producer asks the resolver for a new key
+(`const nextKey = await resolveNextAuthRetryKey(retryState, apiKeyResolver, failure.error, …)`),
 so a refresh write can run after `route` returns. The scope still holds:
 "The store is accessible to any asynchronous operations created within the
 callback" ([Node.js `AsyncLocalStorage.run`](https://nodejs.org/api/async_context.html)).
