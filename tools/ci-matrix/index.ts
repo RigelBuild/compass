@@ -114,6 +114,8 @@ export const AGENT_FOD_TASK = "renovate:agent-fod";
  * running the whole live oracle and flaking on a Linear API blip). Oracle-wiring
  * changes are still covered: every push to main and every schedule full-sweeps
  * the oracle unconditionally (isFullSweep below).
+ * PR paths use `HEAD^1..HEAD`: GitHub's first merge parent is the base it merged,
+ * so base churn or main drift cannot add files to this PR's trigger.
  */
 const FORGE_PATH_RE = /^go\/internal\/forge\//;
 /**
@@ -458,6 +460,27 @@ export function outputLines(out: GenOutput): string[] {
 	];
 }
 
+/** Resolve PR-changed paths from GitHub's merge commit. */
+export async function prChangedPaths(cwd = process.cwd()): Promise<string[]> {
+	const mergeParent = await $`git rev-parse --verify --quiet HEAD^2`
+		.cwd(cwd)
+		.nothrow()
+		.quiet();
+	if (mergeParent.exitCode !== 0) {
+		throw new Error(
+			"pull_request checkout is not GitHub's merge ref: HEAD^2 does not resolve",
+		);
+	}
+	const diff = await $`git diff --name-only HEAD^1 HEAD`
+		.cwd(cwd)
+		.quiet()
+		.text();
+	return diff
+		.split("\n")
+		.map((path) => path.trim())
+		.filter((path) => path !== "");
+}
+
 async function main(): Promise<void> {
 	const eventNameRaw = process.env.GITHUB_EVENT_NAME ?? "push";
 	const event: GenInput["event"] =
@@ -500,20 +523,7 @@ async function main(): Promise<void> {
 
 		// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
 		// where the flags are unconditionally true).
-		let changedPaths: string[] = [];
-		if (event === "pull_request") {
-			const baseRef = process.env.GITHUB_BASE_REF ?? "";
-			if (baseRef !== "") {
-				const diff = await $`git diff --name-only origin/${baseRef}...HEAD`
-					.nothrow()
-					.quiet()
-					.text();
-				changedPaths = diff
-					.split("\n")
-					.map((l) => l.trim())
-					.filter((l) => l !== "");
-			}
-		}
+		const changedPaths = event === "pull_request" ? await prChangedPaths() : [];
 
 		const out = generate({
 			projects,

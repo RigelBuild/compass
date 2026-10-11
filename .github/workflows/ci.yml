@@ -196,11 +196,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fetch-depth 0 gives the base branch history the generator's affected
-          # closure + the forge/gtk4 changed-paths diff need. moon reads the base
-          # from GITHUB_BASE_REF and diffs against it; the generator's own path
-          # detection diffs base...HEAD — both need real history, not a shallow
-          # single-ref checkout.
+          # fetch-depth 0 keeps moon's affected-closure history. PR paths compare
+          # the merge ref to HEAD^1, avoiding files from base churn or main drift.
           fetch-depth: 0
           # On a base-re-point re-trigger (workflow_dispatch with pr set) check
           # out the PR's merge ref, which GitHub recomputes against the new base
@@ -259,8 +256,9 @@ jobs:
         id: gen
         # The discovery + grouping edge: runs `moon query projects` (affected
         # closure on a PR via GITHUB_BASE_REF; full set on push/schedule) and its
-        # own base...HEAD changed-paths diff for the forge/gtk4 detection, then
-        # translates that into the matrix + the four affected flags written to
+        # HEAD^1..HEAD changed-paths diff for forge/gtk4. GitHub's merge-ref first
+        # parent is the base it merged, so base churn or main drift cannot add files.
+        # Translates that into the matrix + affected flags written to
         # $GITHUB_OUTPUT (mapped up into this job's `outputs:` above). The pure
         # translation core is exhaustively unit-tested; this invocation is the
         # thin impure shell around it. It fails loud (exit 1, `::error::`) on any
@@ -1137,7 +1135,8 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The forge-affected git diff needs the base branch history.
+          # PR paths compare the merge ref with HEAD^1, the base GitHub merged;
+          # base churn or main drift cannot add files to the forge affected set.
           fetch-depth: 0
           # Base-repoint re-trigger checks out the recomputed merge ref; empty
           # on every other event (see setup's checkout).
@@ -1207,30 +1206,15 @@ jobs:
         # unconditionally. This mirrors the ci-matrix generator's FORGE_PATH_RE;
         # the two must stay in step.
         #
-        # GitHub exposes no changed-paths primitive to a step `if:`, so — exactly
-        # as the e2e job resolves image_affected into $GITHUB_OUTPUT for its
-        # own `if:` to read — this step computes the boolean and the oracle's
-        # `if:` reads steps.forge_affected.outputs.forge_affected. The checkout is
-        # fetch-depth 0 (see the checkout step), so the base branch's history is
-        # present locally; GITHUB_BASE_REF names the PR's base. `git diff
-        # --name-only origin/$GITHUB_BASE_REF...HEAD` lists the PR's changed files
-        # against the merge-base, and the grep is the path filter. Paths are
-        # repo-relative (this step's working-directory is go/, but git reports
-        # from the repo root), so the forge glob is the full go/internal/forge/
-        # prefix. On push/schedule this step never runs (the `if:` below), so the
-        # output is unset and the oracle's push/schedule arms carry it regardless.
+        # This pull_request gate computes the oracle flag. The merge ref's first
+        # parent is the merged base, so HEAD^1..HEAD excludes base churn and drift.
         if: github.event_name == 'pull_request'
         run: |
-          base="origin/${GITHUB_BASE_REF}"
-          # Fail LOUD if the base ref does not resolve rather than swallowing the
-          # error as "not affected" (mirrors the gtk4-affected gate): an
-          # unresolvable base (e.g. a stacked PR's base churning under a
-          # base re-point) must red the gate, never skip it green.
-          if ! git rev-parse --verify --quiet "$base" >/dev/null; then
-            echo "::error::forge affected gate: base ref $base does not resolve — cannot compute the affected set"
+          if ! git rev-parse --verify --quiet HEAD^2 >/dev/null; then
+            echo "::error::forge affected gate: checkout is not GitHub's merge ref (HEAD^2 does not resolve)"
             exit 1
           fi
-          changed=$(git diff --name-only "$base...HEAD")
+          changed=$(git diff --name-only HEAD^1 HEAD)
           if printf '%s\n' "$changed" \
             | grep -qE '^go/internal/forge/'; then
             echo "forge_affected=true" >>"$GITHUB_OUTPUT"
@@ -1422,7 +1406,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The gtk4 affected `git -C ..` diff needs the base branch history.
+          # PR paths compare the merge ref with HEAD^1, the base GitHub merged;
+          # base churn or main drift cannot add files to the gtk4 affected set.
           fetch-depth: 0
           # Base-re-point re-trigger checks out the recomputed merge ref; empty
           # on every other event (see setup's checkout).
@@ -1530,22 +1515,18 @@ jobs:
           # Decide whether this event must run the gate.
           run_it=1
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            base="origin/${GITHUB_BASE_REF}"
-            # fetch-depth:0 (job checkout) gives the base ref for the diff. Fail
-            # LOUD if it does not resolve rather than swallowing the error as
-            # "not affected": an unresolvable base (e.g. a stacked PR's base
-            # churning under a base re-point) must red the gate,
-            # never skip it green. No `|| true` on the diff for the same reason —
-            # under `bash -e` a genuine diff failure aborts the step.
-            if ! git -C .. rev-parse --verify --quiet "$base" >/dev/null; then
-              echo "::error::gtk4 e2e affected gate: base ref $base does not resolve — cannot compute the affected set"
+            # GitHub's merge-ref first parent is the merged base, so HEAD^1..HEAD
+            # contains only PR files, unaffected by base churn or main drift.
+            # Fail LOUD if the checkout is not the two-parent merge ref.
+            if ! git -C .. rev-parse --verify --quiet HEAD^2 >/dev/null; then
+              echo "::error::gtk4 e2e affected gate: checkout is not GitHub's merge ref (HEAD^2 does not resolve)"
               exit 1
             fi
             # The e2e lane is the ONLY CI lane that compiles the shell, so a
             # closure-only PR (the T2 atk/gdk-pixbuf trim) must trigger it too —
             # keying on go/cmd/compass-app/ alone would skip it (F2). Mirrors the
             # gtk4Affected trigger in tools/ci-matrix/index.ts.
-            changed=$(git -C .. diff --name-only "$base"...HEAD -- \
+            changed=$(git -C .. diff --name-only HEAD^1 HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
               tools/toolchain/gtk-e2e-env.nix \
@@ -1797,7 +1778,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The darwin affected `git -C ..` diff needs the base branch history.
+          # PR paths compare the merge ref with HEAD^1, the base GitHub merged;
+          # base churn or main drift cannot add files to the darwin affected set.
           fetch-depth: 0
           # Base-re-point re-trigger checks out the recomputed merge ref; empty
           # on every other event (see setup's checkout).
@@ -1886,13 +1868,11 @@ jobs:
           # Decide whether this event must run the gate.
           run_it=1
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            base="origin/${GITHUB_BASE_REF}"
-            # fetch-depth:0 (job checkout) gives the base ref for the diff. Fail
-            # LOUD if it does not resolve rather than swallowing the error as
-            # "not affected": an unresolvable base must red the gate, never skip
-            # it green. No `|| true` on the diff for the same reason.
-            if ! git rev-parse --verify --quiet "$base" >/dev/null; then
-              echo "::error::darwin affected gate: base ref $base does not resolve — cannot compute the affected set"
+            # GitHub's merge-ref first parent is the merged base, so HEAD^1..HEAD
+            # contains only PR files, unaffected by base churn or main drift.
+            # Fail LOUD if the checkout is not the two-parent merge ref.
+            if ! git rev-parse --verify --quiet HEAD^2 >/dev/null; then
+              echo "::error::darwin affected gate: checkout is not GitHub's merge ref (HEAD^2 does not resolve)"
               exit 1
             fi
             # The darwin lane compiles the SAME shell the gtk4 lane does, so a
@@ -1901,7 +1881,7 @@ jobs:
             # every first-party package they compile in — `go list -deps` resolves
             # those non-cmd roots to {events, gen, internal, server}. Mirrors the
             # darwinAffected trigger in tools/ci-matrix/index.ts.
-            changed=$(git diff --name-only "$base"...HEAD -- \
+            changed=$(git diff --name-only HEAD^1 HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
               tools/toolchain/gtk-e2e-env.nix \
