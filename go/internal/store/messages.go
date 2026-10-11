@@ -295,8 +295,8 @@ func updateMessageBlocksExec(ctx context.Context, dbtx db.DBTX, id MessageID, bl
 
 // UpdateMessageBlocksAsAuthor replaces a message's block set UNDER an acting
 // account — the only update path safe for a message id that arrives from
-// outside the Server's own trust boundary (a relayed agent MessageUpdated
-// frame, RIG-1364 T3).
+// outside the Server's own trust boundary. It has no production caller; only
+// the comms pgtest helper commitAgentUpdate drives it.
 //
 // Why it is a fork and not a flag on the shared core. updateMessageBlocksExec
 // addresses the row by a bare MessageID with NO participation and NO authorship
@@ -372,8 +372,8 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AuthorHandle, row.AtUnixMs, row.Blocks, row.TurnSequence)
 }
 
-// MessageAskIDs returns the message's ask_ids in block order for the relayed
-// UPDATE's reconciliation. It applies UpdateMessageBlocksAsAuthor's author +
+// MessageAskIDs returns the message's ask_ids in block order for an author
+// update's reconciliation. It applies UpdateMessageBlocksAsAuthor's author +
 // member predicate, so an uneditable message is ErrNotFound like an unknown id;
 // the UPDATE re-checks authz, and each ask_id is immutable once minted.
 func (s *Store) MessageAskIDs(ctx context.Context, actor AccountID, id MessageID) ([]string, error) {

@@ -1,4 +1,4 @@
-//go:build pgtest
+//go:build pgtest && unix
 
 package comms
 
@@ -148,19 +148,19 @@ func TestPostMessageRejectsAskAnswerBlock(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostMessage with an ask_answer block")
 }
 
-// TestCommitAgentUpdateRejectsAskAnswerBlock pins the SAME server-ownership
-// enforcement on the agent-update path: a relayed update frame carrying an
+// TestAgentUpdateRejectsAskAnswerBlock pins the SAME server-ownership
+// enforcement on the agent author-update path: an update carrying an
 // ask_answer block is refused with CodeInvalidArgument. updateBlocksFromWire
 // rejects before any store access, so this needs only an actor — no seeded row.
 // Mirrors TestPostMessageRejectsAskAnswerBlock so a regression deleting either
 // wire-edge reject arm reddens a test.
-func TestCommitAgentUpdateRejectsAskAnswerBlock(t *testing.T) {
+func TestAgentUpdateRejectsAskAnswerBlock(t *testing.T) {
 	h := newStreamHarness(t)
 	ctx := context.Background()
 	owner := mustUser(t, h.store, "owner")
 	agent := mustAgent(t, h.store, owner.ID, "agent")
 
-	_, err := h.svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame("msg-1", []*compassv1.MessageBlock{{
+	_, err := commitAgentUpdate(ctx, h.svc, agent.ID, updatedFrame("msg-1", []*compassv1.MessageBlock{{
 		Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
 			Ask: &compassv1.Ask{
 				AskId:     "ask-1",
@@ -170,5 +170,5 @@ func TestCommitAgentUpdateRejectsAskAnswerBlock(t *testing.T) {
 			AskerAccountId: string(agent.ID),
 		}},
 	}}))
-	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate with an ask_answer block")
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "commitAgentUpdate with an ask_answer block")
 }

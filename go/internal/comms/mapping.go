@@ -432,42 +432,6 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 	return out, nil
 }
 
-// updateBlocksFromWire maps wire blocks for the UPDATE write-through
-// (CommitAgentUpdate), differing from blocksFromWire in ONE respect: an ask
-// block PRESERVES its wire ask_id rather than stripping it. Stripping is correct
-// for a POST (the server mints a fresh id via mintAskIDs), but an update carries
-// the id the append already minted — dropping it would make every ask-bearing
-// update fail the store's immutable-ask_id check. The preserved value is NOT
-// trusted as-is: CommitAgentUpdate reconciles it against the stored row before
-// the write (an empty id is filled from the stored ask, a non-empty id that
-// disagrees with the stored one is rejected as a forged frame).
-func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, error) {
-	out := make([]store.MessageBlock, 0, len(blocks))
-	for _, b := range blocks {
-		switch body := b.GetBlock().(type) {
-		case *compassv1.MessageBlock_Text:
-			if body == nil {
-				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
-			}
-			text := body.Text
-			out = append(out, store.MessageBlock{Text: &text})
-		case *compassv1.MessageBlock_Ask:
-			if body == nil {
-				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
-			}
-			out = append(out, store.MessageBlock{Ask: askFromWireForUpdate(body.Ask)})
-		case *compassv1.MessageBlock_AskAnswer:
-			// ask_answer is server-owned: an inbound one on the agent update
-			// path is rejected at this edge, mirroring the POST path.
-			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock)
-		default:
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errEmptyBlock)
-		}
-	}
-	return out, nil
-}
-
 func askFromWire(a *compassv1.Ask) *store.Ask {
 	// ask_id is server-owned on the POST path: drop any caller-supplied value so
 	// the store's mintAskIDs assigns a fresh, globally-unique id on append. Honoring
@@ -476,18 +440,7 @@ func askFromWire(a *compassv1.Ask) *store.Ask {
 	return &store.Ask{AskID: "", Questions: askQuestionsFromWire(a)}
 }
 
-// askFromWireForUpdate is askFromWire's UPDATE sibling: it PRESERVES the wire
-// ask_id (an update must carry back the id minted at append) instead of
-// stripping it. Safe only because CommitAgentUpdate reconciles the preserved
-// value against the immutable stored ask_id before writing — this mapper alone
-// does not trust it.
-func askFromWireForUpdate(a *compassv1.Ask) *store.Ask {
-	return &store.Ask{AskID: a.GetAskId(), Questions: askQuestionsFromWire(a)}
-}
-
-// askQuestionsFromWire maps an ask's questions onto store types, shared by the
-// POST (askFromWire) and UPDATE (askFromWireForUpdate) mappers — the two differ
-// only in ask_id handling, never in how the question set crosses the edge.
+// askQuestionsFromWire maps an ask's questions onto store types.
 func askQuestionsFromWire(a *compassv1.Ask) []store.AskQuestion {
 	questions := make([]store.AskQuestion, len(a.GetQuestions()))
 	for i, q := range a.GetQuestions() {

@@ -9,7 +9,6 @@ package comms
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
@@ -17,13 +16,6 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
-
-// agentConversationTopic is the topic name a relayed agent conversation frame is
-// committed under (CommitAgentPost, a test-only helper). The landed store has no
-// home-topic default, so an append must name a topic; a relayed frame carries no
-// routing of its own, so its turns collect under this one get-or-created topic in
-// the agent's channel. "general" matches the store's own test convention.
-const agentConversationTopic = "general"
 
 // errNoActor is the fail-closed cause when PostAsAccount/ListAsAccount is called
 // without a resolved account. It maps to CodeInvalidArgument — a server-side
@@ -62,40 +54,6 @@ type notAgentAccountError struct{}
 
 func (notAgentAccountError) Error() string {
 	return "comms: agent-initiated call resolved to a non-agent account, which has no home channel; the session->account binding is wrong"
-}
-
-// askIDMismatchError is the cause when a relayed UPDATE frame's ask block carries
-// a non-empty ask_id that DISAGREES with the id stored for that block — a
-// forged/malformed frame, distinct from an ask block that simply arrived id-less
-// (which reconcileUpdateAskIDs fills from the stored row). It maps to
-// CodeInvalidArgument, but its own message so the mismatch reads as the specific
-// defect it is, never conflated with the generic "no ask_id" refusal.
-type askIDMismatchError struct {
-	block  int
-	wire   string
-	stored string
-}
-
-func (e askIDMismatchError) Error() string {
-	return fmt.Sprintf(
-		"comms: block %d ask_id %q from the update frame does not match the stored ask_id %q; ask_id is immutable and an update must carry the stored id, not a different one",
-		e.block, e.wire, e.stored)
-}
-
-// surplusAskError is the cause when a relayed UPDATE frame carries MORE ask
-// blocks than the stored message has — a surplus ask with no stored counterpart
-// to reconcile against. An update cannot introduce a new ask (a fresh ask_id is
-// minted only on POST), so a surplus ask is always illegitimate: rejecting it
-// keeps a caller-chosen ask_id off the UPDATE path, the same no-forged-ask_id
-// invariant askFromWire enforces for POST. Maps to CodeInvalidArgument.
-type surplusAskError struct {
-	block int
-}
-
-func (e surplusAskError) Error() string {
-	return fmt.Sprintf(
-		"comms: block %d is an ask the stored message does not have; an update cannot introduce a new ask (ask_id is minted only when the ask is first posted)",
-		e.block)
 }
 
 // PostAsAccount executes one agent-initiated PostMessage as account. It sets the
@@ -164,7 +122,7 @@ func (c *Comms) ListAsAccount(
 // real channel id within account's visible set, then delegates to the id-typed
 // PostAsAccount. This is the ONLY caller that treats the container arm as a name;
 // PostAsAccount stays id-typed for its internal id-holder co-callers
-// (postSetupThread, CommitAgentPost, the offline-mention e2e), which the design
+// (postSetupThread, the offline-mention e2e), which the design
 // record's "resolve in PostAsAccount" wording predates.
 //
 // Per R2 there is NO home-channel default at the tool level: an empty channel
@@ -414,154 +372,6 @@ func (c *Comms) OpenDMAsAccount(
 		return nil, connect.NewError(connect.CodeInternal, errors.New("comms OpenDMAsAccount: OpenDM returned nil response"))
 	}
 	return resp.Msg, nil
-}
-
-// CommitAgentPost commits one relayed MessagePosted frame as a durable comms row
-// under account. It builds a PostMessageRequest from the frame's blocks and
-// delegates to PostAsAccount, so this is the SAME PostMessage handler path a
-// human takes: same store calls, same D9 write-authz, same idempotency, same
-// MessagePosted fan-out. No new authz code exists here to drift from the human
-// path.
-//
-// The Container is deliberately left UNSET — defaultChannel fills an empty
-// channel_id from the account's home channel, so a relayed frame lands in the
-// agent's own channel for free (the agent mints no server ids and the Runner
-// plumbs no channel). The topic, by contrast, MUST be named: the landed store
-// requires exactly one of topic id or name on every append (there is no
-// home-topic default), so this routes the frame to the agent channel's
-// conversation topic by name.
-//
-// This unkeyed post sets no ClientRequestId, so it is loss-tolerant, not
-// at-most-once. It has no production caller — the ConversationSink write-through
-// that drove it was removed — and survives only as a test helper for the
-// PostMessage-through-an-agent-account path.
-func (c *Comms) CommitAgentPost(
-	ctx context.Context,
-	account store.AccountID,
-	posted *compassv1.MessagePosted,
-) (*compassv1.PostMessageResponse, error) {
-	if account == "" {
-		return nil, errNoActor
-	}
-	return c.PostAsAccount(ctx, account, &compassv1.PostMessageRequest{
-		// Container unset: routes to the agent's home channel (defaultChannel).
-		// Topic named: the store has no home-topic default, so the frame's
-		// conversation is addressed by topic name.
-		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: agentConversationTopic},
-		CreateTopic:  true,
-		Blocks:       posted.GetMessage().GetBlocks(),
-		TurnSequence: posted.GetTurnSequence(),
-	})
-}
-
-// CommitAgentUpdate applies one relayed MessageUpdated frame to the row it
-// addresses, under account. A streaming turn re-sends its FULL current block set
-// (comms.proto:388-390), so this replaces the block set rather than appending.
-//
-// It goes through store.UpdateMessageBlocksAsAuthor rather than the store's
-// unauthorizing core: that core takes a bare MessageID with no membership and no
-// authorship check, which is safe for AnswerAsk's already-gated call but is a
-// privilege hole for an id that arrived on a relayed frame. The authorizing
-// variant requires the actor to be both a member of the message's channel and its
-// author, and collapses every refusal — unknown id, foreign message, revoked
-// membership — to one ErrNotFound, so a relayed frame cannot enumerate messages
-// it may not touch (the D9 not-found/forbidden merge).
-//
-// Errors map through edgeError to the same Connect codes a human caller gets:
-// CodeNotFound for a refused row, CodeInvalidArgument for a malformed frame (an
-// empty message.id, an empty block set, or an ask block whose ask_id cannot be
-// reconciled against the stored row — see reconcileUpdateAskIDs). Those are the
-// refusals the hub treats as non-fatal drops rather than stream teardowns.
-//
-// Ask_id handling is the one place the UPDATE frame differs from a POST. A POST
-// strips any wire ask_id and lets the store mint one; an update must instead
-// carry back the id the append already minted, so this path maps blocks with
-// updateBlocksFromWire (which PRESERVES the wire ask_id) and then reconciles that
-// id against the stored row before the write. The stored ask_id is authoritative
-// (it is immutable once minted), so reconciliation fills an id-less update ask
-// from the stored ask and rejects a non-empty wire ask_id that disagrees with
-// the stored one as a forged/malformed frame — never blindly trusting the wire
-// value, which would reopen the forgery/collision risk askFromWire guards.
-func (c *Comms) CommitAgentUpdate(
-	ctx context.Context,
-	account store.AccountID,
-	updated *compassv1.MessageUpdated,
-) (*compassv1.MessageUpdated, error) {
-	if account == "" {
-		return nil, errNoActor
-	}
-	msg := updated.GetMessage()
-	blocks, err := updateBlocksFromWire(msg.GetBlocks())
-	if err != nil {
-		return nil, err
-	}
-	if err := c.reconcileUpdateAskIDs(ctx, account, store.MessageID(msg.GetId()), blocks); err != nil {
-		return nil, err
-	}
-	stored, err := c.store.UpdateMessageBlocksAsAuthor(ctx, account, store.MessageID(msg.GetId()), blocks)
-	if err != nil {
-		return nil, edgeError(err)
-	}
-	// Write first, then fan out — the same write-through order PostMessage and
-	// RespondToAsk use, so a subscriber never sees an event for a row that did
-	// not commit.
-	c.publishMessageUpdated(stored)
-	return &compassv1.MessageUpdated{Message: MessageToWire(stored)}, nil
-}
-
-// reconcileUpdateAskIDs makes the ask blocks of a relayed UPDATE frame carry the
-// stored, server-owned ask_id — the safe alternative to trusting the wire value.
-// It reads the stored row's ask_ids (authz-scoped: see store.MessageAskIDs) and,
-// for the k-th ask block of the frame, reconciles it against the k-th stored ask:
-//
-//   - an id-LESS update ask is filled from the stored ask_id (the common case —
-//     the id the append minted, which the store then requires);
-//   - a non-empty wire ask_id that MATCHES the stored one is left as-is;
-//   - a non-empty wire ask_id that DISAGREES with the stored one is a
-//     forged/malformed frame, rejected CodeInvalidArgument and distinctly
-//     messaged (never conflated with the generic id-less case, and never
-//     silently overwriting the stored id).
-//
-// Matching is POSITIONAL among ask blocks: a streaming turn re-sends its FULL
-// current block set in stable order (comms.proto:388-390), so the k-th ask of
-// the frame is the k-th ask of the row. If the frame carries MORE ask blocks
-// than the stored row, the surplus ask has no stored counterpart and is
-// REJECTED (CodeInvalidArgument): an update cannot introduce a brand-new ask —
-// a fresh ask is minted only on POST — so a surplus ask is always illegitimate,
-// whether id-less (unanswerable) or carrying a caller-chosen id (the forgery the
-// POST path strips to keep RespondToAsk's containment SELECT unambiguous). The
-// store guards only the empty-id case, so rejecting here is what closes the
-// non-empty forged-id surplus.
-func (c *Comms) reconcileUpdateAskIDs(ctx context.Context, actor store.AccountID, id store.MessageID, blocks []store.MessageBlock) error {
-	storedAskIDs, err := c.store.MessageAskIDs(ctx, actor, id)
-	if err != nil {
-		return edgeError(err)
-	}
-	askIdx := 0
-	for i := range blocks {
-		ask := blocks[i].Ask
-		if ask == nil {
-			continue
-		}
-		if askIdx >= len(storedAskIDs) {
-			// A surplus ask block has no stored counterpart to reconcile, and an
-			// UPDATE cannot introduce a new ask (minted only on POST): an id-less one
-			// is unanswerable, a NON-empty one is the forgery the POST path strips (a
-			// shared ask_id matches multiple rows). Reject here.
-			return connect.NewError(connect.CodeInvalidArgument,
-				surplusAskError{block: i})
-		}
-		stored := storedAskIDs[askIdx]
-		switch {
-		case ask.AskID == "":
-			ask.AskID = stored
-		case ask.AskID != stored:
-			return connect.NewError(connect.CodeInvalidArgument,
-				askIDMismatchError{block: i, wire: ask.AskID, stored: stored})
-		}
-		askIdx++
-	}
-	return nil
 }
 
 // defaultChannel returns req with an empty channel_id filled from the account's
