@@ -246,7 +246,8 @@ be public, so the user decides where it may go (OQ-8).
     A retry waits until 2 minutes after the last uncertain POST, then pages
     every comment since the row's first attempt and adopts one with the
     marker. A duplicate needs GitHub to make an accepted comment invisible
-    for over 2 minutes. If one appears, the drive keeps the oldest marked
+    for over 2 minutes. A GitHub row that ever had an uncertain POST gets one
+    more scan 10 minutes after it is done; that scan keeps the oldest marked
     comment and deletes the rest.
 - **Link back.** The header names the channel and topic. When `--public-url`
   (`$COMPASS_PUBLIC_URL`, `ServeConfig.PublicURL`) is set, it links the topic
@@ -1163,6 +1164,7 @@ CREATE TABLE forge_mirrors (
     first_attempt_at  TIMESTAMPTZ,  -- set by the first POST; bounds the marker search
     last_attempt_at   TIMESTAMPTZ,  -- the latest POST; a GitHub retry waits 2 minutes past it
     client_comment_id UUID     NOT NULL DEFAULT gen_random_uuid(),  -- v4; Linear's CommentCreateInput.id
+    recheck_at        TIMESTAMPTZ,  -- GitHub: a done row with an uncertain POST is scanned once more then
     lease_until       TIMESTAMPTZ,  -- a Drive holds the row until then
     lease_token       TEXT     NOT NULL DEFAULT '',  -- fences a stale holder
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1173,7 +1175,7 @@ CREATE UNIQUE INDEX forge_mirrors_ask_key ON forge_mirrors (tenant_id, ask_id) W
 CREATE UNIQUE INDEX forge_mirrors_request_key ON forge_mirrors (tenant_id, agent_account_id, client_request_id)
     WHERE client_request_id IS NOT NULL;
 CREATE UNIQUE INDEX forge_mirrors_source_key ON forge_mirrors (tenant_id, source_key, target_ref) WHERE source_key <> '';
-CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE state <> 2;
+CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE state <> 2 OR recheck_at IS NOT NULL;
 ```
 
 ```go
@@ -1185,9 +1187,11 @@ func (s *Store) ForgeMirrorMode(ctx context.Context, p ForgeProvider, host, repo
 func (s *Store) ListForgeMirrorSettings(ctx context.Context) ([]ForgeMirrorSetting, error) // every enabled subscription; off when no row
 func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set ForgeMirrorSetting) error // off deletes the row
 func (s *Store) ClaimForgeMirror(ctx context.Context, m ForgeMirrorRow) (row ForgeMirrorRow, created bool, err error) // a key conflict returns the stored row
+// OpenForgeMirrors returns rows not done, plus done rows whose recheck_at has passed.
 func (s *Store) OpenForgeMirrors(ctx context.Context, agent AccountID) ([]ForgeMirrorRow, error)
 // LeaseForgeMirror claims a row for one Drive: UPDATE ... SET lease_until = now() + ttl,
-// lease_token = @token WHERE id = @id AND state <> 2 AND (lease_until IS NULL OR lease_until < now()).
+// lease_token = @token WHERE id = @id AND (state <> 2 OR recheck_at <= now())
+// AND (lease_until IS NULL OR lease_until < now()).
 func (s *Store) LeaseForgeMirror(ctx context.Context, id, token string, ttl time.Duration) (row ForgeMirrorRow, ok bool, err error)
 // RenewForgeMirror extends the lease only while lease_token still matches.
 func (s *Store) RenewForgeMirror(ctx context.Context, id, token string, ttl time.Duration) (ok bool, err error)
@@ -1257,6 +1261,12 @@ type Mirrorer interface {
   and adopts a comment whose body carries `<!-- compass-mirror:<row id> -->`.
   The renderers append that marker. A drive that finds more than one marked
   comment keeps the oldest and deletes the rest.
+- When a GitHub row with a timed-out or lost-response POST reaches `done`,
+  `MarkForgeMirror` sets `recheck_at` to 10 minutes later. A drive that leases
+  a done row whose `recheck_at` has passed only scans: it deletes newer marked
+  duplicates, repoints the row at the oldest, and clears `recheck_at`. The
+  post-commit drive schedules this scan in-process, and the next board write
+  picks it up after a restart.
 - `PostMirror` runs `mirrorAllowed`. An agent actor's body is stamped with
   `resolveIdentity` and `forge.StampOwner`; a user actor's header names the
   user. An empty key calls `CommentOnPullRequest` when a `pull_requests` row
@@ -1287,9 +1297,9 @@ Tests:
   even after 60 later comments; the forge sees one comment.
 - Linear: a retried create with the same `client_comment_id` yields one
   comment.
-- GitHub: a comment that becomes visible after the retry's scan is found on
-  the next drive, the newer duplicate is deleted, and the row keeps the
-  oldest.
+- GitHub: a comment that becomes visible after the retry's scan is found by
+  the `recheck_at` scan of the done row; the newer duplicate is deleted and
+  the row keeps the oldest. A row with no uncertain POST gets no recheck.
 - Two concurrent `Drive` calls on one pending row make one POST; an expired
   lease lets a later call adopt the comment by its marker.
 - A drive that runs past the first ttl keeps its lease by renewal; a second
