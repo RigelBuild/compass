@@ -19,6 +19,8 @@ syntax = "proto3";
 
 package compass.v1;
 
+import "compass/v1/compass.proto";
+
 // The communication-layer service: accounts, channel groups + channels,
 // messages, agent workspaces, and the event stream. A second service in the
 // compass.v1 package, distinct from CompassService's server/agent-session
@@ -545,6 +547,8 @@ message SubscribeCommsResponse {
     // A topic was created, renamed, merged, or archived (Zulip threading model)
     // — keeps the UI topic index live without a refetch.
     TopicUpserted topic_upserted = 18;
+    // A live update to an agent's board; asks are omitted from the event payload.
+    AgentBoardChanged agent_board_changed = 19;
   }
 }
 
@@ -623,6 +627,334 @@ enum AgentPresence {
   AGENT_PRESENCE_WORKING = 2;
   AGENT_PRESENCE_WAITING = 3;
   AGENT_PRESENCE_OFFLINE = 4;
+}
+
+// The current state of a task on an agent board.
+enum BoardTaskState {
+  // No task state was specified.
+  BOARD_TASK_STATE_UNSPECIFIED = 0;
+  // The task is active.
+  BOARD_TASK_STATE_ACTIVE = 1;
+  // The task is blocked.
+  BOARD_TASK_STATE_BLOCKED = 2;
+  // The task is waiting.
+  BOARD_TASK_STATE_WAITING = 3;
+  // The task is parked.
+  BOARD_TASK_STATE_PARKED = 4;
+  // The task is done.
+  BOARD_TASK_STATE_DONE = 5;
+}
+
+// The reason an agent board is halted.
+enum BoardHaltKind {
+  // No halt kind was specified.
+  BOARD_HALT_KIND_UNSPECIFIED = 0;
+  // The board is halted because work is done.
+  BOARD_HALT_KIND_DONE = 1;
+  // The board is halted because work is blocked.
+  BOARD_HALT_KIND_BLOCKED = 2;
+  // The board is halted while awaiting the user.
+  BOARD_HALT_KIND_AWAITING_USER = 3;
+}
+
+// Who or what a board task is waiting on.
+enum BoardWaitingOn {
+  // No waiting target was specified.
+  BOARD_WAITING_ON_UNSPECIFIED = 0;
+  // The task is waiting on the operator.
+  BOARD_WAITING_ON_OPERATOR = 1;
+  // The task is waiting on an agent.
+  BOARD_WAITING_ON_AGENT = 2;
+  // The task is waiting on an external party or system.
+  BOARD_WAITING_ON_EXTERNAL = 3;
+}
+
+// The kind of artifact named by a board reference.
+enum BoardRefKind {
+  // No reference kind was specified.
+  BOARD_REF_KIND_UNSPECIFIED = 0;
+  // The reference names an issue.
+  BOARD_REF_KIND_ISSUE = 1;
+  // The reference names a pull request.
+  BOARD_REF_KIND_PULL_REQUEST = 2;
+}
+
+// The current gate state for a pull request on an agent board.
+enum BoardPrGate {
+  // No pull request gate was specified.
+  BOARD_PR_GATE_UNSPECIFIED = 0;
+  // The pull request is a draft.
+  BOARD_PR_GATE_DRAFT = 1;
+  // Required checks are pending.
+  BOARD_PR_GATE_CHECKS_PENDING = 2;
+  // Required checks failed.
+  BOARD_PR_GATE_CHECKS_FAILED = 3;
+  // Changes were requested on the pull request.
+  BOARD_PR_GATE_CHANGES_REQUESTED = 4;
+  // The pull request is waiting for review.
+  BOARD_PR_GATE_AWAITING_REVIEW = 5;
+  // The pull request is waiting to be enqueued.
+  BOARD_PR_GATE_AWAITING_ENQUEUE = 6;
+  // The pull request was merged.
+  BOARD_PR_GATE_MERGED = 7;
+  // The pull request was closed without merging.
+  BOARD_PR_GATE_CLOSED = 8;
+  // The pull request is in the merge queue.
+  BOARD_PR_GATE_QUEUED = 9;
+  // The merge queue failed the pull request.
+  BOARD_PR_GATE_QUEUE_FAILED = 10;
+  // The pull request was removed from the merge queue.
+  BOARD_PR_GATE_QUEUE_REMOVED = 11;
+  // The pull request has conflicts.
+  BOARD_PR_GATE_CONFLICTS = 12;
+}
+
+// A reason a task is waiting, including its reference and blocking tasks.
+message BoardWaiting {
+  // The party or system this task is waiting on.
+  BoardWaitingOn on = 1;
+  // The agent handle when waiting on an agent.
+  string agent_handle = 2;
+  // What the task is waiting for.
+  string what = 3;
+  // The related issue or pull request reference.
+  string ref = 4;
+  // Task keys blocked by this wait.
+  repeated string blocks = 5;
+}
+
+// A child agent participating in the task.
+message BoardSubagent {
+  // The subagent's identifier.
+  string id = 1;
+  // The subagent's agent name.
+  string agent = 2;
+  // What the subagent is doing.
+  string description = 3;
+  // The subagent's current status.
+  string status = 4;
+  // When the subagent started, in Unix milliseconds.
+  int64 started_at_unix_ms = 5;
+  // When the subagent ended, in Unix milliseconds.
+  int64 ended_at_unix_ms = 6;
+}
+
+// One task on an agent board.
+message BoardTask {
+  // The task's stable key.
+  string key = 1;
+  // A short task title.
+  string title = 2;
+  // The primary reference associated with this task.
+  string primary_ref = 3;
+  // Other references associated with this task.
+  repeated string refs = 4;
+  // The task's current state.
+  BoardTaskState state = 5;
+  // A short note about the task.
+  string note = 6;
+  // Reasons the task is waiting.
+  repeated BoardWaiting waiting = 7;
+  // Child agents assigned to the task.
+  repeated BoardSubagent subagents = 8;
+  // When the task was written, in Unix milliseconds.
+  int64 written_at_unix_ms = 9;
+}
+
+// Replacement list for task references; an empty present list clears them.
+message BoardRefsOp {
+  // The replacement reference values.
+  repeated string values = 1;
+}
+
+// Replacement list for task waiting reasons; an empty present list clears them.
+message BoardWaitingOp {
+  // The replacement waiting reasons.
+  repeated BoardWaiting values = 1;
+}
+
+// A presence-aware patch to one task on an agent board.
+message BoardTaskPatch {
+  // The task key to update or create.
+  string key = 1;
+  // Replaces the title when present.
+  optional string title = 2;
+  // Replaces the primary reference when present.
+  optional string primary_ref = 3;
+  // Replaces the state when present.
+  optional BoardTaskState state = 4;
+  // Replaces the note when present.
+  optional string note = 5;
+  // Replaces references when present; an empty list clears them.
+  BoardRefsOp refs = 6;
+  // Replaces waiting reasons when present; an empty list clears them.
+  BoardWaitingOp waiting = 7;
+  // Inserts or replaces subagents by identifier.
+  repeated BoardSubagent upsert_subagents = 8;
+}
+
+// A halt state for an agent board.
+message BoardHalt {
+  // Why the board is halted.
+  BoardHaltKind kind = 1;
+  // The issue or pull request reference associated with the halt.
+  string ref = 2;
+  // The reason for the halt.
+  string reason = 3;
+}
+
+// A tracked issue or pull request and its observed forge and tracker state.
+message BoardRef {
+  // The issue or pull request reference.
+  string ref = 1;
+  // Whether the reference is an issue or pull request.
+  BoardRefKind kind = 2;
+  // The artifact title.
+  string title = 3;
+  // The artifact URL.
+  string url = 4;
+  // The artifact's raw forge state.
+  string forge_state = 5;
+  // The Compass lifecycle state for an issue reference.
+  compass.v1.IssueState issue_state = 6;
+  // Whether the pull request is a draft.
+  bool draft = 7;
+  // The pull request's checks state.
+  string checks_state = 8;
+  // The pull request's current gate.
+  BoardPrGate gate = 9;
+  // The top pull request reference in the stack.
+  string stack_tip_ref = 10;
+  // This pull request's position in its stack.
+  uint32 stack_position = 11;
+  // Whether this agent owns the reference.
+  bool owned = 12;
+  // When this reference was observed, in Unix milliseconds.
+  int64 observed_at_unix_ms = 13;
+  // The current merge queue state.
+  string merge_queue_state = 14;
+  // Whether approval is stale for the current pull request head.
+  bool stale_approval = 15;
+  // The linked tracker status.
+  string tracker_status = 16;
+}
+
+// One ask associated with an agent board.
+message BoardAsk {
+  // The ask's identifier.
+  string ask_id = 1;
+  // The message containing the ask.
+  string message_id = 2;
+  // The channel containing the ask.
+  string channel_id = 3;
+  // The issue or pull request reference associated with the ask.
+  string ref = 4;
+  // A short ask heading.
+  string header = 5;
+  // Whether the ask has been answered.
+  bool answered = 6;
+  // When the ask was posted, in Unix milliseconds.
+  int64 posted_at_unix_ms = 7;
+}
+
+// The current board state for one agent.
+message AgentBoard {
+  // The agent account identifier.
+  string agent_account_id = 1;
+  // The agent's handle.
+  string handle = 2;
+  // The focused task key.
+  string focus_task_key = 3;
+  // The board's halt state, if any.
+  BoardHalt halt = 4;
+  // Tasks on the board.
+  repeated BoardTask tasks = 5;
+  // References tracked by the board.
+  repeated BoardRef refs = 6;
+  // References not attached to a task.
+  repeated string untracked_refs = 7;
+  // Asks associated with the board.
+  repeated BoardAsk asks = 8;
+  // The agent turn when this board was written.
+  uint64 written_turn = 9;
+  // When the board was written, in Unix milliseconds.
+  int64 written_at_unix_ms = 10;
+  // Whether the board data is stale.
+  bool stale = 11;
+  // Task keys matched by the current query.
+  repeated string matched_task_keys = 12;
+}
+
+// The compact board summary attached to a roster entry.
+message AgentBoardSummary {
+  // The title of the focused task.
+  string focus = 1;
+  // The number of tasks on the board.
+  uint32 task_count = 2;
+  // The number of tasks waiting on the operator.
+  uint32 waiting_on_operator = 3;
+  // The board's halt state, if any.
+  BoardHalt halt = 4;
+  // When the board was written, in Unix milliseconds.
+  int64 written_at_unix_ms = 5;
+  // Whether the board data is stale.
+  bool stale = 6;
+}
+
+// A request to apply task changes and board metadata for the caller's agent.
+message UpdateAgentBoardRequest {
+  // Tasks to create or update.
+  repeated BoardTaskPatch upsert_tasks = 1;
+  // Task keys to remove.
+  repeated string remove_task_keys = 2;
+  // Replaces the focused task key when present.
+  optional string focus_task_key = 3;
+  // Sets the board halt state when present.
+  BoardHalt halt = 4;
+  // Clears the board halt state when true.
+  bool clear_halt = 5;
+  // The caller's monotonically increasing turn sequence.
+  uint64 turn_sequence = 6;
+  // Whether this board update was generated automatically.
+  bool automatic = 7;
+}
+
+// The board after an update.
+message UpdateAgentBoardResponse {
+  // The updated agent board.
+  AgentBoard board = 1;
+}
+
+// Filters for a visible agent board listing.
+message ListAgentBoardsRequest {
+  // Restricts results to these agent handles when non-empty.
+  repeated string agent_handles = 1;
+  // Searches board content for this query.
+  string query = 2;
+  // Restricts results to boards containing this reference.
+  string ref = 3;
+  // Restricts results to tasks waiting on this party.
+  BoardWaitingOn waiting_on = 4;
+  // Restricts results to tasks in this state.
+  BoardTaskState state = 5;
+  // Restricts results to boards with this halt kind.
+  BoardHaltKind halt = 6;
+  // Maximum number of boards to return.
+  uint32 limit = 7;
+}
+
+// Agent boards matching a listing request.
+message ListAgentBoardsResponse {
+  // Matching agent boards.
+  repeated AgentBoard boards = 1;
+}
+
+// A live agent-board update; the event's board has no asks.
+message AgentBoardChanged {
+  // The account identifier of the agent whose board changed.
+  string agent_account_id = 1;
+  // The updated board with asks omitted.
+  AgentBoard board = 2;
 }
 
 // ── Request / response envelopes ───────────────────────────────────────────
@@ -871,6 +1203,8 @@ message RosterEntry {
   AgentPresence presence = 5;
   string activity = 6;
   int64 activity_at_unix_ms = 7;
+  // A compact summary of the agent's current board.
+  AgentBoardSummary board = 8;
 }
 
 message UpdatePinnedBoardRequest {
