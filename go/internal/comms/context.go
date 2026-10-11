@@ -38,9 +38,8 @@ var errEmptyBlock = errors.New("message block has neither text nor ask set")
 
 // errServerOwnedBlock is the invalid-argument cause for a client write path
 // carrying an ask_answer block: the ask_answer variant is server-owned,
-// constructed only by RespondToAsk, so an inbound one (PostMessage / the agent
-// update path) is rejected at the wire edge — the only layer with caller
-// identity (RIG-2257).
+// constructed only by RespondToAsk, so an inbound one (PostMessage) is rejected
+// at the wire edge, the only layer with caller identity.
 var errServerOwnedBlock = errors.New("ask_answer blocks are server-owned")
 
 // errMissingMemberUpdate is the internal-error cause when a member id recorded in

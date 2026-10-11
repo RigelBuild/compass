@@ -2,9 +2,9 @@
 
 package comms
 
-// The conversation write-through (RIG-1364 T3): CommitAgentPost / CommitAgentUpdate
-// drive the real PostMessage/update path, so agent posts are indistinguishable
-// downstream from human posts. Gated `pgtest && unix` (SKIPs without a Postgres
+// Agent writes: PostAsAccount drives the real PostMessage path, so agent posts
+// are indistinguishable downstream from human posts; commitAgentUpdate drives
+// the store's author-update path. Gated `pgtest && unix` (SKIPs without a Postgres
 // runtime; `unix` because agent_caller.go is unix-tagged).
 
 import (
@@ -18,11 +18,15 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// postedFrame wraps blocks in the MessagePosted frame shape the Runner relays.
-// The Container oneof is deliberately left UNSET — that is what routes the
-// commit to the agent's home channel (defaultChannel, agent_caller.go:109).
-func postedFrame(blocks []*compassv1.MessageBlock) *compassv1.MessagePosted {
-	return &compassv1.MessagePosted{Message: &compassv1.Message{Blocks: blocks}}
+// homeTopicPost builds an agent's home-channel post. Container is left unset so
+// defaultChannel routes it home; the topic is named because the store has no
+// home-topic default.
+func homeTopicPost(blocks []*compassv1.MessageBlock) *compassv1.PostMessageRequest {
+	return &compassv1.PostMessageRequest{
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		CreateTopic: true,
+		Blocks:      blocks,
+	}
 }
 
 // updatedFrame wraps an addressed message id + blocks in the MessageUpdated
@@ -57,19 +61,18 @@ func askBlockWireID(askID string) *compassv1.MessageBlock {
 	}}}
 }
 
-// A relayed posted frame becomes a real Message row on the agent's HOME channel,
-// authored by the AGENT account — the core dogfood contract the stub broke (it
-// acked the frame as committed then discarded it, so nothing landed).
-func TestCommitAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
+// An agent post becomes a real Message row on the agent's HOME channel,
+// authored by the AGENT account.
+func TestAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
 
-	resp, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("the agent speaks")))
+	resp, err := svc.PostAsAccount(ctx, agent.ID, homeTopicPost(textBlocks("the agent speaks")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost: %v", err)
+		t.Fatalf("PostAsAccount: %v", err)
 	}
 	// A message carries only its topic now; that it landed in the HOME channel is
 	// proven by the home-scoped read-back below (the channel is resolved through
@@ -91,7 +94,7 @@ func TestCommitAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	if len(msgs) != 1 {
-		t.Fatalf("home channel holds %d messages, want exactly 1 (the relayed frame must COMMIT, not be observed)", len(msgs))
+		t.Fatalf("home channel holds %d messages, want exactly 1 (the post must COMMIT, not be observed)", len(msgs))
 	}
 	if msgs[0].ID != store.MessageID(resp.GetMessage().GetId()) {
 		t.Fatalf("stored message id = %q, want the returned %q", msgs[0].ID, resp.GetMessage().GetId())
@@ -102,7 +105,7 @@ func TestCommitAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
 // MessagePosted, exactly as a human post does. Driven over the real stream with
 // subscribe concurrent with the commit — connect server-streaming over HTTP/1 is
 // half-duplex, so the subscribe must not precede the mutation.
-func TestCommitAgentPostFansOutOnSubscribeComms(t *testing.T) {
+func TestAgentPostFansOutOnSubscribeComms(t *testing.T) {
 	h := newStreamHarness(t)
 	ctx := context.Background()
 
@@ -113,9 +116,9 @@ func TestCommitAgentPostFansOutOnSubscribeComms(t *testing.T) {
 	// stream filter passes the event to it.
 	events := firstEventAfterBoundary(t, h, agent.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	resp, err := h.svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("fanned out")))
+	resp, err := h.svc.PostAsAccount(ctx, agent.ID, homeTopicPost(textBlocks("fanned out")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost: %v", err)
+		t.Fatalf("PostAsAccount: %v", err)
 	}
 
 	got := awaitFirst(t, events)
@@ -134,17 +137,17 @@ func TestCommitAgentPostFansOutOnSubscribeComms(t *testing.T) {
 	}
 }
 
-// A relayed updated frame edits the addressed row IN PLACE — same id, new blocks,
+// An agent update edits the addressed row IN PLACE — same id, new blocks,
 // no second row — and fans out as MessageUpdated. This is the streaming-turn
 // path: the agent appends a block and re-sends the full current set.
-func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
+func TestAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 	h := newStreamHarness(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, h.store, "owner")
 	agent := mustAgent(t, h.store, owner.ID, "agent")
 
-	// Seed the row through the STORE, not CommitAgentPost: a post publishes
+	// Seed the row through the STORE, not PostAsAccount: a post publishes
 	// MessagePosted that a since_seq=0 subscribe replays, so the update's own
 	// fan-out would not be the first event. A direct append isolates the
 	// assertion to the MessageUpdated this test is about.
@@ -160,9 +163,9 @@ func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, agent.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	updated, err := h.svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id, textBlocks("partial and settled")))
+	updated, err := commitAgentUpdate(ctx, h.svc, agent.ID, updatedFrame(id, textBlocks("partial and settled")))
 	if err != nil {
-		t.Fatalf("CommitAgentUpdate: %v", err)
+		t.Fatalf("commitAgentUpdate: %v", err)
 	}
 	if updated.GetMessage().GetId() != id {
 		t.Fatalf("updated message id = %q, want the edited row %q (an update must not insert)", updated.GetMessage().GetId(), id)
@@ -192,7 +195,7 @@ func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 // A's message even in a channel B can read. It collapses to CodeNotFound (same
 // answer as a nonexistent message) so B cannot enumerate A's messages by id.
 // The positive control (A editing its own row) keeps this from passing vacuously.
-func TestCommitAgentUpdateCrossAccountIsNotFound(t *testing.T) {
+func TestAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
@@ -215,11 +218,11 @@ func TestCommitAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 	}
 	id := postedA.GetMessage().GetId()
 
-	_, err = svc.CommitAgentUpdate(ctx, agentB.ID, updatedFrame(id, textBlocks("put into A's mouth")))
-	connectCodeIs(t, err, connect.CodeNotFound, "CommitAgentUpdate(cross-account)")
+	_, err = commitAgentUpdate(ctx, svc, agentB.ID, updatedFrame(id, textBlocks("put into A's mouth")))
+	connectCodeIs(t, err, connect.CodeNotFound, "commitAgentUpdate(cross-account)")
 
 	// Positive control: A can edit its own row, so B's refusal is authorship.
-	if _, err := svc.CommitAgentUpdate(ctx, agentA.ID, updatedFrame(id, textBlocks("agent A's own edit"))); err != nil {
+	if _, err := commitAgentUpdate(ctx, svc, agentA.ID, updatedFrame(id, textBlocks("agent A's own edit"))); err != nil {
 		t.Fatalf("agent A cannot edit its own message: %v", err)
 	}
 
@@ -235,7 +238,7 @@ func TestCommitAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 // The membership half at the comms seam: an agent removed from the channel it
 // posted in can no longer edit its own past message — CodeNotFound, so write
 // access dies with read access. A bare authorship check would let this through.
-func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
+func TestAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
@@ -255,7 +258,7 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 	id := posted.GetMessage().GetId()
 
 	// Positive control before the revoke.
-	if _, err := svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id, textBlocks("edited while a member"))); err != nil {
+	if _, err := commitAgentUpdate(ctx, svc, agent.ID, updatedFrame(id, textBlocks("edited while a member"))); err != nil {
 		t.Fatalf("the agent cannot edit while still a member: %v", err)
 	}
 
@@ -263,8 +266,8 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 		t.Fatalf("UpdateChannelMembers(remove): %v", err)
 	}
 
-	_, err = svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id, textBlocks("edited after the revoke")))
-	connectCodeIs(t, err, connect.CodeNotFound, "CommitAgentUpdate(revoked member)")
+	_, err = commitAgentUpdate(ctx, svc, agent.ID, updatedFrame(id, textBlocks("edited after the revoke")))
+	connectCodeIs(t, err, connect.CodeNotFound, "commitAgentUpdate(revoked member)")
 
 	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: owner.ID, ChannelID: ch.ID})
 	if err != nil {
@@ -279,29 +282,29 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 // message.id is empty, and one carrying an ask block with NO ask_id and no
 // stored counterpart to reconcile from. Distinct from an ask update carrying its
 // stored id (persists) or one whose id disagrees with the row (mismatch reject).
-func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
+func TestAgentUpdateRejectsMalformedFrames(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
-	posted, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("untouched")))
+	posted, err := svc.PostAsAccount(ctx, agent.ID, homeTopicPost(textBlocks("untouched")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost: %v", err)
+		t.Fatalf("PostAsAccount: %v", err)
 	}
 
 	t.Run("empty message id", func(t *testing.T) {
-		_, err := svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame("", textBlocks("nowhere to land")))
-		connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(empty message id)")
+		_, err := commitAgentUpdate(ctx, svc, agent.ID, updatedFrame("", textBlocks("nowhere to land")))
+		connectCodeIs(t, err, connect.CodeInvalidArgument, "commitAgentUpdate(empty message id)")
 	})
 	t.Run("ask block with no ask id", func(t *testing.T) {
 		// The seeded row is text-only, so an ask block on the update has NO
 		// stored counterpart to fill its id from: it stays id-less and the store
 		// rejects it. Pins the truly id-less case, not that ask-bearing updates
 		// are unsupported (one carrying its stored id persists).
-		_, err := svc.CommitAgentUpdate(ctx, agent.ID,
+		_, err := commitAgentUpdate(ctx, svc, agent.ID,
 			updatedFrame(posted.GetMessage().GetId(), []*compassv1.MessageBlock{askBlockWire()}))
-		connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(ask with no ask_id)")
+		connectCodeIs(t, err, connect.CodeInvalidArgument, "commitAgentUpdate(ask with no ask_id)")
 	})
 
 	// Neither refusal wrote anything: the original row is intact.
@@ -317,26 +320,26 @@ func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
 	}
 }
 
-// Fail-closed identity on BOTH write-through methods: an empty resolved account
+// Fail-closed identity on both agent write paths: an empty resolved account
 // is a hard CodeInvalidArgument that writes NOTHING. Without the guard,
 // actorFromContext's admin fallback would attribute the agent's words to the
 // bootstrap admin — the silent misattribution the fail-closed posture prevents.
-func TestCommitAgentFramesEmptyAccountFailsClosed(t *testing.T) {
+func TestAgentWritesEmptyAccountFailsClosed(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
-	seeded, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("the agent's own")))
+	seeded, err := svc.PostAsAccount(ctx, agent.ID, homeTopicPost(textBlocks("the agent's own")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(seed): %v", err)
+		t.Fatalf("PostAsAccount(seed): %v", err)
 	}
 
-	_, err = svc.CommitAgentPost(ctx, "", postedFrame(textBlocks("should never be written")))
-	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentPost(empty account)")
+	_, err = svc.PostAsAccount(ctx, "", homeTopicPost(textBlocks("should never be written")))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostAsAccount(empty account)")
 
-	_, err = svc.CommitAgentUpdate(ctx, "", updatedFrame(seeded.GetMessage().GetId(), textBlocks("should never be applied")))
-	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(empty account)")
+	_, err = commitAgentUpdate(ctx, svc, "", updatedFrame(seeded.GetMessage().GetId(), textBlocks("should never be applied")))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "commitAgentUpdate(empty account)")
 
 	// Nothing was written or altered under any fallback identity.
 	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
@@ -351,21 +354,19 @@ func TestCommitAgentFramesEmptyAccountFailsClosed(t *testing.T) {
 	}
 }
 
-// Idempotent dedup at the seam the relayed key WILL enter. The relayed frame carries
-// no idempotency key on this base (the agent-minted key terminates at the Runner),
-// so the write-through leaves ClientRequestId unset. Pinned on the PostMessageRequest
-// the write-through builds, so when the key arrives a retry commits no second row.
-func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
+// Idempotent dedup on an agent's home-topic post: a retry carrying the same
+// ClientRequestId commits no second row.
+func TestAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
 
-	// The request shape CommitAgentPost builds (home-channel default via an
-	// unset Container), plus the key T2 will thread onto it.
 	post := func(text string) (*compassv1.PostMessageResponse, error) {
-		return svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: textBlocks(text), ClientRequestId: "relayed-frame-1"})
+		req := homeTopicPost(textBlocks(text))
+		req.ClientRequestId = "relayed-frame-1"
+		return svc.PostAsAccount(ctx, agent.ID, req)
 	}
 	first, err := post("the turn")
 	if err != nil {
@@ -388,29 +389,27 @@ func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 	}
 }
 
-// A relayed frame with no topic routing lands in the agent's home channel's home
-// topic, and two frames from the same agent share it. Threading is by topic now,
-// not a parent pointer: CommitAgentPost's unset Container+Topic route to the home
-// topic (store.AppendMessage), keeping a relayed agent's turns in one conversation.
-func TestCommitAgentPostLandsInHomeTopic(t *testing.T) {
+// A post with no container lands in the agent's home channel, and two posts to
+// the same named topic share it, so an agent's turns stay in one conversation.
+func TestAgentPostLandsInHomeTopic(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
 
-	first, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("the question")))
+	first, err := svc.PostAsAccount(ctx, agent.ID, homeTopicPost(textBlocks("the question")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(first): %v", err)
+		t.Fatalf("PostAsAccount(first): %v", err)
 	}
 	topicID := first.GetMessage().GetTopicId()
 	if topicID == "" {
 		t.Fatal("first committed message TopicId = \"\", want the home topic id")
 	}
 
-	second, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("the follow-up")))
+	second, err := svc.PostAsAccount(ctx, agent.ID, homeTopicPost(textBlocks("the follow-up")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(second): %v", err)
+		t.Fatalf("PostAsAccount(second): %v", err)
 	}
 	if got := second.GetMessage().GetTopicId(); got != topicID {
 		t.Fatalf("second committed message TopicId = %q, want the same home topic %q", got, topicID)
@@ -437,7 +436,7 @@ func TestCommitAgentPostLandsInHomeTopic(t *testing.T) {
 // A session bound to a NON-AGENT account is refused, not a panic. homeChannel reads
 // acc.Agent.HomeChannelID, which scanAccount leaves nil for a user account, so before
 // this guard the deref panicked and took the relay down. CodeFailedPrecondition; all
-// four *AsAccount / write-through methods reach homeChannel, so one guard is not enough.
+// the *AsAccount methods reach homeChannel, so one guard is not enough.
 func TestAgentCallsWithANonAgentAccountAreRefusedNotPanics(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -445,8 +444,8 @@ func TestAgentCallsWithANonAgentAccountAreRefusedNotPanics(t *testing.T) {
 	// A plain USER account: real and resolvable, but acc.Agent is nil.
 	user := mustUser(t, st, "human")
 
-	_, err := svc.CommitAgentPost(ctx, user.ID, postedFrame(textBlocks("never committed")))
-	connectCodeIs(t, err, connect.CodeFailedPrecondition, "CommitAgentPost(user account)")
+	_, err := svc.PostAsAccount(ctx, user.ID, homeTopicPost(textBlocks("never committed")))
+	connectCodeIs(t, err, connect.CodeFailedPrecondition, "PostAsAccount(user account)")
 
 	_, err = svc.PostAsAccount(ctx, user.ID, &compassv1.PostMessageRequest{Blocks: textBlocks("never committed")})
 	connectCodeIs(t, err, connect.CodeFailedPrecondition, "PostAsAccount(user account, empty channel)")
@@ -459,7 +458,7 @@ func TestAgentCallsWithANonAgentAccountAreRefusedNotPanics(t *testing.T) {
 // stored ask_id PERSISTS. Before the fix it went through the POST mapper, which
 // stripped the ask_id and the store rejected the id-less ask. The update path now
 // preserves and reconciles the wire ask_id, so the ask round-trips its id.
-func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
+func TestAgentUpdatePersistsAskBlock(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
@@ -468,10 +467,10 @@ func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
 
 	// Seed a real ask through the POST path so the store mints the ask_id the
 	// update must carry back. The minted id is read off the committed row.
-	posted, err := svc.CommitAgentPost(ctx, agent.ID,
-		postedFrame([]*compassv1.MessageBlock{askBlockWire()}))
+	posted, err := svc.PostAsAccount(ctx, agent.ID,
+		homeTopicPost([]*compassv1.MessageBlock{askBlockWire()}))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(ask): %v", err)
+		t.Fatalf("PostAsAccount(ask): %v", err)
 	}
 	id := posted.GetMessage().GetId()
 	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
@@ -482,13 +481,13 @@ func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
 	// The streaming turn re-sends the full block set: a new text block plus the
 	// SAME ask, carrying the id the append minted. This is the frame that used
 	// to be refused.
-	updated, err := svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id,
+	updated, err := commitAgentUpdate(ctx, svc, agent.ID, updatedFrame(id,
 		[]*compassv1.MessageBlock{
 			{Block: &compassv1.MessageBlock_Text{Text: "settled turn"}},
 			askBlockWireID(storedAskID),
 		}))
 	if err != nil {
-		t.Fatalf("CommitAgentUpdate(ask with stored ask_id) was refused, want persisted: %v", err)
+		t.Fatalf("commitAgentUpdate(ask with stored ask_id) was refused, want persisted: %v", err)
 	}
 	if got := updated.GetMessage().GetBlocks(); len(got) != 2 {
 		t.Fatalf("updated message has %d blocks, want 2 (text + ask)", len(got))
@@ -518,22 +517,22 @@ func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
 // disagrees with the stored one is a forged frame, refused CodeInvalidArgument by
 // reconcileUpdateAskIDs's own mismatch error — never conflated with the id-less
 // case and never silently overwriting the stored id.
-func TestCommitAgentUpdateRejectsAskIDMismatch(t *testing.T) {
+func TestAgentUpdateRejectsAskIDMismatch(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
-	posted, err := svc.CommitAgentPost(ctx, agent.ID,
-		postedFrame([]*compassv1.MessageBlock{askBlockWire()}))
+	posted, err := svc.PostAsAccount(ctx, agent.ID,
+		homeTopicPost([]*compassv1.MessageBlock{askBlockWire()}))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(ask): %v", err)
+		t.Fatalf("PostAsAccount(ask): %v", err)
 	}
 	id := posted.GetMessage().GetId()
 	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
-	_, err = svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id,
+	_, err = commitAgentUpdate(ctx, svc, agent.ID, updatedFrame(id,
 		[]*compassv1.MessageBlock{askBlockWireID("forged-" + storedAskID)}))
-	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(ask_id mismatch)")
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "commitAgentUpdate(ask_id mismatch)")
 	// The classification must be the DISTINCT mismatch, not the generic id-less
 	// refusal ("ask has no ask_id"): asserting the code alone would pass against
 	// the old strip-everything behavior too, which is the misclassification the
@@ -556,20 +555,20 @@ func TestCommitAgentUpdateRejectsAskIDMismatch(t *testing.T) {
 	}
 }
 
-// The forgery vector: a relayed UPDATE appending a SURPLUS ask block with a
+// The forgery vector: an UPDATE appending a SURPLUS ask block with a
 // caller-chosen ask_id must be refused. A surplus ask has no stored counterpart and
 // an update cannot mint a new ask, so a supplied id reopens the collision askFromWire
 // strips on POST (a shared id matches both rows). The store guards only the empty case.
-func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
+func TestAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
-	posted, err := svc.CommitAgentPost(ctx, agent.ID,
-		postedFrame([]*compassv1.MessageBlock{askBlockWire()}))
+	posted, err := svc.PostAsAccount(ctx, agent.ID,
+		homeTopicPost([]*compassv1.MessageBlock{askBlockWire()}))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(ask): %v", err)
+		t.Fatalf("PostAsAccount(ask): %v", err)
 	}
 	id := posted.GetMessage().GetId()
 	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
@@ -577,12 +576,12 @@ func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
 	// Re-send the stored ask (correctly carrying its minted id) AND a surplus
 	// ask carrying a forged, caller-chosen id. The first reconciles cleanly; the
 	// surplus has no stored counterpart and must be rejected.
-	_, err = svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id,
+	_, err = commitAgentUpdate(ctx, svc, agent.ID, updatedFrame(id,
 		[]*compassv1.MessageBlock{
 			askBlockWireID(storedAskID),
 			askBlockWireID("forged-surplus-ask"),
 		}))
-	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(surplus forged ask)")
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "commitAgentUpdate(surplus forged ask)")
 	if err == nil || !strings.Contains(err.Error(), "an update cannot introduce a new ask") {
 		t.Fatalf("surplus error = %v, want the distinct 'an update cannot introduce a new ask' classification", err)
 	}
@@ -604,7 +603,7 @@ func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
 // A forged ask update must refuse exactly as a nonexistent id does (NotFound),
 // without echoing the stored ask_id, for a co-member non-author and for the
 // author once revoked. The author while a member is the positive control.
-func TestCommitAgentUpdateForeignAskMessageIsNotFound(t *testing.T) {
+func TestAgentUpdateForeignAskMessageIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
@@ -633,8 +632,8 @@ func TestCommitAgentUpdateForeignAskMessageIsNotFound(t *testing.T) {
 	refuse := func(actor store.AccountID, who string, want connect.Code) {
 		t.Helper()
 		for name, blocks := range frames {
-			_, err := svc.CommitAgentUpdate(ctx, actor, updatedFrame(id, blocks))
-			connectCodeIs(t, err, want, "CommitAgentUpdate("+who+", "+name+")")
+			_, err := commitAgentUpdate(ctx, svc, actor, updatedFrame(id, blocks))
+			connectCodeIs(t, err, want, "commitAgentUpdate("+who+", "+name+")")
 			if want == connect.CodeNotFound && strings.Contains(err.Error(), storedAskID) {
 				t.Fatalf("%s %s: refusal %q leaks the stored ask_id", who, name, err)
 			}
