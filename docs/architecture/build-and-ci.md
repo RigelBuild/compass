@@ -269,6 +269,11 @@ published before its assets exist could never get them.
 | `SHA256SUMS` | `release-assets` | checksums of the seven downloads above |
 | `nix-outputs.json` | `release-assets` | nix output manifest; not in `SHA256SUMS` |
 
+Every asset listed in `SHA256SUMS` gets a build-provenance attestation from
+`actions/attest-build-provenance` in `release-assets`. The tag ruleset blocks a
+forged tag; the attestation lets a user detect an asset the release workflow
+did not build.
+
 The macOS app links the system WebKit framework, so it builds only on a mac
 runner and is never cross-compiled. Developer ID signing, notarization and the
 app's homebrew cask are not live yet. They wait on the Apple Developer Program

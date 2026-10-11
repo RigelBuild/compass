@@ -750,9 +750,12 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
     # Least privilege: write the Release, nothing else. NOT packages:write — the
     # release-notes generator reads the PUBLIC image digest anonymously, and this
-    # lane never writes a registry (Global Constraint 7).
+    # lane never writes a registry (Global Constraint 7). id-token and
+    # attestations sign the build-provenance attestation over SHA256SUMS.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     # The nix toolchain resolve is the cost that sizes this timeout — the same
     # ceiling ci.yml and both agent-image arch builds use.
     timeout-minutes: 90
@@ -906,6 +909,14 @@ jobs:
             "compass-app_${TAG}_darwin-arm64.dmg" \
             "compass-app_${TAG}_linux-amd64.tar.gz" \
             > SHA256SUMS
+
+      - name: Attest build provenance for every checksummed asset
+        # The tag ruleset stops a forged tag, not a compromised release job.
+        # Users verify against this workflow's identity with
+        # `gh attestation verify` (docs/self-host.md).
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: SHA256SUMS
 
       - name: Generate the release body + nix-outputs manifest
         # The T2 generator (a bun/TS tool with a pure, unit-tested core). It
