@@ -6,7 +6,9 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -35,12 +37,33 @@ func (c Credentials) String() string {
 // GoString redacts the token under %#v as well, so a struct dump can't leak it.
 func (c Credentials) GoString() string { return c.String() }
 
+// WorkspaceSource says where the agent's checkout dir lives. The zero value is
+// the container-local clone dir, so an un-migrated caller keeps today's path.
+type WorkspaceSource int
+
+const (
+	// SourceCloneDir is a checkout dir inside the container's own filesystem.
+	SourceCloneDir WorkspaceSource = iota
+	// SourceVolume is a checkout dir backed by a writable session-volume mount.
+	SourceVolume
+)
+
+// ErrVolumeMountMissing reports a SourceVolume spec whose checkout dir is not a
+// writable mount the backend applies; launching it would put the agent's work
+// outside the volume.
+var ErrVolumeMountMissing = errors.New("runtime: volume workspace needs a writable mount at its checkout dir")
+
+// ErrUnknownWorkspaceSource reports a WorkspaceSource this runtime does not know.
+var ErrUnknownWorkspaceSource = errors.New("runtime: unknown workspace source")
+
 // Workspace is a per-agent workspace: the in-container checkout dir, the scoped
 // $HOME, the unprivileged uid the agent runs as, and optional forge credentials.
 type Workspace struct {
 	// CheckoutDir is the absolute path inside the container where the agent's
 	// checkout dir is created (the agent self-clones into it post-launch).
 	CheckoutDir string
+	// Source selects the clone-dir or volume-backed checkout dir.
+	Source WorkspaceSource
 	// HomeDir is the agent's $HOME inside the container (holds .gitconfig +
 	// creds).
 	HomeDir string
@@ -49,6 +72,30 @@ type Workspace struct {
 	UID uint32
 	// Credentials is optional forge credentials to install into $HOME.
 	Credentials *Credentials
+}
+
+// checkWorkspaceSource fails closed on an unknown source, and requires a volume
+// workspace's checkout dir to be a writable mount on a backend that applies
+// mounts (an unknown tier is refused), so the in-container path and the volume cannot drift apart.
+func checkWorkspaceSource(spec AgentSpec, tier WorkloadTier) error {
+	switch spec.Workspace.Source {
+	case SourceCloneDir:
+		return nil
+	case SourceVolume:
+	default:
+		return fmt.Errorf("%w: %d", ErrUnknownWorkspaceSource, spec.Workspace.Source)
+	}
+	switch tier {
+	case WorkloadTierPodman, WorkloadTierMicroVM, WorkloadTierAppleContainer:
+	default:
+		return fmt.Errorf("%w: tier %q is not known to apply mounts", ErrVolumeMountMissing, tier)
+	}
+	if slices.ContainsFunc(spec.Mounts, func(m Mount) bool {
+		return !m.ReadOnly && m.ContainerPath == spec.Workspace.CheckoutDir
+	}) {
+		return nil
+	}
+	return fmt.Errorf("%w: %q", ErrVolumeMountMissing, spec.Workspace.CheckoutDir)
 }
 
 // CredentialSetupScript is the shell script that installs the scoped credential

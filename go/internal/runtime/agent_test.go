@@ -32,6 +32,7 @@ type fakeRuntime struct {
 	calls              []string
 	execs              []ExecSpec
 	failExecContaining string
+	created            WorkloadSpec
 }
 
 func newFakeRuntime(t *testing.T) *fakeRuntime {
@@ -41,6 +42,9 @@ func newFakeRuntime(t *testing.T) *fakeRuntime {
 
 func (f *fakeRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadID, error) {
 	f.record("create:" + spec.Name)
+	f.mu.Lock()
+	f.created = spec
+	f.mu.Unlock()
 	// The container must carry NET_ADMIN so the entrypoint can arm nft.
 	if !slices.Contains(spec.CapAdd, "NET_ADMIN") {
 		f.t.Errorf("Create spec.CapAdd = %v, must contain NET_ADMIN so the entrypoint can arm the firewall", spec.CapAdd)
