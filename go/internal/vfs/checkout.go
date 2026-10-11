@@ -97,7 +97,17 @@ func (f *CheckoutFS) restoreOrCold(ctx context.Context, src TreeSource) error {
 	case errors.Is(err, ErrVolumeNotEmpty):
 		// A warm reattached tree beats a snapshot; restore never overwrites volume contents.
 		return nil
-	case !errors.Is(err, ErrSnapshotNotFound) || src.Repo == "":
+	case !errors.Is(err, ErrSnapshotNotFound):
+		return fmt.Errorf("vfs: restoring source snapshot: %w", err)
+	}
+	warm, warmErr := f.hasWarmTree()
+	if warmErr != nil {
+		return warmErr
+	}
+	if warm {
+		return nil
+	}
+	if src.Repo == "" {
 		// Without a repo the agent has nothing to complete an empty root from.
 		return fmt.Errorf("vfs: restoring source snapshot: %w", err)
 	}
@@ -105,6 +115,19 @@ func (f *CheckoutFS) restoreOrCold(ctx context.Context, src TreeSource) error {
 		return fmt.Errorf("vfs: preparing cold volume root %q: %w", f.root, err)
 	}
 	return nil
+}
+
+// hasWarmTree reports a reattached tree; a half-restored root (marker present) is not warm.
+func (f *CheckoutFS) hasWarmTree() (bool, error) {
+	marked, err := pathExists(filepath.Join(metaDir(f.vol.HostRoot), restoreMarkerName))
+	if err != nil || marked {
+		return false, err
+	}
+	entries, err := os.ReadDir(f.vol.HostRoot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("vfs: reading volume root %q: %w", f.vol.HostRoot, err)
+	}
+	return len(entries) > 0, nil
 }
 
 func validateTreeSource(src TreeSource) error {

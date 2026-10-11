@@ -130,6 +130,12 @@ func runVirtualFSContract(t *testing.T, newFS func(t *testing.T) VirtualFS) {
 		}
 	})
 
+	t.Run("snapshot-only source with no snapshot fails", func(t *testing.T) {
+		if _, err := newFS(t).Materialize(t.Context(), TreeSource{Snapshot: "missing"}); !errors.Is(err, ErrSnapshotNotFound) {
+			t.Fatalf("Materialize = %v, want ErrSnapshotNotFound", err)
+		}
+	})
+
 	t.Run("customer mount does not rebind the destination", func(t *testing.T) {
 		contractMountKeepsBinding(t, newFS(t), newSource())
 	})
@@ -167,8 +173,12 @@ func (f *fakeVirtualFS) Materialize(_ context.Context, src TreeSource) (string, 
 	if src.CustomerMount != "" && (src.Repo != "" || src.Snapshot != "" || len(src.Sparse) != 0) {
 		return "", ErrInvalidTreeSource
 	}
-	if src.CustomerMount == "" && src.Repo == "" {
+	if src.CustomerMount == "" && src.Snapshot == "" && src.Repo == "" {
 		return "", ErrInvalidTreeSource
+	}
+	// The fake stores no snapshots, so an empty root with no repo has no cold path.
+	if src.Snapshot != "" && src.Repo == "" {
+		return "", ErrSnapshotNotFound
 	}
 	if f.active != "" {
 		return "", ErrAlreadyMaterialized
