@@ -1461,13 +1461,14 @@ func TestGetPullRequestHappy(t *testing.T) {
 		"deletions": 30,
 		"changed_files": 4,
 		"merged": true,
+		"mergeable_state": "blocked",
 		"head": {"ref": "feature", "sha": "abc123"},
 		"base": {"ref": "main"},
 		"user": {"login": "octocat"}
 	}`
 	const reviewsBody = `[
-		{"body": "lgtm", "state": "APPROVED", "user": {"login": "botly", "type": "Bot"}},
-		{"body": "needs work", "state": "CHANGES_REQUESTED", "user": {"login": "carol", "type": "User"}}
+		{"body": "lgtm", "state": "APPROVED", "commit_id": "review-sha", "user": {"login": "botly", "type": "Bot"}},
+		{"body": "needs work", "state": "CHANGES_REQUESTED", "commit_id": "old-sha", "user": {"login": "carol", "type": "User"}}
 	]`
 	const checkRunsBody = `{"check_runs": [
 		{"name": "build", "status": "completed", "conclusion": "success", "html_url": "https://ci/build"}
@@ -1537,11 +1538,14 @@ func TestGetPullRequestHappy(t *testing.T) {
 	if len(got.Reviews) != 2 {
 		t.Fatalf("Reviews len = %d, want 2", len(got.Reviews))
 	}
-	if got.Reviews[0] != (Review{Author: "botly", IsBot: true, Verdict: "approved", Body: "lgtm"}) {
+	if got.Reviews[0] != (Review{Author: "botly", IsBot: true, Verdict: "approved", Body: "lgtm", CommitID: "review-sha"}) {
 		t.Errorf("Reviews[0] = %+v", got.Reviews[0])
 	}
-	if got.Reviews[1] != (Review{Author: "carol", IsBot: false, Verdict: "changes_requested", Body: "needs work"}) {
+	if got.Reviews[1] != (Review{Author: "carol", IsBot: false, Verdict: "changes_requested", Body: "needs work", CommitID: "old-sha"}) {
 		t.Errorf("Reviews[1] = %+v", got.Reviews[1])
+	}
+	if got.HeadSHA != "abc123" || got.MergeableState != "blocked" {
+		t.Errorf("HeadSHA/MergeableState = %q/%q, want abc123/blocked", got.HeadSHA, got.MergeableState)
 	}
 
 	// Embedded checks populated (both sources), rolled up to success; only the

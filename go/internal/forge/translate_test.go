@@ -172,8 +172,8 @@ func assertPRReviews(t *testing.T, got *compassv1.PullRequest) {
 		t.Fatalf("Reviews len = %d, want 1", len(got.GetReviews()))
 	}
 	r := got.GetReviews()[0]
-	if r.GetAuthor() != "rev" || !r.GetIsBot() || r.GetVerdict() != "approved" || r.GetBody() != "lgtm" {
-		t.Errorf("Review = %+v, want {rev bot approved lgtm}", r)
+	if r.GetAuthor() != "rev" || !r.GetIsBot() || r.GetVerdict() != "approved" || r.GetBody() != "lgtm" || r.GetCommitId() != "review-sha" {
+		t.Errorf("Review = %+v, want {rev bot approved lgtm review-sha}", r)
 	}
 }
 
@@ -198,22 +198,23 @@ func assertPRThreads(t *testing.T, got *compassv1.PullRequest) {
 func TestTranslatePullRequestRoundTrip(t *testing.T) {
 	attr := &compassv1.AgentAttribution{AgentHandle: "agent-pr"}
 	in := PullRequest{
-		Number:       7,
-		Title:        "a pr",
-		Body:         "<!-- compass-owner: agent-pr -->\npr body",
-		State:        "merged",
-		URL:          "https://forge/pull/7",
-		HeadRef:      "feature",
-		BaseRef:      "main",
-		ForgeAccount: "octocat",
-		Draft:        true,
-		Changed:      ChangedStats{Files: 3, Additions: 10, Deletions: 2},
+		Number:         7,
+		Title:          "a pr",
+		State:          "merged",
+		URL:            "https://forge/pull/7",
+		HeadRef:        "feature",
+		BaseRef:        "main",
+		HeadSHA:        "head-sha",
+		MergeableState: "blocked",
+		ForgeAccount:   "octocat",
+		Draft:          true,
+		Changed:        ChangedStats{Files: 3, Additions: 10, Deletions: 2},
 		Checks: Checks{
 			HeadSHA: "abc123",
 			State:   "success",
 			Checks:  []Check{{Name: "ci", State: "success", URL: "https://ci/1", Required: true}},
 		},
-		Reviews: []Review{{Author: "rev", IsBot: true, Verdict: "approved", Body: "lgtm"}},
+		Reviews: []Review{{Author: "rev", IsBot: true, Verdict: "approved", Body: "lgtm", CommitID: "review-sha"}},
 		Threads: []ReviewThread{{
 			Path:     "file.go",
 			Resolved: true,
@@ -237,6 +238,9 @@ func TestTranslatePullRequestRoundTrip(t *testing.T) {
 	}
 	if got.GetHeadRef() != "feature" {
 		t.Errorf("HeadRef = %q, want %q", got.GetHeadRef(), "feature")
+	}
+	if got.GetHeadSha() != "head-sha" || got.GetMergeableState() != "blocked" {
+		t.Errorf("HeadSha/MergeableState = %q/%q, want head-sha/blocked", got.GetHeadSha(), got.GetMergeableState())
 	}
 	if got.GetBaseRef() != "main" {
 		t.Errorf("BaseRef = %q, want %q", got.GetBaseRef(), "main")
