@@ -6,7 +6,7 @@
 # `packages = with pkgs; [ … ]` list, never hand-listed here: adding a dev-shell
 # tool extends CI and the gate with no edit to this file.
 #
-# Four outputs, one per consumer:
+# Outputs, one per consumer:
 #   env      a symlink tree of every nixpkgs tool plus Meissa's linters; CI
 #            prepends its bin/ to PATH. The only way CI obtains buf/biome/rumdl/…
 #            at the pinned version — no `setup-*` action could match a nix pin.
@@ -18,6 +18,8 @@
 #   langs    name -> identity for the language toolchains (bun/node/moon/go), the
 #            closed set appended outside the parsed `packages` literal. Never
 #            consumes `attrs` (the set is closed), which is why the head defaults it.
+#   goAnalysis name -> identity for the Go analysis battery. Kept out of `langs`
+#            because no cache holds these rebuilds and only the battery jobs run them.
 #   meissa   name -> identity for rumdl + biome, built by the Meissa flake at the
 #            rev devenv.lock pins — the derivations devenv.nix appends. Closed set.
 { attrs ? [ ] }:
@@ -49,8 +51,8 @@ let
 
   # The Go analysis battery, each rebuilt with the go-overlay toolchain the dev
   # shell uses, passed the same goToolchain so CI and the dev shell resolve one
-  # store path per tool. Covered by the `langs` verdict, not the parsed attrs.
-  goAnalysis = import ./go-analysis.nix { inherit pkgs goToolchain; };
+  # store path per tool. Covered by the `goAnalysis` verdict, not the parsed attrs.
+  goAnalysisTools = import ./go-analysis.nix { inherit pkgs goToolchain; };
 
   # Command names a derivation exposes. Dot-prefixed entries are nix wrapper
   # internals, never on PATH as commands.
@@ -91,13 +93,15 @@ in
     node = identityOf toolchainTools.node;
     moon = identityOf toolchainTools.moon;
     go = identityOf goToolchain;
-    golangci-lint = identityOf goAnalysis.golangci-lint;
-    govulncheck = identityOf goAnalysis.govulncheck;
-    go-licenses = identityOf goAnalysis.go-licenses;
-    nilaway = identityOf goAnalysis.nilaway;
+  };
+  goAnalysis = {
+    golangci-lint = identityOf goAnalysisTools.golangci-lint;
+    govulncheck = identityOf goAnalysisTools.govulncheck;
+    go-licenses = identityOf goAnalysisTools.go-licenses;
+    nilaway = identityOf goAnalysisTools.nilaway;
   };
   meissa = builtins.mapAttrs (_: identityOf) meissaTools;
   # The base policy .rumdl.toml extends; CI exports it as RUMDL_BASE_CONFIG.
   rumdlBaseConfig = meissaPkgs."rumdl-base-config";
-  analysis = goAnalysis;
+  analysis = goAnalysisTools;
 }

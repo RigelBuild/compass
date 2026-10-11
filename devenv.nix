@@ -105,7 +105,8 @@ in
   # The language toolchains (bun/node/moon vendored, go from go-overlay) plus the
   # Go analysis battery rebuilt with that go toolchain. Appended OUTSIDE the
   # `with pkgs` literal because each is a dotted reference and the parity gate
-  # THROWS on any non-bare token there; the gate covers these via `langs` instead.
+  # THROWS on any non-bare token there; the gate covers these via the `langs` and
+  # `goAnalysis` outputs instead.
   ++ [
     toolchainTools.bun
     toolchainTools.node

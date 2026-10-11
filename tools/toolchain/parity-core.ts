@@ -12,8 +12,8 @@
 
 // The sources differ only in where the expected store path comes from: nixpkgs
 // attrs parsed out of devenv.nix and resolved through gate-tools.nix's identity;
-// the language toolchains from its langs output; Meissa's rumdl/biome from its
-// meissa output. All use the same containment test.
+// the language toolchains from its langs output; the Go analysis battery from its
+// goAnalysis output; Meissa's rumdl/biome from its meissa output. All use the same containment test.
 
 // A tool that cannot be checked is NOT skipped — the verdict is unverifiable,
 // which the caller treats as a failure. A silently-omitted tool is the precise
