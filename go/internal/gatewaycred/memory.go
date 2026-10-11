@@ -99,9 +99,12 @@ func (m *Memory) List(ctx context.Context, owner store.AccountID, provider strin
 }
 
 // UpdateOAuth replaces an OAuth grant in the agent's active pool.
-func (m *Memory) UpdateOAuth(ctx context.Context, agent store.AccountID, id string, tok OAuthToken, expected int64) (int64, error) {
+func (m *Memory) UpdateOAuth(ctx context.Context, agent store.AccountID, id string, tok OAuthToken, expected int64, clearFields []string) (int64, error) {
 	if id == "" || agent == "" || expected == 0 || tok.Access == "" {
 		return 0, fmt.Errorf("%w: id, agent, expected version, and access token are required", ErrInvalidArgument)
+	}
+	if !ValidOAuthClearFields(clearFields) {
+		return 0, fmt.Errorf("%w: clear fields name a field that cannot be cleared", ErrInvalidArgument)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,7 +120,7 @@ func (m *Memory) UpdateOAuth(ctx context.Context, agent store.AccountID, id stri
 	if row.credential.Version != expected {
 		return 0, ErrVersionConflict
 	}
-	merged := mergeOAuth(*row.credential.oauth, tok)
+	merged := mergeOAuth(*row.credential.oauth, tok, clearFields)
 	row.credential = NewOAuthCredential(row.credential, merged)
 	row.credential.Version++
 	rows[id] = row
@@ -232,7 +235,7 @@ func validateCredential(c Credential) error {
 	return nil
 }
 
-func mergeOAuth(old, next OAuthToken) OAuthToken {
+func mergeOAuth(old, next OAuthToken, clearFields []string) OAuthToken {
 	if next.Access == "" {
 		next.Access = old.Access
 	}
@@ -274,6 +277,9 @@ func mergeOAuth(old, next OAuthToken) OAuthToken {
 	}
 	if next.ActiveOrganizationID == "" {
 		next.ActiveOrganizationID = old.ActiveOrganizationID
+	}
+	for _, name := range clearFields {
+		oauthClearable[name](&next)
 	}
 	return next
 }

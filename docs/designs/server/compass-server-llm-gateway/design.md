@@ -795,13 +795,17 @@ Interfaces:
   `agent_accounts.owner_user_id` (`0001_init.sql:74-80`); the
   `AuthCredentialStore` contract (`auth-storage.ts:1287-1290`).
 - Produces: the TS `CompassAuthCredentialStore` (RPC client) in the fork's
-  compass wrapper; Go-side `type CredentialStore interface { Create(ctx, c Credential) (Credential, error); List(ctx, userID, provider string) ([]Credential, error); UpdateOAuth(ctx, agentAccountID, id string, tok OAuthToken, expectedVersion int64) (int64, error); Disable(ctx, agentAccountID, id, cause string, expectedVersion int64) error }` (`go/internal/gatewaycred`; `UpdateOAuth` returns the new version the RPC reports, and `Create` is the enrollment write)
+  compass wrapper; Go-side `type CredentialStore interface { Create(ctx, c Credential) (Credential, error); List(ctx, userID, provider string) ([]Credential, error); UpdateOAuth(ctx, agentAccountID, id string, tok OAuthToken, expectedVersion int64, clearFields []string) (int64, error); Disable(ctx, agentAccountID, id, cause string, expectedVersion int64) error }` (`go/internal/gatewaycred`; `UpdateOAuth` returns the new version the RPC reports, and `Create` is the enrollment write)
   and `type PoolResolver interface { Pool(ctx, agentAccountID string) ([]Credential, error) }`
   (the managed-plane org-scoping swap seam) behind the RPC surface;
   proto + regen when the OAuth payload extension needs it. `UpdateOAuth` and
   `Disable` check that `id` is in `Pool(agentAccountID)` before the CAS; a miss
   returns NOT_FOUND, byte-identical to a missing row, so one agent cannot write
   or probe another agent's credential by id.
+  An `UpdateOAuth` field left empty keeps its stored value; `clearFields`
+  names metadata fields to zero instead (clear wins over a sent value). Only
+  the 11 metadata fields are clearable, never `access`, `refresh` or
+  `expires_unix_ms`; any other name is INVALID_ARGUMENT.
 - Test cycle: TS contract tests against a fake Server; Go in-memory ref +
   `pgtest` (DL-174); CAS race tests.
 

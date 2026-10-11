@@ -63,12 +63,15 @@ func (s *gatewayCredentialsService) UpdateCredentialOAuth(ctx context.Context, r
 	if req == nil || req.Msg == nil || req.Msg.GetAgentAccountId() == "" || req.Msg.GetId() == "" || req.Msg.GetExpectedVersion() == 0 || req.Msg.GetToken() == nil || req.Msg.GetToken().GetAccess() == "" {
 		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "id, agent_account_id, expected_version, and token access are required")
 	}
+	if !gatewaycred.ValidOAuthClearFields(req.Msg.GetClearFields()) {
+		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "clear_fields names a field that cannot be cleared")
+	}
 	agent := store.AccountID(req.Msg.GetAgentAccountId())
 	ctx, err := s.resolveTenant(ctx, agent, "UpdateCredentialOAuth")
 	if err != nil {
 		return nil, err
 	}
-	version, err := s.creds.UpdateOAuth(ctx, agent, req.Msg.GetId(), gatewayOAuthFromProto(req.Msg.GetToken()), req.Msg.GetExpectedVersion())
+	version, err := s.creds.UpdateOAuth(ctx, agent, req.Msg.GetId(), gatewayOAuthFromProto(req.Msg.GetToken()), req.Msg.GetExpectedVersion(), req.Msg.GetClearFields())
 	if err != nil {
 		return nil, s.mapStoreError(ctx, "updating OAuth credential", err)
 	}
