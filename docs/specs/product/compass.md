@@ -63,6 +63,8 @@ accounts, channels, messages, and their event stream), described in turn below.
   network door (see [The network door](#the-network-door)).
 - **`RenameAccount`** — an admin-only RPC that renames a user or agent in place.
   Agents keep their owner; a freed handle may be reclaimed.
+- **`GetRefLinkRules`** — the link rules a UI uses to turn issue and PR
+  references in text into links, built from the server's configured forges.
 
 The event payload is an extensible `oneof` — `ServerStatus` and `ResyncRequired`
 plus the agent-session payloads (`AgentSessionStatus`, `AgentMessageChunk`,
@@ -185,6 +187,28 @@ edit is a breaking change to the published contract.
   committed clients)
 - **Then** it fails on the difference, so the schema and its clients can never
   silently disagree.
+
+### Requirement: Ref link rules come from the configured forges
+
+`GetRefLinkRules` SHALL return one GitHub rule per configured GitHub host whose
+App the server reads with, and one Linear rule per enabled Linear team, keyed by
+the team key and the Linear workspace URL key. A rule SHALL carry only its kind,
+prefix, and URL template; it SHALL NOT carry a token, secret, or installation
+identifier. When the Linear workspace key or the enabled-team list cannot be
+read, the server SHALL omit the Linear rules and still return the GitHub rules.
+
+#### Scenario: A UI loads the link rules
+
+- **Given** a server with a configured GitHub App and an enabled Linear team
+- **When** a client calls `GetRefLinkRules`
+- **Then** the server returns a GitHub rule for the App host and a Linear rule
+  for the team, each holding only a kind, prefix, and URL template.
+
+#### Scenario: The Linear workspace key read fails
+
+- **Given** a server whose Linear workspace key read fails
+- **When** a client calls `GetRefLinkRules`
+- **Then** the server returns the GitHub rules and no Linear rule.
 
 ## Local transport
 
@@ -1129,8 +1153,8 @@ webview or a native client).
 The dev endpoint mounts no bearer interceptor, so it never carries an
 authenticated caller. Its admin-only RPCs (`IssueToken`, `RenameAccount`, and the
 agent-session lifecycle RPCs) SHALL therefore fail closed `PermissionDenied`, while the
-authenticated-open RPCs (`GetServerInfo`, `SubscribeEvents`) and the
-ambient-admin comms RPCs remain reachable. This prevents a browser page loaded
+authenticated-open RPCs (`GetServerInfo`, `SubscribeEvents`, `GetRefLinkRules`)
+and the ambient-admin comms RPCs remain reachable. This prevents a browser page loaded
 against a configured dev endpoint from minting a bootstrap-admin token via
 `IssueToken` and replaying it against the network door.
 
@@ -1176,8 +1200,8 @@ service's `Check` and `Watch` methods. `GET` and `HEAD /healthz` are also
 anonymous. The admin-only RPCs (`IssueToken`, `RenameAccount`, and the
 agent-session lifecycle RPCs) SHALL additionally require the caller to resolve
 to the admin account, rejecting a non-admin `PermissionDenied`; the
-authenticated-open RPCs (`GetServerInfo`, `SubscribeEvents`) SHALL admit any
-valid bearer.
+authenticated-open RPCs (`GetServerInfo`, `SubscribeEvents`, `GetRefLinkRules`)
+SHALL admit any valid bearer.
 
 #### Scenario: Health checks require no network-door bearer
 
