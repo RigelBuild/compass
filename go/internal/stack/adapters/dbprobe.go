@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
@@ -34,7 +35,13 @@ func NewDBProber() *DBProber {
 // connection is always closed, on both the ping-failure and success paths, so a
 // probe leaks no pooled-less connection.
 func (p *DBProber) ProbeDB(ctx context.Context, dsn string) error {
-	conn, err := pgx.Connect(ctx, dsn)
+	// Parse as a pool DSN so pool_* settings the store honours are stripped
+	// rather than sent to postgres, which rejects them as unknown parameters.
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("parse dsn: %w", err)
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg.ConnConfig)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
