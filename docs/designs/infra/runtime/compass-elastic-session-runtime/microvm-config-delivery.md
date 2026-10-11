@@ -15,9 +15,10 @@ Tracking: RIG-3093
 A microVM agent runs with empty fleet config. `provisionVsockGateway`
 (`go/internal/runner/host.go`) launches with no config mount and no
 `configVersions` seed, because the backend accepts exactly one read-write
-mount (`workspaceShare`, `go/internal/runtime/microvm_lifecycle.go`:
-`if mounts[0].ReadOnly { return Mount{}, &UnsupportedMountError{...} }`, and
-the same for any `ContainerPath != workspaceMountPath`). `refreshOneContainer` then skips
+mount. `workspaceShare` (`go/internal/runtime/microvm_lifecycle.go`) rejects
+both `if mounts[0].ReadOnly {` and
+`if mounts[0].ContainerPath != workspaceMountPath {` with
+`return Mount{}, &UnsupportedMountError{Mount: mounts[0]}`. `refreshOneContainer` then skips
 the session with `if _, ok := h.engine.(vsockGatewayEngine); ok { return nil }`.
 Intent: config parity with podman, including live refresh on a ConfigVersion
 publish, with that gate and the Provision skip both removed.
