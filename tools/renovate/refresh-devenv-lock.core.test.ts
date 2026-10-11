@@ -2,23 +2,23 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-	changedDevenvLock,
+	changedDevenvLocks,
 	DEVENV_LOCK_PATHS,
 	DEVENV_LOCK_SCOPES,
 	devenvForkLockedRev,
 } from "./refresh-devenv-lock.core.ts";
 
-// Unit tests for the pure decision core (RIG-2815): which of the two devenv locks
-// a branch touched, and reading the fork rev out of a lock. These assert the
-// decisions a wrong line would corrupt: relocking the wrong scope (whose write the
-// one-lock fileFilters discards), or reading a stale rev.
+// Unit tests for the pure decision core (RIG-2815): which devenv locks a branch
+// touched, and reading the fork rev out of a lock. These assert the decisions a
+// wrong line would corrupt: relocking the wrong scope (and leaving it unrelocked),
+// or reading a stale rev.
 
 const repoRoot = join(import.meta.dir, "..", "..");
 
 describe("DEVENV_LOCK_SCOPES", () => {
 	// The cwd IS the scope selector — devenv resolves devenv.lock relative to it —
-	// so each scope's cwd must hold its lock. A mismatch relocks the OTHER scope's
-	// lock while fileFilters names this one, so Renovate commits nothing.
+	// so each scope's cwd must hold its lock. A mismatch relocks the sibling and
+	// leaves this lock unrelocked.
 	test("every scope's relock cwd is the directory holding that scope's lock", () => {
 		for (const { lock, cwd } of Object.values(DEVENV_LOCK_SCOPES)) {
 			const dir = lock.includes("/")
@@ -28,8 +28,7 @@ describe("DEVENV_LOCK_SCOPES", () => {
 		}
 	});
 
-	// Ground truth: both locks the config's two managers govern must actually
-	// exist at these paths, and each must be a devenv lock pinning the fork.
+	// Both governed locks must exist at these paths and pin the fork.
 	test("both scope locks exist in the real tree and pin a 40-hex fork rev", () => {
 		expect(DEVENV_LOCK_PATHS).toEqual([
 			"devenv.lock",
@@ -41,52 +40,49 @@ describe("DEVENV_LOCK_SCOPES", () => {
 		}
 	});
 
-	// RD-1: unify the SOURCE, do NOT reconcile the locks. The two locks tracking
-	// the fork independently means their revs may legitimately differ — this test
-	// documents that they are read as separate scopes, never compared for
-	// equality anywhere in the task.
-	test("the two scopes are distinct files (independent cadences, not reconciled)", () => {
+	// RD-1 unifies the source, not the lock files. A fork bump now moves both revs
+	// in one PR, but the locks remain separate files.
+	test("the two scopes are distinct lock files", () => {
 		const locks = Object.values(DEVENV_LOCK_SCOPES).map((s) => s.lock);
 		expect(new Set(locks).size).toBe(locks.length);
 	});
 });
 
-describe("changedDevenvLock", () => {
+describe("changedDevenvLocks", () => {
 	const ROOT = "devenv.lock";
 	const AGENT = "agent-image/devenv.lock";
 
 	test("selects the root scope when only the root lock changed", () => {
-		expect(changedDevenvLock([ROOT])).toBe("root");
+		expect(changedDevenvLocks([ROOT])).toEqual(["root"]);
 	});
 
 	test("selects the agent-image scope when only that lock changed", () => {
-		expect(changedDevenvLock([AGENT])).toBe("agent-image");
+		expect(changedDevenvLocks([AGENT])).toEqual(["agent-image"]);
 	});
-
 	// The self-gate: on every unrelated Renovate branch the task must be a cheap
 	// no-op, not a spurious relock. Dropping this gate would make the task
 	// re-lock (and network) on branches it has nothing to do with.
-	test("returns null when no devenv lock changed (the self-gate no-op)", () => {
-		expect(changedDevenvLock([])).toBeNull();
-		expect(changedDevenvLock(["package.json", "bun.lock"])).toBeNull();
+	test("returns [] when no devenv lock changed (the self-gate no-op)", () => {
+		expect(changedDevenvLocks([])).toEqual([]);
+		expect(changedDevenvLocks(["package.json", "bun.lock"])).toEqual([]);
 	});
 
 	// Paths are compared EXACTLY, as `git diff --name-only` emits them: a
-	// same-named lock elsewhere in the tree is not either governed scope, and
-	// treating it as one would relock a file no rule's fileFilters admits.
+	// same-named lock elsewhere in the tree is not either governed scope.
 	test("does not mistake a same-named lock elsewhere for a governed scope", () => {
-		expect(changedDevenvLock(["guest-image/devenv.lock"])).toBeNull();
-		expect(changedDevenvLock(["a/agent-image/devenv.lock"])).toBeNull();
+		expect(changedDevenvLocks(["guest-image/devenv.lock"])).toEqual([]);
+		expect(changedDevenvLocks(["a/agent-image/devenv.lock"])).toEqual([]);
 	});
 
-	// Fail loud on the shape the two distinct groupNames exist to prevent. Each
-	// rule's fileFilters names ONE lock, so a two-lock branch would have Renovate
-	// commit one relock and silently DISCARD the other — a PR that bumped a rev
-	// without relocking it. Better to die in-branch than ship that.
-	test("throws when BOTH locks changed (the groupName isolation broke)", () => {
-		expect(() => changedDevenvLock([ROOT, AGENT])).toThrow(
-			/2 devenv locks changed/,
-		);
+	// Both matches are expected in the one fork group. Preserve the declared
+	// scope order regardless of the order `git diff` reports changed paths.
+	test("returns both scopes, root first, whatever the diff order", () => {
+		expect(changedDevenvLocks([AGENT, ROOT])).toEqual(["root", "agent-image"]);
+		expect(changedDevenvLocks([ROOT, AGENT])).toEqual(["root", "agent-image"]);
+		expect(changedDevenvLocks(["bun.lock", AGENT, ROOT])).toEqual([
+			"root",
+			"agent-image",
+		]);
 	});
 });
 

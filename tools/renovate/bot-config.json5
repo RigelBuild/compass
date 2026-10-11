@@ -102,10 +102,8 @@
   //      devenv-nixpkgs channel bump stays a fail-safe trigger. Left stale the
   //      image build fails `hash mismatch in fixed-output derivation` (PR #579).
   //      Wired at the top-level (branch mode), catalog-rule (update mode),
-  //      devenv-nixpkgs channel rule (branch mode), devenv fork (root) rule
-  //      (branch mode), go↔go-overlay lockstep rule (branch mode), agent-image
-  //      devenv fork rule (branch mode), and Meissa rule (branch mode) — one
-  //      command string, so ONE allowlist entry covers all seven sites.
+  //      devenv-nixpkgs channel rule, devenv fork rule, go↔go-overlay lockstep
+  //      rule, and Meissa rule — one command string across all six sites.
   //   5. the go↔go-overlay lockstep, which on a go.nix toolchain bump advances
   //      the go-overlay input in devenv.lock to a rev that provides the new go
   //      release and validates it resolves through gate-tools.nix's `langs.go`
@@ -113,13 +111,8 @@
   //      releases at or before its pinned rev, so without this a bump to a newer
   //      go than the overlay provides evals a missing attr and reds CI
   //      (RIG-3100).
-  //   6. the devenv-fork relock, which on either compass devenv lock's
-  //      fork-rev digest bump runs `devenv update devenv` in that lock's own
-  //      directory, rewriting the whole lock (narHash/lastModified + the
-  //      fork's transitive nodes) at the new rev rather than leaving the
-  //      regex-bumped rev beside a stale hash. Both devenv-fork packageRules
-  //      declare this ONE command — the script self-gates on WHICH lock
-  //      changed — so one entry covers both (RIG-2815).
+  //   6. the devenv-fork relock runs every changed lock in its own directory,
+  //      root first, rewriting each lock at the fork's new rev.
   //   7. the agent-image devenv-nixpkgs CHANNEL relock, the fourth devenv pin:
   //      on that lock's channel digest bump it runs `devenv update nixpkgs` in
   //      agent-image/ under that lock's own devenv, then refreshes

@@ -7,11 +7,10 @@ import { $ } from "bun";
 // Orchestration harness for refresh-devenv-lock.ts (RIG-2815). The pure decisions
 // are unit-tested in refresh-devenv-lock.core.test.ts. This drives the SHIPPED
 // entry point end to end in a throwaway git repo with a stub nix, exercising the
-// step sequencing (self-gate → pick scope → relock → verify) offline.
+// step sequencing (self-gate → pick scopes, relock each → verify) offline.
 
 // Two assertions are load-bearing. The CWD one: relocking in the wrong directory
-// rewrites the sibling scope's lock while fileFilters names this one, so Renovate
-// commits nothing.
+// leaves that changed lock unrelocked.
 
 // The FLAKEREF one: the rev inside the flakeref must be the CHANGED scope's OWN
 // bumped rev. The script self-provisions devenv from the lock it relocks, so each
@@ -48,13 +47,13 @@ const HERMETIC_ENV = {
 	HOME: "/dev/null",
 };
 
-// Three revs per scope: the base lock's, the one the regex update writes (a
-// rev-only rewrite — narHash still describes the base rev), and the one the
-// stubbed relock resolves.
+// Three relevant revs and distinct bumped revs per scope: the base lock's, the
+// one the regex update writes (a rev-only rewrite — narHash still describes the
+// base rev), and the one the stubbed relock resolves.
 const BASE_REV = "1111111111111111111111111111111111111111";
 const BUMPED_REV = "2222222222222222222222222222222222222222";
 const RELOCKED_REV = "3333333333333333333333333333333333333333";
-
+const AGENT_BUMPED_REV = "4444444444444444444444444444444444444444";
 // A minimal devenv lock carrying the devenv fork node the core reads
 // (nodes.devenv.locked.rev) plus the original block whose repeated "repo":
 // "devenv" (followed by "type", never "rev") makes the matchString anchor unique
@@ -112,11 +111,10 @@ const CORRUPT_LOCK = JSON.stringify({
 // stub records the cwd and full argv (tests assert both the scope directory and
 // WHICH devenv was provisioned), then rewrites ./devenv.lock to the RELOCKED rev.
 
-// Sentinel files in the repo root model the failure modes through the script's
-// REAL control flow: .force-noop-relock → exit 0 writing NOTHING (a half-relock);
-// .force-fail-relock → exit 1; .force-corrupt-relock → a short-rev lock (a shape
-// drift the post-relock guard must catch).
-
+// Sentinel files in each scope's own directory model failure modes through the
+// script's REAL control flow: .force-noop-relock → exit 0 writing NOTHING (a
+// half-relock); .force-fail-relock → exit 1; .force-corrupt-relock → a short-rev
+// lock (a shape drift the post-relock guard must catch).
 // The write is gated on the post-`--` args being exactly `update devenv`, so a
 // wrong-input regression fails through BEHAVIOUR (the byte-identical guard fires),
 // not merely an argv-log assertion. Offline throughout.
@@ -125,10 +123,10 @@ set -euo pipefail
 if [ "\${1:-}" = "run" ]; then
   echo "$PWD" >> "$REPO_ROOT/.devenv-update-cwds"
   echo "$@" >> "$REPO_ROOT/.devenv-update-args"
-  if [ -f "$REPO_ROOT/.force-noop-relock" ]; then
+  if [ -f "$PWD/.force-noop-relock" ]; then
     exit 0
   fi
-  if [ -f "$REPO_ROOT/.force-fail-relock" ]; then
+  if [ -f "$PWD/.force-fail-relock" ]; then
     echo "stub nix: forced relock failure" >&2
     exit 1
   fi
@@ -146,12 +144,12 @@ if [ "\${1:-}" = "run" ]; then
   if [ "\${1:-}" != "update" ] || [ "\${2:-}" != "devenv" ]; then
     exit 0
   fi
-  if [ -f "$REPO_ROOT/.force-corrupt-relock" ]; then
+	if [ -f "$PWD/.force-corrupt-relock" ]; then
     printf '%s' '${CORRUPT_LOCK}' > devenv.lock
     exit 0
   fi
   cat > devenv.lock <<'LOCK'
-${devenvLock(RELOCKED_REV, "CCCC")}
+${devenvLock(RELOCKED_REV, "CCCC").trimEnd()}
 LOCK
 fi
 exit 0
@@ -195,8 +193,13 @@ async function buildRepo(): Promise<string> {
 // The rev-only rewrite the customManager's regex update performs: it moves the
 // rev string and NOTHING else, so narHash still describes the base rev. This is
 // precisely the inconsistent state the relock task exists to repair.
-async function applyRegexBump(repo: string, lockRel: string, narHash: string) {
-	await Bun.write(join(repo, lockRel), devenvLock(BUMPED_REV, narHash));
+async function applyRegexBump(
+	repo: string,
+	lockRel: string,
+	narHash: string,
+	rev = BUMPED_REV,
+): Promise<void> {
+	await Bun.write(join(repo, lockRel), devenvLock(rev, narHash));
 }
 
 // Run the shipped script as Renovate does: `bun tools/renovate/…ts`, cwd = repo
@@ -215,15 +218,15 @@ async function runRefresh(repo: string, baseBranch = "main") {
 		.nothrow();
 }
 
-// The flakeref rev the script provisioned its devenv CLI from, read out of the
-// stub's argv log: `run github:<owner>/<repo>/<rev>#devenv -- update devenv`.
-async function provisionedRev(repo: string): Promise<string> {
-	const args = (
-		await readFile(join(repo, ".devenv-update-args"), "utf8")
-	).trim();
-	const rev = /^run github:RigelBuild\/devenv\/([a-f0-9]+)#devenv /.exec(args);
-	expect(rev).not.toBeNull();
-	return rev?.[1] as string;
+// Every flakeref rev the script provisioned its devenv CLI from, in call order.
+async function provisionedRevs(repo: string): Promise<string[]> {
+	const args = await readFile(join(repo, ".devenv-update-args"), "utf8");
+	const matches = args.matchAll(
+		/^run github:RigelBuild\/devenv\/([a-f0-9]+)#devenv /gm,
+	);
+	return Array.from(matches, (match) => match[1]).filter(
+		(rev): rev is string => rev !== undefined,
+	);
 }
 
 describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
@@ -251,23 +254,27 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 		);
 	});
 
-	// The end-to-end happy path per scope, plus the two assertions that are the whole
-	// point of two scopes: the relock runs in the changed lock's OWN directory under
-	// the devenv that lock pins, and leaves the SIBLING lock untouched (fileFilters
-	// admits only the one).
+	// The happy path proves each changed scope uses its own devenv and directory.
+	// A one-lock bump leaves the sibling untouched.
 	test.each([
-		{ label: "root", lockRel: ROOT_LOCK_REL, dir: ".", narHash: "AAAA" },
+		{
+			label: "root",
+			lockRel: ROOT_LOCK_REL,
+			dir: ".",
+			narHash: "AAAA",
+			rev: BUMPED_REV,
+		},
 		{
 			label: "agent-image",
 			lockRel: AGENT_LOCK_REL,
 			dir: "agent-image",
 			narHash: "BBBB",
+			rev: AGENT_BUMPED_REV,
 		},
 	])(
 		"relocks the $label lock in its own directory, under its own devenv, leaving the sibling alone",
-		async ({ lockRel, dir, narHash }) => {
-			await applyRegexBump(repo, lockRel, narHash);
-
+		async ({ lockRel, dir, narHash, rev }) => {
+			await applyRegexBump(repo, lockRel, narHash, rev);
 			const res = await runRefresh(repo);
 			expect(res.exitCode).toBe(0);
 			expect(res.stdout.toString()).not.toContain("nothing to do");
@@ -276,7 +283,7 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 			// rev, not merely the rev string the regex bumped.
 			const relocked = await readFile(join(repo, lockRel), "utf8");
 			expect(relocked).toContain(RELOCKED_REV);
-			expect(relocked).not.toContain(BUMPED_REV);
+			expect(relocked).not.toContain(rev);
 			expect(res.stdout.toString()).toContain(`now at ${RELOCKED_REV}`);
 
 			// It relocked EXACTLY ONCE, in this scope's directory. A wrong cwd would
@@ -294,13 +301,12 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 			// re-lock every input and bloat the PR's diff).
 			expect(args.endsWith(" -- update devenv")).toBe(true);
 
-			// H2 regression guard: the devenv CLI the script provisioned came from THIS
-			// scope's own lock — its flakeref rev is this lock's bumped rev. An ambient
-			// devenv (or the sibling's) would put a different rev here, the cross-scope
-			// coupling this shape removes.
-			expect(await provisionedRev(repo)).toBe(BUMPED_REV);
+			// H2 regression guard: the devenv CLIs were provisioned from each scope's
+			// own lock — each flakeref rev is that lock's bumped rev. An ambient devenv
+			// (or the sibling's) would put a different rev here.
+			expect(await provisionedRevs(repo)).toEqual([rev]);
 
-			// The sibling scope is untouched — the two locks are independent (RD-1).
+			// The sibling lock remains unchanged when only one scope changed.
 			const sibling =
 				lockRel === ROOT_LOCK_REL ? AGENT_LOCK_REL : ROOT_LOCK_REL;
 			expect(await readFile(join(repo, sibling), "utf8")).toContain(BASE_REV);
@@ -356,21 +362,74 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 		expect(res.stdout.toString()).not.toContain("now at");
 	});
 
-	// Fail-loud: BOTH locks changed. The two rules carry distinct groupNames so they
-	// never share a branch; if that breaks, each rule's fileFilters names ONE lock, so
-	// Renovate would commit one relock and drop the other. Exit non-zero, not guess.
-	test("exits non-zero when BOTH locks changed on one branch", async () => {
+	// Both locks can be bumped by one fork update. Relock them in declared scope
+	// order, using each lock's own devenv and directory.
+	test("relocks BOTH locks, root first, each in its own directory under its own devenv", async () => {
 		await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");
-		await applyRegexBump(repo, AGENT_LOCK_REL, "BBBB");
+		await applyRegexBump(repo, AGENT_LOCK_REL, "BBBB", AGENT_BUMPED_REV);
+
+		const res = await runRefresh(repo);
+		expect(res.exitCode).toBe(0);
+		expect(await readFile(join(repo, ROOT_LOCK_REL), "utf8")).toBe(
+			devenvLock(RELOCKED_REV, "CCCC"),
+		);
+		expect(await readFile(join(repo, AGENT_LOCK_REL), "utf8")).toBe(
+			devenvLock(RELOCKED_REV, "CCCC"),
+		);
+		expect(
+			(await readFile(join(repo, ".devenv-update-cwds"), "utf8"))
+				.trim()
+				.split("\n"),
+		).toEqual([repo, join(repo, "agent-image")]);
+		expect(await provisionedRevs(repo)).toEqual([BUMPED_REV, AGENT_BUMPED_REV]);
+		expect(res.stdout.toString().match(/now at/g)).toHaveLength(2);
+	});
+
+	test("stops at the first failing scope and leaves the second untouched", async () => {
+		await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");
+		await applyRegexBump(repo, AGENT_LOCK_REL, "BBBB", AGENT_BUMPED_REV);
+		await Bun.write(join(repo, ".force-fail-relock"), "");
 
 		const res = await runRefresh(repo);
 		expect(res.exitCode).not.toBe(0);
-		expect(res.stderr.toString()).toContain("devenv locks changed");
-		// And it relocked NEITHER — no partial write.
-		expect(await Bun.file(join(repo, ".devenv-update-cwds")).exists()).toBe(
-			false,
+		expect(
+			(await readFile(join(repo, ".devenv-update-cwds"), "utf8"))
+				.trim()
+				.split("\n"),
+		).toEqual([repo]);
+		expect(await readFile(join(repo, AGENT_LOCK_REL), "utf8")).toBe(
+			devenvLock(AGENT_BUMPED_REV, "BBBB"),
 		);
 	});
+
+	test.each([
+		{ marker: ".force-fail-relock", failure: "command failure" },
+		{ marker: ".force-noop-relock", failure: "byte-identical" },
+	])(
+		"a second-scope $failure exits non-zero after relocking the first",
+		async ({ marker, failure }) => {
+			await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");
+			await applyRegexBump(repo, AGENT_LOCK_REL, "BBBB", AGENT_BUMPED_REV);
+			await Bun.write(join(repo, "agent-image", marker), "");
+
+			const res = await runRefresh(repo);
+			expect(res.exitCode).not.toBe(0);
+			if (failure === "byte-identical") {
+				expect(res.stderr.toString()).toContain("byte-identical");
+			}
+			expect(await readFile(join(repo, ROOT_LOCK_REL), "utf8")).toBe(
+				devenvLock(RELOCKED_REV, "CCCC"),
+			);
+			expect(await readFile(join(repo, AGENT_LOCK_REL), "utf8")).toBe(
+				devenvLock(AGENT_BUMPED_REV, "BBBB"),
+			);
+			expect(
+				(await readFile(join(repo, ".devenv-update-cwds"), "utf8"))
+					.trim()
+					.split("\n"),
+			).toEqual([repo, join(repo, "agent-image")]);
+		},
+	);
 
 	// The base-ref fallback DIRECTION: with no `origin/<base>` remote-tracking
 	// ref (a local clone, or a runner that never fetched it), the gate must fall

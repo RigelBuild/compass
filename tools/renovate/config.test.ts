@@ -78,7 +78,7 @@ const bot = botConfig as {
 // tools/renovate/ → repo root is two levels up.
 const repoRoot = join(import.meta.dir, "..", "..");
 
-// The FOD-hash refresh command, declared once. It rides SEVEN task sites in
+// The FOD-hash refresh command, declared once. It rides SIX task sites in
 // config.json5 and is asserted from several describes below; a rename must be a
 // single edit here, not one per assertion (a missed copy degrades quietly).
 const FOD_COMMAND = "bun tools/renovate/refresh-fod-hashes.ts";
@@ -189,20 +189,18 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// commands across the task sites (the FOD-hash refresh rides SIX sites — see
 	// the per-site enumeration on the count test below — so it appears six times
 	// in the declared list but needs only one allowlist entry; the devenv-fork
-	// relock likewise rides BOTH devenv-fork rules under one command string, since
-	// the script self-gates on which lock changed); every
+	// relock rides the one devenv-fork rule, which relocks every changed lock); every
 	// distinct command must be permitted, every entry must be used, and no entry may
 	// be an unanchored substring rule. RIG-3100 added the fifth: the go↔go-overlay
 	// lockstep on the go pin's solo branch. RIG-2815 added the sixth: the
-	// devenv-fork relock on each devenv lock's solo branch. The seventh is the
+	// devenv-fork relock on the one rule covering both locks. The seventh is the
 	// agent-image devenv-nixpkgs CHANNEL relock — the fourth devenv pin, on its
 	// own solo branch, with its own script because the root channel script's
 	// biome/catalog/bun.lock/flake tail has no counterpart in that scope. The
 	// eighth is the guest-rootfs agent-image relock, which rewrites the pinned
 	// tag, digest, and per-layer fetch keys together. The ninth refreshes the
 	// coupled source and vendor hashes for Go analysis pins. The tenth and
-	// eleventh are the Meissa relock (`devenv update meissa`) and the biome
-	// catalog writer that follows Meissa's biome.
+	// eleventh are the Meissa relock (`devenv update meissa`) and biome catalog writer.
 	const commands = allDeclaredCommands();
 	const distinctCommands = [...new Set(commands)];
 	const allowed = bot.allowedCommands ?? [];
@@ -212,20 +210,18 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		expect(allowed).toHaveLength(11);
 	});
 
-	test("the fod-hash refresh is declared at all seven task sites", () => {
+	test("the fod-hash refresh is declared at all six task sites", () => {
 		// The command must ride every task shape that can own a bump able to move a
 		// pinned FOD, because a rule-level task REPLACES the top-level one on its
-		// branch. The seven sites, all carrying the refresh:
+		// branch. The six sites, all carrying the refresh:
 		//   1. top-level (branch mode)      — gomod + bun/TypeScript-first branches
 		//   2. devenv-nixpkgs channel rule  — relocks devenv.lock, a declared trigger
-		//   3. devenv fork (root) rule      — relocks devenv.lock, a declared trigger
+		//   3. devenv fork rule            — relocks both locks, each a declared trigger
 		//   4. go ↔ go-overlay lockstep     — relocks devenv.lock likewise
-		//   5. workspaces.catalog rule      — update mode, eviction-proof
-		//   6. devenv fork (agent-image)    — relocks agent-image/devenv.lock, a
-		//                                     declared trigger of the same pin
-		//   7. Meissa lockstep              — relocks devenv.lock and may move the
-		//                                     biome pin + bun.lock
-		// Sites 3, 4 and 6 carry it fail-safe: each relocks ONE non-nixpkgs input, so
+		//   5. workspaces.catalog rule     — update mode, eviction-proof
+		//   6. Meissa lockstep             — relocks devenv.lock and may move the
+		//                                    biome pin + bun.lock
+		// Sites 3 and 4 carry it fail-safe: each relocks one non-nixpkgs input, so
 		// neither moves the FOD's bun — but each writes a declared trigger of the
 		// entrypoint.nix entry, so the coupling holds at file granularity and the
 		// refresh's write is a no-op when nothing moved (the gate itself fires on
@@ -234,7 +230,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		// this file is what keeps that coverage property true for future sites: it
 		// derives from FOD_ENTRIES that any site declaring a trigger must run the
 		// refresh LAST and name the pin's file.
-		expect(commands.filter((c) => c === FOD_COMMAND)).toHaveLength(7);
+		expect(commands.filter((c) => c === FOD_COMMAND)).toHaveLength(6);
 		const topLevel = cfg.postUpgradeTasks?.commands ?? [];
 		expect(topLevel).toContain(FOD_COMMAND);
 		const catalogRule = cfg.packageRules.find(
@@ -738,56 +734,37 @@ describe("tools/renovate Meissa lint toolchain lockstep", () => {
 });
 
 describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
-	// Both compass devenv scopes resolve github:RigelBuild/devenv by DEFAULT
-	// BRANCH, so the concrete rev lives only in devenv.lock and nothing moved it
-	// until T7. Two customManagers surface the two locks' fork revs as git-refs
-	// digests, each paired with its own solo-branched packageRule carrying the
-	// relock postUpgradeTask. RD-1 keeps the two locks on INDEPENDENT cadences
-	// (unify the source, do NOT reconcile the locks), which is why this is two
-	// managers + two rules + two groupNames and not one widened pair.
+	// Both compass devenv scopes resolve github:RigelBuild/devenv by default
+	// branch. Separate regex managers surface each lock's fork rev, while one
+	// package rule groups both updates and relocks every changed scope.
 	//
 	// Found by the dep each stamps, never by index or a bare "devenv" file-pattern
 	// substring (the devenv-nixpkgs channel manager pattern-matches the same root
 	// lock).
 	const RELOCK = "bun tools/renovate/refresh-devenv-lock.ts";
+	const GROUP = "devenv fork";
+	const forkRule = cfg.packageRules.find((r) => r.groupName === GROUP);
 	const forkScopes: {
 		label: string;
 		depName: string;
 		lock: string;
-		groupName: string;
 		patternLiteral: string;
-		// The rule's WHOLE declared task, pinned literally per scope. Both locks are
-		// declared triggers of the entrypoint.nix FOD entry, so both rules carry the
-		// FOD refresh and name the FOD file.
-		taskCommands: string[];
-		taskFileFilters: string[];
 	}[] = [
 		{
 			label: "root",
 			depName: "RigelBuild/devenv",
 			lock: "devenv.lock",
-			groupName: "devenv fork (root)",
 			patternLiteral: "/^devenv\\.lock$/",
-			taskCommands: [RELOCK, FOD_COMMAND],
-			taskFileFilters: ["devenv.lock", "agent-image/entrypoint.nix"],
 		},
 		{
 			label: "agent-image",
 			depName: "RigelBuild/devenv-agent-image",
 			lock: "agent-image/devenv.lock",
-			groupName: "devenv fork (agent-image)",
 			patternLiteral: "/^agent-image\\/devenv\\.lock$/",
-			taskCommands: [RELOCK, FOD_COMMAND],
-			taskFileFilters: [
-				"agent-image/devenv.lock",
-				"agent-image/entrypoint.nix",
-			],
 		},
 	];
 	const managerFor = (depName: string) =>
 		cfg.customManagers?.find((m) => m.depNameTemplate === depName);
-	const ruleFor = (depName: string) =>
-		cfg.packageRules.find((r) => r.matchDepNames?.includes(depName));
 
 	test.each(forkScopes)(
 		"declares a git-refs regex manager for the $label lock's fork rev",
@@ -796,9 +773,8 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			expect(manager).toBeDefined();
 			expect(manager?.customType).toBe("regex");
 			expect(manager?.datasourceTemplate).toBe("git-refs");
-			// Both scopes point at the SAME fork repo (RD-1's unified source); only
-			// the depName differs, which is what keeps the two rules independently
-			// governed and in separate branches.
+			// Both managers share the packageName cache key, so Renovate resolves
+			// the moving fork HEAD once and gives both upgrades the same newDigest.
 			expect(manager?.packageNameTemplate).toBe(
 				"https://github.com/RigelBuild/devenv",
 			);
@@ -807,13 +783,10 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 
 			// The file pattern must be ANCHORED to exactly this lock: a loose
 			// pattern would make the root manager extract from the agent-image lock
-			// too (or vice versa), collapsing the two independent scopes into one
-			// dep with two files and two conflicting digests.
+			// too (or vice versa), so each manager remains scoped to one lock.
 			//
-			// Pin the LITERAL first, then re-parse it behaviourally below. The
-			// literal assertion is what makes a Renovate delimiter-semantics drift
-			// (e.g. how an unescaped interior `/` is read) fail as a changed literal
-			// rather than silently changing what the re-parse below is testing.
+			// Pin the literal first, so a Renovate delimiter-semantics drift fails as
+			// a changed literal, then re-parse it behaviourally below.
 			expect(manager?.managerFilePatterns).toEqual([patternLiteral]);
 			const pattern = manager?.managerFilePatterns?.[0];
 			const delimited = /^\/(.*)\/$/.exec(pattern as string);
@@ -849,8 +822,8 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			expect(rev).toMatch(/^[a-f0-9]{40}$/);
 			const parsed = JSON.parse(lockText);
 			expect(rev).toBe(parsed.nodes.devenv.locked.rev);
-			// Not the devenv-nixpkgs channel rev — a `"repo": "devenv"` prefix match
-			// against `"devenv-nixpkgs"` is the exact mis-bind the trailing quote in
+			// Not the devenv-nixpkgs channel rev — a "repo": "devenv" prefix match
+			// against "devenv-nixpkgs" is the exact mis-bind the trailing quote in
 			// the anchor prevents.
 			for (const node of Object.values<{
 				locked?: { repo?: string; rev?: string };
@@ -862,83 +835,67 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		},
 	);
 
-	// Solo-branched, cooldown-nulled — the devenv-nixpkgs rule's shape.
-	// The groupName must be UNIQUE to this rule: it is what makes the branch-mode
-	// relock task safe (one branch-mode task slot per branch, so the dep must own
-	// its branch) AND what keeps the two locks on independent cadences.
-	test.each(forkScopes)(
-		"the $label fork rule is solo-grouped and cooldown-exempt",
-		({ depName, groupName }) => {
-			const rule = ruleFor(depName);
-			expect(rule).toBeDefined();
-			expect(rule?.matchManagers).toContain("custom.regex");
-			expect(rule?.groupName).toBe(groupName);
-			expect(
-				cfg.packageRules.filter((r) => r.groupName === groupName),
-			).toHaveLength(1);
-			// A git-refs digest on a moving branch HEAD carries no release age, so
-			// the repo-wide strict cooldown would peg it permanently `pending` and
-			// cut zero PRs (the RIG-1220 silent-no-updates shape).
-			expect(rule?.minimumReleaseAge).toBeNull();
-		},
-	);
+	// One fork rule matches both depNames, owns the branch-mode task slot, and
+	// disables the inapplicable release-age cooldown for the moving git ref.
+	test("one fork rule matches both depNames, solo-grouped and cooldown-exempt", () => {
+		expect(forkRule?.matchManagers).toContain("custom.regex");
+		expect(forkRule?.matchDepNames).toEqual(
+			forkScopes.map((scope) => scope.depName),
+		);
+		expect(
+			cfg.packageRules.filter((rule) => rule.groupName === GROUP),
+		).toHaveLength(1);
+		expect(
+			cfg.packageRules.filter((rule) =>
+				rule.matchDepNames?.some((depName) =>
+					forkScopes.some((scope) => scope.depName === depName),
+				),
+			),
+		).toHaveLength(1);
+		expect(forkRule?.minimumReleaseAge).toBeNull();
+	});
 
-	// Branch-mode relock over exactly the files the rule writes. fileFilters is an
-	// INCLUDE allowlist — Renovate commits ONLY listed files — so naming the
-	// sibling lock would be dead surface and naming LESS would silent-drop the
-	// relock, shipping a rev bump whose narHash/lastModified never moved (the same
-	// silent-drop mode the FOD guard above documents). The root scope additionally
-	// carries the FOD refresh, relock-FIRST: its lock is a declared trigger of the
-	// entrypoint.nix pin, and the reverse order would realise that pin against the
-	// still-at-base lock. The literal pins below turn a reordering into a red test.
-	test.each(forkScopes)(
-		"the $label relock postUpgradeTask is branch-mode over the files it writes",
-		({ depName, taskCommands, taskFileFilters }) => {
-			const task = ruleFor(depName)?.postUpgradeTasks;
-			expect(task?.executionMode).toBe("branch");
-			expect(task?.fileFilters).toEqual(taskFileFilters);
-			expect(task?.commands).toEqual(taskCommands);
-		},
-	);
+	// Branch-mode task relocks both changed locks before refreshing the FOD pin.
+	// fileFilters is an INCLUDE allowlist; all three files written by these steps
+	// must be named so Renovate commits both relocks and the refreshed pin.
+	test("the fork task relocks, then refreshes the FOD pin, branch-mode, over the three files it writes", () => {
+		const task = forkRule?.postUpgradeTasks;
+		expect(task?.executionMode).toBe("branch");
+		expect(task?.commands).toEqual([RELOCK, FOD_COMMAND]);
+		expect(task?.fileFilters).toEqual([
+			"devenv.lock",
+			"agent-image/devenv.lock",
+			"agent-image/entrypoint.nix",
+		]);
+	});
 
-	// ONE command string serves both rules — the script self-gates on WHICH lock
-	// changed — so a single anchored allowlist entry covers both. This is the
-	// coupling the allowedCommands describe above counts; assert the two rules
-	// really do share the string rather than drifting into two near-identical
-	// scripts (which would silently need a second allowlist entry).
-	test("both fork rules declare the SAME relock command (one allowlist entry)", () => {
+	// One rule declares this command, so the single anchored allowlist entry
+	// authorizes it.
+	test("one rule declares the relock command (one allowlist entry)", () => {
 		const declaring = cfg.packageRules.filter((r) =>
 			r.postUpgradeTasks?.commands?.includes(RELOCK),
 		);
-		expect(declaring).toHaveLength(2);
+		expect(declaring).toHaveLength(1);
 		expect(
 			bot.allowedCommands?.filter((a) => new RegExp(a).test(RELOCK)),
 		).toEqual(["^bun tools/renovate/refresh-devenv-lock\\.ts$"]);
 	});
 
-	// The two locks must never land in ONE branch: two branch-mode relock tasks
-	// on a shared branch means Renovate builds only one and the other lock ships
-	// rev-bumped-but-unrelocked. Replay the real last-match-wins packageRule
-	// semantics for each scope's digest and assert each resolves to its own
-	// group, never the TypeScript rollup (which also matches custom.regex).
+	// Replay last-match-wins packageRule semantics for each digest: both scopes
+	// resolve to the one fork group, not the TypeScript rollup.
 	test.each(forkScopes)(
-		"the $label fork digest resolves to its own solo branch, not the TS rollup",
-		({ depName, lock, groupName }) => {
+		"the $label fork digest resolves to the one fork group, not the TS rollup",
+		({ depName, lock }) => {
 			const group = resolveGroupName({
 				manager: "custom.regex",
 				fileName: lock,
 				depName,
 				updateType: "digest",
 			});
-			expect(group).toBe(groupName);
+			expect(group).toBe(GROUP);
 			expect(group).not.toBe("TypeScript dependencies");
 		},
 	);
-
-	test("the two fork scopes carry DISTINCT groupNames (independent cadences)", () => {
-		const groups = forkScopes.map((s) => ruleFor(s.depName)?.groupName);
-		expect(new Set(groups).size).toBe(forkScopes.length);
-	});
 
 	// M1 (RIG-2815 review): the relock `nix run`s the fork flakeref, and the fork
 	// publishes no binary cache, so every fork rev is a from-source devenv build
@@ -997,12 +954,8 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		expect(liveConfig).toContain("cachix.cachix.org-1:");
 	});
 
-	// L3 (RIG-2815 review): the two fork managers carry the SAME matchStrings
-	// literal (RD-1 forbids reconciling the rules, and JSON5 has no anchor, so the
-	// duplication is deliberate). Nothing else pins that they stay in sync — each
-	// per-manager matchString test reads its own manager — so a one-sided edit
-	// would drift silently. Assert the two share one literal, mirroring the
-	// "same relock command" guard above.
+	// Both fork managers retain the SAME matchStrings literal. A one-sided edit
+	// would drift silently, so assert they remain equal.
 	test("both fork managers declare the IDENTICAL matchString literal", () => {
 		const literals = forkScopes.map(
 			(s) => managerFor(s.depName)?.matchStrings?.[0],
@@ -1013,15 +966,12 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 });
 
 describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
-	// The fourth devenv pin. Three of the four (root channel, root fork,
-	// agent-image fork) were tracked; agent-image's CHANNEL rev was governed by
-	// no manager at all, so it only advanced when someone relocked by hand. This
-	// manager + rule pair gives it the same solo-branched, self-relocking shape
-	// as its siblings.
+	// The fourth devenv pin. The agent-image channel digest had no manager, so it
+	// only advanced when someone relocked by hand. Its manager and rule now give
+	// it a solo-branched, self-relocking shape independent of the fork update.
 	//
-	// Found by the dep it stamps, never by index or a file-pattern substring:
-	// TWO managers now pattern-match agent-image/devenv.lock (this one and the
-	// fork manager), so a pattern-based finder would be order-dependent.
+	// Find managers by stamped depName: both the channel and fork managers match
+	// agent-image/devenv.lock, so a file-pattern finder would be order-dependent.
 	const REFRESH = "bun tools/renovate/refresh-agent-image-nixpkgs.ts";
 	const DEP = "cachix/devenv-nixpkgs-agent-image";
 	const LOCK = "agent-image/devenv.lock";
@@ -1033,9 +983,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(manager).toBeDefined();
 		expect(manager?.customType).toBe("regex");
 		expect(manager?.datasourceTemplate).toBe("git-refs");
-		// Same upstream channel repo as the root manager; only the depName
-		// differs, which is what keeps the two rules independently governed and
-		// in separate branches.
+		// differs, so channel rules remain independently governed.
 		expect(manager?.packageNameTemplate).toBe(
 			"https://github.com/cachix/devenv-nixpkgs",
 		);
@@ -1044,7 +992,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		// Pin the LITERAL first (a Renovate delimiter-semantics drift then fails
 		// as a changed literal rather than silently changing what the re-parse
 		// below tests), then re-parse it behaviourally. The escaped interior
-		// slash matches the agent-image fork manager's literal.
+		// slash matches the fork manager's literal.
 		expect(manager?.managerFilePatterns).toEqual([
 			"/^agent-image\\/devenv\\.lock$/",
 		]);
@@ -1054,9 +1002,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(delimited).not.toBeNull();
 		const re = new RegExp(delimited?.[1] as string);
 		expect(re.test(LOCK)).toBe(true);
-		// NEVER the root lock: a loose pattern would collapse the two
-		// independently-cadenced scopes into one dep carrying two conflicting
-		// digests.
+		// NEVER the root lock; the agent-image channel manager remains file-scoped.
 		expect(re.test("devenv.lock")).toBe(false);
 		expect(re.test(`a/${LOCK}`)).toBe(false); // anchored, no arbitrary prefix
 	});
@@ -1083,11 +1029,8 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(rev).not.toBe(parsed.nodes.devenv.locked.rev);
 	});
 
-	// And it must not bind the ROOT lock at all — the manager's file pattern is
-	// the only thing scoping it, so assert the two locks really do carry
-	// DIFFERENT channel revs today (RD-1: unify the source, do NOT reconcile the
-	// locks) and that this manager's dep is the agent-image one.
-	test("the two scopes' channel revs are read independently, not reconciled", () => {
+	// The root and agent-image channel managers keep tracking their own locks.
+	test("the two channel scopes retain their own revs", () => {
 		const agent = JSON.parse(readFileSync(join(repoRoot, LOCK), "utf8"));
 		const root = JSON.parse(
 			readFileSync(join(repoRoot, "devenv.lock"), "utf8"),
@@ -1097,10 +1040,8 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(root.nodes[root.nodes.root.inputs.nixpkgs].locked.rev).toMatch(
 			/^[a-f0-9]{40}$/,
 		);
-		// …and nothing in the config compares them: each scope has its own
-		// manager, so a skew is legitimate rather than a drift to fix. (This
-		// test states the property; it deliberately does NOT assert inequality,
-		// which would fail the day the two happen to coincide.)
+		// The config does not reconcile these independent channel pins, whether or
+		// not they happen to differ today.
 		const channelManagers = (cfg.customManagers ?? []).filter((m) =>
 			m.matchStrings?.some((s) => s.includes("devenv-nixpkgs")),
 		);
@@ -1110,10 +1051,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		).toBe(2);
 	});
 
-	// Solo-branched, cooldown-nulled — its siblings' shape. The
-	// groupName must be UNIQUE to this rule: it is what makes the branch-mode
-	// relock task safe (one branch-mode task slot per branch, so the dep must own
-	// its branch) AND what keeps the two channel pins on independent cadences.
+	// Solo branch and cooldown-exempt, separate from both channel and fork groups.
 	test("the rule is solo-grouped and cooldown-exempt", () => {
 		expect(rule).toBeDefined();
 		expect(rule?.matchManagers).toContain("custom.regex");
@@ -1174,9 +1112,8 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(group).not.toBe("TypeScript dependencies");
 	});
 
-	// …and it is a DIFFERENT branch from the root channel pin and from the
-	// agent-image FORK pin, the two rules it is most likely to be collapsed into.
-	test("its group differs from the root channel and agent-image fork groups", () => {
+	// Its group differs from both channel groups and the shared fork group.
+	test("its group differs from both channel groups and the devenv fork group", () => {
 		const groups = [
 			GROUP,
 			cfg.packageRules.find((r) =>
@@ -1215,19 +1152,16 @@ describe("tools/renovate go ↔ go-overlay lockstep (RIG-3100)", () => {
 	// dead filter surface; listing LESS would silent-drop the re-lock (shipping a
 	// go bump the overlay can't resolve → the exact CI red this task exists to
 	// prevent) or the refreshed pin. fileFilters is an INCLUDE allowlist, so this
-	// pins it. The command order is load-bearing: re-lock FIRST, so the pin is
+	// pins it. The command order is load-bearing: relock FIRST, so the pin is
 	// realised against the written lock. The failure mode under a REVERSED order
-	// differs here from the devenv-nixpkgs and devenv-fork sites: the go
-	// customManager's file scope is /^tools/toolchain/versions/go\.nix$/
-	// (config.json5:319), which never touches devenv.lock — so at the point a
-	// reversed refresh ran, the lock would still be byte-identical to base, its
-	// self-gate (`git diff --quiet <baseRef> -- devenv.lock`,
-	// refresh-fod-hashes.ts:265-274) would read CLEAN, and the refresh would
-	// no-op without realising anything; only THEN would `devenv update
-	// go-overlay` rewrite the lock. So the refresh is silently SKIPPED rather
-	// than realised against a stale lock — a different mechanism, the same end
-	// state: the bump ships the stale pin. Hence the literal pin below.
-	test("the lockstep postUpgradeTask is branch-mode over the files it writes", () => {
+	// differs here from the devenv-nixpkgs and devenv-fork sites: the go manager's
+	// file scope is /^tools/toolchain/versions/go\.nix$/ (config.json5:319),
+	// which never touches devenv.lock. If refresh ran first, its self-gate would
+	// no-op; only then would `devenv update go-overlay` rewrite the lock. The
+	// bump would ship with a stale pin. Hence the literal command-order pin below.
+	// …and it is a DIFFERENT branch from the root channel pin and the shared
+	// devenv fork group.
+	test("its group differs from the root channel and devenv fork groups", () => {
 		const task = goOverlayRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
 		expect(task?.fileFilters).toEqual([
@@ -1855,13 +1789,8 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 		// that the population has not shrunk or grown. A newly coupled site is a
 		// deliberate edit: update this number in the same change.
 		//
-		// 14 = eight sites naming a trigger of the entrypoint.nix entry, plus the UI
-		// pin's four sites (the lockstep, catalog and Meissa rules name bun.lock),
-		// plus two guestd vendorHash pairs: the channel and Meissa sites' broad
-		// `**/*` filters cover go/go.mod and go/go.sum, which the gomod MANAGER
-		// otherwise writes undeclared. The top-level task couples to both bun pins
-		// through tools/toolchain/versions/bun.nix.
-		expect(coupled.length).toBe(14);
+		// 13 = today's baseline 14, less the one site-entry pair the merged rule removes.
+		expect(coupled.length).toBe(13);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 
