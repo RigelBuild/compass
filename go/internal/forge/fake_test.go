@@ -8,8 +8,10 @@ package forge
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Compile-time assertion: the fake IS a Provider.
@@ -26,7 +28,7 @@ func TestFakeRecordsCallsInOrder(t *testing.T) {
 	if _, err := f.CreateIssue(ctx, "org/repo", CreateIssue{Title: "t", Body: "b"}); err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	if _, err := f.CommentOnIssue(ctx, "org/repo", 7, "hi"); err != nil {
+	if _, err := f.CommentOnIssue(ctx, "org/repo", 7, "hi", "client-1"); err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
 	}
 	if _, err := f.Checks(ctx, "org/repo", 42); err != nil {
@@ -40,11 +42,76 @@ func TestFakeRecordsCallsInOrder(t *testing.T) {
 	if calls[0].Method != "CreateIssue" || calls[0].Repo != "org/repo" {
 		t.Errorf("call[0] = %+v, want CreateIssue on org/repo", calls[0])
 	}
-	if calls[1].Method != "CommentOnIssue" || calls[1].Number != 7 || calls[1].Body != "hi" {
-		t.Errorf("call[1] = %+v, want CommentOnIssue number=7 body=hi", calls[1])
+	if calls[1].Method != "CommentOnIssue" || calls[1].Number != 7 || calls[1].Body != "hi" || calls[1].ClientID != "client-1" {
+		t.Errorf("call[1] = %+v, want CommentOnIssue number=7 body=hi clientID=client-1", calls[1])
 	}
 	if calls[2].Method != "Checks" || calls[2].Number != 42 {
 		t.Errorf("call[2] = %+v, want Checks number=42", calls[2])
+	}
+}
+
+func TestFakeCommentOperationsRecordAndScript(t *testing.T) {
+	ctx := context.Background()
+	f := NewFakeProvider("test-forge")
+	editResult := Comment{Key: "edited"}
+	listResult := []Comment{{Key: "one"}, {Key: "two"}}
+	f.EditCommentResult = editResult
+	f.ListCommentsResult = listResult
+	since := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+
+	if got, err := f.EditComment(ctx, "org/repo", "555", "edited body"); err != nil || got != editResult {
+		t.Fatalf("EditComment = %+v, %v; want %+v, nil", got, err, editResult)
+	}
+	if err := f.DeleteComment(ctx, "org/repo", "duplicate"); err != nil {
+		t.Fatalf("DeleteComment: %v", err)
+	}
+	if got, err := f.ListCommentsSince(ctx, "org/repo", 7, since); err != nil || !reflect.DeepEqual(got, listResult) {
+		t.Fatalf("ListCommentsSince = %+v, %v; want %+v, nil", got, err, listResult)
+	}
+	if _, err := f.CommentOnIssue(ctx, "org/repo", 7, "body", "client-1"); err != nil {
+		t.Fatalf("CommentOnIssue: %v", err)
+	}
+	if _, err := f.CommentOnPullRequest(ctx, "org/repo", 8, "body", "client-2"); err != nil {
+		t.Fatalf("CommentOnPullRequest: %v", err)
+	}
+
+	calls := f.Calls()
+	if len(calls) != 5 {
+		t.Fatalf("recorded calls = %d, want 5", len(calls))
+	}
+	if calls[0].Method != "EditComment" || calls[0].CommentKey != "555" || calls[0].Body != "edited body" {
+		t.Errorf("edit call = %+v", calls[0])
+	}
+	if calls[1].Method != "DeleteComment" || calls[1].CommentKey != "duplicate" {
+		t.Errorf("delete call = %+v", calls[1])
+	}
+	if calls[2].Method != "ListCommentsSince" || calls[2].Number != 7 || !calls[2].Since.Equal(since) {
+		t.Errorf("list call = %+v", calls[2])
+	}
+	if calls[3].Method != "CommentOnIssue" || calls[3].ClientID != "client-1" {
+		t.Errorf("issue comment call = %+v", calls[3])
+	}
+	if calls[4].Method != "CommentOnPullRequest" || calls[4].ClientID != "client-2" {
+		t.Errorf("PR comment call = %+v", calls[4])
+	}
+}
+
+func TestFakeCommentOperationsScriptErrors(t *testing.T) {
+	ctx := context.Background()
+	f := NewFakeProvider("test-forge")
+	wantErr := errors.New("scripted comment failure")
+	for _, method := range []string{"EditComment", "DeleteComment", "ListCommentsSince"} {
+		f.SetError(method, wantErr)
+	}
+
+	if _, err := f.EditComment(ctx, "org/repo", "555", "edited"); !errors.Is(err, wantErr) {
+		t.Errorf("EditComment err = %v, want scripted error", err)
+	}
+	if err := f.DeleteComment(ctx, "org/repo", "555"); !errors.Is(err, wantErr) {
+		t.Errorf("DeleteComment err = %v, want scripted error", err)
+	}
+	if _, err := f.ListCommentsSince(ctx, "org/repo", 7, time.Time{}); !errors.Is(err, wantErr) {
+		t.Errorf("ListCommentsSince err = %v, want scripted error", err)
 	}
 }
 
@@ -158,7 +225,7 @@ func TestFakeConcurrentUse(t *testing.T) {
 			// scripting to exercise every lock path concurrently.
 			_, _ = f.CreateIssue(ctx, "org/repo", CreateIssue{Title: "t"})
 			_ = f.Calls()
-			_, _ = f.CommentOnIssue(ctx, "org/repo", i, "hi")
+			_, _ = f.CommentOnIssue(ctx, "org/repo", i, "hi", "")
 			f.SetError("Checks", nil) // drive concurrent errors-map mutation on a key that IS read
 			_, _ = f.GetPullRequest(ctx, "org/repo", i)
 			_ = f.Calls()

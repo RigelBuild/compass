@@ -261,11 +261,21 @@ type TransitionState struct {
 type Provider interface { //nolint:interfacebloat // one method per forge operation the Server drives; the surface is the forge contract, not incidental sprawl
 	Name() string
 	CreateIssue(ctx context.Context, repo string, in CreateIssue) (Issue, error)
-	CommentOnIssue(ctx context.Context, repo string, number uint64, body string) (Comment, error)
+	// CommentOnIssue creates a comment. A non-empty clientID makes a retried
+	// create idempotent where the forge supports it (Linear); GitHub ignores it.
+	CommentOnIssue(ctx context.Context, repo string, number uint64, body, clientID string) (Comment, error)
+	// EditComment updates a comment body by its provider-specific key.
+	EditComment(ctx context.Context, repo, commentKey, body string) (Comment, error)
+	// DeleteComment removes a duplicate marked comment when supported.
+	DeleteComment(ctx context.Context, repo, commentKey string) error
+	// ListCommentsSince returns every comment created at or after since; a provider
+	// may also return older ones (GitHub filters on updated_at).
+	ListCommentsSince(ctx context.Context, repo string, number uint64, since time.Time) ([]Comment, error)
 	GetIssue(ctx context.Context, repo string, number uint64) (Issue, error)
 	ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error)
 	CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error)
-	CommentOnPullRequest(ctx context.Context, repo string, number uint64, body string) (Comment, error)
+	// CommentOnPullRequest creates a PR comment; clientID has the same semantics.
+	CommentOnPullRequest(ctx context.Context, repo string, number uint64, body, clientID string) (Comment, error)
 	// SubmitReview submits a pull-request review (verdict + optional body +
 	// optional inline comments). in.Body is PRE-stamped by the Service. An
 	// unknown verdict is rejected before any wire call.
@@ -291,6 +301,9 @@ type Provider interface { //nolint:interfacebloat // one method per forge operat
 // ErrUnsupported is returned by a provider for an operation it cannot serve
 // (e.g. an issues-only forge for the PR half). #995 Decision 3.
 var ErrUnsupported = errors.New("forge: operation unsupported by this provider")
+
+// ErrBadCommentKey is returned, before any request, for a malformed comment key.
+var ErrBadCommentKey = errors.New("forge: bad comment key")
 
 // StatusError carries the HTTP status a forge returned, so the Service layer can
 // flatten 403/404 into one byte-identical in-band error without inspecting the

@@ -150,7 +150,7 @@ func TestLinearCommentOnIssueRequestGolden(t *testing.T) {
 	}}
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
 
-	got, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply")
+	got, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", "")
 	if err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
 	}
@@ -172,6 +172,193 @@ func TestLinearCommentOnIssueRequestGolden(t *testing.T) {
 	}
 	if got.Body != "a reply" || got.URL != "https://linear.app/x/issue/RIG-7#comment-1" {
 		t.Errorf("decoded Comment = %+v", got)
+	}
+	if _, ok := input["id"]; ok {
+		t.Errorf("empty clientID unexpectedly set input.id = %v", input["id"])
+	}
+}
+
+func TestLinearCommentOnIssueClientID(t *testing.T) {
+	const clientID = "6f9619ff-8b86-4d11-b42d-00c04fc964ff"
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-9"}]}}}`},
+		probeResp(true),
+		{status: http.StatusOK, body: `{"data":{"commentCreate":{"comment":{"id":"comment-uuid","body":"a reply"}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	if _, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID); err != nil {
+		t.Fatalf("CommentOnIssue: %v", err)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	input := vars["input"].(map[string]any)
+	if input["id"] != clientID {
+		t.Errorf("input.id = %v, want %q", input["id"], clientID)
+	}
+}
+
+// Linear refuses a reused comment id as an insert conflict. A retry after a
+// lost response must adopt the comment the first attempt created, not fail.
+func TestLinearCommentOnIssueRetryAdoptsExistingClientID(t *testing.T) {
+	const clientID = "6f9619ff-8b86-4d11-b42d-00c04fc964ff"
+	conflict := scriptedResponse{status: http.StatusOK, body: `{"errors":[{"message":"conflict on insert of Comment","extensions":{"code":"INPUT_ERROR"}}],"data":null}`}
+	existing := func(issue string) scriptedResponse {
+		return scriptedResponse{status: http.StatusOK, body: `{"data":{"comment":{"id":"` + clientID + `","url":"https://linear.app/c","body":"a reply","user":null,"issue":{"id":"` + issue + `"}}}}`}
+	}
+	resolve := scriptedResponse{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-9"}]}}}`}
+
+	t.Run("same issue adopts", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict, existing("issue-uuid-9")}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		got, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID)
+		if err != nil {
+			t.Fatalf("CommentOnIssue retry: %v", err)
+		}
+		if got.Key != clientID || got.URL != "https://linear.app/c" {
+			t.Errorf("adopted Comment = %+v, want the existing comment", got)
+		}
+		query, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[3]))
+		if !strings.Contains(query, "comment(id: $id)") || vars["id"] != clientID {
+			t.Errorf("adoption read = %q vars %v, want comment(id) for the client id", query, vars)
+		}
+	})
+	t.Run("foreign issue keeps the error", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict, existing("other-issue")}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		if _, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID); err == nil {
+			t.Fatal("CommentOnIssue adopted a comment on another issue; want the create error")
+		}
+	})
+	t.Run("failed read reports both causes", func(t *testing.T) {
+		readFail := scriptedResponse{status: http.StatusOK, body: `{"errors":[{"message":"comment read broke"}],"data":null}`}
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict, readFail}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		_, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID)
+		if err == nil || !strings.Contains(err.Error(), "conflict on insert") || !strings.Contains(err.Error(), "comment read broke") {
+			t.Fatalf("err = %v, want both the create conflict and the read failure", err)
+		}
+	})
+	t.Run("auth refusal never reads", func(t *testing.T) {
+		authFail := scriptedResponse{status: http.StatusUnauthorized, body: `{"errors":[{"message":"bad token","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`}
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), authFail}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		if _, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID); err == nil {
+			t.Fatal("CommentOnIssue succeeded on an auth refusal; want the error")
+		}
+		if rt.calls != 3 {
+			t.Errorf("requests = %d, want 3 (no adoption read after an auth refusal)", rt.calls)
+		}
+	})
+	t.Run("no client id never reads", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		if _, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", ""); err == nil {
+			t.Fatal("CommentOnIssue without a client id succeeded on an error; want the error")
+		}
+		if rt.calls != 3 {
+			t.Errorf("requests = %d, want 3 (no adoption read without a client id)", rt.calls)
+		}
+	})
+}
+
+// A short scan would let the mirror post a duplicate, so a missing issue or a
+// next page without a cursor fails instead of returning a partial list.
+func TestLinearListCommentsSinceRefusesPartialScan(t *testing.T) {
+	resolve := scriptedResponse{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-9"}]}}}`}
+	for name, page := range map[string]string{
+		"null issue":     `{"data":{"issue":null}}`,
+		"no next cursor": `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"x"}],"pageInfo":{"hasNextPage":true,"endCursor":""}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, {status: http.StatusOK, body: page}}}
+			l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+			got, err := l.ListCommentsSince(context.Background(), "SEA", 7, time.Time{})
+			if err == nil {
+				t.Fatalf("ListCommentsSince = %+v, nil; want an error", got)
+			}
+			if rt.calls != 2 {
+				t.Errorf("requests = %d, want 2 (refused without fetching another page)", rt.calls)
+			}
+		})
+	}
+}
+
+func TestLinearEditComment(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: http.StatusOK, body: `{"data":{"commentUpdate":{"comment":{"id":"comment-uuid","url":"https://linear.app/comment","body":"edited","user":{"displayName":"Ada"}}}}}`}}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	got, err := l.EditComment(context.Background(), "SEA", "comment-uuid", "edited")
+	if err != nil {
+		t.Fatalf("EditComment: %v", err)
+	}
+	query, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[0]))
+	if !strings.Contains(query, "commentUpdate(") {
+		t.Errorf("query = %q, want commentUpdate mutation", query)
+	}
+	if vars["id"] != "comment-uuid" {
+		t.Errorf("vars.id = %v, want comment-uuid", vars["id"])
+	}
+	input := vars["input"].(map[string]any)
+	if len(input) != 1 || input["body"] != "edited" {
+		t.Errorf("input = %#v, want body only", input)
+	}
+	if got.Key != "comment-uuid" || got.Body != "edited" || got.ForgeAccount != "Ada" {
+		t.Errorf("decoded Comment = %+v", got)
+	}
+}
+
+func TestLinearEditCommentEmptyKeyDoesNotRequest(t *testing.T) {
+	rt := &scriptedRoundTripper{}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	if _, err := l.EditComment(context.Background(), "SEA", "", "edited"); !errors.Is(err, ErrBadCommentKey) {
+		t.Fatalf("EditComment empty key err = %v, want ErrBadCommentKey", err)
+	}
+	if rt.calls != 0 {
+		t.Fatalf("empty key issued %d requests, want zero", rt.calls)
+	}
+}
+
+func TestLinearDeleteCommentUnsupported(t *testing.T) {
+	rt := &scriptedRoundTripper{}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	if err := l.DeleteComment(context.Background(), "SEA", "comment-uuid"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("DeleteComment err = %v, want ErrUnsupported", err)
+	}
+	if rt.calls != 0 {
+		t.Fatalf("DeleteComment issued %d requests, want zero", rt.calls)
+	}
+}
+
+func TestLinearListCommentsSinceWalksPages(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-9"}]}}}`},
+		{status: http.StatusOK, body: `{"data":{"issue":{"comments":{"nodes":[{"id":"comment-1","body":"first"}],"pageInfo":{"hasNextPage":true,"endCursor":"CUR1"}}}}}`},
+		{status: http.StatusOK, body: `{"data":{"issue":{"comments":{"nodes":[{"id":"comment-2","body":"second"}],"pageInfo":{"hasNextPage":false,"endCursor":"CUR2"}}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	since := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+
+	got, err := l.ListCommentsSince(context.Background(), "SEA", 7, since)
+	if err != nil {
+		t.Fatalf("ListCommentsSince: %v", err)
+	}
+	if len(got) != 2 || got[0].Key != "comment-1" || got[0].Body != "first" || got[1].Key != "comment-2" || got[1].Body != "second" {
+		t.Fatalf("comments = %+v, want first then second", got)
+	}
+	if rt.calls != 3 {
+		t.Fatalf("requests = %d, want issue resolve and both pages", rt.calls)
+	}
+	for i, req := range rt.requests[1:] {
+		query, vars := decodeGraphQLReq(t, readReqBody(t, req))
+		if vars["since"] != "2026-10-11T10:00:00Z" {
+			t.Errorf("page %d since = %v, want UTC RFC3339 string", i+1, vars["since"])
+		}
+		if !strings.Contains(query, "createdAt: { gte: $since }") {
+			t.Errorf("page %d query lacks createdAt gte filter: %q", i+1, query)
+		}
+		if i == 1 && vars["after"] != "CUR1" {
+			t.Errorf("second page after = %v, want CUR1", vars["after"])
+		}
 	}
 }
 
@@ -229,7 +416,7 @@ func TestLinearCreateThenWriteSkipsNumberLookup(t *testing.T) {
 	if _, err := l.TransitionIssueState(ctx, "SEA", 42, TransitionState{State: stateClosed}); err != nil {
 		t.Fatalf("TransitionIssueState: %v", err)
 	}
-	if _, err := l.CommentOnIssue(ctx, "SEA", 42, "hi"); err != nil {
+	if _, err := l.CommentOnIssue(ctx, "SEA", 42, "hi", ""); err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
 	}
 	for i, r := range rt.requests {
@@ -395,7 +582,7 @@ func TestLinearUnsupportedOps(t *testing.T) {
 	if _, err := l.CreatePullRequest(ctx, "SEA", CreatePR{}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("CreatePullRequest err = %v, want ErrUnsupported", err)
 	}
-	if _, err := l.CommentOnPullRequest(ctx, "SEA", 1, "x"); !errors.Is(err, ErrUnsupported) {
+	if _, err := l.CommentOnPullRequest(ctx, "SEA", 1, "x", ""); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("CommentOnPullRequest err = %v, want ErrUnsupported", err)
 	}
 	if _, err := l.SubmitReview(ctx, "SEA", 1, SubmitReview{}); !errors.Is(err, ErrUnsupported) {

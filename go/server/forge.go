@@ -543,7 +543,7 @@ func (s *forgeService) commentOnIssue(ctx context.Context, caller store.AccountI
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_issue", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
 	}
-	cm, err := rf.author.CommentOnIssue(ctx, req.GetRepo(), req.GetIssueNumber(), body)
+	cm, err := rf.author.CommentOnIssue(ctx, req.GetRepo(), req.GetIssueNumber(), body, "")
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_issue"}))
 	}
@@ -569,7 +569,7 @@ func (s *forgeService) commentOnPullRequest(ctx context.Context, caller store.Ac
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_pull_request", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
 	}
-	cm, err := rf.author.CommentOnPullRequest(ctx, req.GetRepo(), req.GetPrNumber(), body)
+	cm, err := rf.author.CommentOnPullRequest(ctx, req.GetRepo(), req.GetPrNumber(), body, "")
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_pull_request"}))
 	}

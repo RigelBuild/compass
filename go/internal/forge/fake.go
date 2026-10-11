@@ -8,6 +8,7 @@ package forge
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Call is one recorded Provider invocation on a FakeProvider. Method is the
@@ -21,8 +22,14 @@ type Call struct {
 	Repo string
 	// Number is the issue/PR number for the methods that take one.
 	Number uint64
-	// Body is the comment body for the CommentOn* methods.
+	// Body is the comment body for the CommentOn* and EditComment methods.
 	Body string
+	// CommentKey identifies a comment for edit/delete calls.
+	CommentKey string
+	// ClientID is the optional create idempotency key.
+	ClientID string
+	// Since is the timestamp for ListCommentsSince.
+	Since time.Time
 	// Payload is the CreateIssue/CreatePR input for the create methods (nil
 	// otherwise).
 	Payload any
@@ -39,6 +46,10 @@ type FakeProvider struct {
 	// CommentResult is returned by CommentOnIssue and CommentOnPullRequest when
 	// no error is scripted.
 	CommentResult Comment
+	// EditCommentResult is returned by EditComment when no error is scripted.
+	EditCommentResult Comment
+	// ListCommentsResult is returned by ListCommentsSince when no error is scripted.
+	ListCommentsResult []Comment
 	// GetIssueResult is returned by GetIssue when no error is scripted.
 	GetIssueResult Issue
 	// ListIssuesResult is returned by ListIssues when no error is scripted.
@@ -114,11 +125,32 @@ func (f *FakeProvider) CreateIssue(_ context.Context, repo string, in CreateIssu
 }
 
 // CommentOnIssue records the call and returns the scripted result or error.
-func (f *FakeProvider) CommentOnIssue(_ context.Context, repo string, number uint64, body string) (Comment, error) {
-	if err := f.record(Call{Method: "CommentOnIssue", Repo: repo, Number: number, Body: body}); err != nil {
+func (f *FakeProvider) CommentOnIssue(_ context.Context, repo string, number uint64, body, clientID string) (Comment, error) {
+	if err := f.record(Call{Method: "CommentOnIssue", Repo: repo, Number: number, Body: body, ClientID: clientID}); err != nil {
 		return Comment{}, err
 	}
 	return f.CommentResult, nil
+}
+
+// EditComment records the call and returns the scripted result or error.
+func (f *FakeProvider) EditComment(_ context.Context, repo, commentKey, body string) (Comment, error) {
+	if err := f.record(Call{Method: "EditComment", Repo: repo, CommentKey: commentKey, Body: body}); err != nil {
+		return Comment{}, err
+	}
+	return f.EditCommentResult, nil
+}
+
+// DeleteComment records the call and returns the scripted error.
+func (f *FakeProvider) DeleteComment(_ context.Context, repo, commentKey string) error {
+	return f.record(Call{Method: "DeleteComment", Repo: repo, CommentKey: commentKey})
+}
+
+// ListCommentsSince records the call and returns the scripted result or error.
+func (f *FakeProvider) ListCommentsSince(_ context.Context, repo string, number uint64, since time.Time) ([]Comment, error) {
+	if err := f.record(Call{Method: "ListCommentsSince", Repo: repo, Number: number, Since: since}); err != nil {
+		return nil, err
+	}
+	return f.ListCommentsResult, nil
 }
 
 // GetIssue records the call and returns the scripted result or error.
@@ -146,8 +178,8 @@ func (f *FakeProvider) CreatePullRequest(_ context.Context, repo string, in Crea
 }
 
 // CommentOnPullRequest records the call and returns the scripted result or error.
-func (f *FakeProvider) CommentOnPullRequest(_ context.Context, repo string, number uint64, body string) (Comment, error) {
-	if err := f.record(Call{Method: "CommentOnPullRequest", Repo: repo, Number: number, Body: body}); err != nil {
+func (f *FakeProvider) CommentOnPullRequest(_ context.Context, repo string, number uint64, body, clientID string) (Comment, error) {
+	if err := f.record(Call{Method: "CommentOnPullRequest", Repo: repo, Number: number, Body: body, ClientID: clientID}); err != nil {
 		return Comment{}, err
 	}
 	return f.CommentResult, nil

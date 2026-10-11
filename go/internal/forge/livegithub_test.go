@@ -270,7 +270,7 @@ func TestLiveGitHubCommentOnIssue(t *testing.T) {
 
 	body := "compass-live comment " + newRunID()
 	got, err := createWithBackoff(ctx, func() (Comment, error) {
-		return gh.CommentOnIssue(ctx, repo, issue.Number, body)
+		return gh.CommentOnIssue(ctx, repo, issue.Number, body, "")
 	})
 	if err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
@@ -390,7 +390,7 @@ func TestLiveGitHubCommentOnPullRequest(t *testing.T) {
 
 	body := "compass-live pr comment " + newRunID()
 	got, err := createWithBackoff(ctx, func() (Comment, error) {
-		return gh.CommentOnPullRequest(ctx, repo, pr.Number, body)
+		return gh.CommentOnPullRequest(ctx, repo, pr.Number, body, "")
 	})
 	if err != nil {
 		t.Fatalf("CommentOnPullRequest: %v", err)
@@ -731,7 +731,7 @@ func TestLiveLinearCommentOnIssue(t *testing.T) {
 	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 
 	body := "compass-live comment " + newRunID()
-	got, err := ln.CommentOnIssue(ctx, team, issue.Number, body)
+	got, err := ln.CommentOnIssue(ctx, team, issue.Number, body, "")
 	if err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
 	}
@@ -1564,7 +1564,7 @@ func githubCreateReadSpecs() []captureSpec {
 				body := "a reply"
 				gh := recordingGitHub(author, rt)
 				if _, err := createWithBackoff(ctx, func() (Comment, error) {
-					return gh.CommentOnIssue(ctx, repo, issue.Number, body)
+					return gh.CommentOnIssue(ctx, repo, issue.Number, body, "")
 				}); err != nil {
 					t.Fatalf("CommentOnIssue: %v", err)
 				}
@@ -1753,7 +1753,7 @@ func linearCreateReadSpecs() []captureSpec {
 				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 				body := "a reply"
 				ln := recordingLinear(ts, rt)
-				if _, err := ln.CommentOnIssue(ctx, team, issue.Number, body); err != nil {
+				if _, err := ln.CommentOnIssue(ctx, team, issue.Number, body, ""); err != nil {
 					t.Fatalf("CommentOnIssue: %v", err)
 				}
 				return fixtureRequest{Op: "comment_on_issue", Repo: team, Number: issue.Number,
