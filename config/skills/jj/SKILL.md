@@ -247,8 +247,9 @@ jj workspace forget ws-router && rm -rf ../ws-router   # teardown: forget, then 
 Fetch and rebase onto current `main@origin` before every submit. Re-check each
 affected head and its relevant checks after rebasing. A stack is one linear line;
 submit its top so dependencies travel together, and describe each PR's base when
-handing off a stack. The operator owns the final merge. Do not submit after
-approval changes the reviewed head; obtain a fresh review after any such update.
+handing off a stack. The operator owns the final merge. An approval covers only
+the head it reviewed: after a rebase or any other update, submit the new head and
+obtain a fresh review before you hand it off again.
 
 Before submitting a bookmark, check for commits in its line that no bookmark
 will publish:
