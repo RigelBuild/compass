@@ -1,5 +1,9 @@
 # Compass sidebar pins — unreachable-pin amendment
 
+Erratum: this record's decision landed as DL-113
+([decisions/ui/DL-113.md](../../decisions/ui/DL-113.md)). Read every DL-098
+below as DL-113; DL-098 is an unrelated decision.
+
 Tracker: RIG-1645.
 
 Amends: `compass-sidebar-pins` (RIG-1632, DL-096) §T2/§T3.
