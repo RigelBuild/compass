@@ -162,7 +162,7 @@ func TestResumeBlobsMarksOnlyAbsentReferencesFromSuccessfulFetch(t *testing.T) {
 	}
 }
 
-func TestResumeBlobsDistinguishesUnsupportedBlobStoreFromUnboundSession(t *testing.T) {
+func TestResumeBlobsTreatsOnlyUnimplementedAsAbsent(t *testing.T) {
 	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + hash + `"}]}}` + "\n"
 	tests := []struct {
@@ -172,6 +172,7 @@ func TestResumeBlobsDistinguishesUnsupportedBlobStoreFromUnboundSession(t *testi
 	}{
 		{name: "unsupported blob store marks images unavailable", code: connect.CodeUnimplemented, wantMarked: true},
 		{name: "unbound session preserves image references", code: connect.CodeFailedPrecondition},
+		{name: "unverifiable binding preserves image references", code: connect.CodeUnavailable},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

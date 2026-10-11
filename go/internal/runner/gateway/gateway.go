@@ -118,8 +118,8 @@ type SessionBlobRelay interface {
 // the durable conversation path needs — just CommitConversationFrame. The real
 // client satisfies it; a test supplies a fake. Mirrors CommsRelay's narrowing of
 // RelayCommsCall. The Runner is a pure forwarder: it sends the session_id it
-// structurally owns and the agent's frame verbatim, and passes the Server's
-// retryability-split Connect status straight back — it resolves no account.
+// structurally owns and the agent's frame verbatim, preserving every status unchanged.
+// It resolves no account.
 type ConversationCommitter interface {
 	CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error)
 }

@@ -5,8 +5,8 @@
 
 // Trust model (load-bearing security leg): the Runner is a pure forwarder and
 // asserts NO account. The SERVER resolves session_id -> agent account from this
-// hub's binding and executes under it. Unbound sessions fail generically, while
-// unverifiable bindings return Unavailable so the Runner can retry.
+// hub's binding and executes under it. Unknown and foreign bindings share
+// FailedPrecondition; unverifiable bindings return Unavailable.
 package runnerhub
 
 import (
@@ -622,7 +622,7 @@ var (
 )
 
 // RelayCommsCall executes a comms call under the bound agent account.
-// Binding errors distinguish an unbound caller from a retryable lookup fault.
+// Binding errors fail closed for unbound callers and lookup faults.
 func (h *Hub) RelayCommsCall(
 	ctx context.Context,
 	runnerID string,
@@ -693,8 +693,8 @@ func (h *Hub) CommitConversationFrame(
 
 	if err := h.commitFrame(ctx, transcripts, sessionID, req.GetFrame(), req.GetIdempotencyKey()); err != nil {
 		// Already Connect-coded (commitFrame maps the store sentinel or minted the
-		// malformed-frame status). Propagate as-is so the Runner's retryable/
-		// terminal split reads the right code.
+		// malformed-frame status). Propagate as-is; the Runner forwards all statuses
+		// unchanged.
 		return nil, err
 	}
 	return &compassv1internal.CommitConversationFrameResponse{
@@ -708,9 +708,8 @@ func (h *Hub) CommitConversationFrame(
 // oneof variant. The durable lane carries only the RIG-1570 transcript_entry
 // variant (the conversation_posted / conversation_updated write-through was
 // removed with the Zulip threading model), so a frame with any other variant —
-// or none — is CodeInvalidArgument, the terminal "malformed frame" the Runner
-// does not retry. A store error is mapped through transcriptCommitError. entryJSON
-// is opaque and forwarded verbatim (never parsed here).
+// or none — is CodeInvalidArgument. A store error is mapped through
+// transcriptCommitError. entryJSON is opaque and forwarded verbatim.
 func (h *Hub) commitFrame(
 	ctx context.Context,
 	transcripts TranscriptStore,
@@ -742,14 +741,10 @@ func (h *Hub) commitFrame(
 	}
 }
 
-// transcriptCommitError maps a transcript-store sentinel error onto the Connect
-// code the durable lane's contract expects, mirroring the comms edgeError
-// (comms/context.go): the store's sentinels are the vocabulary, and anything
-// unrecognized is an internal fault the relay should retry, never leaked as a
-// bare CodeUnknown. ErrInvalidArgument (a malformed or unknown-session entry) and
-// ErrConflict (a genuine entry_seq collision) are terminal; any other store
-// error is a transient fault (CodeInternal) the Runner retries under the same
-// key.
+// transcriptCommitError maps transcript-store sentinels onto Connect codes.
+// ErrInvalidArgument maps to InvalidArgument, ErrConflict to AlreadyExists, and
+// other errors to Internal. The Runner forwards every status unchanged; the agent
+// sink retries on its bounded schedule regardless of status.
 func transcriptCommitError(err error) error {
 	switch {
 	case err == nil:

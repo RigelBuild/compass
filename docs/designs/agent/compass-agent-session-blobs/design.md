@@ -1,7 +1,7 @@
 # Compass agent session blobs survive resume
 
 > Freezes on merge; later changes supersede by citation, never rewrite.
-> Amended 2026-10-11: Replaces status clauses in D1, D2, D3, D4, D5, Global Constraints, T4, and T6. Unknown and foreign-Runner sessions return `FailedPrecondition`; unverifiable bindings return `Unavailable`; missing blob storage returns `Unimplemented`. The Runner forwards errors unchanged. The agent sink retries on its bounded schedule regardless of status code. Only `Unimplemented` disables uploads or marks resumed image references absent.
+> Amended 2026-10-11: Supersedes only the changed status clauses in D1, D2/Runner gateway, D3 binding and store-error mapping, D4 fetch handling, D5, Global Constraints, T4, and T6. Unknown, foreign-Runner, and tenant-conflict Server relay bindings share one generic `FailedPrecondition`; unverifiable bindings return `Unavailable`. A missing object store (`ErrFailedPrecondition`) returns `Unimplemented`; no blob store wired remains `Unavailable`. `FetchSessionBlobs` container-authorization misses remain `PermissionDenied`. Only `Unimplemented` disables uploads or marks all resumed references absent; other fetch errors preserve references. The Runner forwards every status unchanged; the agent sink retries on its bounded schedule regardless of status.
 
 Issue: RIG-1582. Parent record:
 [compass-agent session persistence](../compass-agent-session-persistence/design.md#oq-r3--inline-image-blobs--out-of-mvp-resume-scope-deferred-to-rig-1582)

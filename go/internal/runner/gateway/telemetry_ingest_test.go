@@ -176,11 +176,9 @@ func traceFrame(text string) *compassv1internal.AgentFrame {
 	}
 }
 
-// durableFrame builds an admitted durable frame for the generic durable-path
-// tests (delivered-or-erred, retryability, dedup, advisory-set loss, eviction)
-// that only need SOME frame PostConversationFrame accepts. Post-T7 the only
-// admitted variant is transcript_entry, so this builds that; the tests assert
-// forwarding/dedup behavior, not the frame's inner shape.
+// durableFrame builds an admitted frame for durable-path delivery, key handling,
+// deduplication, advisory-set loss, and eviction tests. Post-T7 the only admitted
+// variant is transcript_entry; these tests assert forwarding, not its inner shape.
 func durableFrame(text string) *compassv1internal.AgentFrame {
 	return transcriptEntryFrame(text, false, 0)
 }
@@ -977,11 +975,8 @@ func TestPostConversationFrameForwardsTranscriptEntry(t *testing.T) {
 
 // --- Case 3 ------------------------------------------------------------------
 
-// PostConversationFrame is delivered-or-erred: a commit failure surfaces as the
-// Server's Connect error, never a silent success. The Runner forwards every code
-// unchanged; the agent sink retries on its bounded schedule regardless of code.
-// RED: swallow the commit error (return success without surfacing it) -> the
-// unary wrongly returns success against a failing commit.
+// PostConversationFrame returns commit failures without reporting success. The
+// Runner preserves the status for the caller.
 func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
 	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
@@ -1001,22 +996,17 @@ func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
 	}
 }
 
-// THE durable-contract test: a commit failure leaves the idempotency key
-// uncommitted, so the sink may retry with the same key. Success marks the key so
-// later retries short-circuit. The commit is the durable boundary.
-//
-// RED: swallow the commit error and a failed commit reports success.
-// RED: mark the key on failure and the retry short-circuits, dropping the frame.
-func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
-	// The Runner forwards every failure status unchanged; the agent sink applies
-	// its bounded retry schedule regardless of code.
+// The durable-contract test pins the idempotency key's state: failed commits
+// leave it unmarked, success marks it, and a later call with that key short-circuits.
+// This prevents acknowledging a failed commit or re-sending a committed one.
+func TestPostConversationFrameStatusAndKeyHandling(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		code connect.Code
 	}{
-		{"permanent-failed-precondition", connect.CodeFailedPrecondition},
-		{"permanent-invalid-argument", connect.CodeInvalidArgument},
-		{"transient-unavailable", connect.CodeUnavailable},
+		{"failed-precondition", connect.CodeFailedPrecondition},
+		{"invalid-argument", connect.CodeInvalidArgument},
+		{"unavailable", connect.CodeUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			committer := &fakeCommitter{err: connect.NewError(tc.code, errors.New("commit failed"))}
@@ -1026,20 +1016,15 @@ func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
 				IdempotencyKey: "retry-key",
 			}))
 			if got := connect.CodeOf(err); got != tc.code {
-				t.Fatalf("error code = %v, want %v (the Server's retryability-split status passed straight through)", got, tc.code)
+				t.Fatalf("error code = %v, want %v (the Server status passed through unchanged)", got, tc.code)
 			}
-			// A failed commit must NOT mark the key committed: the sink retries
-			// the SAME key, and the advisory fast-path must let it re-commit.
 			if g.keyCommitted("retry-key") {
-				t.Fatal("key marked committed after a commit FAILURE: a retry would wrongly short-circuit and the frame would be silently dropped")
+				t.Fatal("key marked committed after an error; a repeated call would short-circuit")
 			}
 		})
 	}
 
-	// The retry after a transient failure re-commits under the SAME key (the
-	// fast-path did not short-circuit), and once it succeeds the key IS marked so
-	// a further retry short-circuits without a second commit.
-	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("transient"))}
+	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("commit failed"))}
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 	post := func() error {
 		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
@@ -1050,29 +1035,25 @@ func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
 	}
 
 	if err := post(); connect.CodeOf(err) != connect.CodeUnavailable {
-		t.Fatalf("first (transient) commit = %v, want CodeUnavailable", err)
+		t.Fatalf("first commit = %v, want CodeUnavailable", err)
 	}
-	// The retry must re-commit (a second call), because the transient failure
-	// left the key un-committed.
 	committer.mu.Lock()
-	committer.err = nil // the Server recovers; the retry now succeeds.
+	committer.err = nil
 	committer.mu.Unlock()
 	if err := post(); err != nil {
-		t.Fatalf("retry after transient failure = %v, want success", err)
+		t.Fatalf("second commit = %v, want success", err)
 	}
 	if n := committer.count(); n != 2 {
-		t.Fatalf("commit calls = %d, want 2 (the transient failure must NOT short-circuit the retry)", n)
+		t.Fatalf("commit calls = %d, want 2 (an error must not mark the key committed)", n)
 	}
 	if !g.keyCommitted("k") {
-		t.Fatal("key not marked committed after a SUCCESSFUL commit: a legitimate retry would re-commit needlessly")
+		t.Fatal("key not marked committed after a successful commit")
 	}
-	// A further retry short-circuits: the successful commit marked the key, so no
-	// third commit call is made.
 	if err := post(); err != nil {
-		t.Fatalf("post-success retry = %v, want success (advisory short-circuit)", err)
+		t.Fatalf("post-success call = %v, want success", err)
 	}
 	if n := committer.count(); n != 2 {
-		t.Fatalf("commit calls = %d, want still 2 (a committed key must short-circuit the retry)", n)
+		t.Fatalf("commit calls = %d, want still 2 after the committed key short-circuits", n)
 	}
 }
 

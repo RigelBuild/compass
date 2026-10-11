@@ -2,10 +2,8 @@
 
 package gateway
 
-// The durable-frame ingest: the delivered-or-erred handler carrying a
-// conversation frame off the lossy Publish spine. It commits via the
-// CommitConversationFrame unary and returns success ONLY after the Server acks —
-// a loss is a retryable Connect error, never a silent gapless loss (OQ-3).
+// The durable-frame ingest carries conversation frames off the lossy Publish
+// spine. It returns success only after the Server acknowledges the commit.
 
 // Idempotency: the agent retries under a stable idempotency_key. The durability
 // boundary is the atomic Message-store commit on that key; the in-process
@@ -22,8 +20,8 @@ import (
 
 // PostConversationFrame commits a durable frame through the Server unary.
 // It rejects unsupported variants and an unbound local session before forwarding.
-// The process cache is an advisory fast path; the store enforces at-most-once
-// commit for the idempotency key.
+// The Runner forwards every status unchanged; the agent sink retries on its
+// bounded schedule regardless of status code.
 func (g *Gateway) PostConversationFrame(
 	ctx context.Context,
 	req *connect.Request[compassv1internal.PostConversationFrameRequest],
@@ -49,8 +47,7 @@ func (g *Gateway) PostConversationFrame(
 
 	// Commit on THIS request's ctx: the commit is a unary bound to this call
 	// (unlike the Publish stream on baseCtx). The Runner forwards the session_id
-	// and frame verbatim and passes the Server's retryability-split status back — a
-	// transient failure retries the SAME key, a permanent one drops.
+	// and frame verbatim and passes every status unchanged.
 	if _, err := g.committer.CommitConversationFrame(ctx, connect.NewRequest(&compassv1internal.CommitConversationFrameRequest{
 		SessionId:      sessionID,
 		Frame:          frame,
@@ -61,8 +58,7 @@ func (g *Gateway) PostConversationFrame(
 
 	// The commit was acknowledged. Record the key so a retry whose response was
 	// lost short-circuits here (advisory; the store commit is the real boundary).
-	// A transient failure returned above, so the key is NOT marked — a retry
-	// re-commits under the same key.
+	// Failed commits leave the key unmarked.
 	if key != "" {
 		g.markKeyCommitted(key)
 	}

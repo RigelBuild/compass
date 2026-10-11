@@ -15,13 +15,12 @@ package runnerhub
 //   - a hub with no transcript store wired fails CodeUnavailable, checked BEFORE
 //     resolution (a Deliver-only hub);
 //   - an unbound session fails with FailedPrecondition and NEVER reaches the store;
-//   - a frame with no transcript_entry variant is CodeInvalidArgument (the
-//     terminal malformed-frame the Runner does not retry), and never reaches the
-//     store;
+//   - a frame with no transcript_entry variant is CodeInvalidArgument, and never
+//     reaches the store;
 //   - a transcript_entry under a bound session forwards to AppendTranscriptEntry
 //     with the entry's (session_id, seq, checkpoint, json, key) verbatim, and the
 //     ack is committed=true (message_id/seq empty — the Runner reads neither);
-//   - a store sentinel error maps to the right Connect code (ErrInvalidArgument →
+//   - a store sentinel error maps to its Connect code (ErrInvalidArgument →
 //     InvalidArgument, ErrConflict → AlreadyExists, other → Internal), never
 //     swallowed into a committed=false nil-error ack.
 //
@@ -156,10 +155,9 @@ func TestCommitConversationFrameUnboundSessionFailsClosed(t *testing.T) {
 	}
 }
 
-// 3. A frame with no transcript_entry variant is a malformed frame —
-// CodeInvalidArgument, the TERMINAL class the Runner does not retry (a permanent
-// per-frame refusal). The store is never reached, and the error is a real Connect
-// status error (never committed=false + nil, which the Runner would misread as a
+// 3. A frame with no transcript_entry variant is malformed and gets
+// CodeInvalidArgument. The store is never reached, and the error is a real Connect
+// status error (never committed=false + nil, which the Runner would read as a
 // successful commit).
 func TestCommitConversationFrameNoTranscriptVariantIsInvalidArgument(t *testing.T) {
 	hub, ts := newHubWithTranscripts()
@@ -225,20 +223,17 @@ func TestCommitConversationFrameHappyTranscriptForwardsVerbatim(t *testing.T) {
 }
 
 // 5. A store sentinel error maps to the right Connect code and is NEVER swallowed
-// into a committed=false nil-error ack. ErrInvalidArgument (a malformed or
-// unknown-session entry) → InvalidArgument and ErrConflict (a genuine entry_seq
-// collision) → AlreadyExists are TERMINAL; any other store fault → Internal is
-// transient (the Runner retries under the same key). A bare store error must never
-// surface as CodeUnknown, which the Runner would misread as a retryable teardown.
+// into a committed=false nil-error ack. ErrInvalidArgument maps to InvalidArgument,
+// ErrConflict to AlreadyExists, and other store errors to Internal.
 func TestCommitConversationFrameMapsStoreErrorCodes(t *testing.T) {
 	cases := []struct {
 		name     string
 		storeErr error
 		want     connect.Code
 	}{
-		{"invalid argument is terminal invalid_argument", store.ErrInvalidArgument, connect.CodeInvalidArgument},
-		{"conflict is terminal already_exists", store.ErrConflict, connect.CodeAlreadyExists},
-		{"other store fault is transient internal", errors.New("transient store fault"), connect.CodeInternal},
+		{"invalid argument is invalid_argument", store.ErrInvalidArgument, connect.CodeInvalidArgument},
+		{"conflict is already_exists", store.ErrConflict, connect.CodeAlreadyExists},
+		{"other store fault is internal", errors.New("store fault"), connect.CodeInternal},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
