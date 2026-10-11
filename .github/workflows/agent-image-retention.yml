@@ -1,0 +1,58 @@
+name: agent-image-retention
+
+on:
+  schedule:
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the retention plan without deleting versions
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  prune:
+    if: github.ref == 'refs/heads/main'
+    concurrency:
+      group: agent-image-retention
+      cancel-in-progress: false
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Deletion needs the repository's admin role on the package, which GitHub grants to the publishing repository.
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          # Naming the caches in this reviewed file keeps the trust reviewed:
+          # accept-flake-config would make nix trust any evaluated flake's own
+          # substituters and keys.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+      - name: Put the pinned bun toolchain on PATH
+        # bun comes from the nix-pinned toolchain, never setup-bun, so it is the
+        # same derivation as the dev shell's. `jq -r` renders a missing `.store`
+        # as the literal `null`, so guard for it explicitly.
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+      - name: Prune old agent image versions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRUNE_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
+        run: bun run tools/agent-image-index/prune.ts

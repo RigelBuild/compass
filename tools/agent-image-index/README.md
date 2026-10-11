@@ -31,3 +31,7 @@ command after `skopeo login`.
 GitHub issues `GITHUB_TOKEN` per run and rotates it automatically. CI recreates
 the temporary auth file on each run, so there is no long-lived registry token
 to rotate.
+
+## Retention
+
+The weekly `agent-image-retention` workflow keeps the newest 200 main first-parent image tags, release and unknown tags, off-main tags, lock-pinned images, their index children, and untagged versions younger than seven days. Dispatch the workflow to review a dry-run plan; scheduled runs delete eligible versions. GitHub keeps a deleted version restorable for 30 days.

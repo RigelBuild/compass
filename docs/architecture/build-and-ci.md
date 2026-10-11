@@ -158,6 +158,11 @@ pushes one `linux/amd64` + `linux/arm64` index. The package is
 carries no runtime secrets (those are runner-supplied per-exec) — so the
 first-run pull needs no credential anywhere.
 
+The weekly `agent-image-retention` workflow prunes old out-of-window `git-*`
+versions while preserving release tags, off-main images, lock-pinned digests,
+index children, and recent untagged publishes. Dispatch defaults to a dry-run
+plan; GitHub keeps deleted versions restorable for 30 days.
+
 **One derivation, two destinations.** The published `:git-<sha>` and the local
 `dogfood:agent-image` load are copies of the *same* nix derivation — both flow
 through the image's `container build agent`. They diverge only in the skopeo
