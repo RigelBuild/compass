@@ -174,6 +174,17 @@ func prompt(text string) *compassv1internal.AgentControl {
 	}
 }
 
+func TestStartNowControlIsRepresentable(t *testing.T) {
+	op := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_StartNow{
+			StartNow: &compassv1internal.StartNowControl{},
+		},
+	}
+	if !representable(op) {
+		t.Fatal("start_now control is not representable, so the Runner would refuse it")
+	}
+}
+
 // TestControlSendStampsSeqAndDelivers is the keystone: an open subscription
 // receives a Send-ed op, stamped with a Runner-assigned control_seq.
 func TestControlSendStampsSeqAndDelivers(t *testing.T) {

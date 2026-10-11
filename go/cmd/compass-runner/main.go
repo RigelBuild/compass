@@ -57,6 +57,7 @@ func run() error {
 		"Model selector handed to every agent this Runner starts (the agent's "+
 			"COMPASS_MODEL). Empty leaves each agent on its own default. "+
 			"Defaults to $COMPASS_AGENT_MODEL.")
+	agentBatching := registerAgentBatchingFlag(flag.CommandLine)
 	egressHosts := flag.String("egress-allow", "",
 		"Comma-separated default-deny egress allowlist (DNS names or IP literals). "+
 			"Agents that push with jj-vine need github.com and api.github.com.")
@@ -113,6 +114,9 @@ func run() error {
 	if addr == "" {
 		return errors.New("a server address is required: pass --server or set $COMPASS_SERVER_ADDR")
 	}
+	if err := validateAgentBatching(*agentBatching); err != nil {
+		return err
+	}
 	tokenPath := orEnv(*tokenFile, "COMPASS_RUNNER_TOKEN_FILE")
 	tokenSource, err := resolveTokenSource(os.Getenv("COMPASS_RUNNER_TOKEN"), tokenPath, log)
 	if err != nil {
@@ -159,14 +163,34 @@ func run() error {
 	defer otelShutdown()
 
 	return runner.Run(ctx, runner.RunnerConfig{
-		RunnerID:   id,
-		ServerAddr: addr,
-		Token:      tokenSource,
-		Engine:     engine,
-		RuntimeDir: *runtimeDir,
-		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
-		HTTPClient: httpClient,
+		RunnerID:      id,
+		ServerAddr:    addr,
+		Token:         tokenSource,
+		Engine:        engine,
+		RuntimeDir:    *runtimeDir,
+		AgentModel:    orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
+		AgentBatching: resolveAgentBatchingConfig(*agentBatching).AgentBatching,
+		HTTPClient:    httpClient,
 	}, specs, log)
+}
+
+func registerAgentBatchingFlag(flags *flag.FlagSet) *string {
+	return flags.String("agent-batching", "",
+		"Idle inbound batching for every agent this Runner starts: \"on\" or \"off\" (default off). "+
+			"Defaults to $COMPASS_AGENT_BATCHING.")
+}
+
+func resolveAgentBatchingConfig(flagValue string) runner.RunnerConfig {
+	return runner.RunnerConfig{AgentBatching: orEnv(flagValue, "COMPASS_AGENT_BATCHING")}
+}
+
+// The agent acts only on "on", so any other non-empty value is a typo that would leave batching off silently.
+func validateAgentBatching(flagValue string) error {
+	v := resolveAgentBatchingConfig(flagValue).AgentBatching
+	if v != "" && v != "on" && v != "off" {
+		return fmt.Errorf("--agent-batching (or $COMPASS_AGENT_BATCHING) must be \"on\" or \"off\", got %q", v)
+	}
+	return nil
 }
 
 func resolveTokenSource(staticToken, tokenPath string, log *slog.Logger) (runner.TokenSource, error) {

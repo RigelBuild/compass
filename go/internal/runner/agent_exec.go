@@ -43,6 +43,7 @@ var agentCommand = []string{"compass-agent"}
 // Reload. Empty Model, Persona, Role, or ResumeSessionFile is omitted rather
 // than exported blank, so the agent falls back to its SDK default (or a fresh
 // session) instead of receiving a value it must special-case.
+// COMPASS_AGENT_BATCHING is omitted when empty.
 type AgentEnv struct {
 	// UID is the agent user the exec runs as. Set explicitly because podman
 	// strips the container's ambient capabilities only when --user is passed:
@@ -58,6 +59,8 @@ type AgentEnv struct {
 	Workdir string
 	// Model is the model selector, or empty for the agent's default.
 	Model string
+	// Batching is the Runner-wide idle-batching setting, or empty when off.
+	Batching string
 	// Persona is the server-authoritative identity overlay, or empty for none.
 	Persona string
 	// Role is the server-authoritative operator-set block-0 selector, delivered
@@ -94,6 +97,9 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	spec.Env["COMPASS_WORKDIR"] = e.Workdir
 	if e.Model != "" {
 		spec.Env["COMPASS_MODEL"] = e.Model
+	}
+	if e.Batching != "" {
+		spec.Env["COMPASS_AGENT_BATCHING"] = e.Batching
 	}
 	if e.Persona != "" {
 		spec.Env["COMPASS_PERSONA"] = e.Persona
