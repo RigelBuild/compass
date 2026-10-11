@@ -259,10 +259,13 @@ func (l *Linear) CommentOnIssue(ctx context.Context, repo string, number uint64,
 	if err := l.doGraphQL(ctx, query, map[string]any{gqlInputKey: input}, &out); err != nil {
 		// Linear refuses a reused id as an insert conflict, so a retry after a
 		// lost response adopts the comment the first attempt already created.
-		if _, refused := errors.AsType[*StatusError](err); refused && clientID != "" {
-			if c, ok := l.commentOnIssue(ctx, clientID, issueID); ok {
+		// Any refusal but auth tries this; the issue-id match blocks a wrong adopt.
+		if se, refused := errors.AsType[*StatusError](err); refused && se.Status != http.StatusUnauthorized && clientID != "" {
+			c, ok, readErr := l.commentOnIssue(ctx, clientID, issueID)
+			if ok {
 				return c, nil
 			}
+			err = errors.Join(err, readErr)
 		}
 		return Comment{}, fmt.Errorf("forge: linear comment on issue %q#%d: %w", repo, number, err)
 	}
@@ -335,7 +338,8 @@ func (l *Linear) ListCommentsSince(ctx context.Context, repo string, number uint
 		// A short scan would make the caller post a duplicate, so a missing
 		// issue or a page with no cursor is an error, never a partial list.
 		if out.Issue == nil {
-			return nil, &StatusError{Status: http.StatusNotFound, Message: fmt.Sprintf("no issue %s-%d", repo, number)}
+			return nil, fmt.Errorf("forge: linear list comments since %q#%d: %w", repo, number,
+				&StatusError{Status: http.StatusNotFound, Message: fmt.Sprintf("no issue %s-%d", repo, number)})
 		}
 		for _, comment := range out.Issue.Comments.Nodes {
 			all = append(all, comment.toComment())
@@ -522,9 +526,9 @@ func (l *Linear) Checks(ctx context.Context, repo string, number uint64) (Checks
 // See linearBodyLimit for the conservative-constant rationale.
 func (l *Linear) BodyLimit() int { return linearBodyLimit }
 
-// commentOnIssue reads comment id and reports whether it exists on issueID. Any
-// read failure reports false, so the caller returns its original create error.
-func (l *Linear) commentOnIssue(ctx context.Context, id, issueID string) (Comment, bool) {
+// commentOnIssue reads comment id and reports whether it exists on issueID. A
+// failed read returns its error so the caller can report both causes.
+func (l *Linear) commentOnIssue(ctx context.Context, id, issueID string) (Comment, bool, error) {
 	const query = `query CompassCommentGet($id: String!) {
   comment(id: $id) { id url body user { displayName } issue { id } }
 }`
@@ -537,12 +541,12 @@ func (l *Linear) commentOnIssue(ctx context.Context, id, issueID string) (Commen
 		} `json:"comment"`
 	}
 	if err := l.doGraphQL(ctx, query, map[string]any{"id": id}, &out); err != nil {
-		return Comment{}, false
+		return Comment{}, false, fmt.Errorf("read comment %q: %w", id, err)
 	}
 	if out.Comment == nil || out.Comment.Issue == nil || out.Comment.Issue.ID != issueID {
-		return Comment{}, false
+		return Comment{}, false, nil
 	}
-	return out.Comment.toComment(), true
+	return out.Comment.toComment(), true, nil
 }
 
 // --- Provider: unexported plumbing -------------------------------------------

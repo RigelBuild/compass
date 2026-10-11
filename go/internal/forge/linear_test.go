@@ -229,6 +229,26 @@ func TestLinearCommentOnIssueRetryAdoptsExistingClientID(t *testing.T) {
 			t.Fatal("CommentOnIssue adopted a comment on another issue; want the create error")
 		}
 	})
+	t.Run("failed read reports both causes", func(t *testing.T) {
+		readFail := scriptedResponse{status: http.StatusOK, body: `{"errors":[{"message":"comment read broke"}],"data":null}`}
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict, readFail}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		_, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID)
+		if err == nil || !strings.Contains(err.Error(), "conflict on insert") || !strings.Contains(err.Error(), "comment read broke") {
+			t.Fatalf("err = %v, want both the create conflict and the read failure", err)
+		}
+	})
+	t.Run("auth refusal never reads", func(t *testing.T) {
+		authFail := scriptedResponse{status: http.StatusUnauthorized, body: `{"errors":[{"message":"bad token","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`}
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), authFail}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		if _, err := l.CommentOnIssue(context.Background(), "SEA", 7, "a reply", clientID); err == nil {
+			t.Fatal("CommentOnIssue succeeded on an auth refusal; want the error")
+		}
+		if rt.calls != 3 {
+			t.Errorf("requests = %d, want 3 (no adoption read after an auth refusal)", rt.calls)
+		}
+	})
 	t.Run("no client id never reads", func(t *testing.T) {
 		rt := &scriptedRoundTripper{responses: []scriptedResponse{resolve, probeResp(true), conflict}}
 		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
