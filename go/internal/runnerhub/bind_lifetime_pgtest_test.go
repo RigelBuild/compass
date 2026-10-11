@@ -10,7 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/envelope"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -85,6 +87,42 @@ func TestBindLifetimeHandlerTenantScopedAndFailsClosed(t *testing.T) {
 	if base := baseFor(t, st, ctxB, sess); base != 2 {
 		t.Fatalf("base after bind = %d, want 2 (the stored max)", base)
 	}
+}
+
+func TestFetchSecretsResolvesTenantBAgentSecret(t *testing.T) {
+	ctx := context.Background()
+	st, agent, ctxB := openTenantBSession(t, ctx)
+	resolver := secrets.NewStoreResolver(st, runnerSecretTestKey(t), 1)
+	if err := resolver.Upsert(ctxB, agent.ID, "TENANT_SECRET", store.SecretScopeAgent, string(agent.ID), "tenant-b-value", secrets.DeliveryEnv, secrets.SecretGeneric, "", ""); err != nil {
+		t.Fatalf("Upsert tenant-B secret: %v", err)
+	}
+
+	hub := newHubOnly()
+	hub.SetLifetimeBinder(st)
+	hub.bindContainer("cont-b-secrets", agent.ID, "runner-1")
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+	response, err := client.FetchSecrets(ctx, connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-b-secrets"}))
+	if err != nil {
+		t.Fatalf("FetchSecrets tenant-B agent: %v", err)
+	}
+	got := response.Msg.GetSecrets()
+	if len(got) != 1 || got[0].GetName() != "TENANT_SECRET" || got[0].GetValue() != "tenant-b-value" {
+		t.Fatalf("FetchSecrets secrets = %+v, want tenant-B TENANT_SECRET", got)
+	}
+}
+
+func runnerSecretTestKey(t *testing.T) envelope.Key {
+	t.Helper()
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+	key, err := envelope.NewKey(raw)
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	return key
 }
 
 // baseFor reads the session's bound base under its tenant.

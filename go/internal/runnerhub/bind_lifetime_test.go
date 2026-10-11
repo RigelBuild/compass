@@ -15,17 +15,26 @@ import (
 // recordingBinder is a LifetimeBinder that records the ctx each call ran under,
 // so a test can observe the role and tenant the hub chose.
 type recordingBinder struct {
-	tenant     store.TenantID
-	tenantCtx  context.Context
-	bindCtx    context.Context
-	bindCalls  int
-	bindAcct   store.AccountID
-	bindSessID string
+	tenant        store.TenantID
+	tenantCtx     context.Context
+	tenantAccount store.AccountID
+	bindCtx       context.Context
+	bindCalls     int
+	bindAcct      store.AccountID
+	bindSessID    string
+	tenantErr     error
 }
 
-func (b *recordingBinder) AccountTenant(ctx context.Context, _ store.AccountID) (store.TenantID, error) {
+func (b *recordingBinder) AccountTenant(ctx context.Context, account store.AccountID) (store.TenantID, error) {
 	b.tenantCtx = ctx
-	return b.tenant, nil
+	b.tenantAccount = account
+	return b.tenant, b.tenantErr
+}
+
+func wireRecordingBinder(hub *Hub) *recordingBinder {
+	binder := &recordingBinder{tenant: "tenant-test"}
+	hub.SetLifetimeBinder(binder)
+	return binder
 }
 
 func (b *recordingBinder) BindLifetime(ctx context.Context, sessionID string, account store.AccountID) (uint64, error) {
