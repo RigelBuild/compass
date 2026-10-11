@@ -23,7 +23,7 @@ import (
 // home-topic default.
 func homeTopicPost(blocks []*compassv1.MessageBlock) *compassv1.PostMessageRequest {
 	return &compassv1.PostMessageRequest{
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      blocks,
 	}
@@ -155,7 +155,7 @@ func TestAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 	seed, _, err := h.store.AppendMessage(ctx, store.Message{
 		AuthorAccountID: agent.ID,
 		Blocks:          []store.MessageBlock{{Text: &seedText}},
-	}, string(agent.Agent.HomeChannelID), store.TopicRef{Name: "general", Create: true}, "")
+	}, string(agent.Agent.HomeChannelID), store.TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(seed): %v", err)
 	}
@@ -212,7 +212,7 @@ func TestAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	postedA, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: textBlocks("agent A's words")})
+	postedA, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: textBlocks("agent A's words")})
 	if err != nil {
 		t.Fatalf("PostAsAccount(A): %v", err)
 	}
@@ -251,7 +251,7 @@ func TestAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: textBlocks("posted while a member")})
+	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: textBlocks("posted while a member")})
 	if err != nil {
 		t.Fatalf("PostAsAccount: %v", err)
 	}
@@ -618,7 +618,7 @@ func TestAgentUpdateForeignAskMessageIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	posted, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{askBlockWire()}})
+	posted, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{askBlockWire()}})
 	if err != nil {
 		t.Fatalf("PostAsAccount(A ask): %v", err)
 	}

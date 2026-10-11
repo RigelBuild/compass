@@ -19,7 +19,7 @@ func TestSingleConnPoolFallbackReadsDoNotDeadlock(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 	msg := Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("once")}}
-	topic := TopicRef{Name: "general", Create: true}
+	topic := TopicRef{Name: testTopic, Create: true}
 	first, _, err := s.AppendMessage(ctx, msg, string(ch.ID), topic, "req-single")
 	if err != nil {
 		t.Fatalf("AppendMessage(first): %v", err)

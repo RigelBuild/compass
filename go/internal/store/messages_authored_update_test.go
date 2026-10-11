@@ -31,7 +31,7 @@ import (
 // the row the authorizing-update cases then try to edit under various actors.
 func authoredMessage(t *testing.T, ctx context.Context, s *Store, author AccountID, ch ChannelID, text string) Message {
 	t.Helper()
-	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(text)}}, string(ch), TopicRef{Name: "general", Create: true}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(text)}}, string(ch), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{askBlockID("ask-first"), textBlock("between"), askBlockID("ask-second")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{askBlockID("ask-first"), textBlock("between"), askBlockID("ask-second")}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
 	}
 
 	// reader posts its own ask, then loses membership: the revoked author case.
-	readerMsg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: reader.ID, Blocks: []MessageBlock{askBlockID("ask-reader")}}, string(ch.ID), TopicRef{Name: "general"}, "")
+	readerMsg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: reader.ID, Blocks: []MessageBlock{askBlockID("ask-reader")}}, string(ch.ID), TopicRef{Name: testTopic}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(reader): %v", err)
 	}
@@ -290,7 +290,7 @@ func TestAnswerAskStillWorksForANonAuthorMember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: asker.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: asker.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 

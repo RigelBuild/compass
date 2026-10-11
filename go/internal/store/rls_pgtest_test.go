@@ -90,7 +90,7 @@ func seedChannelWithMessage(t *testing.T, s *Store, tenantCtx context.Context, h
 	}
 	msg, _, err := s.AppendMessage(tenantCtx,
 		Message{AuthorAccountID: owner.ID, Blocks: []MessageBlock{textBlock(body)}},
-		string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+		string(ch.ID), TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%s): %v", handle, err)
 	}

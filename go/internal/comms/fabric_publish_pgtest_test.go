@@ -125,7 +125,7 @@ func postText(ctx context.Context, t *testing.T, svc *Comms, actor store.Account
 	t.Helper()
 	resp, err := svc.PostMessage(WithActor(ctx, actor), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch)},
-		Topic:           &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:           &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic:     true,
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
 		ClientRequestId: requestID,
@@ -289,7 +289,7 @@ func TestRespondToAskPublishesAnswerRefOnFabric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	askMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: agent.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general", Create: true}, "")
+	askMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: agent.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: testTopic, Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}

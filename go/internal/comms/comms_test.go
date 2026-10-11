@@ -20,6 +20,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
+// testTopic is the topic tests post under when the topic itself is not under
+// test. A test that needs a second topic uses another name, never this literal.
+const testTopic = "general"
+
 // mustUser creates a human account through the store or fails the test.
 func mustUser(t *testing.T, s *store.Store, handle string) store.Account {
 	t.Helper()
@@ -94,7 +98,7 @@ func TestPostMessageRejectsTurnSequenceBeyondSignedBigint(t *testing.T) {
 
 	_, err = svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic:  true,
 		TurnSequence: uint64(math.MaxInt64) + 1,
 		Blocks:       textBlocks("out of range"),
@@ -118,7 +122,7 @@ func TestPostMessageAcceptsMaxSignedBigintTurnSequence(t *testing.T) {
 	}
 	resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic:  true,
 		TurnSequence: uint64(math.MaxInt64),
 		Blocks:       textBlocks("max valid sequence"),
@@ -304,7 +308,7 @@ func TestSearchMessagesAuthorizationScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: new("peregrine falcon")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: new("peregrine falcon")}}}, string(chA.ID), store.TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -350,7 +354,7 @@ func TestListMessagesVisibilityScopedAtEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: new("private plans")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: new("private plans")}}}, string(chA.ID), store.TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -386,7 +390,7 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -549,7 +553,7 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 	// Every field the server owns, set by the caller to a value it must not
 	// keep, alongside every content field, which it must.
 	recommended := int32(1)
-	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
+	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
 		AskId:    "forged-ask-id",
 		Answered: true,
 		Questions: []*compassv1.AskQuestion{{
@@ -663,7 +667,7 @@ func TestAskAnsweredFlagReachesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -793,7 +797,7 @@ func TestPostMessageStripsCallerAskID(t *testing.T) {
 
 	// postMinted posts one ask and returns the ask_id on the response Message.
 	postMinted := func(ctx string) string {
-		resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{forgedBlock()}}))
+		resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{forgedBlock()}}))
 		if err != nil {
 			t.Fatalf("PostMessage(%s): %v", ctx, err)
 		}
@@ -858,7 +862,7 @@ func TestRespondToAskVisibilityCollapseNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-secret")}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-secret")}}, string(chA.ID), store.TopicRef{Name: testTopic, Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 

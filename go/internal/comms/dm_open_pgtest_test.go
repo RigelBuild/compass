@@ -993,7 +993,7 @@ func TestOpenDMPostAndReadBothParties(t *testing.T) {
 		t.Helper()
 		resp, err := svc.PostMessage(WithActor(ctx, actor), connect.NewRequest(&compassv1.PostMessageRequest{
 			Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
-			Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+			Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 			CreateTopic: true,
 			Blocks:      textBlocks(text),
 		}))
@@ -1050,7 +1050,7 @@ func TestOpenDMThirdPartySameOwnerCannotSee(t *testing.T) {
 
 	posted, err := svc.PostMessage(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("private to alice and bob"),
 	}))
