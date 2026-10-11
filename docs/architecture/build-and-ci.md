@@ -187,6 +187,11 @@ tag is the source of truth; a missing per-push tag (paths filtered it out, or a
 superseding push skipped it under the serialized concurrency group) is **not** a
 failure — `workflow_dispatch` republishes any HEAD on demand.
 
+The same workflow also runs `publish-runner-image`, `publish-guest-image`, and
+`publish-gateway-image`. The gateway job builds and smoke-tests one local OCI
+layout, then publishes its immutable `:git-<sha12>` tag and records the
+`repo@sha256:…` reference in the step summary.
+
 **The release-please cadence.** `release.yml` also runs release-please, which
 keeps a standing Release PR that batches conventional commits since the last
 release. Merging that PR is the release: it cuts the `vX.Y.Z` git tag, updates
