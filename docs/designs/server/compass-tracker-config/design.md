@@ -115,7 +115,8 @@ next move into the renamed state gets the type default.
 
 ### Consumer contract
 
-compass #2078 (RIG-5059) is the consumer. Its Linear ingest lane owns the
+compass #2078 (RIG-5059) is the consumer. Matt ruled its OQ-1 (c) on
+RIG-5066: ingest Linear issues into `issues`. Its Linear ingest lane owns the
 `issues` CHECK widen and the fetch, defines no mapping, and calls
 `tracker.ResolveLinearStatus` once per issue. The call site is that lane's
 board-ingest sink in `go/server`, after the forge-field upsert. A resolved
@@ -267,7 +268,9 @@ var LinearStateTypes = []string{LinearTypeTriage, LinearTypeBacklog, LinearTypeU
 	LinearTypeStarted, LinearTypeCompleted, LinearTypeCanceled, LinearTypeDuplicate}
 ```
 
-`TestMapLinearStateCoversEverySDLType` ranges `LinearStateTypes`.
+The `{type, want}` table in `TestMapLinearStateCoversEverySDLType` stays,
+including its fallback row. Add an assertion that the table covers every
+entry of `LinearStateTypes`.
 
 New file `go/internal/store/tracker_config.go`:
 
@@ -397,7 +400,7 @@ In `0001_init.sql`, after `account_tour_state` (or in `0002`, per Global
 Constraints):
 
 ```sql
--- One tracker status mapping per tenant (RIG-5077). version is the CAS
+-- One tracker status mapping per tenant. version is the CAS
 -- substrate, as on model_registry. config is validated at the store door.
 CREATE TABLE tracker_config (
     tenant_id  TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
@@ -472,8 +475,8 @@ Move the body of `secretsService.requireUser` in
 ```go
 // requireUserAccount returns the caller and role only for a user account.
 // No caller is CodeUnauthenticated; an agent or a missing account is
-// CodePermissionDenied.
-func requireUserAccount(ctx context.Context, st *store.Store) (store.AccountID, store.UserRole, error)
+// CodePermissionDenied with `denied` as the message.
+func requireUserAccount(ctx context.Context, st *store.Store, denied string) (store.AccountID, store.UserRole, error)
 ```
 
 New file `go/server/tracker_config_service.go`, on `*service`:
@@ -484,9 +487,11 @@ func (s *service) GetTrackerConfig(ctx context.Context, req *connect.Request[com
 func (s *service) PutTrackerConfig(ctx context.Context, req *connect.Request[compassv1.PutTrackerConfigRequest]) (*connect.Response[compassv1.PutTrackerConfigResponse], error)
 ```
 
-- `GetTrackerConfig`: `requireCaller`, then `CurrentTrackerConfig`.
-  `can_edit` is true only for a user with `UserRoleAdmin`.
-- `PutTrackerConfig`: `requireUserAccount`; a role other than
+- `GetTrackerConfig`: `requireCaller`, then `s.store.GetAccount` for the
+  role, then `CurrentTrackerConfig`. `can_edit` is true only for a user with
+  `UserRoleAdmin`. An agent or an account with no user role gets
+  `can_edit=false`, never an error.
+- `PutTrackerConfig`: `requireUserAccount(ctx, s.store, "tracker config writes are user-only")`; a role other than
   `UserRoleAdmin` is `CodePermissionDenied`. Then `PutTrackerConfig`. Rename
   `mapModelRegistryErr` to `mapVersionedWriteErr` and use it in both
   services.
