@@ -102,7 +102,7 @@ func (s *Store) GrantAgentForgeScope(ctx context.Context, scope ForgeScope) (add
 
 func validForgeRepository(repo string) bool {
 	org, name, ok := strings.Cut(repo, "/")
-	return ok && org != "" && name != "" && !strings.Contains(name, "/")
+	return ok && org != "" && name != "" && !strings.Contains(org, "*") && !strings.Contains(name, "*") && !strings.Contains(name, "/")
 }
 
 // RevokeForgeScope removes one user grant; a missing grant is a no-op.

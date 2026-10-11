@@ -239,6 +239,8 @@ func TestGrantAgentForgeScope(t *testing.T) {
 		scope ForgeScope
 	}{
 		{name: "wildcard", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "*"}},
+		{name: "wildcard organization", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "*/repo"}},
+		{name: "wildcard repository", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "org/*"}},
 		{name: "user account", scope: ForgeScope{AccountID: owner.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo"}},
 		{name: "missing slash", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "repo"}},
 		{name: "empty organization", scope: ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "/repo"}},
