@@ -47,6 +47,29 @@ func (q *Queries) LatestSessionForAccount(ctx context.Context, agentAccountID st
 	return session_id, err
 }
 
+const requireAgentSessionOwner = `-- name: RequireAgentSessionOwner :one
+SELECT EXISTS (
+         SELECT 1
+           FROM agent_sessions se
+           JOIN agent_accounts ag ON ag.account_id = se.agent_account_id
+          WHERE se.session_id = $1
+            AND (ag.owner_user_id = $2
+                 OR EXISTS (SELECT 1 FROM user_accounts u
+                             WHERE u.account_id = $2 AND u.role = 1)))
+`
+
+type RequireAgentSessionOwnerParams struct {
+	SessionID   string
+	OwnerUserID string
+}
+
+func (q *Queries) RequireAgentSessionOwner(ctx context.Context, arg RequireAgentSessionOwnerParams) (bool, error) {
+	row := q.db.QueryRow(ctx, requireAgentSessionOwner, arg.SessionID, arg.OwnerUserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const requireAgentSessionSubscriber = `-- name: RequireAgentSessionSubscriber :one
 SELECT EXISTS (
          SELECT 1

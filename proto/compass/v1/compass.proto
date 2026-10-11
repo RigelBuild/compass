@@ -88,6 +88,9 @@ service CompassService {
   // session succeeds.
   rpc StopAgentSession(StopAgentSessionRequest) returns (StopAgentSessionResponse);
 
+  // End the agent's idle batching window now; with no window open it is a no-op.
+  rpc SkipBatchWindow(SkipBatchWindowRequest) returns (SkipBatchWindowResponse);
+
   // Remove a per-agent container and release its durable placement: the
   // teardown counterpart to ProvisionAgentWorkspace, keyed by the same
   // container_name. Admin-gated on this public door (like IssueToken); the
@@ -868,6 +871,12 @@ message StopAgentSessionRequest {
 }
 
 message StopAgentSessionResponse {}
+
+message SkipBatchWindowRequest {
+  string session_id = 1;
+}
+
+message SkipBatchWindowResponse {}
 
 message ReloadAgentSessionRequest {
   string session_id = 1;
