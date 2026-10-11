@@ -206,7 +206,8 @@ read, the server SHALL omit the Linear rules and still return the GitHub rules.
 
 #### Scenario: The Linear workspace key read fails
 
-- **Given** a server whose Linear workspace key read fails
+- **Given** a server with a configured GitHub App whose Linear workspace key
+  read fails
 - **When** a client calls `GetRefLinkRules`
 - **Then** the server returns the GitHub rules and no Linear rule.
 
