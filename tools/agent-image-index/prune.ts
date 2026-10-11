@@ -137,35 +137,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parsePackageVersions(value: unknown): PackageVersion[] {
 	if (!Array.isArray(value))
 		throw new Error("GitHub package versions response was not an array");
-	return value.map((entry, index) => {
-		if (!isRecord(entry))
-			throw new Error(`GitHub package version ${index} was not an object`);
-		const metadata = entry.metadata;
-		if (!isRecord(metadata) || !isRecord(metadata.container)) {
-			throw new Error(
-				`GitHub package version ${index} had no container metadata`,
-			);
-		}
-		const tags = metadata.container.tags;
-		if (
-			typeof entry.id !== "number" ||
-			!Number.isSafeInteger(entry.id) ||
-			typeof entry.name !== "string" ||
-			!DIGEST_PATTERN.test(entry.name) ||
-			typeof entry.created_at !== "string" ||
-			!Number.isFinite(Date.parse(entry.created_at)) ||
-			!Array.isArray(tags) ||
-			!tags.every((tag) => typeof tag === "string")
-		) {
-			throw new Error(`GitHub package version ${index} had invalid fields`);
-		}
-		return {
-			id: entry.id,
-			name: entry.name,
-			created_at: entry.created_at,
-			metadata: { container: { tags } },
-		};
-	});
+	return value.map(parsePackageVersion);
+}
+
+function parsePackageVersion(value: unknown, index: number): PackageVersion {
+	if (!isRecord(value))
+		throw new Error(`GitHub package version ${index} was not an object`);
+	const metadata = value.metadata;
+	if (!isRecord(metadata) || !isRecord(metadata.container)) {
+		throw new Error(
+			`GitHub package version ${index} had no container metadata`,
+		);
+	}
+	const tags = metadata.container.tags;
+	if (
+		typeof value.id !== "number" ||
+		!Number.isSafeInteger(value.id) ||
+		typeof value.name !== "string" ||
+		!DIGEST_PATTERN.test(value.name) ||
+		typeof value.created_at !== "string" ||
+		!Number.isFinite(Date.parse(value.created_at)) ||
+		!Array.isArray(tags) ||
+		!tags.every((tag) => typeof tag === "string")
+	) {
+		throw new Error(`GitHub package version ${index} had invalid fields`);
+	}
+	return {
+		id: value.id,
+		name: value.name,
+		created_at: value.created_at,
+		metadata: { container: { tags } },
+	};
 }
 
 function parseJsonRecord(
@@ -214,6 +216,7 @@ async function anonymousToken(): Promise<string> {
 
 async function listVersions(token: string): Promise<PackageVersion[]> {
 	const versions: PackageVersion[] = [];
+	const seenIds = new Set<number>();
 	for (let page = 1; ; page++) {
 		const response = await fetch(
 			`${PACKAGE_VERSIONS}?per_page=100&page=${page}`,
@@ -231,7 +234,11 @@ async function listVersions(token: string): Promise<PackageVersion[]> {
 			);
 		const pageVersions = parsePackageVersions(await response.json());
 		if (pageVersions.length === 0) return versions;
-		versions.push(...pageVersions);
+		for (const version of pageVersions) {
+			if (seenIds.has(version.id)) continue;
+			seenIds.add(version.id);
+			versions.push(version);
+		}
 	}
 }
 
@@ -332,6 +339,154 @@ function printPlan(plan: RetentionPlan): void {
 		console.log(`DELETE ${entry.version.name} [${tags}] — ${entry.reason}`);
 	}
 }
+function parseReleaseRuns(value: unknown, status: string): unknown[] {
+	const body = parseJsonRecord(value, `GitHub ${status} release runs`);
+	if (!Array.isArray(body.workflow_runs)) {
+		throw new Error(
+			`GitHub ${status} release runs response had no workflow_runs`,
+		);
+	}
+	return body.workflow_runs;
+}
+
+function collectReleaseRunSha12(
+	value: unknown,
+	status: string,
+	index: number,
+	releaseHeadShas: Set<string>,
+	sha12s: Set<string>,
+): void {
+	if (!isRecord(value) || typeof value.head_sha !== "string") {
+		throw new Error(`GitHub ${status} workflow run ${index} had no head_sha`);
+	}
+	if (releaseHeadShas.has(value.head_sha)) return;
+	releaseHeadShas.add(value.head_sha);
+	for (const commit of gitRevList([
+		"--first-parent",
+		"--max-count=50",
+		value.head_sha,
+	])) {
+		sha12s.add(commit.slice(0, 12));
+	}
+}
+
+async function queuedReleaseSha12(token: string): Promise<Set<string>> {
+	const releaseHeadShas = new Set<string>();
+	const sha12s = new Set<string>();
+	for (const status of ["queued", "in_progress", "waiting", "pending"]) {
+		const response = await fetch(
+			`${API}/repos/RigelBuild/compass/actions/workflows/release.yml/runs?status=${status}&per_page=100`,
+			{
+				headers: {
+					Authorization: `Bearer ${token}`,
+					Accept: "application/vnd.github+json",
+					"X-GitHub-Api-Version": "2022-11-28",
+				},
+			},
+		);
+		if (response.status !== 200)
+			throw new Error(
+				`GitHub release runs request failed for ${status}: ${response.status}`,
+			);
+		for (const [index, run] of parseReleaseRuns(
+			await response.json(),
+			status,
+		).entries()) {
+			collectReleaseRunSha12(run, status, index, releaseHeadShas, sha12s);
+		}
+	}
+	return sha12s;
+}
+
+function assertHasWindowIndexTag(
+	plan: RetentionPlan,
+	mainWindowSha12: ReadonlySet<string>,
+): void {
+	const hasWindowIndexTag = plan.keep.some((entry) =>
+		entry.version.metadata.container.tags.some((tag) => {
+			const sha12 = indexTagSha12(tag);
+			return sha12 !== undefined && mainWindowSha12.has(sha12);
+		}),
+	);
+	if (!hasWindowIndexTag) {
+		throw new Error(
+			"no kept version carries an in-window git index tag; refusing to prune",
+		);
+	}
+}
+
+async function deleteEligibleVersions(
+	plan: RetentionPlan,
+	windowSha12: ReadonlySet<string>,
+	mainSha12: ReadonlySet<string>,
+	pins: Pins,
+	indexChildren: ReadonlyMap<string, ReadonlySet<string>>,
+	githubToken: string,
+	now: Date,
+): Promise<number> {
+	let deleted = 0;
+	for (const planned of plan.delete) {
+		const versionUrl = `${PACKAGE_VERSIONS}/${planned.version.id}`;
+		const latest = await fetch(versionUrl, {
+			headers: {
+				Authorization: `Bearer ${githubToken}`,
+				Accept: "application/vnd.github+json",
+				"X-GitHub-Api-Version": "2022-11-28",
+			},
+		});
+		if (latest.status === 404) {
+			console.log(`SKIP ${planned.version.name} — already gone`);
+			continue;
+		}
+		if (latest.status !== 200) {
+			throw new Error(
+				`GitHub package version recheck failed for ${planned.version.id}: ${latest.status}`,
+			);
+		}
+		const current = parsePackageVersion(
+			await latest.json(),
+			planned.version.id,
+		);
+		const freshPlan = planRetention(
+			[current],
+			windowSha12,
+			mainSha12,
+			pins,
+			indexChildren,
+			now,
+		);
+		const changedTags =
+			[...current.metadata.container.tags].sort().join("\0") !==
+			[...planned.version.metadata.container.tags].sort().join("\0");
+		if (changedTags || freshPlan.delete.length === 0) {
+			const reason = changedTags
+				? "tag list changed"
+				: (freshPlan.keep[0]?.reason ?? "no longer eligible for deletion");
+			console.log(`SKIP ${current.name} — ${reason}`);
+			continue;
+		}
+		const response = await fetch(versionUrl, {
+			method: "DELETE",
+			headers: {
+				Authorization: `Bearer ${githubToken}`,
+				Accept: "application/vnd.github+json",
+				"X-GitHub-Api-Version": "2022-11-28",
+			},
+		});
+		if (response.status !== 204) {
+			throw new Error(
+				`GitHub package version deletion failed for ${planned.version.id}: ${response.status}`,
+			);
+		}
+		deleted++;
+	}
+	return deleted;
+}
+
+function gitWindow(head: string, limit: number): Set<string> {
+	const commits = gitRevList(["--first-parent", `--max-count=${limit}`, head]);
+	return new Set(commits.map((commit) => commit.slice(0, 12)));
+}
 
 async function run(): Promise<void> {
 	const window = readEnvInteger("WINDOW", 200, 200);
@@ -339,21 +494,20 @@ async function run(): Promise<void> {
 	const githubToken = process.env.GITHUB_TOKEN;
 	if (!githubToken) throw new Error("GITHUB_TOKEN is required");
 
-	const windowCommits = gitRevList([
-		"--first-parent",
-		`--max-count=${window}`,
-		"HEAD",
-	]);
-	if (windowCommits.length < window) {
+	const windowSha12 = gitWindow("HEAD", window);
+	if (windowSha12.size < window) {
 		throw new Error(
-			`git history has ${windowCommits.length} first-parent commits; WINDOW=${window}, refusing a shallow/incomplete checkout`,
+			`git history has ${windowSha12.size} first-parent commits; WINDOW=${window}, refusing a shallow/incomplete checkout`,
 		);
 	}
-	const mainCommits = gitRevList(["--first-parent", "HEAD"]);
-	const windowSha12 = new Set(
-		windowCommits.map((commit) => commit.slice(0, 12)),
+	const mainSha12 = new Set(
+		gitRevList(["--first-parent", "HEAD"]).map((commit) => commit.slice(0, 12)),
 	);
-	const mainSha12 = new Set(mainCommits.map((commit) => commit.slice(0, 12)));
+	const mainWindowSha12 = new Set(windowSha12);
+	// release-image walks 50 ancestors of its release sha, so a delayed release keeps its walk.
+	for (const sha12 of await queuedReleaseSha12(githubToken)) {
+		windowSha12.add(sha12);
+	}
 	const [versions, pins, registryToken] = await Promise.all([
 		listVersions(githubToken),
 		readPins(),
@@ -366,31 +520,21 @@ async function run(): Promise<void> {
 		pins,
 		registryToken,
 	);
+	const now = new Date();
 	const plan = planRetention(
 		versions,
 		windowSha12,
 		mainSha12,
 		pins,
 		indexChildren,
-		new Date(),
+		now,
 	);
-	const hasWindowIndexTag = plan.keep.some((entry) =>
-		entry.version.metadata.container.tags.some((tag) => {
-			const sha12 = indexTagSha12(tag);
-			return sha12 !== undefined && windowSha12.has(sha12);
-		}),
-	);
-	if (!hasWindowIndexTag) {
-		throw new Error(
-			"no kept version carries an in-window git index tag; refusing to prune",
-		);
-	}
+	assertHasWindowIndexTag(plan, mainWindowSha12);
 	if (plan.delete.length > maxDelete) {
 		throw new Error(
 			`planned delete count ${plan.delete.length} exceeds MAX_DELETE=${maxDelete}; refusing to prune`,
 		);
 	}
-
 	const dryRun =
 		process.env.PRUNE_DRY_RUN === "1" || process.argv.includes("--dry-run");
 	printPlan(plan);
@@ -400,24 +544,15 @@ async function run(): Promise<void> {
 		);
 		return;
 	}
-
-	let deleted = 0;
-	for (const { version } of plan.delete) {
-		const response = await fetch(`${PACKAGE_VERSIONS}/${version.id}`, {
-			method: "DELETE",
-			headers: {
-				Authorization: `Bearer ${githubToken}`,
-				Accept: "application/vnd.github+json",
-				"X-GitHub-Api-Version": "2022-11-28",
-			},
-		});
-		if (response.status !== 204) {
-			throw new Error(
-				`GitHub package version deletion failed for ${version.id}: ${response.status}`,
-			);
-		}
-		deleted++;
-	}
+	const deleted = await deleteEligibleVersions(
+		plan,
+		windowSha12,
+		mainSha12,
+		pins,
+		indexChildren,
+		githubToken,
+		now,
+	);
 	console.log(`Summary: kept ${plan.keep.length}, deleted ${deleted}`);
 }
 

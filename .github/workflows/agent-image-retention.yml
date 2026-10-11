@@ -15,13 +15,16 @@ permissions: {}
 jobs:
   prune:
     if: github.ref == 'refs/heads/main'
+    # Serializes with publish-image-manifest and release-image, the other writers of this package.
     concurrency:
-      group: agent-image-retention
+      group: publish-agent-image
       cancel-in-progress: false
+      queue: max
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       # Deletion needs the repository's admin role on the package, which GitHub grants to the publishing repository.
       packages: write
     steps:

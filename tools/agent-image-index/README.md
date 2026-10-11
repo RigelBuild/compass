@@ -34,4 +34,4 @@ to rotate.
 
 ## Retention
 
-The weekly `agent-image-retention` workflow keeps the newest 200 main first-parent image tags, release and unknown tags, off-main tags, lock-pinned images, their index children, and untagged versions younger than seven days. Dispatch the workflow to review a dry-run plan; scheduled runs delete eligible versions. GitHub keeps a deleted version restorable for 30 days.
+The weekly `agent-image-retention` workflow keeps tags for commits in the newest 200 first-parent commits on main, plus tags for queued release runs' 50-commit walks, release and unknown tags, off-main tags, lock-pinned images, their index children, and untagged versions younger than seven days. Dispatch the workflow to review a dry-run plan; scheduled runs delete eligible versions. GitHub keeps a deleted version restorable for 30 days.

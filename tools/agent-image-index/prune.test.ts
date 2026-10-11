@@ -103,6 +103,34 @@ describe("planRetention", () => {
 		expect(plan.keep[1]?.reason).toContain("child of kept index");
 		expect(plan.delete).toHaveLength(0);
 	});
+	test("keeps per-architecture children of an old semver index", () => {
+		const index = version({
+			id: 16,
+			name: `sha256:${"a".repeat(64)}`,
+			tags: ["v2.3.4"],
+		});
+		const amd64 = version({
+			id: 17,
+			name: `sha256:${"b".repeat(64)}`,
+			tags: [`git-${OLD_MAIN_SHA}-amd64`],
+		});
+		const arm64 = version({
+			id: 18,
+			name: `sha256:${"c".repeat(64)}`,
+			tags: [`git-${OLD_MAIN_SHA}-arm64`],
+		});
+		const plan = classify(
+			[index, amd64, arm64],
+			new Map([[index.name, new Set([amd64.name, arm64.name])]]),
+		);
+
+		expect(plan.keep.map(({ version: item }) => item.id)).toEqual([16, 17, 18]);
+		expect(plan.keep.slice(1).map(({ reason }) => reason)).toEqual([
+			`child of kept index ${index.name}`,
+			`child of kept index ${index.name}`,
+		]);
+		expect(plan.delete).toHaveLength(0);
+	});
 	test("keeps the in-window sha tag when a second git tag is malformed", () => {
 		const plan = classify([
 			version({
