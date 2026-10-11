@@ -142,26 +142,12 @@ on:
           - forge
           - visual
 
-# One in-flight run per ref per event action. A superseded push's run is
-# answering a question nobody is asking any more. Both the event and its action
-# are in the key so runs answering different questions about the same ref don't
-# cancel each other: a nightly schedule and a coincident post-merge push
-# (different events). A PR branch's superseded pushes fire
-# `pull_request.synchronize`, so they share one group and collapse to one
-# in-flight run per ref, as intended.
-#
-# `push` and `schedule` payloads have no `action` field, so
-# `${{ github.event.action }}` renders to a constant empty string for them —
-# their grouping is unchanged by this key (every main push still collapses to
-# `ci-<ref>-push-` and still cancels the prior one; a schedule run still
-# coexists with a coincident push via the distinct event name). A base-re-point
-# re-trigger arrives as `workflow_dispatch` on the PR's HEAD branch, so its
-# `github.ref` (`refs/heads/<head>`) differs from the PR's own
-# `pull_request` runs (`refs/pull/<N>/merge`) — no cross-cancel between a
-# re-point run and a concurrent push to that branch — while two re-points of
-# the same PR share a group and the newer supersedes the older.
+# One in-flight run per ref per event: a PR's opened/synchronize/reopened runs
+# share a group, so a newer head cancels an older head's run. `edited` stays off
+# the trigger list, so a body edit cannot cancel a real run. A re-point dispatch
+# runs on refs/heads/<head>, apart from the PR's refs/pull/<N>/merge runs.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name }}-${{ github.event.action }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 # Same toolchain contract as the devenv shell: moon runs the nix tools on PATH,
