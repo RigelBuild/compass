@@ -232,8 +232,20 @@ func TestCheckoutFSCustomerMountPassesThrough(t *testing.T) {
 	}
 }
 
+// A snapshot with no repo has no cold path: the agent could not complete an empty root.
+func TestCheckoutFSSnapshotOnlyMissingSnapshotFails(t *testing.T) {
+	checkout := newCheckoutForTest(t)
+	if _, err := checkout.Materialize(t.Context(), TreeSource{Snapshot: "unknown"}); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Fatalf("Materialize = %v, want ErrSnapshotNotFound", err)
+	}
+}
+
 func TestCheckoutFSRejectsInvalidCustomerMounts(t *testing.T) {
 	unclean := filepath.Join(t.TempDir(), "mount") + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "mount"
+	symlinked := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), symlinked); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name string
 		path string
@@ -241,6 +253,7 @@ func TestCheckoutFSRejectsInvalidCustomerMounts(t *testing.T) {
 		{name: "relative", path: "relative"},
 		{name: "unclean", path: unclean},
 		{name: "missing", path: filepath.Join(t.TempDir(), "missing")},
+		{name: "symlink", path: symlinked},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			checkout := newCheckoutForTest(t)

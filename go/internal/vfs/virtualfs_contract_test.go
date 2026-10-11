@@ -129,21 +129,48 @@ func runVirtualFSContract(t *testing.T, newFS func(t *testing.T) VirtualFS) {
 			})
 		}
 	})
+
+	t.Run("customer mount does not rebind the destination", func(t *testing.T) {
+		contractMountKeepsBinding(t, newFS(t), newSource())
+	})
+}
+
+func contractMountKeepsBinding(t *testing.T, fs VirtualFS, source TreeSource) {
+	t.Helper()
+	bound, err := fs.Materialize(t.Context(), source)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if err := fs.Release(t.Context(), bound); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	mount := t.TempDir()
+	got, err := fs.Materialize(t.Context(), TreeSource{CustomerMount: mount})
+	if err != nil || got != mount {
+		t.Fatalf("Materialize(mount) = %q, %v; want %q", got, err, mount)
+	}
+	if err := fs.Release(t.Context(), mount); err != nil {
+		t.Fatalf("Release(mount): %v", err)
+	}
+	again, err := fs.Materialize(t.Context(), source)
+	if err != nil || again != bound {
+		t.Fatalf("Materialize after mount = %q, %v; want bound root %q", again, err, bound)
+	}
 }
 
 type fakeVirtualFS struct {
 	root   string
-	active bool
+	active string
 }
 
 func (f *fakeVirtualFS) Materialize(_ context.Context, src TreeSource) (string, error) {
 	if src.CustomerMount != "" && (src.Repo != "" || src.Snapshot != "" || len(src.Sparse) != 0) {
 		return "", ErrInvalidTreeSource
 	}
-	if src.CustomerMount == "" && src.Snapshot == "" && src.Repo == "" {
+	if src.CustomerMount == "" && src.Repo == "" {
 		return "", ErrInvalidTreeSource
 	}
-	if f.active {
+	if f.active != "" {
 		return "", ErrAlreadyMaterialized
 	}
 	root := f.root
@@ -152,15 +179,14 @@ func (f *fakeVirtualFS) Materialize(_ context.Context, src TreeSource) (string, 
 	} else if err := os.MkdirAll(f.root, 0o700); err != nil {
 		return "", err
 	}
-	f.root = root
-	f.active = true
+	f.active = root
 	return root, nil
 }
 
 func (f *fakeVirtualFS) Release(_ context.Context, root string) error {
-	if !f.active || root != f.root {
+	if f.active == "" || root != f.active {
 		return ErrNotMaterialized
 	}
-	f.active = false
+	f.active = ""
 	return nil
 }

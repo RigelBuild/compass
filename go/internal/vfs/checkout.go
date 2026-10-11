@@ -64,17 +64,8 @@ func (f *CheckoutFS) Materialize(ctx context.Context, src TreeSource) (string, e
 	case src.CustomerMount != "":
 		root = src.CustomerMount
 	case src.Snapshot != "":
-		if err := f.store.RestoreSnapshot(ctx, src.Snapshot, f.vol); err != nil {
-			// A warm reattached tree beats a snapshot; restore never overwrites volume contents.
-			if errors.Is(err, ErrVolumeNotEmpty) {
-				break
-			}
-			if !errors.Is(err, ErrSnapshotNotFound) {
-				return "", fmt.Errorf("vfs: restoring source snapshot: %w", err)
-			}
-			if err := os.MkdirAll(f.root, volumeDirMode); err != nil {
-				return "", fmt.Errorf("vfs: preparing cold volume root %q: %w", f.root, err)
-			}
+		if err := f.restoreOrCold(ctx, src); err != nil {
+			return "", err
 		}
 	case src.Repo != "":
 		if err := os.MkdirAll(f.root, volumeDirMode); err != nil {
@@ -98,6 +89,24 @@ func (f *CheckoutFS) Release(_ context.Context, root string) error {
 	return nil
 }
 
+func (f *CheckoutFS) restoreOrCold(ctx context.Context, src TreeSource) error {
+	err := f.store.RestoreSnapshot(ctx, src.Snapshot, f.vol)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrVolumeNotEmpty):
+		// A warm reattached tree beats a snapshot; restore never overwrites volume contents.
+		return nil
+	case !errors.Is(err, ErrSnapshotNotFound) || src.Repo == "":
+		// Without a repo the agent has nothing to complete an empty root from.
+		return fmt.Errorf("vfs: restoring source snapshot: %w", err)
+	}
+	if err := os.MkdirAll(f.root, volumeDirMode); err != nil {
+		return fmt.Errorf("vfs: preparing cold volume root %q: %w", f.root, err)
+	}
+	return nil
+}
+
 func validateTreeSource(src TreeSource) error {
 	if src.CustomerMount != "" {
 		if src.Repo != "" || src.Snapshot != "" || len(src.Sparse) != 0 {
@@ -106,12 +115,13 @@ func validateTreeSource(src TreeSource) error {
 		if !filepath.IsAbs(src.CustomerMount) || filepath.Clean(src.CustomerMount) != src.CustomerMount {
 			return fmt.Errorf("%w: customer mount must be an absolute clean path", ErrInvalidTreeSource)
 		}
-		info, err := os.Stat(src.CustomerMount)
+		// A symlinked mount root would hand the agent whatever directory the link names.
+		info, err := os.Lstat(src.CustomerMount)
 		if err != nil {
 			return fmt.Errorf("%w: inspecting customer mount: %w", ErrInvalidTreeSource, err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("%w: customer mount is not a directory", ErrInvalidTreeSource)
+			return fmt.Errorf("%w: customer mount is not a directory (symlinks are rejected)", ErrInvalidTreeSource)
 		}
 		return nil
 	}
