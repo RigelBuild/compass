@@ -22,9 +22,13 @@ follow (and mute) it independently.
 - **Post** with `comms_post_message`. It takes a `topic` name; an unknown name
   creates that topic, so you name the thread you want simply by posting to it.
   Reuse an existing topic name to continue a thread.
-- **Read** with `comms_list_messages`. Output is grouped by topic, so you scan a
-  channel topic-by-topic rather than as one flat stream. (There is no separate
-  inbox tool — reading is always `comms_list_messages`.)
+- **Read messages** with `comms_list_messages`; omit `topic` for all topics or
+  filter by topic name.
+- **List topics** with `comms_list_topics` to inspect names, message counts,
+  last activity, and archived status.
+- Message output is grouped by topic, so you scan a channel topic-by-topic rather
+  than as one flat stream. (There is no separate inbox tool — reading is always
+  `comms_list_messages`.)
 - You have a HOME channel for talking with the operator; you cannot leave it.
 
 ## Channel and group management

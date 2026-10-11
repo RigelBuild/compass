@@ -358,6 +358,9 @@ message Topic {
   string created_by_account_id = 5;
   // Archived topics are hidden from the default index but keep their messages.
   bool archived = 6;
+  // Set only by the agent topic list; absent elsewhere.
+  optional uint64 message_count = 7;
+  optional int64 last_message_at_unix_ms = 8;
 }
 
 // ── Messages + content blocks (D5) ─────────────────────────────────────────

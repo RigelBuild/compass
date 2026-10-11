@@ -261,3 +261,161 @@ func TestListAsAccountByNameUnknownChannelIsNotFound(t *testing.T) {
 	})
 	connectCodeIs(t, err, connect.CodeNotFound, "ListAsAccountByName(unknown channel)")
 }
+
+func TestListAsAccountByNameTopicFilter(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+	ch, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "war-room", Kind: store.ChannelKindChannel,
+		MemberAccountIDs: []store.AccountID{agent.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	post := func(topic, text string) string {
+		t.Helper()
+		resp, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
+			Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+			Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: topic},
+			CreateTopic: true,
+			Blocks:      textBlocks(text),
+		})
+		if err != nil {
+			t.Fatalf("PostAsAccount(%s): %v", topic, err)
+		}
+		return resp.GetMessage().GetId()
+	}
+	deployID := post("Deploy", "deploy message")
+	post("Design", "design message")
+
+	deploy, err := st.MessageByID(ctx, deployID)
+	if err != nil {
+		t.Fatalf("MessageByID(%s): %v", deployID, err)
+	}
+	listed, err := svc.ListAsAccountByName(ctx, agent.ID, &compassv1.ListMessagesRequest{
+		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: "war-room"},
+		TopicId:   deploy.TopicID,
+	})
+	if err != nil {
+		t.Fatalf("ListAsAccountByName: %v", err)
+	}
+	if got := listed.GetMessages(); len(got) != 1 || got[0].GetId() != deployID {
+		t.Fatalf("topic-filtered messages = %+v, want only %q", got, deployID)
+	}
+}
+
+func TestListTopicsAsAccountByNameUsesHomeChannel(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	agent := mustAgent(t, st, mustUser(t, st, "owner").ID, "agent")
+	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(agent.Agent.HomeChannelID)},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "home topic"},
+		CreateTopic: true, Blocks: textBlocks("home"),
+	})
+	if err != nil {
+		t.Fatalf("PostAsAccount: %v", err)
+	}
+	resp, err := svc.ListTopicsAsAccountByName(ctx, agent.ID, &compassv1.ListTopicsRequest{})
+	if err != nil {
+		t.Fatalf("ListTopicsAsAccountByName(home): %v", err)
+	}
+	if len(resp.GetTopics()) != 1 || resp.GetTopics()[0].GetId() != posted.GetMessage().GetTopicId() {
+		t.Fatalf("home topics = %+v, want posted topic %q", resp.GetTopics(), posted.GetMessage().GetTopicId())
+	}
+	if got := resp.GetTopics()[0].GetMessageCount(); got != 1 {
+		t.Fatalf("home topic message_count = %d, want 1", got)
+	}
+}
+
+func TestListTopicsAsAccountByNameResolvesNamedChannel(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+	ch, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "war-room", Kind: store.ChannelKindChannel, MemberAccountIDs: []store.AccountID{agent.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "deploy"},
+		CreateTopic: true, Blocks: textBlocks("deployment"),
+	})
+	if err != nil {
+		t.Fatalf("PostAsAccount: %v", err)
+	}
+	resp, err := svc.ListTopicsAsAccountByName(ctx, agent.ID, &compassv1.ListTopicsRequest{ChannelId: "war-room"})
+	if err != nil {
+		t.Fatalf("ListTopicsAsAccountByName(named): %v", err)
+	}
+	if len(resp.GetTopics()) != 1 || resp.GetTopics()[0].GetId() != posted.GetMessage().GetTopicId() {
+		t.Fatalf("named topics = %+v, want posted topic %q", resp.GetTopics(), posted.GetMessage().GetTopicId())
+	}
+	if got := resp.GetTopics()[0].GetMessageCount(); got != 1 {
+		t.Fatalf("topic message_count = %d, want 1", got)
+	}
+	if got := resp.GetTopics()[0].GetLastMessageAtUnixMs(); got != posted.GetMessage().GetAtUnixMs() {
+		t.Fatalf("topic last_message_at = %d, want %d", got, posted.GetMessage().GetAtUnixMs())
+	}
+}
+
+func TestListTopicsAsAccountByNameRejectsNonMember(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+	if _, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{Name: "private", Kind: store.ChannelKindChannel}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	_, err := svc.ListTopicsAsAccountByName(ctx, agent.ID, &compassv1.ListTopicsRequest{ChannelId: "private"})
+	connectCodeIs(t, err, connect.CodeNotFound, "ListTopicsAsAccountByName(non-member)")
+}
+
+func TestListTopicsAsAccountByNameHonorsIncludeArchived(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(agent.Agent.HomeChannelID)},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "archived"},
+		CreateTopic: true, Blocks: textBlocks("old"),
+	})
+	if err != nil {
+		t.Fatalf("PostAsAccount: %v", err)
+	}
+	archived := true
+	if _, err := svc.UpdateTopic(WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.UpdateTopicRequest{
+		TopicId: posted.GetMessage().GetTopicId(), Archived: &archived,
+	})); err != nil {
+		t.Fatalf("UpdateTopic(archive): %v", err)
+	}
+	for _, tc := range []struct {
+		name            string
+		includeArchived bool
+		wantCount       int
+	}{{name: "default excludes", wantCount: 0}, {name: "include archived", includeArchived: true, wantCount: 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := svc.ListTopicsAsAccountByName(ctx, agent.ID, &compassv1.ListTopicsRequest{IncludeArchived: tc.includeArchived})
+			if err != nil {
+				t.Fatalf("ListTopicsAsAccountByName: %v", err)
+			}
+			if len(resp.GetTopics()) != tc.wantCount {
+				t.Fatalf("topics = %d, want %d", len(resp.GetTopics()), tc.wantCount)
+			}
+			if tc.wantCount == 1 && !resp.GetTopics()[0].GetArchived() {
+				t.Fatal("included topic is not marked archived")
+			}
+			if tc.wantCount == 1 && (resp.GetTopics()[0].MessageCount == nil || resp.GetTopics()[0].LastMessageAtUnixMs == nil) {
+				t.Fatal("included topic lacks computed stats")
+			}
+		})
+	}
+}

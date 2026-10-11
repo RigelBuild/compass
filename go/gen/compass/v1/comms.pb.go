@@ -1142,9 +1142,12 @@ type Topic struct {
 	// The account that first addressed the topic (created it).
 	CreatedByAccountId string `protobuf:"bytes,5,opt,name=created_by_account_id,json=createdByAccountId,proto3" json:"created_by_account_id,omitempty"`
 	// Archived topics are hidden from the default index but keep their messages.
-	Archived      bool `protobuf:"varint,6,opt,name=archived,proto3" json:"archived,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Archived bool `protobuf:"varint,6,opt,name=archived,proto3" json:"archived,omitempty"`
+	// Set only by the agent topic list; absent elsewhere.
+	MessageCount        *uint64 `protobuf:"varint,7,opt,name=message_count,json=messageCount,proto3,oneof" json:"message_count,omitempty"`
+	LastMessageAtUnixMs *int64  `protobuf:"varint,8,opt,name=last_message_at_unix_ms,json=lastMessageAtUnixMs,proto3,oneof" json:"last_message_at_unix_ms,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *Topic) Reset() {
@@ -1217,6 +1220,20 @@ func (x *Topic) GetArchived() bool {
 		return x.Archived
 	}
 	return false
+}
+
+func (x *Topic) GetMessageCount() uint64 {
+	if x != nil && x.MessageCount != nil {
+		return *x.MessageCount
+	}
+	return 0
+}
+
+func (x *Topic) GetLastMessageAtUnixMs() int64 {
+	if x != nil && x.LastMessageAtUnixMs != nil {
+		return *x.LastMessageAtUnixMs
+	}
+	return 0
 }
 
 // A message in a channel — the persisted unit of the comms layer, held in the
@@ -5585,7 +5602,7 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x14pinned_by_account_id\x18\x04 \x01(\tR\x11pinnedByAccountId\"J\n" +
 	"\x0eAgentWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12(\n" +
-	"\x10agent_account_id\x18\x02 \x01(\tR\x0eagentAccountId\"\xc6\x01\n" +
+	"\x10agent_account_id\x18\x02 \x01(\tR\x0eagentAccountId\"\xd9\x02\n" +
 	"\x05Topic\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -5593,7 +5610,11 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12+\n" +
 	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\x121\n" +
 	"\x15created_by_account_id\x18\x05 \x01(\tR\x12createdByAccountId\x12\x1a\n" +
-	"\barchived\x18\x06 \x01(\bR\barchived\"\x99\x02\n" +
+	"\barchived\x18\x06 \x01(\bR\barchived\x12(\n" +
+	"\rmessage_count\x18\a \x01(\x04H\x00R\fmessageCount\x88\x01\x01\x129\n" +
+	"\x17last_message_at_unix_ms\x18\b \x01(\x03H\x01R\x13lastMessageAtUnixMs\x88\x01\x01B\x10\n" +
+	"\x0e_message_countB\x1a\n" +
+	"\x18_last_message_at_unix_ms\"\x99\x02\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\btopic_id\x18\x02 \x01(\tR\atopicId\x12*\n" +
@@ -6157,6 +6178,7 @@ func file_compass_v1_comms_proto_init() {
 		(*Account_Agent)(nil),
 		(*Account_System)(nil),
 	}
+	file_compass_v1_comms_proto_msgTypes[8].OneofWrappers = []any{}
 	file_compass_v1_comms_proto_msgTypes[10].OneofWrappers = []any{
 		(*MessageBlock_Text)(nil),
 		(*MessageBlock_Ask)(nil),

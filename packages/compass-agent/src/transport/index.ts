@@ -38,7 +38,7 @@ export const SESSION_BLOB_PUT_TIMEOUT_MS = 30_000;
  * the frame/control spine the socket sink + source ride:
  *
  *  - `comms` — the agent-initiated comms call, consumed by `CommsBroker`
- *    (comms.ts), which all eleven native comms tools call through.
+ *    (comms.ts), which all twelve native comms tools call through.
  *  - `publishSpine()` — the single per-session Publish client-stream, memoized:
  *    the socket FrameSink pushes trace/session frames onto it and the
  *    ControlSource pushes control-plane ack frames onto the SAME spine, so the

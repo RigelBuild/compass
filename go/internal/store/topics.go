@@ -18,24 +18,66 @@ import (
 // merge), never a hint the channel exists or an empty list it could mistake for
 // "no topics".
 func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID string, includeArchived bool) ([]Topic, error) {
-	if channelID == "" {
-		return nil, fmt.Errorf("%w: list topics channel is required", ErrInvalidArgument)
-	}
-	member, err := isChannelMember(ctx, s.scopedPool(), AccountID(callerAccountID), ChannelID(channelID))
-	if err != nil {
+	if err := s.requireTopicChannelMember(ctx, callerAccountID, channelID); err != nil {
 		return nil, err
 	}
-	if !member {
-		// D9 merge: a non-participant cannot tell an unauthorized channel from a
-		// nonexistent one, so the refusal enumerates nothing.
-		return nil, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
-	}
-
 	rows, err := s.q.ListTopics(ctx, db.ListTopicsParams{ChannelID: channelID, Column2: includeArchived})
 	if err != nil {
 		return nil, fmt.Errorf("store: list topics: %w", err)
 	}
 	return topicsFromRows(rows), nil
+}
+
+// ListTopicsWithStats adds message count and last activity for the agent topic index.
+func (s *Store) ListTopicsWithStats(ctx context.Context, callerAccountID, channelID string, includeArchived bool) ([]Topic, error) {
+	if err := s.requireTopicChannelMember(ctx, callerAccountID, channelID); err != nil {
+		return nil, err
+	}
+	rows, err := s.q.ListTopicsWithStats(ctx, db.ListTopicsWithStatsParams{ChannelID: channelID, Column2: includeArchived})
+	if err != nil {
+		return nil, fmt.Errorf("store: list topics with stats: %w", err)
+	}
+	return topicsFromStatsRows(rows), nil
+}
+
+// requireTopicChannelMember keeps both topic list paths on the D9 read gate.
+func (s *Store) requireTopicChannelMember(ctx context.Context, callerAccountID, channelID string) error {
+	if channelID == "" {
+		return fmt.Errorf("%w: list topics channel is required", ErrInvalidArgument)
+	}
+	member, err := isChannelMember(ctx, s.scopedPool(), AccountID(callerAccountID), ChannelID(channelID))
+	if err != nil {
+		return err
+	}
+	if !member {
+		// D9 merge: a non-participant cannot tell an unauthorized channel from a
+		// nonexistent one, so the refusal enumerates nothing.
+		return fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+	}
+	return nil
+}
+
+func topicsFromStatsRows(rows []db.ListTopicsWithStatsRow) []Topic {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]Topic, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Topic{
+			ID:                 row.ID,
+			ChannelID:          row.ChannelID,
+			Name:               row.Name,
+			CreatedByAccountID: row.CreatedByAccountID,
+			CreatedAtUnixMS:    row.CreatedAtUnixMs,
+			Archived:           row.Archived,
+			LastSeq:            row.LastSeq,
+			Stats: &TopicStats{
+				MessageCount:        row.MessageCount,
+				LastMessageAtUnixMS: row.LastMessageAtUnixMs,
+			},
+		})
+	}
+	return out
 }
 
 // UpdateTopic renames and/or archives a topic under an acting account, or —

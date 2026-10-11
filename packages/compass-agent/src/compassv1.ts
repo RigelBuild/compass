@@ -202,6 +202,10 @@ export {
 	ListMessagesRequestSchema,
 	type ListMessagesResponse,
 	ListMessagesResponseSchema,
+	type ListTopicsRequest,
+	ListTopicsRequestSchema,
+	type ListTopicsResponse,
+	ListTopicsResponseSchema,
 	// Conversation payloads (comms surface). The AgentFrame reuses MessagePosted/MessageUpdated
 	// (each wraps a Message carrying MessageBlocks) as its conversation variants. The MessageBlock
 	// oneof carries the durable variants (text + ask); trace variants ride the typed SessionEvent.
@@ -229,6 +233,8 @@ export {
 	type RosterEntry,
 	RosterEntrySchema,
 	RosterScope,
+	type Topic,
+	TopicSchema,
 	type UpdateChannelMembersRequest,
 	UpdateChannelMembersRequestSchema,
 	type UpdateChannelMembersResponse,

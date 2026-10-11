@@ -113,6 +113,7 @@ type armCase struct {
 func commsArmCases() []armCase {
 	post := &compassv1.PostMessageRequest{}
 	list := &compassv1.ListMessagesRequest{}
+	listTopics := &compassv1.ListTopicsRequest{}
 	roster := &compassv1.GetRosterRequest{}
 	pin := &compassv1.UpdatePinnedBoardRequest{}
 	createChannel := &compassv1.CreateChannelRequest{}
@@ -122,6 +123,7 @@ func commsArmCases() []armCase {
 
 	postResp := &compassv1.PostMessageResponse{}
 	listResp := &compassv1.ListMessagesResponse{}
+	listTopicsResp := &compassv1.ListTopicsResponse{}
 	rosterResp := &compassv1.GetRosterResponse{}
 	pinResp := &compassv1.UpdatePinnedBoardResponse{}
 	createChannelResp := &compassv1.CreateChannelResponse{}
@@ -147,6 +149,15 @@ func commsArmCases() []armCase {
 			want:     list,
 			gotResp:  func(r *compassv1internal.CommsCallResult) any { return r.GetList() },
 			wantResp: listResp,
+		},
+		{
+			name:     "list_topics",
+			request:  relayListTopics("sess-1", "tc-topics", listTopics),
+			seed:     func(c *fakeCommsCaller) { c.topicListResp = listTopicsResp },
+			field:    func(c commsCall) any { return c.topicList },
+			want:     listTopics,
+			gotResp:  func(r *compassv1internal.CommsCallResult) any { return r.GetListTopics() },
+			wantResp: listTopicsResp,
 		},
 		{
 			name:     "roster",

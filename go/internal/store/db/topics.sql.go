@@ -92,6 +92,64 @@ func (q *Queries) ListTopics(ctx context.Context, arg ListTopicsParams) ([]Topic
 	return items, nil
 }
 
+const listTopicsWithStats = `-- name: ListTopicsWithStats :many
+SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id,
+       (SELECT count(*) FROM messages m WHERE m.topic_id = t.id) AS message_count,
+       COALESCE((SELECT m.at_unix_ms FROM messages m WHERE m.topic_id = t.id ORDER BY m.seq DESC LIMIT 1), 0)::bigint AS last_message_at_unix_ms
+FROM topics t
+WHERE channel_id = $1 AND ($2 OR NOT archived)
+ORDER BY last_seq DESC, created_at_unix_ms DESC, id
+`
+
+type ListTopicsWithStatsParams struct {
+	ChannelID string
+	Column2   interface{}
+}
+
+type ListTopicsWithStatsRow struct {
+	ID                  string
+	ChannelID           string
+	Name                string
+	CreatedByAccountID  string
+	CreatedAtUnixMs     int64
+	Archived            bool
+	LastSeq             int64
+	TenantID            string
+	MessageCount        int64
+	LastMessageAtUnixMs int64
+}
+
+func (q *Queries) ListTopicsWithStats(ctx context.Context, arg ListTopicsWithStatsParams) ([]ListTopicsWithStatsRow, error) {
+	rows, err := q.db.Query(ctx, listTopicsWithStats, arg.ChannelID, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTopicsWithStatsRow
+	for rows.Next() {
+		var i ListTopicsWithStatsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChannelID,
+			&i.Name,
+			&i.CreatedByAccountID,
+			&i.CreatedAtUnixMs,
+			&i.Archived,
+			&i.LastSeq,
+			&i.TenantID,
+			&i.MessageCount,
+			&i.LastMessageAtUnixMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const mergeTopicLastSeq = `-- name: MergeTopicLastSeq :exec
 UPDATE topics dst SET last_seq = GREATEST(dst.last_seq, src.last_seq)
 FROM topics src WHERE dst.id = $1 AND src.id = $2

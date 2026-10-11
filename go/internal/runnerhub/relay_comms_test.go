@@ -51,6 +51,16 @@ func relayList(sessionID, callID string, list *compassv1.ListMessagesRequest) *c
 	}
 }
 
+func relayListTopics(sessionID, callID string, topics *compassv1.ListTopicsRequest) *compassv1internal.RelayCommsCallRequest {
+	return &compassv1internal.RelayCommsCallRequest{
+		SessionId: sessionID,
+		Call: &compassv1internal.CommsCallRequest{
+			CallId: callID,
+			Call:   &compassv1internal.CommsCallRequest_ListTopics{ListTopics: topics},
+		},
+	}
+}
+
 // bindLiveSession binds the canonical session under test to its account through
 // the real Provision->Start promotion path (bindContainer then promoteSession),
 // the same two-step the command handlers drive. Every case binds the same
@@ -206,6 +216,27 @@ func TestRelayCommsCallHappyListForwardsUnderBoundAccountAndStampsCallID(t *test
 	}
 	if resp.GetResult().GetList() != comms.listResp {
 		t.Fatalf("response list result is not the caller's response")
+	}
+}
+
+func TestRelayCommsCallHappyListTopicsForwardsUnderBoundAccount(t *testing.T) {
+	hub, comms := newHubWithComms()
+	comms.topicListResp = &compassv1.ListTopicsResponse{Topics: []*compassv1.Topic{{Id: "topic-1"}}}
+	bindLiveSession(hub)
+	req := &compassv1.ListTopicsRequest{ChannelId: "war-room", IncludeArchived: true}
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayListTopics("sess-1", "tc-topics", req))
+	if err != nil {
+		t.Fatalf("RelayCommsCall(list_topics): %v", err)
+	}
+	calls := comms.snapshot()
+	if len(calls) != 1 || calls[0].account != "acct-agent" || calls[0].topicList != req {
+		t.Fatalf("topic-list calls = %+v, want the exact request under the bound account", calls)
+	}
+	if got := resp.GetResult().GetCallId(); got != "tc-topics" {
+		t.Fatalf("response call_id = %q, want tc-topics", got)
+	}
+	if resp.GetResult().GetListTopics() != comms.topicListResp {
+		t.Fatal("response list_topics result is not the caller's response")
 	}
 }
 

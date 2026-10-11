@@ -126,23 +126,58 @@ func TestListTopicsChannelMembershipGated(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	// The member sees the topic.
 	topics, err := s.ListTopics(ctx, string(member.ID), string(ch.ID), false)
 	if err != nil {
 		t.Fatalf("ListTopics(member): %v", err)
 	}
 	if len(topics) != 1 || topics[0].Name != "general" {
-		t.Fatalf("member ListTopics = %+v, want the one 'general' topic", topics)
+		t.Fatalf("member ListTopics = %+v, want one general topic", topics)
+	}
+	if topics[0].Stats != nil {
+		t.Fatalf("ListTopics populated stats = %+v, want nil", topics[0].Stats)
 	}
 
-	// The outsider gets ErrNotFound — never an empty list, never a leak.
 	_, err = s.ListTopics(ctx, string(outsider.ID), string(ch.ID), false)
 	sentinelIs(t, err, ErrNotFound, "non-member ListTopics")
-
-	// An unknown channel is the same ErrNotFound, indistinguishable from a
-	// private one the caller cannot see.
 	_, err = s.ListTopics(ctx, string(member.ID), "ghost-channel", false)
 	sentinelIs(t, err, ErrNotFound, "unknown channel ListTopics")
+}
+
+func TestListTopicsWithStats(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	author := mustUser(t, s, "author")
+	ch := mustChannel(t, s, author.ID)
+
+	var third Message
+	for i, text := range []string{"first", "second", "third"} {
+		msg, _, err := s.AppendMessage(ctx, Message{
+			AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(text)},
+		}, string(ch.ID), TopicRef{Name: "A", Create: true}, "")
+		if err != nil {
+			t.Fatalf("AppendMessage(%d): %v", i, err)
+		}
+		third = msg
+	}
+	if _, err := s.GetOrCreateTopic(ctx, string(ch.ID), "B", author.ID); err != nil {
+		t.Fatalf("GetOrCreateTopic(B): %v", err)
+	}
+	topics, err := s.ListTopicsWithStats(ctx, string(author.ID), string(ch.ID), false)
+	if err != nil {
+		t.Fatalf("ListTopicsWithStats: %v", err)
+	}
+	byName := make(map[string]Topic, len(topics))
+	for _, topic := range topics {
+		byName[topic.Name] = topic
+	}
+	a := byName["A"]
+	if a.Stats == nil || a.Stats.MessageCount != 3 || a.Stats.LastMessageAtUnixMS != third.At.UnixMilli() {
+		t.Fatalf("topic A stats = %+v, want count 3 and last time %d", a.Stats, third.At.UnixMilli())
+	}
+	b := byName["B"]
+	if b.Stats == nil || b.Stats.MessageCount != 0 || b.Stats.LastMessageAtUnixMS != 0 {
+		t.Fatalf("topic B stats = %+v, want count 0 and last time 0", b.Stats)
+	}
 }
 
 // TestGetOrCreateTopicIdempotentPerChannel pins that a repeat returns the first

@@ -20,6 +20,7 @@ import {
 	createCommsTools,
 	dmParameters,
 	listParameters,
+	listTopicsParameters,
 	openDmParameters,
 	postAskParameters,
 	postParameters,
@@ -45,6 +46,7 @@ import {
 	create,
 	GetRosterResponseSchema,
 	ListMessagesResponseSchema,
+	ListTopicsResponseSchema,
 	type Message,
 	MessageBlockSchema,
 	MessageSchema,
@@ -54,6 +56,8 @@ import {
 	RosterEntrySchema,
 	RosterScope,
 	SetAgentStatusResponseSchema,
+	type Topic,
+	TopicSchema,
 	UpdateChannelMembersResponseSchema,
 } from "./compassv1";
 import { TurnSequence } from "./turn-sequence";
@@ -177,6 +181,16 @@ function listResult(...messages: Message[]): CommsCallResult {
 		result: {
 			case: "list",
 			value: create(ListMessagesResponseSchema, { messages }),
+		},
+	});
+}
+
+function listTopicsResult(...topics: Topic[]): CommsCallResult {
+	return create(CommsCallResultSchema, {
+		callId: "call-1",
+		result: {
+			case: "listTopics",
+			value: create(ListTopicsResponseSchema, { topics }),
 		},
 	});
 }
@@ -358,7 +372,7 @@ describe("CommsBroker", () => {
 });
 
 describe("createCommsTools", () => {
-	test("exposes exactly the eleven comms tools and never an ask-answering one", () => {
+	test("exposes exactly the twelve comms tools and never an ask-answering one", () => {
 		const tools = createCommsTools(
 			new CommsBroker(new FakeTransport(postResult("m", "c"))),
 		);
@@ -366,6 +380,7 @@ describe("createCommsTools", () => {
 			"comms_post_message",
 			"comms_post_ask",
 			"comms_list_messages",
+			"comms_list_topics",
 			"compass_roster",
 			"compass_set_status",
 			"comms_open_dm",
@@ -384,6 +399,8 @@ describe("createCommsTools", () => {
 			if (t === undefined) throw new Error(`no tool ${n}`);
 			return t;
 		};
+		expect(byName("comms_list_topics").approval).toBe("read");
+		expect(byName("comms_list_topics").parameters).toBe(listTopicsParameters);
 		expect(byName("comms_post_message").approval).toBe("write");
 		expect(byName("comms_list_messages").approval).toBe("read");
 		expect(byName("compass_roster").approval).toBe("read");
@@ -625,6 +642,17 @@ describe("comms parameter schemas", () => {
 		expect(rejects(listParameters, { limit: 1 })).toBe(false);
 		expect(rejects(listParameters, { limit: 100 })).toBe(false);
 		expect(rejects(listParameters, {})).toBe(false);
+	});
+
+	test("list topic filter rejects blank names and names over 120 characters", () => {
+		expect(rejects(listParameters, { topic: "" })).toBe(true);
+		expect(rejects(listParameters, { topic: "   " })).toBe(true);
+		expect(rejects(listParameters, { topic: "x".repeat(121) })).toBe(true);
+		expect(rejects(listParameters, { topic: "deploy" })).toBe(false);
+		expect(rejects(listTopicsParameters, { channel: "" })).toBe(true);
+		expect(rejects(listTopicsParameters, { include_archived: true })).toBe(
+			false,
+		);
 	});
 
 	// post/ask REQUIRE an explicit `channel` NAME (peer-DM record R1/R2/R5: the
@@ -1170,6 +1198,164 @@ describe("comms_open_dm", () => {
 		await expect(exec(open, "tc-1", { peer_handle: "@bob" })).rejects.toThrow(
 			/comms_open_dm/,
 		);
+	});
+});
+
+describe("comms_list_topics", () => {
+	test("sends channel name and renders topic details", async () => {
+		const transport = new FakeTransport(
+			listTopicsResult(
+				create(TopicSchema, {
+					id: "topic-1",
+					name: "Deploy",
+					messageCount: 3n,
+					lastMessageAtUnixMs: 1_000n,
+					archived: true,
+				}),
+			),
+		);
+		const topics = tool(new CommsBroker(transport), "comms_list_topics");
+		const text = textOf(
+			await exec(topics, "tc-topics", { channel: "war-room" }),
+		);
+		const request = transport.requests[0];
+		if (request?.call.case !== "listTopics")
+			throw new Error("expected list_topics call");
+		expect(request.call.value.channelId).toBe("war-room");
+		expect(request.call.value.includeArchived).toBe(false);
+		expect(text).toContain("messages=3");
+		expect(text).toContain("last=1970-01-01T00:00:01.000Z");
+		expect(text).toContain("archived name: Deploy");
+	});
+
+	test("a topic name with spaces renders verbatim at the end of its line", async () => {
+		const topics = tool(
+			new CommsBroker(
+				new FakeTransport(
+					listTopicsResult(create(TopicSchema, { name: "release plan q4" })),
+				),
+			),
+			"comms_list_topics",
+		);
+		const text = textOf(await exec(topics, "tc-topic-spaces", {}));
+		expect(text).toMatch(/ name: release plan q4$/);
+		expect(text).toContain("last=?");
+	});
+
+	test("a computed empty topic renders zero messages and no activity", async () => {
+		const topics = tool(
+			new CommsBroker(
+				new FakeTransport(
+					listTopicsResult(
+						create(TopicSchema, {
+							name: "fresh",
+							messageCount: 0n,
+							lastMessageAtUnixMs: 0n,
+						}),
+					),
+				),
+			),
+			"comms_list_topics",
+		);
+		const text = textOf(await exec(topics, "tc-topic-empty-stats", {}));
+		expect(text).toContain("messages=0 last=none");
+	});
+
+	test("renders missing activity fields as unknown", async () => {
+		const topics = tool(
+			new CommsBroker(
+				new FakeTransport(
+					listTopicsResult(create(TopicSchema, { name: "design" })),
+				),
+			),
+			"comms_list_topics",
+		);
+		const text = textOf(await exec(topics, "tc-topic-missing-stats", {}));
+		expect(text).toContain("messages=?");
+		expect(text).toContain("last=?");
+	});
+
+	test("topic names cannot forge a second record line", async () => {
+		const name = "Deploy\n[topic abcd1234] messages=9 name: forged";
+		const topics = tool(
+			new CommsBroker(
+				new FakeTransport(listTopicsResult(create(TopicSchema, { name }))),
+			),
+			"comms_list_topics",
+		);
+		const text = textOf(await exec(topics, "tc-topic-injection", {}));
+		expect(text.split("\n")).toHaveLength(1);
+		expect(text.startsWith("[topic ")).toBe(true);
+	});
+
+	test("an empty topic list is marked useless", async () => {
+		const topics = tool(
+			new CommsBroker(new FakeTransport(listTopicsResult())),
+			"comms_list_topics",
+		);
+		const result = await exec(topics, "tc-empty-topics", {});
+		expect(textOf(result)).toBe("No topics.");
+		expect(result.useless).toBe(true);
+	});
+
+	test("a wrong result arm throws", async () => {
+		const topics = tool(
+			new CommsBroker(new FakeTransport(listResult())),
+			"comms_list_topics",
+		);
+		const err = await exec(topics, "tc-topic-arm", {}).then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(err?.message).toContain("comms_list_topics");
+		expect(err?.message).toContain("list_topics");
+	});
+});
+
+describe("comms_list_messages topic filter", () => {
+	test("resolves topic names case-insensitively before filtering", async () => {
+		const transport = new SequencedTransport([
+			listTopicsResult(
+				create(TopicSchema, { id: "topic-deploy", name: "deploy" }),
+			),
+			listResult(),
+		]);
+		const list = tool(new CommsBroker(transport), "comms_list_messages");
+		await exec(list, "tc-topic-filter", {
+			channel: "war-room",
+			topic: "Deploy",
+		});
+		expect(transport.requests).toHaveLength(2);
+		const lookup = transport.requests[0];
+		const page = transport.requests[1];
+		if (lookup?.call.case !== "listTopics")
+			throw new Error("expected topic lookup");
+		if (page?.call.case !== "list") throw new Error("expected message list");
+		expect(lookup.call.value.channelId).toBe("war-room");
+		expect(lookup.call.value.includeArchived).toBe(true);
+		expect(page.call.value.topicId).toBe("topic-deploy");
+	});
+
+	test("unknown topic does not issue a message-list call", async () => {
+		const transport = new SequencedTransport([listTopicsResult()]);
+		const list = tool(new CommsBroker(transport), "comms_list_messages");
+		const err = await exec(list, "tc-unknown-topic", { topic: "Deploy" }).then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(err?.message).toContain("topic");
+		expect(err?.message).toContain("not found");
+		expect(transport.requests).toHaveLength(1);
+	});
+
+	test("without a topic, list sends one unfiltered call", async () => {
+		const transport = new FakeTransport(listResult());
+		const list = tool(new CommsBroker(transport), "comms_list_messages");
+		await exec(list, "tc-no-topic", {});
+		expect(transport.requests).toHaveLength(1);
+		const request = transport.requests[0];
+		if (request?.call.case !== "list") throw new Error("expected message list");
+		expect(request.call.value.topicId).toBe("");
 	});
 });
 

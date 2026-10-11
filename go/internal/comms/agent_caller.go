@@ -146,6 +146,7 @@ func (c *Comms) ListAsAccount(
 		Limit:           req.GetLimit(),
 		BeforeMessageId: req.GetBeforeMessageId(),
 		SnapshotSeq:     req.GetSnapshotSeq(),
+		TopicId:         req.GetTopicId(),
 	}
 	resp, err := c.ListMessages(WithActor(ctx, account), connect.NewRequest(listReq))
 	if err != nil {
@@ -225,8 +226,39 @@ func (c *Comms) ListAsAccountByName(
 		Limit:           req.GetLimit(),
 		BeforeMessageId: req.GetBeforeMessageId(),
 		SnapshotSeq:     req.GetSnapshotSeq(),
+		TopicId:         req.GetTopicId(),
 	}
 	return c.ListAsAccount(ctx, account, resolved)
+}
+
+// ListTopicsAsAccountByName resolves the tool channel and returns topics with stats.
+func (c *Comms) ListTopicsAsAccountByName(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.ListTopicsRequest,
+) (*compassv1.ListTopicsResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	channelID := req.GetChannelId()
+	if channelID == "" {
+		var err error
+		channelID, err = c.homeChannel(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		ch, err := c.store.ChannelByNameForViewer(ctx, account, channelID)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		channelID = string(ch.ID)
+	}
+	topics, err := c.store.ListTopicsWithStats(ctx, string(account), channelID, req.GetIncludeArchived())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	return &compassv1.ListTopicsResponse{Topics: topicsToWire(topics)}, nil
 }
 
 // UpdatePinnedBoardAsAccount executes one agent-initiated board update as account

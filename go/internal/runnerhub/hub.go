@@ -318,7 +318,7 @@ type SessionTailSink interface {
 // is the safe Runner->Server leg: the account is resolved Server-side from the
 // hub's own binding, never asserted by the Runner (transport design Decision #3
 // / OQ-2, comms-tools design T2).
-type CommsCaller interface { //nolint:interfacebloat // one method per agent-comms arm (post/list/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm) — a dispatch seam, not a bloated abstraction; splitting it would fragment the single relay dispatch in executeCall
+type CommsCaller interface { //nolint:interfacebloat // one method per agent-comms arm (post/list/list_topics/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm) — a dispatch seam, not a bloated abstraction; splitting it would fragment the single relay dispatch in executeCall
 	// PostAsAccount posts under account with an id-typed channel container — the
 	// internal id-holder path (relay transcript, seeds). PostAsAccountByName is
 	// the agent-tool path: it resolves the request's channel NAME to an id first
@@ -330,6 +330,8 @@ type CommsCaller interface { //nolint:interfacebloat // one method per agent-com
 	// NAME to an id and KEEPS omit-=home (a read has no misroute hazard, R2).
 	ListAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
 	ListAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
+	// ListTopicsAsAccountByName returns visible topics, with per-topic stats.
+	ListTopicsAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.ListTopicsRequest) (*compassv1.ListTopicsResponse, error)
 	// RosterAsAccount executes an agent-initiated GetRoster under account (the
 	// caller AND, when the request names no vantage, the session-resolved
 	// vantage) — RIG-1721 T2.
