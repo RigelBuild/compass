@@ -268,9 +268,9 @@ func (s *appTokenSource) postInstallationToken(ctx context.Context, requestBody 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var ghErr ghError
 		if jsonErr := json.Unmarshal(body, &ghErr); jsonErr == nil && ghErr.Message != "" {
-			return installationToken{}, fmt.Errorf("forge: mint installation token: status %d: %s", resp.StatusCode, ghErr.Message)
+			return installationToken{}, fmt.Errorf("forge: mint installation token: %w", &StatusError{Status: resp.StatusCode, Message: ghErr.Message})
 		}
-		return installationToken{}, fmt.Errorf("forge: mint installation token: status %d", resp.StatusCode)
+		return installationToken{}, fmt.Errorf("forge: mint installation token: %w", &StatusError{Status: resp.StatusCode})
 	}
 	var out installationToken
 	if err := json.Unmarshal(body, &out); err != nil {

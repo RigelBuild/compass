@@ -31,7 +31,10 @@ const (
 	gitCredentialMismatchCache = 5 * time.Minute
 )
 
-var errGitCredentialScopeMismatch = errors.New("GitHub granted repository scope differs from requested scope")
+var (
+	errGitCredentialScopeMismatch = errors.New("GitHub granted repository scope differs from requested scope")
+	errGitCredentialScopeCached   = errors.New("GitHub repository scope recently rejected")
+)
 
 var gitCredentialPermissions = map[string]string{
 	"contents":      "write",
@@ -43,8 +46,20 @@ type gitCredentialMinter interface {
 	Mint(ctx context.Context, repos []string, perms map[string]string) (forge.ScopedToken, error)
 }
 
-type gitCredentialGrantLister interface {
+type gitCredentialStore interface {
+	AgentOwner(ctx context.Context, agentAccountID store.AccountID) (store.AccountID, error)
 	ListForgeScopeRepos(ctx context.Context, accountID store.AccountID, provider store.ForgeProvider, host string) ([]string, error)
+}
+
+// gitCredentialScopeRejected reports a mint failure that repeats for the same set.
+func gitCredentialScopeRejected(err error) bool {
+	if errors.Is(err, errGitCredentialScopeMismatch) || errors.Is(err, errGitCredentialScopeCached) {
+		return true
+	}
+	if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
+		return statusErr.Status == 404 || statusErr.Status == 422
+	}
+	return false
 }
 
 type agentSecretResolver interface {
@@ -69,7 +84,7 @@ type gitCredentialFlightResult struct {
 
 type gitCredentialBroker struct {
 	host   string
-	grants gitCredentialGrantLister
+	store  gitCredentialStore
 	minter gitCredentialMinter
 	log    *slog.Logger
 	signal func() error
@@ -112,29 +127,52 @@ func (r *brokeredSecretResolver) ResolveFor(ctx context.Context, agent store.Acc
 }
 
 func (b *gitCredentialBroker) credential(ctx context.Context, agent store.AccountID) (string, bool) {
-	repos, err := b.grants.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, b.host)
+	repos, err := b.store.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, b.host)
 	if err != nil {
 		b.log.ErrorContext(ctx, "list GitHub credential grants", "error", err)
 		return "", false
 	}
-	if len(repos) == 0 {
+	tok, ok, rejected := b.credentialForRepos(ctx, agent, repos)
+	if !rejected {
+		return tok, ok
+	}
+	owner, err := b.store.AgentOwner(ctx, agent)
+	if err != nil {
+		b.log.ErrorContext(ctx, "resolve GitHub credential owner", "agent", agent, "error", err)
 		return "", false
 	}
-	key, names, ok := gitCredentialScope(repos)
-	if !ok {
-		b.log.WarnContext(ctx, "omit GitHub credential for invalid grant scope", "agent", agent)
+	ownerRepos, err := b.store.ListForgeScopeRepos(ctx, owner, store.ForgeProviderGitHub, b.host)
+	if err != nil {
+		b.log.ErrorContext(ctx, "list owner GitHub credential grants", "owner", owner, "error", err)
 		return "", false
+	}
+	ownerKey, _, ownerOK := gitCredentialScope(ownerRepos)
+	if !ownerOK || len(ownerRepos) == 0 || ownerKey == gitCredentialScopeKey(repos) {
+		return "", false
+	}
+	tok, ok, _ = b.credentialForRepos(ctx, agent, ownerRepos)
+	return tok, ok
+}
+
+func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent store.AccountID, repos []string) (tok string, ok, rejected bool) {
+	if len(repos) == 0 {
+		return "", false, false
+	}
+	key, names, valid := gitCredentialScope(repos)
+	if !valid {
+		b.log.WarnContext(ctx, "omit GitHub credential for invalid grant scope", "agent", agent)
+		return "", false, true
 	}
 	if len(names) > gitCredentialMaxRepos {
 		b.log.WarnContext(ctx, "omit GitHub credential for oversized grant scope", "agent", agent, "repositories", len(names))
-		return "", false
+		return "", false, true
 	}
 	now := b.clock()
 	b.mu.Lock()
 	if negative, exists := b.negative[key]; exists {
 		if now.Before(negative.expiresAt) {
 			b.mu.Unlock()
-			return "", false
+			return "", false, true
 		}
 		delete(b.negative, key)
 	}
@@ -143,14 +181,14 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 		b.entries[key] = entry
 		if now.Before(entry.refreshAt) {
 			b.mu.Unlock()
-			return entry.token, true
+			return entry.token, true, false
 		}
 	}
 	b.mu.Unlock()
 
 	value, err, _ := b.group.Do(key, func() (any, error) {
 		if b.negativeCredential(key) {
-			return gitCredentialFlightResult{}, nil
+			return gitCredentialFlightResult{}, errGitCredentialScopeCached
 		}
 		if tok, ok := b.cachedCredential(key); ok {
 			return gitCredentialFlightResult{token: tok}, nil
@@ -167,19 +205,59 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 	})
 	if err != nil {
 		b.log.ErrorContext(ctx, "mint scoped GitHub credential", "scope", key, "error", err)
-		if errors.Is(err, errGitCredentialScopeMismatch) {
-			return "", false
+		if gitCredentialScopeRejected(err) {
+			return "", false, true
 		}
-		tok := b.staleCredential(key)
-		return tok, tok != ""
+		tok = b.staleCredential(key)
+		return tok, tok != "", false
 	}
-	result, ok := value.(gitCredentialFlightResult)
-	if !ok {
+	result, validResult := value.(gitCredentialFlightResult)
+	if !validResult {
 		b.log.ErrorContext(ctx, "unexpected GitHub credential mint result", "scope", key)
-		tok := b.staleCredential(key)
-		return tok, tok != ""
+		tok = b.staleCredential(key)
+		return tok, tok != "", false
 	}
-	return result.token, result.token != ""
+	return result.token, result.token != "", false
+}
+
+func (b *gitCredentialBroker) cachedCredential(key string) (string, bool) {
+	now := b.clock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.entries[key]
+	if !ok {
+		return "", false
+	}
+	entry.lastUsed = now
+	b.entries[key] = entry
+	return entry.token, now.Before(entry.refreshAt)
+}
+func (b *gitCredentialBroker) negativeCredential(key string) bool {
+	now := b.clock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.negative[key]
+	if !ok {
+		return false
+	}
+	if now.Before(entry.expiresAt) {
+		return true
+	}
+	delete(b.negative, key)
+	return false
+}
+
+func (b *gitCredentialBroker) staleCredential(key string) string {
+	now := b.clock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.entries[key]
+	if !ok || entry.expiresAt.Sub(now) < gitCredentialMinStale {
+		return ""
+	}
+	entry.lastUsed = now
+	b.entries[key] = entry
+	return entry.token
 }
 
 func gitCredentialScope(grants []string) (string, []string, bool) {
@@ -209,50 +287,22 @@ func gitCredentialScope(grants []string) (string, []string, bool) {
 	return strings.Join(qualified, ","), names, true
 }
 
-func (b *gitCredentialBroker) cachedCredential(key string) (string, bool) {
-	now := b.clock()
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	entry, ok := b.entries[key]
+func gitCredentialScopeKey(repos []string) string {
+	key, _, ok := gitCredentialScope(repos)
 	if !ok {
-		return "", false
-	}
-	entry.lastUsed = now
-	b.entries[key] = entry
-	return entry.token, now.Before(entry.refreshAt)
-}
-
-func (b *gitCredentialBroker) negativeCredential(key string) bool {
-	now := b.clock()
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	entry, ok := b.negative[key]
-	if !ok {
-		return false
-	}
-	if now.Before(entry.expiresAt) {
-		return true
-	}
-	delete(b.negative, key)
-	return false
-}
-
-func (b *gitCredentialBroker) staleCredential(key string) string {
-	now := b.clock()
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	entry, ok := b.entries[key]
-	if !ok || entry.expiresAt.Sub(now) < gitCredentialMinStale {
 		return ""
 	}
-	entry.lastUsed = now
-	b.entries[key] = entry
-	return entry.token
+	return key
 }
 
 func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []string) (string, bool, error) {
 	token, err := b.minter.Mint(ctx, repos, gitCredentialPermissions)
 	if err != nil {
+		if gitCredentialScopeRejected(err) {
+			b.mu.Lock()
+			b.negative[key] = gitCredentialNegativeEntry{expiresAt: b.clock().Add(gitCredentialMismatchCache)}
+			b.mu.Unlock()
+		}
 		return "", false, err
 	}
 	if token.Token == "" {
@@ -336,7 +386,7 @@ func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string
 func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previous string) bool {
 	value, err, _ := b.group.Do(key, func() (any, error) {
 		if b.negativeCredential(key) {
-			return gitCredentialFlightResult{}, nil
+			return gitCredentialFlightResult{}, errGitCredentialScopeCached
 		}
 		b.mu.Lock()
 		entry, ok := b.entries[key]
@@ -362,7 +412,7 @@ func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previo
 	})
 	if err != nil {
 		b.log.ErrorContext(ctx, "refresh scoped GitHub credential", "scope", key, "error", err)
-		if errors.Is(err, errGitCredentialScopeMismatch) {
+		if gitCredentialScopeRejected(err) {
 			b.mu.Lock()
 			if entry, exists := b.entries[key]; exists && entry.token == previous {
 				delete(b.entries, key)
@@ -406,7 +456,7 @@ func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets
 		return nil, fmt.Errorf("GitHub credential App minter: %w", err)
 	}
 	return &gitCredentialBroker{
-		host: rc.Host, grants: st, minter: minter, log: log,
+		host: rc.Host, store: st, minter: minter, log: log,
 		signal: hub.SignalSecretsVersion, clock: time.Now,
 		entries: make(map[string]gitCredentialEntry), negative: make(map[string]gitCredentialNegativeEntry),
 	}, nil
