@@ -180,50 +180,44 @@ func TestRunnerRelayBindingErrorContractAcrossLegs(t *testing.T) {
 		}
 	}
 
-	messages := map[string][]string{"unknown": {}, "foreign": {}, "tenant conflict": {}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			check := func(class string, hub *Hub, calls func() int, runnerID, sessionID, wantMessage string) string {
+			check := func(hub *Hub, calls func() int, runnerID, sessionID string, wantCode connect.Code) {
 				err := tc.call(hub, runnerID, sessionID)
-				if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
-					t.Fatalf("%s binding error = %v, want FailedPrecondition", class, err)
+				if got := connect.CodeOf(err); got != wantCode {
+					t.Fatalf("binding error = %v, want %s", err, wantCode)
 				}
-				if got := err.Error(); wantMessage != "" && got != wantMessage {
-					t.Fatalf("%s binding message = %q, want %q", class, got, wantMessage)
+				if wantCode == connect.CodeFailedPrecondition {
+					wantMessage := connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound).Error()
+					if got := err.Error(); got != wantMessage {
+						t.Fatalf("binding message = %q, want shared message %q", got, wantMessage)
+					}
 				}
-				messages[class] = append(messages[class], err.Error())
 				if n := calls(); n != 0 {
-					t.Fatalf("%s binding delegated %d times, want 0", class, n)
+					t.Fatalf("binding delegated %d times, want 0", n)
 				}
-				return err.Error()
 			}
 
 			hub, calls := newHub()
 			bindLiveSession(hub)
-			baseline := check("unknown", hub, calls, testRunnerID, "never-bound", "")
-			check("foreign", hub, calls, "runner-2", "sess-1", baseline)
+			check(hub, calls, testRunnerID, "never-bound", connect.CodeFailedPrecondition)
+			check(hub, calls, "runner-2", "sess-1", connect.CodeFailedPrecondition)
 
 			hub, calls = newHub()
 			bindings := newFakeBindingStore()
 			bindings.tenantErr = store.ErrConflict
 			hub.SetSessionBindingStore(bindings)
 			bindLiveSession(hub)
-			check("tenant conflict", hub, calls, testRunnerID, "sess-1", baseline)
+			check(hub, calls, testRunnerID, "sess-1", connect.CodeFailedPrecondition)
+
+			hub, calls = newHub()
+			bindings = newFakeBindingStore()
+			hub.SetSessionBindingStore(bindings)
+			hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+			bindings.seed("sess-1")
+			bindings.resolveErr = errors.New("durable binding read failed")
+			check(hub, calls, testRunnerID, "sess-1", connect.CodeUnavailable)
 		})
-	}
-	var wantMessage string
-	for class, got := range messages {
-		if len(got) != len(cases) {
-			t.Fatalf("%s errors = %d, want one from each of %d relay legs", class, len(got), len(cases))
-		}
-		for _, message := range got {
-			if wantMessage == "" {
-				wantMessage = message
-			}
-			if message != wantMessage {
-				t.Fatalf("%s binding message %q differs from shared message %q", class, message, wantMessage)
-			}
-		}
 	}
 }
 

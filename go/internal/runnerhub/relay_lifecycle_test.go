@@ -69,9 +69,8 @@ func TestRelayLifecycleCallUnboundSessionFailsClosed(t *testing.T) {
 // This is checked BEFORE session resolution, so even a bound session gets
 // Unavailable on a caller-less hub.
 //
-// Mutation: reordering the checks so resolution runs first would change the code
-// to NotFound for an unbound+nil case — the second sub-assertion (unbound session
-// + nil caller still Unavailable) reddens that reorder.
+// Mutation: resolving before checking the caller would change an unbound
+// session's error from Unavailable to FailedPrecondition. This pins precedence.
 func TestRelayLifecycleCallNilCallerIsUnavailableBeforeResolution(t *testing.T) {
 	t.Run("bound session still Unavailable", func(t *testing.T) {
 		hub := newHubOnly()  // no LifecycleCaller wired
@@ -93,7 +92,7 @@ func TestRelayLifecycleCallNilCallerIsUnavailableBeforeResolution(t *testing.T) 
 			t.Fatal("RelayLifecycleCall on a caller-less hub (unbound) = nil error, want CodeUnavailable")
 		}
 		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
-			t.Fatalf("nil-caller (unbound session) error code = %v, want Unavailable, not NotFound (proves nil-check precedes resolution)", got)
+			t.Fatalf("nil-caller (unbound session) error code = %v, want Unavailable while caller is unwired", got)
 		}
 	})
 }

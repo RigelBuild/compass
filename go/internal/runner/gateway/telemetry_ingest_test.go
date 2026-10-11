@@ -305,11 +305,8 @@ type capturedCommit struct {
 }
 
 // fakeCommitter is the durable path's ConversationCommitter under test. It
-// records every commit call and returns a canned (resp, err) — the Runner is a
-// pure forwarder, so a test drives the Server's retryability-split Connect status
-// by setting err and asserts the Runner passes it straight through. Mutex-guarded
-// because the concurrency test drives it from several goroutines at once (mirrors
-// fakeRelay's guarded recorder).
+// records every commit call and returns a canned (resp, err); the Runner passes
+// every status through unchanged. Mutex-guarded because concurrent tests drive it.
 type fakeCommitter struct {
 	mu    sync.Mutex
 	calls []capturedCommit
@@ -981,10 +978,8 @@ func TestPostConversationFrameForwardsTranscriptEntry(t *testing.T) {
 // --- Case 3 ------------------------------------------------------------------
 
 // PostConversationFrame is delivered-or-erred: a commit failure surfaces as the
-// Server's Connect error, never a silent success. The Runner is a pure forwarder,
-// so it passes the Server's retryability-split status straight through (mirror
-// Comms). Levered on a committer returning CodeUnavailable — the real commit
-// failure the delivered-or-erred contract must surface.
+// Server's Connect error, never a silent success. The Runner forwards every code
+// unchanged; the agent sink retries on its bounded schedule regardless of code.
 // RED: swallow the commit error (return success without surfacing it) -> the
 // unary wrongly returns success against a failing commit.
 func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
@@ -1006,19 +1001,15 @@ func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
 	}
 }
 
-// THE durable-contract test (OQ-3 item 5): the retryability split, and that a
-// transient commit failure leaves the idempotency key UN-committed so the sink
-// retries the SAME key, while a success marks it committed so a retry
-// short-circuits without a second commit. The old wedge test defended publisher
-// teardown on the durable path, which no longer exists — the commit IS the
-// durable boundary, so there is no buffer-accept-then-lose to express.
+// THE durable-contract test: a commit failure leaves the idempotency key
+// uncommitted, so the sink may retry with the same key. Success marks the key so
+// later retries short-circuit. The commit is the durable boundary.
 //
-// RED: swallow the commit error -> a transient failure wrongly returns success.
-// RED: mark the key committed on a transient failure -> the retry short-circuits
-// (no second commit call) and a genuinely-uncommitted frame is silently dropped.
+// RED: swallow the commit error and a failed commit reports success.
+// RED: mark the key on failure and the retry short-circuits, dropping the frame.
 func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
-	// Missing or foreign sessions return FailedPrecondition; malformed frames
-	// return InvalidArgument. Only transient Unavailable failures are retryable.
+	// The Runner forwards every failure status unchanged; the agent sink applies
+	// its bounded retry schedule regardless of code.
 	for _, tc := range []struct {
 		name string
 		code connect.Code

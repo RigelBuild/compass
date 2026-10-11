@@ -1,7 +1,7 @@
 # Compass agent session blobs survive resume
 
 > Freezes on merge; later changes supersede by citation, never rewrite.
-> Amended 2026-10-11: Missing blob storage returns `Unimplemented`; only that status disables uploads or marks resumed images absent. Binding `FailedPrecondition` and transient failures preserve references and remain retryable.
+> Amended 2026-10-11: Replaces status clauses in D1, D2, D3, D4, D5, Global Constraints, T4, and T6. Unknown and foreign-Runner sessions return `FailedPrecondition`; unverifiable bindings return `Unavailable`; missing blob storage returns `Unimplemented`. The Runner forwards errors unchanged. The agent sink retries on its bounded schedule regardless of status code. Only `Unimplemented` disables uploads or marks resumed image references absent.
 
 Issue: RIG-1582. Parent record:
 [compass-agent session persistence](../compass-agent-session-persistence/design.md#oq-r3--inline-image-blobs--out-of-mvp-resume-scope-deferred-to-rig-1582)
@@ -71,6 +71,7 @@ Mechanics:
   skips hashes that are done or already queued and enqueues the rest. The
   queue is bounded at `SESSION_BLOB_QUEUE_MAX`; it drops the oldest entry and
   counts the drop.
+- One worker reads `<blobsDir>/<hash>` and sends it, with one upload in flight.
 - A hash enters the done set only on success, `FailedPrecondition`, or
   oversize (over `MAX_SESSION_BLOB_BYTES`). `FailedPrecondition` also disables
   the uploader for the lifetime.
@@ -215,6 +216,7 @@ exec:
 - `agent-image/toolchain.nix` adds `pkgs.gnutar`, since no tar is linked
   today, and the guest rootfs reuses that image.
 
+Start-latency bound: one stream plus one exec. The fetch runs under
 `resumeBlobFetchTimeout` (30 s) and the budget above. A timeout or any
 non-`FailedPrecondition` error counts as transient, and Start continues. Only
 cancellation of the caller's ctx fails the Start.

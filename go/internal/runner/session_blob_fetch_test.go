@@ -133,18 +133,32 @@ func TestFetchSessionBlobsPropagatesMidStreamError(t *testing.T) {
 	}
 }
 
-func TestResumeBlobsMarksReferenceForSuccessfulAbsentHeader(t *testing.T) {
-	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + hash + `"}]}}` + "\n"
-	server := &fakeSessionBlobFetchServer{frames: []*compassv1internal.FetchSessionBlobsResponse{blobHeaderFrame(hash, 0, true)}}
+func TestResumeBlobsMarksOnlyAbsentReferencesFromSuccessfulFetch(t *testing.T) {
+	const absentHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	presentData := []byte("present image bytes")
+	presentDigest := sha256.Sum256(presentData)
+	presentHash := hex.EncodeToString(presentDigest[:])
+	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + absentHash + `"},{"type":"image","data":"blob:sha256:` + presentHash + `"}]}}` + "\n"
+	server := &fakeSessionBlobFetchServer{frames: []*compassv1internal.FetchSessionBlobsResponse{
+		blobHeaderFrame(absentHash, 0, true),
+		blobHeaderFrame(presentHash, uint64(len(presentData)), false),
+		blobChunkFrame(presentData),
+	}}
 	host := &agentHost{link: newLink(newRunnerServiceServer(t, server)), log: discardLoggerRunner()}
 
 	marked, files, err := host.resumeBlobs(t.Context(), "container-1", "session-1", body, false)
 	if err != nil {
 		t.Fatalf("resumeBlobs = %v, want success", err)
 	}
-	if !strings.Contains(marked, imageUnavailableText) || len(files) != 0 {
-		t.Fatalf("resumeBlobs = (%q, %v), want unavailable image marker and no files", marked, files)
+	wantBody := `{"message":{"content":[{"text":"[image unavailable after resume]","type":"text"},{"data":"blob:sha256:` + presentHash + `","type":"image"}]},"type":"message"}` + "\n"
+	if marked != wantBody {
+		t.Fatalf("resumeBlobs body = %q, want only absent reference replaced: %q", marked, wantBody)
+	}
+	if strings.Contains(marked, "blob:sha256:"+absentHash) || !strings.Contains(marked, "blob:sha256:"+presentHash) {
+		t.Fatalf("resumeBlobs body = %q, want absent ref replaced and present ref preserved", marked)
+	}
+	if len(files) != 1 || files[0].Name != presentHash || string(files[0].Data) != string(presentData) {
+		t.Fatalf("resumeBlobs files = %+v, want present blob %s with exact bytes", files, presentHash)
 	}
 }
 

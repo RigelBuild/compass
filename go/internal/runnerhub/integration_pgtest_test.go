@@ -136,9 +136,8 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	// launch), so it is live when the agent dials.
 	containerName := provisionWhenSeamLive(t, ctx, hub, agent.ID)
 
-	// Start binds the session to the account BOTH in the Runner (so the Gateway
-	// resolves container→session) AND in the hub (so RelayCommsCall resolves
-	// session→account). A comms call before this fails closed CodePermissionDenied.
+	// Start binds the session to the account in the Runner and hub. Before that,
+	// a comms call fails closed with CodeFailedPrecondition.
 	startResp, err := hub.Start(ctx, "start-1", &compassv1.StartAgentSessionRequest{ContainerName: containerName})
 	if err != nil {
 		t.Fatalf("hub.Start over the seam = %v", err)
