@@ -50,6 +50,17 @@ to everything but steers. Post your question, background long work, end the turn
 and resume when the answer lands. This is the async contract: posting is
 non-blocking by design.
 
+## Scannable human-facing text
+
+When asking the operator to take a manual action, include its prerequisites,
+exact commands, and expected result in a scannable message or linked artifact.
+Do not leave the operator to find commands in an unrelated document.
+
+Structure longer requests and reports as Markdown. Use headings and bullets to
+organize them, and a table when comparing options or rows. Avoid wall-of-text
+paragraphs. Keep short messages short and link to a durable artifact when the
+full detail needs its own home.
+
 Broadcast pings address groups: `@humans`, `@agents`, `@everyone`. Reserve
 `@everyone` for things that genuinely concern the whole channel — a ping is an
 interrupt, and over-pinging trains readers to mute you.

@@ -24,11 +24,12 @@ override, and it is the operator's to invoke.
 
 ## The loop
 
-1. **Fetch the diff.** Resolve the PR's diff and touched-file list. Compass
-   product CI and PRs live on GitHub, so the diff is the PR's GitHub diff.
-   [TODO RIG-1734] issue/PR tools land pre-Dogfood; until then resolve the diff
-   through the operator-provisioned GitHub surface the wave already uses.
-   Both the diff and the touched-file list go to the reviewer in its spawn brief.
+1. **Fetch the diff and record its scope.** Resolve the PR's diff and touched-file
+   list. Compass product CI and PRs live on GitHub, so the diff is the PR's
+   GitHub diff. [TODO RIG-1734] issue/PR tools land pre-Dogfood; until then
+   resolve the diff through the operator-provisioned GitHub surface the wave
+   already uses. Capture the PR head commit and base ref the diff came from, and
+   pass them with the diff and touched-file list in the reviewer's spawn brief.
 2. **Spawn the `review` subagent — one call per round.** Use the `task` tool,
    one subagent (`agent: review`), handing it the diff plus the touched-file
    list. The subagent holds every lens at once and scales its own depth to the
@@ -37,8 +38,9 @@ override, and it is the operator's to invoke.
    NOT trivial, and a code diff touching auth or input handling gets the security
    lens at full depth. One reviewer, one round is one subagent latency.
 3. **Collect findings.** The subagent returns structured findings in the shape
-   `{ severity, location, finding, suggested_fix }` as its result — directly to
-   you. That single result channel is the aggregation point.
+   `{ severity, location, finding, suggested_fix }`, plus the head commit and
+   base ref from its brief, as its result — directly to you. That single result
+   channel is the aggregation point.
 4. **Aggregate and act** — the driver's autonomy boundary:
    - **Auto-fix** clear, mechanical findings (a guard, a rename, a missing test,
      a dead-code removal) as a new commit on the PR tip. Delegate the fix work
@@ -57,7 +59,16 @@ override, and it is the operator's to invoke.
    and holds the lane (`rule://hold-your-lane`). Then the PR is merge-ready and
    the operator does the final review plus merge.
 
-This is the only review the PR gets; there is no bot pass behind it.
+This is the only review the PR gets; there is no bot pass behind it. Every
+review round must finish, and its findings must be dispositioned, before
+hand-off. Do not hand off a PR while a review round is still running.
+
+## Head check — bind the all-clear to the reviewed commit
+
+An all-clear covers only the commit and base ref that the reviewer saw. Before
+hand-off, read the PR head and base again. If either changed, run a full review
+round on the current head; do not transfer the old all-clear to a rewritten,
+rebased, or otherwise changed PR.
 
 ## All-clear termination (the loop control)
 
@@ -87,6 +98,10 @@ it is fixed or filed. A deferral without an issue number is not a deferral, it i
 a dropped finding.
 [TODO RIG-1734] name the concrete issue-filing tool once it lands; until then,
 file the follow-up on the operator-provisioned tracker surface the wave uses.
+
+If review data marks a finding resolved by its own author, treat it as
+unadjudicated. Re-derive it against the current diff; disposition any finding
+that still applies before hand-off.
 
 ## Recall — the escaped-defect retro
 
@@ -126,6 +141,8 @@ counts where a surface is empty; absence of findings from one surface says
 nothing about another. Resolve or explicitly disposition every finding before
 handoff. A clean review is evidence of readiness only within the reviewer's
 scope, not proof that the change is safe.
+
+## Shared investigation
 
 When several agents encounter the same failing shared check, route observations
 to one investigator rather than starting competing diagnoses. Triage the

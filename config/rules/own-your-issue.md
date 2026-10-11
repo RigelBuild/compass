@@ -20,6 +20,11 @@ finished issue open has not finished.**
 - On handing a lane off, rewrite the owner to the receiving agent. Ownership
   transfers explicitly or not at all — an unswept issue from a torn-down agent
   becomes the supervisor's problem.
+- After editing an issue body, post a short comment that says what changed. The
+  comment is a notice, not a copy of the revised body.
+- When a decision is settled, update the issue in the same turn to record the
+  ruling and remaining work. Do not track implementation under a body that still
+  asks an open question.
 
 Merged ≠ done: a merged PR is evidence toward done, not done. An issue with three
 deliverables is not closed at PR #1 — file the remainder or keep it open.
