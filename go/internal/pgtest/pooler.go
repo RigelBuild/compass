@@ -17,14 +17,19 @@ const PoolerDSNEnvVar = "COMPASS_TEST_POOLER_DSN"
 
 // RequirePoolerDSN returns a direct and a pooled DSN for one fresh database.
 // It isolates by database because a pooler rejects the libpq options parameter
-// that schema isolation uses. It SKIPs when either variable is unset, or FAILs
-// when COMPASS_REQUIRE_LIVE is set.
+// that schema isolation uses. Both DSNs must be URL-form. It SKIPs when either
+// variable is unset, or FAILs when COMPASS_REQUIRE_LIVE is set.
 func RequirePoolerDSN(t *testing.T) (direct, pooled string) {
 	t.Helper()
 	base, pooler := os.Getenv(DSNEnvVar), os.Getenv(PoolerDSNEnvVar)
 	if base == "" || pooler == "" {
 		if os.Getenv(RequireLiveEnvVar) != "" {
-			t.Fatalf("%s is set but %s or %s is unset: the pooler leg must run", RequireLiveEnvVar, DSNEnvVar, PoolerDSNEnvVar)
+			t.Fatalf(
+				"%s is set but %s or %s is unset: the pooler leg must run",
+				RequireLiveEnvVar,
+				DSNEnvVar,
+				PoolerDSNEnvVar,
+			)
 		}
 		t.Skipf("no %s/%s; skipping transaction-mode pooler test", DSNEnvVar, PoolerDSNEnvVar)
 	}
@@ -36,8 +41,11 @@ func RequirePoolerDSN(t *testing.T) (direct, pooled string) {
 func withDatabase(t *testing.T, dsn, name string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme == "" {
-		t.Fatalf("pgtest: pooler leg needs URL-form DSNs, got an unparseable one: %v", err)
+	if err != nil {
+		t.Fatalf("pgtest: parse DSN for the pooler leg: %v", err)
+	}
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		t.Fatalf("pgtest: the pooler leg needs URL-form DSNs (postgres://...), not keyword/value form")
 	}
 	u.Path = "/" + name
 	return u.String()

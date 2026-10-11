@@ -230,8 +230,7 @@ func TestUnsetGUCFailsClosed(t *testing.T) {
 func TestPooledConnReuseCarriesNoScope(t *testing.T) {
 	t.Run("direct", func(t *testing.T) {
 		// One pool connection, so scopedDBTX and the next checkout share a backend.
-		_, dsn := newTestStoreDSN(t)
-		s := openStore(t, dsn+"&pool_max_conns=1")
+		s := openStore(t, pgtest.RequireDSN(t)+"&pool_max_conns=1")
 		assertReuseCarriesNoScope(t, s, s, func(ctx context.Context) (*pgx.Conn, func()) {
 			c, err := s.pool.Acquire(ctx)
 			if err != nil {

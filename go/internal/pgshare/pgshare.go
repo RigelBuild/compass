@@ -138,9 +138,9 @@ func AcquireDSN(t *testing.T) string {
 	return ""
 }
 
-// schemaSeq makes each per-test schema name unique within a process, so tests
-// that share one COMPASS_TEST_DATABASE_DSN database never collide even when the
-// go test runner runs their packages in parallel.
+// schemaSeq makes each per-test schema and database name unique within a
+// process, so tests sharing one COMPASS_TEST_DATABASE_DSN server never collide
+// even when the go test runner runs their packages in parallel.
 var schemaSeq atomic.Uint64
 
 // IsolatedSchemaDSN creates a fresh, uniquely-named schema on the database dsn
@@ -207,17 +207,19 @@ func withSearchPath(dsn, schema string) string {
 func IsolatedDatabase(t *testing.T, dsn string) string {
 	t.Helper()
 	name := fmt.Sprintf("pgtest_db_%d_%d", os.Getpid(), schemaSeq.Add(1))
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := pgx.Connect(t.Context(), dsn)
 	if err != nil {
 		t.Fatalf("pgtest: connect to create database: %v", err)
 	}
-	defer func() { _ = conn.Close(ctx) }()
+	defer func() { _ = conn.Close(context.WithoutCancel(t.Context())) }()
 	// name is a fixed-format identifier, no user input.
-	if _, err := conn.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+	if _, err := conn.Exec(t.Context(), "CREATE DATABASE "+name); err != nil {
 		t.Fatalf("pgtest: create database %s: %v", name, err)
 	}
 	t.Cleanup(func() {
+		// t.Context is canceled before Cleanup runs; keep its values, not its deadline.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 30*time.Second)
+		defer cancel()
 		c, err := pgx.Connect(ctx, dsn)
 		if err != nil {
 			return // best-effort teardown, as IsolatedSchemaDSN
