@@ -242,8 +242,8 @@ async function listVersions(token: string): Promise<PackageVersion[]> {
 	}
 }
 
-async function readPins(): Promise<Pins> {
-	const value: unknown = await Bun.file("guest-image/agent-oci.lock").json();
+/** Pins from `guest-image/agent-oci.lock`: the index digest, each platform manifest, and the tag. */
+export function parseLockPins(value: unknown): Pins {
 	const lock = parseJsonRecord(value, "agent OCI lock");
 	if (typeof lock.tag !== "string" || lock.tag.length === 0) {
 		throw new Error("agent OCI lock had no tag");
@@ -260,7 +260,7 @@ async function readPins(): Promise<Pins> {
 					`agent OCI lock platform ${platform} was not an object`,
 				);
 			digests.add(
-				parseDigest(value.digest, `agent OCI lock ${platform} digest`),
+				parseDigest(value.manifest, `agent OCI lock ${platform} manifest`),
 			);
 		}
 	}
@@ -506,7 +506,7 @@ async function run(): Promise<void> {
 	);
 	const [versions, pins, registryToken] = await Promise.all([
 		listVersions(githubToken),
-		readPins(),
+		parseLockPins(await Bun.file("guest-image/agent-oci.lock").json()),
 		anonymousToken(),
 	]);
 	const indexChildren = await indexChildrenFor(
