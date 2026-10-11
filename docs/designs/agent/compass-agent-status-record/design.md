@@ -238,8 +238,9 @@ be public, so the user decides where it may go (OQ-8).
   tenant context. A refused check marks the row `failed` with no retry.
 - **Lost responses.** A POST can succeed while its response is lost. Every
   body ends with a hidden marker naming the row id. Before a retry posts, the
-  drive lists the target's recent comments and adopts one carrying the marker,
-  then edits it. So a retry never posts a second comment.
+  drive pages every comment on the target created since the row's first
+  attempt and adopts one carrying the marker, then edits it. The window is
+  bounded by time, not count, so a retry never posts a second comment.
 - **Link back.** The header names the channel and topic. When `--public-url`
   (`$COMPASS_PUBLIC_URL`, `ServeConfig.PublicURL`) is set, it links the topic
   through `topicLinkFor`, beside `deepLinkFor` in `go/server/deeplink.go`
@@ -383,10 +384,11 @@ guard, skips `ok=false`, and loads the config under the issue's tenant. With
 no stored config the resolver applies Linear's state type default.
 
 `issues` gains `tracker_state_id`, the last observed state that the change
-test compares, and `tracker_status`, the raw name shown as `TrackerRef.status`
-(OQ-4). The board webhook arm re-reads each issue through `GetIssueConditional`,
-so both paths read the name through the `CompassIssueFields` fragment, which
-adds `state { id }`. A Linear card's `tracker` is the issue itself (`kind
+test compares, `tracker_state_type`, its Linear type, and `tracker_status`,
+the raw name shown as `TrackerRef.status` (OQ-4). `TrackerRef` carries all
+three (D13). The board webhook arm re-reads each issue through
+`GetIssueConditional`, so both paths read them through the
+`CompassIssueFields` fragment, which now reads `state { id name type }`. A Linear card's `tracker` is the issue itself (`kind
 "linear"`, `id` `KEY-N`), and `issueKey` in `apps/ui/src/board-render.ts`
 already shows `tracker.id`.
 
@@ -1055,9 +1057,16 @@ func buildLinearBoardLane(ctx context.Context, cfg ServeConfig, st *store.Store,
 - `buildLinearWiring` sets `dataSink` to a `fanoutSink` over the notify sink
   and the board lane sink, skipping a nil one. It stores the lane on
   `linearWiring.board`.
-- `Serve` starts the lane's `BoardWebhookArm.Run` and `BoardReconciler.Run`
-  on the serve errgroup, beside the GitHub board lane, under the serve
-  context, so shutdown stops both.
+- One `boardService` serves both the hub and this lane. `wireHubServiceCycles`
+  returns the `*boardService` it builds; `Serve` passes it to `buildDoors`,
+  which passes it to `buildLinearWiring` and `buildLinearBoardLane`, so its
+  `transitionMu` covers every transition. `serveDoors` gains `linearBoard
+  *boardIngestLane`, set from `linearWiring.board`.
+- `startForgeIngestLanes` gains a `linearBoard *boardIngestLane` argument.
+  `Serve` passes `doors.linearBoard`, and the function starts its
+  `BoardWebhookArm.Run` and `BoardReconciler.Run` on the serve errgroup the
+  same way it starts the GitHub board lane, so shutdown stops both. A nil lane
+  starts nothing.
 - `linearBoardSink.PublishIssueUpdate` follows the #2110 consumer contract:
   1. `PublishObservedIssue`. Not applied: stop (an older observation).
   2. The prior state id equals `tracker.state_id`: stop (no state change). A
@@ -1144,6 +1153,7 @@ CREATE TABLE forge_mirrors (
     comment_key       TEXT     NOT NULL DEFAULT '',  -- forge.Comment.Key: GitHub id or Linear UUID
     comment_url       TEXT     NOT NULL DEFAULT '',
     last_error        TEXT     NOT NULL DEFAULT '',
+    first_attempt_at  TIMESTAMPTZ,  -- set by the first POST; bounds the marker search
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id         TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
@@ -1159,7 +1169,7 @@ CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE st
 // go/internal/store
 type ForgeMirrorMode int16 // ForgeMirrorOff = 0 (no row), ForgeMirrorManual = 1, ForgeMirrorAuto = 2
 type ForgeMirrorSetting struct { Provider ForgeProvider; Host, Repo string; Mode ForgeMirrorMode }
-type ForgeMirrorRow struct { ID string; Source int16; AskID, SourceKey string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string }
+type ForgeMirrorRow struct { ID string; Source int16; AskID, SourceKey string; Actor, Agent AccountID; ClientRequestID, TargetRef string; BodyRev, PostedRev, State int16; Attempts int; CommentID uint64; CommentKey, CommentURL, LastError string; FirstAttemptAt *time.Time }
 func (s *Store) ForgeMirrorMode(ctx context.Context, p ForgeProvider, host, repo string) (ForgeMirrorMode, error)
 func (s *Store) ListForgeMirrorSettings(ctx context.Context) ([]ForgeMirrorSetting, error) // every enabled subscription; off when no row
 func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set ForgeMirrorSetting) error // off deletes the row
@@ -1174,8 +1184,9 @@ func bumpAskMirror(ctx context.Context, q *db.Queries, askID string) error
 
 // go/internal/forge, Provider gains:
 EditComment(ctx context.Context, repo, commentKey, body string) (Comment, error)
-// ListRecentComments reads the newest 50 comments on an issue or PR.
-ListRecentComments(ctx context.Context, repo string, number uint64) ([]Comment, error)
+// ListCommentsSince pages every comment on an issue or PR created at or after
+// since (GitHub `since`; Linear `comments(filter: {createdAt: {gte}})`).
+ListCommentsSince(ctx context.Context, repo string, number uint64, since time.Time) ([]Comment, error)
 
 // go/internal/mirror
 type Link struct { Channel, Topic, URL string } // URL "" when no public URL is set
@@ -1205,8 +1216,10 @@ type Mirrorer interface {
   `client_request_id`, or by (`source_key`, `target_ref`). Mirroring the same
   topic or message set to the same ref again bumps `body_rev` on that row, so
   the drive edits one comment, whatever the request key.
-- `mirror.Drive`, before a POST on a row with no `comment_key`, calls
-  `ListRecentComments` and adopts a comment whose body carries
+- `forge_mirrors` gains `first_attempt_at TIMESTAMPTZ`, set by the first
+  POST attempt. `mirror.Drive`, before a POST on a row with no `comment_key`
+  and a set `first_attempt_at`, calls `ListCommentsSince` from that time
+  minus one minute (clock skew) and adopts a comment whose body carries
   `<!-- compass-mirror:<row id> -->`. The renderers append that marker.
 - `PostMirror` runs `mirrorAllowed`. An agent actor's body is stamped with
   `resolveIdentity` and `forge.StampOwner`; a user actor's header names the
@@ -1234,8 +1247,8 @@ Tests:
 - Answering the ask edits the same comment; no second comment is posted.
 - A forge success stores the key and URL and marks `done`; three failures mark
   `failed`; a board write re-drives a failed row.
-- A POST that succeeds with a lost response is adopted on retry by its marker;
-  the forge sees one comment.
+- A POST that succeeds with a lost response is adopted on retry by its marker,
+  even after 60 later comments; the forge sees one comment.
 - A mode turned off before the post marks the row `failed` and posts nothing.
 - A scope refusal marks `failed` without retry, and nothing is posted.
 - A non-admin `SetForgeMirrorSetting` gets `permission_denied`.
