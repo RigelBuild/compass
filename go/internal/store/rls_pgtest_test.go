@@ -22,6 +22,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // seedTenant inserts a fresh, non-bootstrap tenant row (bucket A: tenants is
@@ -219,80 +223,116 @@ func TestUnsetGUCFailsClosed(t *testing.T) {
 // leftover tenant scope on a physical connection reused for a later checkout —
 // the transaction-mode-pooler reuse hazard (design.md:663-673, 745-753).
 //
-// A real transaction-mode PgBouncer is not in the pgtest harness (it hands back a
-// direct pgx pool DSN), and standing one up in CI is tracked as a follow-up
-// (RIG-3106 review, Matt-ruled M2). This test proves the property the pooler
-// relies on, at the layer that actually carries it: SET LOCAL is
-// transaction-scoped, and a pgx batch is ONE implicit transaction (one Sync), so
-// the scoping armed into the batch resets at the batch's boundary. It drives the
-// real production mechanism — s pinned *pgx.Conn, two sequential SendBatch calls
-// each arming SET LOCAL ROLE + (batch 1 only) the tenant GUC exactly as
-// scopedDBTX.armQueue does — across the SAME physical backend, which is exactly
-// the reuse a transaction-mode pooler creates between checkouts. If the batch-1
-// SET LOCAL leaked past its implicit transaction, batch 2 (armed role, no GUC)
-// would still see tenant A's rows; it must fail closed (zero rows) instead.
+// It runs twice: against the direct connection, and through a real
+// transaction-mode PgBouncer (COMPASS_TEST_POOLER_DSN, a CI service) whose pool
+// size of one forces the next client's checkout onto the same server backend.
+// Both legs assert the backend pid matches, so a pass always means reuse ran.
 func TestPooledConnReuseCarriesNoScope(t *testing.T) {
-	s := newTestStore(t)
+	t.Run("direct", func(t *testing.T) {
+		// One pool connection, so scopedDBTX and the next checkout share a backend.
+		_, dsn := newTestStoreDSN(t)
+		s := openStore(t, dsn+"&pool_max_conns=1")
+		assertReuseCarriesNoScope(t, s, s, func(ctx context.Context) (*pgx.Conn, func()) {
+			c, err := s.pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire: %v", err)
+			}
+			return c.Conn(), c.Release
+		})
+	})
+	t.Run("pgbouncer", func(t *testing.T) {
+		direct, pooled := pgtest.RequirePoolerDSN(t)
+		// Migrate on the direct DSN: migrate holds a session advisory lock, which
+		// a transaction-mode pooler cannot keep across statements.
+		s := openStore(t, direct)
+		assertReuseCarriesNoScope(t, s, storeOverPooler(t, pooled, s.bootstrapTenantID),
+			func(ctx context.Context) (*pgx.Conn, func()) {
+				c, err := pgx.Connect(ctx, pooled)
+				if err != nil {
+					t.Fatalf("connect through pooler: %v", err)
+				}
+				return c, func() { _ = c.Close(ctx) }
+			})
+	})
+}
+
+// storeOverPooler binds a Store to an already-migrated database reached through
+// the pooler, with scopedDBTX as its query path exactly as Open wires it.
+func storeOverPooler(t *testing.T, dsn string, bootstrap TenantID) *Store {
+	t.Helper()
+	cfg, err := poolConfig(dsn)
+	if err != nil {
+		t.Fatalf("pooler pool config: %v", err)
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("pooler pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	ps := &Store{pool: pool, safetyValveCapBytes: defaultSafetyValveCapBytes, bootstrapTenantID: bootstrap}
+	ps.q = db.New(ps.scopedPool())
+	return ps
+}
+
+// assertReuseCarriesNoScope seeds a tenant-A row through seed, reads it through
+// scoped's scopedDBTX, then checks the next checkout on the same backend carries
+// no role, no tenant GUC, and sees zero rows under compass_app with no GUC.
+func assertReuseCarriesNoScope(t *testing.T, seed, scoped *Store, next func(context.Context) (*pgx.Conn, func())) {
+	t.Helper()
 	ctx := context.Background()
-	// One row under the bootstrap tenant (tenant A).
-	if _, err := s.CreateUser(ctx, NewUser{Handle: "poolseed", DisplayName: "Pool Seed"}); err != nil {
+	if _, err := seed.CreateUser(ctx, NewUser{Handle: "poolseed", DisplayName: "Pool Seed"}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
-	tenantA := string(s.bootstrapTenantID)
 
-	pconn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire: %v", err)
+	// Checkout 1: the production arm (SET LOCAL ROLE + set_config(..., true)
+	// batched with the query) for the bootstrap tenant A.
+	var scopedRows, scopedPID int
+	if err := scoped.scopedPool().QueryRow(ctx, "SELECT count(*), pg_backend_pid() FROM accounts").
+		Scan(&scopedRows, &scopedPID); err != nil {
+		t.Fatalf("scoped read: %v", err)
 	}
-	defer pconn.Release()
-	// The underlying physical backend, reused for BOTH batches below — the same
-	// connection a transaction-mode pooler would hand to two sequential checkouts.
-	pinned := pconn.Conn()
-
-	// Batch 1 — the production arm for a request scoped to tenant A: SET LOCAL
-	// ROLE compass_app + set_config(tenantGUC, A, true) + the query, all in ONE
-	// SendBatch (one implicit transaction), mirroring scopedDBTX.armQueue.
-	b1 := &pgx.Batch{}
-	b1.Queue("SET LOCAL ROLE compass_app")
-	b1.Queue("SELECT set_config('compass.tenant_id', $1, true)", tenantA)
-	b1.Queue("SELECT count(*) FROM accounts")
-	br1 := pinned.SendBatch(ctx, b1)
-	if _, err := br1.Exec(); err != nil {
-		t.Fatalf("batch1 set role: %v", err)
-	}
-	if _, err := br1.Exec(); err != nil {
-		t.Fatalf("batch1 set_config: %v", err)
-	}
-	var scoped int
-	if err := br1.QueryRow().Scan(&scoped); err != nil {
-		t.Fatalf("batch1 count: %v", err)
-	}
-	if err := br1.Close(); err != nil {
-		t.Fatalf("batch1 close: %v", err)
-	}
-	if scoped == 0 {
-		t.Fatalf("batch1 scoped to A saw 0 rows, want A's seeded row — scope not applied")
+	if scopedRows == 0 {
+		t.Fatalf("scoped read for tenant A saw 0 rows, want the seeded row — scope not applied")
 	}
 
-	// Batch 2 on the SAME physical backend: arm the app role but set NO tenant GUC
-	// — the reuse hazard. If batch 1's SET LOCAL set_config leaked past its
-	// implicit transaction, this would still see A's rows. It must fail closed.
-	b2 := &pgx.Batch{}
-	b2.Queue("SET LOCAL ROLE compass_app")
-	b2.Queue("SELECT count(*) FROM accounts")
-	br2 := pinned.SendBatch(ctx, b2)
-	if _, err := br2.Exec(); err != nil {
-		t.Fatalf("batch2 set role: %v", err)
+	// Checkout 2 on the same backend: nothing armed. A leaked SET LOCAL would
+	// show as a non-owner role or a set tenant GUC.
+	conn, release := next(ctx)
+	defer release()
+	var role, guc string
+	var pid int
+	if err := conn.QueryRow(ctx,
+		"SELECT current_user::text, coalesce(current_setting('compass.tenant_id', true), ''), pg_backend_pid()").
+		Scan(&role, &guc, &pid); err != nil {
+		t.Fatalf("probe next checkout: %v", err)
+	}
+	if pid != scopedPID {
+		t.Fatalf("next checkout ran on backend %d, scoped read on %d: reuse was not exercised", pid, scopedPID)
+	}
+	if role == appRole || role == systemRole {
+		t.Fatalf("next checkout runs as %q: SET LOCAL ROLE leaked across the checkout boundary", role)
+	}
+	if guc != "" {
+		t.Fatalf("next checkout carries %s=%q: tenant scope leaked across the checkout boundary", tenantGUC, guc)
+	}
+
+	// Armed role, no GUC: must fail closed even though tenant A ran here last.
+	b := &pgx.Batch{}
+	b.Queue("SET LOCAL ROLE compass_app")
+	b.Queue("SELECT count(*) FROM accounts")
+	br := conn.SendBatch(ctx, b)
+	if _, err := br.Exec(); err != nil {
+		t.Fatalf("set role: %v", err)
 	}
 	var leaked int
-	if err := br2.QueryRow().Scan(&leaked); err != nil {
-		t.Fatalf("batch2 count must fail closed (zero), got error: %v", err)
+	if err := br.QueryRow().Scan(&leaked); err != nil {
+		t.Fatalf("unscoped count must fail closed (zero), got error: %v", err)
 	}
-	if err := br2.Close(); err != nil {
-		t.Fatalf("batch2 close: %v", err)
+	if err := br.Close(); err != nil {
+		t.Fatalf("batch close: %v", err)
 	}
 	if leaked != 0 {
-		t.Fatalf("batch2 (reused backend, no scope) saw %d rows, want 0 — SET LOCAL leaked across the batch boundary", leaked)
+		t.Fatalf("reused backend with no GUC saw %d rows, want 0 — tenant scope leaked", leaked)
 	}
 }
 

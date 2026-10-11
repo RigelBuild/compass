@@ -200,6 +200,35 @@ func withSearchPath(dsn, schema string) string {
 	return dsn + "?" + opt
 }
 
+// IsolatedDatabase creates a fresh, uniquely-named database on the server
+// dsn points at, registers its forced drop on test cleanup, and returns its
+// name. It isolates callers that cannot use IsolatedSchemaDSN, such as a
+// connection pooler that rejects the libpq options startup parameter.
+func IsolatedDatabase(t *testing.T, dsn string) string {
+	t.Helper()
+	name := fmt.Sprintf("pgtest_db_%d_%d", os.Getpid(), schemaSeq.Add(1))
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgtest: connect to create database: %v", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	// name is a fixed-format identifier, no user input.
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		t.Fatalf("pgtest: create database %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		c, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			return // best-effort teardown, as IsolatedSchemaDSN
+		}
+		defer func() { _ = c.Close(ctx) }()
+		// FORCE ends any idle server connection a pooler still holds to it.
+		_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+	})
+	return name
+}
+
 // containerCLI returns the container runtime binary to drive (podman preferred,
 // docker fallback), or "" if neither is on PATH.
 func containerCLI() string {
