@@ -1186,7 +1186,7 @@ func TestSessionForAccountRejectsForeignRunnerBinding(t *testing.T) {
 			t.Fatalf("SessionForAccount returned foreign cached session %q", sessionID)
 		}
 		if err := hub.DispatchControl(context.Background(), "sess-foreign", &compassv1internal.AgentControl{
-			Control: &compassv1internal.AgentControl_Deliver{Deliver: &compassv1internal.DeliverControl{}},
+			Control: &compassv1internal.AgentControl_Deliver{Deliver: &compassv1internal.DeliverControl{Message: &compassv1.Message{Id: "m1"}}},
 		}); err != nil {
 			t.Fatal(err)
 		}

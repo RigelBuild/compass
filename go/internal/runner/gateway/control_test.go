@@ -237,9 +237,9 @@ func TestControlPreservesSendOrder(t *testing.T) {
 // still-undefined-payload variants (TranscriptReplay, ConfigControl) are empty
 // shells on the wire; sending one is a must-not, enforced at the seam with
 // CodeInvalidArgument rather than left for the agent to count as unmapped.
-// SteerControl and DeliverControl are NO LONGER among them — each carries a
-// defined compass.v1.Message, so both are representable and sent (asserted in
-// TestControlSendsSteer and TestControlSendsDeliver).
+// SteerControl and DeliverControl are representable only with their Message:
+// populated ones are sent (TestControlSendsSteer, TestControlSendsDeliver), bare
+// ones refused (TestControlRejectsMessagelessSteerAndDeliver).
 func TestControlRejectsEmptyVariants(t *testing.T) {
 	empties := map[string]*compassv1internal.AgentControl{
 		"replay": {Control: &compassv1internal.AgentControl_Replay{
@@ -346,6 +346,39 @@ func TestControlSendsSteer(t *testing.T) {
 	}
 	if got.GetControlSeq() == 0 {
 		t.Fatal("steered op carried no control_seq; Send must stamp it")
+	}
+}
+
+// TestControlRejectsMessagelessSteerAndDeliver: a steer or deliver without its
+// Message would reach the agent only to decode as undefined and be dropped as
+// unmapped, so the seam refuses it before it is stamped or retained.
+func TestControlRejectsMessagelessSteerAndDeliver(t *testing.T) {
+	cases := map[string]*compassv1internal.AgentControl{
+		"steer nil message":       {Control: &compassv1internal.AgentControl_Steer{Steer: &compassv1internal.SteerControl{}}},
+		"steer nil payload":       {Control: &compassv1internal.AgentControl_Steer{}},
+		"deliver nil message":     {Control: &compassv1internal.AgentControl_Deliver{Deliver: &compassv1internal.DeliverControl{}}},
+		"deliver nil payload":     {Control: &compassv1internal.AgentControl_Deliver{}},
+		"steer typed-nil oneof":   {Control: (*compassv1internal.AgentControl_Steer)(nil)},
+		"deliver typed-nil oneof": {Control: (*compassv1internal.AgentControl_Deliver)(nil)},
+	}
+	for name, op := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProducer()
+			stream := newControlStream()
+			stop := p.subscribe(t, stream)
+			defer stop()
+
+			err := p.Send(testSession, op)
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("Send(%s) = %v, want CodeInvalidArgument", name, err)
+			}
+			if err := p.Send(testSession, prompt("after")); err != nil {
+				t.Fatalf("Send(prompt) = %v", err)
+			}
+			if got := stream.recv(t); got.GetPrompt().GetInput() != "after" {
+				t.Fatalf("first op on the stream = %v, want the prompt (the rejected op must not be queued)", got)
+			}
+		})
 	}
 }
 

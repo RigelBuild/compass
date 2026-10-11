@@ -43,9 +43,8 @@ var errNoControlLane = errors.New("gateway: no control lane wired for subscripti
 var errCloneFailed = errors.New("gateway: control op clone produced the wrong type")
 
 // errEmptyControlVariant is the must-not-send rule. TranscriptReplay and ConfigControl
-// are empty shells on the wire, so sending one carries no information and would reach
-// the agent only to be counted as unmapped. SteerControl/DeliverControl each carry a
-// defined compass.v1.Message, so both are representable and sent.
+// are empty shells on the wire, and a SteerControl/DeliverControl without its Message is
+// one too: each would reach the agent only to be counted as unmapped.
 var errEmptyControlVariant = errors.New("gateway: control variant has no representable payload")
 
 // maxRetainedOps bounds one session's retention buffer. The Runner is the durable side,
@@ -150,13 +149,17 @@ func newControlProducer() *controlProducer {
 }
 
 // representable reports whether the op carries a payload worth sending. Replay and Config
-// are empty shells; Steer and Deliver each carry a defined compass.v1.Message, so they
-// are representable and everything else is too.
+// are empty shells; Steer and Deliver are worth sending only with their compass.v1.Message,
+// since a bare one decodes agent-side as undefined and is dropped as unmapped.
 func representable(op *compassv1internal.AgentControl) bool {
-	switch op.GetControl().(type) {
+	switch c := op.GetControl().(type) {
 	case *compassv1internal.AgentControl_Replay,
 		*compassv1internal.AgentControl_Config:
 		return false
+	case *compassv1internal.AgentControl_Steer:
+		return c != nil && c.Steer.GetMessage() != nil
+	case *compassv1internal.AgentControl_Deliver:
+		return c != nil && c.Deliver.GetMessage() != nil
 	case nil:
 		return false
 	default:
