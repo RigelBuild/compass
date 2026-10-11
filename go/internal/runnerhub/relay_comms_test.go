@@ -152,44 +152,78 @@ func TestRunnerRelayBindingErrorContractAcrossLegs(t *testing.T) {
 			return err
 		}},
 		{"session blob", func(h *Hub, runnerID, sessionID string) error {
-			_, err := h.RelaySessionBlob(context.Background(), runnerID, &compassv1internal.RelaySessionBlobRequest{SessionId: sessionID})
+			blob := []byte("blob")
+			_, err := h.RelaySessionBlob(context.Background(), runnerID, &compassv1internal.RelaySessionBlobRequest{
+				SessionId: sessionID,
+				Blob:      &compassv1internal.PutSessionBlobRequest{Sha256: blobHash(blob), Data: blob},
+			})
 			return err
 		}},
 	}
 
-	newHub := func() *Hub {
-		hub, _ := newHubWithComms()
-		hub.SetLifecycleCaller(&fakeLifecycleCaller{})
-		hub.SetBoardCaller(&fakeBoardCaller{})
-		hub.SetForgeCaller(&fakeForgeCaller{})
-		hub.SetTranscriptStore(&fakeTranscriptStore{})
-		hub.SetSessionBlobStore(&fakeSessionBlobStore{})
-		return hub
+	newHub := func() (*Hub, func() int) {
+		comms := &fakeCommsCaller{}
+		lifecycle := &fakeLifecycleCaller{}
+		board := &fakeBoardCaller{}
+		forge := &fakeForgeCaller{}
+		transcripts := &fakeTranscriptStore{}
+		blobs := &fakeSessionBlobStore{}
+		hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, comms, discardLogger())
+		hub.SetLifecycleCaller(lifecycle)
+		hub.SetBoardCaller(board)
+		hub.SetForgeCaller(forge)
+		hub.SetTranscriptStore(transcripts)
+		hub.SetSessionBlobStore(blobs)
+		return hub, func() int {
+			return len(comms.snapshot()) + len(lifecycle.snapshot()) + len(board.snapshot()) +
+				len(forge.snapshot()) + len(transcripts.snapshot()) + blobs.putCalls
+		}
 	}
 
+	messages := map[string][]string{"unknown": {}, "foreign": {}, "tenant conflict": {}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			hub := newHub()
-			bindLiveSession(hub)
-			unknownErr := tc.call(hub, testRunnerID, "never-bound")
-			foreignErr := tc.call(hub, "runner-2", "sess-1")
-			if connect.CodeOf(unknownErr) != connect.CodeFailedPrecondition || connect.CodeOf(foreignErr) != connect.CodeFailedPrecondition {
-				t.Fatalf("unknown/foreign errors = (%v, %v), want FailedPrecondition", unknownErr, foreignErr)
-			}
-			if unknownErr.Error() != foreignErr.Error() {
-				t.Fatalf("unknown error %q differs from foreign error %q", unknownErr, foreignErr)
+			check := func(class string, hub *Hub, calls func() int, runnerID, sessionID, wantMessage string) string {
+				err := tc.call(hub, runnerID, sessionID)
+				if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+					t.Fatalf("%s binding error = %v, want FailedPrecondition", class, err)
+				}
+				if got := err.Error(); wantMessage != "" && got != wantMessage {
+					t.Fatalf("%s binding message = %q, want %q", class, got, wantMessage)
+				}
+				messages[class] = append(messages[class], err.Error())
+				if n := calls(); n != 0 {
+					t.Fatalf("%s binding delegated %d times, want 0", class, n)
+				}
+				return err.Error()
 			}
 
-			hub = newHub()
+			hub, calls := newHub()
+			bindLiveSession(hub)
+			baseline := check("unknown", hub, calls, testRunnerID, "never-bound", "")
+			check("foreign", hub, calls, "runner-2", "sess-1", baseline)
+
+			hub, calls = newHub()
 			bindings := newFakeBindingStore()
+			bindings.tenantErr = store.ErrConflict
 			hub.SetSessionBindingStore(bindings)
-			hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-			bindings.seed("sess-1")
-			bindings.resolveErr = errors.New("database unavailable")
-			if err := tc.call(hub, testRunnerID, "sess-1"); connect.CodeOf(err) != connect.CodeUnavailable {
-				t.Fatalf("unverifiable binding error = %v, want Unavailable", err)
-			}
+			bindLiveSession(hub)
+			check("tenant conflict", hub, calls, testRunnerID, "sess-1", baseline)
 		})
+	}
+	var wantMessage string
+	for class, got := range messages {
+		if len(got) != len(cases) {
+			t.Fatalf("%s errors = %d, want one from each of %d relay legs", class, len(got), len(cases))
+		}
+		for _, message := range got {
+			if wantMessage == "" {
+				wantMessage = message
+			}
+			if message != wantMessage {
+				t.Fatalf("%s binding message %q differs from shared message %q", class, message, wantMessage)
+			}
+		}
 	}
 }
 

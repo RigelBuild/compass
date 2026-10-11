@@ -1,6 +1,7 @@
 # Compass agent session blobs survive resume
 
 > Freezes on merge; later changes supersede by citation, never rewrite.
+> Amended 2026-10-11: Missing blob storage returns `Unimplemented`; only that status disables uploads or marks resumed images absent. Binding `FailedPrecondition` and transient failures preserve references and remain retryable.
 
 Issue: RIG-1582. Parent record:
 [compass-agent session persistence](../compass-agent-session-persistence/design.md#oq-r3--inline-image-blobs--out-of-mvp-resume-scope-deferred-to-rig-1582)
@@ -214,7 +215,6 @@ exec:
 - `agent-image/toolchain.nix` adds `pkgs.gnutar`, since no tar is linked
   today, and the guest rootfs reuses that image.
 
-Start-latency bound: one stream plus one exec. The fetch runs under
 `resumeBlobFetchTimeout` (30 s) and the budget above. A timeout or any
 non-`FailedPrecondition` error counts as transient, and Start continues. Only
 cancellation of the caller's ctx fails the Start.

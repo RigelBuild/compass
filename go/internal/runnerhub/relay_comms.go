@@ -160,17 +160,9 @@ func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, t
 }
 
 // unbindSession removes a live binding and drives presence offline.
-// session down, but a STOPPED/DISCONNECTED frame arriving after the unbind can
-// no longer resolve the account at deliverSession, so without an edge here the
-// account's presence would stay WORKING/IDLE/WAITING forever. Fire a terminal
-// (DISCONNECTED → OFFLINE) presence edge — but ONLY when THIS session was the
-// account's live session (the reverse entry actually got deleted). If
-// promoteSession already re-pointed the account onto a NEWER session, the
-// account is not offline and no edge fires. publishIfChanged dedups, so an
-// OFFLINE already driven by a terminal frame makes this a no-op second publish.
-// Capture the account under mu, release, then fire the sink — the exact
-// lock-then-release-then-fire discipline promoteSession uses, so the sink (which
-// enqueues into the presence loop) never runs under h.mu.
+// An old terminal frame cannot resolve the account after unbind, so this edge
+// marks it offline only when the reverse mapping still names this session.
+// A promoted replacement stays online; sinks run after releasing h.mu.
 func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 	h.releaseSession(ctx, sessionID, nil)
 }
@@ -678,20 +670,10 @@ func (h *Hub) RelayCommsCall(
 // (runner/gateway/post_conversation_frame.go). The method name and the request/
 // response messages keep the established CommitConversationFrame shape.
 //
-// A binding miss is FailedPrecondition; an unverifiable read is Unavailable.
-//   - committed=true on a fresh commit AND on an idempotent replay of an
-//     already-committed key (the store dedups a duplicate idempotency_key as a
-//     silent success). A non-commit is NEVER committed=false with a nil error —
-//     it is ALWAYS a Connect status error, because the Runner drives
-//     at-least-once purely off the Connect code (err==nil => committed).
-//   - Store errors are mapped to Connect codes (transcriptCommitError, mirroring
-//     the comms edgeError): ErrInvalidArgument -> InvalidArgument (a malformed or
-//     unknown-session frame, terminal), ErrConflict -> AlreadyExists (a genuine
-//     entry_seq collision, terminal), any other -> Internal (a transient store
-//     fault the relay should retry). Never a bare error connect.CodeOf would read
-//     as CodeUnknown — that would wrongly present as a retryable teardown.
-//   - message_id and seq are not meaningful for a transcript entry (the Runner
-//     reads neither): shipped as "" and 0.
+// Unknown and foreign sessions share FailedPrecondition; unverifiable bindings
+// return Unavailable. Store faults map through transcriptCommitError. Successful
+// commits and replays return committed=true; message_id and seq are empty for
+// transcript entries.
 func (h *Hub) CommitConversationFrame(
 	ctx context.Context,
 	runnerID string,

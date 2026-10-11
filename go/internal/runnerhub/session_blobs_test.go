@@ -24,6 +24,7 @@ type fakeSessionBlobStore struct {
 	putErr    error
 	sessionID string
 	account   store.AccountID
+	putCalls  int
 }
 
 func (f *fakeSessionBlobStore) AccountTenant(context.Context, store.AccountID) (store.TenantID, error) {
@@ -31,6 +32,7 @@ func (f *fakeSessionBlobStore) AccountTenant(context.Context, store.AccountID) (
 }
 
 func (f *fakeSessionBlobStore) PutSessionBlob(context.Context, string, string, []byte) error {
+	f.putCalls++
 	return f.putErr
 }
 

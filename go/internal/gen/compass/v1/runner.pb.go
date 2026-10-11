@@ -2093,15 +2093,10 @@ func (x *CommitConversationFrameRequest) GetIdempotencyKey() string {
 //	             the store surfaces a per-row sequence; consumers must not treat
 //	             0 as a valid head position.
 //
-// A NON-commit is surfaced as a Connect status, not committed=false, split by
-// retryability so the Runner can drive at-least-once correctly:
-//
-//	transient (Unavailable / stream teardown / FailedPrecondition contract
-//	  defect) -> a RETRYABLE Connect code; the agent's sink retries on the same
-//	  idempotency_key.
-//	permanent (InvalidArgument malformed frame / NotFound unknown-or-stopped
-//	  session) -> a TERMINAL non-retryable code; the sink drops rather than
-//	  looping the agent forever.
+// A NON-commit is surfaced as a Connect status, not committed=false.
+// Unknown or foreign-Runner sessions return FailedPrecondition; an
+// unverifiable binding returns Unavailable. The Runner retries transient codes
+// with the same idempotency_key and drops terminal malformed-frame errors.
 type CommitConversationFrameResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Committed     bool                   `protobuf:"varint,1,opt,name=committed,proto3" json:"committed,omitempty"`

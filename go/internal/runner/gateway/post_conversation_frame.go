@@ -20,19 +20,10 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// PostConversationFrame commits ONE durable conversation frame to the Server via
-// the dedicated CommitConversationFrame unary and returns only once the Server
-// acknowledges the commit (delivered-or-erred). Unlike the loss-tolerant Publish
-// spine, this does NOT ride the shared PublishEvents publisher: a durable frame
-// leaves that spine entirely and commits request/response, so a Server-side loss
-// is a Connect error the agent retries, never a silent gapless drop. It rejects
-// a frame the durable unary does not carry with CodeInvalidArgument (the lane
-// carries conversation_posted / conversation_updated and the RIG-1570
-// transcript_entry tee variant), and fails closed with CodeFailedPrecondition
-// when no session is bound. Dedups on idempotency_key: a key already committed
-// key already committed in this process returns success without re-committing
-// (advisory fast-path); the durable boundary is the store's atomic at-most-once
-// commit on the same key.
+// PostConversationFrame commits a durable frame through the Server unary.
+// It rejects unsupported variants and an unbound local session before forwarding.
+// The process cache is an advisory fast path; the store enforces at-most-once
+// commit for the idempotency key.
 func (g *Gateway) PostConversationFrame(
 	ctx context.Context,
 	req *connect.Request[compassv1internal.PostConversationFrameRequest],

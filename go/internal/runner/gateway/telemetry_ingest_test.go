@@ -1017,14 +1017,13 @@ func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
 // RED: mark the key committed on a transient failure -> the retry short-circuits
 // (no second commit call) and a genuinely-uncommitted frame is silently dropped.
 func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
-	// A permanent failure surfaces terminal (the agent drops): CodeNotFound /
-	// CodeInvalidArgument. A transient failure surfaces retryable
-	// (CodeUnavailable). The Runner passes each straight through.
+	// Missing or foreign sessions return FailedPrecondition; malformed frames
+	// return InvalidArgument. Only transient Unavailable failures are retryable.
 	for _, tc := range []struct {
 		name string
 		code connect.Code
 	}{
-		{"permanent-not-found", connect.CodeNotFound},
+		{"permanent-failed-precondition", connect.CodeFailedPrecondition},
 		{"permanent-invalid-argument", connect.CodeInvalidArgument},
 		{"transient-unavailable", connect.CodeUnavailable},
 	} {

@@ -1215,14 +1215,9 @@ type promotedPair struct {
 	sessionID string
 }
 
-// enroll registers (or re-attaches) a Runner under its authenticated subject, returning
-// whether it re-attached (OQ6, single-Runner MVP). It drops ALL agent-comms bindings
-// (OQ-2): a restarted Runner could re-mint a still-bound id, so clearing forces
-// a re-minted id to fail relay binding checks until bound anew. RIG-3108: the
-// maps are a read-through cache over session_bindings, which survive restarts.
-// Every enroll reaps this Runner's rows across tenants under the system role.
-// so none of its pre-enroll sessions live. A failed durable reap still runs the
-// in-RAM fallback, then returns the error so the Runner retries enrollment.
+// enroll binds a Runner to its authenticated subject and clears its old
+// session mappings. A failed durable reap still clears the in-memory cache so
+// stale session IDs cannot be reused; enrollment returns the error for retry.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
 	// Held until the runner and router are replaced, so a stream that snapshots
 	// both under it sees one enrollment's pair.

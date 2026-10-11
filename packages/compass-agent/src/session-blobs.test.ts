@@ -311,6 +311,9 @@ test("Unimplemented disables uploads and clears the pending queue", async () => 
 	uploader.offer(line(queued));
 	release.resolve();
 	await waitForCounter(sessionBlobsFailed, failedBefore, 1);
+	const offeredAfterDisable = hash(44);
+	await writeBlob(dir, offeredAfterDisable);
+	uploader.offer(line(offeredAfterDisable));
 	await uploader.close();
 
 	expect(sent).toEqual([first]);

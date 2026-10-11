@@ -133,6 +133,21 @@ func TestFetchSessionBlobsPropagatesMidStreamError(t *testing.T) {
 	}
 }
 
+func TestResumeBlobsMarksReferenceForSuccessfulAbsentHeader(t *testing.T) {
+	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + hash + `"}]}}` + "\n"
+	server := &fakeSessionBlobFetchServer{frames: []*compassv1internal.FetchSessionBlobsResponse{blobHeaderFrame(hash, 0, true)}}
+	host := &agentHost{link: newLink(newRunnerServiceServer(t, server)), log: discardLoggerRunner()}
+
+	marked, files, err := host.resumeBlobs(t.Context(), "container-1", "session-1", body, false)
+	if err != nil {
+		t.Fatalf("resumeBlobs = %v, want success", err)
+	}
+	if !strings.Contains(marked, imageUnavailableText) || len(files) != 0 {
+		t.Fatalf("resumeBlobs = (%q, %v), want unavailable image marker and no files", marked, files)
+	}
+}
+
 func TestResumeBlobsDistinguishesUnsupportedBlobStoreFromUnboundSession(t *testing.T) {
 	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + hash + `"}]}}` + "\n"

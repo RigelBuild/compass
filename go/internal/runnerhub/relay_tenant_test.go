@@ -28,11 +28,13 @@ func TestRunnerRelaysFailClosedWithoutSessionTenant(t *testing.T) {
 			lifecycle := &fakeLifecycleCaller{spawnResp: &compassv1internal.SpawnPeerResponse{}}
 			board := &fakeBoardCaller{resp: &compassv1internal.SetIssueStateResponse{}}
 			transcripts := &fakeTranscriptStore{}
+			forge := &fakeForgeCaller{}
+			blobs := &fakeSessionBlobStore{}
 			hub.SetLifecycleCaller(lifecycle)
 			hub.SetBoardCaller(board)
 			hub.SetTranscriptStore(transcripts)
-			hub.SetForgeCaller(&fakeForgeCaller{})
-			hub.SetSessionBlobStore(&fakeSessionBlobStore{})
+			hub.SetForgeCaller(forge)
+			hub.SetSessionBlobStore(blobs)
 			bindings := newFakeBindingStore()
 			bindings.seed("sess-1")
 			bindings.tenantErr = tenantErr
@@ -45,7 +47,11 @@ func TestRunnerRelaysFailClosedWithoutSessionTenant(t *testing.T) {
 			_, boardErr := hub.RelayBoardCall(ctx, testRunnerID, relaySetIssueState("sess-1", "b-1", &compassv1internal.SetIssueStateRequest{}))
 			_, commitErr := hub.CommitConversationFrame(ctx, testRunnerID, transcriptReq("sess-1", "k-1", 1, false, `{"e":1}`))
 			_, forgeErr := hub.RelayForgeCall(ctx, testRunnerID, relayCreateIssue("sess-1", "f-1", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
-			_, blobErr := hub.RelaySessionBlob(ctx, testRunnerID, &compassv1internal.RelaySessionBlobRequest{SessionId: "sess-1"})
+			blobData := []byte("tenant lookup guard")
+			_, blobErr := hub.RelaySessionBlob(ctx, testRunnerID, &compassv1internal.RelaySessionBlobRequest{
+				SessionId: "sess-1",
+				Blob:      &compassv1internal.PutSessionBlobRequest{Sha256: blobHash(blobData), Data: blobData},
+			})
 			for relay, err := range map[string]error{"comms": commsErr, "lifecycle": lifecycleErr, "board": boardErr, "commit": commitErr, "forge": forgeErr, "session blob": blobErr} {
 				want := connect.CodeFailedPrecondition
 				if name == "store fault" {
@@ -58,7 +64,7 @@ func TestRunnerRelaysFailClosedWithoutSessionTenant(t *testing.T) {
 			if name == "tenant conflict" && connect.CodeOf(commsErr) != connect.CodeFailedPrecondition {
 				t.Fatalf("tenant conflict code = %v, want FailedPrecondition", connect.CodeOf(commsErr))
 			}
-			if n := len(comms.calls) + len(lifecycle.snapshot()) + len(board.snapshot()) + len(transcripts.calls); n != 0 {
+			if n := len(comms.snapshot()) + len(lifecycle.snapshot()) + len(board.snapshot()) + len(transcripts.snapshot()) + len(forge.snapshot()) + blobs.putCalls; n != 0 {
 				t.Fatalf("services called %d times without a session tenant, want 0", n)
 			}
 		})
