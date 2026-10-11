@@ -1032,11 +1032,25 @@ func sameBinding(a, b sessionBinding) bool {
 // that session's tenant, which the caller must use for every later store call.
 func (h *Hub) runnerSessionAccount(ctx context.Context, runnerID, sessionID string) (context.Context, store.AccountID, bool) {
 	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
-	if !scoped {
+	if !scoped || !h.sessionTenantResolved(ctx) {
 		return ctx, "", false
 	}
 	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
 	return ctx, account, ok
+}
+
+// sessionTenantResolved reports whether a relay may run on ctx. With a durable
+// binding store wired, a missing tenant (lookup miss or fault) would fall back to
+// the bootstrap tenant, so it fails closed.
+func (h *Hub) sessionTenantResolved(ctx context.Context) bool {
+	h.mu.Lock()
+	bindings := h.bindings
+	h.mu.Unlock()
+	if bindings == nil {
+		return true
+	}
+	_, ok := store.TenantFromContext(ctx)
+	return ok
 }
 
 // runnerSessionCtx scopes a Runner-originated ctx to the tenant that binds
