@@ -11,6 +11,8 @@ import (
 
 	"connectrpc.com/connect"
 
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -180,6 +182,61 @@ func TestClassifySeedSettle(t *testing.T) {
 				}
 			} else if cerr != nil {
 				t.Errorf("cerr = %v, want nil", cerr)
+			}
+		})
+	}
+}
+
+// enrollProbeClient fails every StopAgentSession with the retryable no-runner
+// error and records the probe ctx deadline; other methods are unused.
+type enrollProbeClient struct {
+	compassServiceClient
+	deadline time.Time
+	hasDL    bool
+}
+
+func (c *enrollProbeClient) StopAgentSession(ctx context.Context, _ *connect.Request[compassv1.StopAgentSessionRequest]) (*connect.Response[compassv1.StopAgentSessionResponse], error) {
+	c.deadline, c.hasDL = ctx.Deadline()
+	return nil, connect.NewError(connect.CodeUnavailable, errors.New(runnerhub.ErrMsgNoRunnerEnrolled+" to serve session"))
+}
+
+// TestRunnerEnrolledProbeBound pins each probe's timeout to
+// min(rpcTimeout, deadline-now), clamped to 1ms once the budget is spent.
+func TestRunnerEnrolledProbeBound(t *testing.T) {
+	base := time.Now()
+	budgetEnd := base.Add(rpcTimeout + 10*time.Second)
+	var offset time.Duration
+	client := &enrollProbeClient{}
+	f := &Fixture{compass: client, now: func() time.Time { return base.Add(offset) }}
+	for _, tc := range []struct {
+		name     string
+		offset   time.Duration
+		deadline time.Time
+		want     time.Duration
+	}{
+		{"no deadline uses rpcTimeout", 0, time.Time{}, rpcTimeout},
+		{"remaining above rpcTimeout uses rpcTimeout", 0, budgetEnd, rpcTimeout},
+		{"remaining equal to rpcTimeout", 10 * time.Second, budgetEnd, rpcTimeout},
+		{"remaining below rpcTimeout uses remaining", 30 * time.Second, budgetEnd, 10 * time.Second},
+		{"nearly spent uses remaining", rpcTimeout + 10*time.Second - 3*time.Millisecond, budgetEnd, 3 * time.Millisecond},
+		{"spent clamps to 1ms", rpcTimeout + 10*time.Second, budgetEnd, time.Millisecond},
+		{"overrun clamps to 1ms", rpcTimeout + 20*time.Second, budgetEnd, time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			offset = tc.offset
+			*client = enrollProbeClient{}
+			before := time.Now()
+			ready, err := f.runnerEnrolledProbe(t.Context(), tc.deadline)
+			after := time.Now()
+			if ready || err != nil {
+				t.Fatalf("runnerEnrolledProbe() = (%v, %v), want (false, nil) on a retryable no-runner error", ready, err)
+			}
+			if !client.hasDL {
+				t.Fatal("probe ctx has no deadline")
+			}
+			// WithTimeout reads the real clock, so the timeout lies in [before, after] + want.
+			if lo, hi := before.Add(tc.want), after.Add(tc.want); client.deadline.Before(lo) || client.deadline.After(hi) {
+				t.Errorf("probe deadline %s after call start, want %s", client.deadline.Sub(before), tc.want)
 			}
 		})
 	}
