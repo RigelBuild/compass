@@ -31,8 +31,10 @@ passes, with its skip guard and V8 W7's presence check (names from source,
 `--- PASS:` required, `--- SKIP:` rejected at any depth). This bar widens W7's
 enumerated file set to all nine `//go:build microvm` test files under `go/`.
 The skip allowlist closes at three, each keyed on test name plus skip-message
-prefix: W1's metadata leg (W1's message); `TestMicroVMVolumeQuotaEnforcedInGuest`
-("no project-quota'd filesystem available"; its headroom skip stays red); and
+prefix: `TestInterTenantHostNetworkUnreachable/metadata_endpoint` ("host
+metadata endpoint 169.254.169.254:80 did not answer"; V8 W1 names neither, so
+this bar fixes the pair); `TestMicroVMVolumeQuotaEnforcedInGuest` ("no
+project-quota'd filesystem available"; its headroom skip stays red); and
 `TestInGuestEgressGatewayDoesNotReachHost` ("host has no IPv4 default-route
 gateway").
 
@@ -102,17 +104,20 @@ resets the window to day 0, and a new window opens on the fix's pinned build:
 2. a probe red: any derived name without `--- PASS:`, whether guest escape,
    cross-session reach, egress breach or another failure;
 3. a Q-budget breach (OQ-5): 3 of the last 20 `microvm session booted`
-   `boot_duration` values over the boot budget; 3 of the last 20 sessions whose
-   first `microvm session memory` line has `vmm_pss_kb + virtiofsd_pss_kb` over
-   the memory budget; or 2 consecutive canaries' `guest_rss_bytes` over it;
+   `boot_duration` values over the boot budget; 3 of the last 20 valid memory
+   samples over the memory budget; or 2 consecutive canaries' `guest_rss_bytes`
+   over it. A valid sample is a session's first `microvm session memory` line
+   carrying both `vmm_pss_kb` and `virtiofsd_pss_kb`;
 4. a session loss (OQ-3): a `microvm session died` line or a failed canary. A
    planned restart does not count: VMs are "killed and rebooted on next
    request, not adopted" (`microvm-runner.md`, § (f));
 5. a `compass.microvm.orphans.reaped{outcome=possibly_live}` point;
 6. a `compass.runner.session.starts{backend=podman}` point (a fallback);
-7. a no-data day: no probe result, or the day's increase in the
+7. a no-data day: no probe result; the day's increase in the
    `compass.microvm.boot.duration{outcome=ok}` histogram count, summed across
-   Runner restarts, is below that day's `microvm session booted` lines.
+   Runner restarts, below that day's `microvm session booted` lines; or fewer
+   than 15 valid memory samples among the last 20 sessions that stayed up at
+   least 60 s (V7's `pssSampleInterval`, so each saw a tick).
 
 **After certification** the soak keeps running on each new pinned build. A
 reset lapses certification until a window closes clean. A `devenv.lock` or
@@ -134,8 +139,10 @@ holds unless it resets.
 - [ ] Matt rules OQ-1 to OQ-5. The PR stays draft until then: DL-486's pending
       status breaks the decisions README's `Active (<who>, YYYY-MM-DD)`. At
       ruling, `Ruled:` becomes `Matt (<date>)`, DL-486 `Active (Matt, <date>)`.
-- [ ] V7 and V8 W1-W7 land, V8 amended: W6 adds `start_ms` (OQ-5); W7 takes
-      criterion 1's file set and allowlist keys, and criterion 2's podman step.
+- [ ] V7 and V8 W1-W7 land, V8 amended: W1 runs the metadata leg as subtest
+      `metadata_endpoint` with criterion 1's skip prefix; W6 adds `start_ms`
+      (OQ-5); W7 takes criterion 1's file set and allowlist keys, and
+      criterion 2's podman step.
 - [ ] Fix the "7 conceded divergences" comments in `contract_microvm_test.go`
       and `contract_suite_test.go` to criterion 2's eight flags.
 - [ ] OQ-4: guest config delivery (V4 OQ-3's follow-up), a live-flip parity
