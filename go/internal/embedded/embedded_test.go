@@ -12,6 +12,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -129,6 +130,40 @@ func TestWhoAmIOverUDSSurfacesError(t *testing.T) {
 	}
 	if id != "" {
 		t.Errorf("account id = %q, want empty on a WhoAmI error", id)
+	}
+}
+
+// TestRunStackUpClassifiesVersionMismatch verifies the exit-status sentinel and stderr survive exec wrapping.
+func TestRunStackUpClassifiesVersionMismatch(t *testing.T) {
+	tests := []struct {
+		name         string
+		exitCode     int
+		wantMismatch bool
+	}{
+		{name: "version mismatch", exitCode: 3, wantMismatch: true},
+		{name: "other failure", exitCode: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bin := filepath.Join(t.TempDir(), "fake-compass-stack")
+			script := fmt.Sprintf("#!/bin/sh\necho 'fake stack stderr' >&2\nexit %d\n", tt.exitCode)
+			if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+				t.Fatalf("write fake stack binary: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
+			defer cancel()
+			err := RunStackUp(bin)(ctx, nil)
+			if err == nil {
+				t.Fatal("RunStackUp() = nil, want an exit error")
+			}
+			if got := errors.Is(err, ErrStackVersionMismatch); got != tt.wantMismatch {
+				t.Errorf("errors.Is(err, ErrStackVersionMismatch) = %v, want %v", got, tt.wantMismatch)
+			}
+			if !strings.Contains(err.Error(), "fake stack stderr") {
+				t.Errorf("error %q does not retain stderr", err)
+			}
+		})
 	}
 }
 

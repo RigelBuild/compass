@@ -17,6 +17,9 @@ import (
 // as a restart-stack prompt.
 var ErrVersionMismatch = errors.New("live stack version does not match this build; restart the stack")
 
+// VersionMismatchExitCode is the compass-stack process status for a live version mismatch.
+const VersionMismatchExitCode = 3
+
 // readyPollInterval and readyPollBudget bound the GetServerInfo readiness poll
 // after compass-server is spawned: the socket binds before migrations complete,
 // so readiness is the first answering probe, not socket existence

@@ -46,11 +46,21 @@ var version = "0.1.0"
 // rejects ":0").
 const defaultListenAddr = "127.0.0.1:50052"
 
+var errStackVersionMismatch = errors.New("the live stack was built by a different version of compass-stack; " +
+	"stop it and run `compass-stack down` (or restart the stack) before bringing up this build")
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		slog.Error("compass-stack exited with an error", "error", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
+}
+
+func exitCode(err error) int {
+	if errors.Is(err, errStackVersionMismatch) {
+		return stack.VersionMismatchExitCode
+	}
+	return 1
 }
 
 // run dispatches the subcommand in args[0] to up/down/status/preflight. An
@@ -483,8 +493,7 @@ func runUp(ctx context.Context, args []string) error {
 	st, err := stack.Up(ctx, cfg, deps)
 	if err != nil {
 		if errors.Is(err, stack.ErrVersionMismatch) {
-			return errors.New("the live stack was built by a different version of compass-stack; " +
-				"stop it and run `compass-stack down` (or restart the stack) before bringing up this build")
+			return errStackVersionMismatch
 		}
 		return fmt.Errorf("bringing up the stack: %w", err)
 	}

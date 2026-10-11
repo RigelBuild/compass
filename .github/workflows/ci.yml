@@ -1919,10 +1919,11 @@ jobs:
           # package because that package also holds GUI E2E tests that need a
           # display; the machine and preflight tests live in internal/embedded.
           CGO_ENABLED=1 go -C go test -trimpath \
-            -run 'TestDistDirForExecutable|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout' \
+            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout' \
             -count=1 -v \
             ./cmd/compass-app/ ./internal/embedded/ | tee /tmp/darwin-unit.log
           for t in TestDistDirForExecutable \
+                   TestHandleStackVersionMismatch \
                    TestMachineReadyRunning \
                    TestMachineReadyNoMachine \
                    TestEnsureMachineReadyNoMachineProvisions \
