@@ -1155,6 +1155,12 @@ message PullRequest {
   ChecksSummary checks = 13;    // rolled-up CI state, translated at ingestion; unset for no CI
   repeated Review reviews = 14; // submitted reviews (approve/request-changes/comment), each flagged is_bot
   repeated ReviewThread threads = 15; // review threads with their comments and resolution
+  // The commit SHA of the PR head.
+  string head_sha = 16;
+  // The forge's mergeability state for this PR.
+  string mergeable_state = 17;
+  // The PR's merge queue entry, when queued.
+  MergeQueueEntry merge_queue = 18;
 }
 
 // The rolled-up CI + status-check state on a PR head — Compass-owned, populated
@@ -1186,8 +1192,9 @@ message TrackerRef {
   string id = 2;                // the tracker's native issue id, e.g. "RIG-1042"
   string status = 3;            // the tracker's native status name in the user's org
   string url = 4;
+  string state_id = 5;          // the tracker's workflow state id (Linear WorkflowState.id)
+  string state_type = 6;        // the state category, e.g. Linear "started" | "completed"
 }
-
 // The full review state the right-sidebar PR pane shows — every submitted review
 // (human and bot) plus the review threads and their comments, translated from
 // the forge at ingestion. Wire contract: `reviews` is submission-ordered
@@ -1199,6 +1206,8 @@ message Review {
   bool is_bot = 2;      // true when the reviewer is a bot
   string verdict = 3;   // "approved" | "changes_requested" | "commented"
   string body = 4;      // the review's summary comment (may be empty)
+  // The commit SHA this review applies to.
+  string commit_id = 5;
 }
 message ReviewThread {
   string path = 1;      // the file the thread anchors to; empty for a PR-level thread
@@ -1209,4 +1218,14 @@ message Comment {
   string author = 1;
   bool is_bot = 2;
   string body = 3;
+}
+
+// The observed state of a pull request in its merge queue.
+message MergeQueueEntry {
+  // The system providing the merge queue.
+  string provider = 1;
+  // The queue state: queued, testing, failed, removed, or merged.
+  string state = 2;
+  // When the queue state changed.
+  google.protobuf.Timestamp changed_at = 3;
 }
