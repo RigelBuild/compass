@@ -293,7 +293,8 @@ is not deterministic.
   - A status line shows while cancelled: `<div class="ask-withdrawn"
     role="status">Withdrawn by the asker — no longer taking answers.</div>`.
     While the ask is cancelled, it replaces the `ask-error` span, so a refusal
-    caused by the cancel does not show as a raw error.
+    caused by the cancel does not show as a raw error. This guards the DOM only;
+    the store rules below keep `askError` clear.
 - **A user mid-answer when the cancel arrives.** Their picks and typed text are
   local only. The pushed cancelled ask wins:
   - `serverHasNoAnswer` becomes `serverIsOpen = (ask) => !ask.answered &&
@@ -306,11 +307,15 @@ is not deterministic.
     on an answered one.
 - **A respond in flight when the cancel commits** is refused with
   `AlreadyExists`. Both arrival orders converge on "withdrawn, no error":
-  - push first, then refusal: the `sendAsk` catch clears the submitted mark,
-    and its restage guard adds `!current.cancelled`, so nothing is restaged.
+  - push first, then refusal: the `sendAsk` catch clears the submitted mark.
+    Its restage guard adds `!current.cancelled`, so nothing is restaged. The
+    catch also skips `setAskErrors` when `current?.cancelled`, so
+    `askError(askId)` stays clear. It still calls `onCommsError`, so the refusal
+    is never swallowed.
   - refusal first, then push: the ask still reads open, so the catch restages
     and records the error. The cancelled push then replaces the block, and the
-    withdrawn line hides the error.
+    withdrawn line hides the error span. `askError(askId)` keeps the stale
+    message in this order; only the DOM hides it.
 - **CSS** (`apps/ui/src/app.css`): the `.block-ask.answered` rule's selector
   becomes `.block-ask.answered, .block-ask.cancelled`, so there is one rule, not
   a copy. `.ask-withdrawn` uses `--cx-text-dim`.
@@ -436,10 +441,11 @@ with a derivation rule that every reader must follow.
 
 ## Decisions (ledger rows)
 
-These rows are not claimed yet. Ids are claimed with `bun tools/dl-claim` after
-Matt rules, as `docs/designs/decisions/agent/DL-NNN.md` files (front matter
-`id` / `decision` / `status` / `record`), in this record's PR. Each row follows
-its OQ's recommendation; a different ruling changes the row.
+These rows are not claimed yet. After Matt rules, the ids are claimed with
+`bun tools/dl-claim` in this record's PR, and that PR adds the
+`docs/designs/decisions/agent/DL-NNN.md` files (front matter `id` / `decision` /
+`status` / `record`). No later slice claims ids. Each row follows its OQ's
+recommendation; a different ruling changes the row.
 
 - **Asks are immutable by construction.** The author block-update path is
   removed. After append, only `AnswerAsk` and `CancelAsk` write an ask's
@@ -478,7 +484,8 @@ Lane: `compass-go` (pgtest). Gate: `compass-go:build`, `compass-go:sqlc-drift`,
 and `go test -tags pgtest ./internal/store/... ./internal/comms/...`.
 
 - `go/internal/comms/agent_caller.go`: delete `CommitAgentUpdate`,
-  `reconcileUpdateAskIDs`, `askIDMismatchError`, and `surplusAskError`.
+  `reconcileUpdateAskIDs`, `askIDMismatchError`, and `surplusAskError`. Remove
+  the `fmt` import: the two error types' `Error` methods are its only users.
 - `go/internal/comms/mapping.go`: delete `updateBlocksFromWire` and
   `askFromWireForUpdate`. The `askQuestionsFromWire` comment drops the
   UPDATE sibling.
@@ -494,7 +501,8 @@ and `go test -tags pgtest ./internal/store/... ./internal/comms/...`.
 - Tests that exercise only the deleted path go with it:
   - `go/internal/comms/agent_conversation_pgtest_test.go`: delete the eight
     `TestCommitAgentUpdate*` tests and the helpers `updatedFrame`,
-    `askBlockWire`, and `askBlockWireID`. In
+    `askBlockWire`, and `askBlockWireID`. Remove the `strings` import: only the
+    deleted ask-id-mismatch, surplus-ask, and foreign-ask tests use it. In
     `TestCommitAgentFramesEmptyAccountFailsClosed`, drop the update assertion,
     discard the now-unused `seeded` result, and rename the test
     `TestCommitAgentPostEmptyAccountFailsClosed`.
@@ -687,8 +695,10 @@ Tests (RED first):
 - Store, `presence_reads_test.go`: `TestAgentHasOpenAskIgnoresCancelledAsk`.
   The only open ask is cancelled → false; a second open ask → true.
 - Comms, `ask_mapping_test.go`: add `"cancelled"` to
-  `askOwnership.serverOwned`, so `TestAskFromWireDropsEveryServerOwnedField`
-  proves the POST path drops it. Add `TestAskCancelledProjectsOutbound`.
+  `askOwnership.serverOwned`, and add `if got.Cancelled { t.Error(...) }` beside
+  the `got.Answered` check in `TestAskFromWireDropsEveryServerOwnedField`. The
+  classification alone does not prove the drop; the named assertion does. Add
+  `TestAskCancelledProjectsOutbound`.
 - Comms, new `go/internal/comms/ask_cancel_test.go` (pgtest, `newStreamHarness`):
   - `TestCancelAskAsAccountPublishesMessageUpdatedOnce`: the subscriber sees
     one `MessageUpdated` with `ask.cancelled=true` and no `MessagePosted`. Then
@@ -725,8 +735,10 @@ Lane: `compass-agent`. Gate: `compass-agent:typecheck` and `compass-agent:test`.
     empty-questions fallback renders as `[withdrawn ${fence} id="…"]`.
 - `packages/compass-agent/src/render-guard.ts`: add `[withdrawn]` to the
   `flat` comment's marker list.
-- `packages/compass-agent/AGENTS.md` and `docs/concepts/tools.md`: update the
-  tool count and list `comms_cancel_ask`.
+- Tool count "twelve" → "thirteen": `packages/compass-agent/AGENTS.md`,
+  `docs/concepts/tools.md`, and the `packages/compass-agent/src/transport/index.ts`
+  header comment ("all twelve native comms tools"). The first two also list
+  `comms_cancel_ask`.
 
 Interfaces:
 
@@ -780,7 +792,9 @@ Lane: `compass-ui`. Gate: `compass-ui:typecheck`, `compass-ui:test`, and
 - `apps/ui/src/live/adapt.ts`: `adaptAsk` maps `cancelled: w.cancelled`.
 - `apps/ui/src/store.ts`:
   - `serverHasNoAnswer` → `serverIsOpen`;
-  - the `sendAsk` restage guard adds `!current.cancelled`;
+  - in the `sendAsk` catch, the restage guard adds `!current.cancelled`, and
+    `setAskErrors` is skipped when `current?.cancelled` (`onCommsError` still
+    fires);
   - `recordAnswer` and `submitAsk` return early on `ask.cancelled`.
 - `apps/ui/src/components/ChannelView.tsx`: apply the D6 changes to
   `AskBlock`: `closed()`, the split `answered` / `cancelled` classes, the
@@ -814,19 +828,27 @@ const serverIsOpen = (ask: Ask) => !ask.answered && !ask.cancelled;
 
 Tests (RED first):
 
-- `ChannelView.ask.test.tsx`: a cancelled ask shows the withdrawn status, has
-  class `cancelled` and not `answered`, and every option and input is disabled
-  with no submit control.
+- `ChannelView.ask.test.tsx`:
+  - a cancelled ask shows the withdrawn status, has class `cancelled` and not
+    `answered`, and every option and input is disabled with no submit control;
+  - push first: a respond is held (`holdNextAskResponse`), a cancelled push
+    arrives (`emit`), and the gate rejects. No `ask-error` span renders, and
+    the withdrawn line shows;
+  - refusal first: `markAskCancelled`, then submit, then the cancelled push. No
+    `ask-error` span renders, and the withdrawn line shows.
 - `store.live.test.ts`: the user stages picks and text, and then a cancelled
   push arrives. The block holds no staged values, is locked, and `submitAsk`
   sends nothing (`askResponses` stays empty).
-- `store.ask-race.test.ts`:
-  - push first: a respond is held (`holdNextAskResponse`), a cancelled push
-    arrives, and the gate rejects with `[already_exists] … is cancelled`. There
-    is no restage and no `ask-error` span, and the withdrawn line shows.
+- `store.ask-race.test.ts` (store only, no DOM). Its `withLiveStore` gains an
+  optional `onCommsError` parameter, the same shape as the `store.live.test.ts`
+  helper:
+  - push first: a respond is held, a cancelled push arrives, and the gate
+    rejects with `[already_exists] … is cancelled`. Nothing is restaged, the
+    block holds no staged values, `store.askError("ask-1")` is `undefined`, and
+    `onCommsError` received the refusal.
   - refusal first: `markAskCancelled`, then submit. The refusal restages and
-    records the error. Then the cancelled push arrives. The end state is the
-    same as above: withdrawn, locked, no staged values, no error span.
+    `store.askError("ask-1")` holds the message. Then the cancelled push
+    arrives: the block is cancelled with no staged values.
 - `adapt.test.ts`: `cancelled` maps through.
 
 ### T5 — Spec and ledger
@@ -839,8 +861,8 @@ Lane: `compass-eng-docs`.
   withdraw is refused; a withdraw after an answer is refused; a non-author
   cannot withdraw; a racing respond and withdraw have exactly one winner. The
   `CommsService` message-surface list does not change (no public RPC).
-- Ledger: claim the ids for the Decisions rows (after Matt rules) and add the
-  `docs/designs/decisions/agent/DL-NNN.md` files.
+- Ledger: T5 claims no ids. The record PR claimed them (see Decisions); T5's PR
+  body cites them. The spec itself carries no DL ids, as today.
 
 Tests: none new. The driver's docs gate covers this slice.
 
@@ -854,8 +876,9 @@ Tests: none new. The driver's docs gate covers this slice.
 
 ## Open Questions
 
-The design follows each recommendation. Matt rules on the record PR. OQ-1 is
-load-bearing: it decides the shape of T1.
+The design follows each recommendation. Matt rules in the linked decision
+issue; the rulings are then folded in here. OQ-1 is load-bearing: it decides
+the shape of T1.
 
 - **OQ-1 — Delete the dead author-update path, or harden it?**
   - (a) Delete it (D1). Asks are immutable by construction. A future edit path
