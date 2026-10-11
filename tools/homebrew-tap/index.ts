@@ -64,11 +64,35 @@ end
 `;
 }
 
+/** True when `tag` is strictly newer than the version a tap formula pins. */
+export function isNewerThanFormula(tag: string, formula: string): boolean {
+	const pinned = /^\s*version "(\d+)\.(\d+)\.(\d+)"$/m.exec(formula);
+	if (!pinned)
+		throw new Error("current tap formula has no semver version line");
+	const next = /^v(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+	if (!next) throw new Error(`tag ${JSON.stringify(tag)} is not vX.Y.Z`);
+	for (let i = 1; i <= 3; i++) {
+		const diff = Number(next[i]) - Number(pinned[i]);
+		if (diff !== 0) return diff > 0;
+	}
+	return false;
+}
+
 if (import.meta.main) {
-	const [tag, sumsPath, outPath] = process.argv.slice(2);
+	const [tag, sumsPath, outPath, currentPath] = process.argv.slice(2);
 	if (!tag || !sumsPath || !outPath) {
-		console.error("usage: homebrew-tap <tag> <SHA256SUMS> <out.rb>");
+		console.error(
+			"usage: homebrew-tap <tag> <SHA256SUMS> <out.rb> [current.rb]",
+		);
 		process.exit(2);
+	}
+	// An empty out file tells the release step the tap is already at or past tag.
+	if (
+		currentPath &&
+		!isNewerThanFormula(tag, await Bun.file(currentPath).text())
+	) {
+		await Bun.write(outPath, "");
+		process.exit(0);
 	}
 	const sums = parseSha256Sums(await Bun.file(sumsPath).text());
 	await Bun.write(outPath, renderFormula(tag, sums));
