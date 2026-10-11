@@ -157,13 +157,15 @@ func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
 		return nil, err
 	}
 	switch WorkloadTier(backend) {
+	case "", WorkloadTierPodman:
+		return NewPodmanCLI(), nil
 	case WorkloadTierMicroVM:
 		return NewMicroVMRuntime(cfg.MicroVM), nil
 	case WorkloadTierAppleContainer:
 		return NewAppleContainerCLI(cfg.AppleContainer), nil
 	case WorkloadTierHost:
 		return NewHostRuntime(defaultHostStateRoot()), nil
-	default: // "" or podman; ValidBackend rejected everything else.
-		return NewPodmanCLI(), nil
+	default: // fail closed: an accepted name with no selector must not land on podman
+		return nil, fmt.Errorf("runtime: backend %q is accepted but has no selector", backend)
 	}
 }
