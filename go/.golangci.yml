@@ -8,11 +8,8 @@
 # pinned (devenv.nix + ci/ci-toolchain.nix) so an upgrade is a deliberate act
 # that re-reviews the newly-shipped linters (the F1 ratchet).
 #
-# The load-bearing pair is the exhaustiveness gate (F-sumtype): `exhaustive`
-# for enum/iota switches and `gochecksumtype` for sealed-interface sum types
-# (the compass.v1 oneof wrapper interfaces). A dropped oneof arm compiles and
-# silently drops a variant in Go, so this gate is what makes a missing arm a
-# build failure — the enforcement the totality discipline relies on.
+# The exhaustiveness gate (F-sumtype): `exhaustive` for enum switches and
+# `gochecksumtype` for `//sumtype:decl` interfaces, so a dropped arm fails the build.
 
 version: "2"
 
@@ -44,7 +41,7 @@ linters:
     - exhaustruct_v5 # successor to exhaustruct (golangci-lint 2.13), same idiom fight
     - varnamelen # short names (i, g, ok, ul) are idiomatic Go, not a defect
     - ireturn # returning interfaces (constructors, test helpers) is idiomatic Go
-    - noctx # the daemon binds process-lifetime listeners and does a local stale-socket probe; a request-scoped net.Dialer/ListenConfig has no caller ctx to thread here (a T3+ outbound client to the Runner brings noctx back into play with per-call ctx)
+    - noctx # process-lifetime listeners, fixture subprocesses and a stale-socket probe have no caller ctx; enabling it needs per-site triage, tracked separately
     - gochecknoglobals # sentinel errors are package-level vars by design (errors.Is/%w, F-oops)
     - err113 # demands a sentinel var per dynamic error; inline fmt.Errorf leaf errors are idiomatic
     - noinlineerr # `if err := f(); err != nil` is THE idiomatic Go form
@@ -54,14 +51,14 @@ linters:
     - godoclint # pedantic godoc-shape checks; descriptive per-file package headers are fine
 
     # ── Class 3: needs an undeclared fleet policy ────────────────────────────
-    - tagliatelle # struct-tag naming convention undeclared, and proto-generated tags would fight one
+    - tagliatelle # no struct-tag case policy declared; hand-written JSON/YAML tags follow external and persisted wire formats (mostly snake_case: forge APIs, OpenAI, NATS, stored JSON)
     - importas # no import-alias convention declared
     - testpackage # no policy forbidding white-box test packages; the tests need unexported access
     - paralleltest # no fleet policy mandating t.Parallel() in every test
     - gomodguard # deprecated v1 alias (superseded by gomodguard_v2, active in settings below); disabled so `all` does not re-enable it and emit a deprecation warning
 
     # ── Class 4: wrong for our workflow ──────────────────────────────────────
-    - godox # we track TODOs with issue refs (Linear SEA-nnn), never forbid them
+    - godox # we track TODOs with issue refs (Linear RIG-nnn), never forbid them
 
   settings:
     # F1 import fence (RIG-3033): a DENYLIST (not an allowlist — an allowlist
@@ -121,12 +118,8 @@ linters:
     goconst:
       ignore-tests: true
 
-    # F-sumtype prerequisite: gochecksumtype only checks interfaces carrying the
-    # `//sumtype:decl` directive, and by default a `default:` arm satisfies the
-    # check. Turn that off so a sum-type switch must enumerate every arm — a
-    # non-panicking default no longer masks a dropped variant. Advisory in effect
-    # until the first sealed interface carries `//sumtype:decl` (the compass.v1
-    # oneof wrappers, when a handler switches over one); gates from that point on.
+    # A `default:` arm must not satisfy a sum-type switch, or a non-panicking
+    # default masks a dropped variant.
     gochecksumtype:
       default-signifies-exhaustive: false
 
@@ -135,9 +128,8 @@ linters:
     exhaustive:
       default-signifies-exhaustive: true
 
-    # F-slog: enforce consistent slog usage for when logging lands — key-value
-    # pairs must be complete and keys consistently cased. Advisory in effect
-    # until the first slog call site exists.
+    # F-slog: enforce consistent slog usage — key-value pairs must be complete
+    # and keys snake_case. Live across the module's slog call sites.
     sloglint:
       no-mixed-args: true
       kv-only: false
