@@ -127,7 +127,7 @@ type CredentialStore interface {
 	List(ctx context.Context, ownerUserID store.AccountID, provider string) ([]Credential, error)
 	// UpdateOAuth replaces the grant of an OAuth credential in agentAccountID's
 	// pool when its version is expectedVersion; an empty field keeps the stored
-	// value unless clear names it. It returns the new version.
+	// value unless its name appears in clearFields. It returns the new version.
 	UpdateOAuth(ctx context.Context, agentAccountID store.AccountID, id string, tok OAuthToken, expectedVersion int64, clearFields []string) (int64, error)
 	// Disable removes a credential in agentAccountID's pool from every pool when
 	// its version is expectedVersion, recording cause for its owner.
@@ -165,10 +165,4 @@ func ValidOAuthClearFields(names []string) bool {
 		}
 	}
 	return true
-}
-
-func clearOAuthField(t *OAuthToken, name string) {
-	if zero, ok := oauthClearable[name]; ok {
-		zero(t)
-	}
 }

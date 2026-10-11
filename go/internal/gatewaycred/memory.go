@@ -103,6 +103,9 @@ func (m *Memory) UpdateOAuth(ctx context.Context, agent store.AccountID, id stri
 	if id == "" || agent == "" || expected == 0 || tok.Access == "" {
 		return 0, fmt.Errorf("%w: id, agent, expected version, and access token are required", ErrInvalidArgument)
 	}
+	if !ValidOAuthClearFields(clearFields) {
+		return 0, fmt.Errorf("%w: clear fields name a field that cannot be cleared", ErrInvalidArgument)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rows := m.tenant(ctx)
@@ -276,7 +279,7 @@ func mergeOAuth(old, next OAuthToken, clearFields []string) OAuthToken {
 		next.ActiveOrganizationID = old.ActiveOrganizationID
 	}
 	for _, name := range clearFields {
-		clearOAuthField(&next, name)
+		oauthClearable[name](&next)
 	}
 	return next
 }

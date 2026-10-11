@@ -100,6 +100,9 @@ func (p *Postgres) UpdateOAuth(ctx context.Context, agent store.AccountID, id st
 	if id == "" || agent == "" || expected == 0 || tok.Access == "" {
 		return 0, fmt.Errorf("%w: id, agent, expected version, and access token are required", ErrInvalidArgument)
 	}
+	if !ValidOAuthClearFields(clearFields) {
+		return 0, fmt.Errorf("%w: clear fields name a field that cannot be cleared", ErrInvalidArgument)
+	}
 	var updated int64
 	err := p.st.WithTx(ctx, func(tx pgx.Tx) error {
 		q := db.New(tx)
