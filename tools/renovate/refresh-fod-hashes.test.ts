@@ -41,7 +41,11 @@ function mustFind(id: string): FodEntry {
 	return entry;
 }
 const GO_ENTRY = mustFind("guestd-go-vendor");
-const BUN_ENTRY = mustFind("agent-node-modules-agent-image-pkgs");
+// One entry per system pin in entrypoint.nix; both share the file and the triggers.
+const BUN_ENTRIES = (["x86_64-linux", "aarch64-linux"] as const).map((s) =>
+	mustFind(`agent-node-modules-${s}`),
+);
+const BUN_ENTRY = BUN_ENTRIES[0] as FodEntry;
 const UI_ENTRY = mustFind("ui-node-modules");
 
 // The real repo, for the table properties that must hold against files on disk
@@ -86,40 +90,50 @@ const GO_MIRROR_FIXTURE = `let
 in compass-app
 `;
 const BUN_NIX_FIXTURE = `let
-  nodeModules = pkgs.stdenv.mkDerivation {
-    ${BUN_ENTRY.marker}${bodyOf(PLACEHOLDER_BUN)}";
+  outputHashBySystem = {
+${BUN_ENTRIES.map((e) => `    ${e.marker}${bodyOf(PLACEHOLDER_BUN)}";`).join("\n")}
   };
-in nodeModules
+in outputHashBySystem
 `;
 // A stand-in for each vehicle the table names that is not itself a pin file. The
 // stub nix never evaluates it; it exists so the fixture tree has the file the
 // script passes to `nix build -f`, matching the real layout.
 const VEHICLE_FIXTURE = "{ }\n";
 
-// A fake nix: emit a hash mismatch block for BOTH FODs (the real build with
+// A fake nix: emit a hash mismatch block for every FOD (the real build with
 // --keep-going reports every stale FOD), each with a fragment-derived got: SRI.
+// node-modules is salted with the build target ($4), so each system pin gets its own value.
 // Offline.
 const STUB_NIX = `#!/usr/bin/env bash
 emit() {
   local frag="$1"
   local digest
-  digest="$(printf %s "$frag" | sha256sum | cut -d' ' -f1)"
+  digest="$(printf %s "$frag$2" | sha256sum | cut -d' ' -f1)"
   echo "error: hash mismatch in fixed-output derivation '/nix/store/deadbeef-compass-\${frag}.drv':" >&2
   echo "         specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" >&2
   echo "            got:    sha256-stub-\${digest}" >&2
 }
 emit go-modules
-emit node-modules
+emit node-modules "$4"
 emit compass-ui-node-modules
 exit 1
 `;
 
 // Mirror the stub's fragment→SRI derivation so the expected value is computable
 // in-process.
-function stubSriForFragment(fragment: string): string {
+function stubSriForFragment(fragment: string, salt = ""): string {
 	const hasher = new Bun.CryptoHasher("sha256");
-	hasher.update(fragment);
+	hasher.update(fragment + salt);
 	return `sha256-stub-${hasher.digest("hex")}`;
+}
+
+// Each system pin must carry the value its OWN target reported.
+function expectBunPinsRefreshed(bunNix: string): void {
+	for (const entry of BUN_ENTRIES) {
+		expect(maybeHashOnMarker(bunNix, entry.marker)).toBe(
+			stubSriForFragment("node-modules", entry.buildTarget),
+		);
+	}
 }
 
 // The `sha256-…` value on the marker line, tolerating absence, so tests
@@ -286,9 +300,7 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		expect(res.exitCode).toBe(0);
 
 		const bunNix = await readFile(join(repo, BUN_ENTRY.file), "utf8");
-		expect(maybeHashOnMarker(bunNix, BUN_ENTRY.marker)).toBe(
-			stubSriForFragment("node-modules"),
-		);
+		expectBunPinsRefreshed(bunNix);
 		expect(await readFile(join(repo, GO_ENTRY.file), "utf8")).toBe(goBefore);
 	});
 
@@ -303,9 +315,7 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		expect(res.exitCode).toBe(0);
 
 		const bunNix = await readFile(join(repo, BUN_ENTRY.file), "utf8");
-		expect(maybeHashOnMarker(bunNix, BUN_ENTRY.marker)).toBe(
-			stubSriForFragment("node-modules"),
-		);
+		expectBunPinsRefreshed(bunNix);
 		expect(await readFile(join(repo, GO_ENTRY.file), "utf8")).toBe(goBefore);
 	});
 	test.each([
@@ -380,21 +390,20 @@ describe("entrypoint outputHash refresh", () => {
 		if (repo) await rm(repo, { recursive: true, force: true });
 	});
 
-	// The pin's only importer is the agent image, so its vehicle is the one realised.
-	test("refreshes the pin through the agent-image vehicle", async () => {
+	// The pin's only importer is the agent image, so its vehicle is the one realised,
+	// once per system: an x64 Renovate run must also refresh the arm64 pin.
+	test("refreshes both system pins through the agent-image vehicle", async () => {
 		await Bun.write(join(repo, "bun.lock"), "bumped\n");
 
 		const res = await runRefresh(repo);
 		const stdout = res.stdout.toString();
 
 		expect(res.exitCode).toBe(0);
-		expect(stdout).toContain(
-			`via ${BUN_ENTRY.buildTarget} (${BUN_ENTRY.buildFile})`,
-		);
+		for (const entry of BUN_ENTRIES) {
+			expect(stdout).toContain(`via ${entry.buildTarget} (${entry.buildFile})`);
+		}
 		const bunNix = await readFile(join(repo, BUN_ENTRY.file), "utf8");
-		expect(maybeHashOnMarker(bunNix, BUN_ENTRY.marker)).toBe(
-			stubSriForFragment("node-modules"),
-		);
+		expectBunPinsRefreshed(bunNix);
 		expect(bunNix).not.toContain("sha256-AAAAAAAA");
 	});
 });

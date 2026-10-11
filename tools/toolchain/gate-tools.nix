@@ -22,6 +22,8 @@
 #            because no cache holds these rebuilds and only the battery jobs run them.
 #   meissa   name -> identity for rumdl + biome, built by the Meissa flake at the
 #            rev devenv.lock pins — the derivations devenv.nix appends. Closed set.
+#   bun      the pinned bun derivation itself, for a runner with no cached `langs`
+#            store path (the arm FOD job) to build.
 { attrs ? [ ] }:
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
@@ -104,4 +106,5 @@ in
   # The base policy .rumdl.toml extends; CI exports it as RUMDL_BASE_CONFIG.
   rumdlBaseConfig = meissaPkgs."rumdl-base-config";
   analysis = goAnalysisTools;
+  inherit (toolchainTools) bun;
 }

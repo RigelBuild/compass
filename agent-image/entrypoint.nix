@@ -20,11 +20,15 @@
 let
   system = pkgs.stdenv.hostPlatform.system;
 
-  # Per-system native pins: the FOD hash covers the platform-specific
-  # optionalDependency, and the addon set differs by arch (x64 two, arm64 one).
+  # Per-system pins: the FOD covers the platform-specific optionalDependency,
+  # and the addon set differs by arch (x64 two, arm64 one).
+  outputHashBySystem = {
+    "x86_64-linux" = "sha256-GxAf2e7XkExIWZBPQvZeFJNbENPzxvbKKxZ16m38ii4=";
+    "aarch64-linux" = "sha256-AOG/vjhcj1Ww9TQmYs1msUaTgUX4ZTulF/neiNX//HU=";
+  };
   nativeBySystem = {
     "x86_64-linux" = {
-      outputHash = "sha256-GxAf2e7XkExIWZBPQvZeFJNbENPzxvbKKxZ16m38ii4=";
+      bunCpu = "x64";
       nativesPkg = "pi-natives-linux-x64";
       addons = [
         "pi_natives.linux-x64-modern.node"
@@ -32,14 +36,13 @@ let
       ];
     };
     "aarch64-linux" = {
-      outputHash = "sha256-AOG/vjhcj1Ww9TQmYs1msUaTgUX4ZTulF/neiNX//HU=";
+      bunCpu = "arm64";
       nativesPkg = "pi-natives-linux-arm64";
       addons = [ "pi_natives.linux-arm64.node" ];
     };
   };
   native =
-    nativeBySystem.${system}
-      or (throw "compass-agent entrypoint: unsupported system ${system}");
+    nativeBySystem.${system} or (throw "compass-agent entrypoint: unsupported system ${system}");
 
   # The package's dependency closure, fetched once as a fixed-output derivation
   # (the only derivation here allowed network access). `--frozen-lockfile` pins
@@ -48,95 +51,102 @@ let
   # and the SDK decodes images with Bun.Image, which the nixpkgs bun lacks.
   pinnedBun = (import ../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
 
-  nodeModules = pkgs.stdenv.mkDerivation {
-    pname = "compass-agent-node-modules";
-    version = "0.1.0";
+  # Parameterized by TARGET system: `--cpu` selects that arch's optionalDependency,
+  # so either pin can be recomputed from any host.
+  nodeModulesFor =
+    target:
+    pkgs.stdenv.mkDerivation {
+      pname = "compass-agent-node-modules";
+      version = "0.1.0";
 
-    # Only the files `bun install` reads: the lockfile plus EVERY workspace
-    # member's package.json (bun resolves the whole graph before installing one
-    # filtered package). No source files, so a code edit does not invalidate this
-    # closure. The member list is READ FROM the root manifest rather than restated,
-    # so adding a workspace package cannot silently break this build; entries mix
-    # literal paths and one-level globs (`packages/*`).
-    src =
-      let
-        repoRoot = ../.;
-        entries = (builtins.fromJSON (builtins.readFile ../package.json)).workspaces.packages;
-        expand =
-          entry:
-          if lib.hasSuffix "/*" entry then
-            let
-              parent = lib.removeSuffix "/*" entry;
-              children = builtins.readDir (repoRoot + "/${parent}");
-            in
-            lib.mapAttrsToList (name: _: "${parent}/${name}") (
-              lib.filterAttrs (
-                name: type:
-                type == "directory" && builtins.pathExists (repoRoot + "/${parent}/${name}/package.json")
-              ) children
-            )
-          else
-            [ entry ];
-        manifests = map (p: repoRoot + "/${p}/package.json") (lib.concatMap expand entries);
-      in
-      lib.fileset.toSource {
-        root = repoRoot;
-        fileset = lib.fileset.unions (
-          [
-            ../bun.lock
-            ../package.json
-          ]
-          ++ manifests
-        );
-      };
+      # Only the files `bun install` reads: the lockfile plus EVERY workspace
+      # member's package.json (bun resolves the whole graph before installing one
+      # filtered package). No source files, so a code edit does not invalidate this
+      # closure. The member list is READ FROM the root manifest rather than restated,
+      # so adding a workspace package cannot silently break this build; entries mix
+      # literal paths and one-level globs (`packages/*`).
+      src =
+        let
+          repoRoot = ../.;
+          entries = (builtins.fromJSON (builtins.readFile ../package.json)).workspaces.packages;
+          expand =
+            entry:
+            if lib.hasSuffix "/*" entry then
+              let
+                parent = lib.removeSuffix "/*" entry;
+                children = builtins.readDir (repoRoot + "/${parent}");
+              in
+              lib.mapAttrsToList (name: _: "${parent}/${name}") (
+                lib.filterAttrs (
+                  name: type:
+                  type == "directory" && builtins.pathExists (repoRoot + "/${parent}/${name}/package.json")
+                ) children
+              )
+            else
+              [ entry ];
+          manifests = map (p: repoRoot + "/${p}/package.json") (lib.concatMap expand entries);
+        in
+        lib.fileset.toSource {
+          root = repoRoot;
+          fileset = lib.fileset.unions (
+            [
+              ../bun.lock
+              ../package.json
+            ]
+            ++ manifests
+          );
+        };
 
-    nativeBuildInputs = [ pinnedBun ];
-    dontConfigure = true;
+      nativeBuildInputs = [ pinnedBun ];
+      dontConfigure = true;
 
-    buildPhase = ''
-      runHook preBuild
-      export HOME=$TMPDIR
-      bun install --frozen-lockfile --ignore-scripts --filter '@compass/agent'
-      runHook postBuild
-    '';
+      buildPhase = ''
+        runHook preBuild
+        export HOME=$TMPDIR
+        bun install --frozen-lockfile --ignore-scripts --filter '@compass/agent' \
+          --cpu=${nativeBySystem.${target}.bunCpu} --os=linux
+        runHook postBuild
+      '';
 
-    # Bun's isolated layout is WORKSPACE-RELATIVE: the real packages live once in
-    # the root store and the member's own `node_modules` is a tree of symlinks
-    # pointing back up. Both trees are kept at their original depths so the
-    # relative links resolve — flattening breaks every dependency.
-    installPhase = ''
-      runHook preInstall
-      mkdir -p $out/packages/compass-agent
-      cp -R node_modules $out/node_modules
-      cp -R packages/compass-agent/node_modules \
-            $out/packages/compass-agent/node_modules
-      # Drop every `node_modules/.bin` directory before hashing. Its entries are
-      # per-CLI symlinks bun points at each package's own `bin/`, not generated
-      # wrapper scripts — so `rm -rf` on a `.bin` dir removes only the links,
-      # never their targets, and no dependency file is collaterally deleted. The
-      # bundle below resolves imports through the `.bun` package trees, never
-      # through `.bin`, so the runtime does not need them. They are ALSO the sole
-      # source of this FOD's cross-environment non-determinism: bun's
-      # nested-`.bin` symlink set is not
-      # stable across build hosts (e.g. a `browserslist` shim inside
-      # `update-browserslist-db/node_modules/.bin` is emitted on some hosts and
-      # not others), which desynchronizes an otherwise byte-identical tree.
-      # Removing them makes the recursive output hash reproducible.
-      find $out -type d -name .bin -prune -exec rm -rf {} +
-      runHook postInstall
-    '';
+      # Bun's isolated layout is WORKSPACE-RELATIVE: the real packages live once in
+      # the root store and the member's own `node_modules` is a tree of symlinks
+      # pointing back up. Both trees are kept at their original depths so the
+      # relative links resolve — flattening breaks every dependency.
+      installPhase = ''
+        runHook preInstall
+        mkdir -p $out/packages/compass-agent
+        cp -R node_modules $out/node_modules
+        cp -R packages/compass-agent/node_modules \
+              $out/packages/compass-agent/node_modules
+        # Drop every `node_modules/.bin` directory before hashing. Its entries are
+        # per-CLI symlinks bun points at each package's own `bin/`, not generated
+        # wrapper scripts — so `rm -rf` on a `.bin` dir removes only the links,
+        # never their targets, and no dependency file is collaterally deleted. The
+        # bundle below resolves imports through the `.bun` package trees, never
+        # through `.bin`, so the runtime does not need them. They are ALSO the sole
+        # source of this FOD's cross-environment non-determinism: bun's
+        # nested-`.bin` symlink set is not
+        # stable across build hosts (e.g. a `browserslist` shim inside
+        # `update-browserslist-db/node_modules/.bin` is emitted on some hosts and
+        # not others), which desynchronizes an otherwise byte-identical tree.
+        # Removing them makes the recursive output hash reproducible.
+        find $out -type d -name .bin -prune -exec rm -rf {} +
+        runHook postInstall
+      '';
 
-    # A fixed-output derivation: `bun install` is the one step needing network,
-    # and pinning the output hash keeps the rest pure. The hash covers the
-    # INSTALLED TREE, not just the version set. `--ignore-scripts` keeps
-    # postinstall from injecting host-varying content, and the installPhase strips
-    # non-deterministic `.bin` shims, so the tree is reproducible across hosts.
-    # Refresh with `lib.fakeSha256` on a bun.lock/manifest move.
-    dontFixup = true;
-    outputHashMode = "recursive";
-    outputHashAlgo = "sha256";
-    outputHash = native.outputHash;
-  };
+      # A fixed-output derivation: `bun install` is the one step needing network,
+      # and pinning the output hash keeps the rest pure. The hash covers the
+      # INSTALLED TREE, not just the version set. `--ignore-scripts` keeps
+      # postinstall from injecting host-varying content, and the installPhase strips
+      # non-deterministic `.bin` shims, so the tree is reproducible across hosts.
+      # Refresh with `lib.fakeSha256` on a bun.lock/manifest move.
+      dontFixup = true;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+      outputHash = outputHashBySystem.${target};
+    };
+  nodeModules = nodeModulesFor system;
+  nodeModulesBySystem = lib.genAttrs (builtins.attrNames outputHashBySystem) nodeModulesFor;
 
   # A denylist (`bun build` only errors on a statically-resolvable missing
   # import, so an allowlist would silently drop a new fixture). Shared with
@@ -180,8 +190,9 @@ in
 # The bundle is a STANDALONE compiled binary, so the wrapper execs it directly —
 # no `bun run` at runtime. It carries its own bun runtime and finds its native
 # addon from the `.node` siblings beside it in the same store dir.
-# `nodeModules` is exposed (drv unchanged) so a fast check can realise the FOD alone.
-lib.extendDerivation true { inherit nodeModules; } (
+# `nodeModules` and `nodeModulesBySystem` are exposed (drv unchanged) so the FOD
+# check and the hash refresher can realise a pin alone.
+lib.extendDerivation true { inherit nodeModules nodeModulesBySystem; } (
   pkgs.writeShellScriptBin "compass-agent" ''
     exec ${bundle}/compass-agent "$@"
   ''
