@@ -90,6 +90,8 @@ type agentHost struct {
 	// model is the model selector handed to every agent this Runner starts;
 	// empty leaves the agent on its own default.
 	model string
+	// batching enables idle inbound batching on every agent this Runner starts.
+	batching string
 	// runnerID labels every container this host creates, so the next start's
 	// sweep removes only this Runner's containers.
 	runnerID string
@@ -153,6 +155,9 @@ type AgentHostConfig struct {
 	// AgentModel is the model selector every agent this host starts receives;
 	// empty leaves the agent on its default.
 	AgentModel string
+	// AgentBatching is the inbound batching setting every agent receives;
+	// empty leaves batching off.
+	AgentBatching string
 	// RunnerID is the Runner's own id, stamped as the ownership label.
 	RunnerID string
 }
@@ -174,6 +179,7 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		log:               log,
 		runtimeDir:        cfg.RuntimeDir,
 		model:             cfg.AgentModel,
+		batching:          cfg.AgentBatching,
 		runnerID:          cfg.RunnerID,
 		sessions:          map[string]*liveSession{},
 		closing:           make(chan struct{}),
@@ -1220,15 +1226,16 @@ func (h *agentHost) requireContainer(ctx context.Context, name string) error {
 
 // agentEnv derives the agent exec's identity and configuration from the
 // launched container's handle, so Start and Reload cannot drift apart. The
-// model is Runner-wide config; everything else is per-container.
+// model and batching are Runner-wide config; everything else is per-container.
 func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 	env := AgentEnv{
-		UID:     handle.WorkspaceUID(),
-		HomeDir: handle.HomeDir(),
-		Workdir: handle.CheckoutDir(),
-		Model:   h.model,
-		Persona: handle.Persona(),
-		Role:    handle.Role(),
+		UID:      handle.WorkspaceUID(),
+		HomeDir:  handle.HomeDir(),
+		Workdir:  handle.CheckoutDir(),
+		Model:    h.model,
+		Batching: h.batching,
+		Persona:  handle.Persona(),
+		Role:     handle.Role(),
 	}
 	// On the host tier the socket and config live in the handle's state dir, not at
 	// the default /run/compass paths (no mounts). Thread those overrides so the agent

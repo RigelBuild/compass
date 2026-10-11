@@ -68,21 +68,22 @@ func (b *fakeSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceReques
 // registry.
 func newHostFixture(t *testing.T, specs SpecBuilder) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
 	t.Helper()
-	return newHostFixtureWithModel(t, specs, "")
+	return newHostFixtureWithModel(t, specs, "", "")
 }
 
-// newHostFixtureWithModel is newHostFixture with the host's Runner-wide model
-// selector set, for the tests that assert what configuration a started agent
-// actually receives.
-func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
+// newHostFixtureWithModel sets Runner-wide agent selectors for configuration tests.
+func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model, batching string) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
 	t.Helper()
 	engine := newStubStreamingRuntime(t)
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
-	// newLink needs a RunnerService client; the capture server terminates a real
-	// wire so nothing in the host path blocks on a missing handler.
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-	cfg := AgentHostConfig{RuntimeDir: t.TempDir(), AgentModel: model, RunnerID: "runner-1"}
+	cfg := AgentHostConfig{
+		RuntimeDir:    t.TempDir(),
+		AgentModel:    model,
+		AgentBatching: batching,
+		RunnerID:      "runner-1",
+	}
 	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner())
 	closeHostAtCleanup(t, host.(*agentHost))
 	return host, engine, registry
@@ -423,6 +424,51 @@ func TestProvisionSpecBuilderErrorAborts(t *testing.T) {
 	}
 	if len(engine.calls) != 0 {
 		t.Fatalf("engine touched (%v) despite a spec-build failure; Launch must not run", engine.calls)
+	}
+}
+
+// Runner runtime-directory settings must survive the host constructor: Provision
+// uses them for both the live socket mount and the materialized config root.
+func TestProvisionUsesRuntimeDirFromRunnerConfig(t *testing.T) {
+	runtimeDir := t.TempDir()
+	engine := newStubStreamingRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	cfg := agentHostConfig(RunnerConfig{RuntimeDir: runtimeDir}, "runner-1")
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
+
+	name, err := host.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("Provision = %v, want success", err)
+	}
+	created := engine.createdSpecs()
+	if len(created) != 1 {
+		t.Fatalf("engine created %d containers, want 1", len(created))
+	}
+	wantSocket := filepath.Join(runtimeDir, agentSocketDir, name, agentSocketFile)
+	wantConfig := filepath.Join(runtimeDir, agentSocketDir, name, "config")
+	for _, want := range []struct {
+		containerPath string
+		hostPath      string
+	}{
+		{containerPath: agentSocketMountPath, hostPath: wantSocket},
+		{containerPath: agentConfigMountPath, hostPath: wantConfig},
+	} {
+		found := false
+		for _, mount := range created[0].Mounts {
+			if mount.ContainerPath == want.containerPath {
+				found = true
+				if mount.HostPath != want.hostPath {
+					t.Errorf("mount %q host path = %q, want %q", want.containerPath, mount.HostPath, want.hostPath)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("launched spec has no mount at %q", want.containerPath)
+		}
 	}
 }
 
@@ -1444,7 +1490,7 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 	spec.Workspace.CheckoutDir = "/srv/checkout"
 	spec.Persona = "You are Ada."
 	specs := &fakeSpecBuilder{spec: spec}
-	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
+	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4", "on")
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
@@ -1473,6 +1519,9 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 			t.Fatalf("exec env %s = %q, want %q", want.key, got, want.value)
 		}
 	}
+	if got := got.Env["COMPASS_AGENT_BATCHING"]; got != "on" {
+		t.Fatalf("COMPASS_AGENT_BATCHING = %q, want on", got)
+	}
 }
 
 // A Runner with no configured model starts its agents with COMPASS_MODEL
@@ -1481,7 +1530,7 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 // model field would export an empty value here.
 func TestStartOmitsModelWhenRunnerHasNoneConfigured(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
-	host, engine, _ := newHostFixtureWithModel(t, specs, "")
+	host, engine, _ := newHostFixtureWithModel(t, specs, "", "")
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
@@ -1496,20 +1545,23 @@ func TestStartOmitsModelWhenRunnerHasNoneConfigured(t *testing.T) {
 	if got, ok := onlyStreamingSpec(t, engine).Env["COMPASS_MODEL"]; ok {
 		t.Fatalf("COMPASS_MODEL exported as %q with no model configured; want the key absent so the agent uses its SDK default", got)
 	}
+	if got, ok := onlyStreamingSpec(t, engine).Env["COMPASS_AGENT_BATCHING"]; ok {
+		t.Fatalf("COMPASS_AGENT_BATCHING exported as %q with batching unset; want key absent", got)
+	}
 }
 
 // Reload relaunches with the SAME exec configuration Start used. Reload has no
 // AgentEnv of its own: it re-resolves the container's handle from the registry
 // so the restarted agent cannot drift from the one it replaces — a Reload that
 // relaunched bare would silently move the agent's cwd back to $HOME and drop
-// its model selector mid-session, with the board still showing a live session.
+// its model or batching selector mid-session, with the board still live.
 func TestReloadRelaunchesWithTheSameAgentEnv(t *testing.T) {
 	spec := liveSpec()
 	spec.Workspace.UID = 4242
 	spec.Workspace.HomeDir = "/home/scoped"
 	spec.Workspace.CheckoutDir = "/srv/checkout"
 	specs := &fakeSpecBuilder{spec: spec}
-	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
+	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4", "on")
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
@@ -1527,6 +1579,9 @@ func TestReloadRelaunchesWithTheSameAgentEnv(t *testing.T) {
 	execs := engine.streamingSpecs()
 	if len(execs) != 2 {
 		t.Fatalf("ExecStreaming called %d times, want 2 (Start then Reload's relaunch)", len(execs))
+	}
+	if got := execs[0].Env["COMPASS_AGENT_BATCHING"]; got != "on" {
+		t.Fatalf("initial COMPASS_AGENT_BATCHING = %q, want on", got)
 	}
 	// Guard against the degenerate pass where BOTH execs are bare: the relaunch
 	// must match a Start that itself carried the container's identity.
