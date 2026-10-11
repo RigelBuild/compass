@@ -36,7 +36,7 @@ marks that upstream down. Mid-stream failover is out of scope.
 - No new runtime, service, or Go.
 - Candidate choice is a pure function of the chain, pool state, marks, and the
   tried set, so v1's prompt-cache argument holds.
-- One tenant's failures alone never change another tenant's routing.
+- One tenant's failures never change another tenant's routing.
 - Compass gets fork changes only by bumping `tools/gateway-image/fork-pin.json`
   to a commit on fork `main`.
 - Scope: the four chat routes (`/v1/chat/completions`, `/v1/messages`,
@@ -51,7 +51,7 @@ resolve ─▶ attempt: credential, lease, streamSimple or completeSimple
   hold events until the first meaningful event
     committed            ─▶ respond from this candidate
     failed before commit ─▶ classifyUpstreamFailure
-      stop          ─▶ return the failure as today
+      stop          ─▶ return the failure
       failover kind ─▶ onFailure, release lease, next candidate
 ```
 
@@ -65,16 +65,23 @@ does not count: the Anthropic provider pushes it just above
 `// Retry loop for transient errors from the stream.`, before any upstream byte.
 
 Until commit, a relay `AssistantMessageEventStream` buffers events; at commit
-it replays them and forwards the rest. If the last attempt fails, the relay
-replays its buffer and the terminal event, so the client sees today's SSE error.
+it replays them and forwards the rest. A committed attempt is final: a later
+error reaches the client as today, and no follower is tried.
 
-A streaming response sends 200 and the SSE headers when its first attempt
-starts, then a `: keepalive` comment every 15 s until commit (OQ-3). SSE parsers
-skip comment lines (`readSseEvents` in `packages/utils/src/stream.ts`), so this
+A streaming response sends 200 and the SSE headers when its first attempt's
+`streamSimple` returns, where today's handlers return their `Response`. It then
+writes a `: keepalive` comment every 15 s until commit (OQ-3). SSE parsers skip
+comment lines (`readSseEvents` in `packages/utils/src/stream.ts`), so this
 works for all four formats. At commit the route runs `encodeStream` on the
 relay. On these streams `x-litellm-model-id` names the requested model and
 `x-litellm-model-api-base` is omitted; the log and usage event name the backend
 that answered.
+
+Setup failures (no credential, or a synchronous `streamSimple` throw) are
+failed attempts, classified like upstream failures. A failure reaches the
+client only when no follower remains: as today's HTTP error `Response` if
+headers are not sent yet, else as an error `AssistantMessage` that ends the
+relay, which `encodeStream` writes as the format's SSE error.
 
 Non-streaming has no commit point: the client gets nothing until
 `completeSimple` settles, so any classified failure fails over, whatever
@@ -83,25 +90,32 @@ partial content the message holds.
 ### Which failures fail over
 
 `classifyUpstreamFailure` in `packages/ai/src/error/gateway.ts` composes the
-existing classifiers. Rows apply in order.
+existing classifiers. Its text is `errorClassificationMessage ?? errorMessage`,
+as both handlers already pass to `classifyGatewayError`. Rows apply in order;
+"reason" is `parseRateLimitReason(text)`.
 
 | Failure before commit | Result |
 | --- | --- |
-| Client abort, `stopReason: "aborted"`, `AbortError` | stop |
-| Usage limit (`AIError.isUsageLimit` or `isUsageLimitOutcome`), 401, 403, 404 | `credential_exhausted` |
-| Any other 4xx except 408 and 429 | stop |
-| 429 | `rate_limited` |
+| Request aborted by the client | stop |
+| Attempt aborted by the loop at its budget | `transport` |
+| Usage limit (`AIError.isUsageLimit` or `isUsageLimitOutcome`) | `credential_exhausted` |
+| 401, or 403 that is not a concurrency cap | `credential_exhausted` |
+| 403 concurrency cap (`isConcurrencyCapExclusion`), or 429 | `rate_limited` |
+| 404 | `not_served` |
+| Any other 4xx except 408 | stop |
 | 408 or 5xx | `server_error` |
-| No status, and `isProviderRetryableError` is true (connect, DNS, TLS, socket close, first-event timeout) | `transport` |
+| No status; reason `RATE_LIMIT_EXCEEDED` or `CONCURRENT_LIMIT` | `rate_limited` |
+| No status; reason `MODEL_CAPACITY_EXHAUSTED` or `SERVER_ERROR` | `server_error` |
+| No status; `isProviderRetryableError` (connect, DNS, TLS, socket close) | `transport` |
 | Anything else | stop |
 
-A usage limit, 401, or 403 reaches the gateway only after in-provider rotation
+A usage limit, 401, or credential 403 reaches the gateway only after rotation
 is exhausted: `refreshGatewayApiKeyAfterAuthError` in `dispatch.ts` records it
-(`markReached` or `invalidateMatching`), then runs
-`if (!switched) return undefined;`. v1's peek honors that state, so
-`credential_exhausted` fails over without a mark. A 404 means the backend does
-not serve the model. A transient 429 or 5xx has already been through provider
-backoff (`isRetryableUpstreamError` in `packages/ai/src/stream.ts`).
+(`markReached` or `invalidateMatching`), which v1's peek honors, so no mark is
+needed. A 403 concurrency cap is never rotated (`isRetryableUpstreamError` in
+`packages/ai/src/stream.ts` excludes it), so it is marked as `rate_limited`. A
+404 can be request-specific, so `not_served` sets no mark; later requests try
+the candidate again and pay one fast failure, since providers do not retry 4xx.
 
 `retryAfterMs` is `getRetryAfterMsFromHeaders(getHeadersFromError(error))`,
 else `extractProviderRetryHint(provider, text)`
@@ -109,10 +123,11 @@ else `extractProviderRetryHint(provider, text)`
 
 ### The provider-down mark
 
-`transport`, `server_error`, and `rate_limited` set a mark. `transport` keys on
-provider and `baseUrl`, since a host that refuses connections is down for every
-model. `server_error` and `rate_limited` also key on model id, since overload
-errors are often per model.
+`transport`, `server_error`, and `rate_limited` set a mark;
+`credential_exhausted` and `not_served` do not. `transport` keys on provider
+and `baseUrl`, since a host that refuses connections is down for every model.
+`server_error` and `rate_limited` also key on model id, since overload errors
+are often per model.
 
 TTL starts at `calculateRateLimitBackoffMs("SERVER_ERROR")` (20 s), or
 `calculateRateLimitBackoffMs("RATE_LIMIT_EXCEEDED")` (30 s) for `rate_limited`
@@ -120,9 +135,8 @@ TTL starts at `calculateRateLimitBackoffMs("SERVER_ERROR")` (20 s), or
 20, 40, 80, 160, then a 300 s cap. It is never shorter than `retryAfterMs`
 (also capped at 300 s). Strikes reset when the last mark expired over 300 s ago.
 
-Marks are per tenant (OQ-4). A `transport` or `server_error` mark on a `baseUrl`
-from the bundled catalog becomes process-wide once two tenants set it within
-its TTL. `rate_limited` marks and tenant-supplied `baseUrl`s stay per tenant.
+Marks are per tenant only (OQ-4): a mark set by one tenant's request never
+affects another tenant.
 
 Marks live in memory in the compass boot entrypoint: one map per gateway
 process. A self-hosted stack runs one process; with several replicas, each
@@ -130,7 +144,7 @@ learns an outage on its own. Both shapes run the same code, per
 `docs/concepts/self-host-and-managed.md` and
 `docs/designs/meta/oss-core-managed-boundary/design.md`. Until a mark exists,
 each request that reaches the down candidate stalls for up to its attempt
-budget. That repeats per tenant (or once, process-wide), per replica, per TTL.
+budget. That repeats per tenant, per replica, per TTL.
 
 v1's `StableNameResolver` walks the chain in order, skips candidates in `tried`,
 and defers marked ones. A marked candidate wins only when no unmarked one has a
@@ -144,18 +158,20 @@ single-candidate chain ignores its mark.
   `candidateFailover.next`. `undefined` from `next` means no follower, never a
   404. Compass returns `undefined` for a direct `provider/id` selector, so
   those get one attempt.
-- **Attempt budget (OQ-2).** Only when a follower exists: half the time left
-  before `deadlineMs` (default 120 000 ms). The attempt gets
-  `streamFirstEventTimeoutMs` equal to the budget and `maxRetryDelayMs: 10_000`,
-  so a longer retry-after hint "fails immediately" (`packages/ai/src/types.ts`).
-  If the budget ends without proof of life, the loop aborts the attempt as
-  `transport`. Proof of life is a 2xx reported via `onResponse`
-  (`notifyProviderResponse`, called by the Anthropic, OpenAI completions,
-  OpenAI responses, and pi-native clients) or any event besides `start`.
+- **Attempt budget (OQ-2).** Only when a follower exists; the last attempt runs
+  as today. The budget is a hard deadline through the first meaningful event:
+  half the time left before `deadlineMs` (default 120 000 ms). It covers the
+  provider's in-flight retries. When it expires the loop aborts the attempt,
+  even after a 2xx, and classifies it `transport`. The attempt also gets
+  `maxRetryDelayMs: 10_000`. Anthropic then fails fast on a longer retry-after
+  hint (`maxRetryDelayMs` in `packages/ai/src/types.ts`); other providers only
+  cap their sleep or ignore it, as the OpenAI-family transport does. The
+  deadline covers all of them.
 - **Deadline.** No attempt starts after `deadlineMs`.
-- **Abort.** One controller per request (`mirrorRequestAbort`) feeds every
-  attempt. Cancelling the hold body aborts it too, as `encodeStream`'s
-  `onCancel` does today.
+- **Abort.** Each attempt has its own `AbortController`, linked to the request
+  controller from `mirrorRequestAbort`. A budget abort stops only that attempt,
+  so its follower still runs. A request abort stops every attempt. Cancelling
+  the hold body aborts the request, as `encodeStream`'s `onCancel` does today.
 - **Leases.** Keyed by provider and model (`sessionKeys` in
   `session-state.ts`), so each attempt acquires its own. A failed attempt's
   lease is released before the next starts.
@@ -176,7 +192,7 @@ single-candidate chain ignores its mark.
   `compass.gateway.candidate_failures` (attributes `provider`, `failure`; no
   tenant). `packages/ai` has no OpenTelemetry dependency.
 
-Failures after commit, and non-chat routes, behave as today.
+Non-chat routes behave as today.
 
 ## Alternatives considered
 
@@ -204,13 +220,19 @@ for every task.
 ### F1 — Fork: `classifyUpstreamFailure`
 
 Add the classifier to `packages/ai/src/error/gateway.ts`. For an
-`AssistantMessage` error, wrap `errorMessage` and `errorStatus` in an `Error`
-with `status`, as `FinalizedProviderStreamError` does.
+`AssistantMessage` error, wrap `errorClassificationMessage ?? errorMessage` and
+`errorStatus` in an `Error` with `status`, as `FinalizedProviderStreamError`
+does.
 
 Interfaces:
 
 ```ts
-export type UpstreamFailureKind = "transport" | "server_error" | "rate_limited" | "credential_exhausted";
+export type UpstreamFailureKind =
+  | "transport"
+  | "server_error"
+  | "rate_limited"
+  | "credential_exhausted"
+  | "not_served";
 
 export interface UpstreamFailure {
   readonly kind: UpstreamFailureKind;
@@ -219,7 +241,7 @@ export interface UpstreamFailure {
   readonly message: string;
 }
 
-/** `undefined` means stop. Same arguments as `isRetryableUpstreamError`. */
+/** `undefined` means stop. `message` is `errorClassificationMessage ?? errorMessage`. */
 export function classifyUpstreamFailure(
   model: Model<Api>,
   error: unknown,
@@ -229,21 +251,34 @@ export function classifyUpstreamFailure(
 ```
 
 Test cycle (`packages/ai/test/auth-gateway-classify-error.test.ts`):
-`usage_limit_reached`, an opaque 429, 401, 403, and 404 give
-`credential_exhausted`; `Too many requests` gives `rate_limited`; 503 gives
-`server_error`; `fetch failed` gives `transport`; 400 and `AbortError` stop.
+
+- `usage_limit_reached`, an opaque 429, 401, and a credential 403 give
+  `credential_exhausted`.
+- A 403 concurrency cap, and 429 `Too many requests`, give `rate_limited`.
+- 404 gives `not_served`; 503 gives `server_error`.
+- Status-less Anthropic stream errors, as `createAnthropicSseStreamError` in
+  `packages/ai/src/providers/anthropic.ts` builds them:
+  `Anthropic stream error (rate_limit_error): Rate limit exceeded` gives
+  `rate_limited`; `Anthropic stream error (overloaded_error): Overloaded` gives
+  `server_error`. Neither carries a status.
+- Status-less `fetch failed` gives `transport`.
+- A status-less error whose `errorMessage` reads as a socket failure but whose
+  `errorClassificationMessage` reads `Too many requests` gives `rate_limited`.
+- 400 and `AbortError` stop.
 
 ### F2a — Fork: extract the per-attempt body
 
 Move each handler's per-attempt setup (credential, lease, stream options) into
-one function per route, with no behavior change. The existing
-`auth-gateway-*.test.ts` suite stays green unchanged.
+one function per route. It takes the attempt's signal and returns a
+`GatewayErrorClassification` on failure, which the handler formats as today.
+No behavior change: the existing `auth-gateway-*.test.ts` suite stays green
+unchanged.
 
 Interfaces (module-private in `server.ts`):
 
 ```ts
 type AttemptStart =
-  | { readonly ok: false; readonly response: Response }
+  | { readonly ok: false; readonly failure: GatewayErrorClassification }
   | {
       readonly ok: true;
       readonly streamOpts: SimpleStreamOptions;
@@ -257,7 +292,7 @@ function prepareFormatAttempt(
   parsed: ParsedFormatRequest,
   model: Model<Api>,
   sessionId: string,
-  controller: AbortController,
+  signal: AbortSignal,
   peer: string,
   sessionStates: AuthGatewaySessionStateStore,
 ): Promise<AttemptStart>;
@@ -268,7 +303,7 @@ function preparePiNativeAttempt(
   parsed: piNative.PiNativeParsedRequest,
   model: Model<Api>,
   sessionId: string,
-  controller: AbortController,
+  signal: AbortSignal,
   peer: string,
   sessionStates: AuthGatewaySessionStateStore,
 ): Promise<AttemptStart>;
@@ -287,12 +322,18 @@ export type HeldAttempt =
   | { readonly kind: "failed"; readonly relay: AssistantMessageEventStream; readonly error: AssistantMessage }
   | { readonly kind: "budget"; readonly relay: AssistantMessageEventStream };
 
-/** Buffers until a meaningful event or `done` (committed), an error (failed), or `budgetEndsAt` with `alive()` false (budget). */
+/** Buffers until a meaningful event or `done` (committed), an `error` (failed), or `budgetEndsAt` (budget). */
 export function holdUntilCommit(
   events: AssistantMessageEventStream,
   budgetEndsAt: number | undefined,
-  alive: () => boolean,
 ): Promise<HeldAttempt>;
+
+/** Ends `relay` with an `error` event carrying `failure`; used once headers are sent. */
+export function endWithFailure(
+  relay: AssistantMessageEventStream,
+  model: Model<Api>,
+  failure: GatewayErrorClassification,
+): void;
 
 /** Writes `: keepalive` every 15 s until `body` resolves, then its bytes. `cancel` calls `onCancel`. */
 export function sseHoldBody(
@@ -302,9 +343,9 @@ export function sseHoldBody(
 ```
 
 Test cycle, on a hand-driven `AssistantMessageEventStream`: `start` then a
-`text_delta` commits and replays both in order; `start`, an empty `text_start`,
-then `error` fails; silence past the budget gives `budget` when `alive()` is
-false and keeps holding when it is true. `sseHoldBody` writes comments before
+`text_delta` commits and replays both in order; a committed relay forwards a
+later `error` unchanged; `start`, an empty `text_start`, then `error` fails;
+silence past the budget gives `budget`. `sseHoldBody` writes comments before
 the body bytes, and `cancel` calls `onCancel`.
 
 ### F2c — Fork: the loop and boot option
@@ -343,16 +384,23 @@ today: with A down, the client gets a 200 carrying an error. Green:
 
 - A fails (`fetch failed`, then 503): all four routes, streaming and not,
   answer from B; `onFailure` fires once, with A.
-- A hangs (its `fetch` never resolves): B answers within A's budget plus B's
-  latency.
+- A's `fetch` never resolves, or A answers 200 and then sends nothing: A is
+  aborted at its budget, the request signal stays live, and B answers.
+- A emits a `text_delta`, then errors: B is never tried, and the client gets
+  A's text and A's error.
 - A returns a usage limit with one credential: B answers; the failure is
   `credential_exhausted`.
+- Streaming, B has no credential after headers are sent: the client gets an
+  SSE error in the open 200 body.
 - A answers 400: no failover.
 - A direct selector fails: one attempt, the original error.
 - Both down: the last error as today.
-- The client disconnects during the hold: no further attempt; lease released.
+- The client disconnects during the hold: no further attempt starts.
 - `onUsage` fires once per nonzero attempt, with distinct request ids.
-- After each case the session store size returns to its starting value.
+- Every attempt's lease is released: as in
+  `auth-gateway-provider-session-state.test.ts`, a probe put in each attempt's
+  `providerSessionState` is closed once the store fills to
+  `AUTH_GATEWAY_MAX_SESSION_STATES`.
 
 ### C1 — Compass: marks, resolver, counter
 
@@ -371,9 +419,9 @@ Interfaces:
 ```ts
 export class ProviderDownMarks {
   constructor(now?: () => number);
-  /** Sets or extends a mark; ignores `credential_exhausted`. Returns the TTL in ms. */
+  /** Sets or extends a tenant's mark; ignores `credential_exhausted` and `not_served`. Returns the TTL in ms. */
   mark(tenant: UserId, model: Model<Api>, failure: UpstreamFailure): number;
-  /** True if a tenant or process-wide mark covers (provider, baseUrl) or (provider, baseUrl, id). */
+  /** True if this tenant's mark covers (provider, baseUrl) or (provider, baseUrl, id). */
   isDown(tenant: UserId, model: Model<Api>): boolean;
 }
 
@@ -384,18 +432,17 @@ resolve(callerUser: UserId, modelId: string, tried?: ReadonlySet<string>): Promi
 Test cycle: with an injected clock, TTLs run 20, 40, 80, 160, 300;
 `retryAfterMs` raises the TTL; strikes reset after 300 s. A `transport` mark
 covers every model on its `baseUrl`; a `server_error` mark covers only its
-model. Two tenants make a catalog-`baseUrl` mark process-wide; one tenant does
-not, and a tenant-supplied `baseUrl` never does. Resolver: a marked first
-candidate is deferred; when all are marked the first wins; a single candidate
-ignores its mark; `tried` is skipped; a direct selector gets no follower.
-Smoke: the gateway image smoke passes at the new pin.
+model. A mark set for one tenant never affects another. Resolver: a marked
+first candidate is deferred; when all are marked the first wins; a single
+candidate ignores its mark; `tried` is skipped; a direct selector gets no
+follower. Smoke: the gateway image smoke passes at the new pin.
 
 ## Tasks
 
 - [ ] F1 — `classifyUpstreamFailure` and table tests (compass-obs).
 - [ ] F2a — Per-attempt extraction, no behavior change (compass-obs).
-- [ ] F2b — `holdUntilCommit`, `sseHoldBody`, exported commit predicate
-      (compass-obs).
+- [ ] F2b — `holdUntilCommit`, `endWithFailure`, `sseHoldBody`, exported
+      commit predicate (compass-obs).
 - [ ] F2c — Loop, `candidateFailover`, log, `auth-gateway-failover.test.ts`
       (compass-obs).
 - [ ] C1 — Pin bump, `ProviderDownMarks`, resolver change, counter, wiring
@@ -409,9 +456,9 @@ Smoke: the gateway image smoke passes at the new pin.
   opt-in behind `candidateFailover`.
 - **OQ-2 — LOAD-BEARING: hung or slow-retrying candidates.** Tracked in
   RIG-5147. Without a budget, a black-holed upstream or a 529 with long
-  retry-after hints never fails over. **Recommendation:** the attempt budget in
-  Bounds. Cost: a silent think on a provider without `onResponse` can be cut
-  when a follower exists.
+  retry-after hints never fails over. **Recommendation:** the hard attempt
+  budget in Bounds. Cost: when a follower exists, a first token slower than
+  the budget is cut, even after a 2xx.
 - **OQ-3 — LOAD-BEARING: silent hold or early headers.** Tracked in RIG-5147. A
   silent hold names the answering backend in headers, but can trip a proxy
   idle timeout (nginx defaults to 60 s) and drops the Anthropic route's 15 s
@@ -419,10 +466,11 @@ Smoke: the gateway image smoke passes at the new pin.
   streaming `x-litellm-model-id` names the requested model.
   `auth-gateway-response-headers.test.ts` runs without the option and is
   unchanged.
-- **OQ-4 — LOAD-BEARING: mark scope.** Tracked in RIG-5147. Per-tenant marks
-  multiply a shared outage's stall cost by active tenants; process-wide marks
-  let one tenant steer others with crafted 5xx. **Recommendation:** per tenant,
-  promoted to process-wide for catalog `baseUrl`s after two tenants.
+- **OQ-4 — LOAD-BEARING: mark scope.** Tracked in RIG-5147.
+  **Recommendation:** per tenant only. Rejected: promoting a mark to
+  process-wide once several tenants set it, because a tenant-triggerable
+  failure would still steer other tenants. Cost: a shared outage's stall
+  repeats per active tenant.
 - **OQ-5 — LOAD-BEARING: usage for failed attempts.** Tracked in RIG-5147.
   Dropping it hides spend that failover creates. **Recommendation:** record
   every nonzero attempt under an attempt-qualified request id.
