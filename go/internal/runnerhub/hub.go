@@ -1317,11 +1317,18 @@ func (h *Hub) routerForStream(sessionID string) (*commandRouter, uint64, error) 
 	return router, h.enrollGen, err
 }
 
+// ErrMsgNoRunnerEnrolled and ErrMsgNoSessionsStream prefix the not-ready errors
+// that clients match after the wire drops the error chain; never reword them.
+const (
+	ErrMsgNoRunnerEnrolled = "no runner enrolled"
+	ErrMsgNoSessionsStream = "no live runner sessions stream"
+)
+
 func (h *Hub) routerFor(sessionID string) (*commandRouter, string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.runner == nil {
-		return nil, "", fmt.Errorf("no runner enrolled to serve session %q", sessionID)
+		return nil, "", fmt.Errorf("%s to serve session %q", ErrMsgNoRunnerEnrolled, sessionID)
 	}
 	return h.runner.router, h.runner.id, nil
 }
