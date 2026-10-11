@@ -19,18 +19,19 @@ custodies no durable state and no storage credentials, so destroying it loses
 nothing of record. That is what makes aggressive containment cheap: the strong
 move (tear the whole thing down) has no data cost.
 
-The substrate is on a path from **rootless-podman container** (today, through
-Dogfood and trusted-tenant Beta) to a **hardware-virtualized microVM** (the
-end state). Both fill the same role; the microVM raises the execution boundary
+The substrate is a **rootless-podman container** or a **hardware-virtualized
+microVM**. Both fill the same role; the microVM raises the execution boundary
 from a shared-kernel container to a VM-class boundary with its own guest kernel —
 the right isolation for running untrusted model-written code, and for putting
-multiple tenants on one host. A box without KVM degrades to the container
-runtime with an explicit capability log, never silently. The microVM Runner
-backend is designed in
+multiple tenants on one host. The choice follows the trust model (ledger
+DL-325): untrusted multi-tenant operation requires the microVM, while a
+single-tenant self-host may run podman as a permanent entry tier, with the
+microVM recommended. Selecting the microVM on a box without KVM fails at
+startup; there is no silent fallback to a container. The microVM Runner backend
+is designed in
 [`microvm-runner.md`](../designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md)
-(RIG-2394); its KVM floor is already baked into shipped decisions — it is what
-made the native app a thin client against a headless KVM-capable stack (ledger
-DL-235) and the self-host stack a KVM-capable host bring-up (ledger DL-259).
+(RIG-2394), and the runner split in
+[`compass-runner-adoption-strategy`](../designs/infra/runtime/compass-runner-adoption-strategy/design.md).
 
 ## Default-deny egress: the agent reaches only what it is allowed to
 
@@ -90,7 +91,7 @@ mediated by the Server.
 
 | Boundary | Mechanism | The agent cannot |
 | --- | --- | --- |
-| Execution | per-agent sandbox (container today → microVM end state) | touch the host or another agent's sandbox |
+| Execution | per-agent sandbox (podman container, or microVM where untrusted tenants share a host) | touch the host or another agent's sandbox |
 | Network | default-deny nftables egress, allowlist-only | reach any host not explicitly allowed |
 | Firewall control | rules armed by root at launch; agent runs non-root, empty caps | flush or edit its own egress ruleset |
 | Server authority | egress-sealed, no server token; privileged calls forwarded by the Runner, resolved + executed by the Server | call privileged server RPCs directly |

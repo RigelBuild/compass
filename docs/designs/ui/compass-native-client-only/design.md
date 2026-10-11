@@ -11,7 +11,7 @@ carried forward whole.
 > **Superseded by the embedded-mode revival
 > ([`../compass-native-embedded-revival/design.md`](../compass-native-embedded-revival/design.md),
 > DL-319, Matt 2026-09-01).** This record's premise is falsified: podman is a
-> permanent supported tier for single-tenant self-host (DL-318, DL-325), so the
+> permanent supported tier for single-tenant self-host (DL-325), so the
 > upstream constraint that forced the app to drop embedded mode no longer holds.
 > The frozen prose below is left intact as the record of what was ratified.
 >

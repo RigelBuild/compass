@@ -36,7 +36,7 @@ Linear: RIG-1662
 > ([`../compass-native-embedded-revival/design.md`](../compass-native-embedded-revival/design.md),
 > DL-319, Matt 2026-09-01).** The app is dual-mode again: embedded returns as
 > the onboarding and local-dev front door, and client mode stays the recommended
-> steady state. The ground is the trust model (DL-318), not this record's
+> steady state. The ground is the trust model (DL-325), not this record's
 > original charter, so DL-106 stays `Superseded by DL-235` and DL-319 carries
 > the restored shape.
 

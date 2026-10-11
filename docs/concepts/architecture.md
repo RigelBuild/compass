@@ -35,7 +35,7 @@ and the agent process is the third tier.
   rides the same relay, orchestrated server-side, with the hub resolving caller
   identity only. (`go/internal/runnerhub/relay_comms.go`, ledger DL-076)
 - **The sandbox — one disposable environment per session.** A rootless-podman
-  container today, a hardware-virtualized microVM in the end state; egress-sealed
+  container, or a hardware-virtualized microVM where untrusted tenants share a host; egress-sealed
   and holding no server token. It custodies nothing of record, so it is safe to
   tear down. Its containment and egress posture is owned by
   [isolation and egress](./isolation-and-egress.md).
@@ -85,7 +85,7 @@ replays, why the split is the design — is
 | Server | control plane: identity, lifecycle, secrets, forge relay, sole forge credential | `design.md:174-179`, DL-052 |
 | Runner | host substrate: provisions/starts/stops sandboxes; pure forwarder for agent calls | `host.go:46-48`, `agent.go:32-57`, `relay_comms.go` |
 | RunnerHub | Server-side binding: resolves `session_id → account` and executes | `relay_comms.go`, DL-076 |
-| Sandbox | one disposable env per session (container → microVM), egress-sealed, no server token | `agent.go:32-57` |
+| Sandbox | one disposable env per session (podman container or microVM), egress-sealed, no server token | `agent.go:32-57` |
 | Agent process | resident per session; hosts in-process gates + MCP servers | `design.md:180-184` |
 
 ## The detailed projections
