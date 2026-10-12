@@ -87,7 +87,8 @@ to the store.
 - **Catalog: bundled, `provider/id` keys only (OQ1).** The `ModelResolver`
   type `(modelId) => Model<Api> | undefined` never sees the caller, and
   `/v1/models` skips the pool. The boot indexes `getBundledModels()` for
-  every bundled provider, keeping `GATEWAY_MODEL_KINDS` only.
+  every bundled provider, keeping `GATEWAY_MODEL_KINDS` only. OQ1 option B
+  would replace this with a per-owner registry.
   - **No bare ids.** `indexModelsByRequestId` would add a bare-id fallback:
     `if (!modelById.has(model.id)) modelById.set(model.id, model);`. Over all
     providers, that routes a shared bare id to whichever provider comes
@@ -98,7 +99,7 @@ to the store.
 - **Inbound auth.** `authorize` is the verifier, wrapped in
   `withEnrollToken` when `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` is set (OQ5).
   `bearerTokenAuthorizer` is not used, and no shared inbound token remains
-  (OQ2).
+  (OQ2, resolved).
 - **Outbound TLS.** The store and the verifier share one fetch,
   `fetch(input, { ...init, tls: { ca } })`, with `ca` read from
   `COMPASS_SERVER_CA_FILE`. Provider calls keep the default trust store.
@@ -131,19 +132,25 @@ to the store.
   - a revoke mid-run means 503 until the next `up`;
   - an external database plus a wiped state dir leaves old hashes live, as on
     the runner path.
-- **Server address (Linux).** The container runs with
-  `--network pasta:-T,<door port>` and dials `https://127.0.0.1:<door port>`.
-  - pasta does not forward container loopback by default (`pastaHostGateway`
-    in `go/e2e/fixture.go`: "pasta does not forward 127.0.0.1").
-  - A local probe on rootless podman 5.8.6 showed that `-T` works, and that
-    `-p` still publishes.
-  - The SAN matches (`go/internal/stack/adapters/cert.go`:
-    `var certHosts = []string{"127.0.0.1", "::1", "localhost"}`).
+- **Server address (OQ7-A, resolved).** The container dials
+  `https://host.containers.internal:<door port>` on both OSes and runs with
+  `--network pasta:--map-host-loopback,169.254.1.2`. Both mappings land on
+  the host's `127.0.0.1` (probe table under Resolved decisions):
+  - Linux: by default pasta does not forward container loopback
+    (`pastaHostGateway` in `go/e2e/fixture.go`: "pasta does not forward
+    127.0.0.1"). The map reaches a host `127.0.0.1` listener, and `-p` still
+    publishes.
+  - darwin: the name resolves to `192.168.127.254`, which reaches a Mac
+    `127.0.0.1` listener under the same pasta spec, and `-p` still
+    publishes from that container.
+  - TLS: the name needs a DNS SAN. Today the SANs are
+    `var certHosts = []string{"127.0.0.1", "::1", "localhost"}`
+    (`go/internal/stack/adapters/cert.go`), so the Linux probe failed the
+    hostname check. `needsRotation` checks only the key, the parse and the
+    expiry (`return !notAfter.After(now.Add(e.rotateWindow))`). S2 adds the SAN
+    and makes a missing `certHosts` SAN trigger rotation. Every existing
+    anchor then rotates once, on the expiry-rotation path.
   - `<state>/tls.crt` is mounted read-only as the CA.
-
-  On darwin the container runs in the podman-machine VM
-  (`internal/embedded/machine.go`), so `-T` would reach the VM's loopback
-  (OQ7, [INFERENCE]).
 - **Door host.** `overlapsLoopbackPublish` (`go/internal/stack/config.go`)
   is too wide here, because it also passes every DNS name:
   `return ip == nil || ip.IsUnspecified() || ip.Equal(net.IPv4(127, 0, 0, 1))`.
@@ -166,7 +173,9 @@ to the store.
 - **Reusing `gateway.token` for the service bearer.** It would adopt the old
   inbound secret, and skew would stay silent. Rejected.
 - **`--network host`.** It drops `-p` and network isolation. Rejected.
-  `host.containers.internal` is OQ7 option A.
+- **`--network pasta:-T,<door port>` with `127.0.0.1`.** Linux only. On
+  darwin it reaches the VM's loopback ("Connection reset by peer"). Rejected
+  (OQ7).
 - **An ErrorInfo reason on `VerifyAgentToken`.** The verifier would have to
   decode error details from Connect JSON. Rejected for S0's literal pin.
 - **A verify cache.** A revoked token would keep working. Deferred (OQ3).
@@ -179,10 +188,13 @@ to the store.
   - `packages/ai/src/compass/` (new modules, plus F1's `wire.ts` helpers and
     the matching `credential-store.ts` transport refactor);
   - `gateway-boot.ts`;
-  - one export from `auth-gateway-cli.ts`.
+  - one export from `auth-gateway-cli.ts`;
+  - option types and call sites in `dispatch.ts` and `server.ts`, for F2's
+    `routeScope` narrowing and, only if OQ1 picks B, the caller-aware
+    `resolveModel` and `listModels`.
 
-  No change to `auth-storage.ts`, `packages/ai/src/auth/`, `server.ts` or
-  `dispatch.ts`.
+  No routing-core change, and no change to `auth-storage.ts` or
+  `packages/ai/src/auth/`.
 - **Fork base.** `rigel-release` with RIG-5205 (`routeScope`, `d0ac08ac56cc`).
   #146 (RIG-5206) is based on it.
 - **Server dependency.** A default-pinned image needs RIG-5204, because on main
@@ -208,16 +220,21 @@ to the store.
   | Name | Value | Supplier |
   |---|---|---|
   | `COMPASS_SERVICE_TOKEN_FILE` | `/run/compass/service.token` | S2 |
-  | `COMPASS_SERVER_URL` | `https://127.0.0.1:<door port>` (darwin: OQ7) | S2 |
+  | `COMPASS_SERVER_URL` | `https://host.containers.internal:<door port>` | S2 |
   | `COMPASS_SERVER_CA_FILE` | `/run/compass/server-ca.crt` | S2 |
   | `COMPASS_GATEWAY_BIND` | `0.0.0.0:4000` | existing |
   | `COMPASS_GATEWAY_DRAIN_MS` | `20000` | existing |
   | `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` | optional | E2/E3, later |
 
-- **Door listen host.** S2 accepts only `127.0.0.1`, `localhost`, `0.0.0.0` or
-  `::`, all of which accept on the `127.0.0.1` URL. Any other host or DNS name
-  errors and names `--gateway-external`. OQ7 option A changes the URL, not
-  this rule.
+- **Door listen host.** Both host mappings deliver to the host's IPv4
+  `127.0.0.1`. So S2 accepts only `127.0.0.1`, `localhost`, `0.0.0.0` or `::`,
+  which all accept there:
+  - `localhost` binds its first IPv4 (`la := addrs.first(isIPv4)` in Go's
+    `net/dial.go`);
+  - `::` binds dual-stack.
+
+  Any other host, including `::1`, `127.0.0.2` and every DNS name, errors and
+  names `--gateway-external`.
 - **Order.** Each line is linear:
   - compass: S0 → S1 → S2 → P1;
   - fork: #146 → F1 → F2 → F3.
@@ -335,11 +352,17 @@ Lane: compass-server. Depends on S1.
 
 ```go
 const GatewayServiceTokenMountPath, GatewayCAMountPath = "/run/compass/service.token", "/run/compass/server-ca.crt"
+const gatewayServerHost, gatewayHostLoopbackAddr = "host.containers.internal", "169.254.1.2"
 type GatewayContainerSpec struct { /* existing */ ServerURL string; NetworkArgs []string; CAFile string }
 func gatewayContainerSpec(cfg Config, listenAddr string, cert CertResult) (GatewayContainerSpec, error)
+// adapters/cert.go
+var certHosts = []string{"127.0.0.1", "::1", "localhost", "host.containers.internal"}
+func (e *CertEnsurer) needsRotation(certPath, keyPath string, now time.Time) bool // also true when a certHosts SAN is missing
 ```
 
-- The spec sets the env table, `NetworkArgs` and the two `:ro,z` mounts.
+- The spec sets the env table, `NetworkArgs`
+  (`--network pasta:--map-host-loopback,169.254.1.2`) and the two `:ro,z`
+  mounts.
 - `startGateway` runs `MkdirAll(TokenDir, 0o700)`, removes `gateway.token`,
   then calls `EnsureServiceToken`, then `Start`.
 - `ensureGatewayToken` is deleted.
@@ -348,8 +371,10 @@ func gatewayContainerSpec(cfg Config, listenAddr string, cert CertResult) (Gatew
 Tests:
 
 - args and mounts are pinned;
-- `compass.example` and a non-loopback IP error, and the four allowed hosts
+- `::1`, `127.0.0.2` and `compass.example` error, and the four allowed hosts
   pass;
+- `cert_test.go`: a fresh anchor carries the DNS SAN. An unexpired anchor
+  without it rotates once, and the next ensure keeps it;
 - harness: on fresh state, server ready → token → container start, and the
   drain stops the gateway before the server.
 
@@ -360,9 +385,11 @@ Lane: compass-gateway.
 - Bump `fork-pin.json` from `57f41121ff5e…` to the `rigel-release` commit
   that holds F1–F3.
 - Drop the old `ENV` and its allowlist entry.
-- `smoke.ts` drops the broker. It runs a fake Server on host loopback, boots
-  with `pasta:-T`, and asserts `/healthz`, `/v1/models` for a good token, 401
-  for a bad token, and a `no-server-env` fault.
+- `smoke.ts` drops the broker. It runs a fake Server on the host's
+  `127.0.0.1` over https, with a throwaway cert for `host.containers.internal`
+  (`compass-gen-cert -hosts`) mounted as the CA. It boots with the S2 network
+  spec and asserts `/healthz`, `/v1/models` for a good token, 401 for a bad
+  token, and a `no-server-env` fault.
 
 ### P1 — Default image pin
 
@@ -375,7 +402,8 @@ T5, so this test is not end-to-end proof.
 
 - [ ] S0 — compass-server: pin `invalid agent token`.
 - [ ] S1 — compass-server: `TokenStatus`; `EnsureServiceToken` (makes its dir).
-- [ ] S2 — compass-server: spec, mounts, `pasta:-T`, door-host rule, order.
+- [ ] S2 — compass-server: spec, mounts, `map-host-loopback`, SAN and
+      one-time rotation, door-host rule, order.
 - [ ] F1 — compass-gateway: `wire.ts` transport, verifier, door probe (#150).
 - [ ] F2 — compass-gateway: owner pool and its required tests.
 - [ ] F3 — compass-gateway: compass `runGatewayBoot`, `readTokenFile`.
@@ -386,8 +414,38 @@ T5, so this test is not end-to-end proof.
   - DL (server): the `llm-gateway` service bearer is
     `<state>/gateway/service.token`, and agents are admitted only through
     `VerifyAgentToken`.
-  - DL (server): the boot serves the bundled catalog by `provider/id` until
-    stable-name P1. Claim after OQ1.
+  - DL (server): the bundled gateway reaches the Server at
+    `host.containers.internal` through `pasta:--map-host-loopback`, and the
+    stack anchor carries that DNS SAN (OQ7).
+  - DL (server): the boot's catalog per the OQ1 ruling. Claim after OQ1.
+
+## Resolved decisions
+
+**OQ2: drop the inbound shared bearer (Matt, 2026-10-12).** This reverses
+the T1 contract ("token file = inbound bearer"). Agents are admitted only
+through `VerifyAgentToken`.
+
+**OQ7: A, `host.containers.internal` on both OSes (Matt, 2026-10-12).**
+One network spec, `--network pasta:--map-host-loopback,169.254.1.2`, with the
+DNS SAN and the one-time rotation from S2. Option C (bundled gateway
+unsupported on darwin) was the fallback. It is moot, because the darwin probe
+passed.
+
+Probe evidence. Each probe targets a host listener on `127.0.0.1`.
+
+| Host | Network | Target | Result |
+|---|---|---|---|
+| Linux, rootless podman 5.8.6 | default | `127.0.0.1` | refused |
+| Linux | `pasta:-T,<port>` | `127.0.0.1` | reached; `-p` publishes |
+| Linux | `pasta:--map-host-loopback,169.254.1.2` | `host.containers.internal` | reached (cert failed: no SAN); `-p` publishes |
+| mattmini, macOS arm64, podman 5.8.6, applehv | default | `host.containers.internal` → `192.168.127.254` | reached |
+| mattmini | `pasta:--map-host-loopback,169.254.1.2` | `host.containers.internal` → `192.168.127.254` | reached |
+| mattmini | `pasta:-T,51999` | `127.0.0.1` | "Connection reset by peer" |
+| mattmini | default, `-p 127.0.0.1:51998:80` | host → container | reached |
+| mattmini | `pasta:--map-host-loopback,169.254.1.2`, `-p 127.0.0.1:51998:8080` | host → container, and same container → `host.containers.internal` | both reached |
+
+The Mac listener was `python3 -m http.server 51999 --bind 127.0.0.1`. The
+probe machine was removed afterwards.
 
 ## Open Questions
 
@@ -395,8 +453,13 @@ T5, so this test is not end-to-end proof.
 
 - **A (recommended):** every bundled provider by `provider/id`, with a
   dispatch 401 when a credential is missing.
-- **B:** a per-owner `ModelRegistry`. This needs a caller-aware resolver, a
-  router-core change.
+- **B:** a per-owner `ModelRegistry`, built in the owner pool. It needs no
+  parent amendment: the stable-name record (Global Constraints, "Fork changes
+  are seam-shaped") already ratified widening `resolveModel` to
+  `(modelId, identity) => Promise<Model<Api> | undefined>` as an
+  injection-point change. B pulls that widening forward from stable-name P1.
+  It also needs a caller-aware `listModels`, because today's
+  `listModels?: () => Iterable<Model<Api>>` (`dispatch.ts`) skips the pool.
 - **C:** a union of live pools. It leaks between owners and is
   nondeterministic.
 - **D:** A, limited to the parent's day-1 set. This makes a new provider a
@@ -405,24 +468,7 @@ T5, so this test is not end-to-end proof.
 - **E:** read `GetGatewayModelRegistry` now. This duplicates stable-name P1:
   a sync resolver would need a boot fetch, a poll and a model mapping.
 
-Decision needed: A or D.
-
-**OQ2 (load-bearing): drop the inbound shared bearer.** This reverses the T1
-contract ("token file = inbound bearer"). Recommendation: drop it. Decision
-needed: confirm there is no operator or debug use for one.
-
-**OQ7 (load-bearing): reaching the Server on darwin** [INFERENCE; not probed].
-
-- **A:** `host.containers.internal` on both OSes. Linux adds
-  `pasta:--map-host-loopback,169.254.1.2`, which was probed and works. The
-  cost is a DNS SAN in `certHosts` and a SAN check in `needsRotation`.
-- **B:** per OS. This still needs A's SAN and adds a second path to test.
-- **C:** `-T` everywhere, with the bundled gateway unsupported on darwin. The
-  spec errors there and points to `--gateway-external`.
-
-Recommendation: A if a darwin probe works, otherwise C for now. The door
-probe makes a wrong choice fail `up` loudly. Decision needed: A or C, and who
-runs the darwin probe.
+Decision needed: B (Matt leaning) or A.
 
 **OQ3 (deferred): verify cache.** Revisit after dev measures the load.
 
