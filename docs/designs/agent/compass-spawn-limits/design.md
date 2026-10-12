@@ -3,8 +3,7 @@
 ## Problem / Intent
 
 Agent-driven spawn has no limit: the spawn/despawn record ruled "no limit for
-MVP, we can follow up with a better limits design later (per user, per agent,
-etc)" (`docs/designs/agent/compass-agent-spawn-despawn/design.md` §OQ-3).
+MVP" (`docs/designs/agent/compass-agent-spawn-despawn/design.md` §OQ-3).
 Each spawn is a real container or microVM, so one looping agent can fill the
 host. This record caps placed agents per owner at the agent spawn tool, and
 adds `compass agent despawn` so a human can free a slot (OQ-6). It bounds one
@@ -16,17 +15,15 @@ owner's tree, not the host (OQ-4).
 slot for the caller's owner. At `N` placed-or-reserved agents it is refused
 with `connect.CodeResourceExhausted`. The relay renders that in-band:
 `lifecycleCallError` (`go/internal/runnerhub/relay_lifecycle.go`) sets
-"`Code: connect.CodeOf(err).String(),`", an open token that the forge relay
-already uses for "`"resource_exhausted" for a rate limit`" (`forgeCallError`,
-`go/internal/runnerhub/relay_forge.go`). No proto change.
+"`Code: connect.CodeOf(err).String(),`". No proto change.
 
 ### What is counted
 
 A slot is an `agent_placements` row or a reservation row, joined to
 `agent_accounts.owner_user_id`. A spawned peer "inherits the CALLER'S OWNER"
-(`SpawnAsAccount`), so the whole tree shares one budget. A placement outlives
-its container: `reprovision` (`go/server/lifecycle.go`) "re-creates the
-container for an agent whose placement names one the Runner no longer has".
+(`SpawnAsAccount`, `go/server/lifecycle.go`), so the whole tree shares one
+budget. A placement outlives its container, because `reprovision`
+(`go/server/lifecycle.go`) "re-creates the container".
 Sessions are not counted, because a stopped session keeps its container
 (`go/internal/runner/host.go`: "Stop/Start reuses the container and its
 socket").
@@ -35,14 +32,14 @@ socket").
 
 A reservation is a row in a new tenant-owned table,
 `agent_spawn_reservations`, keyed by (owner, handle). DL-312 runs "stateless
-L7-load-balanced instances (any Server handles any client request)", so an
-in-process count would let two replicas admit the last slot, and a restart
-would forget pending spawns (OQ-8).
+L7-load-balanced instances", so an in-process count would let two replicas
+admit the last slot (OQ-8).
 
 `ReserveSpawn` runs in one `beginTenantTx`:
 
 1. `pg_advisory_xact_lock(hashtext('spawn:' || owner))`, the `LockOwnerDM`
-   idiom (`queries/dm.sql`).
+   idiom (`go/internal/store/queries/dm.sql`: "`SELECT
+   pg_advisory_xact_lock(hashtext('dm:' || $1));`").
 2. Delete the owner's expired rows. This is lease expiry, with no sweeper.
 3. A row for the handle: `SpawnInFlight`.
 4. A placement for the handle: `SpawnAlreadyPlaced`.
@@ -60,8 +57,9 @@ holder whose row expired cannot touch a newer holder's row.
 checks:
 
 - `SpawnInFlight` is refused with `connect.CodeAborted` (GC-3). It is checked
-  first because `RecordAgentPlacement` runs before Start, so a retry must not
-  report a half-made agent as spawned.
+  first because `provisionAndStart` (`go/server/lifecycle.go`) runs "record
+  the durable placement, Start", so a retry must not report a half-made agent
+  as spawned.
 - `SpawnAtLimit` is refused before any write, so a looping agent adds no
   account, channel, or tree edge.
 - `SpawnAlreadyPlaced` returns the placement and session with no row, even at
@@ -69,58 +67,62 @@ checks:
   answer".
 - `SpawnReserved` runs the existing chain under the row.
 
-The chain releases the row on a known outcome: success, because the placement
-now holds the slot, or a failure that left no container. The in-flight
-refusal also closes the "Concurrent-spawn window" that `SpawnAsAccount`
-accepts today, where a same-id retry's failed Start removes the winner's
-container.
+The chain releases the row on success, because the placement now holds the
+slot, or after a confirmed Remove (§Ambiguous outcomes keep the slot). The
+in-flight refusal also closes the "Concurrent-spawn window" that
+`SpawnAsAccount` accepts today, where a same-id retry's failed Start removes
+the winner's container.
 
 ### Ambiguous outcomes keep the slot
 
-Two exits leave a container that may exist:
+A container may exist after three exits:
 
-- **A timed-out Provision.** `waitCall` (`go/internal/runnerhub/router.go`):
-  "A ctx timeout leaves the call in-flight on purpose". The Runner's Provision
-  has no deadline. It queues on `provisionSem` ("ctx.Done releases a caller
-  blocked for a slot on shutdown"), then runs engine commands and the config
-  `Materialize`.
+- **A Provision error.** `waitCall` (`go/internal/runnerhub/router.go`): "A
+  ctx timeout leaves the call in-flight on purpose". The Runner's Provision
+  has no deadline: it queues on `provisionSem`, then runs engine commands. A
+  Runner error proves no more, because `AgentRuntime.Launch`
+  (`go/internal/runtime/agent.go`) cleans up "Best-effort".
 - **A failed rollback Remove.** `rollbackSpawn` logs it and goes on.
+- **A dropped enrollment**, below.
 
-Neither has a time bound, so no timed release is safe. `provisionAndStart`
-hands the row to `go settleSpawn` on `context.WithoutCancel(ctx)`, like
-`dropLostSessionDetached` (`go/internal/runnerhub/relay_comms.go`). It renews
-the lease every `spawnReservationLease / 3` and releases on the first observed
-outcome:
+No timed release is safe. `provisionAndStart` hands the row to `go
+settleSpawn` on `context.WithoutCancel(ctx)`, like `dropLostSessionDetached`
+(`go/internal/runnerhub/relay_comms.go`). It renews the lease every
+`spawnReservationLease / 3` and releases on one of two outcomes:
 
-1. **The Runner answers the Provision.** `settleSpawn` re-sends the same id.
-   The hub joins an in-flight call, and the Runner replays a completed one
-   ("a completed id returns the recorded result",
+1. **The Provision succeeds.** After a timeout, `settleSpawn` re-sends the
+   same id. The hub joins an in-flight call, and the Runner replays a
+   completed one ("a completed id returns the recorded result",
    `go/internal/runner/dispatch.go`). Success records the placement, and the
-   next message wakes the agent (`freshStart`). A Runner error releases.
-2. **The Runner answers a Remove.** After a failed rollback Remove, or a
-   failed late `RecordAgentPlacement`, `settleSpawn` retries Remove every
+   next message wakes the agent (`freshStart`). A Runner error goes to 2.
+2. **A Remove succeeds.** `settleSpawn` retries Remove every
    `spawnSettleRetry`. It mints a fresh id after an answered failure, because
-   the Runner replays recorded failures. A `compass agent despawn` (T1) also
-   clears it.
-3. **The enrollment ends.** `Run` returns on "a dropped session stream", and
-   `runSessions` cancels, "then join every in-flight command goroutine". The
-   deferred `Close` tears down every container, "so no agent container
-   outlives the Runner". A crashed Runner skips `Close`. On restart, the
-   podman and Apple container engines sweep its containers "before sessions
-   start" (`ListByOwner`). The microVM and host backends have no sweep, so a
-   crash there can leak a container that nothing charges (OQ-4).
+   the Runner replays recorded failures.
+
+One exception: a first Provision that never left the server. `dispatch`
+refuses with no live stream or a full queue before it enqueues. T2 marks both
+`runnerhub.ErrNotSent`, and that Provision releases at once.
 
 `settleSpawn` talks only to the spawn's own enrollment. `enroll` builds a new
 router ("`router := newCommandRouter()`") for a Runner whose `handled` map is
 empty, so a re-push there would provision a second container. T2 adds
 `runnerhub.Pin`, the router and Runner id that `routerFor` reads together. The
-first Provision, the rejoin, and every retried Remove use it.
+first Provision, the rejoin, and every Remove use it.
 
-A wedged, connected Runner keeps its slots, which is correct while it may
-still build containers. A dead server stops renewing, but its Runner streams
-drop too, so `Close` runs first. The lease, `5 * time.Minute`, is only that
-crash backstop and exceeds the chain plus its rollback. Only a Postgres outage
-longer than the lease can expire a held row early.
+**No Runner signal confirms removal.** A Runner enrolls once per process. Its
+deferred `agentHost.Close` "logs each per-container error and discards it".
+The restart sweep (`sweepStaleAgentContainers`, `go/internal/runner/run.go`)
+returns nothing, and `EnrollRequest` carries only `runner_id`,
+`runtime_tier`, and `egress_posture`. After the pin's stream drops, `RemoveOn`
+returns `ErrNotSent`, so the row stays charged and renewed while this server
+lives. A new enrollment's Remove proves nothing either, because `removeLocked`
+(`go/internal/runner/host.go`) treats "A container the registry no longer
+resolves" as "already gone". That gap also hides a container whose cleanup
+failed, since `Launch` registers only after it provisions. Both are OQ-9.
+
+The lease, `5 * time.Minute`, lapses only after the holding server stops
+renewing, so it is only the crash backstop. A Postgres outage longer than the
+lease can expire a held row early.
 
 ### Scope decisions
 
@@ -132,9 +134,9 @@ longer than the lease can expire a held row early.
   (`go/internal/auth/admin_gate.go`) lists
   `CompassServiceSpawnAgentProcedure` under `adminOnly` (OQ-3).
 - **The wake path adds no rows.** `freshStart` and `reprovision` reuse a
-  placement. `RecordAgentPlacement` "is an UPSERT keyed on the agent".
-- **Human recovery is in scope.** `newAgentCmd` is "Spawn and inspect agent
-  sessions (spawn, status)", so today only an agent can free a slot (OQ-6).
+  placement. `RecordAgentPlacement` (`go/internal/store/agent_placements.go`)
+  "is an UPSERT keyed on the agent".
+- **Human recovery is in scope.** Today only an agent can free a slot (OQ-6).
 - **Known gap.** A spawn failing at Start frees its slot and leaves the
   account "UNPLACED", so a failing loop never reaches the cap (OQ-7).
 
@@ -151,13 +153,9 @@ value below 1 fails boot (OQ-2). DL-479 records this. DL-077 stays Active: its
 - **Count sessions.** A spawn-then-stop loop passes while containers pile up.
 - **Reserve with an `agent_placements` row.** A wake during the spawn would
   Start a container that does not exist yet.
-- **An in-process limiter.** It needs no migration, but it contradicts DL-312
-  and forgets pending spawns on restart (OQ-8 (b)).
-- **A timed release under an end-to-end Provision bound.** The Runner has no
-  such bound. `provisionSem` waits only on shutdown, and each engine command
-  has its own timeout (`go/internal/runtime/podman.go`:
-  "`defaultCommandTimeout = 120 * time.Second`"). A bound would change every
-  engine backend.
+- **An in-process limiter.** OQ-8 (b).
+- **A timed release.** The Runner has no end-to-end Provision bound, and one
+  would change every engine backend.
 - **No lease.** A server crash during a hold would charge the slot forever.
 - **A rate limit.** A slow loop still fills the host (OQ-7).
 - **Gate in the runnerhub relay.** DL-076: "the runnerhub resolves caller
@@ -191,9 +189,9 @@ value below 1 fails boot (OQ-2). DL-479 records this. DL-077 stays Active: its
 ## Deps
 
 - **RIG-5110 (Done, merged to `main` in #2123).** `RelayLifecycleCall` runs
-  under the session's tenant: "`ctx, account, ok := h.runnerSessionAccount(ctx,
-  runnerID, req.GetSessionId())`" (`go/internal/runnerhub/relay_lifecycle.go`
-  on `main`). T2 rebases onto it, and test 9 pins the cap on that path.
+  under the session's tenant (`runnerSessionAccount`,
+  `go/internal/runnerhub/relay_lifecycle.go`). T2 rebases onto it, and test 9
+  pins the cap on that path.
 - **DL-312 (Active).** Servers run as replicas (OQ-8).
 
 ## Plan
@@ -312,10 +310,10 @@ type Pin struct {
 
 func (h *Hub) PinRunner() (Pin, error) // routerFor under h.mu
 func (p Pin) RunnerID() string
-// Ended reports that the pin's router has no live stream. Callers ask only after
-// a command was sent on it, so it means the stream detached; a Runner opens one
-// stream per process and enrolls anew on restart, so the router never re-attaches.
-func (p Pin) Ended() bool
+// ErrNotSent marks a dispatch refused before the send queue: no live stream, or
+// a full queue. dispatch appends it with %w, so ErrMsgNoSessionsStream stays the
+// prefix, and connect.Error's Unwrap keeps it visible to errors.Is.
+var ErrNotSent = errors.New("command not sent")
 
 // ProvisionOn and RemoveOn relay on the pin's router only, never a newer
 // enrollment's. They keep Provision's dedup id and bindContainer, and Remove's
@@ -389,12 +387,13 @@ func (l *lifecycleService) resumeOrReject(ctx context.Context, slot *spawnSlot, 
 	req *compassv1internal.SpawnPeerRequest) (*compassv1internal.SpawnPeerResponse, error)
 func (l *lifecycleService) provisionAndStart(ctx context.Context, slot *spawnSlot, agentID store.AccountID,
 	persona, role string, req *compassv1internal.SpawnPeerRequest) (*compassv1internal.SpawnPeerResponse, error)
-func (l *lifecycleService) rollbackSpawn(ctx context.Context, container, sessionID string) (removed bool)
+func (l *lifecycleService) rollbackSpawn(ctx context.Context, pin runnerhub.Pin, container, sessionID string) (removed bool) // Remove via RemoveOn
 func (l *lifecycleService) settleSpawn(ctx context.Context, slot *spawnSlot, s spawnSettle) // run with go
 
-// service_placement_pgtest_test.go: recordingRunner gains three knobs, and
+// service_placement_pgtest_test.go: recordingRunner gains four knobs, and
 // commands() labels a Remove "remove <container>" instead of "other".
 func (r *recordingRunner) setProvisionGate(gate chan struct{}) // holds each Provision, like setStartGate
+func (r *recordingRunner) setFailProvision(v bool)            // Provision answers RUNNER_ERROR_CODE_INTERNAL
 func (r *recordingRunner) setFailRemove(v bool)               // Remove answers RUNNER_ERROR_CODE_INTERNAL
 func (r *recordingRunner) hangUp()                            // closes the Sessions stream now; cleanup's close becomes a no-op
 ```
@@ -403,10 +402,13 @@ func (r *recordingRunner) hangUp()                            // closes the Sess
 a despawn racing `SpawnAlreadyPlaced` returns `errSpawnInFlight`.
 `provisionAndStart` provisions on its pin with `provID :=
 req.GetClientRequestId()`, or `rand.Text()`, so a rejoin is exact. A
-Provision error with `ctx.Err() != nil`, or a `rollbackSpawn` that returns
-false, starts `go l.settleSpawn(ctx, slot.handOff(), …)`. Each settle attempt
-runs on `context.WithTimeout(context.WithoutCancel(ctx), spawnChainTimeout)`,
-and a transport error releases only when `pin.Ended()`.
+Provision error goes one of three ways. A `PinRunner` error or `ErrNotSent`
+returns, and the deferred release frees the row. `ctx.Err() != nil` hands the
+rejoin to `settleSpawn`. Any other error runs `rollbackSpawn` on
+`runner.AgentContainerNamePrefix + agentID`, the name T1 derives; if it
+returns false, `go l.settleSpawn(ctx, slot.handOff(), …)`. Each settle attempt
+runs on `context.WithTimeout(context.WithoutCancel(ctx), spawnChainTimeout)`.
+`settleSpawn` never releases on `ErrNotSent`; it renews and retries.
 
 **Test cycle (red first).**
 
@@ -416,8 +418,8 @@ and a transport error releases only when `pin.Ended()`.
 2. `TestReserveSpawnAcrossStores`: two `Store`s, 32 goroutines, limit 3 admit
    exactly 3. `TestOpenUpgradesV1AddsSpawnReservations`: `Open` applies 0002.
 3. `TestProvisionOnStaysOnItsEnrollment` (runnerhub, `synctest`,
-   `enrollAttached`): after a re-enroll the old pin is `Ended`, and
-   `ProvisionOn` on it sends nothing to the new router.
+   `enrollAttached`): after a re-enroll, `ProvisionOn` and `RemoveOn` on the
+   old pin return `ErrNotSent` and send nothing to the new router.
 4. `TestSpawnSlotSettlesOnce`, `TestSpawnLimitError` (unit).
 5. `TestSpawnLimit*` (server pgtest, limit 2): a new handle at the cap is
    refused with no Provision or account; a placed handle returns its
@@ -429,13 +431,18 @@ and a transport error releases only when `pin.Ended()`.
    Provision, one Start, and no Remove.
 7. `TestSpawnSettlesTimedOutProvision` (limit 1, Provision gated): the row
    outlives two leases with `provisionCount()` 1; opening the gate places the
-   agent and drops the row; `hangUp` drops it with no placement.
+   agent and drops the row. In a second run, `hangUp` with the Provision still
+   gated drops the Runner while its container may exist: the row outlives two
+   more leases, a new handle gets `resource_exhausted`, and no Remove is sent.
 8. `TestSpawnSettlesFailedRollback` (limit 1, `setFailRemove(true)`), once per
-   rollback: a refused Start; a failed `RecordAgentPlacement` (`execSQL` of
-   `REVOKE INSERT ON agent_placements FROM compass_app`); a failed
-   `RecordAgentSession` (`REVOKE INSERT ON agent_sessions FROM compass_app`),
-   where `stop <session>` precedes `remove <container>`. Each leaves no
-   placement and a held row; after `setFailRemove(false)` the row drops.
+   rollback: a refused Provision (`setFailProvision(true)`), where the Remove
+   names `runner.AgentContainerNamePrefix + agentID`; a refused Start; a
+   failed `RecordAgentPlacement` or `RecordAgentSession` (`execSQL` of
+   `REVOKE INSERT` on its table `FROM compass_app`; for the session, `stop
+   <session>` precedes `remove <container>`). Each leaves no placement and a
+   row held past two leases; after `setFailRemove(false)` the row drops. A
+   refused-Provision run that calls `hangUp` while Remove still fails keeps
+   the row held past two more leases.
 9. `TestSpawnLimitNonBootstrapTenant`: tenant B, seeded as
    `bearer_tenant_pgtest_test.go` does, spawns through
    `f.hub.RelayLifecycleCall` at limit 1. Its rows carry tenant B, and its
@@ -443,8 +450,9 @@ and a transport error releases only when `pin.Ended()`.
 
 **Spec and docs, same PR.** `docs/specs/product/compass.md` gains
 `### Requirement: Agent-initiated spawn is capped per owner` after "One
-container per agent account", stating §The gate's four outcomes, the
-observed-outcome release, and the exempt operator door, with a refusal
+container per agent account", stating §The gate's four outcomes, release only
+on a placement, a confirmed Remove, or an unsent Provision, and the exempt
+operator door, with a refusal
 scenario and a retry scenario. The `agents_spawn_peer` bullet in
 `docs/concepts/tools.md` names `resource_exhausted` and despawn.
 
@@ -500,9 +508,9 @@ when the test passes and `moon run compass-go:ci` is green.
 - [ ] T1: `compass agent despawn`, `qualifiedAgentHandle` account id,
       self-host doc
 - [ ] T2: `0002_spawn_reservations.sql` with the composite owner FK,
-      `ReserveSpawn` (in-flight before placed), `runnerhub.Pin`, the gate,
-      `settleSpawn` with lease renewal, tests 1–9, spec requirement, and tools
-      doc
+      `ReserveSpawn` (in-flight before placed), `runnerhub.Pin` and
+      `ErrNotSent`, the gate, `settleSpawn` with lease renewal, tests 1–9,
+      spec requirement, and tools doc
 - [ ] T3: flag and env, `ServeConfig.MaxAgentsPerOwner`, startup log,
       self-host upgrade note
 - [ ] When Matt rules, set DL-479's status to `Active (Matt, <date>)`, or
@@ -521,9 +529,9 @@ when the test passes and `moon run compass-go:ci` is green.
   spawn can push an owner past `N`. **Recommendation:** keep it. A capped seed
   could stop the supervisor from booting.
 - **OQ-4: Per-Runner host ceiling. Non-load-bearing.** Only the Runner sees a
-  container outside every row, such as one a crashed microVM or host-backend
-  Runner leaves, and only it bounds several owners on one host.
-  **Recommendation:** a follow-up Runner-side refusal when the host is full.
+  container outside every row, such as one whose cleanup failed (OQ-9), and
+  only it bounds several owners on one host. **Recommendation:** a follow-up
+  Runner-side refusal when the host is full.
 - **OQ-5: Default 16. Non-load-bearing.** It is unmeasured. Before ruling, run
   `SELECT a.owner_user_id, count(*) FROM agent_placements p JOIN
   agent_accounts a ON a.account_id = p.agent_account_id GROUP BY 1` with the
@@ -537,17 +545,27 @@ when the test passes and `moon run compass-go:ci` is green.
   account, a home channel, and a tree edge. **Recommendation:** a follow-up
   per-owner attempt budget.
 - **OQ-8: Durable reservations, or an in-process limiter? Load-bearing.**
-  - (a) Postgres rows under a per-owner advisory lock, released on an
-    observed outcome, with a renewed lease as the crash backstop. The cap
-    holds across restarts and replicas, for one migration and one
-    transaction per spawn.
+  - (a) Postgres rows under a per-owner advisory lock, released on a
+    placement or a confirmed Remove, with a renewed lease as the crash
+    backstop. The cap holds across restarts and replicas, for one migration
+    and one transaction per spawn.
   - (b) An in-process limiter. It needs no migration, but it conflicts with
-    DL-312 and forgets pending spawns on restart. It also adds a second
-    single-instance assumption beside `spawnMemoTTL` (`go/server/spawn.go`:
-    "the server is single-instance").
+    DL-312 and forgets pending spawns on restart.
 
-  The cap is core capability. `docs/concepts/self-host-and-managed.md` says
-  "**The core must not assume it is single-tenant, nor assume it is
-  managed.**", and `docs/designs/meta/oss-core-managed-boundary/design.md`
-  calls this "core-capability-under-managed-motivation".
-  **Recommendation:** (a). This record is designed against (a).
+  The cap is core capability
+  (`docs/designs/meta/oss-core-managed-boundary/design.md`:
+  "core-capability-under-managed-motivation"). **Recommendation:** (a). This
+  record is designed against (a).
+- **OQ-9: No Runner signal confirms removal. Load-bearing; depends on OQ-8
+  (a).** Evidence is in §Ambiguous outcomes keep the slot. This record holds
+  such a slot, renewed, until its server stops.
+  - (a) Ship as designed. A dropped Runner can hold an owner's slots until
+    that server restarts, and `compass agent despawn` cannot free them.
+  - (b) Follow-up: on a registry miss, `removeLocked` fails when
+    `h.engine.Exists(ctx, containerName)` is true, as `Provision` checks a
+    stale entry. No proto change.
+  - (c) Follow-up proto change: the Runner reports its sweep result or its
+    owned containers at enroll, so a new enrollment can release. No such
+    signal exists today.
+
+  **Recommendation:** (a) now, with (b) and (c) as one follow-up issue.
