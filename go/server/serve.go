@@ -1207,11 +1207,12 @@ var drainTimeout = 5 * time.Second
 // deadline, and reports the hub's final frame accounting.
 func drainDoors(ctx context.Context, d drainSet) error {
 	// Close both buses so held-open streams end and release their handlers:
-	// SubscribeEvents rides bus, SubscribeComms rides commsBus (Shutdown does not cancel it).
+	// SubscribeEvents rides bus, SubscribeComms rides commsBus. Closing only bus would
+	// wedge a SubscribeComms subscriber (Shutdown does not cancel its ctx). Both closes idempotent.
 	d.bus.Close()
 	d.commsBus.Close()
-	// Stop the runner-ready seed first: bar new fires and cancel its ctx, so it
-	// unwinds while the doors drain.
+	// Stop the runner-ready seed first: bar new fires and cancel its ctx, so it unwinds
+	// while the doors drain. A drain woken by a group error has a live parent ctx.
 	hooksDone := d.hub.StopReadyHooks()
 	if d.cancelHooks != nil {
 		d.cancelHooks()

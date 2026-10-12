@@ -206,6 +206,7 @@ linters:
           - errorlint # a direct != on an unwrapped local sentinel is fine in a test
           - predeclared # a test-local may shadow a builtin (e.g. a var named recover)
           - depguard # tests freely use fenced imports (math/rand fixtures, os/exec harnesses for podman/microVM); the import fence is a production concern
+      # Test roots and the top of a main may mint the root context.
       - path: '(_test\.go|cmd/[^/]+/main\.go)$'
         linters: [forbidigo]
         text: 'go-thread-context'
