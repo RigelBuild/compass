@@ -976,6 +976,8 @@ func yamlMapEntries(node any) []yamlMapEntry {
 // provider surface (CP-4): providers.<name>.apiKey, or providers.<name>.headers.<h> set
 // to a NON-env-indirection literal (a pinned secret). An env-referenced header passes.
 // The door can't see the container env, so "is an env reference" is a syntactic judgment.
+// A header value that is not a string, or a headers node that is not a mapping, is
+// refused rather than skipped: the SDK schema admits only string values.
 func rejectCredentialModels(mapping map[string]any, joined string) error {
 	providers, present := mapping["providers"]
 	if !present {
@@ -986,13 +988,19 @@ func rejectCredentialModels(mapping map[string]any, joined string) error {
 			return fmt.Errorf("%w: models member %q sets providers.%s.apiKey (provider credentials never ride the config bundle)", ErrInvalidArgument, joined, p.key)
 		}
 		headers, ok := yamlMapIndex(p.val, "headers")
-		if !ok {
+		if !ok || headers == nil {
 			continue
 		}
-		for _, hdr := range yamlMapEntries(headers) {
+		// The SDK types headers as a string map, yet sends a list's items as
+		// headers named by index, so a non-mapping headers node is refused.
+		entries := yamlMapEntries(headers)
+		if entries == nil {
+			return fmt.Errorf("%w: models member %q sets providers.%s.headers to a non-mapping (headers must map names to env references)", ErrInvalidArgument, joined, p.key)
+		}
+		for _, hdr := range entries {
 			s, ok := hdr.val.(string)
 			if !ok {
-				continue
+				return fmt.Errorf("%w: models member %q sets providers.%s.headers.%s to a non-string value (pin it to an env reference instead)", ErrInvalidArgument, joined, p.key, hdr.key)
 			}
 			if !isEnvIndirection(s) {
 				return fmt.Errorf("%w: models member %q sets providers.%s.headers.%s to a literal secret (pin it to an env reference instead)", ErrInvalidArgument, joined, p.key, hdr.key)
