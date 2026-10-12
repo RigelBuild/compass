@@ -1,3 +1,5 @@
+//go:build pgtest && unix
+
 // Package pgtest is the shared real-Postgres test harness for the compass
 // backend. A store of record is only proven against the database it targets, so
 // every store/handler/serve integration test runs against an actual Postgres
@@ -25,9 +27,7 @@
 // It is build-tagged `pgtest` so it is compiled only into that opt-in test lane,
 // never the default `go test` gate. It is a non-test file (not `_test.go`) so it
 // is importable across packages; the build tag keeps it out of production
-// binaries all the same.
-//go:build pgtest && unix
-
+// binaries all the same. Which tier to test at: docs/architecture/testing-tiers.md.
 package pgtest
 
 import (
