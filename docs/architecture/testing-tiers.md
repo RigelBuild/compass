@@ -98,4 +98,4 @@ stack starts or stops Postgres.
 ## Related
 
 - Design record: `docs/designs/infra/ci/compass-test-harness-tiers/design.md`.
-- Toolchains and the moon battery: [Build & CI](build-and-ci.md).
+- CI jobs: [Build & CI](build-and-ci.md).
