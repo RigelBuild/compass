@@ -156,6 +156,15 @@ func liveLinear(ts TokenSource) *Linear {
 	return NewLinear(LinearConfig{Token: ts})
 }
 
+// Leave time before each test deadline for the read gate to return its error.
+func liveCtx(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return context.WithDeadline(context.Background(), deadline.Add(-30*time.Second))
+	}
+	return context.Background(), func() {}
+}
+
 // newRunID is a per-run unique suffix for artifact names, so a leaked artifact
 // from a prior run never collides with (or fails) the next run's create.
 func newRunID() string {
@@ -312,7 +321,8 @@ func TestLiveGitHubGetIssue(t *testing.T) {
 // the oracle asserts the first row's shape, not the whole slice length).
 func TestLiveGitHubListIssues(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	setup, err := createWithBackoff(ctx, func() (Issue, error) {
@@ -653,11 +663,12 @@ func TestLiveGitHubTransitionPullRequestReopen(t *testing.T) {
 	}
 }
 
-// TestLiveGitHubTransitionCrossOp proves a transition took effect with a separate
-// read after close and reopen; the read polls because state can lag the write.
+// TestLiveGitHubTransitionCrossOp checks state after each transition because
+// state can lag a successful write.
 func TestLiveGitHubTransitionCrossOp(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	issue, err := createWithBackoff(ctx, func() (Issue, error) {
@@ -760,7 +771,8 @@ func TestLiveLinearGetIssue(t *testing.T) {
 // leg uses.
 func TestLiveLinearListIssues(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	setup, err := createWithBackoff(ctx, func() (Issue, error) {
@@ -928,11 +940,12 @@ func liveStateNameOfType(t *testing.T, ctx context.Context, ln *Linear, team, st
 	return ""
 }
 
-// TestLiveLinearTransitionCrossOp proves a transition took effect with a separate
-// read after close and reopen; the read polls because state can lag the write.
+// TestLiveLinearTransitionCrossOp checks state after each transition because
+// state can lag a successful write.
 func TestLiveLinearTransitionCrossOp(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-xop-" + newRunID()})
@@ -1034,14 +1047,19 @@ var listLagDelays = []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * ti
 // was seen trailing a create by under a second. Short keeps the suite in budget.
 var visibilityDelays = []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 
-// readGateBudget caps one read gate: a 30s client timeout per poll would
-// otherwise stretch it past the package timeout.
-var readGateBudget = 2 * time.Minute
+// readGateBudget allows scheduled poll delays plus one client timeout.
+func readGateBudget(delays []time.Duration) time.Duration {
+	var budget time.Duration
+	for _, delay := range delays {
+		budget += delay
+	}
+	return budget + 30*time.Second
+}
 
 // findListedIssueWithBackoff polls ListIssues through a provider's eventual list
 // lag; an exhausted window or a non-transient error still fails the caller.
 func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo string, f IssueFilter, want uint64, delays []time.Duration) (Issue, int, error) {
-	ctx, cancel := context.WithTimeout(ctx, readGateBudget)
+	ctx, cancel := context.WithTimeout(ctx, readGateBudget(delays))
 	defer cancel()
 	var lastLen int
 	var lastErr error
@@ -1082,9 +1100,9 @@ type issueGetter interface {
 	GetIssue(ctx context.Context, repo string, number uint64) (Issue, error)
 }
 
-// awaitIssueVisible waits out Linear's number lookup trailing CreateIssue.
+// awaitIssueVisible waits because the issue lookup can lag a successful create.
 func awaitIssueVisible(ctx context.Context, getter issueGetter, repo string, number uint64, delays []time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, readGateBudget)
+	ctx, cancel := context.WithTimeout(ctx, readGateBudget(delays))
 	defer cancel()
 	var lastErr error
 	for _, d := range delays {
@@ -1112,10 +1130,9 @@ func awaitIssueVisible(ctx context.Context, getter issueGetter, repo string, num
 	return fmt.Errorf("issue %s-%d not visible after %d polls: %w", repo, number, len(delays), lastErr)
 }
 
-// awaitIssueState polls GetIssue until the issue reaches want; it fails loud at
-// the bound with the last state seen.
+// State can lag a successful transition, so one read is not proof.
 func awaitIssueState(ctx context.Context, getter issueGetter, repo string, number uint64, want string, delays []time.Duration) (Issue, error) {
-	ctx, cancel := context.WithTimeout(ctx, readGateBudget)
+	ctx, cancel := context.WithTimeout(ctx, readGateBudget(delays))
 	defer cancel()
 	var last Issue
 	var lastErr error
@@ -1156,7 +1173,9 @@ func awaitIssueState(ctx context.Context, getter issueGetter, repo string, numbe
 // on teardown, and waits until GetIssue resolves it by number.
 func createVisibleLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, in CreateIssue) Issue {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
+
 	issue, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -1202,8 +1221,7 @@ func isUpstreamTransient(err error) bool {
 	return errors.Is(err, syscall.ECONNRESET)
 }
 
-// isReadTransient reports an upstream blip or client timeout that the read
-// gates poll through.
+// Repeating a read is safe; writes do not use this classifier.
 func isReadTransient(err error) bool {
 	return isUpstreamTransient(err) || isTransientNetworkTimeout(err)
 }

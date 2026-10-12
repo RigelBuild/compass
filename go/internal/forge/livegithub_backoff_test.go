@@ -19,13 +19,18 @@ type scriptedReads struct {
 	errs   []error
 	states []string
 	calls  int
+	cancel context.CancelFunc
 }
 
 func (s *scriptedReads) GetIssue(context.Context, string, uint64) (Issue, error) {
 	err := s.next()
 	if err != nil {
+		if s.cancel != nil {
+			s.cancel()
+		}
 		return Issue{}, err
 	}
+
 	issue := Issue{Number: 7}
 	if s.calls <= len(s.states) {
 		issue.State = s.states[s.calls-1]
@@ -38,6 +43,9 @@ func (s *scriptedReads) GetIssue(context.Context, string, uint64) (Issue, error)
 func (s *scriptedReads) ListIssues(context.Context, string, IssueFilter) ([]Issue, error) {
 	err := s.next()
 	if s.calls <= len(s.errs) {
+		if err != nil && s.cancel != nil {
+			s.cancel()
+		}
 		return []Issue{{Number: 1}}, err
 	}
 	return []Issue{{Number: 1}, {Number: 7}}, nil
@@ -146,6 +154,14 @@ func TestAwaitIssueVisible(t *testing.T) {
 			t.Fatalf("awaitIssueVisible = %v, want context.Canceled", err)
 		}
 	})
+	t.Run("transient error then canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		g := &scriptedReads{errs: []error{errClientTimeout}, cancel: cancel}
+		err := awaitIssueVisible(ctx, g, "RIG", 7, zeroDelays(3))
+		if !errors.Is(err, errClientTimeout) {
+			t.Fatalf("awaitIssueVisible = %v, want last read error", err)
+		}
+	})
 }
 
 func TestFindListedIssueWithBackoff(t *testing.T) {
@@ -184,6 +200,14 @@ func TestFindListedIssueWithBackoff(t *testing.T) {
 			t.Fatalf("err = %v after %d calls, want the 403 after 1", err, l.calls)
 		}
 	})
+	t.Run("transient error then canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		l := &scriptedReads{errs: []error{errClientTimeout}, cancel: cancel}
+		_, _, err := findListedIssueWithBackoff(ctx, l, "RIG", IssueFilter{}, 7, zeroDelays(3))
+		if !errors.Is(err, errClientTimeout) {
+			t.Fatalf("findListedIssueWithBackoff = %v, want last read error", err)
+		}
+	})
 }
 
 func TestAwaitIssueState(t *testing.T) {
@@ -216,6 +240,14 @@ func TestAwaitIssueState(t *testing.T) {
 		got, err := awaitIssueState(context.Background(), g, "RIG", 7, stateOpen, zeroDelays(3))
 		if err != nil || got.State != stateOpen {
 			t.Fatalf("awaitIssueState = %+v, %v; want state %q", got, err, stateOpen)
+		}
+	})
+	t.Run("transient error then canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		g := &scriptedReads{errs: []error{errClientTimeout}, cancel: cancel}
+		_, err := awaitIssueState(ctx, g, "RIG", 7, stateOpen, zeroDelays(3))
+		if !errors.Is(err, errClientTimeout) {
+			t.Fatalf("awaitIssueState = %v, want last read error", err)
 		}
 	})
 }
