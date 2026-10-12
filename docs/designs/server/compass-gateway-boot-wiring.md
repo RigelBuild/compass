@@ -205,6 +205,12 @@ to the store.
   #146 (RIG-5206) is based on it.
 - **Server dependency.** A default-pinned image needs RIG-5204, because on main
   `ListCredentialPoolRequest` still requires `agent_account_id`.
+- **Host floor (OQ7-A).** The bundled gateway needs passt 2024-08-21 or newer,
+  which added `--map-host-loopback`. Ubuntu 24.04's passt lacks it, and
+  26.04's has it (Resolved decisions). Below the floor, `up` fails at S2's
+  preflight; `--gateway-external` still works. The existing
+  `hostcheck.MicroVMFloors` passt floor (`2025_09_19`) covers only the
+  microVM backend's `passt` on PATH, not podman's pasta.
 - **Fail before bind.** The boot exits non-zero and never binds when:
   - `COMPASS_SERVER_URL` is unset or fails `normalizeCompassBaseUrl`;
   - an https URL has no readable CA file;
@@ -389,6 +395,15 @@ func (e *CertEnsurer) needsRotation(certPath, keyPath string, now time.Time) boo
   consumer tier together.
 - `ensureGatewayToken` is deleted.
 - The gateway step moves as in the Approach.
+- **Network preflight.** Before `EnsureServiceToken`, `startGateway` runs a
+  throwaway `podman run --rm` of the gateway image with the S2 `NetworkArgs`
+  and `--version`, which tini (the image's `ENTRYPOINT` in `Dockerfile.gateway`)
+  answers. This is a new `GatewayContainer.CheckNetwork(ctx, spec) error`.
+  On failure, `up` fails with an error that names passt 2024-08-21,
+  `--map-host-loopback` and `--gateway-external`, and quotes the first two
+  lines of podman's stderr (pasta's `unrecognized option` line; its full
+  usage text runs to about 150 lines). The run tests the option itself, so
+  it works through the darwin machine too, with no version string to parse.
 
 Tests:
 
@@ -400,6 +415,8 @@ Tests:
   without it rotates once, and the next ensure keeps it;
 - harness: on fresh state, server ready → token → container start, and the
   drain stops the gateway before the server.
+- a fake podman that rejects `--map-host-loopback` fails `up` with that
+  error, before the token is ensured or the container starts;
 
 ### I1 — Fork pin, image env and smoke
 
@@ -413,6 +430,11 @@ Lane: compass-gateway.
   (`compass-gen-cert -hosts`) mounted as the CA. It boots with the S2 network
   spec and asserts `/healthz`, `/v1/models` for a good token, 401 for a bad
   token, and a `no-server-env` fault.
+- `release.yml` `publish-gateway-image` runs the smoke on
+  `runs-on: ubuntu-latest`. Pin it to `runs-on: ubuntu-26.04`, because
+  24.04's passt lacks `--map-host-loopback` and `ubuntu-latest` moves to
+  26.04 only gradually (Resolved decisions). The alternative is a nix passt
+  on PATH. Pinning is recommended.
 
 ### P1 — Default image pin
 
@@ -471,6 +493,19 @@ Probe evidence. Each probe targets a host listener on `127.0.0.1`.
 
 The Mac listener was `python3 -m http.server 51999 --bind 127.0.0.1`. The
 probe machine was removed afterwards.
+
+Host floor evidence. A holds, with a floor:
+
+- `--map-host-loopback` landed in upstream passt on 2024-08-21 (commit
+  e813a4df, "conf: Allow address remapped to host to be configured").
+- Ubuntu noble (24.04) ships passt `0.0~git20240220`, and its pasta(1) has
+  no `--map-host-loopback`. Resolute (26.04, passt 20260120) has it
+  (manpages.ubuntu.com `noble`/`resolute` `man1/pasta.1`;
+  launchpad.net/ubuntu/+source/passt).
+- GitHub `ubuntu-latest` moves to 26.04 gradually, from 2026-10-19 to
+  2026-11-19 (github.blog changelog, 2026-09-17).
+- This box's podman 5.8.6 bundles `pasta 2026_07_16`, whose `--help` lists
+  the option.
 
 ## Open Questions
 
