@@ -264,7 +264,8 @@ export interface CompassOwnerEntry { storage: AuthStorage; store: { hasPendingWr
 export interface CompassOwnerPoolOptions { open: (ownerUserId: string) => Promise<CompassOwnerEntry>; maxOwners?: number; idleMs?: number; minIdleMs?: number; sweepIntervalMs?: number; now?: () => number }
 export class CompassOwnerPool {
 	get(ownerUserId: string): Promise<AuthStorage>;
-	withRequestLease<T>(run: () => Promise<T>): Promise<T>;
+	withRequestLease(run: () => Promise<Response>): Promise<Response>;
+	// F2 narrows AuthGatewayRouteOptions.routeScope to Response to match.
 	sweep(): void;
 	close(): void;
 }
