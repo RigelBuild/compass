@@ -84,6 +84,22 @@ func NewComms(st *store.Store, bus commsBus, fab fabric.EventFabric, adminID sto
 	return &Comms{store: st, bus: bus, fabric: fab, fabricPublishFailures: failures, adminID: adminID}
 }
 
+// PublishAccountRename emits account and same-owner DM changes after the
+// rename transaction commits. Channels are fetched in the committed state so
+// every event carries their new deterministic names.
+func (c *Comms) PublishAccountRename(ctx context.Context, account store.Account, channelIDs []store.ChannelID) {
+	ctx = context.WithoutCancel(ctx)
+	c.publishAccountChanged(account)
+	for _, channelID := range channelIDs {
+		channel, err := c.store.GetChannel(ctx, channelID)
+		if err != nil {
+			slog.ErrorContext(ctx, "comms: reading renamed dm channel for event", "channel_id", channelID, "err", err)
+			continue
+		}
+		c.publishChannelChanged(channel, nil)
+	}
+}
+
 // SetPresenceSource wires the in-memory presence enum source GetRoster joins
 // against, AFTER both Comms and the hub exist — a post-construction setter that
 // breaks the comms<->hub construction cycle (comms is built before the hub
@@ -690,13 +706,7 @@ func (c *Comms) OpenDM(
 	peerOwner := peer.Agent.OwnerUserID
 	host := callerOwner
 	var name string
-	if peerOwner == callerOwner {
-		callerAcc, err := c.store.GetAccount(ctx, caller)
-		if err != nil {
-			return nil, edgeError(err)
-		}
-		name = dmChannelName(callerAcc.Handle, peer.Handle)
-	} else {
+	if peerOwner != callerOwner {
 		if peerOwner < host {
 			host = peerOwner
 		}

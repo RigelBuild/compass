@@ -4651,8 +4651,9 @@ func (x *IssueTokenResponse) GetToken() string {
 type RenameAccountRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Current bare user handle or `owner/agent` handle. Empty is INVALID_ARGUMENT;
-	// bad qualified grammar is INVALID_ARGUMENT, unknown handles are NOT_FOUND, and
-	// the system account is PERMISSION_DENIED.
+	// bad qualified grammar is INVALID_ARGUMENT, unknown handles are NOT_FOUND,
+	// and the system account is PERMISSION_DENIED. The bootstrap admin and its
+	// root supervisor are protected with FAILED_PRECONDITION.
 	AccountHandle string `protobuf:"bytes,1,opt,name=account_handle,json=accountHandle,proto3" json:"account_handle,omitempty"`
 	// New bare handle; an agent keeps its current owner. Empty, bad grammar, or a
 	// qualified handle is INVALID_ARGUMENT; a taken handle is ALREADY_EXISTS.

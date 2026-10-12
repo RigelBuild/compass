@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/RigelBuild/compass/go/internal/store/db"
@@ -517,51 +518,113 @@ func (s *Store) AccountHandle(ctx context.Context, id AccountID) (string, error)
 	return handle, nil
 }
 
+// AccountHandleTx resolves an account's current handle through the caller's
+// transaction. It is used after the per-owner DM lock so an open that waited
+// behind a rename cannot create a channel under its stale pre-lock name.
+func (s *Store) AccountHandleTx(ctx context.Context, tx pgx.Tx, id AccountID) (string, error) {
+	handle, err := db.New(tx).GetAccountHandle(ctx, string(id))
+	if err != nil {
+		if noRows(err) {
+			return "", fmt.Errorf("%w: account handle %q", ErrNotFound, id)
+		}
+		return "", fmt.Errorf("store: get account handle in transaction: %w", err)
+	}
+	return handle, nil
+}
+
 // RenameHandle changes an account's resolution and display handles atomically.
+// Same-owner DM names are re-keyed in the same transaction so a freed handle
+// cannot make a new account inherit the renamed account's channel history.
 // A handle freed by the rename is immediately available for reuse.
-func (s *Store) RenameHandle(ctx context.Context, id AccountID, newHandle string) (Account, error) {
+func (s *Store) RenameHandle(ctx context.Context, id AccountID, newHandle string) (Account, []ChannelID, error) {
 	if err := validateHandle(newHandle); err != nil {
-		return Account{}, err
+		return Account{}, nil, err
 	}
 
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
-		return Account{}, fmt.Errorf("store: begin rename handle: %w", err)
+		return Account{}, nil, fmt.Errorf("store: begin rename handle: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
+	// A user owns its DM group, so its own id is the lock key; an agent locks its owner's.
+	ownerUserID, err := qtx.ResolveOwner(ctx, string(id))
+	if err != nil {
+		return Account{}, nil, fmt.Errorf("store: resolve owner before rename: %w", err)
+	}
+	if err := LockOwnerDMTx(ctx, tx, AccountID(ownerUserID)); err != nil {
+		return Account{}, nil, err
+	}
+
 	currentHandle, err := qtx.GetAccountHandle(ctx, string(id))
 	if err != nil {
 		if noRows(err) {
-			return Account{}, fmt.Errorf("%w: account %q", ErrNotFound, id)
+			return Account{}, nil, fmt.Errorf("%w: account %q", ErrNotFound, id)
 		}
-		return Account{}, fmt.Errorf("store: get handle before rename: %w", err)
+		return Account{}, nil, fmt.Errorf("store: get handle before rename: %w", err)
 	}
+	dmChannels, err := qtx.AccountDMChannelsForRename(ctx, string(id))
+	if err != nil {
+		return Account{}, nil, fmt.Errorf("store: list account dms before rename: %w", err)
+	}
+	var channelIDs []ChannelID
 	if currentHandle != newHandle {
-		rows, err := qtx.RenameAccountHandle(ctx, db.RenameAccountHandleParams{AccountID: string(id), Handle: newHandle})
+		channelIDs, err = renameHandleTx(ctx, qtx, id, newHandle, dmChannels)
 		if err != nil {
-			if mapped := mapAccountHandleUniqueViolation(err, newHandle); mapped != nil {
-				return Account{}, mapped
-			}
-			return Account{}, fmt.Errorf("store: update account handle: %w", err)
-		}
-		if rows == 0 {
-			return Account{}, fmt.Errorf("%w: account %q", ErrNotFound, id)
-		}
-		rows, err = qtx.RenameAccountDisplayHandle(ctx, db.RenameAccountDisplayHandleParams{ID: string(id), Handle: newHandle})
-		if err != nil {
-			return Account{}, fmt.Errorf("store: update account display handle: %w", err)
-		}
-		if rows == 0 {
-			return Account{}, fmt.Errorf("%w: account %q", ErrNotFound, id)
+			return Account{}, nil, err
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return Account{}, fmt.Errorf("store: commit rename handle: %w", err)
+		return Account{}, nil, fmt.Errorf("store: commit rename handle: %w", err)
 	}
-	return s.GetAccount(ctx, id)
+	account, err := s.GetAccount(ctx, id)
+	if err != nil {
+		return Account{}, nil, err
+	}
+	return account, channelIDs, nil
+}
+
+func renameHandleTx(
+	ctx context.Context,
+	qtx *db.Queries,
+	id AccountID,
+	newHandle string,
+	dmChannels []db.AccountDMChannelsForRenameRow,
+) ([]ChannelID, error) {
+	rows, err := qtx.RenameAccountHandle(ctx, db.RenameAccountHandleParams{AccountID: string(id), Handle: newHandle})
+	if err != nil {
+		if mapped := mapAccountHandleUniqueViolation(err, newHandle); mapped != nil {
+			return nil, mapped
+		}
+		return nil, fmt.Errorf("store: update account handle: %w", err)
+	}
+	if rows == 0 {
+		return nil, fmt.Errorf("%w: account %q", ErrNotFound, id)
+	}
+	rows, err = qtx.RenameAccountDisplayHandle(ctx, db.RenameAccountDisplayHandleParams{ID: string(id), Handle: newHandle})
+	if err != nil {
+		return nil, fmt.Errorf("store: update account display handle: %w", err)
+	}
+	if rows == 0 {
+		return nil, fmt.Errorf("%w: account %q", ErrNotFound, id)
+	}
+	channelIDs := make([]ChannelID, 0, len(dmChannels))
+	for _, channel := range dmChannels {
+		rows, err := qtx.RenameDMChannel(ctx, db.RenameDMChannelParams{
+			ID:   channel.ID,
+			Name: DMChannelName(newHandle, channel.Handle),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("store: re-key dm channel %q: %w", channel.ID, err)
+		}
+		if rows == 0 {
+			return nil, fmt.Errorf("%w: dm channel %q", ErrNotFound, channel.ID)
+		}
+		channelIDs = append(channelIDs, ChannelID(channel.ID))
+	}
+	return channelIDs, nil
 }
 
 // ResolveOwner resolves a caller to the user account it acts under. It mirrors

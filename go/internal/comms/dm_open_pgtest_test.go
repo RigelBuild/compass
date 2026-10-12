@@ -893,7 +893,7 @@ func TestOpenDMAsAccountResolvesOrCreates(t *testing.T) {
 // the first's channel, cross-adding members (a same-owner private-DM
 // confidentiality break). The `:` separator is excluded from the handle grammar,
 // so the two pairs map to distinct names (dm:a:b--c vs dm:a--b:c) and must
-// resolve to DISTINCT channels. RED if dmChannelName reverts to a `-` delimiter.
+// resolve to DISTINCT channels. RED if DMChannelName reverts to a `-` delimiter.
 func TestOpenDMDoubleHyphenHandlesResolveDistinctChannels(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -918,7 +918,7 @@ func TestOpenDMDoubleHyphenHandlesResolveDistinctChannels(t *testing.T) {
 		t.Fatalf("second pair created = false, want true (a distinct pair must mint its own DM, not resume)")
 	}
 	if second.Msg.GetChannel().GetId() == first.Msg.GetChannel().GetId() {
-		t.Fatalf("the two distinct pairs collided onto one channel %q — dmChannelName is not injective", first.Msg.GetChannel().GetId())
+		t.Fatalf("the two distinct pairs collided onto one channel %q — DMChannelName is not injective", first.Msg.GetChannel().GetId())
 	}
 	// And the first DM's membership is uncorrupted: exactly a + b--c (+ their
 	// owner), never the second pair's ab or c.
@@ -971,6 +971,75 @@ func TestOpenDMResumeEmitsNoChannelChanged(t *testing.T) {
 	}
 	if dmChannelChanges != 1 {
 		t.Fatalf("ChannelChanged events for the DM = %d, want exactly 1 (the create only; a resume must emit nothing)", dmChannelChanges)
+	}
+}
+
+// TestRenameReclaimsSameOwnerDMWithoutSharingHistory proves that a new account
+// cannot resume a renamed account's private DM history.
+func TestRenameReclaimsSameOwnerDMWithoutSharingHistory(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := t.Context()
+	owner := mustUser(t, st, "owner")
+	original := mustAgent(t, st, owner.ID, "alice")
+	bob := mustAgent(t, st, owner.ID, "bob")
+
+	first, err := svc.OpenDM(WithActor(ctx, original.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(original -> bob): %v", err)
+	}
+	oldID := store.ChannelID(first.Msg.GetChannel().GetId())
+	if _, err := svc.PostMessage(WithActor(ctx, original.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(oldID)},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		CreateTopic: true,
+		Blocks:      textBlocks("private history"),
+	})); err != nil {
+		t.Fatalf("PostMessage(original DM): %v", err)
+	}
+
+	if _, _, err := st.RenameHandle(ctx, original.ID, "alice-renamed"); err != nil {
+		t.Fatalf("RenameHandle(original): %v", err)
+	}
+	messages, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: original.ID, ChannelID: oldID})
+	if err != nil {
+		t.Fatalf("ListMessages(old DM after rename): %v", err)
+	}
+	if len(messages) != 1 || messages[0].Blocks[0].Text == nil || *messages[0].Blocks[0].Text != "private history" {
+		t.Fatalf("old DM history after rename = %+v, want the original private message", messages)
+	}
+	reclaimer := mustAgent(t, st, owner.ID, "alice")
+
+	newDM, err := svc.OpenDM(WithActor(ctx, reclaimer.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(reclaimer -> bob): %v", err)
+	}
+	if !newDM.Msg.GetCreated() || newDM.Msg.GetChannel().GetId() == string(oldID) {
+		t.Fatalf("reclaimer DM = (id %q, created %v), want a new channel distinct from %q", newDM.Msg.GetChannel().GetId(), newDM.Msg.GetCreated(), oldID)
+	}
+	oldChannel, err := st.GetChannel(ctx, oldID)
+	if err != nil {
+		t.Fatalf("GetChannel(old DM): %v", err)
+	}
+	if containsString(accountIDsToStrings(oldChannel.MemberAccountIDs), string(reclaimer.ID)) {
+		t.Fatalf("old DM members %v include reclaimed account %q", oldChannel.MemberAccountIDs, reclaimer.ID)
+	}
+	reclaimedMessages, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: reclaimer.ID, ChannelID: oldID})
+	if err != nil {
+		t.Fatalf("ListMessages(old DM as reclaimer): %v", err)
+	}
+	if len(reclaimedMessages) != 0 {
+		t.Fatalf("reclaimer can read old DM history: %+v", reclaimedMessages)
+	}
+
+	resumed, err := svc.OpenDM(WithActor(ctx, original.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(renamed original -> bob): %v", err)
+	}
+	if resumed.Msg.GetCreated() || resumed.Msg.GetChannel().GetId() != string(oldID) {
+		t.Fatalf("renamed original DM = (id %q, created %v), want resume of %q", resumed.Msg.GetChannel().GetId(), resumed.Msg.GetCreated(), oldID)
+	}
+	if bob.ID == reclaimer.ID {
+		t.Fatal("test setup returned duplicate account ids")
 	}
 }
 
@@ -1191,5 +1260,58 @@ func TestConvertChannelNameIsNoOpOnNonDM(t *testing.T) {
 	}
 	if !containsString(ch.GetMemberAccountIds(), string(newcomer.ID)) {
 		t.Fatalf("members = %v, want the added t15newcomer %s", ch.GetMemberAccountIds(), newcomer.ID)
+	}
+}
+
+// TestRenameReclaimsOwnerAgentDMWithoutResume covers the owner-agent DM, also
+// handle-keyed: a reclaimed agent handle must not resume the owner's old DM.
+func TestRenameReclaimsOwnerAgentDMWithoutResume(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := t.Context()
+	owner := mustUser(t, st, "probe-owner")
+	alice := mustAgent(t, st, owner.ID, "alice")
+	first, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "alice"}))
+	if err != nil {
+		t.Fatalf("OpenDM(owner -> alice): %v", err)
+	}
+	if _, _, err := st.RenameHandle(ctx, alice.ID, "alice-old"); err != nil {
+		t.Fatalf("RenameHandle(alice): %v", err)
+	}
+	reclaimer := mustAgent(t, st, owner.ID, "alice")
+	second, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "alice"}))
+	if err != nil {
+		t.Fatalf("OpenDM(owner -> reclaimed alice): %v", err)
+	}
+	if second.Msg.GetChannel().GetId() == first.Msg.GetChannel().GetId() {
+		t.Fatalf("owner's DM with the reclaimed handle resumed the renamed agent's channel %q", first.Msg.GetChannel().GetId())
+	}
+	if containsString(second.Msg.GetChannel().GetMemberAccountIds(), string(alice.ID)) {
+		t.Fatalf("new DM members %v include the renamed agent", second.Msg.GetChannel().GetMemberAccountIds())
+	}
+	if !containsString(second.Msg.GetChannel().GetMemberAccountIds(), string(reclaimer.ID)) {
+		t.Fatalf("new DM members %v omit the reclaimer", second.Msg.GetChannel().GetMemberAccountIds())
+	}
+}
+
+// TestRenameOwnerResumesOwnerAgentDM: renaming the owner re-keys its DMs with its
+// agents, so the renamed owner resumes the same channel instead of forking one.
+func TestRenameOwnerResumesOwnerAgentDM(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := t.Context()
+	owner := mustUser(t, st, "rename-owner")
+	mustAgent(t, st, owner.ID, "helper")
+	first, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "helper"}))
+	if err != nil {
+		t.Fatalf("OpenDM(owner -> helper): %v", err)
+	}
+	if _, _, err := st.RenameHandle(ctx, owner.ID, "rename-owner-2"); err != nil {
+		t.Fatalf("RenameHandle(owner): %v", err)
+	}
+	again, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "helper"}))
+	if err != nil {
+		t.Fatalf("OpenDM(renamed owner -> helper): %v", err)
+	}
+	if again.Msg.GetCreated() || again.Msg.GetChannel().GetId() != first.Msg.GetChannel().GetId() {
+		t.Fatalf("renamed owner DM = (id %q, created %v), want resume of %q", again.Msg.GetChannel().GetId(), again.Msg.GetCreated(), first.Msg.GetChannel().GetId())
 	}
 }

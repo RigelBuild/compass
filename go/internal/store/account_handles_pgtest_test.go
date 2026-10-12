@@ -22,8 +22,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 )
@@ -112,6 +115,9 @@ func TestAgentHandleMayOverlapUserHandle(t *testing.T) {
 
 // TestHandleRenameInPlaceBothTiers: rename updates both the resolution key and
 // the accounts.handle display copy, while freeing the previous handle.
+//
+// Mutation: skipping RenameAccountDisplayHandle leaves accounts.handle stale;
+// the Account.Handle assertions below then fail.
 func TestHandleRenameInPlaceBothTiers(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
@@ -120,7 +126,7 @@ func TestHandleRenameInPlaceBothTiers(t *testing.T) {
 	agent := mustAgent(t, s, owner.ID, "old-agent")
 
 	// User rename (global tier).
-	got, err := s.RenameHandle(ctx, user.ID, "newname")
+	got, _, err := s.RenameHandle(ctx, user.ID, "newname")
 	if err != nil || got.Handle != "newname" {
 		t.Fatalf("RenameHandle(user, newname) = (%+v, %v), want handle newname", got, err)
 	}
@@ -134,7 +140,7 @@ func TestHandleRenameInPlaceBothTiers(t *testing.T) {
 	assertAccountDisplayHandle(t, ctx, s, user.ID, "newname")
 
 	// Agent rename (per-owner tier).
-	gotA, err := s.RenameHandle(ctx, agent.ID, "new-agent")
+	gotA, _, err := s.RenameHandle(ctx, agent.ID, "new-agent")
 	if err != nil || gotA.Handle != "new-agent" {
 		t.Fatalf("RenameHandle(agent, new-agent) = (%+v, %v), want handle new-agent", gotA, err)
 	}
@@ -148,13 +154,59 @@ func TestHandleRenameInPlaceBothTiers(t *testing.T) {
 	assertAccountDisplayHandle(t, ctx, s, agent.ID, "new-agent")
 }
 
+// TestRenameHandleRekeysSameOwnerDMWithoutChangingMembership proves an agent
+// rename keeps the channel ID and parties while deriving its name from the new
+// handle.
+func TestRenameHandleRekeysSameOwnerDMWithoutChangingMembership(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "dm-owner")
+	alice := mustAgent(t, s, owner.ID, "alice")
+	bob := mustAgent(t, s, owner.ID, "bob")
+	var channelID ChannelID
+	if err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		if err := LockOwnerDMTx(ctx, tx, owner.ID); err != nil {
+			return err
+		}
+		group, err := s.EnsureOwnerDMGroupTx(ctx, tx, owner.ID)
+		if err != nil {
+			return err
+		}
+		channelID, _, err = s.UpsertDMChannelTx(ctx, tx, DMChannelSpec{
+			GroupID: group,
+			Name:    DMChannelName(alice.Handle, bob.Handle),
+			Members: []AccountID{alice.ID, bob.ID},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("open DM: %v", err)
+	}
+	renamed, rekeyed, err := s.RenameHandle(ctx, alice.ID, "alice-new")
+	if err != nil {
+		t.Fatalf("RenameHandle: %v", err)
+	}
+	if renamed.Handle != "alice-new" || len(rekeyed) != 1 || rekeyed[0] != channelID {
+		t.Fatalf("RenameHandle = (%q, %v), want handle alice-new and the same DM ID %q", renamed.Handle, rekeyed, channelID)
+	}
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if channel.Name != DMChannelName("alice-new", bob.Handle) {
+		t.Fatalf("renamed DM name = %q, want %q", channel.Name, DMChannelName("alice-new", bob.Handle))
+	}
+	if !slices.Contains(channel.MemberAccountIDs, alice.ID) || !slices.Contains(channel.MemberAccountIDs, bob.ID) || !slices.Contains(channel.MemberAccountIDs, owner.ID) {
+		t.Fatalf("renamed DM members = %v, want both agents and their owner", channel.MemberAccountIDs)
+	}
+}
+
 // TestHandleReclaimBothTiers: a freed handle may be re-registered at either tier.
 func TestHandleReclaimBothTiers(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 	user := mustUser(t, s, "matt")
 	// Free the user handle by renaming it away, then a new user reclaims "matt".
-	if _, err := s.RenameHandle(ctx, user.ID, "matt-old"); err != nil {
+	if _, _, err := s.RenameHandle(ctx, user.ID, "matt-old"); err != nil {
 		t.Fatalf("rename user away: %v", err)
 	}
 	reclaimer, err := s.CreateUser(ctx, NewUser{Handle: "matt", DisplayName: "New Matt"})
@@ -170,7 +222,7 @@ func TestHandleReclaimBothTiers(t *testing.T) {
 	// Agent tier: free `owner/ux`, a new agent reclaims it under the same owner.
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "ux")
-	if _, err := s.RenameHandle(ctx, agent.ID, "ux-old"); err != nil {
+	if _, _, err := s.RenameHandle(ctx, agent.ID, "ux-old"); err != nil {
 		t.Fatalf("rename agent away: %v", err)
 	}
 	reAgent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "ux", DisplayName: "New UX"})
@@ -186,6 +238,9 @@ func TestHandleReclaimBothTiers(t *testing.T) {
 
 // TestRenameHandleCollisionsRespectHandleTiers proves conflicts remain local to
 // each namespace and a failed update leaves both accounts unchanged.
+//
+// Mutation: skipping mapAccountHandleUniqueViolation changes ErrConflict into a
+// raw database error; the first assertion then fails.
 func TestRenameHandleCollisionsRespectHandleTiers(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
@@ -216,7 +271,7 @@ func TestRenameHandleCollisionsRespectHandleTiers(t *testing.T) {
 	t.Run("user collision rolls back", func(t *testing.T) {
 		user := createUser("user-before")
 		taken := createUser("user-taken")
-		if _, err := s.RenameHandle(ctx, user.ID, taken.Handle); !errors.Is(err, ErrConflict) {
+		if _, _, err := s.RenameHandle(ctx, user.ID, taken.Handle); !errors.Is(err, ErrConflict) {
 			t.Fatalf("RenameHandle(user, taken) = %v, want ErrConflict", err)
 		}
 		assertBothHandles(user, "user-before")
@@ -227,7 +282,7 @@ func TestRenameHandleCollisionsRespectHandleTiers(t *testing.T) {
 		owner := createUser("same-owner")
 		agent := createAgent(owner.ID, "agent-before")
 		sibling := createAgent(owner.ID, "agent-taken")
-		if _, err := s.RenameHandle(ctx, agent.ID, sibling.Handle); !errors.Is(err, ErrConflict) {
+		if _, _, err := s.RenameHandle(ctx, agent.ID, sibling.Handle); !errors.Is(err, ErrConflict) {
 			t.Fatalf("RenameHandle(agent, sibling handle) = %v, want ErrConflict", err)
 		}
 		assertBothHandles(agent, "agent-before")
@@ -239,7 +294,7 @@ func TestRenameHandleCollisionsRespectHandleTiers(t *testing.T) {
 		ownerB := createUser("owner-b")
 		agent := createAgent(ownerA.ID, "agent-a")
 		other := createAgent(ownerB.ID, "agent-b")
-		got, err := s.RenameHandle(ctx, agent.ID, other.Handle)
+		got, _, err := s.RenameHandle(ctx, agent.ID, other.Handle)
 		if err != nil || got.Handle != other.Handle {
 			t.Fatalf("RenameHandle(agent, different owner handle) = (%+v, %v)", got, err)
 		}
@@ -251,7 +306,7 @@ func TestRenameHandleCollisionsRespectHandleTiers(t *testing.T) {
 		user := createUser("shared-name")
 		owner := createUser("agent-owner")
 		agent := createAgent(owner.ID, "agent-name")
-		got, err := s.RenameHandle(ctx, agent.ID, user.Handle)
+		got, _, err := s.RenameHandle(ctx, agent.ID, user.Handle)
 		if err != nil || got.Handle != user.Handle {
 			t.Fatalf("RenameHandle(agent, user handle) = (%+v, %v)", got, err)
 		}
@@ -266,10 +321,10 @@ func TestRenameHandleRejectsInvalidHandleAndUnknownID(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 	user := mustUser(t, s, "rename-target")
-	if _, err := s.RenameHandle(ctx, user.ID, "owner/agent"); !errors.Is(err, ErrInvalidArgument) {
+	if _, _, err := s.RenameHandle(ctx, user.ID, "owner/agent"); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("RenameHandle(qualified handle) = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := s.RenameHandle(ctx, "missing-account", "valid-name"); !errors.Is(err, ErrNotFound) {
+	if _, _, err := s.RenameHandle(ctx, "missing-account", "valid-name"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("RenameHandle(unknown id) = %v, want ErrNotFound", err)
 	}
 }
@@ -278,7 +333,7 @@ func TestRenameHandleCurrentHandleIsNoop(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 	user := mustUser(t, s, "same-name")
-	got, err := s.RenameHandle(ctx, user.ID, user.Handle)
+	got, _, err := s.RenameHandle(ctx, user.ID, user.Handle)
 	if err != nil || got.ID != user.ID || got.Handle != user.Handle {
 		t.Fatalf("RenameHandle(current handle) = (%+v, %v), want unchanged account", got, err)
 	}

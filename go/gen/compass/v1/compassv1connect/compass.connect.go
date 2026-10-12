@@ -240,8 +240,9 @@ type CompassServiceClient interface {
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
 	// Admin-gated: only an admin may rename an account; non-admin callers get
-	// permission_denied. Freed handles may be reclaimed; the owner of an agent
-	// does not change.
+	// permission_denied. Same-owner DMs are re-keyed; freed handles may be
+	// reclaimed, and an agent's owner does not change. The bootstrap admin and
+	// its root supervisor are protected from rename with failed_precondition.
 	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)
 	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
 	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
@@ -730,8 +731,9 @@ type CompassServiceHandler interface {
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
 	// Admin-gated: only an admin may rename an account; non-admin callers get
-	// permission_denied. Freed handles may be reclaimed; the owner of an agent
-	// does not change.
+	// permission_denied. Same-owner DMs are re-keyed; freed handles may be
+	// reclaimed, and an agent's owner does not change. The bootstrap admin and
+	// its root supervisor are protected from rename with failed_precondition.
 	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)
 	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
 	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by

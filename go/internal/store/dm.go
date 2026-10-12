@@ -42,6 +42,21 @@ type DMChannelSpec struct {
 	Members []AccountID
 }
 
+// DMChannelName derives the deterministic sorted-handle pair name for a peer DM.
+// Handles are sorted lexicographically so open(a,b) and open(b,a) resolve the
+// same channel.
+//
+// The separator is `:`, a byte the handle grammar excludes, so the split is
+// unambiguous. A hyphen delimiter is not injective because handles may contain
+// consecutive hyphens.
+func DMChannelName(h1, h2 string) string {
+	lo, hi := h1, h2
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return "dm:" + lo + ":" + hi
+}
+
 // EnsureOwnerDMGroupTx get-or-creates the single per-owner namespace group that
 // hosts every one of ownerUserID's peer-DM channels, on tx, and returns its id.
 // It mirrors EnsureOwnerCoordinationGroupTx exactly — deterministic + idempotent

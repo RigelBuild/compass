@@ -11,6 +11,11 @@ import (
 )
 
 type Querier interface {
+	// AccountDMChannelsForRename reads the same-owner DMs (agent-agent and
+	// owner-agent) keyed by the renamed account's current handle. Cross-owner DMs use
+	// account IDs and do not change.
+	//
+	AccountDMChannelsForRename(ctx context.Context, accountID string) ([]AccountDMChannelsForRenameRow, error)
 	// The tenant an account belongs to. A system-role caller (the delivery loop) reads
 	// it to act for that account under its own tenant.
 	AccountTenant(ctx context.Context, id string) (string, error)
@@ -584,6 +589,7 @@ type Querier interface {
 	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
 	RenameAccountDisplayHandle(ctx context.Context, arg RenameAccountDisplayHandleParams) (int64, error)
 	RenameAccountHandle(ctx context.Context, arg RenameAccountHandleParams) (int64, error)
+	RenameDMChannel(ctx context.Context, arg RenameDMChannelParams) (int64, error)
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
 	RequireAgentSessionOwner(ctx context.Context, arg RequireAgentSessionOwnerParams) (bool, error)
 	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)

@@ -63,6 +63,10 @@ var errNoSessionID = errors.New("runner returned no session id to stop")
 // onto a copy at the stream edge.
 type busPayload = *compassv1.SubscribeEventsResponse
 
+type accountRenamePublisher interface {
+	PublishAccountRename(ctx context.Context, account store.Account, channelIDs []store.ChannelID)
+}
+
 // service is the server's compass.v1 service. The event bus and the store of
 // record are shared by pointer and the version is a small owned string. The
 // store backs IssueToken: it verifies the target account against the store, then
@@ -91,7 +95,9 @@ type service struct {
 	// so a frame the hub relays reaches this service's stream subscribers. nil on
 	// a server built with no Runner door (SubscribeAgentSession then Unavailable,
 	// like the other Runner-backed RPCs).
-	tail *sessionTail
+	tail           *sessionTail
+	accountRenamer accountRenamePublisher
+	adminID        store.AccountID
 	// signaler emits a ConfigVersion signal to every live session after a
 	// successful config write (PutAgentConfig / DeleteAgentConfig), so live
 	// Runners re-fetch the bundle. *runnerhub.Hub satisfies it; the service
@@ -464,7 +470,11 @@ func (s *service) RenameAccount(
 			fmt.Errorf("account %q is the system account and cannot be renamed", raw))
 	}
 
-	renamed, err := s.store.RenameHandle(ctx, acc.ID, newHandle)
+	if acc.ID == s.adminID || isAdminRootSupervisor(acc, s.adminID) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("account %q is a protected bootstrap account", raw))
+	}
+	renamed, rekeyedChannels, err := s.store.RenameHandle(ctx, acc.ID, newHandle)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrInvalidArgument):
@@ -476,6 +486,9 @@ func (s *service) RenameAccount(
 		default:
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+	}
+	if s.accountRenamer != nil {
+		s.accountRenamer.PublishAccountRename(ctx, renamed, rekeyedChannels)
 	}
 	handle := renamed.Handle
 	if renamed.Agent != nil {
@@ -620,6 +633,12 @@ func (s *service) SubscribeAgentSession(
 			}
 		}
 	}
+}
+
+func (s *service) withAccountRenamer(p accountRenamePublisher, adminID store.AccountID) *service {
+	s.accountRenamer = p
+	s.adminID = adminID
+	return s
 }
 
 // withRev sets the build git rev GetServerInfo reports; only Serve stamps it.

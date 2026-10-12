@@ -1883,8 +1883,9 @@ export const IssueTokenResponseSchema: GenMessage<IssueTokenResponse> = /*@__PUR
 export type RenameAccountRequest = Message<"compass.v1.RenameAccountRequest"> & {
   /**
    * Current bare user handle or `owner/agent` handle. Empty is INVALID_ARGUMENT;
-   * bad qualified grammar is INVALID_ARGUMENT, unknown handles are NOT_FOUND, and
-   * the system account is PERMISSION_DENIED.
+   * bad qualified grammar is INVALID_ARGUMENT, unknown handles are NOT_FOUND,
+   * and the system account is PERMISSION_DENIED. The bootstrap admin and its
+   * root supervisor are protected with FAILED_PRECONDITION.
    *
    * @generated from field: string account_handle = 1;
    */
@@ -3800,8 +3801,9 @@ export const CompassService: GenService<{
   },
   /**
    * Admin-gated: only an admin may rename an account; non-admin callers get
-   * permission_denied. Freed handles may be reclaimed; the owner of an agent
-   * does not change.
+   * permission_denied. Same-owner DMs are re-keyed; freed handles may be
+   * reclaimed, and an agent's owner does not change. The bootstrap admin and
+   * its root supervisor are protected from rename with failed_precondition.
    *
    * @generated from rpc compass.v1.CompassService.RenameAccount
    */

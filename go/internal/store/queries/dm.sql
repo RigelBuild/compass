@@ -30,6 +30,30 @@ VALUES ($1, $2, $3, $4, $5, NULL, $6)
 ON CONFLICT (group_id, name) WHERE group_id IS NOT NULL DO NOTHING
 RETURNING id;
 
+-- AccountDMChannelsForRename reads the same-owner DMs (agent-agent and
+-- owner-agent) keyed by the renamed account's current handle. Cross-owner DMs use
+-- account IDs and do not change.
+--
+-- name: AccountDMChannelsForRename :many
+SELECT c.id, other.account_id, other_handle.handle
+FROM channels c
+JOIN channel_groups cg ON cg.id = c.group_id AND cg.name = '__dm__'
+    AND cg.parent_group_id IS NULL AND cg.visibility = 0
+JOIN channel_members subject ON subject.channel_id = c.id AND subject.account_id = $1
+JOIN channel_members other ON other.channel_id = c.id AND other.account_id <> $1
+JOIN account_handles other_handle ON other_handle.account_id = other.account_id
+JOIN account_handles subject_handle ON subject_handle.account_id = subject.account_id
+WHERE c.kind = 1
+  AND cg.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
+  AND c.name IN (
+      'dm:' || subject_handle.handle || ':' || other_handle.handle,
+      'dm:' || other_handle.handle || ':' || subject_handle.handle
+  )
+ORDER BY c.id, other.account_id;
+
+-- name: RenameDMChannel :execrows
+UPDATE channels SET name = $2 WHERE id = $1;
+
 -- name: LockOwnerDM :exec
 SELECT pg_advisory_xact_lock(hashtext('dm:' || $1));
 
