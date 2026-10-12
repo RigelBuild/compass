@@ -242,7 +242,8 @@ func assertMatchesFixture(t *testing.T, got any, want json.RawMessage) {
 // closes the issue (GitHub cannot delete issues via REST).
 func TestLiveGitHubCreateIssue(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "create_issue")
@@ -266,7 +267,8 @@ func TestLiveGitHubCreateIssue(t *testing.T) {
 // compare would strip both sides to {} and pin nothing.
 func TestLiveGitHubCommentOnIssue(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	issue, err := createWithBackoff(ctx, func() (Issue, error) {
@@ -293,7 +295,8 @@ func TestLiveGitHubCommentOnIssue(t *testing.T) {
 // value matches the fixture under the allowlist.
 func TestLiveGitHubGetIssue(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "get_issue")
@@ -353,7 +356,8 @@ func TestLiveGitHubListIssues(t *testing.T) {
 // closes the PR and deletes the branch.
 func TestLiveGitHubCreatePullRequest(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	head := "compass-live-" + newRunID()
@@ -381,7 +385,8 @@ func TestLiveGitHubCreatePullRequest(t *testing.T) {
 // echoed back.
 func TestLiveGitHubCommentOnPullRequest(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	head := "compass-live-" + newRunID()
@@ -415,7 +420,8 @@ func TestLiveGitHubCommentOnPullRequest(t *testing.T) {
 // friction report), so the oracle asserts the verdict fold directly.
 func TestLiveGitHubSubmitReview(t *testing.T) {
 	repo, author, reviewer := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	authorGH := liveGitHub(author)
 	reviewerGH := liveGitHub(reviewer)
 
@@ -462,7 +468,8 @@ func TestLiveGitHubSubmitReview(t *testing.T) {
 // APPROVE succeeds. Teardown closes the PR and deletes the branch.
 func TestLiveGitHubF1AuthorApprovalRejected(t *testing.T) {
 	repo, author, reviewer := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	authorGH := liveGitHub(author)
 	reviewerGH := liveGitHub(reviewer)
 
@@ -504,7 +511,8 @@ func TestLiveGitHubF1AuthorApprovalRejected(t *testing.T) {
 // client's TokenSource.Invalidate() (the credential-rotation hook).
 func TestLiveGitHubAuthFailureInvalidates(t *testing.T) {
 	repo, _, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	// A well-formed-but-dead installation-token prefix (ghs_, the post-cutover
 	// model) so the 401/403 arrives from GitHub's auth layer, not a malformed
 	// header — never a bot PAT (ghp_), which this suite retired (RIG-3096).
@@ -536,7 +544,8 @@ func TestLiveGitHubAuthFailureInvalidates(t *testing.T) {
 // reason) and asserts the decoded issue matches the committed fixture.
 func TestLiveGitHubTransitionIssueClose(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "transition_issue_close_default")
@@ -560,7 +569,8 @@ func TestLiveGitHubTransitionIssueClose(t *testing.T) {
 // fixture (State closed, the label preserved through the close).
 func TestLiveGitHubTransitionIssueCloseReason(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "transition_issue_close_reason")
@@ -583,7 +593,8 @@ func TestLiveGitHubTransitionIssueCloseReason(t *testing.T) {
 // the reopen response matches the fixture (State open).
 func TestLiveGitHubTransitionIssueReopen(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "transition_issue_reopen")
@@ -612,7 +623,8 @@ func TestLiveGitHubTransitionIssueReopen(t *testing.T) {
 // seeded PR — so the leg asserts the state fold directly, not via the fixture.
 func TestLiveGitHubTransitionPullRequestClose(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	head := "compass-live-" + newRunID()
@@ -638,7 +650,8 @@ func TestLiveGitHubTransitionPullRequestClose(t *testing.T) {
 // the state fold directly (see TestLiveGitHubTransitionPullRequestClose).
 func TestLiveGitHubTransitionPullRequestReopen(t *testing.T) {
 	repo, author, _ := requireLive(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	gh := liveGitHub(author)
 
 	head := "compass-live-" + newRunID()
@@ -700,7 +713,8 @@ func TestLiveGitHubTransitionCrossOp(t *testing.T) {
 // asserts the decoded value matches the committed fixture under the allowlist.
 func TestLiveLinearCreateIssue(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "create_issue")
@@ -726,10 +740,11 @@ func TestLiveLinearCreateIssue(t *testing.T) {
 // via URL (see linear.go linearComment.toComment).
 func TestLiveLinearCommentOnIssue(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 
 	body := "compass-live comment " + newRunID()
 	got, err := ln.CommentOnIssue(ctx, team, issue.Number, body, "")
@@ -749,11 +764,12 @@ func TestLiveLinearCommentOnIssue(t *testing.T) {
 // open (unstarted) state, which is exactly what the fixture pins.
 func TestLiveLinearGetIssue(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "get_issue")
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-get-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-get-" + newRunID()})
 
 	got, err := ln.GetIssue(ctx, team, issue.Number)
 	if err != nil {
@@ -800,7 +816,8 @@ func TestLiveLinearListIssues(t *testing.T) {
 // unsupported on an issues-only forge, returning ErrUnsupported (no wire call).
 func TestLiveLinearPRUnsupported(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	if _, err := ln.CreatePullRequest(ctx, team, CreatePR{}); !errors.Is(err, ErrUnsupported) {
@@ -812,11 +829,12 @@ func TestLiveLinearPRUnsupported(t *testing.T) {
 // default (completed) mapping and asserts the decoded issue matches the fixture.
 func TestLiveLinearTransitionIssueClose(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "transition_issue_close_default")
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
 
 	got, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed})
 	if err != nil {
@@ -832,12 +850,13 @@ func TestLiveLinearTransitionIssueClose(t *testing.T) {
 // fixture pins the resolved stateId offline.
 func TestLiveLinearTransitionIssueCloseByName(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	named := liveStateNameOfType(t, ctx, ln, team, "canceled")
 	f := liveFixture(t, providerLinear, "transition_issue_close_by_name")
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
 
 	got, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: named})
 	if err != nil {
@@ -850,11 +869,12 @@ func TestLiveLinearTransitionIssueCloseByName(t *testing.T) {
 // default (unstarted) mapping and asserts the reopen matches the fixture.
 func TestLiveLinearTransitionIssueReopen(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "transition_issue_reopen_default")
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
 
 	// Close first so the reopen is a real state change.
 	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
@@ -873,10 +893,11 @@ func TestLiveLinearTransitionIssueReopen(t *testing.T) {
 // RIG is team-specific, so the live leg substitutes the live team key).
 func TestLiveLinearTransitionUnknownName(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tunknown-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-tunknown-" + newRunID()})
 
 	_, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: "compass-live-nonexistent-state"})
 	se, ok := errors.AsType[*StatusError](err)
@@ -898,11 +919,12 @@ func TestLiveLinearTransitionUnknownName(t *testing.T) {
 // for the wrong reason.
 func TestLiveLinearTransitionTypeContradiction(t *testing.T) {
 	ts, team := requireLinear(t)
-	ctx := context.Background()
+	ctx, cancel := liveCtx(t)
+	defer cancel()
 	ln := liveLinear(ts)
 
 	started := liveStateNameOfType(t, ctx, ln, team, "started")
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tcontra-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-tcontra-" + newRunID()})
 
 	_, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: started})
 	se, ok := errors.AsType[*StatusError](err)
@@ -948,7 +970,7 @@ func TestLiveLinearTransitionCrossOp(t *testing.T) {
 	defer cancel()
 	ln := liveLinear(ts)
 
-	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-xop-" + newRunID()})
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-xop-" + newRunID()})
 
 	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
 		t.Fatalf("TransitionIssueState close: %v", err)
@@ -1169,17 +1191,14 @@ func awaitIssueState(ctx context.Context, getter issueGetter, repo string, numbe
 	return Issue{}, errors.New(message)
 }
 
-// createVisibleLinearIssue creates a Linear setup issue, registers its archive
-// on teardown, and waits until GetIssue resolves it by number.
-func createVisibleLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, in CreateIssue) Issue {
+// createVisibleLinearIssue creates a Linear setup issue and waits for visibility.
+func createVisibleLinearIssue(ctx context.Context, t *testing.T, ln *Linear, ts TokenSource, team string, in CreateIssue) Issue {
 	t.Helper()
-	ctx, cancel := liveCtx(t)
-	defer cancel()
-
 	issue, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
+	//nolint:contextcheck // Cleanup must outlive the live test context.
 	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
 	if err := awaitIssueVisible(ctx, ln, team, issue.Number, visibilityDelays); err != nil {
 		t.Fatalf("await setup issue visible: %v", err)
@@ -1479,9 +1498,6 @@ type captureSpec struct {
 // it skips cleanly (it rewrites committed fixtures — never a default run). The
 // credential gates (requireLive/requireLinear) skip each provider's legs
 // independently when its creds are unset.
-//
-// context.Background() below is the test root — the sanctioned F-ttsr exemption
-// (mirrors the sibling live scenarios).
 func TestLiveUpdateFixtures(t *testing.T) {
 	if !*update {
 		t.Skip(liveUpdateSkipMessage)
@@ -1522,12 +1538,17 @@ func githubUpdateSpecs() []captureSpec {
 }
 
 func githubCreateReadSpecs() []captureSpec {
+	return append(githubCreateIssueSpec(), append(githubIssueReadSpecs(), githubPullRequestReadSpecs()...)...)
+}
+
+func githubCreateIssueSpec() []captureSpec {
 	return []captureSpec{
 		{provider: providerGitHub, name: "create_issue", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				gh := recordingGitHub(author, rt)
 				in := CreateIssue{Title: "compass-live-issue-" + newRunID(), Body: "stamped body", Labels: []string{"bug", "p1"}}
 				got, err := createWithBackoff(ctx, func() (Issue, error) { return gh.CreateIssue(ctx, repo, in) })
@@ -1538,11 +1559,21 @@ func githubCreateReadSpecs() []captureSpec {
 				return fixtureRequest{Op: "create_issue", Repo: repo,
 					Input: &fixtureInput{Title: in.Title, Body: in.Body, Labels: in.Labels}}
 			}},
+	}
+}
+
+func githubIssueReadSpecs() []captureSpec {
+	return append(githubGetIssueSpec(), githubListIssuesSpec()...)
+}
+
+func githubGetIssueSpec() []captureSpec {
+	return []captureSpec{
 		{provider: providerGitHub, name: "get_issue", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupGitHub(author)
 				issue, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{
@@ -1558,11 +1589,17 @@ func githubCreateReadSpecs() []captureSpec {
 				}
 				return fixtureRequest{Op: "get_issue", Repo: repo, Number: issue.Number}
 			}},
+	}
+}
+
+func githubListIssuesSpec() []captureSpec {
+	return []captureSpec{
 		{provider: providerGitHub, name: "list_issues", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupGitHub(author)
 				got, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-list-" + newRunID(), Labels: []string{"bug"}})
@@ -1579,11 +1616,21 @@ func githubCreateReadSpecs() []captureSpec {
 				return fixtureRequest{Op: "list_issues", Repo: repo,
 					Filter: &fixtureFilter{State: filter.State, Labels: filter.Labels}}
 			}},
+	}
+}
+
+func githubPullRequestReadSpecs() []captureSpec {
+	return append(githubCreatePRSpec(), append(githubGetPRSpec(), githubCommentIssueSpec()...)...)
+}
+
+func githubCreatePRSpec() []captureSpec {
+	return []captureSpec{
 		{provider: providerGitHub, name: "create_pull_request", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				head := "compass-live-" + newRunID()
 				seedHeadBranch(t, ctx, author, repo, head)
 				gh := recordingGitHub(author, rt)
@@ -1596,11 +1643,17 @@ func githubCreateReadSpecs() []captureSpec {
 				return fixtureRequest{Op: "create_pull_request", Repo: repo,
 					Input: &fixtureInput{Title: in.Title, Body: in.Body, HeadRef: in.HeadRef, BaseRef: in.BaseRef, Draft: in.Draft}}
 			}},
+	}
+}
+
+func githubGetPRSpec() []captureSpec {
+	return []captureSpec{
 		{provider: providerGitHub, name: "get_pull_request", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				head := "compass-live-" + newRunID()
 				seedHeadBranch(t, ctx, author, repo, head)
 				setup := setupGitHub(author)
@@ -1618,11 +1671,17 @@ func githubCreateReadSpecs() []captureSpec {
 				}
 				return fixtureRequest{Op: "get_pull_request", Repo: repo, Number: pr.Number}
 			}},
+	}
+}
+
+func githubCommentIssueSpec() []captureSpec {
+	return []captureSpec{
 		{provider: providerGitHub, name: "comment_on_issue", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupGitHub(author)
 				issue, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
@@ -1650,7 +1709,8 @@ func githubTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupGitHub(author)
 				issue, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
@@ -1670,7 +1730,8 @@ func githubTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupGitHub(author)
 				issue, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclosereason-" + newRunID(), Labels: []string{"bug"}})
@@ -1690,7 +1751,8 @@ func githubTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupGitHub(author)
 				issue, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
@@ -1713,7 +1775,8 @@ func githubTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				head := "compass-live-" + newRunID()
 				seedHeadBranch(t, ctx, author, repo, head)
 				setup := setupGitHub(author)
@@ -1735,7 +1798,8 @@ func githubTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				repo, author, _ := requireLive(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				head := "compass-live-" + newRunID()
 				seedHeadBranch(t, ctx, author, repo, head)
 				setup := setupGitHub(author)
@@ -1775,7 +1839,8 @@ func linearCreateReadSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				ts, team := requireLinear(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				ln := recordingLinear(ts, rt)
 				in := CreateIssue{Title: "compass-live-issue-" + newRunID(), Body: "stamped body"}
 				got, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
@@ -1790,9 +1855,10 @@ func linearCreateReadSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				ts, team := requireLinear(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupLinear(ts)
-				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
+				issue := createVisibleLinearIssue(ctx, t, setup, ts, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.GetIssue(ctx, team, issue.Number); err != nil {
 					t.Fatalf("GetIssue: %v", err)
@@ -1803,9 +1869,10 @@ func linearCreateReadSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				ts, team := requireLinear(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupLinear(ts)
-				createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
+				createVisibleLinearIssue(ctx, t, setup, ts, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
 				filter := IssueFilter{State: "open"}
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.ListIssues(ctx, team, filter); err != nil {
@@ -1818,9 +1885,10 @@ func linearCreateReadSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				ts, team := requireLinear(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupLinear(ts)
-				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+				issue := createVisibleLinearIssue(ctx, t, setup, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 				body := "a reply"
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.CommentOnIssue(ctx, team, issue.Number, body, ""); err != nil {
@@ -1838,9 +1906,10 @@ func linearTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				ts, team := requireLinear(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupLinear(ts)
-				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
+				issue := createVisibleLinearIssue(ctx, t, setup, ts, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
 					t.Fatalf("TransitionIssueState close: %v", err)
@@ -1852,9 +1921,10 @@ func linearTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				ts, team := requireLinear(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupLinear(ts)
-				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
+				issue := createVisibleLinearIssue(ctx, t, setup, ts, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
 				// Discovered on the NON-recording setup client, so the lookup spends no
 				// prelude slot on the recording transport.
 				named := liveStateNameOfType(t, ctx, setup, team, "canceled")
@@ -1869,9 +1939,10 @@ func linearTransitionSpecs() []captureSpec {
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
 				ts, team := requireLinear(t)
-				ctx := context.Background()
+				ctx, cancel := liveCtx(t)
+				defer cancel()
 				setup := setupLinear(ts)
-				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
+				issue := createVisibleLinearIssue(ctx, t, setup, ts, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
 				if _, err := setup.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
 					t.Fatalf("TransitionIssueState close (setup): %v", err)
 				}
