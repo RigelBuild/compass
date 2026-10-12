@@ -653,10 +653,8 @@ func TestLiveGitHubTransitionPullRequestReopen(t *testing.T) {
 	}
 }
 
-// TestLiveGitHubTransitionCrossOp is the T7 cross-op oracle: create -> close ->
-// an INDEPENDENT GetIssue confirming the state changed -> reopen -> GetIssue
-// confirming it reopened. The separate read proves the write took effect, which
-// a single-call fixture compare cannot show.
+// TestLiveGitHubTransitionCrossOp proves a transition took effect with a separate
+// read after close and reopen; the read polls because state can lag the write.
 func TestLiveGitHubTransitionCrossOp(t *testing.T) {
 	repo, author, _ := requireLive(t)
 	ctx := context.Background()
@@ -673,23 +671,15 @@ func TestLiveGitHubTransitionCrossOp(t *testing.T) {
 	if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed}); err != nil {
 		t.Fatalf("TransitionIssueState close: %v", err)
 	}
-	closed, err := gh.GetIssue(ctx, repo, issue.Number)
-	if err != nil {
-		t.Fatalf("GetIssue after close: %v", err)
-	}
-	if closed.State != stateClosed {
-		t.Errorf("GetIssue after close State = %q, want %q", closed.State, stateClosed)
+	if _, err := awaitIssueState(ctx, gh, repo, issue.Number, stateClosed, visibilityDelays); err != nil {
+		t.Fatalf("await issue closed: %v", err)
 	}
 
 	if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateOpen}); err != nil {
 		t.Fatalf("TransitionIssueState reopen: %v", err)
 	}
-	reopened, err := gh.GetIssue(ctx, repo, issue.Number)
-	if err != nil {
-		t.Fatalf("GetIssue after reopen: %v", err)
-	}
-	if reopened.State != stateOpen {
-		t.Errorf("GetIssue after reopen State = %q, want %q", reopened.State, stateOpen)
+	if _, err := awaitIssueState(ctx, gh, repo, issue.Number, stateOpen, visibilityDelays); err != nil {
+		t.Fatalf("await issue reopened: %v", err)
 	}
 }
 
@@ -938,9 +928,8 @@ func liveStateNameOfType(t *testing.T, ctx context.Context, ln *Linear, team, st
 	return ""
 }
 
-// TestLiveLinearTransitionCrossOp is the Linear half of the T7 cross-op oracle:
-// create -> close -> an INDEPENDENT GetIssue confirming the state changed ->
-// reopen -> GetIssue confirming it reopened.
+// TestLiveLinearTransitionCrossOp proves a transition took effect with a separate
+// read after close and reopen; the read polls because state can lag the write.
 func TestLiveLinearTransitionCrossOp(t *testing.T) {
 	ts, team := requireLinear(t)
 	ctx := context.Background()
@@ -951,23 +940,15 @@ func TestLiveLinearTransitionCrossOp(t *testing.T) {
 	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
 		t.Fatalf("TransitionIssueState close: %v", err)
 	}
-	closed, err := ln.GetIssue(ctx, team, issue.Number)
-	if err != nil {
-		t.Fatalf("GetIssue after close: %v", err)
-	}
-	if closed.State != stateClosed {
-		t.Errorf("GetIssue after close State = %q, want %q", closed.State, stateClosed)
+	if _, err := awaitIssueState(ctx, ln, team, issue.Number, stateClosed, visibilityDelays); err != nil {
+		t.Fatalf("await issue closed: %v", err)
 	}
 
 	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateOpen}); err != nil {
 		t.Fatalf("TransitionIssueState reopen: %v", err)
 	}
-	reopened, err := ln.GetIssue(ctx, team, issue.Number)
-	if err != nil {
-		t.Fatalf("GetIssue after reopen: %v", err)
-	}
-	if reopened.State != stateOpen {
-		t.Errorf("GetIssue after reopen State = %q, want %q", reopened.State, stateOpen)
+	if _, err := awaitIssueState(ctx, ln, team, issue.Number, stateOpen, visibilityDelays); err != nil {
+		t.Fatalf("await issue reopened: %v", err)
 	}
 }
 
@@ -1053,17 +1034,26 @@ var listLagDelays = []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * ti
 // was seen trailing a create by under a second. Short keeps the suite in budget.
 var visibilityDelays = []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 
+// readGateBudget caps one read gate: a 30s client timeout per poll would
+// otherwise stretch it past the package timeout.
+var readGateBudget = 2 * time.Minute
+
 // findListedIssueWithBackoff polls ListIssues through a provider's eventual list
 // lag; an exhausted window or a non-transient error still fails the caller.
 func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo string, f IssueFilter, want uint64, delays []time.Duration) (Issue, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, readGateBudget)
+	defer cancel()
 	var lastLen int
 	var lastErr error
 	for _, d := range delays {
 		if err := sleepCtx(ctx, d); err != nil {
+			if lastErr != nil {
+				return Issue{}, lastLen, lastErr
+			}
 			return Issue{}, lastLen, err
 		}
 		got, err := lister.ListIssues(ctx, repo, f)
-		if isUpstreamTransient(err) {
+		if isReadTransient(err) {
 			lastErr = err
 			continue
 		}
@@ -1078,6 +1068,12 @@ func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo st
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		if lastErr != nil {
+			return Issue{}, lastLen, lastErr
+		}
+		return Issue{}, lastLen, err
+	}
 	return Issue{}, lastLen, lastErr // zero row + nil error: not found; caller fails loud
 }
 
@@ -1086,24 +1082,74 @@ type issueGetter interface {
 	GetIssue(ctx context.Context, repo string, number uint64) (Issue, error)
 }
 
-// awaitIssueVisible waits out Linear's number lookup trailing CreateIssue (an
-// immediate follow-up can 404); it returns the last error at the bound.
+// awaitIssueVisible waits out Linear's number lookup trailing CreateIssue.
 func awaitIssueVisible(ctx context.Context, getter issueGetter, repo string, number uint64, delays []time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, readGateBudget)
+	defer cancel()
 	var lastErr error
 	for _, d := range delays {
 		if err := sleepCtx(ctx, d); err != nil {
+			if lastErr != nil {
+				return lastErr
+			}
 			return err
 		}
 		_, err := getter.GetIssue(ctx, repo, number)
 		if err == nil {
 			return nil
 		}
-		if !isNotFound(err) && !isUpstreamTransient(err) {
+		if !isNotFound(err) && !isReadTransient(err) {
 			return err
 		}
 		lastErr = err
 	}
+	if err := ctx.Err(); err != nil {
+		if lastErr != nil {
+			return lastErr
+		}
+		return err
+	}
 	return fmt.Errorf("issue %s-%d not visible after %d polls: %w", repo, number, len(delays), lastErr)
+}
+
+// awaitIssueState polls GetIssue until the issue reaches want; it fails loud at
+// the bound with the last state seen.
+func awaitIssueState(ctx context.Context, getter issueGetter, repo string, number uint64, want string, delays []time.Duration) (Issue, error) {
+	ctx, cancel := context.WithTimeout(ctx, readGateBudget)
+	defer cancel()
+	var last Issue
+	var lastErr error
+	polls := 0
+	for _, d := range delays {
+		if err := sleepCtx(ctx, d); err != nil {
+			if lastErr != nil {
+				return Issue{}, fmt.Errorf("issue %s-%d state %q, want %q after %d polls: %w", repo, number, last.State, want, polls, lastErr)
+			}
+			return Issue{}, fmt.Errorf("issue %s-%d state %q, want %q after %d polls: %w", repo, number, last.State, want, polls, err)
+		}
+		got, err := getter.GetIssue(ctx, repo, number)
+		polls++
+		if err != nil {
+			if isNotFound(err) || isReadTransient(err) {
+				lastErr = err
+				continue
+			}
+			return Issue{}, err
+		}
+		last = got
+		lastErr = nil
+		if got.State == want {
+			return got, nil
+		}
+	}
+	message := fmt.Sprintf("issue %s-%d state %q, want %q after %d polls", repo, number, last.State, want, polls)
+	if lastErr != nil {
+		return Issue{}, fmt.Errorf("%s: %w", message, lastErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return Issue{}, fmt.Errorf("%s: %w", message, err)
+	}
+	return Issue{}, errors.New(message)
 }
 
 // createVisibleLinearIssue creates a Linear setup issue, registers its archive
@@ -1154,6 +1200,12 @@ func isUpstreamTransient(err error) bool {
 		}
 	}
 	return errors.Is(err, syscall.ECONNRESET)
+}
+
+// isReadTransient reports an upstream blip or client timeout that the read
+// gates poll through.
+func isReadTransient(err error) bool {
+	return isUpstreamTransient(err) || isTransientNetworkTimeout(err)
 }
 
 // isSecondaryRateLimit reports whether err is GitHub's 403 secondary-rate-limit.
