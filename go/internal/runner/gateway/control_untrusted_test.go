@@ -124,14 +124,12 @@ func TestBoundedAboveSetDoesNotScaleWithTheField(t *testing.T) {
 		oversized[i] = uint64(i) // never retained: nothing to prune
 	}
 
-	bounded := testing.AllocsPerRun(10, func() {
-		_ = boundedAboveSet(retained, retainedSeqs)
-	})
-	unbounded := testing.AllocsPerRun(10, func() {
-		_ = boundedAboveSet(oversized, retainedSeqs)
-	})
+	bounded := minAllocsPerRun(func() { _ = boundedAboveSet(retained, retainedSeqs) })
+	unbounded := minAllocsPerRun(func() { _ = boundedAboveSet(oversized, retainedSeqs) })
 
-	if unbounded > bounded {
+	// Scaling with the field costs 3x or more (unfiltered, or presized by input);
+	// a 25% margin absorbs the one-or-two-alloc jitter seen across runs.
+	if unbounded >= bounded*5/4 {
 		t.Errorf("a set built from %d seqs allocated %.0f, vs %.0f from the %d retained: "+
 			"the agent sizes this field, so it must not scale past what can be pruned",
 			len(oversized), unbounded, bounded, len(retained))
@@ -139,6 +137,16 @@ func TestBoundedAboveSetDoesNotScaleWithTheField(t *testing.T) {
 	if got := len(boundedAboveSet(oversized, retainedSeqs)); got != maxRetainedOps {
 		t.Errorf("set size = %d, want the %d retained seqs", got, maxRetainedOps)
 	}
+}
+
+// minAllocsPerRun is the fewest allocations f made over several rounds, since
+// AllocsPerRun also counts mallocs from other goroutines.
+func minAllocsPerRun(f func()) float64 {
+	least := testing.AllocsPerRun(10, f)
+	for range 4 {
+		least = min(least, testing.AllocsPerRun(10, f))
+	}
+	return least
 }
 
 // The proto specifies no ordering for applied_above, so position carries no
