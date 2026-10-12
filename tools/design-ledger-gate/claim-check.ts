@@ -8,6 +8,8 @@ export interface FetchClaimsDeps {
 		init?: RequestInit,
 	) => Promise<Response>;
 	sleep?: (milliseconds: number) => Promise<void>;
+	/** Monotonic clock in milliseconds. */
+	now?: () => number;
 }
 
 const CLAIMS_URL = "https://dl.rigel.build";
@@ -29,11 +31,13 @@ function rateLimitError(): Error {
 
 const responseReason = (status: number) => `HTTP ${status}`;
 
-function readRetryAfter(response: Response): number {
-	const header = response.headers.get("retry-after");
-	if (header === null || !/^\d+(?:\.\d+)?$/.test(header)) return 60_000;
-	const seconds = Number(header);
-	return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : 60_000;
+/** Delta-seconds or an HTTP-date; anything else falls back to 60 s. */
+function readRetryAfter(response: Response, nowMs: number): number {
+	const header = response.headers.get("retry-after")?.trim();
+	if (header === undefined || header === "") return 60_000;
+	if (/^\d+$/.test(header)) return Number(header) * 1_000;
+	const at = Date.parse(header);
+	return Number.isNaN(at) ? 60_000 : Math.max(0, at - nowMs);
 }
 
 async function readVerdicts(
@@ -79,9 +83,9 @@ async function readVerdicts(
 }
 
 type BatchDeps = Required<FetchClaimsDeps>;
-/** Rate-limit wait already spent across every batch of one gate run. */
+/** One deadline for all rate-limit handling in a gate run, so 429s cannot spin. */
 interface RateLimitState {
-	waitedMs: number;
+	deadline: number;
 }
 
 async function fetchResponse(
@@ -101,10 +105,9 @@ async function waitForRateLimit(
 	deps: BatchDeps,
 	state: RateLimitState,
 ): Promise<void> {
-	const waitMs = readRetryAfter(response);
-	if (state.waitedMs + waitMs > MAX_RATE_LIMIT_WAIT_MS) throw rateLimitError();
+	const waitMs = readRetryAfter(response, Date.now());
+	if (deps.now() + waitMs >= state.deadline) throw rateLimitError();
 	await deps.sleep(waitMs);
-	state.waitedMs += waitMs;
 }
 
 async function fetchWithRetries(
@@ -151,9 +154,12 @@ export async function fetchClaims(
 	const requestDeps: BatchDeps = {
 		fetchFn: deps.fetchFn ?? fetch,
 		sleep: deps.sleep ?? Bun.sleep,
+		now: deps.now ?? (() => performance.now()),
 	};
 	const verdicts = new Map<string, ClaimState>();
-	const rateLimitState: RateLimitState = { waitedMs: 0 };
+	const rateLimitState: RateLimitState = {
+		deadline: requestDeps.now() + MAX_RATE_LIMIT_WAIT_MS,
+	};
 	for (let offset = 0; offset < ids.length; offset += MAX_BATCH_SIZE) {
 		const batch = ids.slice(offset, offset + MAX_BATCH_SIZE);
 		const batchVerdicts = await fetchBatch(

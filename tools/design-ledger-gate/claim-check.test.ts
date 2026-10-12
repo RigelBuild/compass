@@ -173,7 +173,8 @@ describe("fetchClaims", () => {
 		expect(sleeps).toEqual([30000]);
 	});
 
-	test("429 waits exceeding the shared 65s budget use the rate-limit message", async () => {
+	test("429 waits past the 65s run deadline use the rate-limit message", async () => {
+		let clock = 0;
 		let calls = 0;
 		const sleeps: number[] = [];
 		await expect(
@@ -189,15 +190,73 @@ describe("fetchClaims", () => {
 					},
 					sleep: async (milliseconds) => {
 						sleeps.push(milliseconds);
+						clock += milliseconds;
 					},
+					now: () => clock,
 				}),
 			),
 		).rejects.toThrow(
 			"design-ledger-gate: the DL claim service rate-limited this runner for 65 s. Re-run the pipeline in a minute.",
 		);
 		expect(calls).toBe(2);
-		// The second wait would overrun the budget, so it fails without sleeping.
+		// The second wait would overrun the deadline, so it fails without sleeping.
 		expect(sleeps).toEqual([60_000]);
+	});
+
+	test("request time counts against the rate-limit deadline", async () => {
+		let clock = 0;
+		let calls = 0;
+		const sleeps: number[] = [];
+		await expect(
+			fetchClaims(
+				"feature/ui",
+				["DL-123"],
+				claimDeps({
+					fetchFn: async () => {
+						calls += 1;
+						clock += 9_000;
+						return jsonResponse({}, 429, { headers: { "retry-after": "5" } });
+					},
+					sleep: async (milliseconds) => {
+						sleeps.push(milliseconds);
+						clock += milliseconds;
+					},
+					now: () => clock,
+				}),
+			),
+		).rejects.toThrow("rate-limited this runner");
+		// Each round costs 14 s; counting sleeps alone would allow 13 rounds.
+		expect(calls).toBe(5);
+		expect(sleeps).toEqual([5_000, 5_000, 5_000, 5_000]);
+	});
+
+	test("Retry-After accepts zero and an HTTP-date", async () => {
+		for (const [header, expected] of [
+			["0", 0],
+			[new Date(Date.now() + 20_000).toUTCString(), 20_000],
+		] as const) {
+			let calls = 0;
+			const sleeps: number[] = [];
+			await fetchClaims(
+				"feature/ui",
+				["DL-123"],
+				claimDeps({
+					fetchFn: async () => {
+						calls += 1;
+						return calls === 1
+							? jsonResponse({}, 429, { headers: { "retry-after": header } })
+							: jsonResponse({ claims: [{ id: "DL-123", state: "lane" }] });
+					},
+					sleep: async (milliseconds) => {
+						sleeps.push(milliseconds);
+					},
+				}),
+			);
+			expect(sleeps).toHaveLength(1);
+			// toUTCString drops milliseconds, so the date form lands up to 1 s early.
+			expect(sleeps[0]).toBeLessThanOrEqual(expected);
+			expect(sleeps[0]).toBeGreaterThan(expected - 1_500);
+		}
 	});
 
 	test("400 fails immediately", async () => {

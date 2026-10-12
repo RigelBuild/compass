@@ -518,7 +518,7 @@ export interface Deps {
 	changed: Changed;
 	log: (msg: string) => void;
 	err: (msg: string) => void;
-	/** List DL ids in the origin/main decision tree. */
+	/** List DL ids in the main commit this checkout was built on. */
 	mainDecisionIds?: () => Promise<Set<string>>;
 	/** Fetch lane claim verdicts for newly added decision ids. */
 	claims?: (lane: string, ids: string[]) => Promise<Map<string, ClaimState>>;
@@ -736,14 +736,21 @@ if (import.meta.main) {
 			log: (message) => console.log(message),
 			...(ctx.kind === "pr"
 				? {
+						// The merge base, not origin/main: a main that moved since the
+						// merge ref was built would hide an id this tree does not contain.
 						mainDecisionIds: async () => {
+							const base = await $`git merge-base HEAD origin/main`
+								.nothrow()
+								.quiet();
 							const result =
-								await $`git ls-tree -r --name-only origin/main -- docs/designs/decisions`
-									.nothrow()
-									.quiet();
+								base.exitCode === 0
+									? await $`git ls-tree -r --name-only ${base.stdout.toString().trim()} -- docs/designs/decisions`
+											.nothrow()
+											.quiet()
+									: base;
 							if (result.exitCode !== 0) {
 								throw new Error(
-									"design-ledger-gate: cannot list decision ids from origin/main; origin/main must resolve in this checkout.",
+									"design-ledger-gate: cannot list decision ids at the merge base with origin/main; origin/main must resolve in this checkout.",
 								);
 							}
 							return new Set(
@@ -757,7 +764,7 @@ if (import.meta.main) {
 									.filter((id): id is string => id !== undefined),
 							);
 						},
-						claims: (lane, ids) => fetchClaims(lane, ids, { sleep: Bun.sleep }),
+						claims: (lane, ids) => fetchClaims(lane, ids),
 					}
 				: {}),
 			err: (message) => console.error(message),
