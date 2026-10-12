@@ -191,9 +191,13 @@ to the store.
   - `gateway-boot.ts`;
   - one export from `auth-gateway-cli.ts`;
   - option types and call sites in `dispatch.ts` and `server.ts`, for F2's
-    `routeScope` narrowing and, only if OQ1 picks B, the caller-aware
-    `resolveModel`. A caller-aware `listModels` (B2) also needs a
-    stable-name amendment first.
+    `routeScope` narrowing;
+  - only if OQ1 picks B: the caller-aware `resolveModel` in `dispatch.ts`,
+    `server.ts` and the seven `routes/` handlers (embeddings, images,
+    rerank, speech, systemone, transcriptions, video). Each
+    `bootOpts.resolveModel(...)` call receives the admitted caller and awaits
+    the result. This is an injection-point change, not routing core. A
+    caller-aware `listModels` (B2) also needs a stable-name amendment first.
 
   No routing-core change, and no change to `auth-storage.ts` or
   `packages/ai/src/auth/`.
@@ -482,8 +486,11 @@ probe machine was removed afterwards.
   stable-name vocabulary on it. Two variants:
   - **B1 (recommended if B):** the resolver only, pulled forward from
     stable-name P1, with the listing unchanged. No amendment is needed.
-    Dispatch is per owner, but `/v1/models` is not: a listed model the owner
-    holds no credential for gets a 404 from the resolver.
+    Cost: the seam change in `dispatch.ts`, `server.ts` and seven route
+    handlers (Global Constraints), plus one caller-specific non-chat route
+    test (embeddings). Dispatch is per owner, but `/v1/models` is not: a
+    listed model the owner holds no credential for gets a 404 from the
+    resolver.
   - **B2:** B1 plus a caller-aware listing. This adds a second seam and
     changes the `/v1/models` contract that stable-name discovery relies on,
     so it needs a stable-name amendment.
