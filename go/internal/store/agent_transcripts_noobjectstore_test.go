@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// With no object store configured, a flush-triggering append still commits its
-// row, reports the flush error once, and the same-key retry the relay sends on
-// that error dedups to success. Nothing is lost and nothing is pruned.
+// With no object store configured, a flush-triggering append commits its row
+// and returns nil; FlushTranscript reports the missing tier, and a same-key
+// retry dedups to success. Nothing is lost and nothing is pruned.
 func TestAppendWithoutObjectStoreKeepsEntriesAndRetrySucceeds(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -57,14 +57,16 @@ func TestAppendWithoutObjectStoreKeepsEntriesAndRetrySucceeds(t *testing.T) {
 			tc.setup(t, s, sess)
 
 			key := fmt.Sprintf("idem-%d", tc.seq)
-			err := s.AppendTranscriptEntry(t.Context(), sess, tc.seq, tc.checkpoint, tc.body, key)
-			if err == nil || !strings.Contains(err.Error(), "object store not configured") {
-				t.Fatalf("flush-triggering append err = %v, want object store not configured", err)
+			if err := s.AppendTranscriptEntry(t.Context(), sess, tc.seq, tc.checkpoint, tc.body, key); err != nil {
+				t.Fatalf("flush-triggering append = %v, want nil (the row commits)", err)
+			}
+			if err := s.FlushTranscript(t.Context(), sess); err == nil || !strings.Contains(err.Error(), "object store not configured") {
+				t.Fatalf("FlushTranscript = %v, want object store not configured", err)
 			}
 			if got := hotTailSeqs(t, s, sess); !seqsEqual(got, tc.wantTail...) {
 				t.Fatalf("hot tail after failed flush = %v, want %v (row committed, nothing pruned)", got, tc.wantTail)
 			}
-			// The relay retries a CodeInternal under the same key; dedup makes it succeed.
+			// A same-key retry dedups to success.
 			if err := s.AppendTranscriptEntry(t.Context(), sess, tc.seq, tc.checkpoint, tc.body, key); err != nil {
 				t.Fatalf("same-key retry = %v, want nil (dedup, no flush)", err)
 			}

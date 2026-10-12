@@ -84,42 +84,41 @@ func (q *Queries) CollectSegment(ctx context.Context, arg CollectSegmentParams) 
 }
 
 const hotTailBytes = `-- name: HotTailBytes :one
-SELECT COALESCE(SUM(octet_length(entry_json)), 0)::BIGINT AS bytes
-   FROM agent_session_transcript_entries
-  WHERE session_id = $1 AND entry_seq > $2
+SELECT COALESCE(SUM(octet_length(e.entry_json)), 0)::BIGINT AS bytes
+   FROM agent_session_transcript_entries e
+  WHERE e.session_id = $1
+    AND e.entry_seq > (SELECT COALESCE(MAX(cp.entry_seq), 0)
+                  FROM agent_session_transcript_entries cp
+                 WHERE cp.session_id = $1 AND cp.checkpoint)
 `
 
-type HotTailBytesParams struct {
-	SessionID string
-	EntrySeq  int64
-}
-
-func (q *Queries) HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error) {
-	row := q.db.QueryRow(ctx, hotTailBytes, arg.SessionID, arg.EntrySeq)
+// HotTailBytes and HotTailSizes derive the checkpoint inside the statement, so
+// a checkpoint committed between the valve's reads cannot shift its window.
+func (q *Queries) HotTailBytes(ctx context.Context, sessionID string) (int64, error) {
+	row := q.db.QueryRow(ctx, hotTailBytes, sessionID)
 	var bytes int64
 	err := row.Scan(&bytes)
 	return bytes, err
 }
 
 const hotTailSizes = `-- name: HotTailSizes :many
-SELECT entry_seq, octet_length(entry_json)::BIGINT AS bytes
-   FROM agent_session_transcript_entries
-  WHERE session_id = $1 AND entry_seq > $2
-  ORDER BY entry_seq
+SELECT e.entry_seq, e.checkpoint, octet_length(e.entry_json)::BIGINT AS bytes
+   FROM agent_session_transcript_entries e
+  WHERE e.session_id = $1
+    AND e.entry_seq > (SELECT COALESCE(MAX(cp.entry_seq), 0)
+                  FROM agent_session_transcript_entries cp
+                 WHERE cp.session_id = $1 AND cp.checkpoint)
+  ORDER BY e.entry_seq
 `
 
-type HotTailSizesParams struct {
-	SessionID string
-	EntrySeq  int64
-}
-
 type HotTailSizesRow struct {
-	EntrySeq int64
-	Bytes    int64
+	EntrySeq   int64
+	Checkpoint bool
+	Bytes      int64
 }
 
-func (q *Queries) HotTailSizes(ctx context.Context, arg HotTailSizesParams) ([]HotTailSizesRow, error) {
-	rows, err := q.db.Query(ctx, hotTailSizes, arg.SessionID, arg.EntrySeq)
+func (q *Queries) HotTailSizes(ctx context.Context, sessionID string) ([]HotTailSizesRow, error) {
+	rows, err := q.db.Query(ctx, hotTailSizes, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +126,7 @@ func (q *Queries) HotTailSizes(ctx context.Context, arg HotTailSizesParams) ([]H
 	var items []HotTailSizesRow
 	for rows.Next() {
 		var i HotTailSizesRow
-		if err := rows.Scan(&i.EntrySeq, &i.Bytes); err != nil {
+		if err := rows.Scan(&i.EntrySeq, &i.Checkpoint, &i.Bytes); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -206,7 +205,7 @@ func (q *Queries) LatestCheckpointSeq(ctx context.Context, sessionID string) (in
 	return seq, err
 }
 
-const pruneTranscriptEntries = `-- name: PruneTranscriptEntries :exec
+const pruneTranscriptEntries = `-- name: PruneTranscriptEntries :execrows
 DELETE FROM agent_session_transcript_entries
   WHERE session_id = $1 AND entry_seq >= $2 AND entry_seq <= $3
 `
@@ -217,9 +216,12 @@ type PruneTranscriptEntriesParams struct {
 	EntrySeq_2 int64
 }
 
-func (q *Queries) PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) error {
-	_, err := q.db.Exec(ctx, pruneTranscriptEntries, arg.SessionID, arg.EntrySeq, arg.EntrySeq_2)
-	return err
+func (q *Queries) PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneTranscriptEntries, arg.SessionID, arg.EntrySeq, arg.EntrySeq_2)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const remarkSafetyValveSuperseded = `-- name: RemarkSafetyValveSuperseded :exec
@@ -239,10 +241,15 @@ func (q *Queries) RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSaf
 }
 
 const safetyValveSegments = `-- name: SafetyValveSegments :many
-SELECT object_key, min_entry_seq, max_entry_seq, kind
-   FROM agent_session_archive_segments
-  WHERE session_id = $1 AND kind = $2
-  ORDER BY min_entry_seq
+SELECT a.object_key, a.min_entry_seq, a.max_entry_seq, a.kind
+   FROM agent_session_archive_segments a
+  WHERE a.session_id = $1 AND a.kind = $2
+    -- A valve segment at or below the latest checkpoint is stale: resume must not
+    -- splice it after that checkpoint's body.
+    AND a.min_entry_seq > (SELECT COALESCE(MAX(cp.entry_seq), 0)
+                  FROM agent_session_transcript_entries cp
+                 WHERE cp.session_id = $1 AND cp.checkpoint)
+  ORDER BY a.min_entry_seq
 `
 
 type SafetyValveSegmentsParams struct {

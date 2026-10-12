@@ -205,7 +205,7 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn during outage: %v", err)
 	}
-	// The turn settles before CommitConversationFrame lands; wait for the row segmentsCoveringMarker reads.
+	// The commit no longer waits on the frozen PUT, but it trails the settle; wait for the row segmentsCoveringMarker reads.
 	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "marker durability-second"); err != nil {
 		t.Fatalf("await outage transcript: %v", err)
 	}
@@ -219,6 +219,7 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn after outage: %v", err)
 	}
+	// A pass hung on the frozen PUT ends within its 60s deadline, inside settleTimeout; a later pass archives the reply.
 	waitArchiveContains(t, ctx, f, sessionID, "durability second reply")
 }
 

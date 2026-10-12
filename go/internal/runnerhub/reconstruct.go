@@ -61,9 +61,11 @@ func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]b
 	}
 
 	// One atomic snapshot: PG hot-tail and safety_valve manifest are read together
-	// so a concurrent flush can't corrupt the body. The NotFound-on-empty-tail
-	// return relies on the store invariant that the valve never evicts the last
-	// row — a future eviction change MUST preserve it or resume wrongly NotFounds.
+	// so a background flush pass committing mid-read can't corrupt the body, and
+	// the manifest read drops valve segments at or below the latest checkpoint.
+	// The NotFound-on-empty-tail return relies on the store invariant that the
+	// valve never evicts the last row — a future eviction change MUST preserve it
+	// or resume wrongly NotFounds.
 	tail, segments, err := reader.SessionResumeSnapshot(ctx, sessionID)
 	if err != nil {
 		return nil, reconstructReadError(err)

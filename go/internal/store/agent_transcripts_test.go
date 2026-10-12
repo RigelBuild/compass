@@ -66,6 +66,12 @@ func (f *fakeObjectStore) GetSegment(_ context.Context, key string) ([]byte, err
 	return body, nil
 }
 
+func (f *fakeObjectStore) setPutErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putErr = err
+}
+
 func (f *fakeObjectStore) has(key string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -482,10 +488,17 @@ func TestSessionTranscriptUnknownNotFound(t *testing.T) {
 
 // ── Flush machinery ─────────────────────────────────────────────────────────
 
-// TestPrimaryFlushOnCheckpointArrival pins the compaction flush embedded in
-// AppendTranscriptEntry: when a checkpoint row commits, all pre-checkpoint
-// hot-tail rows flush to ONE superseded segment + a manifest row, and the
-// hot-tail is pruned to [checkpoint..now].
+// mustFlush waits for a flush pass over the session and fails the test on error.
+func mustFlush(t *testing.T, s *Store, sessionID string) {
+	t.Helper()
+	if err := s.FlushTranscript(t.Context(), sessionID); err != nil {
+		t.Fatalf("FlushTranscript(%q): %v", sessionID, err)
+	}
+}
+
+// TestPrimaryFlushOnCheckpointArrival pins the compaction flush a checkpoint
+// commit requests: all pre-checkpoint hot-tail rows flush to ONE superseded
+// segment + a manifest row, and the hot-tail is pruned to [checkpoint..now].
 func TestPrimaryFlushOnCheckpointArrival(t *testing.T) {
 	s, fake := storeWithFake(t)
 	sess := seedSession(t, s, "primary", "sess-primary")
@@ -500,6 +513,7 @@ func TestPrimaryFlushOnCheckpointArrival(t *testing.T) {
 			t.Fatalf("append %d: %v", a.seq, err)
 		}
 	}
+	mustFlush(t, s, sess)
 	// Hot-tail pruned to [3] (the checkpoint), the pre-checkpoint 1,2 flushed.
 	if got := hotTailSeqs(t, s, sess); !seqsEqual(got, 3) {
 		t.Fatalf("hot tail after primary flush = %v, want [3]", got)
@@ -516,6 +530,7 @@ func TestPrimaryFlushOnCheckpointArrival(t *testing.T) {
 	if err := s.AppendTranscriptEntry(t.Context(), sess, 4, false, `{"e":4}`, "idem-4"); err != nil {
 		t.Fatalf("append 4: %v", err)
 	}
+	mustFlush(t, s, sess)
 	if got := hotTailSeqs(t, s, sess); !seqsEqual(got, 3, 4) {
 		t.Fatalf("hot tail = %v, want [3 4]", got)
 	}
@@ -536,10 +551,12 @@ func TestFlushPutBeforePrune(t *testing.T) {
 		}
 	}
 	// Arm the PUT to fail, then land the checkpoint that triggers the flush.
-	fake.putErr = errors.New("object store down")
-	err := s.AppendTranscriptEntry(t.Context(), sess, 3, true, `{"e":3}`, "idem-3")
-	if err == nil {
-		t.Fatal("checkpoint append with a failing PutSegment must return an error")
+	fake.setPutErr(errors.New("object store down"))
+	if err := s.AppendTranscriptEntry(t.Context(), sess, 3, true, `{"e":3}`, "idem-3"); err != nil {
+		t.Fatalf("checkpoint append = %v, want nil (the flush runs after the commit)", err)
+	}
+	if err := s.FlushTranscript(t.Context(), sess); err == nil {
+		t.Fatal("flush with a failing PutSegment must return an error")
 	}
 	// The checkpoint row committed (the append), but the flush left PG intact:
 	// no prune, no manifest row.
@@ -649,6 +666,7 @@ func TestReconstructionIsPGOnlyAfterFlush(t *testing.T) {
 			t.Fatalf("append %d: %v", a.seq, err)
 		}
 	}
+	mustFlush(t, s, sess)
 	// Any GetSegment from here fails the test.
 	fake.failOnGet = t
 	got, err := s.SessionTranscript(t.Context(), sess)
@@ -684,6 +702,7 @@ func TestSafetyValveFlushOnSizeCap(t *testing.T) {
 			t.Fatalf("append %d: %v", seq, err)
 		}
 	}
+	mustFlush(t, s, sess)
 	seg, err := s.SafetyValveSegments(t.Context(), sess)
 	if err != nil {
 		t.Fatalf("SafetyValveSegments: %v", err)
@@ -703,7 +722,7 @@ func TestSafetyValveFlushOnSizeCap(t *testing.T) {
 
 // TestSafetyValveResupersededByLaterCheckpoint pins the re-mark: once a later
 // checkpoint supersedes a safety_valve segment (its max < the new checkpoint
-// seq), the PRIMARY flush re-marks it to superseded, so SafetyValveSegments no
+// seq), the next pass's primary flush re-marks it to superseded, so SafetyValveSegments no
 // longer returns it — a stale pre-checkpoint segment is never spliced on resume.
 func TestSafetyValveResupersededByLaterCheckpoint(t *testing.T) {
 	s, _ := storeWithFake(t)
@@ -723,6 +742,7 @@ func TestSafetyValveResupersededByLaterCheckpoint(t *testing.T) {
 		}
 		last = seq
 	}
+	mustFlush(t, s, sess)
 	seg, err := s.SafetyValveSegments(t.Context(), sess)
 	if err != nil {
 		t.Fatalf("SafetyValveSegments: %v", err)
@@ -735,6 +755,7 @@ func TestSafetyValveResupersededByLaterCheckpoint(t *testing.T) {
 	if err := s.AppendTranscriptEntry(t.Context(), sess, last+1, true, `{"cp":2}`, "idem-cp2"); err != nil {
 		t.Fatalf("checkpoint 2: %v", err)
 	}
+	mustFlush(t, s, sess)
 	after, err := s.SafetyValveSegments(t.Context(), sess)
 	if err != nil {
 		t.Fatalf("SafetyValveSegments after re-mark: %v", err)
