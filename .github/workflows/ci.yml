@@ -654,8 +654,8 @@ jobs:
       github.event.inputs.pr != '') &&
       (github.event_name != 'pull_request' ||
       needs.setup.outputs.pgtest_affected == 'true')
-    # Passing runs take 18-19.5m (the -race suite alone is ~17m); at 20, runs
-    # whose packages all passed were cancelled during the sqlc-vet bootstrap.
+    # Passing runs take 18-19.5m (the -race suite alone is ~17m); at 20, a run
+    # whose packages had all passed was cancelled during the sqlc-vet bootstrap.
     timeout-minutes: 30
     env:
       # The Real-Postgres suites bind AF_UNIX sockets under t.TempDir(); the
