@@ -24,10 +24,11 @@ write to an owner or host outside the agent's allowlist.
 Matt ruled the layering; this record does not reopen it. The guard (D2-D7)
 ships in every agent image. Branch protection (D8) is advice to users. The
 guard stops a cooperative agent's mistaken or habitual command. It is not a
-sandbox: a command assembled at run time inside a script file or an `eval`
-cell can evade it, and so can state the persistent `bash` session keeps
-between calls (functions, aliases, an exported `GH_REPO`). The token scope
-and branch protection bound those cases.
+sandbox: a command assembled at run time inside a script file, or a process an
+`eval` cell spawns itself (`Bun.$`, Python `subprocess`), can evade it, and so
+can state the persistent `bash` session keeps between calls (functions,
+aliases, an exported `GH_REPO`). The token scope and branch protection bound
+those cases.
 
 ### D2 An inline extension compiled into the binary
 
@@ -59,7 +60,11 @@ and branch protection bound those cases.
 
 - `bash` and any tool whose `input.command` is a string, parsed per D6, in
   `input.cwd` or else `ctx.cwd`.
-- `eval`: `input.code` gets the D6 text check only.
+- `eval`: `input.code` gets the D6 text check. A tool the cell calls through
+  the bridge (`tool.bash(...)` in JS, the Python equivalent) is a separate
+  `tool_call`: `callSessionTool` (`eval/js/tool-bridge.ts`) resolves it through
+  `getToolForEvalBridge`, which returns the `ExtensionToolWrapper`-wrapped
+  registry entry, so the guard sees the assembled command (verified on 18.3.5).
 - The SDK `github` tool (present when `gh` is on `PATH`): ops `pr_create` and
   `pr_push`.
 - GitHub MCP tools, `/^mcp__(?:[a-z0-9]+_)?github_/`. The SDK names MCP tools
@@ -264,7 +269,7 @@ token is already repo-scoped by grants. This record adds no server code for it.
 - Interfaces:
 
 ```text
-jj bookmark list --all-remotes -T 'name ++ "\t" ++ if(remote, remote, "@local") ++ "\t" ++ if(remote, tracked(), synced()) ++ "\n"'
+jj bookmark list --all-remotes -T 'name ++ "\t" ++ if(remote, remote, "@local") ++ "\t" ++ if(remote, tracked, synced) ++ "\n"'
 ```
 
 ```ts
@@ -293,8 +298,10 @@ export function pushGuard(config: PushGuardConfig, probes?: Probes): ExtensionFa
   to its `createAgentSession` call.
 - Acceptance: a session test built like `native-tools.test.ts` shows a blocked
   `bash` call returns the `push-guard:` reason to the model as a tool error,
-  that a `task` child session blocks the same call, and that a settings bundle
-  enabling task isolation does not turn it on.
+  that a `task` child session blocks the same call, that a settings bundle
+  enabling task isolation does not turn it on, and that a `bash` call made
+  through the eval bridge (`callSessionTool`) with a command assembled at run
+  time is blocked.
 - Interfaces: consumes T2 `pushGuard` and `readPushGuardConfig`; depends on T1.
 
 ### T4 Allowlist delivery (lane server, RIG-1882)
