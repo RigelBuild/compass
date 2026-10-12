@@ -9,343 +9,261 @@ to the §Global Constraints "Compass boot entrypoint" bullet of
 
 The fork's compass boot entrypoint (`packages/coding-agent/src/cli/gateway-boot.ts`
 in RigelBuild/oh-my-pi) calls `runAuthGatewayCommand({ action: "serve" })`.
-Its `runServe` (`packages/coding-agent/src/cli/auth-gateway-cli.ts`) throws
-without a broker, under `if (!brokerConfig) {`:
+`runServe` (`packages/coding-agent/src/cli/auth-gateway-cli.ts`) throws under
+`if (!brokerConfig) {` with
 `` "`omp auth-gateway serve` requires OMP_AUTH_BROKER_URL …" ``. So the
-published image cannot serve under the stack. This record wires that entrypoint to the Compass
-Server's doors: agent tokens are verified by `GatewayAuth.VerifyAgentToken`,
-each owner gets its own `AuthStorage` over `CompassAuthCredentialStore`, and
-the stack mints, registers and mounts the `llm-gateway` service bearer those
-door calls need.
+published image cannot serve under the stack. This record wires the
+entrypoint to the Compass Server's doors:
+
+- agent tokens are verified by `GatewayAuth.VerifyAgentToken`;
+- each owner gets its own `AuthStorage` over `CompassAuthCredentialStore`;
+- the stack mints, registers and mounts the `llm-gateway` service bearer that
+  those door calls need.
 
 ## Approach
 
-The work has two halves: a fork boot that talks to the Server, and a stack
-spec that gives the boot what it needs.
-
 ### Fork: a compass boot, not a reshaped `runServe`
 
-`gateway-boot.ts` stops calling `runAuthGatewayCommand`. It calls
-`startAuthGateway` itself with compass adapters. `runServe` in
-`packages/coding-agent/src/cli/auth-gateway-cli.ts` stays the broker path for
-upstream `omp auth-gateway serve`. The boot reuses `registerGatewayShutdown`
-and the `GATEWAY_MODEL_KINDS` list (exported by this change). Two new modules
-go in `packages/ai/src/compass/`, next to the store, as gateway adapters:
+`gateway-boot.ts` calls `startAuthGateway` itself with compass adapters.
+`runServe` stays the broker path for upstream `omp auth-gateway serve`. The
+boot reuses `registerGatewayShutdown` and `GATEWAY_MODEL_KINDS`, which this
+change exports. The gateway adapters live in `packages/ai/src/compass/`, next
+to the store.
 
-- **`agent-verifier.ts`: the authorizer.** It sends the presented bearer to
-  `POST <COMPASS_SERVER_URL>/compass.v1.GatewayAuth/VerifyAgentToken`, using
-  the same Connect JSON transport and service bearer as `#request` in
-  `credential-store.ts`. The `AuthGatewayAuthorizer` doc in
-  `auth-gateway/types.ts` sets the result mapping: "`null` to answer 401. A
-  throw answers 503 … bound any remote call; a timeout should throw."
-  - No bearer → `null`, with no call made.
+- **Transport (`wire.ts`).** The verifier and the store share two helpers:
+  - `normalizeCompassBaseUrl` replaces `assertSecureBaseUrl`. It allows https,
+    or http on loopback only.
+  - `fetchCompassRpcResponse` sends Connect JSON with the service bearer and
+    `redirect: "error"`.
+- **`agent-verifier.ts`: the authorizer.** It posts the presented bearer to
+  `GatewayAuth/VerifyAgentToken`. The mapping follows the
+  `AuthGatewayAuthorizer` doc (`auth-gateway/types.ts`): "`null` to answer
+  401. A throw answers 503 … bound any remote call".
+  - No bearer → `null`, with no call.
   - 200 → `{ kind: "agent", agentAccountId, ownerUserId }`. An empty id
     throws.
-  - `unauthenticated` with message `invalid agent token` → `null`. That
-    message is `errGatewayTokenInvalid` in `go/server/gateway_auth.go`
-    (`var errGatewayTokenInvalid = errors.New("invalid agent token")`); S0
-    pins it as a wire contract (OQ4).
-  - Any other `unauthenticated` → throw (503). A bad service bearer gets
-    `errServiceUnauthenticated` from `ServiceBearerInterceptor`
-    (`go/internal/auth/service_door.go`:
+  - `unauthenticated` with message `invalid agent token` → `null`. The
+    message is `errGatewayTokenInvalid` (`go/server/gateway_auth.go`:
+    `var errGatewayTokenInvalid = errors.New("invalid agent token")`), and
+    S0 pins it.
+  - Any other result or error → throw (503). A bad service bearer gets
+    `ServiceBearerInterceptor`'s message (`go/internal/auth/service_door.go`:
     `connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))`).
     Mapped to 401, a broken gateway would look like a bad agent token.
-  - `internal`, `unavailable`, a timeout or a transport error → throw.
   - The deadline is `AbortSignal.any([req.signal, AbortSignal.timeout(5_000)])`.
-  - **No cache.** One loopback call per admitted request, so a revoked token
-    fails at once (OQ3).
-- **`owner-pool.ts`: the per-owner store pool.** `resolveStorage(caller)`
-  calls `pool.get(caller.ownerUserId)`. A missing `ownerUserId` throws, which
-  the router answers with 503 `credential pool unavailable`
-  (`createAuthGatewayRouter` in `server.ts`).
-  - **Lazy, single-flight open.** On first use the pool opens, per owner:
-    1. `CompassAuthCredentialStore.open({ baseUrl, token, fetch })`, with no
-       `agentAccountId`;
-    2. `new AuthStorage(store, { sourceLabel: "compass" })`;
-    3. `storage.credentials.reload()`.
+    There is no cache (OQ3).
+- **`owner-pool.ts`: one `AuthStorage` per owner.**
+  `resolveStorage(caller)` calls `pool.get(caller.ownerUserId)`. A missing
+  owner throws, which the router answers with 503.
+  - **Open.** On first use the pool opens, per owner:
+    1. `CompassAuthCredentialStore.open(...)`, with no `agentAccountId`;
+    2. `new AuthStorage(store)`;
+    3. `credentials.reload()`.
 
-    Concurrent first requests share one open, and a failed open is not
-    cached. The open runs inside `routeScope`. On `rigel-release`,
-    `createAuthGatewayRouter` (`packages/ai/src/auth-gateway/server.ts`) wraps
-    the router body, `resolveStorage` included:
+    The open is single-flight, and a failure is not cached. It runs inside
+    `routeScope`, because `createAuthGatewayRouter`
+    (`packages/ai/src/auth-gateway/server.ts`) wraps the whole body:
     `return opts.routeScope ? await opts.routeScope(req, body) : await body();`.
     So `open()` sees the agent token.
-  - **Per-request leases.** A stream outlives `route`. Bun idles a response up
-    to 255 s (`startAuthGateway` in `server.ts`: `idleTimeout: 255,`). A
-    mid-stream OAuth refresh then writes back through the store. A store
-    closed under it throws (`#request` in
-    `packages/ai/src/compass/credential-store.ts`:
-    `if (this.#closed) throw new CompassRpcError("closed", "Compass credential store is closed");`),
-    and the rotated refresh token is lost. So:
-    - `routeScope` runs each routed request in a lease scope.
-    - Each `get` inside it takes a lease on the entry.
-    - The lease ends when the response body ends, errors or is cancelled. The
-      boot wraps the body: a `TransformStream` `flush`/`cancel` pair, or a
-      `ReadableStream` wrapper if Bun lacks the transformer `cancel` hook.
-    - A body-less result or a throw ends the lease at once.
-  - **Eviction.** Each `get` stamps `lastUsedMs`. A sweep (60 s timer,
-    `unref`) closes entries that meet all of:
-    - `leases === 0`;
-    - `store.hasPendingWrites()` is false;
-    - idle longer than `idleMs` (15 min).
+  - **Leases.** A response stream outlives `route`: `startAuthGateway` sets
+    `idleTimeout: 255,`. A mid-stream OAuth refresh writes back through the
+    store, and a closed store throws (`#request` in `credential-store.ts`:
+    `if (this.#closed) throw new CompassRpcError("closed", "Compass credential store is closed");`).
+    The rotated refresh token would then be lost. So `routeScope` runs each
+    request in a lease scope, and every `get` inside it leases the entry.
+    The lease ends when the body ends, errors or is cancelled. A body-less
+    result or a throw ends it at once.
+  - **Eviction.** A 60 s sweep closes an entry only when all of these hold:
+    - it has no leases;
+    - `store.hasPendingWrites()` is false (the door record's pin);
+    - it has been idle 15 min.
 
-    Over `maxOwners` (256), the sweep also closes least-recently-used entries
-    that are idle longer than 60 s and pass the same two checks. The cap is
-    soft. The `hasPendingWrites()` pin is the door record's rule.
-  - **`close()` on shutdown** closes every entry, pinned or leased. A parked
-    write is lost at exit. The door record accepts this residual.
-  - **No credential-poll timer** (door record: "A credential-poll timer is not
-    needed").
-- **`routeScope`.** This is the door record's line, plus the lease scope:
+    Over 256 owners, the sweep also closes LRU entries idle more than 60 s
+    that pass the first two checks. `close()` at shutdown closes every
+    entry; a parked write is lost then, a residual the door record accepts.
+    There is no credential-poll timer.
+- **`routeScope`.** The door record's line, plus the lease:
   `(req, run) => { const t = presentedBearer(req); const leased = () => pool.withRequestLease(run); return t ? runWithAgentToken(t, leased) : leased(); }`.
-- **Catalog: the bundled catalog, by `provider/id` only (OQ1).**
-  `ModelResolver` is `(modelId) => Model<Api> | undefined` (`dispatch.ts`). It
-  never sees the caller, and `/v1/models` "skips the pool lookup". So no
-  per-owner catalog is possible without a router-core change. At start the
-  boot builds one map from `getBundledProviders()` and `getBundledModels()`
-  (`@oh-my-pi/pi-catalog`), keeping kinds in `GATEWAY_MODEL_KINDS`, keyed
-  `` `${provider}/${id}` `` only.
-  - **No bare-id fallback.** `indexModelsByRequestId` (`auth-gateway-cli.ts`)
-    adds one: `if (!modelById.has(model.id)) modelById.set(model.id, model);`.
-    Across every bundled provider, that fallback would route a bare id to the
-    first provider in catalog order, which the owner may hold no credential
-    for. A bare id gets the router's 404 instead (`server.ts`:
-    `` formatError(404, "invalid_request_error", `Unknown model: ${modelId}`) ``).
-  - A model whose provider is not in the owner's pool fails in dispatch with
-    401 `No credential available for provider X` (`resolveGatewayApiKey`).
-  - `pickProbeCandidates` already sends `getBundledModels` output straight to
-    providers, so bundled `Model` objects are callable without
-    `ModelRegistry`.
-  - There is no refresh timer. Stable-name P1 replaces this resolver.
-- **Authorizer composition.** `authorize = verifier`. When
-  `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` is set, it becomes
-  `withEnrollToken(enrollToken, verifier)` (OQ5).
-- **No inbound shared bearer.** `bearerTokenAuthorizer` is not used. Agents
-  carry per-agent tokens (parent T3/T5), and no Go code reads
-  `gateway.token` except the stack mount (`gatewayContainerSpec`) (OQ2).
-- **TLS to the door.** The store and the verifier share one compass fetch:
-  `(input, init) => fetch(input, { ...init, tls: { ca } })`, with `ca` read
-  from `COMPASS_SERVER_CA_FILE`. Provider calls keep the default trust store.
-  `NODE_EXTRA_CA_CERTS` is not used: `wrapFetchForExtraCa`
-  (`packages/utils/src/tls-fetch.ts`) would apply the CA to every fetch.
-- **Fail-fast door probe.** `/healthz` answers 200 with no checks
-  (`startAuthGateway`), so `waitGateway` passes even when every door call
-  fails. Before bind, the boot calls `VerifyAgentToken` with `token: ""`. It
-  expects `unauthenticated` with the message `invalid agent token`. On the
-  Server, `GatewayTokens.Verify` (`go/internal/auth/gateway_token.go`) returns
-  `ErrGatewayTokenInvalid` for a malformed token before any store read
-  (`if !wellFormedToken(token) { return store.GatewayCaller{}, ErrGatewayTokenInvalid }`).
-  Any other result exits non-zero. The probe proves network
-  reach, TLS and a live service bearer. It reads no credentials, so door
-  rule 1 ("no door call with no request behind it") still holds. After the
-  bounded restarts the container stays down, and `waitGateway` fails `up`
-  loudly.
+- **Catalog: bundled, `provider/id` keys only (OQ1).** The `ModelResolver`
+  type `(modelId) => Model<Api> | undefined` never sees the caller, and
+  `/v1/models` skips the pool. The boot indexes `getBundledModels()` for
+  every bundled provider, keeping `GATEWAY_MODEL_KINDS` only.
+  - **No bare ids.** `indexModelsByRequestId` would add a bare-id fallback:
+    `if (!modelById.has(model.id)) modelById.set(model.id, model);`. Over all
+    providers, that routes a shared bare id to whichever provider comes
+    first. A bare id gets the router's
+    `` formatError(404, "invalid_request_error", `Unknown model: ${modelId}`) ``.
+  - A provider missing from the owner's pool gets a dispatch 401
+    (`resolveGatewayApiKey`).
+- **Inbound auth.** `authorize` is the verifier, wrapped in
+  `withEnrollToken` when `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` is set (OQ5).
+  `bearerTokenAuthorizer` is not used, and no shared inbound token remains
+  (OQ2).
+- **Outbound TLS.** The store and the verifier share one fetch,
+  `fetch(input, { ...init, tls: { ca } })`, with `ca` read from
+  `COMPASS_SERVER_CA_FILE`. Provider calls keep the default trust store.
+- **Door probe before bind.** `/healthz` answers 200 with no checks, so
+  `waitGateway` cannot see a broken door. The boot calls `VerifyAgentToken`
+  with `""` and exits non-zero unless the answer is `invalid agent token`.
+  `GatewayTokens.Verify` (`go/internal/auth/gateway_token.go`) returns that
+  before any store read:
+  `if !wellFormedToken(token) { return store.GatewayCaller{}, ErrGatewayTokenInvalid }`.
+  The probe proves reachability, TLS and a live service bearer, and it reads
+  no credentials.
 
 ### Stack: service bearer, server address, start order
 
-- **The service bearer.** Its file is `<state>/gateway/service.token`,
-  mounted at `/run/compass/service.token` and named by
-  `COMPASS_SERVICE_TOKEN_FILE`. S1 deletes the old `<state>/gateway/gateway.token`.
-  The rename keeps the old hex inbound secret (`ensureGatewayToken`:
-  `os.WriteFile(path, []byte(hex.EncodeToString(raw[:])), 0o600)`) from being
-  adopted through the "unknown → re-register" arm. It also makes version skew fail before bind:
-  an old image reads the missing `gateway.token`, and a new image finds no
-  `COMPASS_SERVER_URL`.
-
-  `EnsureServiceToken` uses the file-before-store shape of `ensure` in
-  `go/internal/stack/adapters/token.go`. S1 makes the status check generic
-  over `store.Subject`. `RunnerTokenStatus` (`go/internal/runnerhub/mint.go`)
-  hardcodes `if subj.Kind == store.SubjectRunner && subj.ID == runnerID {`. The want is
-  `{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID}`:
-  - **Registered under that subject:** keep the token.
-  - **Unknown** (database replaced): re-register the same token.
-  - **Revoked, or another subject:** mint a fresh one. The runner instead
-    keeps a revoked token, but no operator CLI mints service tokens.
-  - **Minting:** `runnerhub.GenerateRunnerToken`, then write the file at 0600
-    atomically, then `PutTokenHash`. If the hash commit fails, remove the
-    file.
-
-  `ensureGatewayToken` (`adapters/gateway_container.go`) is deleted.
+- **Service bearer.** `<state>/gateway/service.token` (0600), mounted as
+  `COMPASS_SERVICE_TOKEN_FILE`. S2 deletes the old `gateway.token`, which
+  `ensureGatewayToken` filled with an unregistered hex secret:
+  `os.WriteFile(path, []byte(hex.EncodeToString(raw[:])), 0o600)`. A new
+  name means skew fails before bind, never by adopting that secret. S1 makes
+  the token status check generic over `store.Subject`, because
+  `RunnerTokenStatus` (`go/internal/runnerhub/mint.go`) hardcodes
+  `if subj.Kind == store.SubjectRunner && subj.ID == runnerID {`. The rules
+  for subject `{SubjectService, "llm-gateway"}`:
+  - registered → keep;
+  - unknown → re-register;
+  - revoked or another subject → mint a fresh one, file first, then
+    `PutTokenHash`, and remove the file if the commit fails.
 
   Residuals:
-  - a revoke while the stack runs means 503 on every request until the next
-    `up`;
-  - with `ExternalDatabase` and a wiped state dir, each `up` leaves the old
-    `llm-gateway` hash live, with no revoke-by-subject. The runner path has
-    the same flaw.
+  - a revoke mid-run means 503 until the next `up`;
+  - an external database plus a wiped state dir leaves old hashes live, as on
+    the runner path.
 - **Server address (Linux).** The container runs with
-  `--network pasta:-T,<door port>` and dials
-  `https://127.0.0.1:<door port>`. The cert's `127.0.0.1` SAN matches
-  (`go/internal/stack/adapters/cert.go`:
-  `var certHosts = []string{"127.0.0.1", "::1", "localhost"}`). By default pasta
-  does not forward container loopback to the host (`pastaHostGateway` comment
-  in `go/e2e/fixture.go`: "pasta does not forward 127.0.0.1"). Local rootless
-  podman 5.8.6 probes showed:
-  - the default network is refused;
-  - `-T` reaches the host listener, and `-p` publishing still works.
+  `--network pasta:-T,<door port>` and dials `https://127.0.0.1:<door port>`.
+  - pasta does not forward container loopback by default (`pastaHostGateway`
+    in `go/e2e/fixture.go`: "pasta does not forward 127.0.0.1").
+  - A local probe on rootless podman 5.8.6 showed that `-T` works, and that
+    `-p` still publishes.
+  - The SAN matches (`go/internal/stack/adapters/cert.go`:
+    `var certHosts = []string{"127.0.0.1", "::1", "localhost"}`).
+  - `<state>/tls.crt` is mounted read-only as the CA.
 
-  `<state>/tls.crt` (0644, `certgen.WriteFiles`) is mounted read-only at
-  `/run/compass/server-ca.crt`. On darwin the server runs on the Mac and the
-  container runs in the podman-machine VM (`internal/embedded/machine.go`).
-  There `-T` would reach the VM's loopback [INFERENCE]: OQ7. The spec carries
-  the URL and network args as fields, so the OQ7 choice changes only S2 and
-  `certHosts`.
-
-  The door host must be one that `-T` forwards to the fixed
-  `127.0.0.1` URL. `overlapsLoopbackPublish` (`go/internal/stack/config.go`) is
-  too wide for this, because it also passes every DNS name:
+  On darwin the container runs in the podman-machine VM
+  (`internal/embedded/machine.go`), so `-T` would reach the VM's loopback
+  (OQ7, [INFERENCE]).
+- **Door host.** `overlapsLoopbackPublish` (`go/internal/stack/config.go`)
+  is too wide here, because it also passes every DNS name:
   `return ip == nil || ip.IsUnspecified() || ip.Equal(net.IPv4(127, 0, 0, 1))`.
-  S2 therefore adds its own check (Global Constraints, Door listen host).
-- **Start order.** Today `spawnChain` (`stack.go`) starts the gateway at step
-  1e, before the TLS anchor (step 2) and the server (step 3). On a first run
-  that leaves no CA file and no store to register the token in. The gateway
-  moves to after `waitReady` and before `startRunner`, and in-process
-  `drainChildren` becomes runner → gateway → server. The drain gain is small.
-  By then the runner and its agents are gone, and once T5 revokes tokens on
-  stop, a late write-back parks and is lost anyway (OQ6).
+  S2 has its own rule (Global Constraints).
+- **Start order.** `spawnChain` (`stack.go`) starts the gateway at step 1e,
+  before the TLS anchor and the server. So on a first run there is no CA file
+  and no store to register the token in. The gateway moves to after
+  `waitReady` and before `startRunner`. In-process drain becomes runner →
+  gateway → server. That gain is small: agents are gone by then, and T5
+  revokes their tokens on stop (OQ6).
 
 ## Alternatives considered
 
-- **Reshape `runServe` with a `--compass` mode.** This mixes broker and
-  compass wiring in one upstream command. Rejected.
-- **Bare-id index over all providers.** Misroutes shared bare ids. Rejected
-  for `provider/id` only.
-- **Keep the shared bearer as a second admitted class (OQ2).** Anyone holding
-  the file would get a pool-less `"\u0000shared"` caller. Rejected.
-- **Reuse `gateway.token` for the service bearer.** It adopts the old inbound
-  secret, and version skew is silent about which meaning the file has.
-  Rejected for the rename.
-- **`--network host`.** Drops `-p` and network isolation. Rejected.
+- **A `--compass` mode in `runServe`.** This mixes broker and compass wiring
+  in one upstream command. Rejected.
+- **A bare-id index over all providers.** It misroutes shared bare ids.
+  Rejected.
+- **Keeping the shared bearer as a second caller class (OQ2).** Its holder
+  would get a pool-less caller. Rejected.
+- **Reusing `gateway.token` for the service bearer.** It would adopt the old
+  inbound secret, and skew would stay silent. Rejected.
+- **`--network host`.** It drops `-p` and network isolation. Rejected.
   `host.containers.internal` is OQ7 option A.
-- **ErrorInfo reason on `VerifyAgentToken`.** The verifier would have to
-  decode protobuf error details from Connect JSON. Rejected for S0's literal
-  pin (OQ4).
-- **Cache `VerifyAgentToken` results.** A revoked token would keep working.
-  Deferred (OQ3).
+- **An ErrorInfo reason on `VerifyAgentToken`.** The verifier would have to
+  decode error details from Connect JSON. Rejected for S0's literal pin.
+- **A verify cache.** A revoked token would keep working. Deferred (OQ3).
 
 ## Global Constraints
 
 - **Public repo.** This record and every compass task cite only compass and
   RigelBuild/oh-my-pi.
-- **Fork changes stay seam-shaped.** Fork changes are limited to:
-  - new files in `packages/ai/src/compass/`;
-  - the boot (`gateway-boot.ts`);
-  - one export from `auth-gateway-cli.ts` (`GATEWAY_MODEL_KINDS`).
+- **Fork changes stay seam-shaped.** Allowed:
+  - `packages/ai/src/compass/` (new modules, plus F1's `wire.ts` helpers and
+    the matching `credential-store.ts` transport refactor);
+  - `gateway-boot.ts`;
+  - one export from `auth-gateway-cli.ts`.
 
-  No change to `auth-storage.ts`, `packages/ai/src/auth/`, or
-  `auth-gateway/server.ts` or `dispatch.ts`.
-- **Fork base.** `rigel-release` with RIG-5205 (`routeScope`, `d0ac08ac56cc`)
-  and RIG-5206 (fork #146). #146 must first be rebased onto a `rigel-release`
-  that contains `d0ac08ac56cc`; its workspace has no `routeScope`.
-- **Server dependency.** A default-pinned image needs RIG-5204. On main,
-  `ListCredentialPoolRequest` still requires `agent_account_id`
-  (`gateway_credentials.proto`: "empty is INVALID_ARGUMENT").
+  No change to `auth-storage.ts`, `packages/ai/src/auth/`, `server.ts` or
+  `dispatch.ts`.
+- **Fork base.** `rigel-release` with RIG-5205 (`routeScope`, `d0ac08ac56cc`).
+  #146 (RIG-5206) is based on it.
+- **Server dependency.** A default-pinned image needs RIG-5204, because on main
+  `ListCredentialPoolRequest` still requires `agent_account_id`.
 - **Fail before bind.** The boot exits non-zero and never binds when:
-  - `COMPASS_SERVER_URL` is unset or fails `assertSecureBaseUrl`;
-  - an https URL has no readable `COMPASS_SERVER_CA_FILE`;
-  - `COMPASS_SERVICE_TOKEN_FILE` is unset or fails `readGatewayToken`;
-  - `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` is set but unreadable, or fails
-    `withEnrollToken`;
-  - the door probe gets anything but `invalid agent token`.
-
-  The compass values have no defaults.
-- **Secrets never logged.** The service bearer, agent tokens and enroll token
-  never appear in a log line or an error. Only `errorName(error)` reaches
-  logs.
-- **Env contract.** The stack passes these with `-e`, never as image `ENV`.
-  I1 removes the `COMPASS_GATEWAY_TOKEN_FILE` `ENV` from `Dockerfile.gateway`
-  and its entry from `SECRET_NAME_ALLOWLIST` (`tools/gateway-image/core.ts`).
+  - `COMPASS_SERVER_URL` is unset or fails `normalizeCompassBaseUrl`;
+  - an https URL has no readable CA file;
+  - the service-token file is unset, empty or holds whitespace (the error
+    names `COMPASS_SERVICE_TOKEN_FILE`);
+  - an enroll-token file is set but invalid;
+  - the door probe fails.
+- **Inbound transport is loopback only.** The stack publishes the listener only
+  on host `127.0.0.1:4100` (`go/internal/stack/gateway_container.go`:
+  `gatewayHostEndpoint = "127.0.0.1:4100"`). So in this record agent tokens
+  cross loopback only, and the listener has no TLS. Parent OQ-4 ("TLS via the
+  stack's existing anchor when bound beyond loopback") applies when T5 exposes
+  the gateway to agent containers, and T5 owns it.
+- **Secrets never logged.** No token appears in a log line or an error; only
+  `errorName(error)` is logged.
+- **Env contract.** Passed with `-e`, never as image `ENV`. I1 drops the
+  `COMPASS_GATEWAY_TOKEN_FILE` `ENV` and its allowlist entry.
 
   | Name | Value | Supplier |
   |---|---|---|
-  | `COMPASS_SERVICE_TOKEN_FILE` | `/run/compass/service.token` | stack (S2), new mount |
-  | `COMPASS_SERVER_URL` | `https://127.0.0.1:<door port>` (Linux; darwin: OQ7) | stack (S2) |
-  | `COMPASS_SERVER_CA_FILE` | `/run/compass/server-ca.crt` | stack (S2), new mount |
-  | `COMPASS_GATEWAY_BIND` | `0.0.0.0:4000` | stack, existing |
-  | `COMPASS_GATEWAY_DRAIN_MS` | `20000` | stack, existing |
-  | `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` | optional | E2/E3 lane, later |
+  | `COMPASS_SERVICE_TOKEN_FILE` | `/run/compass/service.token` | S2 |
+  | `COMPASS_SERVER_URL` | `https://127.0.0.1:<door port>` (darwin: OQ7) | S2 |
+  | `COMPASS_SERVER_CA_FILE` | `/run/compass/server-ca.crt` | S2 |
+  | `COMPASS_GATEWAY_BIND` | `0.0.0.0:4000` | existing |
+  | `COMPASS_GATEWAY_DRAIN_MS` | `20000` | existing |
+  | `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` | optional | E2/E3, later |
 
-- **Door listen host.** S2 accepts only a `ListenAddr` host of `127.0.0.1`,
-  `localhost`, or an unspecified IP (`0.0.0.0`, `::`). Each one accepts on
-  `127.0.0.1`, which is the URL the gateway dials. Any other host, including
-  any other DNS name, errors in the spec and names `--gateway-external`.
-  Option A of OQ7 changes the URL, not this host rule.
-- **Order.** Each line below is linear.
-  - Compass: S0 → S1 → S2 → P1. S2 calls `EnsureServiceToken`.
-  - Fork: #146 rebased → F1 → F2 → F3. F1 has no code dependency on #146.
-  - I1 follows F3's merge to `rigel-release`, because `build.ts` checks
-    ancestry.
-  - P1 also waits on I1's digest and RIG-5204.
+- **Door listen host.** S2 accepts only `127.0.0.1`, `localhost`, `0.0.0.0` or
+  `::`, all of which accept on the `127.0.0.1` URL. Any other host or DNS name
+  errors and names `--gateway-external`. OQ7 option A changes the URL, not
+  this rule.
+- **Order.** Each line is linear:
+  - compass: S0 → S1 → S2 → P1;
+  - fork: #146 → F1 → F2 → F3.
 
+  I1 follows F3's merge to `rigel-release`. P1 also waits on I1 and RIG-5204.
   No Pulumi state is involved.
 
 ## Plan
 
-### S0 — Pin the verify message (stack)
+The Plan is the long section, because it carries the exact interfaces each
+lane builds against.
 
-Lane: compass-server (owns `go/server`).
+### S0 — Pin the verify message
 
-Interfaces: none new. Add a test in `go/server/gateway_auth_test.go` that
-asserts `connect.CodeOf(err) == connect.CodeUnauthenticated` and
-`err.(*connect.Error).Message() == "invalid agent token"`. Its comment names
-the gateway verifier and boot probe as consumers.
+Lane: compass-server (owns `go/server`). Add a test in
+`go/server/gateway_auth_test.go` that asserts code `Unauthenticated` and
+message `invalid agent token`, and names the gateway as consumer.
 
-Test cycle: `go test ./server -run VerifyAgentToken`.
+### F1 — Verifier and shared transport (fork #150)
 
-### F1 — Agent verifier (fork)
-
-Lane: compass-gateway.
+Lane: compass-gateway. Depends on #146.
 
 ```ts
-// packages/ai/src/compass/agent-verifier.ts (exported from ./compass)
-export interface CompassAgentVerifierOptions {
-	baseUrl: string;       // same rules as CompassAuthCredentialStoreOptions.baseUrl
-	token: string;         // llm-gateway service bearer
-	fetch?: typeof fetch;
-	timeoutMs?: number;    // default 5_000
-}
+// packages/ai/src/compass/wire.ts
+export function normalizeCompassBaseUrl(baseUrl: string): string; // replaces assertSecureBaseUrl
+export function fetchCompassRpcResponse(opts: { baseUrl: string; service: string; method: string; token: string; fetch: typeof fetch; body: unknown; signal: AbortSignal }): Promise<{ response: Response; text: string }>;
+// packages/ai/src/compass/agent-verifier.ts
+export interface CompassAgentVerifierOptions { baseUrl: string; token: string; fetch?: typeof fetch; timeoutMs?: number }
 export function createCompassAgentVerifier(opts: CompassAgentVerifierOptions): AuthGatewayAuthorizer;
-/** The boot's pre-bind probe: resolves when the door answers `invalid agent token` to "". */
 export function probeCompassDoor(opts: CompassAgentVerifierOptions): Promise<void>;
+// credential-store.ts: #request uses both helpers.
 ```
 
-Consumes `compassRpcErrorFromResponse` and `decodeCompassJson` (`wire.ts`) and
-`presentedBearer` (`auth-gateway/http.ts`).
+Tests cover each mapping row above, abort, the probe, and that no token
+appears in an error.
 
-Test cycle: `bun test` against a fake `fetch`. Cases:
-
-- no bearer → `null`, with no call made;
-- 200 → `AgentCaller`, and the request carries the service bearer plus
-  `{ token }`;
-- `invalid agent token` → `null`;
-- other `unauthenticated` → throws;
-- `internal` → throws;
-- timeout → throws;
-- `req.signal` abort cancels the call;
-- an empty id in the response → throws;
-- the probe resolves only on `invalid agent token`;
-- no token appears in any error.
-
-### F2 — Owner pool (fork)
+### F2 — Owner pool
 
 Lane: compass-gateway.
 
 ```ts
-// packages/ai/src/compass/owner-pool.ts (exported from ./compass)
+// packages/ai/src/compass/owner-pool.ts
 export interface CompassOwnerEntry { storage: AuthStorage; store: { hasPendingWrites(): boolean } }
-export interface CompassOwnerPoolOptions {
-	open: (ownerUserId: string) => Promise<CompassOwnerEntry>;
-	maxOwners?: number;        // default 256 (soft)
-	idleMs?: number;           // default 900_000
-	minIdleMs?: number;        // default 60_000; floor for cap eviction
-	sweepIntervalMs?: number;  // default 60_000; 0 = no timer (tests)
-	now?: () => number;
-}
+export interface CompassOwnerPoolOptions { open: (ownerUserId: string) => Promise<CompassOwnerEntry>; maxOwners?: number; idleMs?: number; minIdleMs?: number; sweepIntervalMs?: number; now?: () => number }
 export class CompassOwnerPool {
-	constructor(opts: CompassOwnerPoolOptions);
-	/** Inside withRequestLease, also leases the entry until that request's lease ends. */
 	get(ownerUserId: string): Promise<AuthStorage>;
-	/** Runs one routed request. Its leases end when a Response body ends, errors or is cancelled; at once for a body-less result or a throw. */
 	withRequestLease<T>(run: () => Promise<T>): Promise<T>;
 	sweep(): void;
 	close(): void;
@@ -353,262 +271,171 @@ export class CompassOwnerPool {
 export function openCompassOwner(opts: CompassAuthCredentialStoreOptions): Promise<CompassOwnerEntry>;
 ```
 
-Test cycle: `bun test` with fake entries and a fake clock. Cases:
+Required tests:
 
-- same instance per owner;
-- concurrent first `get` opens once;
-- a failed open is retried;
-- an idle entry closes;
-- **a streamed response held open past `minIdleMs` and `idleMs`, with the
-  cap exceeded, is not evicted, and it is evictable once the body ends**;
-- a cancelled body and a thrown `run` both release the lease;
-- **an idle owner with a parked write survives the sweep, and the next
-  request under a live token commits it.** This uses a real
-  `CompassAuthCredentialStore` over a fake door (door record requirement);
-- the cap evicts LRU entries only when they are idle, unleased and have no
-  pending writes;
-- `close()` closes all entries.
+- **Two-owner isolation.** Each owner gets the same instance on repeat calls,
+  and the two owners get different instances. Each selects only its own
+  credential.
+- **Lease.** A stream held past both idle limits, with the cap exceeded,
+  survives, and becomes evictable once its body ends.
+- **Parked write.** An idle owner with a parked write survives the sweep. The
+  next live-token request commits it, using a real store over a fake door.
+- **Basics:** single-flight open, retried after a failure, and closed by
+  `close()`.
 
-### F3 — Compass boot (fork)
+### F3 — Compass boot
 
 Lane: compass-gateway.
 
 ```ts
 // packages/coding-agent/src/cli/gateway-boot.ts
-export interface GatewayBootConfig {
-	serviceTokenFile: string; serverUrl: string; caFile?: string;
-	bind: string; drainMs: number; enrollTokenFile?: string;
-}
+export interface GatewayBootConfig { serviceTokenFile: string; serverUrl: string; caFile?: string; bind: string; drainMs: number; enrollTokenFile?: string }
 export function getGatewayBootConfig(env: Readonly<Record<string, string | undefined>>): GatewayBootConfig;
-export function bundledGatewayModels(): Map<string, Model<Api>>; // keyed provider/id only
-export async function runGatewayBoot(env?: Readonly<Record<string, string | undefined>>): Promise<void>;
-// auth-gateway-cli.ts: `export const GATEWAY_MODEL_KINDS` (was module-private)
+export function readTokenFile(path: string, envName: string): Promise<string>; // replaces readGatewayToken
+export function bundledGatewayModels(): Map<string, Model<Api>>;
+export function runGatewayBoot(env?: Readonly<Record<string, string | undefined>>): Promise<void>;
 ```
 
-`runGatewayBoot` steps:
+Order: config → token files and CA → `installGlobalProxyFetch()` →
+`probeCompassDoor` → `startAuthGateway(...)` → `registerGatewayShutdown(handle, drainMs, () => pool.close())`.
+The required `storage` option gets a placeholder `AuthStorage` over a store
+that throws on every call.
 
-1. Read the config.
-2. Read the token, the CA and the optional enroll token.
-3. `installGlobalProxyFetch()`.
-4. Build the compass fetch.
-5. `probeCompassDoor`.
-6. `startAuthGateway({ bind, authorize, storage: placeholder, resolveStorage, routeScope, resolveModel, listModels, version })`.
-7. `registerGatewayShutdown(handle, drainMs, () => pool.close())`.
+Tests:
 
-`storage` is still required by `AuthGatewayRouteOptions`. The placeholder is
-an `AuthStorage` over a store that throws on every call, so any accidental
-use answers 500 and logs. Delete the "still requires OMP_AUTH_BROKER_URL"
-comment.
+- each fail-before-bind rule;
+- the model map holds no bare ids;
+- an end-to-end boot against a fake Server: good token → 200, bad token →
+  401, Server `internal` → 503, bare id → 404, missing provider → 401.
 
-Test cycle: extend `packages/coding-agent/test/cli/gateway-boot.test.ts`.
+### S1 — Service bearer ensure
 
-- Each fail-before-bind rule throws before any listen.
-- The model map holds only routable kinds and no bare ids.
-- An end-to-end boot against a fake Server on loopback `http`:
-  - `/healthz` → 200;
-  - a good token → `/v1/models` 200;
-  - a bad token → 401;
-  - the Server answering `internal` → 503;
-  - a bare model id → 404;
-  - a chat request for a provider absent from the pool → 401.
-- The fork gateway suite stays green.
-
-### S1 — Service bearer ensure (stack)
-
-Lane: compass-server (owner of `go/internal/stack/adapters`; reviewer of
-S1, S2 and P1).
+Lane: compass-server (owns `go/internal/stack/adapters`; reviews S1, S2, P1).
 
 ```go
-// go/internal/runnerhub/mint.go
-func TokenStatus(ctx context.Context, r TokenHashResolver, token string, want store.Subject) (TokenState, store.Subject, error)
-// RunnerTokenStatus becomes TokenStatus(ctx, r, token, store.Subject{Kind: store.SubjectRunner, ID: runnerID})
-// go/internal/stack/deps.go
-type ServiceTokenEnsurer interface {
-	EnsureServiceToken(ctx context.Context, path, serviceID string) error
-}
-// Deps gains: ServiceTokens ServiceTokenEnsurer
-// go/internal/stack/adapters/token.go
-func (e *TokenEnsurer) EnsureServiceToken(ctx context.Context, path, serviceID string) error
+func TokenStatus(ctx context.Context, r TokenHashResolver, token string, want store.Subject) (TokenState, store.Subject, error) // runnerhub; RunnerTokenStatus wraps it
+type ServiceTokenEnsurer interface{ EnsureServiceToken(ctx context.Context, path, serviceID string) error } // stack.Deps.ServiceTokens
+func (e *TokenEnsurer) EnsureServiceToken(ctx context.Context, path, serviceID string) error // adapters
 ```
 
-`TokenStatus` compares only `Kind` and `ID`. `ensure` takes the want subject,
-a keep-revoked flag and a register func. The runner keeps
-`StoreRunnerTokenHash`; the service path calls `PutTokenHash` with
-`sha256(token)`. `cmd/compass-stack/main.go` wires one
-`adapters.NewTokenEnsurer(cfg.DatabaseDSN)` into both fields.
+`EnsureServiceToken` creates the token's directory at 0700 before its first
+write. Tests:
 
-Test cycle: `token_test.go` against the fake store:
-
-- absent → mint, file first;
-- registered → kept;
-- unknown → re-registered;
-- revoked → rotated;
-- other subject → rotated;
-- hash commit fails → file removed;
+- each Approach rule;
+- the file is removed when the commit fails;
 - mode 0600;
+- **fresh state:** with no `<state>/gateway/`, the call creates it at 0700
+  and mints the token;
 - the runner cases stay green.
 
-### S2 — Gateway spec, network and order (stack)
+### S2 — Gateway spec, network and order
 
 Lane: compass-server. Depends on S1.
 
 ```go
-// go/internal/stack/gateway_container.go
-const (
-	GatewayServiceTokenMountPath = "/run/compass/service.token"
-	GatewayCAMountPath           = "/run/compass/server-ca.crt"
-)
-type GatewayContainerSpec struct { /* existing fields */ ServerURL string; NetworkArgs []string; CAFile string }
+const GatewayServiceTokenMountPath, GatewayCAMountPath = "/run/compass/service.token", "/run/compass/server-ca.crt"
+type GatewayContainerSpec struct { /* existing */ ServerURL string; NetworkArgs []string; CAFile string }
 func gatewayContainerSpec(cfg Config, listenAddr string, cert CertResult) (GatewayContainerSpec, error)
 ```
 
-- **Spec.** `TokenFile` becomes `<state>/gateway/service.token`. Env as in
-  the table. A `listenAddr` host outside the Door listen host set errors.
-- **Run args.** `gatewayRunArgs` appends `NetworkArgs`
-  (`--network pasta:-T,<port>` on Linux) and mounts the token at
-  `GatewayServiceTokenMountPath` and the CA at `GatewayCAMountPath` (`:ro,z`;
-  the host server reads the same CA file).
-- **Start.** `Stack.startGateway` removes the old `gateway.token`, then calls
-  `ServiceTokens.EnsureServiceToken(ctx, spec.TokenFile, auth.LLMGatewayServiceID)`,
-  then `GatewayContainer.Start`. `ensureGatewayToken` is deleted.
-- **Order.** `spawnChain` moves the gateway after `waitReady`;
-  `drainChildren` order becomes runner, gateway, server.
+- The spec sets the env table, `NetworkArgs` and the two `:ro,z` mounts.
+- `startGateway` runs `MkdirAll(TokenDir, 0o700)`, removes `gateway.token`,
+  then calls `EnsureServiceToken`, then `Start`.
+- `ensureGatewayToken` is deleted.
+- The gateway step moves as in the Approach.
 
-Test cycle:
+Tests:
 
-- `gateway_container_test.go`: spec env, mounts and run args pinned; a
-  DNS hostname (`compass.example`) and a non-loopback IP both error;
-  `127.0.0.1`, `localhost`, `0.0.0.0` and `::` are accepted.
-- Harness: server ready before gateway start; gateway drained before server;
-  service token ensured and old file removed before the container starts.
-- `downdetached` tests stay green.
+- args and mounts are pinned;
+- `compass.example` and a non-loopback IP error, and the four allowed hosts
+  pass;
+- harness: on fresh state, server ready → token → container start, and the
+  drain stops the gateway before the server.
 
-### I1 — Fork pin, image env and smoke (image lane)
+### I1 — Fork pin, image env and smoke
 
 Lane: compass-gateway.
 
-- Bump `tools/gateway-image/fork-pin.json` from `57f41121ff5e…` to the
-  `rigel-release` commit holding F1–F3.
-- Drop the `COMPASS_GATEWAY_TOKEN_FILE` `ENV` and its allowlist entry.
-- Rewrite `smoke.ts`:
-  - drop the broker;
-  - run a Bun fake Server on host loopback `http` that answers
-    `VerifyAgentToken` (`invalid agent token` for `""`) and an empty
-    `ListCredentialPool`;
-  - boot with `--network pasta:-T,<fake port>`;
-  - assert `/healthz` 200, `/v1/models` with the good token `modelsListOk`,
-    and a bad token 401;
-  - fault `no-server-env` (replaces `no-broker-env`) exits before `/healthz`
-    answers.
+- Bump `fork-pin.json` from `57f41121ff5e…` to the `rigel-release` commit
+  that holds F1–F3.
+- Drop the old `ENV` and its allowlist entry.
+- `smoke.ts` drops the broker. It runs a fake Server on host loopback, boots
+  with `pasta:-T`, and asserts `/healthz`, `/v1/models` for a good token, 401
+  for a bad token, and a `no-server-env` fault.
 
-Test cycle: `core.test.ts`, plus the lane's `smoke` task on local podman.
+### P1 — Default image pin
 
-### P1 — Default image pin (stack)
-
-Lane: compass-server. Depends on S2, I1's digest and RIG-5204.
-
-Set `DefaultGatewayImage` (`go/internal/stack/gateway_image.go`) to I1's
-`repo@sha256:…`.
-
-Test cycle: one stack podman test that boots the bundled gateway with no
-`--gateway-external` and gets 200 on `/v1/models`. Its agent token is minted
-through `auth.NewGatewayTokens(st).Mint` directly. No production code calls
-`Mint` today; it is used only by tests. So until T5, no real agent sends
-traffic through the gateway, and this test is not end-to-end proof.
+Lane: compass-server. Set `DefaultGatewayImage` to I1's digest. A podman
+test boots the bundled gateway and gets 200 on `/v1/models`. Its token comes
+from `auth.NewGatewayTokens(st).Mint` directly: only tests call `Mint` until
+T5, so this test is not end-to-end proof.
 
 ## Tasks
 
-- [ ] S0 — compass-server: Go test pins `invalid agent token` as the
-      `VerifyAgentToken` wire contract.
-- [ ] S1 — compass-server: `TokenStatus` over `store.Subject`;
-      `EnsureServiceToken` for `llm-gateway`.
-- [ ] S2 — compass-server: `service.token` + delete `gateway.token`; env,
-      mounts, `pasta:-T`; loopback-covering door host; gateway after server
-      ready; drain gateway before server.
-- [ ] F1 — compass-gateway: `createCompassAgentVerifier` +
-      `probeCompassDoor`.
-- [ ] F2 — compass-gateway: `CompassOwnerPool` (single-flight open, leases,
-      `hasPendingWrites` pin, idle sweep, soft cap, close) + stream and
-      parked-write tests.
-- [ ] F3 — compass-gateway: compass `runGatewayBoot` (env contract, door
-      probe, `provider/id` catalog, throwing placeholder, CA-scoped fetch).
-- [ ] I1 — compass-gateway: fork pin bump, image env cleanup, broker-free
-      smoke.
+- [ ] S0 — compass-server: pin `invalid agent token`.
+- [ ] S1 — compass-server: `TokenStatus`; `EnsureServiceToken` (makes its dir).
+- [ ] S2 — compass-server: spec, mounts, `pasta:-T`, door-host rule, order.
+- [ ] F1 — compass-gateway: `wire.ts` transport, verifier, door probe (#150).
+- [ ] F2 — compass-gateway: owner pool and its required tests.
+- [ ] F3 — compass-gateway: compass `runGatewayBoot`, `readTokenFile`.
+- [ ] I1 — compass-gateway: pin bump, image env, broker-free smoke.
 - [ ] P1 — compass-server: pin `DefaultGatewayImage`.
-- [ ] Ledger: claim these with `bun tools/dl-claim` when this record's PR is
-      ready. The design pass does not claim them.
-  - DL (server): the stack's `llm-gateway` service bearer is
-    `<state>/gateway/service.token`. The compass boot admits agents only
-    through `GatewayAuth.VerifyAgentToken`, with no inbound shared token.
-    Record: `#approach`.
-  - DL (server): the compass boot serves the bundled catalog by
-    `provider/id` until stable-name P1. Record: `#approach`. Claim after
-    Matt rules on OQ1.
+- [ ] Ledger: claim these with `bun tools/dl-claim` when this PR is ready;
+      the design pass does not claim them.
+  - DL (server): the `llm-gateway` service bearer is
+    `<state>/gateway/service.token`, and agents are admitted only through
+    `VerifyAgentToken`.
+  - DL (server): the boot serves the bundled catalog by `provider/id` until
+    stable-name P1. Claim after OQ1.
 
 ## Open Questions
 
-**OQ1 (load-bearing): catalog under per-owner pools.**
+**OQ1 (load-bearing): the catalog under per-owner pools.**
 
-- **A (recommended):** every bundled provider, indexed by `provider/id`, with
-  no credential gating. A missing provider gets a dispatch 401.
-- **B:** a per-owner `ModelRegistry`. Needs a caller-aware `ModelResolver`, a
+- **A (recommended):** every bundled provider by `provider/id`, with a
+  dispatch 401 when a credential is missing.
+- **B:** a per-owner `ModelRegistry`. This needs a caller-aware resolver, a
   router-core change.
-- **C:** a union over live pools. It leaks between owners and is
+- **C:** a union of live pools. It leaks between owners and is
   nondeterministic.
-- **D:** A, limited to the parent record's day-1 set ("anthropic (OAuth +
-  api_key), openai/openai-codex (OAuth + api_key), google (api_key)"). This
-  bounds `/v1/models`, but it turns a new provider into a code change. Parent
-  RD-6 says "Additional providers are configuration, not code".
-- **E:** read the Server registry now (`GetGatewayModelRegistry` is mounted,
-  `go/server/gateway_registry_service.go`). Stable-name P1 owns that swap and
-  plans an async, caller-aware `resolveModel`. Today `ModelResolver` is sync,
-  so E would need a boot-time fetch, a version-poll timer and a
-  registry-to-`Model` mapping. That duplicates P1 before P1 lands.
+- **D:** A, limited to the parent's day-1 set. This makes a new provider a
+  code change, against RD-6 ("Additional providers are configuration, not
+  code").
+- **E:** read `GetGatewayModelRegistry` now. This duplicates stable-name P1:
+  a sync resolver would need a boot fetch, a poll and a model mapping.
 
-**Recommendation: A.** Decision needed: accept A (or D) as the interim
-catalog.
+Decision needed: A or D.
 
-**OQ2 (load-bearing): drop the inbound shared bearer.** The record admits no
-shared caller. The service bearer moves to `service.token` and
-`COMPASS_SERVICE_TOKEN_FILE`, and `gateway.token` is deleted. This reverses
-the T1 contract ("token file = inbound bearer").
+**OQ2 (load-bearing): drop the inbound shared bearer.** This reverses the T1
+contract ("token file = inbound bearer"). Recommendation: drop it. Decision
+needed: confirm there is no operator or debug use for one.
 
-**Recommendation: drop it.** Decision needed: confirm there is no operator or
-debug use for a shared inbound token.
+**OQ7 (load-bearing): reaching the Server on darwin** [INFERENCE; not probed].
 
-**OQ7 (load-bearing): reaching the Server on darwin.** On darwin, pasta runs
-in the podman-machine VM, so `-T` would reach the VM's loopback, not the Mac
-[INFERENCE; not probed, no Mac host].
+- **A:** `host.containers.internal` on both OSes. Linux adds
+  `pasta:--map-host-loopback,169.254.1.2`, which was probed and works. The
+  cost is a DNS SAN in `certHosts` and a SAN check in `needsRotation`.
+- **B:** per OS. This still needs A's SAN and adds a second path to test.
+- **C:** `-T` everywhere, with the bundled gateway unsupported on darwin. The
+  spec errors there and points to `--gateway-external`.
 
-- **A:** `https://host.containers.internal:<port>` on both OSes, with Linux
-  adding `--network pasta:--map-host-loopback,169.254.1.2` (probed:
-  reaches the host). Costs:
-  - a DNS SAN `host.containers.internal` in `certHosts`;
-  - a SAN check in `needsRotation`, which today checks only the key, parsing
-    and expiry, so existing anchors rotate once.
-- **B:** per OS: `-T` and `127.0.0.1` on Linux, `host.containers.internal` on
-  darwin. This still needs A's SAN and adds a second path to test.
-- **C:** `-T` everywhere. The bundled gateway is unsupported on darwin, and
-  the spec errors there, pointing to `--gateway-external`.
+Recommendation: A if a darwin probe works, otherwise C for now. The door
+probe makes a wrong choice fail `up` loudly. Decision needed: A or C, and who
+runs the darwin probe.
 
-**Recommendation: A, if a darwin probe shows `host.containers.internal`
-reaching a Mac `127.0.0.1` listener; otherwise C for now.** The door probe
-(Approach) makes any wrong choice fail `up` loudly instead of failing every
-request. Decision needed: A or C, and who runs the darwin probe before S2.
+**OQ3 (deferred): verify cache.** Revisit after dev measures the load.
 
-**OQ3 (not load-bearing): verifier cache.** None for now. Revisit after dev
-measures VerifyAgentToken load, alongside the door-call rate (door record
-Q1).
+**OQ4 (resolved): the 401 vs 503 split hangs on one message.** No test pinned
+it before; S0 does now.
 
-**OQ4 (resolved by design): the 401 vs 503 split depends on a message.** No
-Go test pinned the literal. `TestVerifyAgentTokenInvalidIsUnauthenticated`
-checks only the code, plus equal text across tokens. S0 pins the literal.
-ErrorInfo was rejected (Alternatives).
+**OQ5 (deferred): enroll token supply.** Nothing reads or writes
+`COMPASS_GATEWAY_ENROLL_TOKEN_FILE` today. Owned by E2/E3 of
+`compass-gateway-oauth-enrollment`.
 
-**OQ5 (not load-bearing): enroll token supply.** No compass or fork code reads
-or writes `COMPASS_GATEWAY_ENROLL_TOKEN_FILE`. Minting and mounting it belong
-to E2/E3 of `compass-gateway-oauth-enrollment`.
+**OQ6 (accepted residual): detached down.** `drainTargets` signals the
+runner, server and gateway together, so a write-back during the gateway's
+drain can be lost.
 
-**OQ6 (not load-bearing): detached down.** `drainTargets` signals the whole
-consumer tier (runner, server, gateway) at once. A write-back during the
-gateway's drain can park and be lost. The door record accepts this residual.
+**OQ8 (deferred to T5): inbound TLS.** The listener is published only on
+host loopback (Global Constraints). T5 owns TLS once it binds beyond
+loopback (parent OQ-4).
