@@ -354,27 +354,11 @@ is a wall on first run:
   before `Start`** — it rides the share the guest already mounts. An
   executor reaching for a dedicated read-only mount for a test-only binary
   gets `UnsupportedMountError` at `Create`.
-- **A missing or unstartable probe is an `Exec` ERROR, not exit 126/127.**
-  guestd does not surface an unresolvable program as an exit code:
-  `resolveProgram`'s error is wrapped into
-  `connect.NewError(connect.CodeInternal, …)` by `buildChild`
-  (`internal/guestd/supervisor.go:600-614`), and a path-form argv like
-  `/workspace/vsockprobe` bypasses PATH resolution entirely
-  (`resolveProgram`: a name containing a slash "is used as given",
-  `supervisor.go:643-646`) and then fails at `cmd.Start()` — also
-  `CodeInternal`. Host-side that is a returned error, not an
-  `ExecOutput.ExitCode`: `Exec` maps a transport/refusal failure to
-  `ExecOutput{}, err` (`microvm_lifecycle.go:486-496`, whose doc states "a
-  guest refusal or transport failure is an error" while "a non-zero exit is
-  a SUCCESSFUL call", `:470-475`). W2 therefore asserts **`err == nil`
-  first** — a transport/spawn error is a harness fault and must `t.Fatal`,
-  matching V6's `guestSh` posture ("A transport/refusal error is fatal; a
-  NON-ZERO EXIT IS NOT", PR #912
-  `microvm_isolation_microvm_test.go:111-123`) — and only then
-  discriminates `0`/`2`/`3` on `ExecOutput.ExitCode`. The exit-code
-  contract accordingly drops its 126/127 arm: those codes are not
-  observable on this path, and a missing probe is caught by the `err == nil`
-  assertion instead.
+- **Amended 2026-10-11 by Matt's ruling: a missing probe exits 127; a present
+  but non-executable probe exits 126.** Both are successful `Exec` results with
+  stderr diagnostics. A missing or non-directory workdir, a missing
+  interpreter, and transport failures remain errors. The harness checks `err == nil`, rejects 126/127, then
+  discriminates 0/2/3 on `ExecOutput.ExitCode`.
 
 The test asserts, in order:
 
@@ -404,14 +388,13 @@ Vacuity analysis: "dial fails" alone would pass if the vsock device were
 missing, the port wrong, or the probe binary broken — all caught by the
 positive control against CID 2, and further separated by the exit-code
 discrimination: `3` for absent transport or refused connect, `2` for
-accepted-then-closed, `0` for connected-and-served. A missing or unstartable
-probe is deliberately **not** in that table: it never reaches an exit code,
-surfacing instead as an `Exec` error (guestd's `CodeInternal`, see above),
-which W2's `err == nil` assertion catches as a harness fault before any
-exit-code comparison runs. Proving mutation: use the test-only initrd built
-with `bootModules ++ [ "vsock_loopback" ]` and selected through
-`COMPASS_TEST_GUEST_INITRD`; the probe MUST flip from exit 3 to exit 2, making
-the production-image exit-3 assertion go red. Production boots are unchanged.
+accepted-then-closed, and `0` for connected-and-served. A missing probe exits
+127 and a present but non-executable probe exits 126; `err == nil` is checked
+first, then both setup codes are rejected before the transport comparison.
+Use the test-only initrd built with `bootModules ++ [ "vsock_loopback" ]` and
+selected through `COMPASS_TEST_GUEST_INITRD`; the probe MUST flip from exit 3 to
+exit 2, making the production-image exit-3 assertion go red. Production boots
+are unchanged.
 
 ### (e) Cycles 2-5 — contract and failure modes at the assembled layer
 
@@ -1057,24 +1040,20 @@ leg.
   spawn failure is a harness fault and `t.Fatal`s, matching V6's `guestSh`
   posture ("A transport/refusal error is fatal; a NON-ZERO EXIT IS NOT",
   PR #912 `microvm_isolation_microvm_test.go:111-123`) — and only then is an
-  exit code compared. Then: CID 2:1025 dial to the test listener exits 0 (positive control); the CID-1
-  dial MUST exit 3 on the production image because `vsock_loopback` is
-  absent from the initrd. Exit 3 proves transport-level unreachability,
+  exit code compared. The CID-2 control dials the test listener and exits 0;
+  the CID-1 dial MUST exit 3 on the production image because `vsock_loopback`
+  is absent from the initrd. Exit 3 proves transport-level unreachability,
   strictly stronger than the parent's "refused" wording. The CID-2 control
   plus exit-code discrimination rules out a missing device, wrong port, or
   broken probe: `3` means no transport or refused connect, `2` means
-  accepted-then-closed, and `0` means connected-and-served. **A missing or
-  unstaged probe is NOT in that table:** guestd converts an unresolvable or
-  unstartable program into `connect.NewError(connect.CodeInternal, …)`
-  (`internal/guestd/supervisor.go:600-614`; a slash-bearing argv bypasses
-  PATH entirely, `:643-646`), which `Exec` returns as
-  `ExecOutput{}, err` (`microvm_lifecycle.go:486-496`) — so 126/127 can
-  never be observed as an exit code on this path, and the `err == nil`
-  assertion above catches broken staging. Proving mutation: build a TEST-ONLY
-  initrd with `bootModules ++ [ "vsock_loopback" ]`, select it through
-  `COMPASS_TEST_GUEST_INITRD`, and rerun the probe. It MUST flip from exit 3
-  to exit 2, making the production-image assertion go red; production boots
-  remain unchanged.
+  accepted-then-closed, and `0` means connected-and-served. A missing probe
+  exits 127 and a present but non-executable probe exits 126. Check `err == nil`
+  first, then reject both setup codes before the `0`/`2`/`3` transport comparison.
+  Proving mutation: build a TEST-ONLY initrd with
+  `bootModules ++ [ "vsock_loopback" ]`, select it through
+  `COMPASS_TEST_GUEST_INITRD`, and rerun the probe. It MUST flip from exit 3 to
+  exit 2, making the production-image assertion go red; production boots remain
+  unchanged.
 - **Depends:** none beyond main (the guestd gate is on main,
   `go/internal/guestd/vsock.go:25-29`); independent of W1 and of V6/V7 —
   one of the Plan preamble's **two** full exemptions (with W5), and W2's
@@ -1657,8 +1636,8 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
       `./...`, so an untagged compile guard catches rot in the default
       lane), staged by writing into the existing `/workspace` host dir
       before `Start` (never a second mount, `microvm_lifecycle.go:313-330`);
-      `Exec` `err == nil` asserted BEFORE any exit code (a missing probe is
-      a `CodeInternal` error, never 126/127); CID 2:1025 positive control against a test listener; CID-1
+      `Exec` `err == nil` asserted BEFORE exit-code validation; missing probes
+      yield 127 and present but non-executable probes 126; reject both before CID 2:1025
       exits 3 on the production initrd; the test-only initrd mutation adds
       `vsock_loopback` and flips the probe to exit 2; independent of V6/V7 —
       may land first

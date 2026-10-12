@@ -53,24 +53,19 @@ package compass.v1;
 service GuestControl {
   rpc Health(HealthRequest) returns (HealthResponse);
 
-  // Exec runs one command to completion and returns its captured output. A
-  // non-zero exit is a SUCCESSFUL call whose ExecResponse.exit_code is
-  // non-zero — never a Connect error. A Connect error means the exec could not
-  // be attempted or could not complete: a spawn failure, a refused uid (0), a
-  // timeout, or an unprovisioned gate.
+  // Exec captures one command. A missing program returns 127; a present one
+  // that cannot be invoked (no exec bit, ENOEXEC, execve EACCES/EPERM) returns
+  // 126. A missing or non-directory workdir or missing interpreter is an error.
   rpc Exec(ExecRequest) returns (ExecResponse);
 
-  // ExecStream runs a long-lived command over one bidi stream: the request
-  // stream carries the start frame, then stdin bytes and an optional
-  // half-close; the response stream carries the exec_id, then interleaved
-  // stdout/stderr, then exactly one terminal exit frame. Kill rides Signal
-  // (below), not this stream, so a teardown never contends with an in-flight
-  // stdin write.
+  // ExecStream: one start frame, stdin, optional half-close. Start failures
+  // follow Exec's 127/126 rule as ExecStarted, stderr, ExecExit; a missing or
+  // non-directory workdir or missing interpreter errors before ExecStarted.
   rpc ExecStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
 
-  // Signal delivers a signal to a running exec by exec_id; an empty exec_id
-  // targets the guest itself (graceful Stop, record §(d)). Signalling an
-  // already-exited exec is a no-op success.
+  // Signal delivers a signal to a running exec by exec_id (exec kill rides
+  // here, not ExecStream); an empty exec_id targets the guest itself (graceful
+  // Stop, record §(d)). Signalling an already-exited exec is a no-op success.
   rpc Signal(SignalRequest) returns (SignalResponse);
 
   // Provision transitions the supervisor ready -> provisioned: it records the
@@ -94,9 +89,8 @@ message HealthResponse {
   bytes boot_nonce = 4;
 }
 
-// ExecRequest is a one-shot exec. It mirrors runtime.ExecSpec field for field.
+// ExecRequest mirrors runtime.ExecSpec. See GuestControl.Exec for the 127/126 rule.
 message ExecRequest {
-  // command is argv; command[0] is the program.
   repeated string command = 1;
   // uid is the exec's user. Absent = the session default uid set by Provision
   // (the baked agent uid). uid 0 is REFUSED with a failed-precondition error
@@ -117,8 +111,8 @@ message ExecRequest {
 message ExecResponse {
   bytes stdout = 1;
   bytes stderr = 2;
-  // exit_code is the command's exit status. Non-zero is a successful call with
-  // a failed command, never a Connect error (see the Exec doc-comment).
+  // Non-zero statuses, including 126/127, are successful calls. A missing or
+  // non-directory workdir, a missing interpreter, or a transport failure is an error.
   int32 exit_code = 3;
 }
 
@@ -143,8 +137,8 @@ message StartExec {
 // StdinClose half-closes the child's stdin pipe without ending the stream.
 message StdinClose {}
 
-// ExecStreamResponse frames flow guest -> host: exactly one ExecStarted first,
-// then interleaved stdout/stderr, then exactly one ExecExit.
+// Exactly one ExecStarted, then interleaved stdout/stderr, then one ExecExit.
+// A start failure classified as 127/126 uses the same order.
 message ExecStreamResponse {
   oneof frame {
     ExecStarted started = 1;

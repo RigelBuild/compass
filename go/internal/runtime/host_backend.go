@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec" //nolint:depguard // host backend seam: *exec.Cmd/*exec.ExitError drive the direct host subprocess this backend exists to run
@@ -210,13 +211,9 @@ func (h *HostRuntime) Start(_ context.Context, id WorkloadID) error {
 	return nil
 }
 
-// Exec runs the command as a direct host subprocess of the Runner, under the
-// Runner's own uid, honoring ExecSpec's command/env/workdir/stdin under the
-// per-command timeout. A non-zero exit is a successful call returning
-// ExecOutput.ExitCode; only a spawn failure or a timeout is a Go error. The
-// child inherits the Runner's environment with ExecSpec.Env overriding per key
-// — there is no image here to supply a baseline. See checkUser for the AsUser
-// rule.
+// Exec runs a command as a direct host child under the Runner's uid and
+// timeout. Missing programs return 127; programs that cannot execute return
+// 126. A missing or non-directory workdir or missing interpreter is an error.
 func (h *HostRuntime) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (ExecOutput, error) {
 	if err := h.checkUser(spec.User); err != nil {
 		return ExecOutput{}, err
@@ -228,13 +225,19 @@ func (h *HostRuntime) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (E
 		return ExecOutput{}, errors.New("runtime: host exec requires a command")
 	}
 
+	if err := ctx.Err(); err != nil {
+		return ExecOutput{}, err
+	}
+	childEnv := envSlice(spec.Env)
+	if code, stderr, ok := hostExecPrecheck(spec.Command[0], spec.Workdir, childEnv); ok {
+		return ExecOutput{Stderr: stderr, ExitCode: code}, nil
+	}
 	cctx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
 
-	//nolint:gosec // G204: the host backend seam spawns the Runner-assembled agent command; the argv is not attacker-controlled.
-	cmd := exec.CommandContext(cctx, spec.Command[0], spec.Command[1:]...)
+	cmd := hostExecCommand(cctx, spec.Command, spec.Workdir, childEnv)
 	cmd.WaitDelay = 10 * time.Second
-	cmd.Env = envSlice(spec.Env)
+	cmd.Env = childEnv
 	if spec.Workdir != nil {
 		cmd.Dir = *spec.Workdir
 	}
@@ -254,14 +257,14 @@ func (h *HostRuntime) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (E
 		case ctx.Err() != nil:
 			return ExecOutput{}, ctx.Err()
 		default:
+			executablePath := cmd.Path
+			if code, stderr, ok := hostExecStartFailure(spec.Command[0], spec.Workdir, executablePath, runErr); ok {
+				return ExecOutput{Stderr: stderr, ExitCode: code}, nil
+			}
 			if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
-				// Ran to completion but exited non-zero: a successful call.
 				return ExecOutput{Stdout: out.String(), Stderr: errBuf.String(), ExitCode: exitErr.ExitCode()}, nil
 			}
 			if errors.Is(runErr, exec.ErrWaitDelay) {
-				// The command itself exited; a leaked grandchild held the output
-				// pipe past that exit. The exit status is real, so report it with
-				// what was captured rather than losing it to a spawn error.
 				return ExecOutput{Stdout: out.String(), Stderr: errBuf.String(), ExitCode: cmd.ProcessState.ExitCode()}, nil
 			}
 			return ExecOutput{}, &SpawnError{Program: spec.Command[0], Err: runErr}
@@ -270,11 +273,9 @@ func (h *HostRuntime) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (E
 	return ExecOutput{Stdout: out.String(), Stderr: errBuf.String(), ExitCode: 0}, nil
 }
 
-// ExecStreaming spawns the agent as a host child in its own process group,
-// stdio piped, bound to ctx so cancelling it terminates the process. This is
-// the one clean mapping — where the host-tier agent comes to life. No
-// wall-clock timeout: the process is meant to run indefinitely. Same AsUser
-// rule as Exec.
+// ExecStreaming starts a host child in its own process group and returns its live
+// pipes. Missing programs return 127; programs that cannot execute return 126.
+// A missing or non-directory workdir or missing interpreter is an error.
 func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error) {
 	if err := h.checkUser(spec.User); err != nil {
 		return nil, err
@@ -287,15 +288,19 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 		return nil, errors.New("runtime: host streaming exec requires a command")
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	childEnv := envSlice(spec.Env)
+	if code, stderr, ok := hostExecPrecheck(spec.Command[0], spec.Workdir, childEnv); ok {
+		return hostStartFailureStream(code, stderr), nil
+	}
 	execCtx, cancel := context.WithCancel(ctx)
-	//nolint:gosec // G204: the host backend seam spawns the Runner-assembled agent command; the argv is not attacker-controlled.
-	cmd := exec.CommandContext(execCtx, spec.Command[0], spec.Command[1:]...)
-	// Own process group so Stop/Remove can signal the whole tree, and ctx
-	// cancellation SIGKILLs that group rather than the leader alone.
+	cmd := hostExecCommand(execCtx, spec.Command, spec.Workdir, childEnv)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 10 * time.Second
-	cmd.Env = envSlice(spec.Env)
+	cmd.Env = childEnv
 	if spec.Workdir != nil {
 		cmd.Dir = *spec.Workdir
 	}
@@ -324,7 +329,16 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 
 	if startErr := cmd.Start(); startErr != nil {
 		cancel()
-		return nil, errors.Join(&SpawnError{Program: spec.Command[0], Err: startErr}, closePipes(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW))
+		cleanupErr := closePipes(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
+		if code, stderr, ok := hostExecStartFailure(spec.Command[0], spec.Workdir, cmd.Path, startErr); ok {
+			stream := hostStartFailureStream(code, stderr)
+			if cleanupErr != nil {
+				_ = errors.Join(stream.IO.Stdin.Close(), stream.IO.Stdout.Close(), stream.IO.Stderr.Close())
+				return nil, &SpawnError{Program: spec.Command[0], Err: cleanupErr}
+			}
+			return stream, nil
+		}
+		return nil, errors.Join(&SpawnError{Program: spec.Command[0], Err: startErr}, cleanupErr)
 	}
 	// Close the child-side ends in the parent so the caller sees EOF when the
 	// child exits and closes its own copies.
@@ -376,10 +390,147 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 	}, nil
 }
 
-// Stop signals the handle's process group: SIGTERM, wait up to timeout, then
-// SIGKILL. Scope is the group the backend spawned — a process the agent
-// double-forked out of that group is NOT reliably stopped (no cgroup freezer in
-// v1). Stopping a handle with no live process is a no-op.
+func hostExecCommand(ctx context.Context, command []string, workdir *string, env []string) *exec.Cmd {
+	path := command[0]
+	if !strings.ContainsRune(path, '/') {
+		pathEnv := ""
+		for _, kv := range env {
+			if value, ok := strings.CutPrefix(kv, "PATH="); ok {
+				pathEnv = value
+				break
+			}
+		}
+		for _, dir := range filepath.SplitList(pathEnv) {
+			if dir == "" {
+				dir = "."
+			}
+			candidate := filepath.Join(dir, path)
+			if candidate == path {
+				candidate = "." + string(filepath.Separator) + candidate
+			}
+			resolved := pathAtWorkdir(candidate, workdir)
+			if info, err := os.Stat(resolved); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+				path, err = filepath.Abs(resolved)
+				if err != nil {
+					path = candidate
+				}
+				break
+			}
+		}
+	}
+	cmd := exec.CommandContext(ctx, path, command[1:]...) //nolint:gosec // path is resolved from the exec environment PATH; argv remains an argument vector
+	cmd.Path = path
+	cmd.Err = nil
+	return cmd
+}
+
+func hostExecPrecheck(program string, workdir *string, env []string) (int, string, bool) {
+	explicit := strings.ContainsRune(program, '/')
+	if workdir != nil {
+		if info, err := os.Stat(*workdir); err != nil || !info.IsDir() {
+			return 0, "", false
+		}
+	}
+	if explicit {
+		info, err := os.Stat(pathAtWorkdir(program, workdir))
+		if errors.Is(err, syscall.ENOENT) {
+			return hostMissingProgram(program, true)
+		}
+		if err != nil {
+			return 0, "", false
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			return hostNonExecutableProgram(program)
+		}
+		return 0, "", false
+	}
+	pathEnv := ""
+	for _, kv := range env {
+		if value, ok := strings.CutPrefix(kv, "PATH="); ok {
+			pathEnv = value
+			break
+		}
+	}
+	notExecutable := false
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, program)
+		info, err := os.Stat(pathAtWorkdir(candidate, workdir))
+		// Like a shell PATH search: unreadable entries and directories are skipped.
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			notExecutable = true
+			continue
+		}
+		return 0, "", false
+	}
+	if notExecutable {
+		return hostNonExecutableProgram(program)
+	}
+	return hostMissingProgram(program, false)
+}
+func hostMissingProgram(program string, explicit bool) (int, string, bool) {
+	if explicit {
+		return 127, fmt.Sprintf("%q: no such file or directory\n", program), true
+	}
+	return 127, fmt.Sprintf("executable file %q not found in $PATH\n", program), true
+}
+
+func pathAtWorkdir(path string, workdir *string) string {
+	if workdir != nil && !filepath.IsAbs(path) {
+		return filepath.Join(*workdir, path)
+	}
+	return path
+}
+
+func hostExecStartFailure(program string, workdir *string, executablePath string, err error) (int, string, bool) {
+	path, ok := errors.AsType[*os.PathError](err)
+	if !ok || path.Op != "fork/exec" || path.Path != executablePath {
+		return 0, "", false
+	}
+	switch {
+	case errors.Is(path.Err, syscall.ENOENT):
+		if workdir != nil {
+			if _, err := os.Stat(*workdir); err != nil {
+				return 0, "", false
+			}
+		}
+		if _, err := os.Stat(pathAtWorkdir(executablePath, workdir)); errors.Is(err, syscall.ENOENT) {
+			return hostMissingProgram(program, strings.ContainsRune(program, '/'))
+		}
+		return 0, "", false
+	case errors.Is(path.Err, syscall.ENOEXEC), errors.Is(path.Err, syscall.EACCES), errors.Is(path.Err, syscall.EPERM):
+		return hostNonExecutableProgram(program)
+	default:
+		return 0, "", false
+	}
+}
+
+func hostNonExecutableProgram(program string) (int, string, bool) {
+	return 126, fmt.Sprintf("%q: permission denied / not executable\n", program), true
+}
+
+func hostStartFailureStream(code int, stderr string) *StreamingExec {
+	stdinR, stdinW := io.Pipe()
+	_ = stdinR.Close()
+	return &StreamingExec{
+		IO: StreamingIO{
+			Stdin:  stdinW,
+			Stdout: io.NopCloser(strings.NewReader("")),
+			Stderr: io.NopCloser(strings.NewReader(stderr)),
+		},
+		Process: newChildHandleFuncs(func() error { return nil }, func() error {
+			return &ExitStatusError{Code: code}
+		}),
+	}
+}
+
+// Stop SIGTERMs the spawned process group, then SIGKILLs after timeout. A process
+// double-forked out of that group is not reliably stopped (no cgroup freezer).
 func (h *HostRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
 	stopped := h.liveProcess(id)
 	if stopped != nil {

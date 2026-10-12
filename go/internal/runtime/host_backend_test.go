@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -109,6 +110,284 @@ func TestHostExecNonZeroExitIsNotError(t *testing.T) {
 	}
 }
 
+func TestHostExecUnstartableProgramReturnsExitCode(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-unstartable")
+	dir := t.TempDir()
+	nonExecutable := filepath.Join(dir, "noexec")
+	if err := os.WriteFile(nonExecutable, []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pathFile := filepath.Join(dir, "path-entry-file")
+	if err := os.WriteFile(pathFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	invalidExecutable := filepath.Join(dir, "invalid-executable")
+	if err := os.WriteFile(invalidExecutable, []byte("not an executable format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bare-noexec"), []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		command string
+		code    int
+	}{
+		{name: "missing", command: "/compass-missing-exec-test", code: 127},
+		{name: "missing after regular-file PATH entry", command: "missing-after-path-entry", code: 127},
+		{name: "directory", command: "/", code: 126},
+		{name: "non-executable explicit path", command: nonExecutable, code: 126},
+		{name: "non-executable from PATH", command: "bare-noexec", code: 126},
+		{name: "non-executable after PATH file", command: "bare-noexec", code: 126},
+		{name: "exec format failure", command: invalidExecutable, code: 126},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := NewExecSpec(tt.command)
+			spec.Env["PATH"] = dir + string(os.PathListSeparator) + os.Getenv("PATH")
+			if tt.name == "missing after regular-file PATH entry" {
+				spec.Env["PATH"] = pathFile
+			}
+			if tt.name == "non-executable after PATH file" {
+				spec.Env["PATH"] = pathFile + string(os.PathListSeparator) + dir
+			}
+			out, err := h.Exec(t.Context(), id, spec)
+			if err != nil {
+				t.Fatalf("Exec(%q) = %v, want exit %d with no error", tt.command, err, tt.code)
+			}
+			if out.ExitCode != tt.code || out.Stderr == "" {
+				t.Fatalf("Exec(%q) = %+v, want exit %d and non-empty stderr", tt.command, out, tt.code)
+			}
+		})
+	}
+}
+
+func TestHostExecStartFailureClassifiesPermissionErrors(t *testing.T) {
+	for _, errno := range []error{syscall.EACCES, syscall.EPERM, syscall.ENOEXEC} {
+		t.Run(errno.Error(), func(t *testing.T) {
+			path := &os.PathError{Op: "fork/exec", Path: "/probe", Err: errno}
+			code, stderr, ok := hostExecStartFailure("/probe", nil, "/probe", path)
+			if !ok || code != 126 || !strings.Contains(stderr, "/probe") {
+				t.Fatalf("hostExecStartFailure() = (%d, %q, %v), want 126, diagnostic, true", code, stderr, ok)
+			}
+		})
+	}
+}
+func TestHostExecSkipsUnsearchablePATHEntry(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory search permission")
+	}
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-unsearchable-path")
+	locked := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	spec := NewExecSpec("compass-unsearchable-probe")
+	spec.Env = map[string]string{"PATH": locked}
+	out, err := h.Exec(t.Context(), id, spec)
+	if err != nil || out.ExitCode != 127 {
+		t.Fatalf("Exec with unsearchable PATH entry = (%+v, %v), want exit 127", out, err)
+	}
+}
+
+func TestHostExecCanceledContextBeforePrecheck(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-canceled-precheck")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if out, err := h.Exec(ctx, id, NewExecSpec("/compass-missing-canceled-probe")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Exec with canceled ctx = (%+v, %v), want context.Canceled", out, err)
+	}
+	if _, err := h.ExecStreaming(ctx, id, NewStreamingExecSpec("/compass-missing-canceled-probe")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecStreaming with canceled ctx = %v, want context.Canceled", err)
+	}
+}
+
+func TestHostExecNonDirectoryWorkdirTakesPrecedenceOverMissingBareProgram(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-nondir-workdir-bare-missing")
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, streaming := range []bool{false, true} {
+		t.Run(map[bool]string{false: "one-shot", true: "streaming"}[streaming], func(t *testing.T) {
+			if streaming {
+				spec := NewStreamingExecSpec("compass-missing-workdir-probe")
+				spec.Workdir = &file
+				if _, err := h.ExecStreaming(t.Context(), id, spec); err == nil {
+					t.Fatal("ExecStreaming with non-directory workdir and missing bare program returned nil error")
+				}
+				return
+			}
+			spec := NewExecSpec("compass-missing-workdir-probe")
+			spec.Workdir = &file
+			if _, err := h.Exec(t.Context(), id, spec); err == nil {
+				t.Fatal("Exec with non-directory workdir and missing bare program returned nil error")
+			}
+		})
+	}
+}
+
+func TestHostExecMissingWorkdirRemainsError(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-missing-workdir")
+	missing := filepath.Join(t.TempDir(), "missing")
+	spec := NewExecSpec("/bin/true")
+	spec.Workdir = &missing
+	if _, err := h.Exec(t.Context(), id, spec); err == nil {
+		t.Fatal("Exec with missing workdir returned nil error")
+	}
+}
+
+func TestHostExecNonDirectoryWorkdirRemainsError(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-nondir-workdir")
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := NewExecSpec("/bin/true")
+	spec.Workdir = &file
+	if _, err := h.Exec(t.Context(), id, spec); err == nil {
+		t.Fatal("Exec with non-directory workdir returned nil error")
+	}
+}
+
+func TestHostExecInvalidWorkdirTakesPrecedenceOverMissingProgram(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-workdir-precedence")
+	missing := filepath.Join(t.TempDir(), "missing-workdir")
+	for _, streaming := range []bool{false, true} {
+		t.Run(map[bool]string{false: "one-shot", true: "streaming"}[streaming], func(t *testing.T) {
+			workdir := missing
+			if streaming {
+				spec := NewStreamingExecSpec(filepath.Join(missing, "missing-program"))
+				spec.Workdir = &workdir
+				if _, err := h.ExecStreaming(t.Context(), id, spec); err == nil {
+					t.Fatal("ExecStreaming with invalid workdir and missing program returned nil error")
+				}
+				return
+			}
+			spec := NewExecSpec(filepath.Join(missing, "missing-program"))
+			spec.Workdir = &workdir
+			if _, err := h.Exec(t.Context(), id, spec); err == nil {
+				t.Fatal("Exec with invalid workdir and missing program returned nil error")
+			}
+		})
+	}
+}
+
+func TestHostExecStreamingInvalidWorkdirRemainsError(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-stream-invalid-workdir")
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := NewStreamingExecSpec("/bin/true")
+	spec.Workdir = &file
+	if _, err := h.ExecStreaming(t.Context(), id, spec); err == nil {
+		t.Fatal("ExecStreaming with non-directory workdir returned nil error")
+	}
+}
+
+func TestHostExecStreamingFailedStartClosesAllPipeDescriptors(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-stream-failed-start-fds")
+	program := filepath.Join(t.TempDir(), "missing-interpreter")
+	if err := os.WriteFile(program, []byte("#!/compass-missing-interpreter\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	countFDs := func() int {
+		t.Helper()
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatalf("reading open descriptors: %v", err)
+		}
+		return len(entries)
+	}
+	before := countFDs()
+	for range 10 {
+		if _, err := h.ExecStreaming(t.Context(), id, NewStreamingExecSpec(program)); err == nil {
+			t.Fatal("ExecStreaming with missing interpreter returned nil error")
+		}
+	}
+	if after := countFDs(); after != before {
+		t.Fatalf("open file descriptors = %d after failed starts, want %d before", after, before)
+	}
+}
+
+func TestHostExecMissingInterpreterRemainsError(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-missing-interpreter")
+	program := filepath.Join(t.TempDir(), "missing-interpreter")
+	if err := os.WriteFile(program, []byte("#!/compass-missing-interpreter\necho never\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Exec(t.Context(), id, NewExecSpec(program)); err == nil {
+		t.Fatal("Exec with missing script interpreter returned nil error")
+	}
+	if _, err := h.ExecStreaming(t.Context(), id, NewStreamingExecSpec(program)); err == nil {
+		t.Fatal("ExecStreaming with missing script interpreter returned nil error")
+	}
+}
+
+func TestHostExecStreamingUnstartableProgramReturnsExit(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-stream-unstartable")
+	dir := t.TempDir()
+	nonExecutable := filepath.Join(dir, "noexec")
+	if err := os.WriteFile(nonExecutable, []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bare-noexec"), []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	invalidExecutable := filepath.Join(dir, "invalid-executable")
+	if err := os.WriteFile(invalidExecutable, []byte("not an executable format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		command string
+		code    int
+	}{
+		{name: "missing", command: "/compass-missing-stream-test", code: 127},
+		{name: "directory", command: "/", code: 126},
+		{name: "non-executable explicit path", command: nonExecutable, code: 126},
+		{name: "non-executable from PATH", command: "bare-noexec", code: 126},
+		{name: "exec format failure", command: invalidExecutable, code: 126},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := NewStreamingExecSpec(tt.command)
+			spec.Env["PATH"] = dir + string(os.PathListSeparator) + os.Getenv("PATH")
+			stream, err := h.ExecStreaming(t.Context(), id, spec)
+			if err != nil {
+				t.Fatalf("ExecStreaming(%q) = %v, want an exited stream", tt.command, err)
+			}
+			defer stream.IO.Stdin.Close()
+			stdout, err := io.ReadAll(stream.IO.Stdout)
+			if err != nil || len(stdout) != 0 {
+				t.Fatalf("stdout = %q, err = %v; want empty stdout", stdout, err)
+			}
+			stderr, err := io.ReadAll(stream.IO.Stderr)
+			if err != nil || len(stderr) == 0 {
+				t.Fatalf("stderr = %q, err = %v; want non-empty stderr", stderr, err)
+			}
+			waitErr := stream.Process.Wait()
+			status, ok := errors.AsType[*ExitStatusError](waitErr)
+			if !ok || status.Code != tt.code || status.Signal != 0 {
+				t.Fatalf("Process.Wait() = %v; want exit %d without signal", waitErr, tt.code)
+			}
+		})
+	}
+}
+
 // TestHostExecLeakedChildKeepsExitStatus: a command that SUCCEEDS but leaves a
 // background child holding the output pipe must still report success. Go's
 // WaitDelay fires on the orphan's inherited pipe, not on the command. A
@@ -196,6 +475,78 @@ func TestHostExecInheritsRunnerEnv(t *testing.T) {
 	}
 	if !strings.Contains(out.Stdout, "resolved") {
 		t.Fatalf("Stdout = %q, want \"resolved\"", out.Stdout)
+	}
+}
+
+func TestHostExecUsesExecEnvironmentPATH(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-custom-path")
+	dir := t.TempDir()
+	program := filepath.Join(dir, "host-path-probe")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf custom-path\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := NewExecSpec("host-path-probe")
+	spec.Env["PATH"] = dir
+	out, err := h.Exec(t.Context(), id, spec)
+	if err != nil {
+		t.Fatalf("Exec with custom PATH: %v", err)
+	}
+	if out.ExitCode != 0 || out.Stdout != "custom-path" {
+		t.Fatalf("Exec output = %+v, want custom-path with exit 0", out)
+	}
+}
+
+func TestHostExecRelativePATHWithRelativeWorkdir(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-relative-path")
+	dir, err := os.MkdirTemp(".", "host-relative-path-") //nolint:usetesting // The relative directory is required to test child workdir PATH lookup.
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	workdir := dir
+	bin := filepath.Join(workdir, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	program := filepath.Join(bin, "host-relative-path-probe")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf relative-path\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := NewExecSpec("host-relative-path-probe")
+	spec.Env["PATH"] = "bin"
+	spec.Workdir = &workdir
+	out, err := h.Exec(t.Context(), id, spec)
+	if err != nil {
+		t.Fatalf("Exec with relative PATH and workdir: %v", err)
+	}
+	if out.ExitCode != 0 || out.Stdout != "relative-path" {
+		t.Fatalf("Exec output = %+v, want relative-path with exit 0", out)
+	}
+}
+
+func TestHostExecDotPATHWithWorkdir(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-dot-path")
+	workdir, err := os.MkdirTemp(".", "host-dot-path-") //nolint:usetesting // Relative workdir is needed to test a dot PATH entry.
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workdir) })
+	program := filepath.Join(workdir, "dot-path-probe")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf dot-path\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := NewExecSpec("dot-path-probe")
+	spec.Env["PATH"] = "."
+	spec.Workdir = &workdir
+	out, err := h.Exec(t.Context(), id, spec)
+	if err != nil {
+		t.Fatalf("Exec with dot PATH: %v", err)
+	}
+	if out.ExitCode != 0 || out.Stdout != "dot-path" {
+		t.Fatalf("Exec output = %+v, want dot-path with exit 0", out)
 	}
 }
 

@@ -157,11 +157,10 @@ func (x *HealthResponse) GetBootNonce() []byte {
 	return nil
 }
 
-// ExecRequest is a one-shot exec. It mirrors runtime.ExecSpec field for field.
+// ExecRequest mirrors runtime.ExecSpec. See GuestControl.Exec for the 127/126 rule.
 type ExecRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// command is argv; command[0] is the program.
-	Command []string `protobuf:"bytes,1,rep,name=command,proto3" json:"command,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Command []string               `protobuf:"bytes,1,rep,name=command,proto3" json:"command,omitempty"`
 	// uid is the exec's user. Absent = the session default uid set by Provision
 	// (the baked agent uid). uid 0 is REFUSED with a failed-precondition error
 	// before any spawn — the guest supervisor never runs an exec as root.
@@ -256,8 +255,8 @@ type ExecResponse struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Stdout []byte                 `protobuf:"bytes,1,opt,name=stdout,proto3" json:"stdout,omitempty"`
 	Stderr []byte                 `protobuf:"bytes,2,opt,name=stderr,proto3" json:"stderr,omitempty"`
-	// exit_code is the command's exit status. Non-zero is a successful call with
-	// a failed command, never a Connect error (see the Exec doc-comment).
+	// Non-zero statuses, including 126/127, are successful calls. A missing or
+	// non-directory workdir, a missing interpreter, or a transport failure is an error.
 	ExitCode      int32 `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -520,8 +519,8 @@ func (*StdinClose) Descriptor() ([]byte, []int) {
 	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{6}
 }
 
-// ExecStreamResponse frames flow guest -> host: exactly one ExecStarted first,
-// then interleaved stdout/stderr, then exactly one ExecExit.
+// Exactly one ExecStarted, then interleaved stdout/stderr, then one ExecExit.
+// A start failure classified as 127/126 uses the same order.
 type ExecStreamResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Frame:

@@ -77,22 +77,17 @@ const (
 // GuestControlClient is a client for the compass.v1.GuestControl service.
 type GuestControlClient interface {
 	Health(context.Context, *connect.Request[v1.HealthRequest]) (*connect.Response[v1.HealthResponse], error)
-	// Exec runs one command to completion and returns its captured output. A
-	// non-zero exit is a SUCCESSFUL call whose ExecResponse.exit_code is
-	// non-zero — never a Connect error. A Connect error means the exec could not
-	// be attempted or could not complete: a spawn failure, a refused uid (0), a
-	// timeout, or an unprovisioned gate.
+	// Exec captures one command. A missing program returns 127; a present one
+	// that cannot be invoked (no exec bit, ENOEXEC, execve EACCES/EPERM) returns
+	// 126. A missing or non-directory workdir or missing interpreter is an error.
 	Exec(context.Context, *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error)
-	// ExecStream runs a long-lived command over one bidi stream: the request
-	// stream carries the start frame, then stdin bytes and an optional
-	// half-close; the response stream carries the exec_id, then interleaved
-	// stdout/stderr, then exactly one terminal exit frame. Kill rides Signal
-	// (below), not this stream, so a teardown never contends with an in-flight
-	// stdin write.
+	// ExecStream: one start frame, stdin, optional half-close. Start failures
+	// follow Exec's 127/126 rule as ExecStarted, stderr, ExecExit; a missing or
+	// non-directory workdir or missing interpreter errors before ExecStarted.
 	ExecStream(context.Context) *connect.BidiStreamForClient[v1.ExecStreamRequest, v1.ExecStreamResponse]
-	// Signal delivers a signal to a running exec by exec_id; an empty exec_id
-	// targets the guest itself (graceful Stop, record §(d)). Signalling an
-	// already-exited exec is a no-op success.
+	// Signal delivers a signal to a running exec by exec_id (exec kill rides
+	// here, not ExecStream); an empty exec_id targets the guest itself (graceful
+	// Stop, record §(d)). Signalling an already-exited exec is a no-op success.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 	// Provision transitions the supervisor ready -> provisioned: it records the
 	// session's default exec uid and base env and, when nft_script is non-empty,
@@ -184,22 +179,17 @@ func (c *guestControlClient) Provision(ctx context.Context, req *connect.Request
 // GuestControlHandler is an implementation of the compass.v1.GuestControl service.
 type GuestControlHandler interface {
 	Health(context.Context, *connect.Request[v1.HealthRequest]) (*connect.Response[v1.HealthResponse], error)
-	// Exec runs one command to completion and returns its captured output. A
-	// non-zero exit is a SUCCESSFUL call whose ExecResponse.exit_code is
-	// non-zero — never a Connect error. A Connect error means the exec could not
-	// be attempted or could not complete: a spawn failure, a refused uid (0), a
-	// timeout, or an unprovisioned gate.
+	// Exec captures one command. A missing program returns 127; a present one
+	// that cannot be invoked (no exec bit, ENOEXEC, execve EACCES/EPERM) returns
+	// 126. A missing or non-directory workdir or missing interpreter is an error.
 	Exec(context.Context, *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error)
-	// ExecStream runs a long-lived command over one bidi stream: the request
-	// stream carries the start frame, then stdin bytes and an optional
-	// half-close; the response stream carries the exec_id, then interleaved
-	// stdout/stderr, then exactly one terminal exit frame. Kill rides Signal
-	// (below), not this stream, so a teardown never contends with an in-flight
-	// stdin write.
+	// ExecStream: one start frame, stdin, optional half-close. Start failures
+	// follow Exec's 127/126 rule as ExecStarted, stderr, ExecExit; a missing or
+	// non-directory workdir or missing interpreter errors before ExecStarted.
 	ExecStream(context.Context, *connect.BidiStream[v1.ExecStreamRequest, v1.ExecStreamResponse]) error
-	// Signal delivers a signal to a running exec by exec_id; an empty exec_id
-	// targets the guest itself (graceful Stop, record §(d)). Signalling an
-	// already-exited exec is a no-op success.
+	// Signal delivers a signal to a running exec by exec_id (exec kill rides
+	// here, not ExecStream); an empty exec_id targets the guest itself (graceful
+	// Stop, record §(d)). Signalling an already-exited exec is a no-op success.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 	// Provision transitions the supervisor ready -> provisioned: it records the
 	// session's default exec uid and base env and, when nft_script is non-empty,

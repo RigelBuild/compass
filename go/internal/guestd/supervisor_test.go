@@ -90,6 +90,30 @@ func TestExecRefusedBeforeProvision(t *testing.T) {
 	}
 }
 
+func TestExecEmptyCommandIsInvalidArgument(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("Exec with empty command = %v, want InvalidArgument", err)
+	}
+}
+
+func TestExecStreamEmptyCommandIsInvalidArgument(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	stream := client.ExecStream(t.Context())
+	if err := stream.Send(&compassv1internal.ExecStreamRequest{
+		Frame: &compassv1internal.ExecStreamRequest_Start{Start: &compassv1internal.StartExec{}},
+	}); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	if err := stream.CloseRequest(); err != nil {
+		t.Fatalf("close request: %v", err)
+	}
+	if _, err := stream.Receive(); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("ExecStream with empty command = %v, want InvalidArgument", err)
+	}
+}
+
 func TestProvisionOpensGateAndRejectsRootAndNft(t *testing.T) {
 	client, svc := newTestSupervisor(t, false, 0)
 
@@ -178,11 +202,9 @@ func TestProvisionArmFailureLeavesGateClosed(t *testing.T) {
 	if state != stateReady {
 		t.Fatalf("state after failed arm = %d, want stateReady", state)
 	}
-	// The exec gate is still closed.
 	if gerr := svc.requireProvisioned(); gerr == nil {
 		t.Fatal("requireProvisioned after failed arm = nil, want refused")
 	}
-	// A retried Provision may run (state still stateReady).
 	svc.armFunc = func(_ context.Context, _ string) error { return nil }
 	if _, rerr := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
 		DefaultExecUid: 1000,
@@ -362,6 +384,339 @@ func TestExecEnvMergedExecKeysWin(t *testing.T) {
 	}
 	if got := string(resp.Msg.GetStdout()); got != "base,exec" {
 		t.Fatalf("env merge = %q, want base,exec (exec key wins)", got)
+	}
+}
+func TestExecUnstartableProgramReturnsExitCode(t *testing.T) {
+	dir := t.TempDir()
+	nonExecutable := dir + "/noexec"
+	if err := os.WriteFile(nonExecutable, []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pathFile := dir + "/path-entry-file"
+	if err := os.WriteFile(pathFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executableButInvalid := dir + "/invalid-executable"
+	if err := os.WriteFile(executableButInvalid, []byte("not an executable format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		command string
+		path    string
+		code    int32
+	}{
+		{name: "missing from path", command: "compass-missing-exec-test", path: dir, code: 127},
+		{name: "missing after unusable path entry", command: "compass-missing-exec-test", path: pathFile, code: 127},
+		{name: "missing explicit path", command: dir + "/missing", code: 127},
+		{name: "directory is not executable", command: "/", code: 126},
+		{name: "non-executable from path", command: "noexec", path: dir, code: 126},
+		{name: "non-executable explicit path", command: nonExecutable, code: 126},
+		{name: "exec format failure", command: executableButInvalid, code: 126},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, svc := newTestSupervisor(t, true, 1000)
+			if tt.path != "" {
+				svc.mu.Lock()
+				svc.baseEnv = map[string]string{"PATH": tt.path}
+				svc.mu.Unlock()
+			}
+			resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
+				Command: []string{tt.command},
+			}))
+			if err != nil {
+				t.Fatalf("Exec(%q) = %v, want exit %d with no handler error", tt.command, err, tt.code)
+			}
+			if got := resp.Msg.GetExitCode(); got != tt.code {
+				t.Fatalf("Exec(%q) exit_code = %d, want %d (stderr %q)", tt.command, got, tt.code, resp.Msg.GetStderr())
+			}
+			if got := resp.Msg.GetStderr(); len(got) == 0 {
+				t.Fatalf("Exec(%q) stderr = %q, want non-empty stderr", tt.command, got)
+			}
+		})
+	}
+}
+
+func TestExecInvalidWorkdirTakesPrecedenceOverMissingProgram(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(map[bool]string{false: "one-shot", true: "streaming"}[streaming], func(t *testing.T) {
+			client, _ := newTestSupervisor(t, true, 1000)
+			missing := t.TempDir() + "/missing-workdir"
+			program := missing + "/missing-program"
+			if streaming {
+				stream := client.ExecStream(t.Context())
+				if err := stream.Send(&compassv1internal.ExecStreamRequest{Frame: &compassv1internal.ExecStreamRequest_Start{Start: &compassv1internal.StartExec{Command: []string{program}, Workdir: &missing}}}); err != nil {
+					t.Fatalf("send start: %v", err)
+				}
+				if err := stream.CloseRequest(); err != nil {
+					t.Fatalf("close request: %v", err)
+				}
+				if _, err := stream.Receive(); err == nil {
+					t.Fatal("ExecStream with invalid workdir and missing program returned a response")
+				}
+				return
+			}
+			_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{Command: []string{program}, Workdir: &missing}))
+			if err == nil {
+				t.Fatal("Exec with invalid workdir and missing program returned nil error")
+			}
+		})
+	}
+}
+
+func TestExecNonDirectoryWorkdirRemainsError(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	file := t.TempDir() + "/not-a-directory"
+	if err := os.WriteFile(file, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, program := range []string{"/bin/true", "compass-missing-workdir-probe"} {
+		_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{Command: []string{program}, Workdir: &file}))
+		if err == nil {
+			t.Fatalf("Exec %q with non-directory workdir returned nil error", program)
+		}
+	}
+}
+
+func TestExecStreamNonDirectoryWorkdirRemainsError(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	file := t.TempDir() + "/not-a-directory"
+	if err := os.WriteFile(file, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, program := range []string{"/bin/true", "compass-missing-workdir-probe"} {
+		stream := client.ExecStream(t.Context())
+		if err := stream.Send(&compassv1internal.ExecStreamRequest{Frame: &compassv1internal.ExecStreamRequest_Start{Start: &compassv1internal.StartExec{Command: []string{program}, Workdir: &file}}}); err != nil {
+			t.Fatalf("send start: %v", err)
+		}
+		if err := stream.CloseRequest(); err != nil {
+			t.Fatalf("close request: %v", err)
+		}
+		if _, err := stream.Receive(); err == nil {
+			t.Fatalf("ExecStream %q with non-directory workdir returned a response", program)
+		}
+	}
+}
+
+func TestGuestExecStartFailureClassifiesPermissionErrors(t *testing.T) {
+	for _, errno := range []error{syscall.EACCES, syscall.EPERM, syscall.ENOEXEC} {
+		t.Run(errno.Error(), func(t *testing.T) {
+			path := &os.PathError{Op: "fork/exec", Path: "/probe", Err: errno}
+			code, stderr, ok := guestExecStartFailure("/probe", nil, "/probe", path)
+			if !ok || code != 126 || !strings.Contains(stderr, "/probe") {
+				t.Fatalf("guestExecStartFailure() = (%d, %q, %v), want 126, diagnostic, true", code, stderr, ok)
+			}
+		})
+	}
+}
+
+func TestExecBareInvalidFormatProgramReturns126(t *testing.T) {
+	dir := t.TempDir()
+	program := dir + "/invalid-format"
+	if err := os.WriteFile(program, []byte("not an executable format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client, svc := newTestSupervisor(t, true, 1000)
+	svc.mu.Lock()
+	svc.baseEnv = map[string]string{"PATH": dir}
+	svc.mu.Unlock()
+	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{Command: []string{"invalid-format"}}))
+	if err != nil {
+		t.Fatalf("Exec bare invalid-format program: %v", err)
+	}
+	if resp.Msg.GetExitCode() != 126 || len(resp.Msg.GetStderr()) == 0 {
+		t.Fatalf("Exec result = %+v, want exit 126 with stderr", resp.Msg)
+	}
+}
+
+func TestExecSkipsUnsearchablePATHEntry(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory search permission")
+	}
+	locked := t.TempDir() + "/locked"
+	if err := os.Mkdir(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	client, svc := newTestSupervisor(t, true, 1000)
+	svc.mu.Lock()
+	svc.baseEnv = map[string]string{"PATH": locked}
+	svc.mu.Unlock()
+	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{Command: []string{"compass-unsearchable-probe"}}))
+	if err != nil || resp.Msg.GetExitCode() != 127 {
+		t.Fatalf("Exec with unsearchable PATH entry = (%v, %v), want exit 127", resp, err)
+	}
+}
+
+func TestExecStreamBareInvalidFormatProgramReturns126(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/invalid-format", []byte("not an executable format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client, svc := newTestSupervisor(t, true, 1000)
+	svc.mu.Lock()
+	svc.baseEnv = map[string]string{"PATH": dir}
+	svc.mu.Unlock()
+	stream := client.ExecStream(t.Context())
+	if err := stream.Send(&compassv1internal.ExecStreamRequest{Frame: &compassv1internal.ExecStreamRequest_Start{Start: &compassv1internal.StartExec{Command: []string{"invalid-format"}}}}); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	var frames []string
+	var code int32 = -1
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			t.Fatalf("receive after %v: %v", frames, err)
+		}
+		switch f := msg.GetFrame().(type) {
+		case *compassv1internal.ExecStreamResponse_Started:
+			frames = append(frames, "started")
+		case *compassv1internal.ExecStreamResponse_Stderr:
+			frames = append(frames, "stderr")
+		case *compassv1internal.ExecStreamResponse_Exit:
+			frames = append(frames, "exit")
+			code = f.Exit.GetExitCode()
+		}
+		if code >= 0 {
+			break
+		}
+	}
+	if strings.Join(frames, ",") != "started,stderr,exit" || code != 126 {
+		t.Fatalf("frames = %v exit = %d, want started,stderr,exit and 126", frames, code)
+	}
+}
+
+func TestExecMissingWorkdirRemainsError(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	missing := t.TempDir() + "/missing"
+	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
+		Command: []string{"/bin/true"},
+		Workdir: &missing,
+	}))
+	if err == nil {
+		t.Fatal("Exec with missing workdir returned nil error")
+	}
+}
+
+func TestExecStreamMissingWorkdirRemainsError(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	missing := t.TempDir() + "/missing"
+	stream := client.ExecStream(t.Context())
+	if err := stream.Send(&compassv1internal.ExecStreamRequest{
+		Frame: &compassv1internal.ExecStreamRequest_Start{
+			Start: &compassv1internal.StartExec{Command: []string{"/bin/true"}, Workdir: &missing},
+		},
+	}); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	if err := stream.CloseRequest(); err != nil {
+		t.Fatalf("close request: %v", err)
+	}
+	if _, err := stream.Receive(); err == nil {
+		t.Fatal("ExecStream with missing workdir returned a response, want spawn error")
+	}
+}
+
+func TestExecMissingInterpreterRemainsError(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	program := t.TempDir() + "/missing-interpreter"
+	if err := os.WriteFile(program, []byte("#!/compass-missing-interpreter\necho never\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
+		Command: []string{program},
+	}))
+	if err == nil {
+		t.Fatal("Exec with missing script interpreter returned nil error")
+	}
+}
+
+func TestExecStreamMissingInterpreterRemainsError(t *testing.T) {
+	client, _ := newTestSupervisor(t, true, 1000)
+	program := t.TempDir() + "/missing-interpreter"
+	if err := os.WriteFile(program, []byte("#!/compass-missing-interpreter\necho never\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stream := client.ExecStream(t.Context())
+	if err := stream.Send(&compassv1internal.ExecStreamRequest{
+		Frame: &compassv1internal.ExecStreamRequest_Start{
+			Start: &compassv1internal.StartExec{Command: []string{program}},
+		},
+	}); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	if err := stream.CloseRequest(); err != nil {
+		t.Fatalf("close request: %v", err)
+	}
+	if _, err := stream.Receive(); err == nil {
+		t.Fatal("ExecStream with missing script interpreter returned a response")
+	}
+}
+
+func TestExecStreamUnstartableProgramReturnsExit(t *testing.T) {
+	dir := t.TempDir()
+	nonExecutable := dir + "/noexec"
+	if err := os.WriteFile(nonExecutable, []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pathFile := dir + "/path-entry-file"
+	if err := os.WriteFile(pathFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executableButInvalid := dir + "/invalid-executable"
+	if err := os.WriteFile(executableButInvalid, []byte("not an executable format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		command string
+		path    string
+		code    int32
+	}{
+		{name: "missing", command: "/compass-missing-stream-test", code: 127},
+		{name: "directory", command: "/", code: 126},
+		{name: "non-executable from path", command: "noexec", path: dir, code: 126},
+		{name: "non-executable explicit path", command: nonExecutable, code: 126},
+		{name: "missing after unusable PATH entry", command: "compass-missing-stream-test", path: pathFile, code: 127},
+		{name: "exec format failure", command: executableButInvalid, code: 126},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, svc := newTestSupervisor(t, true, 1000)
+			if tt.path != "" {
+				svc.mu.Lock()
+				svc.baseEnv = map[string]string{"PATH": tt.path}
+				svc.mu.Unlock()
+			}
+			stream := client.ExecStream(t.Context())
+			if err := stream.Send(&compassv1internal.ExecStreamRequest{
+				Frame: &compassv1internal.ExecStreamRequest_Start{
+					Start: &compassv1internal.StartExec{Command: []string{tt.command}},
+				},
+			}); err != nil {
+				t.Fatalf("send start: %v", err)
+			}
+			if err := stream.CloseRequest(); err != nil {
+				t.Fatalf("close request: %v", err)
+			}
+
+			started, err := stream.Receive()
+			if err != nil || started.GetStarted() == nil {
+				t.Fatalf("first frame = %v, err = %v; want ExecStarted", started, err)
+			}
+			stderr, err := stream.Receive()
+			if err != nil || len(stderr.GetStderr()) == 0 {
+				t.Fatalf("stderr frame = %v, err = %v; want non-empty stderr", stderr, err)
+			}
+			exit, err := stream.Receive()
+			if err != nil || exit.GetExit() == nil || exit.GetExit().GetExitCode() != tt.code {
+				t.Fatalf("terminal frame = %v, err = %v; want exit %d", exit, err, tt.code)
+			}
+			if _, err := stream.Receive(); err == nil {
+				t.Fatal("stream continued after terminal ExecExit frame")
+			}
+		})
 	}
 }
 
@@ -585,6 +940,17 @@ func TestSignalKillsLiveChildAndExitCarriesSignal(t *testing.T) {
 	}
 }
 
+func TestSignalOnNilCommandExecIsNoOpSuccess(t *testing.T) {
+	client, svc := newTestSupervisor(t, true, 1000)
+	execID := svc.register(nil)
+	_, err := client.Signal(t.Context(), connect.NewRequest(&compassv1internal.SignalRequest{
+		ExecId: execID,
+		Signal: int32(syscall.SIGTERM),
+	}))
+	if err != nil {
+		t.Fatalf("Signal on start-failed exec = %v, want no-op success", err)
+	}
+}
 func TestSignalOnExitedExecIsNoOpSuccess(t *testing.T) {
 	client, _ := newTestSupervisor(t, true, 1000)
 	// Signal an exec_id that never existed (equivalent to already-reaped): the
@@ -742,6 +1108,91 @@ func TestExecResolvesBareCommandViaSessionPATH(t *testing.T) {
 	}
 	if resp.Msg.GetExitCode() != 0 {
 		t.Fatalf("exit_code = %d, want 0", resp.Msg.GetExitCode())
+	}
+}
+
+func TestExecResolvesRelativePATHFromWorkdir(t *testing.T) {
+	workdir, err := os.MkdirTemp(".", "guest-relative-path-") //nolint:usetesting // The relative directory is required to test child workdir PATH lookup.
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workdir) })
+	bin := workdir + "/bin"
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := bin + "/probe"
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\nprintf relative-path\n"), 0o755); err != nil {
+		t.Fatalf("writing probe: %v", err)
+	}
+	client, _ := newTestSupervisor(t, false, 0)
+	if _, err := client.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+		DefaultExecUid: 1000,
+		BaseEnv:        map[string]string{"PATH": "bin"},
+	})); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
+		Command: []string{"probe"},
+		Workdir: &workdir,
+	}))
+	if err != nil {
+		t.Fatalf("Exec from relative PATH and workdir: %v", err)
+	}
+	if resp.Msg.GetExitCode() != 0 || string(resp.Msg.GetStdout()) != "relative-path" {
+		t.Fatalf("Exec result = %+v, want relative-path with exit 0", resp.Msg)
+	}
+}
+
+func TestExecResolvesDotPATHFromWorkdir(t *testing.T) {
+	workdir, err := os.MkdirTemp(".", "guest-dot-path-") //nolint:usetesting // Relative workdir is needed to test a dot PATH entry.
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workdir) })
+	program := workdir + "/dot-path-probe"
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf dot-path\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := newTestSupervisor(t, false, 0)
+	if _, err := client.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{DefaultExecUid: 1000, BaseEnv: map[string]string{"PATH": "."}})); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{Command: []string{"dot-path-probe"}, Workdir: &workdir}))
+	if err != nil {
+		t.Fatalf("Exec with dot PATH: %v", err)
+	}
+	if resp.Msg.GetExitCode() != 0 || string(resp.Msg.GetStdout()) != "dot-path" {
+		t.Fatalf("Exec result = %+v, want dot-path with exit 0", resp.Msg)
+	}
+}
+
+func TestExecForeignOwnedExecutableReturns126(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root to run the child as another uid")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	program := dir + "/foreign-owned"
+	if err := os.WriteFile(program, []byte("not an executable format"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client, svc := newTestSupervisor(t, false, 0)
+	svc.newCredential = func(uint32) *syscall.Credential {
+		return &syscall.Credential{Uid: 65534, Gid: 65534}
+	}
+	if _, err := client.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{DefaultExecUid: 1000})); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	uid := uint32(65534)
+	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{Command: []string{program}, Uid: &uid}))
+	if err != nil {
+		t.Fatalf("Exec foreign-owned program: %v", err)
+	}
+	if resp.Msg.GetExitCode() != 126 || len(resp.Msg.GetStderr()) == 0 {
+		t.Fatalf("Exec result = %+v, want exit 126 with stderr", resp.Msg)
 	}
 }
 

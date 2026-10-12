@@ -170,13 +170,12 @@ func isDeadline(err error) bool {
 		connect.CodeOf(err) == connect.CodeDeadlineExceeded
 }
 
-// ExecStream opens the bidi stream, sends the StartExec frame, and AWAITS the
-// ExecStarted frame before returning — so a spawn failure surfaces as the
-// returned error rather than a broken pipe on first read. It returns a
-// GuestStream whose io.Pipe stdio is pumped by a per-exec goroutine: the Stdin
-// pipe is framed as stdin frames (Close -> stdin_close), and stdout/stderr
-// response frames are demuxed onto the read pipes, which close when the
-// ExecExit frame arrives.
+// ExecStream opens the bidi stream, sends the StartExec frame, and awaits
+// ExecStarted before returning. An unstartable program instead returns an
+// exited GuestStream with a stderr diagnostic and terminal 126/127 status.
+// It returns a GuestStream whose io.Pipe stdio is pumped by a per-exec
+// goroutine: stdin is framed as stdin frames and stdout/stderr are demuxed
+// onto the read pipes, which close when ExecExit arrives.
 func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestStream, retErr error) {
 	stream := g.openBidi(ctx)
 	// Until the pumps take ownership, any early-error return must reap both
@@ -213,6 +212,9 @@ func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestSt
 	started := first.GetStarted()
 	if started == nil {
 		return nil, fmt.Errorf("guest exec stream: first frame was not started: %T", first.GetFrame())
+	}
+	if started.GetExecId() == "" {
+		return nil, errors.New("guest exec stream: ExecStarted has empty exec_id")
 	}
 
 	stdinR, stdinW := io.Pipe()

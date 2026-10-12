@@ -461,12 +461,9 @@ func bootPollContext(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(ctx, bootDeadline)
 }
 
-// Exec runs one command to completion in the session guest, mapping the spec
-// onto microvm.ExecCall and the result back onto ExecOutput. A non-zero exit is
-// a SUCCESSFUL call (captured in ExecOutput.ExitCode), never an error; a guest
-// refusal or transport failure is an error, and a host-side timeout is mapped
-// to a *runtime.TimeoutError so requireSuccess/atStage callers behave
-// identically to the podman path (record §(c)).
+// Exec runs one command in the session guest. Missing programs return 127 and
+// programs that cannot execute return 126 in ExecOutput; runtime and transport
+// faults remain errors, with timeouts mapped to *runtime.TimeoutError.
 func (m *MicroVMRuntime) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (ExecOutput, error) {
 	guestExec, err := m.startedExec(id)
 	if err != nil {
@@ -549,14 +546,9 @@ func exitError(st microvm.ExitStatus) error {
 	}
 }
 
-// ExecStreaming starts a long-lived streaming exec in the session guest,
-// mapping the spec onto microvm.StreamCall and the GuestStream onto a
-// *StreamingExec. ExecStream awaits the ExecStarted frame, so a spawn failure
-// surfaces as the returned error. The ChildHandle is built over the remote
-// exec's kill/wait pair: killFunc issues a bounded SIGKILL Signal (never
-// blocking teardown), and waitFunc maps the guest exit onto nil / a
-// *runtime.ExitStatusError so the runner's isDeliberateKill recognizes a
-// signalled exit as a deliberate kill (OQ-G/U3b, record §(c)).
+// ExecStreaming starts a streaming exec in the session guest. Missing programs
+// return exit 127; programs that cannot execute return 126. Other spawn failures
+// and transport faults remain errors.
 func (m *MicroVMRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error) {
 	guestExec, err := m.startedExec(id)
 	if err != nil {

@@ -96,6 +96,11 @@ error from `Exec` means the exec could not be *attempted* (spawn failure,
 refused uid, unprovisioned gate) — exactly the cases `PodmanCLI.Exec` folds
 into its non-nil error return (`podman.go:517-520`).
 
+> Amended 2026-10-11 by Matt's ruling: a missing program returns
+> `exit_code` 127; a present program that cannot be invoked (no exec bit,
+> ENOEXEC, execve EACCES/EPERM) returns 126, not a Connect error. A missing or
+> non-directory workdir and a missing script interpreter stay errors.
+
 The streaming pair carries the whole `StreamingExec` lifecycle over one bidi
 stream:
 

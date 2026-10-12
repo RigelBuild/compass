@@ -197,8 +197,10 @@ func runContractSuite(t *testing.T, newRuntime func(t *testing.T) WorkloadRuntim
 
 	t.Run("exec_exit_codes", func(t *testing.T) { rowExecExitCodes(t, rt, caps, primary) })
 	t.Run("exec_stdin", func(t *testing.T) { rowExecStdin(t, rt, caps, primary) })
+	t.Run("exec_unstartable_programs", func(t *testing.T) { rowExecUnstartablePrograms(t, rt, caps, primary) })
+	t.Run("exec_stream_unstartable_programs", func(t *testing.T) { rowExecStreamingUnstartablePrograms(t, rt, caps, primary) })
 	t.Run("streaming_stdio", func(t *testing.T) { rowStreamingStdio(t, rt, caps, primary) })
-	t.Run("kill_wait_deliberate", func(t *testing.T) { rowKillWait(t, rt, caps, primary) })
+	t.Run("kill_wait", func(t *testing.T) { rowKillWait(t, rt, caps, primary) })
 	t.Run("ctx_cancel_reaps", func(t *testing.T) { rowCtxCancelReaps(t, rt, caps, primary) })
 	t.Run("uid_enforcement", func(t *testing.T) { rowUIDEnforcement(t, rt, caps, primary) })
 	t.Run("resize_not_implemented", func(t *testing.T) { rowResize(t, rt, caps, primary) })
@@ -249,6 +251,85 @@ func rowExecExitCodes(t *testing.T, rt WorkloadRuntime, caps backendCaps, primar
 	}
 	if out.Success() {
 		t.Fatal("Exec(exit 7).Success() = true, want false")
+	}
+}
+
+// hasCannotInvokeReason accepts each backend's 126 wording, podman's included.
+func hasCannotInvokeReason(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	for _, reason := range []string{"not executable", "permission denied", "not a regular file"} {
+		if strings.Contains(lower, reason) {
+			return true
+		}
+	}
+	return false
+}
+
+func rowExecUnstartablePrograms(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
+	t.Helper()
+	program := "/etc/passwd"
+	for _, tc := range []struct {
+		name    string
+		command string
+		code    int
+	}{
+		{name: "missing program", command: "/compass-missing-contract-probe", code: 127},
+		{name: "present but non-executable program", command: program, code: 126},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := rt.Exec(t.Context(), primary, NewExecSpec(tc.command).AsUser(caps.execUser()))
+			if err != nil {
+				t.Fatalf("Exec(%q) = %v, want exit %d and nil error", tc.command, err, tc.code)
+			}
+			if out.ExitCode != tc.code || out.Stderr == "" {
+				t.Fatalf("Exec(%q) = %+v, want exit %d and non-empty stderr", tc.command, out, tc.code)
+			}
+			if tc.code == 126 && (!strings.Contains(out.Stderr, tc.command) || !hasCannotInvokeReason(out.Stderr)) {
+				t.Fatalf("Exec(%q) stderr = %q, want program path and a cannot-invoke reason", tc.command, out.Stderr)
+			}
+		})
+	}
+}
+
+func rowExecStreamingUnstartablePrograms(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
+	t.Helper()
+	program := "/etc/passwd"
+	for _, tc := range []struct {
+		name    string
+		command string
+		code    int
+	}{
+		{name: "missing program", command: "/compass-missing-contract-probe", code: 127},
+		{name: "present but non-executable program", command: program, code: 126},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec(tc.command).AsUser(caps.execUser()))
+			if err != nil {
+				t.Fatalf("ExecStreaming(%q) = %v, want an exited stream", tc.command, err)
+			}
+			defer stream.IO.Stdin.Close()
+			// Drain both concurrently: microVM stdio is unbuffered io.Pipe, so
+			// reading stdout to EOF first blocks the pump on the stderr frame.
+			stderrCh := make(chan []byte, 1)
+			go func() {
+				b, _ := io.ReadAll(stream.IO.Stderr)
+				stderrCh <- b
+			}()
+			stdout, err := io.ReadAll(stream.IO.Stdout)
+			if err != nil || len(stdout) != 0 {
+				t.Fatalf("stdout = %q, err = %v; want empty stdout", stdout, err)
+			}
+			stderr := <-stderrCh
+			if len(stderr) == 0 {
+				t.Fatalf("stderr is empty; want a diagnostic")
+			}
+			if tc.code == 126 && (!strings.Contains(string(stderr), tc.command) || !hasCannotInvokeReason(string(stderr))) {
+				t.Fatalf("stderr = %q, want program path %q and a cannot-invoke reason", stderr, tc.command)
+			}
+			if waitErr := stream.Process.Wait(); exitCodeOf(waitErr, caps) != tc.code {
+				t.Fatalf("Process.Wait() = %v; want exit %d without signal", waitErr, tc.code)
+			}
+		})
 	}
 }
 
@@ -628,6 +709,46 @@ func registerRemove(t *testing.T, rt WorkloadRuntime, id WorkloadID, label strin
 			t.Errorf("Remove(%s) cleanup: %v", label, err)
 		}
 	})
+}
+
+// exitCodeOf reads a plain exit code from a Wait error: the portable
+// *ExitStatusError, or *exec.ExitError only for backends without one; -1 otherwise.
+func exitCodeOf(err error, caps backendCaps) int {
+	if e, ok := errors.AsType[*ExitStatusError](err); ok && e.Signal == 0 {
+		return e.Code
+	}
+	if caps.portableKillError {
+		return -1
+	}
+	if e, ok := errors.AsType[*exec.ExitError](err); ok {
+		return e.ExitCode()
+	}
+	return -1
+}
+
+func TestExitCodeOf(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", "exit 3")
+	runErr := cmd.Run()
+	if _, ok := errors.AsType[*exec.ExitError](runErr); !ok {
+		t.Fatalf("sh exit 3 = %v, want *exec.ExitError", runErr)
+	}
+	for _, tc := range []struct {
+		name     string
+		err      error
+		portable bool
+		want     int
+	}{
+		{name: "exec.ExitError without portable exit error", err: runErr, want: 3},
+		{name: "exec.ExitError with portable exit error", err: runErr, portable: true, want: -1},
+		{name: "portable exit", err: &ExitStatusError{Code: 126}, portable: true, want: 126},
+		{name: "signalled portable exit", err: &ExitStatusError{Signal: 9}, portable: true, want: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := exitCodeOf(tc.err, backendCaps{portableKillError: tc.portable}); got != tc.want {
+				t.Fatalf("exitCodeOf = %d, want %d", got, tc.want)
+			}
+		})
+	}
 }
 
 // deliberateKill reports whether err is the deliberate-kill signal error the
