@@ -571,3 +571,61 @@ func TestExecPassesThroughChildExitCode(t *testing.T) {
 		})
 	}
 }
+
+// TestVerifyNoPastaForwards covers the canary's verdicts: a pasta forward
+// conflict refuses, a clean start passes, and a non-pasta default network skips it.
+func TestVerifyNoPastaForwards(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      string
+		runStderr string
+		runExit   int
+		wantErr   string
+		wantNoRun bool
+	}{
+		{name: "clean canary passes", mode: "pasta"},
+		{name: "configured forward refuses", mode: "pasta", runExit: 126,
+			runStderr: "Error: pasta failed with exit code 1:\n-T none conflicts with previous options", wantErr: "pasta_options"},
+		{name: "other canary failure is an error", mode: "pasta", runExit: 125,
+			runStderr: "Error: image not known", wantErr: "pasta canary container failed"},
+		{name: "pasta mode with arguments runs the canary", mode: "pasta:--map-gw", runExit: 126,
+			runStderr: "-T none conflicts with previous options", wantErr: "pasta_options"},
+		{name: "bridge default network skips the canary", mode: "bridge", wantNoRun: true},
+		{name: "slirp4netns default network skips the canary", mode: "slirp4netns", wantNoRun: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ran, removed := filepath.Join(dir, "ran"), filepath.Join(dir, "removed")
+			prog := filepath.Join(dir, "podman-stub.sh")
+			script := fmt.Sprintf(`#!/bin/sh
+case "$*" in
+  "create --entrypoint=true img:1") echo probe-id ;;
+  "inspect --format {{.HostConfig.NetworkMode}} probe-id") echo %s ;;
+  "rm -f probe-id") : > %s ;;
+  "run --rm --network %s --entrypoint=true img:1")
+    : > %s
+    printf '%%s' '%s' >&2
+    exit %d ;;
+  *) echo "unexpected argv: $*" >&2; exit 99 ;;
+esac
+`, tc.mode, removed, pastaCanaryNetwork, ran, tc.runStderr, tc.runExit)
+			if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+				t.Fatalf("writing stub: %v", err)
+			}
+			err := NewPodmanCLI().WithProgram(prog).VerifyNoPastaForwards(t.Context(), "img:1")
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("VerifyNoPastaForwards() = %v, want nil", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("VerifyNoPastaForwards() = %v, want an error containing %q", err, tc.wantErr)
+			}
+			if _, statErr := os.Stat(ran); (statErr == nil) == tc.wantNoRun {
+				t.Errorf("canary ran = %v, want %v", statErr == nil, !tc.wantNoRun)
+			}
+			if _, statErr := os.Stat(removed); statErr != nil {
+				t.Error("network probe container was not removed")
+			}
+		})
+	}
+}

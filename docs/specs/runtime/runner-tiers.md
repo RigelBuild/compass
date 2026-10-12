@@ -105,6 +105,11 @@ today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
   "armEgress arms the egress firewall as the image's default user (uid 1000)
   with CAP_NET_ADMIN. After this, an agent exec — run as the agent uid with
   no capabilities — cannot alter the ruleset").
+  The ruleset accepts loopback, so a pasta `-T`/`-U` forward (namespace to
+  host) would reach host loopback ports. When agents' default network is
+  pasta, the Runner refuses to start if `containers.conf` `pasta_options`
+  enables one
+  (`PodmanCLI.VerifyNoPastaForwards`, `go/internal/runtime/podman.go`).
 - **When to use:** the permanent, supported self-host entry tier — any Linux
   box or VPS without `/dev/kvm`, and macOS via podman-machine. It is the
   production default today (`go/internal/runtime/microvm.go:119-120`:

@@ -147,7 +147,7 @@ func run() error {
 			return err
 		}
 	}
-	specs, err := newSpecBuilder(engine, img, egress, *checkoutDir, *homeDir, mounts)
+	specs, err := newSpecBuilder(ctx, engine, img, egress, *checkoutDir, *homeDir, mounts)
 	if err != nil {
 		return err
 	}
@@ -295,7 +295,7 @@ func pathContains(parent, child string) bool {
 // tiers keep the baked fleet constant); everything else is the operator's
 // flags/env verbatim. The per-backend uid policy lives in internal/runner beside
 // the non-root check that validates the result — this binary stays a thin wrapper.
-func newSpecBuilder(engine runtime.WorkloadRuntime, image string, egress runtime.EgressPolicy, checkoutDir, homeDir string, mounts []runtime.Mount) (runner.SpecBuilder, error) {
+func newSpecBuilder(ctx context.Context, engine runtime.WorkloadRuntime, image string, egress runtime.EgressPolicy, checkoutDir, homeDir string, mounts []runtime.Mount) (runner.SpecBuilder, error) {
 	uid, err := runner.ResolveWorkspaceUID(engine)
 	if err != nil {
 		return nil, err
@@ -306,6 +306,9 @@ func newSpecBuilder(engine runtime.WorkloadRuntime, image string, egress runtime
 	}
 	image, imageIrrelevant, err := runner.ResolveAgentImage(engine, image)
 	if err != nil {
+		return nil, err
+	}
+	if err := verifyNoPastaForwards(ctx, engine, image); err != nil {
 		return nil, err
 	}
 	return runner.NewConfigSpecBuilder(runner.SpecDefaults{
@@ -337,6 +340,21 @@ type podmanPreflighter interface {
 // floor this backend's command contract relies on.
 type appleContainerPreflighter interface {
 	VerifyAppleContainerSupport(ctx context.Context) error
+}
+
+// pastaForwardVerifier is the podman backend's check that containers.conf opens
+// no pasta port forward. It needs the agent image, so it runs after image resolve.
+type pastaForwardVerifier interface {
+	VerifyNoPastaForwards(ctx context.Context, image string) error
+}
+
+// verifyNoPastaForwards runs the pasta forward check on engines that have one.
+func verifyNoPastaForwards(ctx context.Context, engine runtime.WorkloadRuntime, image string) error {
+	v, ok := engine.(pastaForwardVerifier)
+	if !ok {
+		return nil
+	}
+	return v.VerifyNoPastaForwards(ctx, image)
 }
 
 // canaryBooter is the microVM backend's dynamic host-capability probe: it really
