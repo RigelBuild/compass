@@ -73,7 +73,7 @@ func TestDrainDoorsOverrunCancelsWedgedHandlers(t *testing.T) {
 				t.Fatal("handler never entered")
 			}
 
-			err = drainDoors(drainSet{
+			err = drainDoors(t.Context(), drainSet{
 				bus:      events.NewBus[busPayload](),
 				commsBus: events.NewBus[*compassv1.SubscribeCommsResponse](),
 				uds:      srv,

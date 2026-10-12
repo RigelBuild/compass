@@ -151,7 +151,7 @@ var schemaSeq atomic.Uint64
 func IsolatedSchemaDSN(t *testing.T, dsn string) string {
 	t.Helper()
 	schema := fmt.Sprintf("pgtest_%d_%d", os.Getpid(), schemaSeq.Add(1))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
@@ -166,12 +166,13 @@ func IsolatedSchemaDSN(t *testing.T, dsn string) string {
 	_ = conn.Close(ctx)
 
 	t.Cleanup(func() {
-		c, err := pgx.Connect(ctx, dsn)
+		cctx := context.WithoutCancel(ctx)
+		c, err := pgx.Connect(cctx, dsn)
 		if err != nil {
 			return // best-effort teardown; a dropped connection at exit is harmless
 		}
-		defer func() { _ = c.Close(ctx) }()
-		_, _ = c.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		defer func() { _ = c.Close(cctx) }()
+		_, _ = c.Exec(cctx, "DROP SCHEMA "+schema+" CASCADE")
 	})
 
 	return withSearchPath(dsn, schema)

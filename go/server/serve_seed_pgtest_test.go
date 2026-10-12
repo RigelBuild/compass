@@ -141,7 +141,7 @@ func TestDrainDoorsCancelsAndJoinsInFlightSeed(t *testing.T) {
 	t.Cleanup(func() { close(gate) }) // runs first: frees the loop before teardown
 	waitForStartCount(t, rec, 1)      // the seed is now blocked on the Runner's Start
 
-	err := drainDoors(drainSet{
+	err := drainDoors(t.Context(), drainSet{
 		bus:         events.NewBus[busPayload](),
 		commsBus:    events.NewBus[*compassv1.SubscribeCommsResponse](),
 		uds:         &http.Server{ReadHeaderTimeout: time.Second},

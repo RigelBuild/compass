@@ -974,7 +974,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// error still wins because the group keeps the first error.
 	g.Go(func() error {
 		<-gctx.Done()
-		return drainDoors(drainSet{ //nolint:contextcheck // drainDoors deliberately takes no ctx: the inherited one is already cancelled (that cancellation is what woke this drain), so a bounded shutdown needs the fresh ctx drainDoors makes internally, not the dead one
+		return drainDoors(gctx, drainSet{
 			bus:         bus,
 			commsBus:    commsBus,
 			uds:         doors.uds,
@@ -1203,26 +1203,21 @@ type drainSet struct {
 // than a const only so a test can shorten it; never reassigned in production.
 var drainTimeout = 5 * time.Second
 
-// drainDoors ends the live streams, drains every configured door under one
-// bounded deadline, and reports the hub's final frame accounting. It is split
-// out of Serve so the shutdown sequence reads as one unit: the ordering here is
-// load-bearing and was previously buried at the bottom of a 200-line function.
-func drainDoors(d drainSet) error {
+// drainDoors ends live streams, drains every configured door under one bounded
+// deadline, and reports the hub's final frame accounting.
+func drainDoors(ctx context.Context, d drainSet) error {
 	// Close both buses so held-open streams end and release their handlers:
-	// SubscribeEvents rides bus, SubscribeComms rides commsBus, both on every
-	// door. Closing only bus would leave a live SubscribeComms subscriber wedged
-	// (Shutdown does not cancel its ctx), stalling the drain. Both closes idempotent.
+	// SubscribeEvents rides bus, SubscribeComms rides commsBus (Shutdown does not cancel it).
 	d.bus.Close()
 	d.commsBus.Close()
 	// Stop the runner-ready seed first: bar new fires and cancel its ctx, so it
-	// unwinds while the doors drain. A drain woken by a group error has a live parent ctx.
+	// unwinds while the doors drain.
 	hooksDone := d.hub.StopReadyHooks()
 	if d.cancelHooks != nil {
 		d.cancelHooks()
 	}
-	// Fresh ctx is deliberate: the parent is already cancelled (that woke this
-	// drain), so the bounded drain needs a live ctx, not the dead inherited one.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	// The parent is already cancelled (that woke this drain); keep its values, drop its cancel.
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
 	defer cancel()
 	doors := []*http.Server{d.uds}
 	for _, srv := range []*http.Server{d.dev, d.net} {
@@ -1246,10 +1241,8 @@ func drainDoors(d drainSet) error {
 	if err := awaitReadyHooks(shutdownCtx, hooksDone); err != nil && drainErr == nil {
 		drainErr = err
 	}
-	// After a clean drain no further frame can arrive, so the hub's counters are
-	// final; after an overrun they are a best-effort snapshot. This is the only
-	// non-test reader of the frame-loss accounting, so a run that committed none
-	// of the agent's conversation stays distinguishable from one that committed all.
+	// After a clean drain the hub's counters are final; after an overrun they are a
+	// best-effort snapshot. This is the only non-test reader of the frame-loss accounting.
 	logFrameDiagnostics(shutdownCtx, d.log, d.hub)
 	if drainErr != nil {
 		return fmt.Errorf("draining compass.v1 servers on shutdown: %w", drainErr)
