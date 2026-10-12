@@ -649,7 +649,7 @@ func validateSettingsMember(joined string, r io.Reader) ([]byte, error) {
 }
 
 // validateModelsMember validates the top-level models.yml member: a YAML mapping
-// with no credentialed provider surface (apiKey, or a headers.* literal secret).
+// with no credentialed provider surface (see rejectCredentialModels).
 func validateModelsMember(joined string, r io.Reader) ([]byte, error) {
 	content, err := io.ReadAll(r)
 	if err != nil {
@@ -976,35 +976,66 @@ func yamlMapEntries(node any) []yamlMapEntry {
 // provider surface (CP-4): providers.<name>.apiKey, or providers.<name>.headers.<h> set
 // to a NON-env-indirection literal (a pinned secret). An env-referenced header passes.
 // The door can't see the container env, so "is an env reference" is a syntactic judgment.
-// A header value that is not a string, or a headers node that is not a mapping, is
-// refused rather than skipped: the SDK schema admits only string values.
+// Model definitions and model overrides carry headers too, checked the same way.
 func rejectCredentialModels(mapping map[string]any, joined string) error {
 	providers, present := mapping["providers"]
-	if !present {
+	if !present || providers == nil {
 		return nil
 	}
-	for _, p := range yamlMapEntries(providers) {
+	// The SDK schema coerces a list at a record-typed node into an index-keyed
+	// record, so a non-mapping node here would skip the walk; refuse it instead.
+	entries := yamlMapEntries(providers)
+	if entries == nil {
+		return fmt.Errorf("%w: models member %q sets providers to a non-mapping (providers must map names to provider configs)", ErrInvalidArgument, joined)
+	}
+	for _, p := range entries {
 		if v, present := yamlMapIndex(p.val, "apiKey"); present && v != nil {
 			return fmt.Errorf("%w: models member %q sets providers.%s.apiKey (provider credentials never ride the config bundle)", ErrInvalidArgument, joined, p.key)
 		}
-		headers, ok := yamlMapIndex(p.val, "headers")
-		if !ok || headers == nil {
-			continue
+		if err := rejectCredentialHeaders(p.val, joined, "providers."+p.key); err != nil {
+			return err
 		}
-		// The SDK types headers as a string map, yet sends a list's items as
-		// headers named by index, so a non-mapping headers node is refused.
-		entries := yamlMapEntries(headers)
-		if entries == nil {
-			return fmt.Errorf("%w: models member %q sets providers.%s.headers to a non-mapping (headers must map names to env references)", ErrInvalidArgument, joined, p.key)
+		models, _ := yamlMapIndex(p.val, "models")
+		list, _ := models.([]any)
+		for i, m := range list {
+			if err := rejectCredentialHeaders(m, joined, fmt.Sprintf("providers.%s.models[%d]", p.key, i)); err != nil {
+				return err
+			}
 		}
-		for _, hdr := range entries {
-			s, ok := hdr.val.(string)
-			if !ok {
-				return fmt.Errorf("%w: models member %q sets providers.%s.headers.%s to a non-string value (pin it to an env reference instead)", ErrInvalidArgument, joined, p.key, hdr.key)
+		overrides, _ := yamlMapIndex(p.val, "modelOverrides")
+		overrideEntries := yamlMapEntries(overrides)
+		if overrides != nil && overrideEntries == nil {
+			return fmt.Errorf("%w: models member %q sets providers.%s.modelOverrides to a non-mapping (overrides must map model ids to overrides)", ErrInvalidArgument, joined, p.key)
+		}
+		for _, o := range overrideEntries {
+			if err := rejectCredentialHeaders(o.val, joined, "providers."+p.key+".modelOverrides."+o.key); err != nil {
+				return err
 			}
-			if !isEnvIndirection(s) {
-				return fmt.Errorf("%w: models member %q sets providers.%s.headers.%s to a literal secret (pin it to an env reference instead)", ErrInvalidArgument, joined, p.key, hdr.key)
-			}
+		}
+	}
+	return nil
+}
+
+// rejectCredentialHeaders checks the headers node under owner (a provider, model
+// definition, or model override, named by path). Each value must be a string env
+// reference; the SDK sends a headers list's items under index names, so a
+// non-mapping headers node is refused.
+func rejectCredentialHeaders(owner any, joined, path string) error {
+	headers, ok := yamlMapIndex(owner, "headers")
+	if !ok || headers == nil {
+		return nil
+	}
+	entries := yamlMapEntries(headers)
+	if entries == nil {
+		return fmt.Errorf("%w: models member %q sets %s.headers to a non-mapping (headers must map names to env references)", ErrInvalidArgument, joined, path)
+	}
+	for _, hdr := range entries {
+		s, ok := hdr.val.(string)
+		if !ok {
+			return fmt.Errorf("%w: models member %q sets %s.headers.%s to a non-string value (pin it to an env reference instead)", ErrInvalidArgument, joined, path, hdr.key)
+		}
+		if !isEnvIndirection(s) {
+			return fmt.Errorf("%w: models member %q sets %s.headers.%s to a literal secret (pin it to an env reference instead)", ErrInvalidArgument, joined, path, hdr.key)
 		}
 	}
 	return nil

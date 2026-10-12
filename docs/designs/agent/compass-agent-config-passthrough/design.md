@@ -22,6 +22,19 @@
 > in 17.1.8 and to be re-verified at upgrade time, not a load-bearing claim
 > for the shipped mechanism.
 >
+> **Amendment (2026-10-11) — model-level headers are the same credential
+> surface.** CP-4 and T1 name `providers.<name>.headers.*`. The installed SDK
+> (`@oh-my-pi/pi-coding-agent@18.0.11`) also reads
+> `providers.<name>.models[].headers` (`mergeCustomModelHeaders`,
+> `custom-models.ts`) and `providers.<name>.modelOverrides.<id>.headers`
+> (`createLiveConfigHeaders`, `model-config-values.ts`). Both merge onto the
+> model's headers and resolve each value through the same `resolveConfigValue`.
+> The door applies the CP-4 header rule at all three sites. It also refuses a
+> header value that is not a string (the schema admits only strings) and a
+> non-mapping `providers`, `modelOverrides` or `headers` node: the schema
+> coerces a list at a record-typed node into an index-keyed record, so a list
+> still reaches the registry.
+>
 > Freezes on merge; later changes supersede by citation, never rewrite
 > (convention: `../compass-0.5/design.md:10-12`). Tracked as RIG-1678. Extends
 > the frozen RIG-1568 record
