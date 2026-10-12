@@ -98,6 +98,9 @@ const (
 	// CommsServiceRespondToAskProcedure is the fully-qualified name of the CommsService's RespondToAsk
 	// RPC.
 	CommsServiceRespondToAskProcedure = "/compass.v1.CommsService/RespondToAsk"
+	// CommsServiceMirrorToForgeProcedure is the fully-qualified name of the CommsService's
+	// MirrorToForge RPC.
+	CommsServiceMirrorToForgeProcedure = "/compass.v1.CommsService/MirrorToForge"
 	// CommsServiceSearchMessagesProcedure is the fully-qualified name of the CommsService's
 	// SearchMessages RPC.
 	CommsServiceSearchMessagesProcedure = "/compass.v1.CommsService/SearchMessages"
@@ -184,6 +187,9 @@ type CommsServiceClient interface {
 	// Answer a pending structured ask (D5). Authorized: the caller must be a
 	// member of the channel the ask belongs to.
 	RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error)
+	// Mirror a visible ask, topic, or message set to an allowed forge ref on the
+	// calling user's behalf.
+	MirrorToForge(context.Context, *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error)
 	// Full-text search across the messages the caller may see — the audit/search
 	// property served from the store of record (D1, D12). Results are scoped to
 	// the caller's visible channels regardless of the scope field.
@@ -332,6 +338,12 @@ func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(commsServiceMethods.ByName("RespondToAsk")),
 			connect.WithClientOptions(opts...),
 		),
+		mirrorToForge: connect.NewClient[v1.MirrorToForgeRequest, v1.MirrorToForgeResponse](
+			httpClient,
+			baseURL+CommsServiceMirrorToForgeProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("MirrorToForge")),
+			connect.WithClientOptions(opts...),
+		),
 		searchMessages: connect.NewClient[v1.SearchMessagesRequest, v1.SearchMessagesResponse](
 			httpClient,
 			baseURL+CommsServiceSearchMessagesProcedure,
@@ -402,6 +414,7 @@ type commsServiceClient struct {
 	listTopics           *connect.Client[v1.ListTopicsRequest, v1.ListTopicsResponse]
 	updateTopic          *connect.Client[v1.UpdateTopicRequest, v1.UpdateTopicResponse]
 	respondToAsk         *connect.Client[v1.RespondToAskRequest, v1.RespondToAskResponse]
+	mirrorToForge        *connect.Client[v1.MirrorToForgeRequest, v1.MirrorToForgeResponse]
 	searchMessages       *connect.Client[v1.SearchMessagesRequest, v1.SearchMessagesResponse]
 	setChannelPolicy     *connect.Client[v1.SetChannelPolicyRequest, v1.SetChannelPolicyResponse]
 	getRoster            *connect.Client[v1.GetRosterRequest, v1.GetRosterResponse]
@@ -495,6 +508,11 @@ func (c *commsServiceClient) UpdateTopic(ctx context.Context, req *connect.Reque
 // RespondToAsk calls compass.v1.CommsService.RespondToAsk.
 func (c *commsServiceClient) RespondToAsk(ctx context.Context, req *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error) {
 	return c.respondToAsk.CallUnary(ctx, req)
+}
+
+// MirrorToForge calls compass.v1.CommsService.MirrorToForge.
+func (c *commsServiceClient) MirrorToForge(ctx context.Context, req *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error) {
+	return c.mirrorToForge.CallUnary(ctx, req)
 }
 
 // SearchMessages calls compass.v1.CommsService.SearchMessages.
@@ -600,6 +618,9 @@ type CommsServiceHandler interface {
 	// Answer a pending structured ask (D5). Authorized: the caller must be a
 	// member of the channel the ask belongs to.
 	RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error)
+	// Mirror a visible ask, topic, or message set to an allowed forge ref on the
+	// calling user's behalf.
+	MirrorToForge(context.Context, *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error)
 	// Full-text search across the messages the caller may see — the audit/search
 	// property served from the store of record (D1, D12). Results are scoped to
 	// the caller's visible channels regardless of the scope field.
@@ -744,6 +765,12 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(commsServiceMethods.ByName("RespondToAsk")),
 		connect.WithHandlerOptions(opts...),
 	)
+	commsServiceMirrorToForgeHandler := connect.NewUnaryHandler(
+		CommsServiceMirrorToForgeProcedure,
+		svc.MirrorToForge,
+		connect.WithSchema(commsServiceMethods.ByName("MirrorToForge")),
+		connect.WithHandlerOptions(opts...),
+	)
 	commsServiceSearchMessagesHandler := connect.NewUnaryHandler(
 		CommsServiceSearchMessagesProcedure,
 		svc.SearchMessages,
@@ -828,6 +855,8 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 			commsServiceUpdateTopicHandler.ServeHTTP(w, r)
 		case CommsServiceRespondToAskProcedure:
 			commsServiceRespondToAskHandler.ServeHTTP(w, r)
+		case CommsServiceMirrorToForgeProcedure:
+			commsServiceMirrorToForgeHandler.ServeHTTP(w, r)
 		case CommsServiceSearchMessagesProcedure:
 			commsServiceSearchMessagesHandler.ServeHTTP(w, r)
 		case CommsServiceSetChannelPolicyProcedure:
@@ -919,6 +948,10 @@ func (UnimplementedCommsServiceHandler) UpdateTopic(context.Context, *connect.Re
 
 func (UnimplementedCommsServiceHandler) RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.RespondToAsk is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) MirrorToForge(context.Context, *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.MirrorToForge is not implemented"))
 }
 
 func (UnimplementedCommsServiceHandler) SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error) {

@@ -11,17 +11,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"strings"
-	"testing"
-	"time"
-
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/refs"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"math"
+	"strings"
+	"testing"
+	"time"
 )
 
 // ownerHeaderSentinel is the one literal owner-header marker StampOwner writes;
@@ -53,15 +53,19 @@ type fakeForgeStore struct {
 
 	// DL-053 subscriptions: subs is keyed by subscription id; subKey indexes the
 	// UNIQUE (agent, coordinate) to its existing id, as the store upsert does.
-	subs       map[string]store.AgentForgeSubscription
-	subKey     map[string]string
-	nextSub    int
-	subErr     error
-	delErr     error
-	scopes     map[string]bool
-	scopeErr   error
-	scopeCalls int
-	scopeArgs  []string
+	subs          map[string]store.AgentForgeSubscription
+	subKey        map[string]string
+	nextSub       int
+	subErr        error
+	delErr        error
+	scopes        map[string]bool
+	scopeErr      error
+	scopeCalls    int
+	scopeArgs     []string
+	mirrorModes   map[string]store.ForgeMirrorMode
+	mirrorModeErr error
+	prRows        []store.PullRequestRow
+	prErr         error
 }
 
 // recordedTransition is one RecordStateTransition the fake saw: the full
@@ -80,10 +84,11 @@ type recordedTransition struct {
 
 func newFakeForgeStore() *fakeForgeStore {
 	return &fakeForgeStore{
-		accounts: make(map[store.AccountID]store.Account),
-		memo:     make(map[string]store.AuthoredArtifact),
-		subs:     make(map[string]store.AgentForgeSubscription),
-		subKey:   make(map[string]string),
+		accounts:    make(map[store.AccountID]store.Account),
+		memo:        make(map[string]store.AuthoredArtifact),
+		subs:        make(map[string]store.AgentForgeSubscription),
+		subKey:      make(map[string]string),
+		mirrorModes: make(map[string]store.ForgeMirrorMode),
 	}
 }
 
@@ -141,6 +146,13 @@ func (f *fakeForgeStore) HasForgeScope(_ context.Context, accountID store.Accoun
 		}
 	}
 	return f.scopes[key] || f.scopes[fmt.Sprintf("%s|%d|%s|*", accountID, provider, host)], nil
+}
+
+func (f *fakeForgeStore) ForgeMirrorMode(_ context.Context, provider store.ForgeProvider, host, repo string) (store.ForgeMirrorMode, error) {
+	if f.mirrorModeErr != nil {
+		return store.ForgeMirrorOff, f.mirrorModeErr
+	}
+	return f.mirrorModes[fmt.Sprintf("%d|%s|%s", provider, host, repo)], nil
 }
 
 func (f *fakeForgeStore) GetAccount(_ context.Context, id store.AccountID) (store.Account, error) {
@@ -203,11 +215,8 @@ func (f *fakeForgeStore) RecordStateTransition(_ context.Context, provider store
 	return nil
 }
 
-// seedAgent registers an agent account and its owning user so resolveIdentity
-// finds both handles.
-func (f *fakeForgeStore) seedAgent(agentID store.AccountID, agentHandle string, ownerID store.AccountID, ownerHandle string) {
-	f.accounts[agentID] = store.Account{ID: agentID, Handle: agentHandle, Agent: &store.AgentAccount{OwnerUserID: ownerID}}
-	f.accounts[ownerID] = store.Account{ID: ownerID, Handle: ownerHandle, User: &store.UserAccount{}}
+func (f *fakeForgeStore) PullRequestsByCoords(_ context.Context, _ []store.ForgeCoord) ([]store.PullRequestRow, error) {
+	return f.prRows, f.prErr
 }
 
 // --- harness ----------------------------------------------------------------
@@ -1495,4 +1504,236 @@ func TestForgeCreatePullRequestMemoHitWritesNothing(t *testing.T) {
 	if len(author.Calls()) != 1 || len(st.prCreates) != 1 {
 		t.Fatalf("provider calls=%d PR creates=%d, want 1 and 1", len(author.Calls()), len(st.prCreates))
 	}
+}
+
+func TestForgeMirrorAllowedModes(t *testing.T) {
+	ref := refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}
+	tests := []struct {
+		name string
+		mode store.ForgeMirrorMode
+		need store.ForgeMirrorMode
+		code string
+	}{
+		{name: "off refuses manual", mode: store.ForgeMirrorOff, need: store.ForgeMirrorManual, code: "failed_precondition"},
+		{name: "off refuses auto", mode: store.ForgeMirrorOff, need: store.ForgeMirrorAuto, code: "failed_precondition"},
+		{name: "manual admits manual", mode: store.ForgeMirrorManual, need: store.ForgeMirrorManual},
+		{name: "manual refuses auto", mode: store.ForgeMirrorManual, need: store.ForgeMirrorAuto, code: "failed_precondition"},
+		{name: "auto admits manual", mode: store.ForgeMirrorAuto, need: store.ForgeMirrorManual},
+		{name: "auto admits auto", mode: store.ForgeMirrorAuto, need: store.ForgeMirrorAuto},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+			st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = tc.mode
+			_, _, _, fe := svc.mirrorAllowed(context.Background(), st.accounts[testOwnerID], tc.need, ref)
+			if tc.code == "" {
+				if fe != nil {
+					t.Fatalf("mirrorAllowed error = %v, want allowed", fe)
+				}
+				return
+			}
+			if fe == nil || fe.GetCode() != tc.code || !strings.Contains(fe.GetMessage(), testRepo) {
+				t.Fatalf("mirrorAllowed error = %v, want %s naming %s", fe, tc.code, testRepo)
+			}
+		})
+	}
+
+	t.Run("agent scope refusal", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+		svc.enforceScopes = true
+		st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorAuto
+		_, _, _, fe := svc.mirrorAllowed(context.Background(), st.accounts[testAgentID], store.ForgeMirrorAuto, ref)
+		if fe == nil || fe.GetCode() != "not_found" || len(author.Calls()) != 0 || st.scopeCalls != 1 {
+			t.Fatalf("mirrorAllowed = %v, provider calls=%d, scope calls=%d; want not_found, 0, 1", fe, len(author.Calls()), st.scopeCalls)
+		}
+	})
+}
+
+func TestResolveMirrorCoordinateLinear(t *testing.T) {
+	linear := forge.NewFakeProvider("linear")
+	svc, _ := newForgeServiceForTest(t, forge.NewFakeProvider("gh-author"), forge.NewFakeProvider("gh-reviewer"))
+	reg := newForgeProviderRegistry()
+	if err := reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host: "linear.app"}, linear, linear, false); err != nil {
+		t.Fatal(err)
+	}
+	svc.providers = reg
+	rf, repo, number, fe := svc.resolveMirrorCoordinate(refs.Ref{Kind: refs.KindTracker, Key: "RIG", Number: 12})
+	if fe != nil || rf.provider != compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR || rf.host != "linear.app" || repo != "RIG" || number != 12 {
+		t.Fatalf("Linear coordinate = (%+v, %q, %d, %v)", rf, repo, number, fe)
+	}
+}
+
+func TestForgeMirrorPostUsesManualBodyAndLimit(t *testing.T) {
+	ctx := context.Background()
+	ref := refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}
+	author := forge.NewFakeProvider("gh-author")
+	author.BodyLimitResult = 1024
+	author.CommentResult = forge.Comment{ID: 1, Key: "c-1", URL: "https://github.com/owner/repo/issues/12#issuecomment-1"}
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	st.accounts[testOwnerID] = store.Account{ID: testOwnerID, Handle: testOwnerHandle, User: &store.UserAccount{}}
+	st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorManual
+
+	comment, err := svc.PostMirror(ctx, testOwnerID, store.ForgeMirrorManual, ref, "", "client-1", "source body")
+	if err != nil {
+		t.Fatalf("PostMirror: %v", err)
+	}
+	if comment.URL != author.CommentResult.URL {
+		t.Fatalf("PostMirror comment URL = %q, want %q", comment.URL, author.CommentResult.URL)
+	}
+	calls := author.Calls()
+	if len(calls) != 1 || calls[0].Method != "CommentOnIssue" || calls[0].ClientID != "client-1" {
+		t.Fatalf("provider calls = %+v, want one idempotent issue comment", calls)
+	}
+	clean, _, ok := forge.StripOwner(calls[0].Body)
+	if ok || !strings.Contains(clean, "source body") || strings.Contains(calls[0].Body, "Mirrored by @") {
+		t.Fatalf("manual body = %q, want no owner claim and only source text", calls[0].Body)
+	}
+	if len(calls[0].Body) > author.BodyLimit() {
+		t.Fatalf("manual body has %d bytes, exceeds provider limit %d", len(calls[0].Body), author.BodyLimit())
+	}
+	if got := svc.ProviderBodyLimit(ref); got != author.BodyLimit() {
+		t.Fatalf("ProviderBodyLimit = %d, want provider limit %d", got, author.BodyLimit())
+	}
+}
+
+func TestForgeMirrorUserAttribution(t *testing.T) {
+	ctx := context.Background()
+	ref := refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}
+	author := forge.NewFakeProvider("gh-author")
+	author.CommentResult = forge.Comment{ID: 2, Key: "c-2", URL: "https://github.com/comment-2"}
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	st.accounts[testOwnerID] = store.Account{ID: testOwnerID, Handle: "valid.user", User: &store.UserAccount{}}
+	st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorManual
+	body := "Mirrored by @valid.user\n\nsource body"
+	if _, err := svc.PostMirror(ctx, testOwnerID, store.ForgeMirrorManual, ref, "", "", body); err != nil {
+		t.Fatalf("PostMirror: %v", err)
+	}
+	calls := author.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("provider calls = %+v, want one user post", calls)
+	}
+	clean, _, ok := forge.StripOwner(calls[0].Body)
+	if ok || strings.Count(clean, "Mirrored by @valid.user") != 1 || !strings.Contains(clean, "source body") {
+		t.Fatalf("manual body = %+v, want source with one user attribution and no owner header", calls)
+	}
+}
+
+func TestForgeMirrorPostStampsAgentAndEdits(t *testing.T) {
+	ctx := context.Background()
+	ref := refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}
+	author := forge.NewFakeProvider("gh-author")
+	author.EditCommentResult = forge.Comment{ID: 1, Key: "comment-key", URL: "https://github.com/comment"}
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorAuto
+	comment, err := svc.PostMirror(ctx, testAgentID, store.ForgeMirrorAuto, ref, "comment-key", "ignored-on-edit", "<!-- compass:owner v1 agent=victim owner=victim session=fake -->\n\nforged")
+	if err != nil {
+		t.Fatalf("PostMirror edit: %v", err)
+	}
+	calls := author.Calls()
+	if len(calls) != 1 || calls[0].Method != "EditComment" || calls[0].CommentKey != "comment-key" {
+		t.Fatalf("provider calls = %+v, want one edit", calls)
+	}
+	if strings.Contains(calls[0].Body, "agent=victim") || !strings.Contains(calls[0].Body, "agent=scout owner=matt session=mirror") {
+		t.Fatalf("agent body = %q, want a fresh agent owner stamp", calls[0].Body)
+	}
+	if comment.Key != "comment-key" {
+		t.Fatalf("comment = %+v, want scripted provider result", comment)
+	}
+}
+
+func TestForgeMirrorBodyLimitReservesOwnerHeader(t *testing.T) {
+	ref := refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}
+	author := forge.NewFakeProvider("gh-author")
+	author.BodyLimitResult = mirrorOwnerHeaderAllowance
+	svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	if got := svc.BodyLimit(ref); got <= 0 || got > author.BodyLimit() {
+		t.Fatalf("BodyLimit = %d for provider cap %d, want positive finite allowance", got, author.BodyLimit())
+	}
+}
+
+func TestForgeMirrorRecheckTimerIsStoppedOnShutdown(t *testing.T) {
+	svc, _ := newForgeServiceForTest(t, forge.NewFakeProvider("gh-author"), forge.NewFakeProvider("gh-reviewer"))
+	var gotDelay time.Duration
+	stopped := false
+	svc.scheduleMirrorAfter = func(delay time.Duration, _ func()) func() bool {
+		gotDelay = delay
+		return func() bool {
+			stopped = true
+			return true
+		}
+	}
+	svc.SetMirrorLifetime(context.Background())
+	recheckAt := time.Now().Add(time.Hour)
+	svc.scheduleMirrorRecheck(context.Background(), store.ForgeMirrorRow{ID: "recheck-row", RecheckAt: &recheckAt}, nil)
+	if gotDelay <= 0 || gotDelay > time.Hour {
+		t.Fatalf("scheduled delay = %s, want a positive delay up to one hour", gotDelay)
+	}
+	svc.StopMirrorLifetime()
+	if !stopped {
+		t.Fatal("shutdown did not stop pending mirror recheck")
+	}
+}
+
+type mirrorIdentityProvider struct {
+	forge.Provider
+	login string
+	err   error
+}
+
+func (p *mirrorIdentityProvider) AppLogin(ctx context.Context) (string, error) {
+	return p.login, p.err
+}
+
+func TestForgeMirrorCommentRecoveryRequiresAppIdentity(t *testing.T) {
+	t.Run("only app comments are returned", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		identity := &mirrorIdentityProvider{Provider: author, login: "compass[bot]"}
+		svc, st := newForgeServiceForTest(t, author, reviewer)
+		svc.providers.entries[forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: testHost}] = forgeProviderRoles{author: identity, reviewer: reviewer}
+		st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorManual
+		author.ListCommentsResult = []forge.Comment{
+			{Key: "app", ForgeAccount: "Compass[bot]"},
+			{Key: "user", ForgeAccount: "alice"},
+		}
+
+		got, err := svc.ListMirrorComments(context.Background(), testOwnerID,
+			refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}, time.Time{})
+		if err != nil {
+			t.Fatalf("ListMirrorComments: %v", err)
+		}
+		if len(got) != 1 || got[0].Key != "app" {
+			t.Fatalf("recovery comments = %+v, want only Compass App comment", got)
+		}
+		calls := author.Calls()
+		if len(calls) != 1 || calls[0].Method != "ListCommentsSince" {
+			t.Fatalf("provider calls = %+v, want one comment listing", calls)
+		}
+	})
+
+	t.Run("identity lookup failure prevents listing", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		identity := &mirrorIdentityProvider{Provider: author, err: errors.New("identity unavailable")}
+		svc, st := newForgeServiceForTest(t, author, reviewer)
+		svc.providers.entries[forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: testHost}] = forgeProviderRoles{author: identity, reviewer: reviewer}
+		st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorManual
+
+		if _, err := svc.ListMirrorComments(context.Background(), testOwnerID,
+			refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}, time.Time{}); err == nil {
+			t.Fatal("ListMirrorComments error = nil, want identity lookup failure")
+		}
+		if calls := author.Calls(); len(calls) != 0 {
+			t.Fatalf("provider calls = %+v, want no comment listing without a verified App identity", calls)
+		}
+	})
+}
+
+// seedAgent registers an agent account and its owning user so resolveIdentity
+// finds both handles.
+func (f *fakeForgeStore) seedAgent(agentID store.AccountID, agentHandle string, ownerID store.AccountID, ownerHandle string) {
+	f.accounts[agentID] = store.Account{ID: agentID, Handle: agentHandle, Agent: &store.AgentAccount{OwnerUserID: ownerID}}
+	f.accounts[ownerID] = store.Account{ID: ownerID, Handle: ownerHandle, User: &store.UserAccount{}}
 }

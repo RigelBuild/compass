@@ -457,6 +457,8 @@ type Ask struct {
 	AskID string
 	// Ref is the explicit issue or pull request this ask concerns.
 	Ref string
+	// RefCoord is derived at the comms edge for auto-mirror routing; it is not stored.
+	RefCoord *ForgeCoord
 	// Questions are the questions the agent asked, in order. At least one; a
 	// zero-question ask is rejected on both marshal and unmarshal.
 	Questions []AskQuestion

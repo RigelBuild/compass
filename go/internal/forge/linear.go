@@ -150,6 +150,9 @@ type Linear struct {
 	// createdOrder is createdIDs' keys oldest-first, so the cap evicts the oldest.
 	createdOrder []string
 
+	identityMu   sync.Mutex
+	appLogin     string
+	identityDone chan struct{}
 	// probeDone/actorCapable cache the one-time actor-capability probe (A4).
 	// Once probeDone, actorCapable governs whether writes set createAsUser.
 	probeDone    bool
@@ -181,6 +184,53 @@ func NewLinear(cfg LinearConfig) *Linear {
 		workflowStates: make(map[string]workflowStateCacheEntry),
 		createdIDs:     make(map[string]string),
 		now:            time.Now,
+	}
+}
+
+// AppLogin resolves the Compass app identity used in Linear comment records.
+func (l *Linear) AppLogin(ctx context.Context) (string, error) {
+	for {
+		l.identityMu.Lock()
+		if l.appLogin != "" {
+			login := l.appLogin
+			l.identityMu.Unlock()
+			return login, nil
+		}
+		if done := l.identityDone; done != nil {
+			l.identityMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-done:
+			}
+			continue
+		}
+		done := make(chan struct{})
+		l.identityDone = done
+		l.identityMu.Unlock()
+
+		const query = `query CompassMirrorIdentity { viewer { id displayName } }`
+		var out struct {
+			Viewer struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"displayName"`
+			} `json:"viewer"`
+		}
+		err := l.doGraphQL(ctx, query, nil, &out)
+		if err == nil && (out.Viewer.ID == "" || strings.TrimSpace(out.Viewer.DisplayName) == "") {
+			err = errors.New("forge: Linear viewer identity was empty")
+		}
+		l.identityMu.Lock()
+		if err == nil {
+			l.appLogin = out.Viewer.DisplayName
+		}
+		l.identityDone = nil
+		close(done)
+		l.identityMu.Unlock()
+		if err != nil {
+			return "", fmt.Errorf("forge: resolve Linear app identity: %w", err)
+		}
+		return out.Viewer.DisplayName, nil
 	}
 }
 

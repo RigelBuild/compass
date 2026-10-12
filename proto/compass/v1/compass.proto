@@ -197,6 +197,14 @@ service CompassService {
   // like PutModelRegistry. Fails closed if the registry being cleared holds any
   // stable name still referenced by a published profile's models.* map.
   rpc DeleteModelRegistry(DeleteModelRegistryRequest) returns (DeleteModelRegistryResponse);
+
+  // List the tenant's enabled forge-repository mirror settings. Any authenticated
+  // account may read them; can_edit reports whether the caller may change them.
+  rpc ListForgeMirrorSettings(ListForgeMirrorSettingsRequest) returns (ListForgeMirrorSettingsResponse);
+
+  // Set one tenant's mirror mode for an enabled forge repository. Requires a
+  // tenant admin; OFF removes the setting row.
+  rpc SetForgeMirrorSetting(SetForgeMirrorSettingRequest) returns (SetForgeMirrorSettingResponse);
 }
 
 // How a resolved secret is delivered into the agent container. Mirrors
@@ -1161,6 +1169,51 @@ message ForgeRef {
                     // "git.acme.internal"; disambiguates two instances of the
                     // same provider. For a SaaS-only tracker-as-forge (Linear)
                     // it is the constant service host, "linear.app"
+}
+
+// Whether asks naming a forge coordinate may be mirrored by an agent or user.
+enum ForgeMirrorMode {
+  // The mode is omitted or invalid.
+  FORGE_MIRROR_MODE_UNSPECIFIED = 0;
+  // Mirroring is disabled. No settings row is stored for this mode.
+  FORGE_MIRROR_MODE_OFF = 1;
+  // A user may click to mirror; agents may not mirror automatically.
+  FORGE_MIRROR_MODE_MANUAL = 2;
+  // A user may click and agents may mirror asks automatically.
+  FORGE_MIRROR_MODE_AUTO = 3;
+}
+
+// The tenant-selected mirror mode for one forge repository or Linear team.
+message ForgeMirrorSetting {
+  // The provider and host that identify the forge coordinate.
+  ForgeRef forge = 1;
+  // The repository name or Linear team key on that coordinate.
+  string repo = 2;
+  // The selected mirror policy for the coordinate.
+  ForgeMirrorMode mode = 3;
+}
+
+// Request to list enabled forge-repository mirror settings.
+message ListForgeMirrorSettingsRequest {}
+
+// The caller's settings for enabled forge repositories.
+message ListForgeMirrorSettingsResponse {
+  // Each enabled repository and its selected mirror mode.
+  repeated ForgeMirrorSetting settings = 1;
+  // Whether the authenticated caller can change these settings.
+  bool can_edit = 2;
+}
+
+// Request to set a mirror mode for one enabled forge repository.
+message SetForgeMirrorSettingRequest {
+  // The coordinate and mode to set. UNSPECIFIED is invalid.
+  ForgeMirrorSetting setting = 1;
+}
+
+// The stored setting after a successful update.
+message SetForgeMirrorSettingResponse {
+  // The coordinate and mode that were stored.
+  ForgeMirrorSetting setting = 1;
 }
 
 // The board unit: a Compass Issue — the forge issue's fields PLUS the Compass

@@ -203,7 +203,7 @@ func TestUpdatedAtTriggerCatalogFloor(t *testing.T) {
 	for _, tbl := range []string{
 		"secrets", "agent_placements", "session_bindings",
 		"agent_config_bundle", "model_registry", "forge_repo_subscriptions",
-		"pull_requests",
+		"forge_mirror_settings", "forge_mirrors", "pull_requests",
 	} {
 		var n int
 		if err := s.pool.QueryRow(ctx,

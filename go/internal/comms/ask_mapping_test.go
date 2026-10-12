@@ -81,7 +81,7 @@ func TestAskFromWireDropsEveryServerOwnedField(t *testing.T) {
 	// one so the content assertion also checks canonicalization.
 	wire.Ref = "RigelBuild/Compass#12"
 
-	got, err := askFromWire(wire)
+	got, err := askFromWire(wire, "")
 	if err != nil {
 		t.Fatalf("askFromWire: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestAskFromWireRef(t *testing.T) {
 		{name: "url", in: "https://github.com/o/r/pull/1", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := askFromWire(&compassv1.Ask{Ref: tc.in})
+			got, err := askFromWire(&compassv1.Ask{Ref: tc.in}, "")
 			if tc.wantErr {
 				if connect.CodeOf(err) != connect.CodeInvalidArgument {
 					t.Fatalf("askFromWire(%q) err = %v, want invalid_argument", tc.in, err)
@@ -309,5 +309,16 @@ func TestAskFromWireRef(t *testing.T) {
 				t.Fatalf("Ref = %q, want %q", got.Ref, tc.want)
 			}
 		})
+	}
+}
+
+func TestAskFromWireUsesConfiguredGitHubHost(t *testing.T) {
+	got, err := askFromWire(&compassv1.Ask{Ref: "owner/repo#7"}, "ghe.example")
+	if err != nil {
+		t.Fatalf("askFromWire: %v", err)
+	}
+	want := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "ghe.example", Repo: "owner/repo", Number: 7}
+	if got.RefCoord == nil || *got.RefCoord != want {
+		t.Fatalf("RefCoord = %+v, want %+v", got.RefCoord, want)
 	}
 }

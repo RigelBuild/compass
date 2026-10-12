@@ -71,9 +71,12 @@ type Querier interface {
 	// to both rollups, so a replayed id counts once. The arrays hold one element
 	// per event, and no id repeats.
 	AppendTokenUsageEvents(ctx context.Context, arg AppendTokenUsageEventsParams) error
+	AskForForgeMirror(ctx context.Context, arg AskForForgeMirrorParams) (AskForForgeMirrorRow, error)
+	AskForgeMirrors(ctx context.Context, askIds []string) ([]AskForgeMirrorsRow, error)
 	AuthoredArtifactByCoordinate(ctx context.Context, arg AuthoredArtifactByCoordinateParams) (ForgeAuthoredArtifact, error)
 	AuthoredArtifactByRequestID(ctx context.Context, arg AuthoredArtifactByRequestIDParams) (ForgeAuthoredArtifact, error)
 	AuthoredCoordsForAgent(ctx context.Context, arg AuthoredCoordsForAgentParams) ([]AuthoredCoordsForAgentRow, error)
+	BeginForgeMirrorAttempt(ctx context.Context, arg BeginForgeMirrorAttemptParams) (BeginForgeMirrorAttemptRow, error)
 	// Agent-transcript queries (sqlc adoption T5, RIG-3034). These replace the
 	// inline SQL literals in internal/store/agent_transcripts.go; the hand-written
 	// Store methods keep their exact signatures and own the two-tier flush
@@ -88,6 +91,8 @@ type Querier interface {
 	// pool (the eponymous method) and a snapshot tx (SessionResumeSnapshot, via
 	// WithTx), so one generated query backs both call sites.
 	BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error)
+	BumpAskForgeMirror(ctx context.Context, askID string) error
+	BumpForgeMirrorSourceRevision(ctx context.Context, id string) (int64, error)
 	// Keep handle joins optional so missing handle rows do not hide @everyone members.
 	// reach: the author may reach agent aa
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]ChannelAgentMembersRow, error)
@@ -101,6 +106,7 @@ type Querier interface {
 	ChannelParticipant(ctx context.Context, arg ChannelParticipantParams) (pgtype.Bool, error)
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
+	ClaimForgeMirror(ctx context.Context, arg ClaimForgeMirrorParams) (ClaimForgeMirrorRow, error)
 	// The unique key makes concurrent first-run attempts a single-winner claim.
 	ClaimTourStart(ctx context.Context, arg ClaimTourStartParams) (string, error)
 	ClearForgeRepoMergeQueueConfigs(ctx context.Context, arg ClearForgeRepoMergeQueueConfigsParams) error
@@ -152,6 +158,7 @@ type Querier interface {
 	DeleteComputeUsageIntervalsBefore(ctx context.Context, arg DeleteComputeUsageIntervalsBeforeParams) (int64, error)
 	// DeleteComputeUsageRollupsFrom clears rows the rebuild can reconstruct.
 	DeleteComputeUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
+	DeleteForgeMirrorSetting(ctx context.Context, arg DeleteForgeMirrorSettingParams) error
 	// Delete marks the row as unconfigured while retaining its monotonic version.
 	// It matches only the version the orphan check read, so a racing Put conflicts.
 	DeleteModelRegistry(ctx context.Context, version int64) (int64, error)
@@ -204,6 +211,10 @@ type Querier interface {
 	EnsureForgeRepoSubscription(ctx context.Context, arg EnsureForgeRepoSubscriptionParams) error
 	FallbackIssuesForTarget(ctx context.Context, arg FallbackIssuesForTargetParams) ([]FallbackIssuesForTargetRow, error)
 	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
+	ForgeMirrorByConflictKeys(ctx context.Context, arg ForgeMirrorByConflictKeysParams) (ForgeMirrorByConflictKeysRow, error)
+	ForgeMirrorByID(ctx context.Context, id string) (ForgeMirrorByIDRow, error)
+	// Ask mirroring settings and outbox persistence.
+	ForgeMirrorMode(ctx context.Context, arg ForgeMirrorModeParams) (int16, error)
 	ForgeScopeUserExists(ctx context.Context, accountID string) (bool, error)
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
 	// EXISTS guard leaves it in place if any other agent still subscribes).
@@ -320,6 +331,7 @@ type Querier interface {
 	InsertAgentSession(ctx context.Context, arg InsertAgentSessionParams) error
 	InsertAgentWorkspaceIgnore(ctx context.Context, arg InsertAgentWorkspaceIgnoreParams) error
 	InsertArchiveSegment(ctx context.Context, arg InsertArchiveSegmentParams) error
+	InsertAskForgeMirror(ctx context.Context, arg InsertAskForgeMirrorParams) error
 	InsertChannel(ctx context.Context, arg InsertChannelParams) error
 	// Channel-domain queries (sqlc adoption T3, RIG-3034). These replace the inline
 	// SQL literals that lived in internal/store/channels.go; the hand-written Store
@@ -404,6 +416,7 @@ type Querier interface {
 	IssuesByCoords(ctx context.Context, arg IssuesByCoordsParams) ([]IssuesByCoordsRow, error)
 	LatestCheckpointSeq(ctx context.Context, sessionID string) (int64, error)
 	LatestSessionForAccount(ctx context.Context, agentAccountID string) (string, error)
+	LeaseForgeMirror(ctx context.Context, arg LeaseForgeMirrorParams) (LeaseForgeMirrorRow, error)
 	LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSessionRow, error)
 	// An account's own rows only; the owner's grants are not included.
 	ListAgentForgeScopeRepos(ctx context.Context, arg ListAgentForgeScopeReposParams) ([]string, error)
@@ -417,6 +430,7 @@ type Querier interface {
 	ListChannels(ctx context.Context, accountID string) ([]ListChannelsRow, error)
 	ListEnabledForgeRepoSubscriptions(ctx context.Context, arg ListEnabledForgeRepoSubscriptionsParams) ([]ListEnabledForgeRepoSubscriptionsRow, error)
 	ListEnabledForgeRepos(ctx context.Context) ([]string, error)
+	ListForgeMirrorSettings(ctx context.Context) ([]ListForgeMirrorSettingsRow, error)
 	// The reconcile sweep's work list for one (provider, host): each subscribed
 	// coordinate with its LEFT-JOINed shared FETCH cursor (nullable when never
 	// observed) and the subscriber rows, container-scope rows collapsed per
@@ -536,6 +550,7 @@ type Querier interface {
 	// LockTokenUsage serializes one tenant's appends and rebuilds. A rebuild beside
 	// an append would count the append's events twice or lose them.
 	LockTokenUsage(ctx context.Context) error
+	MarkForgeMirror(ctx context.Context, arg MarkForgeMirrorParams) (int64, error)
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
 	MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledParams) (int64, error)
 	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
@@ -545,6 +560,7 @@ type Querier interface {
 	MessagesHeadSeq(ctx context.Context) (int64, error)
 	ModelRegistryVersion(ctx context.Context) (int64, error)
 	MoveMessagesToTopic(ctx context.Context, arg MoveMessagesToTopicParams) error
+	OpenForgeMirrors(ctx context.Context, agentAccountID string) ([]OpenForgeMirrorsRow, error)
 	// The accounts still owed a mention: a wake that failed before any Runner could
 	// serve it is retried for these once one attaches.
 	OwedMentionAccounts(ctx context.Context) ([]string, error)
@@ -621,6 +637,7 @@ type Querier interface {
 	RenameCoordinationChannel(ctx context.Context, arg RenameCoordinationChannelParams) (int64, error)
 	RenameDMChannel(ctx context.Context, arg RenameDMChannelParams) (int64, error)
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
+	RenewForgeMirror(ctx context.Context, arg RenewForgeMirrorParams) (int64, error)
 	RequireAgentSessionOwner(ctx context.Context, arg RequireAgentSessionOwnerParams) (bool, error)
 	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)
 	ResolveAckMessage(ctx context.Context, arg ResolveAckMessageParams) (int64, error)
@@ -771,6 +788,7 @@ type Querier interface {
 	UpsertChannelSubscription(ctx context.Context, arg UpsertChannelSubscriptionParams) error
 	UpsertExplicitPullRequestLink(ctx context.Context, arg UpsertExplicitPullRequestLinkParams) error
 	UpsertForgeArtifactCursor(ctx context.Context, arg UpsertForgeArtifactCursorParams) error
+	UpsertForgeMirrorSetting(ctx context.Context, arg UpsertForgeMirrorSettingParams) error
 	// Issue-domain queries (sqlc adoption T6, RIG-3034). These replace the inline
 	// SQL literals in internal/store/issues.go; the hand-written Store methods keep
 	// their signatures, the door-side validation, the ErrNotFound/ErrInvalidArgument

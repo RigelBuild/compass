@@ -645,6 +645,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 		"agent_boards", "agent_board_tasks",
 		"linear_agent_sessions",
 		"issues", "forge_repo_subscriptions", "forge_artifact_cursors",
+		"forge_mirror_settings", "forge_mirrors",
 		"forge_state_transitions",
 		"token_usage_events", "token_usage_rollups_hourly", "token_usage_rollups_daily",
 		"compute_usage_events", "compute_usage_rollups_hourly", "compute_usage_rollups_daily",
