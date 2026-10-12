@@ -35,6 +35,30 @@
 > coerces a list at a record-typed node into an index-keyed record, so a list
 > still reaches the registry.
 >
+> **Amendment (2026-10-12) — URL-embedded credentials.** The SDK
+> (`@oh-my-pi/pi-coding-agent@18.0.11`) dials `baseUrl` (`ProviderConfigSchema`
+> and `ModelDefinitionSchema`, `models-config-schema-bundle.ts`) and
+> `remoteCompaction.endpoint` (`resolveOpenAiCompactEndpoint`,
+> `@oh-my-pi/pi-agent-core@18.0.11` `compaction/openai.ts`), `v2Endpoint` and `streamingEndpoint`
+> (`compaction-v2-streaming.ts`). `remoteCompaction` exists at provider, model
+> definition and model override level. None of these go through
+> `resolveConfigValue`, so any credential in them is a literal. The door
+> refuses each such URL when it:
+>
+> - is not a string, or is not an absolute `http`/`https` URL with a host and
+>   no fragment;
+> - carries userinfo;
+> - has a query string that fails strict parsing (a bad escape), split on `&`
+>   and `;`;
+> - has a query parameter that names a credential. The name is lowercased with
+>   every non-alphanumeric rune removed, then matched exactly against `auth`,
+>   `authorization`, `sig` or `pwd`, or by suffix against `key`, `token`,
+>   `secret`, `password`, `signature` or `credential`.
+>
+> A non-mapping `remoteCompaction` is refused too. `compat.extraBody` stays
+> outside the door: it is free-form request shaping, and a key-name denylist
+> there would be a guess.
+>
 > Freezes on merge; later changes supersede by citation, never rewrite
 > (convention: `../compass-0.5/design.md:10-12`). Tracked as RIG-1678. Extends
 > the frozen RIG-1568 record

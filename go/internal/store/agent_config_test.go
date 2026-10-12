@@ -422,6 +422,9 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 		// non-string key with NO credential leaf must still be ACCEPTED. Guards
 		// against yamlMapEntries over-rejecting benign models config.
 		{"models.yml nested non-string key no credential", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    0: junk\n    baseUrl: https://y\n"}}},
+		{"models.yml baseUrl with port path and benign query", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y:8443/v1?api-version=2024-10-01\"\n"}}},
+		{"models.yml remoteCompaction endpoint plain", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    remoteCompaction:\n      endpoint: https://y/compact\n"}}},
+		{"models.yml baseUrl benign token-like query names", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?max_tokens=10&keyword=a&tokenizer=b\"\n"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -593,6 +596,126 @@ func assertBundleRejects(t *testing.T, cases []bundleRejectCase) {
 			}
 		})
 	}
+}
+
+// URL fields bypass env indirection, so userinfo or a credential query parameter is a literal secret.
+func TestValidateConfigBundleRejectsModelsURLCredentials(t *testing.T) {
+	assertBundleRejects(t, []bundleRejectCase{
+		{
+			name:    "provider baseUrl userinfo with password",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://u:sk-live-123@y/v1\"\n"},
+			wantSub: "providers.x.baseUrl with URL userinfo",
+		},
+		{
+			name:    "provider baseUrl userinfo token only",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://sk-live-123@y/v1\"\n"},
+			wantSub: "providers.x.baseUrl with URL userinfo",
+		},
+		{
+			name:    "provider baseUrl key query",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?key=sk-live-123\"\n"},
+			wantSub: "providers.x.baseUrl with credential query parameter \"key\"",
+		},
+		{
+			name:    "provider baseUrl mixed-case api-key query",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?a=1&Api-Key=sk-live-123\"\n"},
+			wantSub: "credential query parameter \"Api-Key\"",
+		},
+		{
+			name:    "model-definition baseUrl access_token query",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    models:\n      - id: m\n        baseUrl: \"https://y/v1?access_token=sk-live-123\"\n"},
+			wantSub: "providers.x.models[0].baseUrl",
+		},
+		{
+			name:    "provider remoteCompaction endpoint userinfo",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    remoteCompaction:\n      endpoint: \"https://u:p@y/compact\"\n"},
+			wantSub: "providers.x.remoteCompaction.endpoint",
+		},
+		{
+			name:    "model-definition remoteCompaction v2Endpoint token query",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    models:\n      - id: m\n        remoteCompaction:\n          v2Endpoint: \"https://y/c?token=sk-live-123\"\n"},
+			wantSub: "providers.x.models[0].remoteCompaction.v2Endpoint",
+		},
+		{
+			name:    "model-override remoteCompaction streamingEndpoint secret query",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    modelOverrides:\n      m:\n        remoteCompaction:\n          streamingEndpoint: \"https://y/s?secret=sk-live-123\"\n"},
+			wantSub: "providers.x.modelOverrides.m.remoteCompaction.streamingEndpoint",
+		},
+		{
+			name:    "provider baseUrl unparseable",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/%zz\"\n"},
+			wantSub: "providers.x.baseUrl to an unparseable URL",
+		},
+		{
+			name:    "provider baseUrl bad escape in credential value",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?key=sk-live-123%zz\"\n"},
+			wantSub: "providers.x.baseUrl to an unparseable URL",
+		},
+		{
+			name:    "provider baseUrl semicolon-separated credential",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?a=1;key=sk-live-123\"\n"},
+			wantSub: "credential query parameter \"key\"",
+		},
+		{
+			name:    "provider baseUrl plus-separated api key",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?api+key=sk-live-123\"\n"},
+			wantSub: "credential query parameter \"api key\"",
+		},
+		{
+			name:    "provider baseUrl dotted api key",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?api.key=sk-live-123\"\n"},
+			wantSub: "credential query parameter \"api.key\"",
+		},
+		{
+			name:    "provider baseUrl subscription-key suffix",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?subscription-key=sk-live-123\"\n"},
+			wantSub: "credential query parameter \"subscription-key\"",
+		},
+		{
+			name:    "provider baseUrl azure sas sig",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?sv=1&sig=abc\"\n"},
+			wantSub: "credential query parameter \"sig\"",
+		},
+		{
+			name:    "provider baseUrl scheme-less userinfo",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"u:sk-live-123@y/v1\"\n"},
+			wantSub: "providers.x.baseUrl to a URL that is not absolute",
+		},
+		{
+			name:    "provider baseUrl non-string",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: [\"https://u:p@y\"]\n"},
+			wantSub: "providers.x.baseUrl to a non-string value",
+		},
+		{
+			name:    "provider remoteCompaction non-mapping",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    remoteCompaction:\n      - \"https://u:p@y\"\n"},
+			wantSub: "providers.x.remoteCompaction to a non-mapping",
+		},
+		{
+			name:    "provider remoteCompaction v2Endpoint userinfo",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    remoteCompaction:\n      v2Endpoint: \"https://u:p@y/c\"\n"},
+			wantSub: "providers.x.remoteCompaction.v2Endpoint",
+		},
+		{
+			name:    "provider remoteCompaction streamingEndpoint shielded by non-string sibling",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    remoteCompaction:\n      0: junk\n      streamingEndpoint: \"https://u:p@y/s\"\n"},
+			wantSub: "providers.x.remoteCompaction.streamingEndpoint",
+		}, {
+			name:    "provider baseUrl fragment-borne credential",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1#key=sk-live-123\"\n"},
+			wantSub: "providers.x.baseUrl to a URL that is not absolute",
+		},
+		{
+			name:    "provider baseUrl scheme-less no colon",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"sk-live-123@y/v1\"\n"},
+			wantSub: "providers.x.baseUrl to a URL that is not absolute",
+		},
+		{
+			name:    "provider baseUrl passwd query",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: \"https://y/v1?passwd=x\"\n"},
+			wantSub: "credential query parameter \"passwd\"",
+		},
+	})
 }
 
 // TestValidateConfigBundleRejectsModelsHeaderShapes pins the models.yml header

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -972,11 +973,10 @@ func yamlMapEntries(node any) []yamlMapEntry {
 	}
 }
 
-// rejectCredentialModels rejects a models.yml member that sets either credential-bearing
-// provider surface (CP-4): providers.<name>.apiKey, or providers.<name>.headers.<h> set
-// to a NON-env-indirection literal (a pinned secret). An env-referenced header passes.
-// The door can't see the container env, so "is an env reference" is a syntactic judgment.
-// Model definitions and model overrides carry headers too, checked the same way.
+// rejectCredentialModels walks a models.yml member for literal credentials (CP-4):
+// providers.<name>.apiKey, then per owner (provider, model definition, model
+// override) header literals and URL-embedded credentials, via rejectCredentialOwner.
+// An env reference is a syntactic judgment: the door can't see the container env.
 func rejectCredentialModels(mapping map[string]any, joined string) error {
 	providers, present := mapping["providers"]
 	if !present || providers == nil {
@@ -992,13 +992,13 @@ func rejectCredentialModels(mapping map[string]any, joined string) error {
 		if v, present := yamlMapIndex(p.val, "apiKey"); present && v != nil {
 			return fmt.Errorf("%w: models member %q sets providers.%s.apiKey (provider credentials never ride the config bundle)", ErrInvalidArgument, joined, p.key)
 		}
-		if err := rejectCredentialHeaders(p.val, joined, "providers."+p.key); err != nil {
+		if err := rejectCredentialOwner(p.val, joined, "providers."+p.key); err != nil {
 			return err
 		}
 		models, _ := yamlMapIndex(p.val, "models")
 		list, _ := models.([]any)
 		for i, m := range list {
-			if err := rejectCredentialHeaders(m, joined, fmt.Sprintf("providers.%s.models[%d]", p.key, i)); err != nil {
+			if err := rejectCredentialOwner(m, joined, fmt.Sprintf("providers.%s.models[%d]", p.key, i)); err != nil {
 				return err
 			}
 		}
@@ -1008,12 +1008,124 @@ func rejectCredentialModels(mapping map[string]any, joined string) error {
 			return fmt.Errorf("%w: models member %q sets providers.%s.modelOverrides to a non-mapping (overrides must map model ids to overrides)", ErrInvalidArgument, joined, p.key)
 		}
 		for _, o := range overrideEntries {
-			if err := rejectCredentialHeaders(o.val, joined, "providers."+p.key+".modelOverrides."+o.key); err != nil {
+			if err := rejectCredentialOwner(o.val, joined, "providers."+p.key+".modelOverrides."+o.key); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// rejectCredentialOwner runs the per-owner checks shared by a provider, a model
+// definition, and a model override.
+func rejectCredentialOwner(owner any, joined, path string) error {
+	if err := rejectCredentialHeaders(owner, joined, path); err != nil {
+		return err
+	}
+	return rejectCredentialURLs(owner, joined, path)
+}
+
+// remoteCompactionURLKeys are the remoteCompaction members the SDK dials as URLs.
+var remoteCompactionURLKeys = []string{"endpoint", "v2Endpoint", "streamingEndpoint"}
+
+// credentialQueryExact and credentialQuerySuffixes judge a query parameter name
+// lowercased with every non-alphanumeric rune removed.
+var (
+	credentialQueryExact    = map[string]bool{"auth": true, "authorization": true, "sig": true, "pwd": true, "passwd": true}
+	credentialQuerySuffixes = []string{"key", "token", "secret", "password", "signature", "credential"}
+)
+
+// rejectCredentialURLs refuses a literal credential embedded in owner's baseUrl or
+// remoteCompaction endpoints. URL fields bypass env indirection, so any value is literal.
+func rejectCredentialURLs(owner any, joined, path string) error {
+	if err := rejectCredentialURL(owner, "baseUrl", joined, path); err != nil {
+		return err
+	}
+	rc, ok := yamlMapIndex(owner, "remoteCompaction")
+	if !ok || rc == nil {
+		return nil
+	}
+	if yamlMapEntries(rc) == nil {
+		return fmt.Errorf("%w: models member %q sets %s.remoteCompaction to a non-mapping (remoteCompaction must map fields to values)", ErrInvalidArgument, joined, path)
+	}
+	for _, key := range remoteCompactionURLKeys {
+		if err := rejectCredentialURL(rc, key, joined, path+".remoteCompaction"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectCredentialURL refuses owner[key] when it is not a string, is not an
+// absolute http(s) URL, carries userinfo or a fragment, or has a credential-named query parameter.
+func rejectCredentialURL(owner any, key, joined, path string) error {
+	v, ok := yamlMapIndex(owner, key)
+	if !ok || v == nil {
+		return nil
+	}
+	s, isString := v.(string)
+	if !isString {
+		return fmt.Errorf("%w: models member %q sets %s.%s to a non-string value", ErrInvalidArgument, joined, path, key)
+	}
+	if s == "" {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: models member %q sets %s.%s to an unparseable URL", ErrInvalidArgument, joined, path, key)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Fragment != "" {
+		return fmt.Errorf("%w: models member %q sets %s.%s to a URL that is not absolute http(s) without a fragment", ErrInvalidArgument, joined, path, key)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: models member %q sets %s.%s with URL userinfo (credentials never ride the config bundle)", ErrInvalidArgument, joined, path, key)
+	}
+	name, err := credentialQueryParam(u.RawQuery)
+	if err != nil {
+		return fmt.Errorf("%w: models member %q sets %s.%s to an unparseable URL", ErrInvalidArgument, joined, path, key)
+	}
+	if name != "" {
+		return fmt.Errorf("%w: models member %q sets %s.%s with credential query parameter %q (credentials never ride the config bundle)", ErrInvalidArgument, joined, path, key, name)
+	}
+	return nil
+}
+
+// credentialQueryParam returns the first credential-named parameter in rawQuery.
+// It splits on both '&' and ';' and fails on a bad escape: url.Values silently
+// drops such pairs, while the SDK sends the raw query unchanged.
+func credentialQueryParam(rawQuery string) (string, error) {
+	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		rawName, value, _ := strings.Cut(pair, "=")
+		name, err := url.QueryUnescape(rawName)
+		if err != nil {
+			return "", err
+		}
+		if _, err := url.QueryUnescape(value); err != nil {
+			return "", err
+		}
+		if isCredentialQueryName(name) {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+func isCredentialQueryName(name string) bool {
+	norm := strings.Map(func(r rune) rune {
+		if ('a' <= r && r <= 'z') || ('0' <= r && r <= '9') {
+			return r
+		}
+		return -1
+	}, strings.ToLower(name))
+	if credentialQueryExact[norm] {
+		return true
+	}
+	for _, suffix := range credentialQuerySuffixes {
+		if strings.HasSuffix(norm, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // rejectCredentialHeaders checks the headers node under owner (a provider, model
