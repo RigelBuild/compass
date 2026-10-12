@@ -415,6 +415,8 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 		{"top-level models.yml mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: https://y\n"}}},
 		{"models.yml headers env reference", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Org: MY_ORG_ENV\n"}}},
 		{"models.yml headers !command indirection", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: \"!op read secret\"\n"}}},
+		{"models.yml empty headers mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers: {}\n"}}},
+		{"models.yml null headers", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers: ~\n"}}},
 		// Symmetric to the shielded-credential models.yml reject cases: a nested
 		// non-string key with NO credential leaf must still be ACCEPTED. Guards
 		// against yamlMapEntries over-rejecting benign models config.
@@ -559,6 +561,35 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			name:    "models apiKey shielded by non-string siblings at providers and provider",
 			member:  tarEntry{name: "models.yml", content: "providers:\n  0: junk\n  openai:\n    1: junk\n    apiKey: sk-secret\n"},
 			wantSub: "providers.openai.apiKey",
+		},
+		// The SDK schema types every header value as a string, so a value of any
+		// other shape is not checked by isEnvIndirection; reject it here.
+		{
+			name:    "models header value mapping",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization:\n        v: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.headers.Authorization",
+		},
+		{
+			name:    "models header value list",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: [\"Bearer sk-live-123\"]\n"},
+			wantSub: "providers.x.headers.Authorization",
+		},
+		{
+			name:    "models header value number",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Key: 1234567890\n"},
+			wantSub: "providers.x.headers.X-Key",
+		},
+		{
+			name:    "models header value null",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Key:\n"},
+			wantSub: "providers.x.headers.X-Key",
+		},
+		{
+			// The SDK accepts a headers list and sends each item under its index
+			// as the header name, so a literal secret in a list reaches the wire.
+			name:    "models headers list",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      - \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.headers",
 		},
 		{
 			// The only denylist entry whose leaf is a RECORD not a scalar — the
