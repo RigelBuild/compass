@@ -143,6 +143,45 @@ func TestPullRequestBeforeIssueAttachesLater(t *testing.T) {
 	}
 }
 
+func TestPullRequestFieldsSurviveStoredPRRoundTrip(t *testing.T) {
+	p, _, _ := newIssueBoard(t)
+	mustPublishIssue(t, p, 1)
+
+	current := ingestedPR(10, 0, time.Hour, 1)
+	current.PR.HeadSha = "head-sha"
+	current.PR.MergeableState = "blocked"
+	current.PR.Reviews = []*compassv1.Review{{CommitId: "review-sha"}}
+	mustPublishPR(t, p, current)
+
+	legacy := ingestedPR(11, time.Hour, 2*time.Hour, 1)
+	mustPublishPR(t, p, legacy)
+
+	prs := cachedIssue1(t, p).GetPrs()
+	if len(prs) != 2 {
+		t.Fatalf("stored pull requests = %d, want 2", len(prs))
+	}
+	byNumber := make(map[uint32]*compassv1.PullRequest, len(prs))
+	for _, pr := range prs {
+		byNumber[pr.GetNumber()] = pr
+	}
+	currentPR := byNumber[10]
+	if currentPR == nil {
+		t.Fatal("stored current pull request is missing")
+	}
+	if currentPR.GetHeadSha() != "head-sha" || currentPR.GetMergeableState() != "blocked" {
+		t.Errorf("stored PR head/mergeable = %q/%q, want head-sha/blocked", currentPR.GetHeadSha(), currentPR.GetMergeableState())
+	}
+	if len(currentPR.GetReviews()) != 1 || currentPR.GetReviews()[0].GetCommitId() != "review-sha" {
+		t.Errorf("stored PR reviews = %v, want one review on review-sha", currentPR.GetReviews())
+	}
+	legacyPR := byNumber[11]
+	if legacyPR == nil {
+		t.Fatal("stored legacy pull request is missing")
+	}
+	if legacyPR.GetHeadSha() != "" || legacyPR.GetMergeableState() != "" || len(legacyPR.GetReviews()) != 0 {
+		t.Errorf("legacy stored PR fields = %q/%q/%v, want empty values", legacyPR.GetHeadSha(), legacyPR.GetMergeableState(), legacyPR.GetReviews())
+	}
+}
 func TestFallbackMovesWhenExplicitTargetArrives(t *testing.T) {
 	ctx := context.Background()
 	p, bus, st := newIssueBoard(t)

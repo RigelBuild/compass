@@ -41,6 +41,8 @@
 			"URL": "https://github.com/org/repo/pull/13",
 			"HeadRef": "feature",
 			"BaseRef": "main",
+			"HeadSHA": "",
+			"MergeableState": "",
 			"ForgeAccount": "octocat",
 			"Draft": true,
 			"Changed": { "Files": 0, "Additions": 0, "Deletions": 0 },

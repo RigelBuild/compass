@@ -20,6 +20,7 @@
 			"deletions": 30,
 			"changed_files": 4,
 			"merged": true,
+			"mergeable_state": "blocked",
 			"head": { "ref": "feature", "sha": "abc123" },
 			"base": { "ref": "main" },
 			"user": { "login": "octocat" }
@@ -31,11 +32,13 @@
 					{
 						"body": "lgtm",
 						"state": "APPROVED",
+						"commit_id": "review-sha",
 						"user": { "login": "botly", "type": "Bot" }
 					},
 					{
 						"body": "needs work",
 						"state": "CHANGES_REQUESTED",
+						"commit_id": "old-sha",
 						"user": { "login": "carol", "type": "User" }
 					}
 				]
@@ -165,6 +168,8 @@
 			"State": "merged",
 			"URL": "https://github.com/org/repo/pull/42",
 			"HeadRef": "feature",
+			"HeadSHA": "abc123",
+			"MergeableState": "blocked",
 			"BaseRef": "main",
 			"ForgeAccount": "octocat",
 			"Draft": false,
@@ -192,13 +197,15 @@
 					"Author": "botly",
 					"IsBot": true,
 					"Verdict": "approved",
-					"Body": "lgtm"
+					"Body": "lgtm",
+					"CommitID": "review-sha"
 				},
 				{
 					"Author": "carol",
 					"IsBot": false,
 					"Verdict": "changes_requested",
-					"Body": "needs work"
+					"Body": "needs work",
+					"CommitID": "old-sha"
 				}
 			],
 			"Threads": [

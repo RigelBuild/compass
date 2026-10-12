@@ -69,15 +69,17 @@ func TranslateIssue(in Issue, attr *compassv1.AgentAttribution) *compassv1.Issue
 // caller/projection supplies them).
 func TranslatePullRequest(in PullRequest, attr *compassv1.AgentAttribution) *compassv1.PullRequest {
 	return &compassv1.PullRequest{
-		Number:       narrowNumber(in.Number),
-		Title:        in.Title,
-		ForgeState:   in.State,
-		Url:          in.URL,
-		HeadRef:      in.HeadRef,
-		BaseRef:      in.BaseRef,
-		ForgeAccount: in.ForgeAccount,
-		Draft:        in.Draft,
-		Agent:        attr,
+		Number:         narrowNumber(in.Number),
+		Title:          in.Title,
+		ForgeState:     in.State,
+		Url:            in.URL,
+		HeadRef:        in.HeadRef,
+		BaseRef:        in.BaseRef,
+		HeadSha:        in.HeadSHA,
+		MergeableState: in.MergeableState,
+		ForgeAccount:   in.ForgeAccount,
+		Draft:          in.Draft,
+		Agent:          attr,
 		Changed: &compassv1.ChangedStats{
 			Files:     in.Changed.Files,
 			Additions: in.Changed.Additions,
@@ -131,10 +133,11 @@ func translateReviews(in []Review) []*compassv1.Review {
 	out := make([]*compassv1.Review, len(in))
 	for i, r := range in {
 		out[i] = &compassv1.Review{
-			Author:  r.Author,
-			IsBot:   r.IsBot,
-			Verdict: r.Verdict,
-			Body:    r.Body,
+			Author:   r.Author,
+			IsBot:    r.IsBot,
+			Verdict:  r.Verdict,
+			Body:     r.Body,
+			CommitId: r.CommitID,
 		}
 	}
 	return out

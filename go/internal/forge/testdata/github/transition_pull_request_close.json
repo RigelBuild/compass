@@ -30,6 +30,7 @@
 			"deletions": 2,
 			"changed_files": 3,
 			"merged": false,
+			"mergeable_state": "blocked",
 			"head": { "ref": "feature", "sha": "abc123" },
 			"base": { "ref": "main" },
 			"user": { "login": "octocat" }
@@ -41,6 +42,8 @@
 			"State": "closed",
 			"URL": "https://github.com/org/repo/pull/7",
 			"HeadRef": "feature",
+			"HeadSHA": "abc123",
+			"MergeableState": "blocked",
 			"BaseRef": "main",
 			"ForgeAccount": "octocat",
 			"Draft": false,

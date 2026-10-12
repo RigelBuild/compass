@@ -616,19 +616,20 @@ func (g *GitHub) GetIssue(ctx context.Context, repo string, number uint64) (Issu
 // open|closed plus a separate merged bool; toPullRequest folds them into the
 // forge domain's open|closed|merged.
 type ghPullDetail struct {
-	Number       uint64 `json:"number"`
-	Title        string `json:"title"`
-	Body         string `json:"body"`
-	State        string `json:"state"`
-	HTMLURL      string `json:"html_url"`
-	Draft        bool   `json:"draft"`
-	Additions    uint32 `json:"additions"`
-	Deletions    uint32 `json:"deletions"`
-	ChangedFiles uint32 `json:"changed_files"`
-	Merged       bool   `json:"merged"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
-	Head         struct {
+	Number         uint64 `json:"number"`
+	Title          string `json:"title"`
+	Body           string `json:"body"`
+	State          string `json:"state"`
+	HTMLURL        string `json:"html_url"`
+	Draft          bool   `json:"draft"`
+	Additions      uint32 `json:"additions"`
+	Deletions      uint32 `json:"deletions"`
+	ChangedFiles   uint32 `json:"changed_files"`
+	Merged         bool   `json:"merged"`
+	MergeableState string `json:"mergeable_state"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+	Head           struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
@@ -650,15 +651,17 @@ func (r ghPullDetail) toPullRequest() PullRequest {
 		state = prStateMerged
 	}
 	return PullRequest{
-		Number:       r.Number,
-		Title:        r.Title,
-		Body:         r.Body,
-		State:        state,
-		URL:          r.HTMLURL,
-		HeadRef:      r.Head.Ref,
-		BaseRef:      r.Base.Ref,
-		ForgeAccount: r.User.Login,
-		Draft:        r.Draft,
+		Number:         r.Number,
+		Title:          r.Title,
+		Body:           r.Body,
+		State:          state,
+		URL:            r.HTMLURL,
+		HeadRef:        r.Head.Ref,
+		HeadSHA:        r.Head.SHA,
+		MergeableState: r.MergeableState,
+		BaseRef:        r.Base.Ref,
+		ForgeAccount:   r.User.Login,
+		Draft:          r.Draft,
 		Changed: ChangedStats{
 			Files:     r.ChangedFiles,
 			Additions: r.Additions,
@@ -672,9 +675,10 @@ func (r ghPullDetail) toPullRequest() PullRequest {
 // ghReviewRow is the wire shape of one entry in the pull reviews list. Only the
 // fields forge.Review needs are decoded; the user type discriminates a bot.
 type ghReviewRow struct {
-	Body  string `json:"body"`
-	State string `json:"state"`
-	User  struct {
+	Body     string `json:"body"`
+	State    string `json:"state"`
+	CommitID string `json:"commit_id"`
+	User     struct {
 		Login string `json:"login"`
 		Type  string `json:"type"`
 	} `json:"user"`
@@ -705,10 +709,11 @@ func (g *GitHub) GetPullRequest(ctx context.Context, repo string, number uint64)
 	pr.Reviews = make([]Review, 0, len(reviews))
 	for _, rv := range reviews {
 		pr.Reviews = append(pr.Reviews, Review{
-			Author:  rv.User.Login,
-			IsBot:   rv.User.Type == "Bot",
-			Verdict: strings.ToLower(rv.State),
-			Body:    rv.Body,
+			Author:   rv.User.Login,
+			IsBot:    rv.User.Type == "Bot",
+			Verdict:  strings.ToLower(rv.State),
+			Body:     rv.Body,
+			CommitID: rv.CommitID,
 		})
 	}
 

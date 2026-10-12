@@ -98,6 +98,10 @@ type PullRequest struct {
 	HeadRef string
 	// BaseRef is the target branch name.
 	BaseRef string
+	// HeadSHA is the commit currently at the source branch head.
+	HeadSHA string
+	// MergeableState is the forge's mergeability assessment for the PR.
+	MergeableState string
 	// ForgeAccount is the native forge login that authored the PR.
 	ForgeAccount string
 	// Draft reports whether the PR is a draft on the forge.
@@ -160,6 +164,8 @@ type Review struct {
 	Verdict string
 	// Body is the review's summary body.
 	Body string
+	// CommitID is the commit the reviewer submitted this review against.
+	CommitID string
 }
 
 // ReviewThread is one inline (or PR-level) review comment thread.
