@@ -550,6 +550,39 @@ func (p *PodmanCLI) VerifyUsernsRemapSupport(ctx context.Context) error {
 	return nil
 }
 
+// pastaCanaryNetwork asks pasta for no forwards. pasta refuses it when
+// containers.conf pasta_options adds one, which podman applies to every container.
+const pastaCanaryNetwork = "pasta:-T,none,-U,none"
+
+// probeEntrypoint makes a probe container exit at once whatever the image runs.
+const probeEntrypoint = "--entrypoint=true"
+
+// VerifyNoPastaForwards refuses a host whose containers.conf pasta_options open
+// forwards: they reach host loopback ports past the armed egress ruleset, and
+// neither podman info nor inspect shows them. It is skipped when agents' default
+// network is not pasta, since pasta_options then never applies to them.
+func (p *PodmanCLI) VerifyNoPastaForwards(ctx context.Context, image string) error {
+	mode, err := p.defaultNetworkMode(ctx, image)
+	if err != nil {
+		return err
+	}
+	if mode != "pasta" && !strings.HasPrefix(mode, "pasta:") {
+		return nil
+	}
+	_, err = p.run(ctx, "podman run (pasta canary)", []string{
+		"run", "--rm", "--network", pastaCanaryNetwork, probeEntrypoint, image,
+	})
+	if cmdErr, ok := errors.AsType[*CommandError](err); ok && strings.Contains(cmdErr.Stderr, "conflicts with previous options") {
+		return fmt.Errorf("containers.conf pasta_options configures a pasta port forward, "+
+			"which would let agent containers reach host loopback ports past the egress firewall; "+
+			"remove the forward from pasta_options: %w", err)
+	}
+	if err != nil {
+		return fmt.Errorf("pasta canary container failed to start: %w", err)
+	}
+	return nil
+}
+
 // parsePodmanVersion parses the leading major.minor of a podman version string
 // (e.g. "5.8.4" or "4.3.1-dev") into its numeric components. Split out so the
 // floor comparison is unit-testable without spawning podman. An input without a
@@ -776,6 +809,24 @@ func (p *PodmanCLI) MountLabel(ctx context.Context, id WorkloadID) (string, erro
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// defaultNetworkMode reports the network mode podman gives a container created
+// with no --network, as agent containers are, by creating one and inspecting it.
+func (p *PodmanCLI) defaultNetworkMode(ctx context.Context, image string) (string, error) {
+	out, err := p.run(ctx, "podman create (network probe)", []string{"create", probeEntrypoint, image})
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(string(out))
+	defer func() {
+		_, _ = p.run(context.WithoutCancel(ctx), "podman rm (network probe)", []string{"rm", "-f", id})
+	}()
+	mode, err := p.run(ctx, "podman inspect (network probe)", []string{argInspect, argFormat, "{{.HostConfig.NetworkMode}}", id})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(mode)), nil
 }
 
 // execStreamingArgs assembles the argv for a streaming `podman exec -i`. Split

@@ -11,6 +11,8 @@ package main
 // cannot recur silently.
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -247,7 +249,7 @@ func TestBackendConfigSelectsMicroVM(t *testing.T) {
 func TestNewSpecBuilderAgentImageUnderMicroVM(t *testing.T) {
 	engine := runtime.NewMicroVMRuntime(runtime.MicroVMConfig{})
 
-	specs, err := newSpecBuilder(engine, "", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil)
+	specs, err := newSpecBuilder(t.Context(), engine, "", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil)
 	if err != nil {
 		t.Fatalf("newSpecBuilder(microvm, no image) = %v, want a builder", err)
 	}
@@ -255,7 +257,7 @@ func TestNewSpecBuilderAgentImageUnderMicroVM(t *testing.T) {
 		t.Fatal("newSpecBuilder(microvm, no image) returned no builder")
 	}
 
-	_, err = newSpecBuilder(engine, "compass-agent:latest", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil)
+	_, err = newSpecBuilder(t.Context(), engine, "compass-agent:latest", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil)
 	if err == nil {
 		t.Fatal("newSpecBuilder(microvm, image set) = nil error, want a refusal")
 	}
@@ -267,7 +269,35 @@ func TestNewSpecBuilderAgentImageUnderMicroVM(t *testing.T) {
 // The container backend keeps the requirement, so the relaxation above is
 // scoped to the backend that cannot apply an image.
 func TestNewSpecBuilderAgentImageStillRequiredUnderPodman(t *testing.T) {
-	if _, err := newSpecBuilder(runtime.NewPodmanCLI(), "", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil); err == nil {
+	if _, err := newSpecBuilder(t.Context(), runtime.NewPodmanCLI(), "", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil); err == nil {
 		t.Fatal("newSpecBuilder(podman, no image) = nil error, want the required-image rejection")
+	}
+}
+
+// pastaPodman is a podman engine whose pasta forward check returns err.
+type pastaPodman struct {
+	*runtime.PodmanCLI
+	image *string
+	err   error
+}
+
+func (e pastaPodman) VerifyNoPastaForwards(_ context.Context, image string) error {
+	*e.image = image
+	return e.err
+}
+
+// TestNewSpecBuilderRunsPastaCheck checks startup passes the resolved image to
+// the pasta forward check and returns no builder when it refuses.
+func TestNewSpecBuilderRunsPastaCheck(t *testing.T) {
+	var got string
+	engine := pastaPodman{PodmanCLI: runtime.NewPodmanCLI(), image: &got}
+	if _, err := newSpecBuilder(t.Context(), engine, "img:1", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil); err != nil || got != "img:1" {
+		t.Fatalf("newSpecBuilder = %v with checked image %q, want a builder and img:1", err, got)
+	}
+	refuse := errors.New("forward configured")
+	engine.err = refuse
+	specs, err := newSpecBuilder(t.Context(), engine, "img:1", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil)
+	if !errors.Is(err, refuse) || specs != nil {
+		t.Fatalf("newSpecBuilder = (%v, %v), want (nil, %v)", specs, err, refuse)
 	}
 }

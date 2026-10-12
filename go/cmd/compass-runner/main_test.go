@@ -25,6 +25,7 @@ import (
 var (
 	_ microVMPreflighter        = (*runtime.MicroVMRuntime)(nil)
 	_ podmanPreflighter         = (*runtime.PodmanCLI)(nil)
+	_ pastaForwardVerifier      = (*runtime.PodmanCLI)(nil)
 	_ canaryBooter              = (*runtime.MicroVMRuntime)(nil)
 	_ appleContainerPreflighter = (*runtime.AppleContainerCLI)(nil)
 )
@@ -420,5 +421,34 @@ func TestPreflightUnderSignalsInterruptCancelsCanary(t *testing.T) {
 	}
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Errorf("preflightUnderSignals = %v, want the canary's context.Canceled", err)
+	}
+}
+
+// pastaEngine records the image the pasta forward check receives.
+type pastaEngine struct {
+	runtime.WorkloadRuntime
+	image *string
+	err   error
+}
+
+func (e pastaEngine) VerifyNoPastaForwards(_ context.Context, image string) error {
+	*e.image = image
+	return e.err
+}
+
+// TestVerifyNoPastaForwards checks the runner runs the check with the agent
+// image, refuses on its error, and skips engines without it.
+func TestVerifyNoPastaForwards(t *testing.T) {
+	var got string
+	if err := verifyNoPastaForwards(t.Context(), pastaEngine{image: &got}, "img:1"); err != nil || got != "img:1" {
+		t.Fatalf("verifyNoPastaForwards = %v with image %q, want nil with img:1", err, got)
+	}
+	refuse := errors.New("forward configured")
+	if err := verifyNoPastaForwards(t.Context(), pastaEngine{image: &got, err: refuse}, "img:1"); !errors.Is(err, refuse) {
+		t.Fatalf("verifyNoPastaForwards = %v, want %v", err, refuse)
+	}
+	called := false
+	if err := verifyNoPastaForwards(t.Context(), podmanOnlyEngine{called: &called}, "img:1"); err != nil {
+		t.Fatalf("verifyNoPastaForwards on an engine without the check = %v, want nil", err)
 	}
 }
