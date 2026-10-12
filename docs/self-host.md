@@ -376,7 +376,7 @@ Use `compass agent repo add <agent> <org/name>`, `remove <agent> <org/name>` and
 
 Agents created later by an agent inherit its repository rows. A grant or remove signals the affected live agent to refresh its credential. After remove, the old token may still reach the removed repository until it expires, up to one hour.
 
-Seeding only inserts. Removing a grant from the flag does not revoke it. Boot seeding runs in the bootstrap tenant, so every account in the flag must be a user there; any other account fails startup.
+`--forge-scope-grants` is for bringing a server up, not for maintaining grants. When forge writes are enabled, every start inserts each listed grant that is missing, in the bootstrap tenant. Every account in the flag must be a user there, or startup fails. Seeding never revokes, so removing an entry from the flag leaves its grant in place. With forge writes disabled, nothing is seeded, but a malformed entry still fails startup. Once the server is up, manage agent access with `compass agent repo` above; there is no runtime operation for user grants.
 
 ### Choosing a provider
 
