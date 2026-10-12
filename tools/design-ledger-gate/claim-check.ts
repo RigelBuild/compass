@@ -32,20 +32,82 @@ function rateLimitError(): Error {
 
 const responseReason = (status: number) => `HTTP ${status}`;
 
-/** RFC 9110 IMF-fixdate, the HTTP-date form servers send. */
-const IMF_FIXDATE =
-	/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+const MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec";
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const LONG_DAYS = [
+	"Sunday",
+	"Monday",
+	"Tuesday",
+	"Wednesday",
+	"Thursday",
+	"Friday",
+	"Saturday",
+];
+/** The three HTTP-date forms of RFC 9110 5.6.7: IMF-fixdate, rfc850, asctime. */
+const HTTP_DATE_FORMS = [
+	{
+		re: new RegExp(
+			`^(\\w{3}), (\\d{2}) (${MONTHS}) (\\d{4}) (\\d{2}):(\\d{2}):(\\d{2}) GMT$`,
+		),
+		order: ["wday", "day", "mon", "year", "h", "m", "s"],
+		days: DAYS,
+	},
+	{
+		re: new RegExp(
+			`^(\\w+), (\\d{2})-(${MONTHS})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) GMT$`,
+		),
+		order: ["wday", "day", "mon", "year", "h", "m", "s"],
+		days: LONG_DAYS,
+	},
+	{
+		re: new RegExp(
+			`^(\\w{3}) (${MONTHS}) ([ \\d]\\d) (\\d{2}):(\\d{2}):(\\d{2}) (\\d{4})$`,
+		),
+		order: ["wday", "mon", "day", "h", "m", "s", "year"],
+		days: DAYS,
+	},
+] as const;
 
-/** Delta-seconds or a real IMF-fixdate; anything else falls back to 60 s. */
+/** Epoch ms for a valid HTTP-date in UTC, or null; impossible dates are rejected. */
+export function parseHttpDate(text: string, nowMs: number): number | null {
+	for (const form of HTTP_DATE_FORMS) {
+		const match = form.re.exec(text);
+		if (match === null) continue;
+		const get = (name: (typeof form.order)[number]) =>
+			match[form.order.indexOf(name) + 1]?.trim() ?? "";
+		const yearText = get("year");
+		let year = Number(yearText);
+		if (yearText.length === 2) {
+			// RFC 9110: a two-digit year more than 50 years ahead is in the past century.
+			const thisYear = new Date(nowMs).getUTCFullYear();
+			year += Math.floor(thisYear / 100) * 100;
+			if (year > thisYear + 50) year -= 100;
+		}
+		const month = MONTHS.split("|").indexOf(get("mon"));
+		const [day, h, m, s] = (["day", "h", "m", "s"] as const).map((name) =>
+			Number(get(name)),
+		);
+		const at = Date.UTC(year, month, day, h, m, s);
+		const date = new Date(at);
+		const exact =
+			date.getUTCFullYear() === year &&
+			date.getUTCMonth() === month &&
+			date.getUTCDate() === day &&
+			date.getUTCHours() === h &&
+			date.getUTCMinutes() === m &&
+			date.getUTCSeconds() === s &&
+			form.days[date.getUTCDay()] === get("wday");
+		return exact ? at : null;
+	}
+	return null;
+}
+
+/** Delta-seconds or a valid HTTP-date; anything else falls back to 60 s. */
 function readRetryAfter(response: Response, nowMs: number): number {
 	const header = response.headers.get("retry-after")?.trim() ?? "";
 	if (/^\d+$/.test(header)) return Number(header) * 1_000;
-	if (!IMF_FIXDATE.test(header)) return 60_000;
-	const at = Date.parse(header);
-	// A shape-valid but impossible date (day 32) must not become a zero wait.
-	if (!Number.isFinite(at) || new Date(at).toUTCString() !== header)
-		return 60_000;
-	return Math.max(0, at - nowMs);
+	const at = parseHttpDate(header, nowMs);
+	return at === null ? 60_000 : Math.max(0, at - nowMs);
 }
 
 async function readVerdicts(

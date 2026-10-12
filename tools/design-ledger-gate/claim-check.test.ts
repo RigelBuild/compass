@@ -7,6 +7,7 @@ import {
 	claimCheckViolations,
 	fetchClaims,
 	mergeBaseDecisionIds,
+	parseHttpDate,
 } from "./claim-check.ts";
 import { type Changed, type Deps, KEY_LINE, runOnce } from "./index.ts";
 
@@ -236,6 +237,35 @@ describe("fetchClaims", () => {
 		// Each round costs 14 s; counting sleeps alone would allow 13 rounds.
 		expect(calls).toBe(5);
 		expect(sleeps).toEqual([5_000, 5_000, 5_000, 5_000]);
+	});
+
+	test("parseHttpDate reads all three RFC 9110 forms as UTC", () => {
+		const now = Date.UTC(2026, 9, 12);
+		const expected = Date.UTC(1994, 10, 6, 8, 49, 37);
+		for (const text of [
+			"Sun, 06 Nov 1994 08:49:37 GMT",
+			"Sunday, 06-Nov-94 08:49:37 GMT",
+			"Sun Nov  6 08:49:37 1994",
+		]) {
+			expect(parseHttpDate(text, now)).toBe(expected);
+		}
+		// rfc850 two-digit year: within 50 years ahead stays in this century.
+		expect(parseHttpDate("Monday, 12-Oct-26 00:00:00 GMT", now)).toBe(now);
+	});
+
+	test("parseHttpDate rejects impossible dates and mismatched weekdays", () => {
+		const now = Date.UTC(2026, 9, 12);
+		for (const text of [
+			"Mon, 32 Jan 2025 00:00:00 GMT",
+			"Mon, 31 Feb 2025 00:00:00 GMT",
+			"Mon, 06 Nov 1994 08:49:37 GMT",
+			"Sun, 06 Nov 1994 25:00:00 GMT",
+			"Sun, 06-Nov-94 08:49:37 GMT",
+			"Sun Nov  6 08:49:37 1994 GMT",
+			"2026-10-12",
+		]) {
+			expect(parseHttpDate(text, now)).toBeNull();
+		}
 	});
 
 	test("Retry-After accepts zero and an HTTP-date", async () => {
