@@ -41,10 +41,8 @@ const (
 	// SegmentKindSuperseded holds pre-checkpoint history flushed at compaction;
 	// NEVER read on resume (the read view starts at the latest checkpoint).
 	SegmentKindSuperseded SegmentKind = "superseded"
-	// SegmentKindSafetyValve holds post-checkpoint entries evicted by the high
-	// size cap; spliced back on resume (T5). A later checkpoint re-marks any now
-	// pre-checkpoint safety_valve row to superseded, so a safety_valve row is
-	// post-latest-checkpoint by construction.
+	// SegmentKindSafetyValve holds post-checkpoint entries evicted by the size cap.
+	// It is resume-eligible only above the latest checkpoint, as the segment readers' query enforces.
 	SegmentKindSafetyValve SegmentKind = "safety_valve"
 	// SegmentKindSessionEnd archives the retained post-checkpoint tail at
 	// teardown for analytics completeness; NEVER read on resume (the PG tail
@@ -91,8 +89,8 @@ type ObjectStore interface {
 
 // SetObjectStore injects the archive-tier object-store client. It is set once at
 // construction (slice B wires the real client; store tests inject an in-memory
-// fake) before the store serves any flush. A nil object store fails a flush
-// loudly rather than silently dropping the archive.
+// fake) before the store serves any append. With none, appends request no flush
+// and the rows stay in PG; FlushTranscript reports it.
 func (s *Store) SetObjectStore(os ObjectStore) {
 	s.objectStore = os
 }
@@ -132,10 +130,9 @@ func (s *Store) BindLifetime(ctx context.Context, sessionID string, account Acco
 // lifetimeSeq is the agent-stamped per-lifetime sequence; the store rebases it
 // onto the session's base at lifetime bind (entry_seq = base + lifetimeSeq).
 // Unknown session_id is ErrInvalidArgument (the FK). A distinct entry re-using an
-// existing (session_id, entry_seq) is ErrConflict (the PK). When a new
-// checkpoint row commits, the PRIMARY flush fires (all pre-checkpoint hot-tail
-// rows -> one superseded segment, pruned); otherwise the SAFETY-VALVE cap is
-// checked. A deduped retry short-circuits before either flush.
+// existing (session_id, entry_seq) is ErrConflict (the PK). It returns once the
+// row commits: a fresh row requests a background flush pass, so an object-store
+// fault never fails or stalls the commit. A deduped retry requests nothing.
 func (s *Store) AppendTranscriptEntry(ctx context.Context, sessionID string, lifetimeSeq uint64, checkpoint bool, entryJSON, idempotencyKey string) error {
 	switch {
 	case sessionID == "":
@@ -177,18 +174,11 @@ func (s *Store) AppendTranscriptEntry(ctx context.Context, sessionID string, lif
 		}
 		return fmt.Errorf("store: append transcript entry: %w", err)
 	}
-	if rowsAffected == 0 {
-		// Duplicate idempotency_key: retry dedup. Silent success, NO flush — a
-		// retried checkpoint must not re-invoke the primary flush (design.md T4).
-		// If the original's flush failed, the next checkpoint's flush (or
-		// session-end) re-covers the range, so the PG read view stays correct.
-		return nil
+	// A deduped retry owes no flush: the original's commit already requested one.
+	if rowsAffected > 0 && s.objectStore != nil {
+		s.requestFlush(ctx, sessionID)
 	}
-
-	if checkpoint {
-		return s.primaryFlush(ctx, sessionID, entrySeq)
-	}
-	return s.maybeSafetyValve(ctx, sessionID)
+	return nil
 }
 
 // SessionTranscript returns the hot-tail post-supersession view: the latest
@@ -237,8 +227,8 @@ func transcriptRowsFromDB(rows []db.SessionTranscriptRow) []TranscriptEntryRow {
 // deterministic [min..max] key and the manifest INSERT is
 // ON CONFLICT (session_id, object_key) DO NOTHING, so a re-run cannot wedge; a
 // crash before the PUT leaves PG intact. This is the SESSION-END / external flush
-// entry point (the call-site is slice C); the PRIMARY and SAFETY-VALVE flushes
-// fire internally from AppendTranscriptEntry.
+// entry point; the PRIMARY and SAFETY-VALVE flushes run on the Store's
+// background flusher after AppendTranscriptEntry commits.
 func (s *Store) FlushSuperseded(ctx context.Context, sessionID string, uptoEntrySeq uint64, kind SegmentKind) error {
 	if sessionID == "" {
 		return fmt.Errorf("%w: session id is required", ErrInvalidArgument)
@@ -253,10 +243,10 @@ func (s *Store) FlushSuperseded(ctx context.Context, sessionID string, uptoEntry
 // SafetyValveSegments returns the manifest rows for a session whose kind is
 // safety_valve (post-checkpoint entries evicted to the object store by the size
 // cap), ordered by min_entry_seq — the only segments T5's reconstructor fetches
-// on resume. By construction these are all post-latest-checkpoint: the PRIMARY
-// flush re-marks any safety_valve row a later checkpoint superseded to
-// superseded, so a stale pre-checkpoint segment is never returned. Empty for a
-// normal session (superseded and session_end segments are excluded).
+// on resume. The query keeps only segments wholly above the latest checkpoint:
+// a valve pass can commit after a newer checkpoint lands, before the next pass
+// re-marks its row. Empty for a normal session (superseded and session_end
+// segments are excluded).
 func (s *Store) SafetyValveSegments(ctx context.Context, sessionID string) ([]ArchiveSegmentRow, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
@@ -299,7 +289,8 @@ func segmentRowsFromDB(rows []db.SafetyValveSegmentsRow) []ArchiveSegmentRow {
 // corrupt the reconstructed body (double-count an entry, or drop one). Under the
 // snapshot the at-rest disjointness invariant — safety_valve seqs are disjoint
 // from PG-tail seqs — is observed as a single consistent DB state, closing the
-// flush-between-reads race.
+// flush-between-reads race. Flushes run in the background, so a deferred or
+// failed one only leaves more rows in the PG tail.
 //
 // It preserves SessionTranscript's ErrNotFound-on-empty-tail behavior and
 // short-circuits before reading segments, mirroring the reconstructor's normal
@@ -383,83 +374,32 @@ func (s *Store) sessionBase(ctx context.Context, sessionID string) (uint64, erro
 	return toUint64(base), nil
 }
 
-// primaryFlush is the compaction/checkpoint-arrival flush: when a checkpoint row
-// at checkpointSeq commits, it flushes ALL pre-checkpoint hot-tail rows
-// (entry_seq < checkpointSeq) as one superseded segment and prunes them, and in
-// the SAME transaction re-marks any existing safety_valve manifest row whose
-// max_entry_seq < checkpointSeq to superseded — so no crash window leaves a
-// superseded safety_valve segment resume-eligible. Self-healing: it targets the
-// rows STILL IN the hot-tail, so a crash before this commits is idempotently
-// reclaimed by the next compaction.
-func (s *Store) primaryFlush(ctx context.Context, sessionID string, checkpointSeq uint64) error {
-	return s.flushUpto(ctx, sessionID, 0, checkpointSeq-1, SegmentKindSuperseded, true, checkpointSeq)
-}
-
-// maybeSafetyValve is the high-size-cap check on the same AppendTranscriptEntry
-// path. Two-phase: a CHEAP single-scalar aggregate sums the post-checkpoint
-// hot-tail bytes in ONE query and returns early when under the cap (the common
-// path — the valve sits above the compaction window, so it never engages in
-// normal operation, and no per-row materialization happens). ONLY when the
-// scalar exceeds the cap does it run the per-row query to pick the eviction cut
-// point, evict the oldest post-checkpoint chunk as a safety_valve segment, and
-// prune it, always retaining the newest entry.
+// maybeSafetyValve is the high-size-cap check, run by each flush pass after the
+// primary step. A cheap scalar sums the post-checkpoint bytes and returns early
+// under the cap (the normal case). Over it, the per-row read picks the cut with
+// valveCut, which stops before any checkpoint committed since the scalar and
+// always retains the newest entry.
 func (s *Store) maybeSafetyValve(ctx context.Context, sessionID string) error {
-	cpSeq, err := s.latestCheckpointSeq(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	// Cheap gate: sum the post-checkpoint byte total in ONE scalar (no per-row
-	// materialization on the common path). The valve sits above the compaction
-	// window, so in normal operation this scalar is under the cap and returns here.
-	tailBytes, err := s.q.HotTailBytes(ctx, db.HotTailBytesParams{
-		SessionID: sessionID,
-		EntrySeq:  toInt64(cpSeq),
-	})
+	tailBytes, err := s.q.HotTailBytes(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("store: measure hot tail: %w", err)
 	}
-	if tailBytes <= int64(s.safetyValveCapBytes) {
+	if s.flushes.afterValveRead != nil {
+		s.flushes.afterValveRead()
+	}
+	capBytes := int64(s.safetyValveCapBytes)
+	if tailBytes <= capBytes {
 		return nil
 	}
-	// Over the cap: NOW materialize the rows to pick the eviction cut point.
-	sizes, err := s.q.HotTailSizes(ctx, db.HotTailSizesParams{
-		SessionID: sessionID,
-		EntrySeq:  toInt64(cpSeq),
-	})
+	sizes, err := s.q.HotTailSizes(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("store: measure hot tail: %w", err)
 	}
-	type sized struct {
-		seq   uint64
-		bytes int64
-	}
-	entries := make([]sized, 0, len(sizes))
-	var total int64
-	for _, row := range sizes {
-		entries = append(entries, sized{seq: toUint64(row.EntrySeq), bytes: row.Bytes})
-		total += row.Bytes
-	}
-	cap64 := int64(s.safetyValveCapBytes)
-	if total <= cap64 {
-		return nil
-	}
-
-	// Evict the oldest post-checkpoint rows until the remainder fits under the
-	// cap, but never the newest entry (the just-appended one) — the eviction is
-	// a contiguous oldest chunk with a deterministic upper bound.
-	remaining := total
-	var upto uint64
-	for i := range len(entries) - 1 {
-		if remaining <= cap64 {
-			break
-		}
-		upto = entries[i].seq
-		remaining -= entries[i].bytes
-	}
+	from, upto := valveCut(sizes, capBytes)
 	if upto == 0 {
 		return nil
 	}
-	return s.flushUpto(ctx, sessionID, cpSeq+1, upto, SegmentKindSafetyValve, true, 0)
+	return s.flushUpto(ctx, sessionID, from, upto, SegmentKindSafetyValve, true, 0)
 }
 
 // latestCheckpointSeq returns the entry_seq of the session's newest checkpoint
@@ -510,7 +450,7 @@ func (s *Store) flushUpto(ctx context.Context, sessionID string, fromEntrySeq, u
 	minSeq, maxSeq := seqs[0], seqs[len(seqs)-1]
 
 	if s.objectStore == nil {
-		return errors.New("store: object store not configured for transcript flush")
+		return errNoObjectStore
 	}
 	key := segmentKey(sessionID, minSeq, maxSeq)
 	// PUT-before-prune: the segment must be durable in the object store before
@@ -538,12 +478,18 @@ func (s *Store) flushUpto(ctx context.Context, sessionID string, fromEntrySeq, u
 		return fmt.Errorf("store: insert archive segment: %w", err)
 	}
 	if prune {
-		if err := qtx.PruneTranscriptEntries(ctx, db.PruneTranscriptEntriesParams{
+		pruned, err := qtx.PruneTranscriptEntries(ctx, db.PruneTranscriptEntriesParams{
 			SessionID:  sessionID,
 			EntrySeq:   toInt64(minSeq),
 			EntrySeq_2: toInt64(maxSeq),
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("store: prune flushed entries: %w", err)
+		}
+		// The database owns disjointness: a pass whose range another pass already
+		// pruned, or a writer grew, must not commit its manifest row.
+		if pruned != int64(len(seqs)) {
+			return fmt.Errorf("%w: archived %d rows of [%d..%d], pruned %d", errFlushRaced, len(seqs), minSeq, maxSeq, pruned)
 		}
 	}
 	if remarkBelow > 0 {

@@ -366,6 +366,10 @@ func TestStartAgentSessionResumeS3FallbackReconstructsEvictedEntries(t *testing.
 		}
 	}
 
+	// The valve runs on the store's background flusher; wait for its pass.
+	if err := f.store.FlushTranscript(ctx, logical); err != nil {
+		t.Fatalf("FlushTranscript: %v", err)
+	}
 	// The valve must have fired: a safety_valve segment recorded and a body in
 	// the object store.
 	segs, err := f.store.SafetyValveSegments(ctx, logical)

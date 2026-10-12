@@ -8,9 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/RigelBuild/compass/go/internal/store/db"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +37,8 @@ var migrationsFS embed.FS
 // store; any concurrent Open blocks here until the first finishes, then finds
 // the schema already current.
 const migrationLockKey int64 = 0x0C0A_5500_0000_0001
+
+const instrumentationScope = "github.com/RigelBuild/compass/go/internal/store"
 
 // Store is the Postgres store of record. It owns a pgx connection pool and is
 // safe for concurrent use by every RPC handler; share it by pointer. Construct
@@ -65,6 +72,11 @@ type Store struct {
 	// resolved tenant (resolveTenant). Set once in Open before the store serves;
 	// no lock, mirroring coordinationHook's set-once-before-serving discipline.
 	bootstrapTenantID TenantID
+	// flushes runs transcript flushes after their commits, one pass at a time per
+	// session; Open starts it and Close joins it.
+	flushes *transcriptFlusher
+	// flushPassTimeout bounds one background flush pass; tests lower it.
+	flushPassTimeout time.Duration
 }
 
 // defaultPoolMaxConns caps the pool when the DSN sets no pool_max_conns. pgx's
@@ -127,12 +139,29 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, err
 	}
 	s.bootstrapTenantID = bt
+	// A metric miss must never fail Open, matching the comms counter.
+	failures, err := otel.Meter(instrumentationScope).Int64Counter(
+		"compass.store.transcript_flush_failures",
+		metric.WithDescription("Count of background transcript flush passes that failed."),
+	)
+	if err != nil {
+		slog.Warn("store: failed to create transcript flush failure counter; metric disabled", "err", err)
+		failures = nil
+	}
+	s.flushes = newTranscriptFlusher(failures)
+	s.flushPassTimeout = defaultFlushPassTimeout
+	s.startTranscriptFlusher(ctx)
 	return s, nil
 }
 
-// Close releases the connection pool. Idempotent-safe to call once; after it
+// Close stops the transcript flusher, waits for every in-flight pass, then
+// releases the pool, so no pass touches a closed pool. Call it once; after it
 // the Store must not be used.
 func (s *Store) Close() {
+	if s.flushes != nil && s.flushes.stop != nil {
+		s.flushes.stop()
+		<-s.flushes.stopped
+	}
 	s.pool.Close()
 }
 

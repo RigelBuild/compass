@@ -41,21 +41,34 @@ SELECT e.entry_seq, e.checkpoint, e.entry_json
   ORDER BY entry_seq;
 
 -- name: SafetyValveSegments :many
-SELECT object_key, min_entry_seq, max_entry_seq, kind
-   FROM agent_session_archive_segments
-  WHERE session_id = $1 AND kind = $2
-  ORDER BY min_entry_seq;
+SELECT a.object_key, a.min_entry_seq, a.max_entry_seq, a.kind
+   FROM agent_session_archive_segments a
+  WHERE a.session_id = $1 AND a.kind = $2
+    -- A valve segment at or below the latest checkpoint is stale: resume must not
+    -- splice it after that checkpoint's body.
+    AND a.min_entry_seq > (SELECT COALESCE(MAX(cp.entry_seq), 0)
+                  FROM agent_session_transcript_entries cp
+                 WHERE cp.session_id = $1 AND cp.checkpoint)
+  ORDER BY a.min_entry_seq;
 
+-- HotTailBytes and HotTailSizes derive the checkpoint inside the statement, so
+-- a checkpoint committed between the valve's reads cannot shift its window.
 -- name: HotTailBytes :one
-SELECT COALESCE(SUM(octet_length(entry_json)), 0)::BIGINT AS bytes
-   FROM agent_session_transcript_entries
-  WHERE session_id = $1 AND entry_seq > $2;
+SELECT COALESCE(SUM(octet_length(e.entry_json)), 0)::BIGINT AS bytes
+   FROM agent_session_transcript_entries e
+  WHERE e.session_id = $1
+    AND e.entry_seq > (SELECT COALESCE(MAX(cp.entry_seq), 0)
+                  FROM agent_session_transcript_entries cp
+                 WHERE cp.session_id = $1 AND cp.checkpoint);
 
 -- name: HotTailSizes :many
-SELECT entry_seq, octet_length(entry_json)::BIGINT AS bytes
-   FROM agent_session_transcript_entries
-  WHERE session_id = $1 AND entry_seq > $2
-  ORDER BY entry_seq;
+SELECT e.entry_seq, e.checkpoint, octet_length(e.entry_json)::BIGINT AS bytes
+   FROM agent_session_transcript_entries e
+  WHERE e.session_id = $1
+    AND e.entry_seq > (SELECT COALESCE(MAX(cp.entry_seq), 0)
+                  FROM agent_session_transcript_entries cp
+                 WHERE cp.session_id = $1 AND cp.checkpoint)
+  ORDER BY e.entry_seq;
 
 -- name: LatestCheckpointSeq :one
 SELECT COALESCE(MAX(entry_seq), 0)::BIGINT AS seq
@@ -79,7 +92,7 @@ INSERT INTO agent_session_archive_segments
      VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (session_id, object_key) DO NOTHING;
 
--- name: PruneTranscriptEntries :exec
+-- name: PruneTranscriptEntries :execrows
 DELETE FROM agent_session_transcript_entries
   WHERE session_id = $1 AND entry_seq >= $2 AND entry_seq <= $3;
 

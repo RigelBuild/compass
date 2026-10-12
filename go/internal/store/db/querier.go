@@ -280,8 +280,10 @@ type Querier interface {
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)
-	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)
-	HotTailSizes(ctx context.Context, arg HotTailSizesParams) ([]HotTailSizesRow, error)
+	// HotTailBytes and HotTailSizes derive the checkpoint inside the statement, so
+	// a checkpoint committed between the valve's reads cannot shift its window.
+	HotTailBytes(ctx context.Context, sessionID string) (int64, error)
+	HotTailSizes(ctx context.Context, sessionID string) ([]HotTailSizesRow, error)
 	InSweepSet(ctx context.Context, arg InSweepSetParams) (bool, error)
 	// Account-domain queries (sqlc adoption T2, RIG-3034). These replace the inline
 	// SQL literals that lived in internal/store/accounts.go; the hand-written Store
@@ -536,7 +538,7 @@ type Querier interface {
 	OwnersPeeredRowsForShare(ctx context.Context, arg OwnersPeeredRowsForShareParams) ([]OwnersPeeredRowsForShareRow, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
-	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) error
+	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) (int64, error)
 	PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error)
 	// Explicit links attach directly; a closing reference attaches only when none
 	// of the PR's explicit targets is an issue on the board.

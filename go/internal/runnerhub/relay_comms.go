@@ -694,17 +694,20 @@ func (h *Hub) RelayCommsCall(
 //   - A hub with no transcript store wired fails CodeUnavailable (the durable
 //     transcript leg is not mounted — a Deliver-only hub). Checked BEFORE
 //     session resolution, so even a bound session gets Unavailable.
-//   - committed=true on a fresh commit AND on an idempotent replay of an
-//     already-committed key (the store dedups a duplicate idempotency_key as a
-//     silent success). A non-commit is NEVER committed=false with a nil error —
+//   - committed=true once the row commits, on a fresh commit AND on an
+//     idempotent replay of an already-committed key (the store dedups a
+//     duplicate idempotency_key as a silent success). The archive flush runs
+//     after, on the store's flusher, so object-store faults never reach this
+//     path. A non-commit is NEVER committed=false with a nil error —
 //     it is ALWAYS a Connect status error, because the Runner drives
 //     at-least-once purely off the Connect code (err==nil => committed).
 //   - Store errors are mapped to Connect codes (transcriptCommitError, mirroring
 //     the comms edgeError): ErrInvalidArgument -> InvalidArgument (a malformed or
 //     unknown-session frame, terminal), ErrConflict -> AlreadyExists (a genuine
-//     entry_seq collision, terminal), any other -> Internal (a transient store
-//     fault the relay should retry). Never a bare error connect.CodeOf would read
-//     as CodeUnknown — that would wrongly present as a retryable teardown.
+//     entry_seq collision, terminal), any other -> Internal (a transient Postgres
+//     fault on the commit path the relay should retry). Never a bare error
+//     connect.CodeOf would read as CodeUnknown — that would wrongly present as
+//     a retryable teardown.
 //   - message_id and seq are not meaningful for a transcript entry (the Runner
 //     reads neither): shipped as "" and 0.
 func (h *Hub) CommitConversationFrame(
