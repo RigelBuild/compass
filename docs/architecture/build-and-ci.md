@@ -34,9 +34,9 @@ means PATH order never silently decides which copy of a tool wins.
 (`inputs`/`outputs`), affected-target detection, and local parallel execution.
 `moon run <project>:<task>` is the interface; `moon run :ci` runs every
 project's `ci` task. Affected detection decides which projects a change
-actually touches — CI's PR gate drives it through `moon ci :ci` (the
-CI-environment form, which reads the base from the provider), while a local
-`moon run :ci --affected` is the same detection on demand.
+actually touches. In CI, the `setup` job queries moon's affected set and hands
+each `moon` leg its targets; a local `moon run :ci --affected` is the same
+detection on demand.
 
 moon runs `go` and `bun` as **system tasks** — it execs the toolchain on PATH
 rather than managing its own. moon's graph/caching layer stays
@@ -60,31 +60,53 @@ step.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request, every push to `main`,
-and a nightly schedule. One job, `CI`, with two parts:
+`.github/workflows/ci.yml` runs on every pull request, every push to `main`, and
+a nightly schedule, and is re-run automatically (by `pr-base-repoint.yml`) when
+a stacked PR's base moves. It is a set of jobs behind one required check,
+`rollup`, which passes only when every job it needs succeeded, or skipped
+because `setup` marked it unaffected. Branch protection requires only `rollup`,
+so jobs can be added or renamed without touching it.
 
-- **The moon battery** — the whole battery over the moon task graph. It runs
-  one of two ways by event. On a **pull request** it is `moon ci :ci`, which
-  runs only the projects the PR affects — unrelated projects are not built. On
-  a **push to `main`** and on the **nightly schedule** it is the full
-  `moon run :ci`: every task, every project, no affected filter. Affected
-  detection trusts each task's `inputs` globs, so the full sweep on everything
-  that reaches `main` is the backstop — an incomplete glob that let a task be
-  skipped on a PR is caught the moment the change lands (and re-checked
-  nightly), named rather than hidden. Either way nothing about the workspace is
-  enumerated in the workflow, so a new project is gated the moment it is
-  registered in `.moon/workspace.yml`. This is the same task graph the local
-  gate and the `hk` pre-push hook run.
-- **The real-Postgres suites** — build-tagged `pgtest`, and therefore never
-  compiled by the moon battery's `go test ./...`. They run as a step in this
-  same job, unconditionally (no affected filter and no event filter, so they
-  run on every trigger including the nightly), against a Postgres service
-  container attached to the job. A step afterwards asserts they actually ran:
-  the harness *skips* when it finds no database, so a service that never came
-  up would otherwise pass silently. These suites were once a separate `pgtest`
-  job, to keep a Postgres-service outage from redding the hermetic gate; they
-  were folded in so there is one required check to gate `main` on, at the cost
-  that a service-container flake now reds `CI` (a re-run clears it).
+- **`setup`** asks moon which projects to run: the affected set on a pull
+  request, every project on `main` and nightly. Some special-job flags come from
+  a changed-paths diff instead. `tools/ci-matrix` turns that answer into the
+  matrix for the `moon` job and an affected flag for each special job. Nothing
+  about the workspace is listed in the workflow, so a new project is gated the
+  moment it is registered in `.moon/workspace.yml` and tagged with a
+  `ci-group.<name>` tag.
+- **`moon`** runs the moon battery, one leg per concern group, each its own
+  check, today `moon (go)`, `moon (bun)` and `moon (nix)`. This is the same task
+  graph the local gate and the `hk` pre-push hook run.
+- **Special jobs** need an environment the moon battery does not have. On a
+  pull request each runs only when its flag says the change affects it, except
+  `e2e`, which runs on every pull request. On `main` and nightly each always
+  runs.
+  - `pgtest`: the real-Postgres suites (`go test -tags pgtest -race ./...`)
+    against a Postgres service container. `COMPASS_REQUIRE_LIVE=1` turns a
+    missing database into a failure.
+  - `e2e`: the podman tier in a privileged container, so rootless podman can
+    load and run a tree-built agent image. The stack starts its own Postgres.
+    The command is
+    `go test -tags podman -race -count=1 -p 1 ./e2e/... ./cmd/compass-stack/...`.
+  - `microvm`, `forge`, `gtk4`, `darwin` and `agent-fod-arm64` cover the
+    microVM suites, the live forge contract, the GTK UI, the macOS bundle, and
+    the arm64 agent dependency pin.
+- **`bun-audit`** checks bun dependencies against the live advisory database,
+  whatever the affected set.
+
+A tagged suite skips when its dependency is missing, so `pgtest`, `e2e`,
+`microvm` and `forge` each end with a step that fails if the suite skipped
+instead of running.
+
+**Affected on pull requests, full on `main`.** Affected detection trusts each
+task's `inputs` globs and the affected closure, so an incomplete glob can skip
+a task on a pull request. The full run on every push to `main` and the nightly
+sweep catch that as soon as the change lands. The design-ledger gate is the one
+target added to every pull request whatever the closure says, because no
+affected edge reaches it.
+
+Which test tier to write at, and how the Go test harness is built:
+[Go testing tiers](testing-tiers.md).
 
 ### Where CI's toolchain comes from
 
@@ -121,8 +143,8 @@ Skipping what it cannot verify would make its green mean nothing.
   no check exercises the UI against a running server.
 - **The native app shell and the microVM boot lane.** `compass-app-dev`'s
   `build`/`run` and `compass-go:test-microvm` are `runInCI: false` — they need a
-  GUI toolchain and KVM respectively. The gtk4 e2e lane and `ci.yml`'s own
-  microVM step cover those paths instead, so neither is unguarded; they are just
+  GUI toolchain and KVM respectively. The `gtk4` and `microvm` jobs in
+  `ci.yml` cover those paths instead, so neither is unguarded; they are just
   not gated through the moon battery.
 
 ## Publishing the agent image
@@ -170,7 +192,7 @@ destination (a registry ref versus `containers-storage:`), so what CI publishes
 is byte-for-byte what a developer loads locally.
 
 **The unified release lane.** Publishing lives in
-`.github/workflows/release.yml`, **not** a step in the `CI` gate and **not** a
+`.github/workflows/release.yml`, **not** a job in `ci.yml` and **not** a
 required check. Two jobs share it. The per-push `publish-image` job runs
 main-only plus `workflow_dispatch`, closure-gated in-job (an in-job changed-path
 check, not a trigger `paths:` filter — release-pr needs every commit),
@@ -178,14 +200,12 @@ with its own concurrency group set to `cancel-in-progress: false` (publishes
 serialize rather than tear a tag pair mid-push) and a `packages: write` token
 the gate job never gets; it publishes `:git-<sha>` + `:latest`. The
 release-gated `release-image` job fires only when a `vX.Y.Z` release is cut and
-digest-re-tags that image to `:vX.Y.Z`. This is a principled exception to the
-[ONE-JOB doctrine](#ci): the doctrine exists to stop a second source of truth
-for *what the gate covers*, and this workflow enumerates no moon projects
-(`agent-image/` is a standalone devenv, not a moon project) — so it recreates
-none of the silent-staleness failure the doctrine guards against. A published
-tag is the source of truth; a missing per-push tag (paths filtered it out, or a
-superseding push skipped it under the serialized concurrency group) is **not** a
-failure — `workflow_dispatch` republishes any HEAD on demand.
+digest-re-tags that image to `:vX.Y.Z`. It keeps the [CI](#ci) rule that no
+workflow lists moon projects, because a list goes stale silently: release.yml
+lists none (`agent-image/` is a standalone devenv, not a moon project). A
+published tag is the source of truth; a missing per-push tag (paths filtered it
+out, or a superseding push skipped it under the serialized concurrency group) is
+**not** a failure — `workflow_dispatch` republishes any HEAD on demand.
 
 The same workflow also runs `publish-runner-image`, `publish-guest-image`, and
 `publish-gateway-image`. The gateway job builds and smoke-tests one local OCI
@@ -244,9 +264,9 @@ full class.
 The Compass agent's compile script derives the SDK's lazy legacy-module registry from installed package exports and supplies it through a local Bun plugin. If the SDK adds a supported root option, Compass can remove this local plugin and use that option instead.
 
 The build is heavy — the image closure is the dominant CI cost, the reason
-the gate's timeout is 90m — but it is not paid on every PR. `moon ci` runs a
-PR's *affected* projects only, and the task's `inputs` scope it to the image
-closure: the `agent-image/` tree, `packages/compass-agent/`, the root
+the `moon` job's timeout is 90m — but it is not paid on every PR. `setup`
+selects a PR's *affected* projects only, and the task's `inputs` scope it to the
+image closure: the `agent-image/` tree, `packages/compass-agent/`, the root
 `package.json` and `bun.lock`, and `tools/toolchain/versions/bun.nix`.
 A PR that touches none of those never builds the image; every push to main runs
 it unconditionally in the full sweep. Its `inputs` mirror the closure set the
@@ -254,9 +274,9 @@ it unconditionally in the full sweep. Its `inputs` mirror the closure set the
 trigger carries no `paths:` filter — release-pr needs every commit, so the job
 self-gates) — the reviewed source of truth for what changes the published
 artifact — including the bun pin file, since the image now builds bun from that
-pinned derivation, so a pin move there changes the output. As a project in the
-one-job gate it is a required check: a build break blocks merge, the same
-posture as every other required build in the gate.
+pinned derivation, so a pin move there changes the output. As a `ci-group.nix`
+project it runs in the `moon (nix)` leg behind `rollup`, so a build break
+blocks merge, like every other build in CI.
 
 ## Release assets and install channels
 
