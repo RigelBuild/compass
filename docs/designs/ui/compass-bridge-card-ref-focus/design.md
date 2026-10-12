@@ -20,7 +20,8 @@ Ledger: one candidate decision (§A5). It refines DL-221.
 
    **Option A: a grid `onKeyDown`.**
    - `onRefKeyDown` sits on both `.bridge-grid` elements. Solid delegates
-     `keydown` to `document`, so it runs before the window dispatcher.
+     `keydown` to the app render root, so it runs before the window
+     dispatcher.
    - When `focusedRef()` is set, it maps the event to a walk or move row, or to
      a literal `Escape` (exit). It runs `onRefCommand` or `exitRef`, then
      `preventDefault()`.
@@ -35,10 +36,6 @@ Ledger: one candidate decision (§A5). It refines DL-221.
    - Any future Escape row would also fire on the card.
    - An arrow on a ref leaves a pending leader armed.
    - Escape cannot be remapped.
-
-   Benefit: Escape exits ref mode without closing the tour callout. Kobalte
-   dismisses only an Escape whose default is not prevented, and its document
-   listener runs after Solid's. This is inferred and pinned by test (d).
 
    **Option B: a ref handle on the spine.**
    - A hand-built `RovingGroupHandle`, `refGroup`, is registered and retracted
@@ -67,7 +64,9 @@ Ledger: one candidate decision (§A5). It refines DL-221.
      `preventDefault()`.
    - A ref gets a focused card's zone exposure. The `when: "main"` rows are all
      Enter chords, which `RefLink` stops first.
-   - One Escape closes the tour callout and also exits ref mode.
+   - Like Option A, Escape on a ref leaves the tour callout open. Both paths
+     call `preventDefault()`, and Kobalte dismisses only an Escape that is not
+     default-prevented.
 
    **Recommendation:** B, unless Matt does not want an app-wide Escape row.
 3. **Screen-reader announcement inside a `<button>`.** ARIA makes a button's
@@ -317,8 +316,8 @@ Tests (same mount; option-specific results are marked):
   - `Escape` makes RIG-965 the cursor.
   - In a fresh mount, `ArrowLeft` lands on "compass-ui lane".
 - **(d) Tour callout.** Open the board callout as `startCallout` does, then
-  press `Escape` on a ref. Focus moves to the card. `store.tour.open()` is
-  `true` under A and `false` under B.
+  press `Escape` on a ref. Focus moves to the card, and `store.tour.open()`
+  stays `true` under both options.
 - **(e) Ordering (A only).** A window `keydown` listener added after mount
   records `store.keyboard.activeGroup()?.group.id` on `Escape` from a ref. It
   records `"bridge-board"`.
