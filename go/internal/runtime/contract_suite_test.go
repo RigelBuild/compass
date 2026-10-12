@@ -308,13 +308,20 @@ func rowExecStreamingUnstartablePrograms(t *testing.T, rt WorkloadRuntime, caps 
 				t.Fatalf("ExecStreaming(%q) = %v, want an exited stream", tc.command, err)
 			}
 			defer stream.IO.Stdin.Close()
+			// Drain both concurrently: microVM stdio is unbuffered io.Pipe, so
+			// reading stdout to EOF first blocks the pump on the stderr frame.
+			stderrCh := make(chan []byte, 1)
+			go func() {
+				b, _ := io.ReadAll(stream.IO.Stderr)
+				stderrCh <- b
+			}()
 			stdout, err := io.ReadAll(stream.IO.Stdout)
 			if err != nil || len(stdout) != 0 {
 				t.Fatalf("stdout = %q, err = %v; want empty stdout", stdout, err)
 			}
-			stderr, err := io.ReadAll(stream.IO.Stderr)
-			if err != nil || len(stderr) == 0 {
-				t.Fatalf("stderr = %q, err = %v; want non-empty stderr", stderr, err)
+			stderr := <-stderrCh
+			if len(stderr) == 0 {
+				t.Fatalf("stderr is empty; want a diagnostic")
 			}
 			if tc.code == 126 && (!strings.Contains(string(stderr), tc.command) || !hasCannotInvokeReason(string(stderr))) {
 				t.Fatalf("stderr = %q, want program path %q and a cannot-invoke reason", stderr, tc.command)
