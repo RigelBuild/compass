@@ -135,6 +135,8 @@ service CommsService {
   // minting; the message must already live in a topic of the channel). A pin
   // may compare-and-swap a currently pinned entry. Emits ChannelChanged.
   rpc UpdatePinnedBoard(UpdatePinnedBoardRequest) returns (UpdatePinnedBoardResponse);
+  // List whole boards for agents the caller can see, optionally filtered.
+  rpc ListAgentBoards(ListAgentBoardsRequest) returns (ListAgentBoardsResponse);
 
   // Approve a user as a peer of the caller (a user account). A peering is
   // live only when both users have approved each other; until then this is
@@ -147,10 +149,9 @@ service CommsService {
   rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
   // List the caller's peerings: every user with an approval in either direction.
   rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
-  // The event stream: message, channel, group, account, and workspace updates,
-  // scoped to the caller's visible set, with gap-free replay-on-join. The sole
-  // push path for the comms surface, mirroring CompassService.SubscribeEvents'
-  // seq/epoch replay contract (D1).
+  // The comms event stream, scoped to the caller's visible set, with gap-free
+  // replay-on-join. The sole push path for the comms surface, mirroring
+  // CompassService.SubscribeEvents' seq/epoch replay contract (D1).
   rpc SubscribeComms(SubscribeCommsRequest) returns (stream SubscribeCommsResponse);
 }
 
@@ -727,7 +728,7 @@ message BoardWaiting {
   string what = 3;
   // The related issue or pull request reference.
   string ref = 4;
-  // Task keys blocked by this wait.
+  // References blocked by this wait.
   repeated string blocks = 5;
 }
 
@@ -973,7 +974,7 @@ message UpdateAgentBoardResponse {
 message ListAgentBoardsRequest {
   // Restricts results to these agent handles when non-empty.
   repeated string agent_handles = 1;
-  // Searches board content for this query.
+  // Searches task titles and notes for this query.
   string query = 2;
   // Restricts results to boards containing this reference.
   string ref = 3;
@@ -993,11 +994,12 @@ message ListAgentBoardsResponse {
   repeated AgentBoard boards = 1;
 }
 
-// A live agent-board update; the event's board has no asks.
+// An authored-only board update. Clients re-read ListAgentBoards for derived refs
+// and asks.
 message AgentBoardChanged {
   // The account identifier of the agent whose board changed.
   string agent_account_id = 1;
-  // The updated board with asks omitted.
+  // The authored board; clients re-read ListAgentBoards for derived refs and asks.
   AgentBoard board = 2;
 }
 

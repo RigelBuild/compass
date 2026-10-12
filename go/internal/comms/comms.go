@@ -31,6 +31,7 @@ import (
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -54,6 +55,7 @@ type Comms struct {
 	bus                   commsBus
 	fabric                fabric.EventFabric
 	fabricPublishFailures metric.Int64Counter
+	boardForges           board.Forges
 	// adminID attributes every RPC on the local-socket door (the door has no
 	// interceptor yet). The T3 interceptor overrides this per-request by setting
 	// a caller on the context; adminID is the fallback when none is set.
@@ -110,6 +112,11 @@ func (c *Comms) PublishAccountRename(ctx context.Context, account store.Account,
 		}
 		c.publishChannelChanged(channel, nil)
 	}
+}
+
+// SetBoardForges sets the configured forge coordinates used for board reads.
+func (c *Comms) SetBoardForges(forges board.Forges) {
+	c.boardForges = forges
 }
 
 // SetPresenceSource wires the in-memory presence enum source GetRoster joins

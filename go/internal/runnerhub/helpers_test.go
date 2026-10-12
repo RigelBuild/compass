@@ -184,13 +184,15 @@ func bindSession(hub *Hub, sessionID string) {
 // the fake's proof of WHICH account attribution the hub applied — the security
 // invariant the RelayCommsCall tests defend.
 type commsCall struct {
-	account   store.AccountID
-	post      *compassv1.PostMessageRequest
-	list      *compassv1.ListMessagesRequest
-	topicList *compassv1.ListTopicsRequest
-	roster    *compassv1.GetRosterRequest
-	setStatus string
-	pin       *compassv1.UpdatePinnedBoardRequest
+	account     store.AccountID
+	post        *compassv1.PostMessageRequest
+	list        *compassv1.ListMessagesRequest
+	topicList   *compassv1.ListTopicsRequest
+	roster      *compassv1.GetRosterRequest
+	setStatus   string
+	pin         *compassv1.UpdatePinnedBoardRequest
+	updateBoard *compassv1.UpdateAgentBoardRequest
+	boards      *compassv1.ListAgentBoardsRequest
 
 	createChannel      *compassv1.CreateChannelRequest
 	updateMembers      *compassv1.UpdateChannelMembersRequest
@@ -226,6 +228,10 @@ type fakeCommsCaller struct {
 	setStatusReturned   string
 	pinResp             *compassv1.UpdatePinnedBoardResponse
 	pinErr              error
+	updateBoardResp     *compassv1.UpdateAgentBoardResponse
+	updateBoardErr      error
+	boardsResp          *compassv1.ListAgentBoardsResponse
+	boardsErr           error
 
 	createChannelResp *compassv1.CreateChannelResponse
 	createChannelErr  error
@@ -321,6 +327,20 @@ func (f *fakeCommsCaller) UpdatePinnedBoardAsAccount(_ context.Context, account 
 		return nil, f.pinErr
 	}
 	return f.pinResp, nil
+}
+
+func (f *fakeCommsCaller) UpdateBoardAsAccount(_ context.Context, account store.AccountID, req *compassv1.UpdateAgentBoardRequest) (*compassv1.UpdateAgentBoardResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, updateBoard: req})
+	return f.updateBoardResp, f.updateBoardErr
+}
+
+func (f *fakeCommsCaller) ListBoardsAsAccount(_ context.Context, account store.AccountID, req *compassv1.ListAgentBoardsRequest) (*compassv1.ListAgentBoardsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, boards: req})
+	return f.boardsResp, f.boardsErr
 }
 
 func (f *fakeCommsCaller) CreateChannelAsAccount(_ context.Context, account store.AccountID, req *compassv1.CreateChannelRequest) (*compassv1.CreateChannelResponse, error) {

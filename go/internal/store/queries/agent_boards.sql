@@ -61,35 +61,37 @@ SELECT agent_account_id, task_key, title, primary_ref, refs, state, note,
  WHERE agent_account_id = ANY($1::text[])
  ORDER BY position, task_key;
 
+
 -- name: SearchAgentBoardTasks :many
 WITH filtered_tasks AS (
     SELECT t.agent_account_id, t.task_key, t.position
       FROM agent_board_tasks t
-      JOIN agent_boards b ON b.agent_account_id = t.agent_account_id
      WHERE (cardinality(@agent_account_ids::text[]) = 0 OR t.agent_account_id = ANY(@agent_account_ids::text[]))
        AND (@query::text = '' OR to_tsvector('english', t.title || ' ' || t.note)
             @@ websearch_to_tsquery('english', @query::text))
        AND (@ref::text = '' OR @ref::text = ANY(t.refs) OR t.primary_ref = @ref::text)
        AND (@waiting_on::smallint = 0 OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(t.waiting) AS w(value)
+            SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.waiting) = 'array' THEN t.waiting ELSE '[]'::jsonb END) AS w(value)
              WHERE w.value->>'on' = CASE @waiting_on::smallint
                     WHEN 1 THEN 'BOARD_WAITING_ON_OPERATOR'
                     WHEN 2 THEN 'BOARD_WAITING_ON_AGENT'
                     WHEN 3 THEN 'BOARD_WAITING_ON_EXTERNAL'
                     ELSE '' END))
        AND (@state::smallint = 0 OR t.state = @state::smallint)
+), matching_agents AS (
+    SELECT b.agent_account_id
+      FROM agent_boards b
+     WHERE (cardinality(@agent_account_ids::text[]) = 0 OR b.agent_account_id = ANY(@agent_account_ids::text[]))
        AND (@halt::smallint = 0 OR b.halt_kind = @halt::smallint)
-),
-matching_agents AS (
-    SELECT DISTINCT agent_account_id
-      FROM filtered_tasks
-     ORDER BY agent_account_id
+       AND (@query::text = '' AND @ref::text = '' AND @waiting_on::smallint = 0 AND @state::smallint = 0
+            OR EXISTS (SELECT 1 FROM filtered_tasks f WHERE f.agent_account_id = b.agent_account_id))
+     ORDER BY b.agent_account_id
      LIMIT sqlc.arg(agent_limit)
 )
-SELECT f.agent_account_id, f.task_key
-  FROM filtered_tasks f
-  JOIN matching_agents a USING (agent_account_id)
- ORDER BY f.agent_account_id, f.position, f.task_key;
+SELECT a.agent_account_id, COALESCE(f.task_key, '')::text AS task_key
+  FROM matching_agents a
+  LEFT JOIN filtered_tasks f USING (agent_account_id)
+ ORDER BY a.agent_account_id, f.position, f.task_key;
 
 -- name: ListAsksByAuthor :many
 -- The EXISTS body is ChannelVisibleTo's predicate with the channel spelled

@@ -88,6 +88,10 @@ func (f fakeVisibility) SharesVisibleChannel(context.Context, store.AccountID, s
 	return false, errUnexpectedVisCall
 }
 
+func (fakeVisibility) boardVisible(context.Context, store.AccountID, store.AccountID) (bool, error) {
+	return false, errUnexpectedVisCall
+}
+
 // compile-time proof the fake satisfies the seam forwardComms consults.
 var _ eventVisibility = fakeVisibility{}
 
@@ -373,6 +377,11 @@ func (visibleAlways) IsAgentWorkspaceVisible(context.Context, store.AccountID, s
 	return true, nil
 }
 func (visibleAlways) SharesVisibleChannel(context.Context, store.AccountID, store.AccountID) (bool, error) {
+	return true, nil
+}
+
+func (visibleAlways) boardVisible(context.Context, store.AccountID, store.AccountID) (bool, error) {
+
 	return true, nil
 }
 

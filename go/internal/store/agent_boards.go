@@ -17,16 +17,37 @@ import (
 )
 
 const (
-	maxBoardTasks        = 30
-	maxBoardRefs         = 10
-	maxBoardWaiting      = 5
-	maxBoardSubagents    = 20
+	// MaxBoardTasks is the maximum number of tasks an agent board stores.
+	MaxBoardTasks = 30
+	// MaxBoardRefs is the maximum number of refs on one board task or waiting entry.
+	MaxBoardRefs = 10
+	// MaxBoardWaiting is the maximum number of waiting entries on one board task.
+	MaxBoardWaiting = 5
+	// MaxBoardSubagents is the maximum number of subagents on one board task.
+	MaxBoardSubagents = 20
+	// MaxBoardSearchAgents is the maximum number of agents returned by a board search.
+	MaxBoardSearchAgents = 100
 	maxBoardAsks         = 20
-	maxBoardSearchAgents = 100
-	maxBoardTitleChars   = 120
-	maxBoardNoteChars    = 500
-	maxBoardHaltChars    = 200
-	maxBoardWhatChars    = 200
+	// MaxBoardTaskKeyChars limits task keys.
+	MaxBoardTaskKeyChars = 64
+	// MaxBoardHandleChars limits waiting-entry agent handles.
+	MaxBoardHandleChars = 64
+	// MaxBoardSubagentIDChars limits subagent identifiers.
+	MaxBoardSubagentIDChars = 64
+	// MaxBoardSubagentAgentChars limits subagent agent names.
+	MaxBoardSubagentAgentChars = 64
+	// MaxBoardSubagentDescriptionChars limits subagent descriptions.
+	MaxBoardSubagentDescriptionChars = 200
+	// MaxBoardSubagentStatusChars limits subagent status strings.
+	MaxBoardSubagentStatusChars = 64
+	// MaxBoardTitleChars limits task titles.
+	MaxBoardTitleChars = 120
+	// MaxBoardNoteChars limits task notes.
+	MaxBoardNoteChars = 500
+	// MaxBoardHaltReasonChars limits board halt reasons.
+	MaxBoardHaltReasonChars = 200
+	// MaxBoardWhatChars limits waiting-entry explanations.
+	MaxBoardWhatChars = 200
 )
 
 // BoardTaskPatch updates only fields that are present in the patch.
@@ -145,8 +166,8 @@ func (s *Store) ApplyBoardPatch(ctx context.Context, agent AccountID, p BoardPat
 	if err != nil {
 		return BoardRow{}, err
 	}
-	if len(next.Tasks) > maxBoardTasks {
-		return BoardRow{}, fmt.Errorf("%w: board has %d tasks; maximum is %d", ErrInvalidArgument, len(next.Tasks), maxBoardTasks)
+	if len(next.Tasks) > MaxBoardTasks {
+		return BoardRow{}, fmt.Errorf("%w: board has %d tasks; maximum is %d", ErrInvalidArgument, len(next.Tasks), MaxBoardTasks)
 	}
 	if next.Focus != "" && !boardHasTask(next.Tasks, next.Focus) {
 		return BoardRow{}, fmt.Errorf("%w: focus task %q is not on the board", ErrInvalidArgument, next.Focus)
@@ -229,6 +250,9 @@ func mergeBoardPatch(current BoardRow, positions map[string]int32, p BoardPatch)
 		return BoardRow{}, nil, err
 	}
 	if p.Focus != nil {
+		if err := validateBoardTaskKey(*p.Focus); err != nil {
+			return BoardRow{}, nil, err
+		}
 		next.Focus = *p.Focus
 	}
 	if err := applyBoardHalt(&next, p); err != nil {
@@ -246,13 +270,16 @@ func applyBoardTaskUpserts(next *BoardRow, positions map[string]int32, p BoardPa
 		if patch.Key == "" {
 			return fmt.Errorf("%w: task key is required", ErrInvalidArgument)
 		}
+		if err := validateBoardTaskKey(patch.Key); err != nil {
+			return err
+		}
 		index := boardTaskIndex(next.Tasks, patch.Key)
 		if index < 0 {
 			if patch.Title == nil {
 				return fmt.Errorf("%w: new task %q requires a title", ErrInvalidArgument, patch.Key)
 			}
-			if len(next.Tasks) == maxBoardTasks {
-				return fmt.Errorf("%w: board exceeds %d tasks", ErrInvalidArgument, maxBoardTasks)
+			if len(next.Tasks) == MaxBoardTasks {
+				return fmt.Errorf("%w: board exceeds %d tasks", ErrInvalidArgument, MaxBoardTasks)
 			}
 			position, err := nextBoardPosition(positions)
 			if err != nil {
@@ -304,6 +331,9 @@ func removeBoardTasks(next *BoardRow, positions map[string]int32, keys []string)
 		if key == "" {
 			return fmt.Errorf("%w: removed task key is required", ErrInvalidArgument)
 		}
+		if err := validateBoardTaskKey(key); err != nil {
+			return err
+		}
 		remove[key] = struct{}{}
 		delete(positions, key)
 		if next.Focus == key {
@@ -332,7 +362,6 @@ func nextBoardPosition(positions map[string]int32) (int32, error) {
 	}
 	return highest + 1, nil
 }
-
 func applyTaskPatch(row BoardTaskRow, patch BoardTaskPatch) (BoardTaskRow, error) {
 	if patch.Title != nil {
 		row.Title = *patch.Title
@@ -348,6 +377,14 @@ func applyTaskPatch(row BoardTaskRow, patch BoardTaskPatch) (BoardTaskRow, error
 	}
 	if patch.Refs != nil {
 		row.Refs = append([]string(nil), (*patch.Refs)...)
+	}
+	if err := validateBoardNoNUL("board task primary ref", row.PrimaryRef, ErrInvalidArgument); err != nil {
+		return BoardTaskRow{}, err
+	}
+	for _, ref := range row.Refs {
+		if err := validateBoardNoNUL("board task ref", ref, ErrInvalidArgument); err != nil {
+			return BoardTaskRow{}, err
+		}
 	}
 	if patch.Waiting != nil {
 		waiting, err := validateWaiting(*patch.Waiting)
@@ -370,17 +407,20 @@ func applyTaskPatch(row BoardTaskRow, patch BoardTaskPatch) (BoardTaskRow, error
 }
 
 func validateTask(row BoardTaskRow) error {
+	if err := validateBoardTaskKey(row.Key); err != nil {
+		return err
+	}
 	if row.Title == "" {
 		return fmt.Errorf("%w: task %q title is required", ErrInvalidArgument, row.Key)
 	}
-	if n := utf8.RuneCountInString(row.Title); n > maxBoardTitleChars {
-		return fmt.Errorf("%w: task %q title has %d characters; maximum is %d", ErrInvalidArgument, row.Key, n, maxBoardTitleChars)
+	if err := validateBoardString("board task title", row.Title, MaxBoardTitleChars, ErrInvalidArgument); err != nil {
+		return err
 	}
-	if n := utf8.RuneCountInString(row.Note); n > maxBoardNoteChars {
-		return fmt.Errorf("%w: task %q note has %d characters; maximum is %d", ErrInvalidArgument, row.Key, n, maxBoardNoteChars)
+	if err := validateBoardString("board task note", row.Note, MaxBoardNoteChars, ErrInvalidArgument); err != nil {
+		return err
 	}
-	if len(row.Refs) > maxBoardRefs {
-		return fmt.Errorf("%w: task %q has %d refs; maximum is %d", ErrInvalidArgument, row.Key, len(row.Refs), maxBoardRefs)
+	if len(row.Refs) > MaxBoardRefs {
+		return fmt.Errorf("%w: task %q has %d refs; maximum is %d", ErrInvalidArgument, row.Key, len(row.Refs), MaxBoardRefs)
 	}
 	if row.State < 1 || row.State > 5 {
 		return fmt.Errorf("%w: task %q has invalid state %d", ErrInvalidArgument, row.Key, row.State)
@@ -392,20 +432,24 @@ func validateTask(row BoardTaskRow) error {
 	if err != nil {
 		return err
 	}
-	if len(subagents) > maxBoardSubagents {
-		return fmt.Errorf("%w: task %q has %d subagents; maximum is %d", ErrInvalidArgument, row.Key, len(subagents), maxBoardSubagents)
+	if len(subagents) > MaxBoardSubagents {
+		return fmt.Errorf("%w: task %q has %d subagents; maximum is %d", ErrInvalidArgument, row.Key, len(subagents), MaxBoardSubagents)
 	}
 	return nil
+}
+
+func validateBoardTaskKey(key string) error {
+	return validateBoardString("board task key", key, MaxBoardTaskKeyChars, ErrInvalidArgument)
 }
 
 func validateHalt(halt BoardHalt) error {
 	if halt.Kind < 0 || halt.Kind > 3 {
 		return fmt.Errorf("%w: invalid halt kind %d", ErrInvalidArgument, halt.Kind)
 	}
-	if n := utf8.RuneCountInString(halt.Reason); n > maxBoardHaltChars {
-		return fmt.Errorf("%w: halt reason has %d characters; maximum is %d", ErrInvalidArgument, n, maxBoardHaltChars)
+	if err := validateBoardNoNUL("board halt ref", halt.Ref, ErrInvalidArgument); err != nil {
+		return err
 	}
-	return nil
+	return validateBoardString("board halt reason", halt.Reason, MaxBoardHaltReasonChars, ErrInvalidArgument)
 }
 
 func validateWaiting(raw []byte) ([]byte, error) {
@@ -413,36 +457,81 @@ func validateWaiting(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &entries); err != nil || entries == nil {
 		return nil, fmt.Errorf("%w: waiting must be a JSON array", ErrInvalidArgument)
 	}
-	if len(entries) > maxBoardWaiting {
-		return nil, fmt.Errorf("%w: task has %d waiting entries; maximum is %d", ErrInvalidArgument, len(entries), maxBoardWaiting)
+	if len(entries) > MaxBoardWaiting {
+		return nil, fmt.Errorf("%w: task has %d waiting entries; maximum is %d", ErrInvalidArgument, len(entries), MaxBoardWaiting)
 	}
 	for _, entry := range entries {
-		var value map[string]json.RawMessage
-		if err := json.Unmarshal(entry, &value); err != nil || value == nil {
-			return nil, fmt.Errorf("%w: waiting entry must be an object", ErrInvalidArgument)
-		}
-		rawOn, found := value["on"]
-		var on string
-		if !found || json.Unmarshal(rawOn, &on) != nil {
-			return nil, fmt.Errorf("%w: waiting on is required", ErrInvalidArgument)
-		}
-		if on != "BOARD_WAITING_ON_OPERATOR" && on != "BOARD_WAITING_ON_AGENT" && on != "BOARD_WAITING_ON_EXTERNAL" {
-			return nil, fmt.Errorf("%w: waiting on must be a recognized BOARD_WAITING_ON value", ErrInvalidArgument)
-		}
-		if rawWhat, found := value["what"]; found {
-			var what string
-			if err := json.Unmarshal(rawWhat, &what); err != nil {
-				return nil, fmt.Errorf("%w: waiting what must be a string", ErrInvalidArgument)
-			}
-			if n := utf8.RuneCountInString(what); n > maxBoardWhatChars {
-				return nil, fmt.Errorf("%w: waiting what has %d characters; maximum is %d", ErrInvalidArgument, n, maxBoardWhatChars)
-			}
+		if err := validateWaitingEntry(entry); err != nil {
+			return nil, err
 		}
 	}
 	if len(entries) == 0 {
 		return []byte("[]"), nil
 	}
 	return append([]byte(nil), raw...), nil
+}
+
+func validateWaitingEntry(entry json.RawMessage) error {
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(entry, &value); err != nil || value == nil {
+		return fmt.Errorf("%w: waiting entry must be an object", ErrInvalidArgument)
+	}
+	if err := validateOptionalWaitingString(value, "agent_handle", "waiting agent_handle", MaxBoardHandleChars, true); err != nil {
+		return err
+	}
+	if err := validateWaitingOn(value); err != nil {
+		return err
+	}
+	if err := validateOptionalWaitingString(value, "what", "waiting what", MaxBoardWhatChars, true); err != nil {
+		return err
+	}
+	if err := validateOptionalWaitingString(value, "ref", "waiting ref", 0, false); err != nil {
+		return err
+	}
+	return validateWaitingBlocks(value["blocks"])
+}
+
+func validateOptionalWaitingString(value map[string]json.RawMessage, key, label string, maxChars int, bounded bool) error {
+	raw, found := value[key]
+	if !found {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return fmt.Errorf("%w: %s must be a string", ErrInvalidArgument, key)
+	}
+	if bounded {
+		return validateBoardString(label, text, maxChars, ErrInvalidArgument)
+	}
+	return validateBoardNoNUL(label, text, ErrInvalidArgument)
+}
+
+func validateWaitingOn(value map[string]json.RawMessage) error {
+	raw, found := value["on"]
+	var on string
+	if !found || json.Unmarshal(raw, &on) != nil {
+		return fmt.Errorf("%w: waiting on is required", ErrInvalidArgument)
+	}
+	if on != "BOARD_WAITING_ON_OPERATOR" && on != "BOARD_WAITING_ON_AGENT" && on != "BOARD_WAITING_ON_EXTERNAL" {
+		return fmt.Errorf("%w: waiting on must be a recognized BOARD_WAITING_ON value", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func validateWaitingBlocks(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []string
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return fmt.Errorf("%w: waiting blocks must be strings", ErrInvalidArgument)
+	}
+	for _, ref := range blocks {
+		if err := validateBoardNoNUL("waiting block ref", ref, ErrInvalidArgument); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func mergeSubagents(existing, updates []byte) ([]byte, error) {
@@ -474,7 +563,7 @@ func mergeSubagents(existing, updates []byte) ([]byte, error) {
 		positions[id] = len(current)
 		current = append(current, item)
 	}
-	for len(current) > maxBoardSubagents {
+	for len(current) > MaxBoardSubagents {
 		oldest := -1
 		oldestAt := int64(math.MaxInt64)
 		for i, item := range current {
@@ -485,7 +574,7 @@ func mergeSubagents(existing, updates []byte) ([]byte, error) {
 			}
 		}
 		if oldest < 0 {
-			return nil, fmt.Errorf("%w: task has more than %d unsettled subagents", ErrInvalidArgument, maxBoardSubagents)
+			return nil, fmt.Errorf("%w: task has more than %d unsettled subagents", ErrInvalidArgument, MaxBoardSubagents)
 		}
 		current = append(current[:oldest], current[oldest+1:]...)
 	}
@@ -517,6 +606,9 @@ func validateSubagents(raw []byte, callerInput bool) ([]json.RawMessage, error) 
 			return nil, errors.New("subagent entry must be an object")
 		}
 		id, err := subagentID(entry)
+		if err := validateSubagentStrings(value, callerInput); err != nil {
+			return nil, err
+		}
 		if err != nil || id == "" {
 			if callerInput {
 				return nil, fmt.Errorf("%w: subagent id is required", ErrInvalidArgument)
@@ -541,6 +633,55 @@ func subagentID(raw json.RawMessage) (string, error) {
 		return "", err
 	}
 	return value.ID, nil
+}
+
+func validateSubagentStrings(value map[string]json.RawMessage, callerInput bool) error {
+	for _, field := range []struct {
+		name string
+		max  int
+	}{{"id", MaxBoardSubagentIDChars}, {"agent", MaxBoardSubagentAgentChars}, {"description", MaxBoardSubagentDescriptionChars}, {"status", MaxBoardSubagentStatusChars}} {
+		raw, found := value[field.name]
+		if !found {
+			continue
+		}
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			if callerInput {
+				return fmt.Errorf("%w: subagent %s must be a string", ErrInvalidArgument, field.name)
+			}
+			return fmt.Errorf("subagent %s must be a string", field.name)
+		}
+		if callerInput {
+			if err := validateBoardString("subagent "+field.name, text, field.max, ErrInvalidArgument); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := validateBoardNoNUL("subagent "+field.name, text, errors.New("invalid stored subagent")); err != nil {
+			return err
+		}
+		if utf8.RuneCountInString(text) > field.max {
+			return fmt.Errorf("subagent %s exceeds %d characters", field.name, field.max)
+		}
+	}
+	return nil
+}
+
+func validateBoardString(field, value string, maxChars int, sentinel error) error {
+	if err := validateBoardNoNUL(field, value, sentinel); err != nil {
+		return err
+	}
+	if n := utf8.RuneCountInString(value); n > maxChars {
+		return fmt.Errorf("%w: %s has %d characters; maximum is %d", sentinel, field, n, maxChars)
+	}
+	return nil
+}
+
+func validateBoardNoNUL(field, value string, sentinel error) error {
+	if strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("%w: %s contains a NUL character", sentinel, field)
+	}
+	return nil
 }
 
 func subagentSettled(raw json.RawMessage) (bool, int64) {
@@ -652,9 +793,8 @@ func persistBoardTasks(ctx context.Context, q *db.Queries, agent AccountID, next
 // AgentBoards returns stored board rows for the requested agents.
 func (s *Store) AgentBoards(ctx context.Context, agents []AccountID) (map[AccountID]BoardRow, error) {
 	ids := uniqueAccountStrings(agents)
-	out := make(map[AccountID]BoardRow, len(ids))
 	if len(ids) == 0 {
-		return out, nil
+		return map[AccountID]BoardRow{}, nil
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -664,13 +804,24 @@ func (s *Store) AgentBoards(ctx context.Context, agents []AccountID) (map[Accoun
 	if err := armTx(ctx, s, tx); err != nil {
 		return nil, err
 	}
-	qtx := s.q.WithTx(tx)
-	boards, err := qtx.GetAgentBoards(ctx, ids)
+	rows, err := readAgentBoardRows(ctx, s.q.WithTx(tx), ids, s.afterBoardMetaRead)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit board snapshot: %w", err)
+	}
+	return rows, nil
+}
+
+func readAgentBoardRows(ctx context.Context, q *db.Queries, ids []string, afterMetaRead func()) (map[AccountID]BoardRow, error) {
+	out := make(map[AccountID]BoardRow, len(ids))
+	boards, err := q.GetAgentBoards(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("store: read agent boards: %w", err)
 	}
-	if s.afterBoardMetaRead != nil {
-		s.afterBoardMetaRead()
+	if afterMetaRead != nil {
+		afterMetaRead()
 	}
 	for _, row := range boards {
 		id := AccountID(row.AgentAccountID)
@@ -684,7 +835,7 @@ func (s *Store) AgentBoards(ctx context.Context, agents []AccountID) (map[Accoun
 			Tasks: make([]BoardTaskRow, 0),
 		}
 	}
-	tasks, err := qtx.GetAgentBoardTasks(ctx, ids)
+	tasks, err := q.GetAgentBoardTasks(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("store: read agent board tasks: %w", err)
 	}
@@ -705,33 +856,68 @@ func (s *Store) AgentBoards(ctx context.Context, agents []AccountID) (map[Accoun
 		})
 		out[id] = board
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("store: commit board snapshot: %w", err)
-	}
 	return out, nil
 }
 
-// SearchAgentBoards returns task keys matched by all supplied filters.
-func (s *Store) SearchAgentBoards(ctx context.Context, f BoardTaskFilter) (map[AccountID][]string, error) {
+// SearchAndReadAgentBoards returns matching task keys and complete boards from one snapshot.
+func (s *Store) SearchAndReadAgentBoards(ctx context.Context, f BoardTaskFilter) (map[AccountID][]string, map[AccountID]BoardRow, error) {
+	params := boardSearchParams(f)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: begin board search snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := armTx(ctx, s, tx); err != nil {
+		return nil, nil, err
+	}
+	qtx := s.q.WithTx(tx)
+	searchRows, err := qtx.SearchAgentBoardTasks(ctx, params)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: search agent boards: %w", err)
+	}
+	matches := make(map[AccountID][]string)
+	matchedIDs := make([]string, 0, len(searchRows))
+	seen := make(map[string]struct{}, len(searchRows))
+	for _, row := range searchRows {
+		id := AccountID(row.AgentAccountID)
+		if _, found := matches[id]; !found {
+			matches[id] = nil
+		}
+		if row.TaskKey != "" {
+			matches[id] = append(matches[id], row.TaskKey)
+		}
+		if _, found := seen[row.AgentAccountID]; !found {
+			seen[row.AgentAccountID] = struct{}{}
+			matchedIDs = append(matchedIDs, row.AgentAccountID)
+		}
+	}
+	if len(matchedIDs) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, nil, fmt.Errorf("store: commit board search snapshot: %w", err)
+		}
+		return matches, map[AccountID]BoardRow{}, nil
+	}
+	rows, err := readAgentBoardRows(ctx, qtx, matchedIDs, s.afterBoardMetaRead)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("store: commit board search snapshot: %w", err)
+	}
+	return matches, rows, nil
+}
+
+func boardSearchParams(f BoardTaskFilter) db.SearchAgentBoardTasksParams {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 20
-	} else if limit > maxBoardSearchAgents {
-		limit = maxBoardSearchAgents
+	} else if limit > MaxBoardSearchAgents {
+		limit = MaxBoardSearchAgents
 	}
-	rows, err := s.q.SearchAgentBoardTasks(ctx, db.SearchAgentBoardTasksParams{
+	return db.SearchAgentBoardTasksParams{
 		AgentAccountIds: uniqueAccountStrings(f.Agents), Query: strings.TrimSpace(f.Query), AgentLimit: int32(limit),
 		Ref: f.Ref, WaitingOn: f.WaitingOn, State: f.State, Halt: f.Halt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("store: search agent boards: %w", err)
 	}
-	out := make(map[AccountID][]string)
-	for _, row := range rows {
-		id := AccountID(row.AgentAccountID)
-		out[id] = append(out[id], row.TaskKey)
-	}
-	return out, nil
 }
 
 func uniqueAccountStrings(agents []AccountID) []string {

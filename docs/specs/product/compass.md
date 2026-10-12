@@ -704,7 +704,36 @@ pipeline.
 (`CreateChannelGroup`, `ListChannelGroups`, `ListChannels`, `CreateChannel`,
 `UpdateChannelMembers`), the agent-workspace projection (`OpenAgentWorkspace`),
 the message surface (`ListMessages`, `PostMessage`, `RespondToAsk`,
-`SearchMessages`), and the comms event stream (`SubscribeComms`).
+`SearchMessages`), roster reads (`GetRoster`, `ListAgentBoards`), and the comms
+event stream (`SubscribeComms`). Agents write their own board through the
+agent-gateway `update_board` relay arm, not a CommsService RPC.
+
+### Requirement: An agent writes its own board with a presence-based patch
+
+An agent writes only its own board, through the agent-gateway `update_board`
+arm; a non-agent caller gets `permission_denied`. In each `upsert_tasks`
+entry an unset field keeps the stored value and a set field (including `""`)
+replaces it. A present `refs` or `waiting` op replaces the list, and an empty
+op clears it. A new task needs a `title`, and its `state` defaults to `ACTIVE`.
+`remove_task_keys` drops tasks (removing the focus task clears the focus), and
+`halt` and `clear_halt` are mutually exclusive. An `automatic` patch never
+refreshes the board's written turn or time; an empty one returns the board
+unchanged and emits no event. A committed write emits `AgentBoardChanged` with
+the authored fields only.
+
+### Requirement: `ListAgentBoards` returns visible boards and derived refs
+
+`ListAgentBoards` SHALL return each matching agent's whole board when the
+caller can see that agent, with the matching task keys and derived refs. The
+request's optional handle, text, ref, waiting, state, and halt filters SHALL be
+combined with AND; the default limit is 20 and the maximum is 100.
+
+#### Scenario: A peer lists a matching board
+
+- **Given** an agent board visible to the caller and a task matching the query
+- **When** the caller lists boards with that query
+- **Then** the response contains the whole board and identifies the matching
+  task key.
 
 ### Requirement: The caller is the connection's account, never a request field
 
@@ -830,10 +859,15 @@ shared-grouped channel — (as `ListChannels`), not bare membership, so a shared
 channel's change still reaches a non-member who may see it; a
 `ChannelGroupChanged` by group visibility (as `ListChannelGroups`); an
 `AccountChanged` by account visibility (as `ListAccounts`); an
-`AgentWorkspaceChanged` by the agent's home-channel membership. A
+`AgentWorkspaceChanged` by the agent's home-channel membership; an
+`AgentBoardChanged` by board visibility (as `ListAgentBoards`). A
 `CommsResyncRequired` is a control frame and is always delivered. A non-visible
 event is silently skipped, not a resync; a failure to resolve visibility ends
 the stream rather than delivering an unfiltered event.
+
+`AgentBoardChanged` follows the same visibility split as `ListAgentBoards`. Its
+board contains authored fields only, with no asks or derived refs; clients
+re-read the list RPC for those values.
 
 Because a subscriber's live tail is filtered, it observes gaps in the bus `seq`
 sequence (an event dropped for a channel it cannot see). A gap is normal: the
@@ -1428,13 +1462,12 @@ Runner SHALL use the system roots.
 
 ## Not yet specified
 
-These surfaces are designed (see the design record) but not yet implemented, and
-are out of scope for this spec until they land:
+These remaining surfaces are designed (see the design record) but not yet
+implemented, and are out of scope for this spec until they land:
 
-- **Dispatcher and board/audit events** — the agent session layer above plugs a
-  Dispatcher MCP endpoint into a named seam, but its logic is a separate issue;
-  the board and audit event payloads are likewise unbuilt. The Bridge UI that
-  consumes the agent event stream is out of scope.
+- **Dispatcher and audit events** — the agent session layer above plugs a
+  Dispatcher MCP endpoint into a named seam, but its logic is a separate issue.
+  The Bridge UI that consumes the agent event stream is out of scope.
 - **Desktop shell (Wails v3)** — a thin shell bridging the UI webview to the
   server's Unix socket over its own IPC (a browser cannot dial a Unix socket),
   streaming gRPC-Web responses back as ordered byte frames with no localhost TCP

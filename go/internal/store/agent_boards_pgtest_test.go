@@ -85,6 +85,7 @@ func TestApplyBoardPatchMergesFieldsAndDefaultsState(t *testing.T) {
 	if got.WrittenTurn != 7 || got.WrittenAtUnixMs != 100 || got.Focus != "build" || got.Halt.Kind != 2 {
 		t.Fatalf("initial board metadata = %+v", got)
 	}
+
 	if len(got.Tasks) != 1 || got.Tasks[0].State != 2 || !reflect.DeepEqual(got.Tasks[0].Refs, refs) {
 		t.Fatalf("initial task = %+v", got.Tasks)
 	}
@@ -223,7 +224,7 @@ func TestApplyBoardPatchReplaceTaskAtCapacity(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "board-replace-full-owner")
 	agent := mustAgent(t, s, owner.ID, "board-replace-full-agent")
-	upserts := make([]BoardTaskPatch, maxBoardTasks)
+	upserts := make([]BoardTaskPatch, MaxBoardTasks)
 	for i := range upserts {
 		upserts[i] = boardTask(fmt.Sprintf("task-%02d", i), "task")
 	}
@@ -241,7 +242,7 @@ func TestApplyBoardPatchReplaceTaskAtCapacity(t *testing.T) {
 		t.Fatalf("AgentBoards after replacement: %v", err)
 	}
 	got := boards[agent.ID].Tasks
-	if len(got) != maxBoardTasks || got[0].Key != "task-01" || got[len(got)-1].Key != "replacement" {
+	if len(got) != MaxBoardTasks || got[0].Key != "task-01" || got[len(got)-1].Key != "replacement" {
 		t.Fatalf("replacement board has unexpected tasks: count=%d first=%q last=%q", len(got), got[0].Key, got[len(got)-1].Key)
 	}
 	for i, task := range got {
@@ -266,7 +267,7 @@ func TestApplyBoardPatchCapBreachPreservesExistingBoard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyBoardPatch(initial): %v", err)
 	}
-	tooMany := make([]BoardTaskPatch, maxBoardTasks)
+	tooMany := make([]BoardTaskPatch, MaxBoardTasks)
 	for i := range tooMany {
 		tooMany[i] = boardTask(fmt.Sprintf("extra-%02d", i), "extra")
 	}
@@ -463,7 +464,7 @@ func TestSearchAgentBoardsCombinesFilters(t *testing.T) {
 			t.Fatalf("ApplyBoardPatch(%s): %v", item.key, err)
 		}
 	}
-	got, err := s.SearchAgentBoards(t.Context(), BoardTaskFilter{
+	got, _, err := s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{
 		Agents: []AccountID{agent.ID, other.ID}, Query: "migration", Ref: "RIG-12", WaitingOn: 1, State: 2, Halt: 2,
 	})
 	if err != nil {
@@ -471,6 +472,33 @@ func TestSearchAgentBoardsCombinesFilters(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, map[AccountID][]string{agent.ID: {"match"}}) {
 		t.Fatalf("SearchAgentBoards = %v, want only the task matching every filter", got)
+	}
+}
+
+func TestSearchAgentBoardsIncludesEmptyBoardsAndFiltersByBoardHalt(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "board-empty-search-owner")
+	agent := mustAgent(t, s, owner.ID, "board-empty-search-agent")
+	if _, err := s.ApplyBoardPatch(t.Context(), agent.ID, BoardPatch{
+		Halt: &BoardHalt{Kind: 2}, NowUnixMs: 1,
+	}); err != nil {
+		t.Fatalf("ApplyBoardPatch(empty halted board): %v", err)
+	}
+
+	matches, _, err := s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{Agents: []AccountID{agent.ID}, Halt: 2})
+	if err != nil {
+		t.Fatalf("SearchAgentBoards(blocked): %v", err)
+	}
+	if keys, ok := matches[agent.ID]; !ok || len(keys) != 0 {
+		t.Fatalf("SearchAgentBoards(blocked) = %v, want empty board with no matched tasks", matches)
+	}
+
+	matches, _, err = s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{Agents: []AccountID{agent.ID}, Halt: 1})
+	if err != nil {
+		t.Fatalf("SearchAgentBoards(done): %v", err)
+	}
+	if _, ok := matches[agent.ID]; ok {
+		t.Fatalf("SearchAgentBoards(done) returned blocked board: %v", matches)
 	}
 }
 
@@ -490,7 +518,7 @@ func TestSearchAgentBoardsTitleAndPrimaryRefOnly(t *testing.T) {
 		t.Fatalf("ApplyBoardPatch: %v", err)
 	}
 	t.Run("title contains query", func(t *testing.T) {
-		got, err := s.SearchAgentBoards(t.Context(), BoardTaskFilter{Agents: []AccountID{agent.ID}, Query: "quartz"})
+		got, _, err := s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{Agents: []AccountID{agent.ID}, Query: "quartz"})
 		if err != nil {
 			t.Fatalf("SearchAgentBoards(title query): %v", err)
 		}
@@ -499,7 +527,7 @@ func TestSearchAgentBoardsTitleAndPrimaryRefOnly(t *testing.T) {
 		}
 	})
 	t.Run("primary ref matches without refs entry", func(t *testing.T) {
-		got, err := s.SearchAgentBoards(t.Context(), BoardTaskFilter{Agents: []AccountID{agent.ID}, Ref: primaryRef})
+		got, _, err := s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{Agents: []AccountID{agent.ID}, Ref: primaryRef})
 		if err != nil {
 			t.Fatalf("SearchAgentBoards(primary ref): %v", err)
 		}
@@ -512,7 +540,7 @@ func TestSearchAgentBoardsTitleAndPrimaryRefOnly(t *testing.T) {
 func TestSearchAgentBoardsClampsLimit(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "board-search-limit-owner")
-	agents := make([]AccountID, maxBoardSearchAgents+1)
+	agents := make([]AccountID, MaxBoardSearchAgents+1)
 	taskKeys := []string{"task-a", "task-b", "task-c"}
 	title := "searchable"
 	for i := range agents {
@@ -526,17 +554,17 @@ func TestSearchAgentBoardsClampsLimit(t *testing.T) {
 			t.Fatalf("ApplyBoardPatch(%d): %v", i, err)
 		}
 	}
-	got, err := s.SearchAgentBoards(t.Context(), BoardTaskFilter{Agents: agents, Limit: maxBoardSearchAgents + 1})
+	got, _, err := s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{Agents: agents, Limit: MaxBoardSearchAgents + 1})
 	if err != nil {
 		t.Fatalf("SearchAgentBoards: %v", err)
 	}
-	if len(got) != maxBoardSearchAgents {
-		t.Fatalf("SearchAgentBoards returned %d agents, want cap %d", len(got), maxBoardSearchAgents)
+	if len(got) != MaxBoardSearchAgents {
+		t.Fatalf("SearchAgentBoards returned %d agents, want cap %d", len(got), MaxBoardSearchAgents)
 	}
 	wantStoreIDs := append([]AccountID(nil), agents...)
 	slices.Sort(wantStoreIDs)
-	wantStoreIDs = wantStoreIDs[:maxBoardSearchAgents]
-	gotStoreIDs := make([]AccountID, 0, maxBoardSearchAgents)
+	wantStoreIDs = wantStoreIDs[:MaxBoardSearchAgents]
+	gotStoreIDs := make([]AccountID, 0, MaxBoardSearchAgents)
 	for agentID, keys := range got {
 		gotStoreIDs = append(gotStoreIDs, agentID)
 		if !reflect.DeepEqual(keys, taskKeys) {
@@ -566,7 +594,7 @@ func TestSearchAgentBoardsZeroLimitDefaultsToTwenty(t *testing.T) {
 			t.Fatalf("ApplyBoardPatch(%d): %v", i, err)
 		}
 	}
-	got, err := s.SearchAgentBoards(t.Context(), BoardTaskFilter{Limit: 0})
+	got, _, err := s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{Limit: 0})
 	if err != nil {
 		t.Fatalf("SearchAgentBoards(zero limit): %v", err)
 	}
@@ -624,6 +652,38 @@ func TestAgentBoardsUsesOneSnapshotAcrossConcurrentPatch(t *testing.T) {
 	board = after[agent.ID]
 	if board.Focus != "new" || len(board.Tasks) != 2 || board.Tasks[1].Key != "new" || board.Tasks[1].Title != newTitle {
 		t.Fatalf("committed patch missing from next snapshot: %+v", board)
+	}
+}
+
+func TestSearchAndReadAgentBoardsUsesOneSnapshotAcrossConcurrentPatch(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "board-search-snapshot-owner")
+	agent := mustAgent(t, s, owner.ID, "board-search-snapshot-agent")
+	if _, err := s.ApplyBoardPatch(t.Context(), agent.ID, BoardPatch{
+		Upsert: []BoardTaskPatch{boardTask("old", "match old")}, Focus: new("old"), NowUnixMs: 1,
+	}); err != nil {
+		t.Fatalf("ApplyBoardPatch(initial): %v", err)
+	}
+	var patchErr error
+	s.afterBoardMetaRead = func() {
+		s.afterBoardMetaRead = nil
+		_, patchErr = s.ApplyBoardPatch(t.Context(), agent.ID, BoardPatch{
+			Upsert: []BoardTaskPatch{boardTask("new", "match new")}, Focus: new("new"), NowUnixMs: 2,
+		})
+	}
+	matches, boards, err := s.SearchAndReadAgentBoards(t.Context(), BoardTaskFilter{Agents: []AccountID{agent.ID}, Query: "match"})
+	if err != nil {
+		t.Fatalf("SearchAndReadAgentBoards: %v", err)
+	}
+	if patchErr != nil {
+		t.Fatalf("ApplyBoardPatch(concurrent): %v", patchErr)
+	}
+	if !reflect.DeepEqual(matches[agent.ID], []string{"old"}) {
+		t.Fatalf("matched task keys = %v, want old snapshot", matches[agent.ID])
+	}
+	board := boards[agent.ID]
+	if board.Focus != "old" || len(board.Tasks) != 1 || board.Tasks[0].Key != "old" {
+		t.Fatalf("board rows came from a different snapshot: %+v", board)
 	}
 }
 
@@ -844,11 +904,77 @@ func TestAgentBoardsTenantIsolation(t *testing.T) {
 	if len(boards) != 0 {
 		t.Fatalf("tenant B saw tenant A board: %+v", boards)
 	}
-	matches, err := s.SearchAgentBoards(WithTenant(t.Context(), tenantB), BoardTaskFilter{Agents: []AccountID{agent.ID}})
+	matches, _, err := s.SearchAndReadAgentBoards(WithTenant(t.Context(), tenantB), BoardTaskFilter{Agents: []AccountID{agent.ID}})
 	if err != nil {
 		t.Fatalf("SearchAgentBoards(tenant B): %v", err)
 	}
 	if len(matches) != 0 {
 		t.Fatalf("tenant B saw tenant A task matches: %+v", matches)
+	}
+}
+
+func TestApplyBoardPatchRejectsBoardFieldCharacterLimits(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "board-field-limit-owner")
+	agent := mustAgent(t, s, owner.ID, "board-field-limit-agent")
+	title := "boundary task"
+	waiting := boardJSON(t, []map[string]any{{"on": "BOARD_WAITING_ON_OPERATOR", "agent_handle": strings.Repeat("h", 64)}})
+	overlongWaiting := boardJSON(t, []map[string]any{{"on": "BOARD_WAITING_ON_OPERATOR", "agent_handle": strings.Repeat("h", 65)}})
+	subagents := boardJSON(t, []map[string]any{{
+		"id": strings.Repeat("i", 64), "agent": strings.Repeat("a", 64),
+		"description": strings.Repeat("d", 200), "status": strings.Repeat("s", 64),
+	}})
+	if _, err := s.ApplyBoardPatch(t.Context(), agent.ID, BoardPatch{Upsert: []BoardTaskPatch{
+		{Key: strings.Repeat("k", 64), Title: &title, Waiting: &waiting, UpsertSubagents: subagents},
+		boardTask("probe", title),
+	}, NowUnixMs: 1}); err != nil {
+		t.Fatalf("ApplyBoardPatch(at size limits): %v", err)
+	}
+	badNULWaiting := boardJSON(t, []map[string]any{{"on": "BOARD_WAITING_ON_OPERATOR", "what": "bad\u0000text"}})
+	badNULWaitingRef := boardJSON(t, []map[string]any{{"on": "BOARD_WAITING_ON_OPERATOR", "ref": "bad\u0000ref"}})
+	badNULWaitingBlocks := boardJSON(t, []map[string]any{{"on": "BOARD_WAITING_ON_OPERATOR", "blocks": []string{"bad\u0000ref"}}})
+	badNULSubagentID := boardJSON(t, []map[string]any{{"id": "bad\u0000id"}})
+	badNULSubagentAgent := boardJSON(t, []map[string]any{{"id": "child-agent-nul", "agent": "bad\u0000agent"}})
+	badNULSubagentDescription := boardJSON(t, []map[string]any{{"id": "child-description-nul", "description": "bad\u0000text"}})
+	badNULSubagentStatus := boardJSON(t, []map[string]any{{"id": "child-status-nul", "status": "bad\u0000text"}})
+	overlongSubagentStatus := boardJSON(t, []map[string]any{{"id": "child-status", "status": strings.Repeat("s", 65)}})
+	badNULHaltReason := "bad\u0000text"
+	badNULHaltRef := "bad\u0000ref"
+	badNULFocus := "bad\u0000key"
+	badNULPrimaryRef := "bad\u0000ref"
+	badNULTaskTitle := "bad\u0000title"
+	badNULTaskNote := "bad\u0000note"
+	tests := []struct {
+		name  string
+		patch BoardPatch
+	}{
+		{name: "task key", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: strings.Repeat("k", 65), Title: &title}}}},
+		{name: "waiting agent handle", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Waiting: &overlongWaiting}}}},
+		{name: "subagent id length", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: boardJSON(t, []map[string]any{{"id": strings.Repeat("i", 65)}})}}}},
+		{name: "subagent agent length", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: boardJSON(t, []map[string]any{{"id": "child", "agent": strings.Repeat("a", 65)}})}}}},
+		{name: "subagent description length", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: boardJSON(t, []map[string]any{{"id": "child", "description": strings.Repeat("d", 201)}})}}}},
+		{name: "subagent status length", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: overlongSubagentStatus}}}},
+		{name: "waiting NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Waiting: &badNULWaiting}}}},
+		{name: "subagent id NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: badNULSubagentID}}}},
+		{name: "subagent agent NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: badNULSubagentAgent}}}},
+		{name: "subagent description NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: badNULSubagentDescription}}}},
+		{name: "subagent status NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", UpsertSubagents: badNULSubagentStatus}}}},
+		{name: "halt reason NUL", patch: BoardPatch{Halt: &BoardHalt{Kind: 1, Reason: badNULHaltReason}}},
+		{name: "focus NUL", patch: BoardPatch{Focus: &badNULFocus}},
+		{name: "task title NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Title: &badNULTaskTitle}}}},
+		{name: "task note NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Title: &title, Note: &badNULTaskNote}}}},
+		{name: "focus key NUL", patch: BoardPatch{Focus: &badNULFocus}},
+		{name: "task refs NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Title: &title, Refs: &[]string{"bad\u0000ref"}}}}},
+		{name: "waiting ref NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Waiting: &badNULWaitingRef}}}},
+		{name: "waiting blocks NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Waiting: &badNULWaitingBlocks}}}},
+		{name: "halt ref NUL", patch: BoardPatch{Halt: &BoardHalt{Kind: 1, Ref: badNULHaltRef}}},
+		{name: "primary ref NUL", patch: BoardPatch{Upsert: []BoardTaskPatch{{Key: "probe", Title: &title, PrimaryRef: &badNULPrimaryRef}}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.patch.NowUnixMs = 2
+			_, err := s.ApplyBoardPatch(t.Context(), agent.ID, tc.patch)
+			sentinelIs(t, err, ErrInvalidArgument, "invalid "+tc.name)
+		})
 	}
 }

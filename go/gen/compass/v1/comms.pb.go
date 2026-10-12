@@ -2933,7 +2933,7 @@ type BoardWaiting struct {
 	What string `protobuf:"bytes,3,opt,name=what,proto3" json:"what,omitempty"`
 	// The related issue or pull request reference.
 	Ref string `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
-	// Task keys blocked by this wait.
+	// References blocked by this wait.
 	Blocks        []string `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4292,7 +4292,7 @@ type ListAgentBoardsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Restricts results to these agent handles when non-empty.
 	AgentHandles []string `protobuf:"bytes,1,rep,name=agent_handles,json=agentHandles,proto3" json:"agent_handles,omitempty"`
-	// Searches board content for this query.
+	// Searches task titles and notes for this query.
 	Query string `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
 	// Restricts results to boards containing this reference.
 	Ref string `protobuf:"bytes,3,opt,name=ref,proto3" json:"ref,omitempty"`
@@ -4433,12 +4433,13 @@ func (x *ListAgentBoardsResponse) GetBoards() []*AgentBoard {
 	return nil
 }
 
-// A live agent-board update; the event's board has no asks.
+// An authored-only board update. Clients re-read ListAgentBoards for derived refs
+// and asks.
 type AgentBoardChanged struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The account identifier of the agent whose board changed.
 	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	// The updated board with asks omitted.
+	// The authored board; clients re-read ListAgentBoards for derived refs and asks.
 	Board         *AgentBoard `protobuf:"bytes,2,opt,name=board,proto3" json:"board,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -8082,7 +8083,7 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\vRosterScope\x12\x1d\n" +
 	"\x19ROSTER_SCOPE_NEIGHBORHOOD\x10\x00\x12\x18\n" +
 	"\x14ROSTER_SCOPE_SUBTREE\x10\x01\x12\x16\n" +
-	"\x12ROSTER_SCOPE_OWNER\x10\x022\xc0\x11\n" +
+	"\x12ROSTER_SCOPE_OWNER\x10\x022\x9c\x12\n" +
 	"\fCommsService\x12K\n" +
 	"\n" +
 	"CreateUser\x12\x1d.compass.v1.CreateUserRequest\x1a\x1e.compass.v1.CreateUserResponse\x12N\n" +
@@ -8107,7 +8108,8 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x0eSearchMessages\x12!.compass.v1.SearchMessagesRequest\x1a\".compass.v1.SearchMessagesResponse\x12]\n" +
 	"\x10SetChannelPolicy\x12#.compass.v1.SetChannelPolicyRequest\x1a$.compass.v1.SetChannelPolicyResponse\x12H\n" +
 	"\tGetRoster\x12\x1c.compass.v1.GetRosterRequest\x1a\x1d.compass.v1.GetRosterResponse\x12`\n" +
-	"\x11UpdatePinnedBoard\x12$.compass.v1.UpdatePinnedBoardRequest\x1a%.compass.v1.UpdatePinnedBoardResponse\x12N\n" +
+	"\x11UpdatePinnedBoard\x12$.compass.v1.UpdatePinnedBoardRequest\x1a%.compass.v1.UpdatePinnedBoardResponse\x12Z\n" +
+	"\x0fListAgentBoards\x12\".compass.v1.ListAgentBoardsRequest\x1a#.compass.v1.ListAgentBoardsResponse\x12N\n" +
 	"\vApprovePeer\x12\x1e.compass.v1.ApprovePeerRequest\x1a\x1f.compass.v1.ApprovePeerResponse\x12K\n" +
 	"\n" +
 	"RevokePeer\x12\x1d.compass.v1.RevokePeerRequest\x1a\x1e.compass.v1.RevokePeerResponse\x12H\n" +
@@ -8357,38 +8359,40 @@ var file_compass_v1_comms_proto_depIdxs = []int32{
 	86,  // 112: compass.v1.CommsService.SetChannelPolicy:input_type -> compass.v1.SetChannelPolicyRequest
 	88,  // 113: compass.v1.CommsService.GetRoster:input_type -> compass.v1.GetRosterRequest
 	91,  // 114: compass.v1.CommsService.UpdatePinnedBoard:input_type -> compass.v1.UpdatePinnedBoardRequest
-	58,  // 115: compass.v1.CommsService.ApprovePeer:input_type -> compass.v1.ApprovePeerRequest
-	60,  // 116: compass.v1.CommsService.RevokePeer:input_type -> compass.v1.RevokePeerRequest
-	62,  // 117: compass.v1.CommsService.ListPeers:input_type -> compass.v1.ListPeersRequest
-	109, // 118: compass.v1.CommsService.SubscribeComms:input_type -> compass.v1.SubscribeCommsRequest
-	65,  // 119: compass.v1.CommsService.CreateUser:output_type -> compass.v1.CreateUserResponse
-	67,  // 120: compass.v1.CommsService.CreateAgent:output_type -> compass.v1.CreateAgentResponse
-	69,  // 121: compass.v1.CommsService.ListAccounts:output_type -> compass.v1.ListAccountsResponse
-	71,  // 122: compass.v1.CommsService.CreateChannelGroup:output_type -> compass.v1.CreateChannelGroupResponse
-	73,  // 123: compass.v1.CommsService.ListChannelGroups:output_type -> compass.v1.ListChannelGroupsResponse
-	75,  // 124: compass.v1.CommsService.ListChannels:output_type -> compass.v1.ListChannelsResponse
-	77,  // 125: compass.v1.CommsService.CreateChannel:output_type -> compass.v1.CreateChannelResponse
-	79,  // 126: compass.v1.CommsService.UpdateChannelMembers:output_type -> compass.v1.UpdateChannelMembersResponse
-	81,  // 127: compass.v1.CommsService.OpenDM:output_type -> compass.v1.OpenDMResponse
-	83,  // 128: compass.v1.CommsService.ReparentAgent:output_type -> compass.v1.ReparentAgentResponse
-	85,  // 129: compass.v1.CommsService.ReparentChannel:output_type -> compass.v1.ReparentChannelResponse
-	95,  // 130: compass.v1.CommsService.OpenAgentWorkspace:output_type -> compass.v1.OpenAgentWorkspaceResponse
-	97,  // 131: compass.v1.CommsService.ListMessages:output_type -> compass.v1.ListMessagesResponse
-	99,  // 132: compass.v1.CommsService.PostMessage:output_type -> compass.v1.PostMessageResponse
-	101, // 133: compass.v1.CommsService.ListTopics:output_type -> compass.v1.ListTopicsResponse
-	103, // 134: compass.v1.CommsService.UpdateTopic:output_type -> compass.v1.UpdateTopicResponse
-	106, // 135: compass.v1.CommsService.RespondToAsk:output_type -> compass.v1.RespondToAskResponse
-	49,  // 136: compass.v1.CommsService.MirrorToForge:output_type -> compass.v1.MirrorToForgeResponse
-	108, // 137: compass.v1.CommsService.SearchMessages:output_type -> compass.v1.SearchMessagesResponse
-	87,  // 138: compass.v1.CommsService.SetChannelPolicy:output_type -> compass.v1.SetChannelPolicyResponse
-	89,  // 139: compass.v1.CommsService.GetRoster:output_type -> compass.v1.GetRosterResponse
-	93,  // 140: compass.v1.CommsService.UpdatePinnedBoard:output_type -> compass.v1.UpdatePinnedBoardResponse
-	59,  // 141: compass.v1.CommsService.ApprovePeer:output_type -> compass.v1.ApprovePeerResponse
-	61,  // 142: compass.v1.CommsService.RevokePeer:output_type -> compass.v1.RevokePeerResponse
-	63,  // 143: compass.v1.CommsService.ListPeers:output_type -> compass.v1.ListPeersResponse
-	29,  // 144: compass.v1.CommsService.SubscribeComms:output_type -> compass.v1.SubscribeCommsResponse
-	119, // [119:145] is the sub-list for method output_type
-	93,  // [93:119] is the sub-list for method input_type
+	54,  // 115: compass.v1.CommsService.ListAgentBoards:input_type -> compass.v1.ListAgentBoardsRequest
+	58,  // 116: compass.v1.CommsService.ApprovePeer:input_type -> compass.v1.ApprovePeerRequest
+	60,  // 117: compass.v1.CommsService.RevokePeer:input_type -> compass.v1.RevokePeerRequest
+	62,  // 118: compass.v1.CommsService.ListPeers:input_type -> compass.v1.ListPeersRequest
+	109, // 119: compass.v1.CommsService.SubscribeComms:input_type -> compass.v1.SubscribeCommsRequest
+	65,  // 120: compass.v1.CommsService.CreateUser:output_type -> compass.v1.CreateUserResponse
+	67,  // 121: compass.v1.CommsService.CreateAgent:output_type -> compass.v1.CreateAgentResponse
+	69,  // 122: compass.v1.CommsService.ListAccounts:output_type -> compass.v1.ListAccountsResponse
+	71,  // 123: compass.v1.CommsService.CreateChannelGroup:output_type -> compass.v1.CreateChannelGroupResponse
+	73,  // 124: compass.v1.CommsService.ListChannelGroups:output_type -> compass.v1.ListChannelGroupsResponse
+	75,  // 125: compass.v1.CommsService.ListChannels:output_type -> compass.v1.ListChannelsResponse
+	77,  // 126: compass.v1.CommsService.CreateChannel:output_type -> compass.v1.CreateChannelResponse
+	79,  // 127: compass.v1.CommsService.UpdateChannelMembers:output_type -> compass.v1.UpdateChannelMembersResponse
+	81,  // 128: compass.v1.CommsService.OpenDM:output_type -> compass.v1.OpenDMResponse
+	83,  // 129: compass.v1.CommsService.ReparentAgent:output_type -> compass.v1.ReparentAgentResponse
+	85,  // 130: compass.v1.CommsService.ReparentChannel:output_type -> compass.v1.ReparentChannelResponse
+	95,  // 131: compass.v1.CommsService.OpenAgentWorkspace:output_type -> compass.v1.OpenAgentWorkspaceResponse
+	97,  // 132: compass.v1.CommsService.ListMessages:output_type -> compass.v1.ListMessagesResponse
+	99,  // 133: compass.v1.CommsService.PostMessage:output_type -> compass.v1.PostMessageResponse
+	101, // 134: compass.v1.CommsService.ListTopics:output_type -> compass.v1.ListTopicsResponse
+	103, // 135: compass.v1.CommsService.UpdateTopic:output_type -> compass.v1.UpdateTopicResponse
+	106, // 136: compass.v1.CommsService.RespondToAsk:output_type -> compass.v1.RespondToAskResponse
+	49,  // 137: compass.v1.CommsService.MirrorToForge:output_type -> compass.v1.MirrorToForgeResponse
+	108, // 138: compass.v1.CommsService.SearchMessages:output_type -> compass.v1.SearchMessagesResponse
+	87,  // 139: compass.v1.CommsService.SetChannelPolicy:output_type -> compass.v1.SetChannelPolicyResponse
+	89,  // 140: compass.v1.CommsService.GetRoster:output_type -> compass.v1.GetRosterResponse
+	93,  // 141: compass.v1.CommsService.UpdatePinnedBoard:output_type -> compass.v1.UpdatePinnedBoardResponse
+	55,  // 142: compass.v1.CommsService.ListAgentBoards:output_type -> compass.v1.ListAgentBoardsResponse
+	59,  // 143: compass.v1.CommsService.ApprovePeer:output_type -> compass.v1.ApprovePeerResponse
+	61,  // 144: compass.v1.CommsService.RevokePeer:output_type -> compass.v1.RevokePeerResponse
+	63,  // 145: compass.v1.CommsService.ListPeers:output_type -> compass.v1.ListPeersResponse
+	29,  // 146: compass.v1.CommsService.SubscribeComms:output_type -> compass.v1.SubscribeCommsResponse
+	120, // [120:147] is the sub-list for method output_type
+	93,  // [93:120] is the sub-list for method input_type
 	93,  // [93:93] is the sub-list for extension type_name
 	93,  // [93:93] is the sub-list for extension extendee
 	0,   // [0:93] is the sub-list for field type_name

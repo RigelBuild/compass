@@ -342,6 +342,9 @@ type CommsCaller interface { //nolint:interfacebloat // one method per agent-com
 	// returning the server-truncated value that landed in the table — the write
 	// half of the set_status ordered write-then-publish (RIG-1721 T2 / T3).
 	SetStatusAsAccount(ctx context.Context, account store.AccountID, activity string) (string, error)
+	// UpdateBoardAsAccount applies a presence-aware board patch for account.
+	UpdateBoardAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdateAgentBoardRequest) (*compassv1.UpdateAgentBoardResponse, error)
+	ListBoardsAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListAgentBoardsRequest) (*compassv1.ListAgentBoardsResponse, error)
 	UpdatePinnedBoardAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdatePinnedBoardRequest) (*compassv1.UpdatePinnedBoardResponse, error)
 	CreateChannelAsAccount(ctx context.Context, account store.AccountID, req *compassv1.CreateChannelRequest) (*compassv1.CreateChannelResponse, error)
 	// UpdateChannelMembersAsAccountByName is the agent-tool path: channel_id is a

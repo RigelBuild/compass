@@ -117,7 +117,8 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CommsServiceApprovePeerProcedure,
 		compassv1connect.CommsServiceRevokePeerProcedure,
 		compassv1connect.CommsServiceListPeersProcedure,
-		compassv1connect.CommsServiceSubscribeCommsProcedure:
+		compassv1connect.CommsServiceSubscribeCommsProcedure,
+		compassv1connect.CommsServiceListAgentBoardsProcedure:
 		return authenticatedOpen{}, true
 
 	// The SecretsService write + read RPCs: open to any authenticated account. The

@@ -61,7 +61,7 @@ func (c *Comms) SubscribeComms(
 			return nil // client hung up before the first frame: a clean end
 		}
 	}
-	if err := forwardComms(ctx, actor, c.store, sub, stream); err != nil {
+	if err := forwardComms(ctx, actor, storeEventVisibility{Store: c.store, boardVisibleFn: c.boardVisible}, sub, stream); err != nil {
 		// A store error resolving per-event visibility: the stream ends rather than
 		// failing open (the event is never sent unfiltered), but the client must see
 		// a fault, not a clean EOF. The underlying error is logged, not returned, so
@@ -271,6 +271,17 @@ type eventVisibility interface {
 	// that agent — the shared-channel rule matching the fan-out's per-actor
 	// scoping (design.md:487-491).
 	SharesVisibleChannel(ctx context.Context, actor store.AccountID, agent store.AccountID) (bool, error)
+	// boardVisible gates AgentBoardChanged with the same clip as board reads.
+	boardVisible(ctx context.Context, actor, agent store.AccountID) (bool, error)
+}
+
+type storeEventVisibility struct {
+	*store.Store
+	boardVisibleFn func(context.Context, store.AccountID, store.AccountID) (bool, error)
+}
+
+func (s storeEventVisibility) boardVisible(ctx context.Context, viewer, agent store.AccountID) (bool, error) {
+	return s.boardVisibleFn(ctx, viewer, agent)
 }
 
 // visibleToActor reports whether actor may receive resp — the per-event D9 gate
@@ -316,6 +327,8 @@ func visibleToActor(
 		return vis.AccountVisibleTo(ctx, actor, store.AccountID(p.AccountChanged.GetAccount().GetId()))
 	case *compassv1.SubscribeCommsResponse_AgentWorkspaceChanged:
 		return vis.IsAgentWorkspaceVisible(ctx, actor, store.AccountID(p.AgentWorkspaceChanged.GetWorkspace().GetAgentAccountId()))
+	case *compassv1.SubscribeCommsResponse_AgentBoardChanged:
+		return vis.boardVisible(ctx, actor, store.AccountID(p.AgentBoardChanged.GetAgentAccountId()))
 	case *compassv1.SubscribeCommsResponse_AgentPresenceChanged:
 		return vis.SharesVisibleChannel(ctx, actor, store.AccountID(p.AgentPresenceChanged.GetAgentAccountId()))
 	case *compassv1.SubscribeCommsResponse_TopicUpserted:
