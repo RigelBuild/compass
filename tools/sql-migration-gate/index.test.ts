@@ -580,6 +580,26 @@ console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(roo
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	test("the gate entrypoint fails on an edited base migration", async () => {
+		const path = "go/internal/store/migrations/0001_init.sql";
+		await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
+			writeFileSync(join(root, path), "SELECT 2;\n");
+			const child = Bun.spawn(
+				[process.execPath, join(import.meta.dir, "index.ts")],
+				{
+					cwd: root,
+					env: { ...process.env, GATE_ROOT: root, GATE_BASE_REF: "base" },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			const stderr = await new Response(child.stderr).text();
+			expect(await child.exited, stderr).toBe(1);
+			expect(stderr).toContain(path);
+			expect(stderr).toContain("FAIL — findings from migration-immutability");
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------

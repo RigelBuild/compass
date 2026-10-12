@@ -396,14 +396,7 @@ if (import.meta.main) {
 			runLinter: makeSpawnLinter(root),
 			log: (msg) => console.log(msg),
 			err: (msg) => console.error(msg),
-			// Suspended while open migration PRs fold into 0001_init.sql; restore
-			// `checkMigrationImmutability(root)` once the dev DB is wiped.
-			runMigrationCheck: async () => ({
-				name: "migration-immutability",
-				code: 0,
-				output:
-					"sql-migration-gate: migration-immutability suspended for the 0001 collapse",
-			}),
+			runMigrationCheck: () => checkMigrationImmutability(root),
 		}),
 	);
 }
