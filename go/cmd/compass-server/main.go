@@ -408,6 +408,8 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 // socket-only default. A door without TLS would send bearer tokens in cleartext,
 // and TLS without a door is a keypair nothing serves; both fail fast here.
 func resolveNetworkDoor(listen string, listenFD int, tlsCert, tlsKey string) (string, int, *server.TLSConfig, error) {
+	// A whitespace-only value counts as unset, so a typo fails here, not at bind.
+	listen, tlsCert, tlsKey = strings.TrimSpace(listen), strings.TrimSpace(tlsCert), strings.TrimSpace(tlsKey)
 	if listenFD < 0 || (listenFD > 0 && listenFD < 3) {
 		return "", 0, nil, fmt.Errorf("--listen-fd must be 0 (unset) or at least 3, got %d", listenFD)
 	}

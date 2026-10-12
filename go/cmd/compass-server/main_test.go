@@ -45,6 +45,10 @@ func TestResolveNetworkDoor(t *testing.T) {
 		{name: "listen and inherited fd conflict", listen: listen, listenFD: 3, cert: cert, key: key, wantErr: []string{"--listen", "--listen-fd"}},
 		{name: "negative inherited fd is rejected", listenFD: -1, cert: cert, key: key, wantErr: []string{"--listen-fd", "3"}},
 		{name: "inherited fd below 3 is rejected", listenFD: 2, cert: cert, key: key, wantErr: []string{"--listen-fd", "3"}},
+		{name: "whitespace-only listen counts as unset", listen: " ", cert: cert, key: key, wantErr: []string{"--listen", "--listen-fd"}},
+		{name: "whitespace-only cert counts as unset", listen: listen, cert: "\t", key: key, wantErr: []string{"--tls-cert"}},
+		{name: "whitespace-only key counts as unset", listen: listen, cert: cert, key: "  ", wantErr: []string{"--tls-key"}},
+		{name: "padded values are trimmed", listen: " " + listen + " ", cert: " " + cert, key: key + " ", wantListen: listen},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
