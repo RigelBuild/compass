@@ -249,8 +249,22 @@ describe("fetchClaims", () => {
 		]) {
 			expect(parseHttpDate(text, now)).toBe(expected);
 		}
-		// rfc850 two-digit year: within 50 years ahead stays in this century.
+		// rfc850 two-digit year: up to exactly 50 years ahead stays in this century;
+		// later in that same calendar year is the past century.
 		expect(parseHttpDate("Monday, 12-Oct-26 00:00:00 GMT", now)).toBe(now);
+		expect(parseHttpDate("Monday, 12-Oct-76 00:00:00 GMT", now)).toBe(
+			Date.UTC(2076, 9, 12),
+		);
+		expect(parseHttpDate("Wednesday, 13-Oct-76 00:00:00 GMT", now)).toBe(
+			Date.UTC(1976, 9, 13),
+		);
+		expect(parseHttpDate("Friday, 31-Dec-76 00:00:00 GMT", now)).toBe(
+			Date.UTC(1976, 11, 31),
+		);
+		// A leap second at 23:59:60 is the next second.
+		expect(parseHttpDate("Sat, 31 Dec 2016 23:59:60 GMT", now)).toBe(
+			Date.UTC(2017, 0, 1),
+		);
 	});
 
 	test("parseHttpDate rejects impossible dates and mismatched weekdays", () => {
@@ -260,6 +274,7 @@ describe("fetchClaims", () => {
 			"Mon, 31 Feb 2025 00:00:00 GMT",
 			"Mon, 06 Nov 1994 08:49:37 GMT",
 			"Sun, 06 Nov 1994 25:00:00 GMT",
+			"Sun, 06 Nov 1994 08:49:60 GMT",
 			"Sun, 06-Nov-94 08:49:37 GMT",
 			"Sun Nov  6 08:49:37 1994 GMT",
 			"2026-10-12",

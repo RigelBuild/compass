@@ -68,6 +68,33 @@ const HTTP_DATE_FORMS = [
 	},
 ] as const;
 
+interface DateParts {
+	wday: string;
+	year: number;
+	month: number;
+	day: number;
+	h: number;
+	m: number;
+	s: number;
+}
+
+/** Epoch ms for parts that name a real UTC instant with the right weekday, else null. */
+function exactUtc(p: DateParts, days: readonly string[]): number | null {
+	// A leap second (:60) is only valid at 23:59; it maps to the next second.
+	const leap = p.s === 60 && p.h === 23 && p.m === 59;
+	const s = leap ? 59 : p.s;
+	const date = new Date(Date.UTC(p.year, p.month, p.day, p.h, p.m, s));
+	const exact =
+		date.getUTCFullYear() === p.year &&
+		date.getUTCMonth() === p.month &&
+		date.getUTCDate() === p.day &&
+		date.getUTCHours() === p.h &&
+		date.getUTCMinutes() === p.m &&
+		date.getUTCSeconds() === s &&
+		days[date.getUTCDay()] === p.wday;
+	return exact ? date.getTime() + (leap ? 1_000 : 0) : null;
+}
+
 /** Epoch ms for a valid HTTP-date in UTC, or null; impossible dates are rejected. */
 export function parseHttpDate(text: string, nowMs: number): number | null {
 	for (const form of HTTP_DATE_FORMS) {
@@ -76,28 +103,34 @@ export function parseHttpDate(text: string, nowMs: number): number | null {
 		const get = (name: (typeof form.order)[number]) =>
 			match[form.order.indexOf(name) + 1]?.trim() ?? "";
 		const yearText = get("year");
-		let year = Number(yearText);
-		if (yearText.length === 2) {
-			// RFC 9110: a two-digit year more than 50 years ahead is in the past century.
-			const thisYear = new Date(nowMs).getUTCFullYear();
-			year += Math.floor(thisYear / 100) * 100;
-			if (year > thisYear + 50) year -= 100;
-		}
-		const month = MONTHS.split("|").indexOf(get("mon"));
-		const [day, h, m, s] = (["day", "h", "m", "s"] as const).map((name) =>
-			Number(get(name)),
+		const parts: DateParts = {
+			wday: get("wday"),
+			year: Number(yearText),
+			month: MONTHS.split("|").indexOf(get("mon")),
+			day: Number(get("day")),
+			h: Number(get("h")),
+			m: Number(get("m")),
+			s: Number(get("s")),
+		};
+		if (yearText.length !== 2) return exactUtc(parts, form.days);
+		// RFC 9110: an rfc850 date more than 50 years in the future is in the past century.
+		const century = Math.floor(new Date(nowMs).getUTCFullYear() / 100) * 100;
+		const cutoff = new Date(nowMs);
+		cutoff.setUTCFullYear(cutoff.getUTCFullYear() + 50);
+		const sameCentury = { ...parts, year: parts.year + century };
+		const provisional = Date.UTC(
+			sameCentury.year,
+			parts.month,
+			parts.day,
+			parts.h,
+			parts.m,
+			Math.min(parts.s, 59),
 		);
-		const at = Date.UTC(year, month, day, h, m, s);
-		const date = new Date(at);
-		const exact =
-			date.getUTCFullYear() === year &&
-			date.getUTCMonth() === month &&
-			date.getUTCDate() === day &&
-			date.getUTCHours() === h &&
-			date.getUTCMinutes() === m &&
-			date.getUTCSeconds() === s &&
-			form.days[date.getUTCDay()] === get("wday");
-		return exact ? at : null;
+		const year =
+			provisional > cutoff.getTime()
+				? sameCentury.year - 100
+				: sameCentury.year;
+		return exactUtc({ ...parts, year }, form.days);
 	}
 	return null;
 }
