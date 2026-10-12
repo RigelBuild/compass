@@ -36,12 +36,16 @@ const responseReason = (status: number) => `HTTP ${status}`;
 const IMF_FIXDATE =
 	/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 
-/** Delta-seconds or an IMF-fixdate; anything else falls back to 60 s. */
+/** Delta-seconds or a real IMF-fixdate; anything else falls back to 60 s. */
 function readRetryAfter(response: Response, nowMs: number): number {
 	const header = response.headers.get("retry-after")?.trim() ?? "";
 	if (/^\d+$/.test(header)) return Number(header) * 1_000;
 	if (!IMF_FIXDATE.test(header)) return 60_000;
-	return Math.max(0, Date.parse(header) - nowMs);
+	const at = Date.parse(header);
+	// A shape-valid but impossible date (day 32) must not become a zero wait.
+	if (!Number.isFinite(at) || new Date(at).toUTCString() !== header)
+		return 60_000;
+	return Math.max(0, at - nowMs);
 }
 
 async function readVerdicts(

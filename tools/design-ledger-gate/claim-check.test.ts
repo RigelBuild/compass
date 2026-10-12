@@ -268,7 +268,12 @@ describe("fetchClaims", () => {
 	});
 
 	test("Retry-After that is fractional or malformed falls back to 60 s", async () => {
-		for (const header of ["1.5", "soon", "2026-10-12"]) {
+		for (const header of [
+			"1.5",
+			"soon",
+			"2026-10-12",
+			"Mon, 32 Jan 2025 00:00:00 GMT",
+		]) {
 			let calls = 0;
 			const sleeps: number[] = [];
 			await fetchClaims(
