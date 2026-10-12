@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"google.golang.org/protobuf/encoding/protojson"
 	"net/http"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -14,6 +13,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type mergeQueueConfigStore struct {
@@ -24,7 +24,6 @@ type mergeQueueConfigStore struct {
 func (q *mergeQueueConfigStore) MergeQueueFor(ctx context.Context, repo string) (string, string, error) {
 	return q.st.MergeQueueConfigFor(ctx, q.host, repo)
 }
-
 func (q *mergeQueueConfigStore) MergeQueueRepos(ctx context.Context) ([]string, error) {
 	configs, err := q.st.MergeQueueConfigs(ctx, q.host)
 	if err != nil {
@@ -49,7 +48,6 @@ func (s mergeQueuePullRequestStore) OpenPullRequests(ctx context.Context, repo s
 }
 
 type mergeQueueProjection struct {
-	st  *store.Store
 	brd *board.IssueProjection
 }
 
@@ -66,10 +64,10 @@ func (p mergeQueueProjection) PublishPullRequestMergeQueue(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	if !changed {
-		return nil
+	if changed {
+		return p.brd.PublishPullRequestMergeQueue(ctx, coord, entry)
 	}
-	return p.brd.PublishPullRequestMergeQueue(ctx, coord, entry)
+	return nil
 }
 
 func mergeQueueProviders(host string, token func(context.Context) ([]byte, error), httpClient *http.Client) map[string]forge.MergeQueue {
@@ -120,19 +118,10 @@ func reconcileMergeQueueConfigs(ctx context.Context, st *store.Store, host strin
 	}
 	for _, config := range configs {
 		if err := st.SetForgeRepoMergeQueueConfig(ctx, host, config.Repo, config.Provider, config.Branch); err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				return fmt.Errorf("set forge merge queue %q: %w", config.Repo, err)
+			if errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("merge queue repo %q has no forge subscription: %w", config.Repo, err)
 			}
-			if err := st.EnsureForgeRepoSubscription(ctx, store.ForgeRepoSubscription{
-				Provider:    store.ForgeProviderGitHub,
-				Host:        host,
-				Repo:        config.Repo,
-				Enabled:     true,
-				MergeQueue:  config.Provider,
-				MergeBranch: config.Branch,
-			}); err != nil {
-				return fmt.Errorf("seed merge queue subscription %q: %w", config.Repo, err)
-			}
+			return fmt.Errorf("set forge merge queue %q: %w", config.Repo, err)
 		}
 	}
 	return nil

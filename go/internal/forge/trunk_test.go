@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -29,6 +31,7 @@ func TestTrunkEntriesMapsStatesAndRequest(t *testing.T) {
 		}
 		if got := r.Header.Get("X-Api-Token"); got != "fixture-token" {
 			t.Errorf("X-Api-Token = %q, want fixture-token", got)
+
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
@@ -39,22 +42,19 @@ func TestTrunkEntriesMapsStatesAndRequest(t *testing.T) {
 			`{"prNumber":2,"state":"pending","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":true},` +
 			`{"prNumber":3,"state":"testing","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":true},` +
 			`{"prNumber":4,"state":"tests_passed","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":true},` +
-			`{"prNumber":5,"state":"failed","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":true},` +
-			`{"prNumber":6,"state":"pending_failure","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":true},` +
+			`{"prNumber":5,"state":"failed","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":false},` +
+			`{"prNumber":6,"state":"pending_failure","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":false},` +
 			`{"prNumber":7,"state":"cancelled","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":false},` +
 			`{"prNumber":8,"state":"merged","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":false},` +
 			`{"prNumber":9,"state":"pending","stateChangedAt":"` + changedAt + `","isCurrentlySubmittedToQueue":false}` +
 			`],"notFound":[{"number":10}]}`))
 	}))
-	defer server.Close()
-
-	client := &http.Client{Transport: roundTripTo(server)}
 	queue := NewTrunk(TrunkConfig{
 		Token: func(context.Context) ([]byte, error) { return []byte("fixture-token"), nil },
 		Host:  "github.com",
-		HTTP:  client,
+		HTTP:  &http.Client{Transport: roundTripTo(server)},
 	})
-	got, err := queue.entriesAt(context.Background(), server.URL, "owner/repo", "main", []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	got, err := queue.Entries(context.Background(), "owner/repo", "main", []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
 	if err != nil {
 		t.Fatalf("Entries: %v", err)
 	}
@@ -108,11 +108,72 @@ func TestTrunkEntriesMapsCancelledSubmissionToRemoved(t *testing.T) {
 	}
 }
 
-func TestTrunkEntriesRejectsMoreThanFiftyPRs(t *testing.T) {
-	queue := NewTrunk(TrunkConfig{Token: func(context.Context) ([]byte, error) { return []byte("fixture-token"), nil }})
+func TestTrunkEntriesBatchesAtFifty(t *testing.T) {
+	var sizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request trunkRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		sizes = append(sizes, len(request.PRs))
+		response := trunkResponse{PullRequests: make([]trunkPullRequest, 0, len(request.PRs))}
+		for _, pr := range request.PRs {
+			response.PullRequests = append(response.PullRequests, trunkPullRequest{
+				PRNumber: pr.Number, State: "pending", StateChangedAt: "2026-10-11T12:34:56Z", IsCurrentlySubmittedToQueue: true,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+	queue := NewTrunk(TrunkConfig{
+		Token: func(context.Context) ([]byte, error) { return []byte("fixture-token"), nil },
+		HTTP:  &http.Client{Transport: roundTripTo(server)},
+	})
 	numbers := make([]uint64, 51)
-	if _, err := queue.Entries(context.Background(), "owner/repo", "main", numbers); err == nil {
-		t.Fatal("Entries with 51 PRs returned no error")
+	for i := range numbers {
+		numbers[i] = uint64(i + 1)
+	}
+	entries, err := queue.Entries(context.Background(), "owner/repo", "main", numbers)
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if !reflect.DeepEqual(sizes, []int{50, 1}) {
+		t.Fatalf("batch sizes = %v, want [50 1]", sizes)
+	}
+	if len(entries) != len(numbers) {
+		t.Fatalf("Entries returned %d PRs, want %d", len(entries), len(numbers))
+	}
+}
+
+func TestTrunkDoesNotFollowRedirectsOrExposeResponseBody(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"pullRequests":[],"notFound":[]}`))
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+		_, _ = w.Write([]byte("response-body-must-not-appear"))
+	}))
+	defer origin.Close()
+	queue := NewTrunk(TrunkConfig{Token: func(context.Context) ([]byte, error) { return []byte("fixture-token"), nil }})
+	_, err := queue.entriesAt(context.Background(), origin.URL, "owner/repo", "main", []uint64{1})
+	if err == nil || !strings.Contains(err.Error(), "302") {
+		t.Fatalf("Entries error = %v, want HTTP 302", err)
+	}
+	if strings.Contains(err.Error(), "response-body-must-not-appear") {
+		t.Fatalf("Entries error exposes response body: %v", err)
+	}
+	if redirected.Load() != 0 {
+		t.Fatalf("redirect target received %d requests, want none", redirected.Load())
 	}
 }
 

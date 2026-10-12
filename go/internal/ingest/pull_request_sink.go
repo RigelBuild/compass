@@ -72,7 +72,9 @@ func (h *PullRequestHydrator) Hydrate(ctx context.Context, repo string, number u
 	pr := forge.TranslatePullRequest(raw, attr)
 	pr.Forge = &compassv1.ForgeRef{Provider: h.forgeRef.GetProvider(), Host: h.forgeRef.GetHost()}
 	pr.Repo = repo
-	pr.MergeQueue = h.mergeQueueEntry(ctx, repo, number)
+	if entry := h.mergeQueueEntry(ctx, repo, number); entry != nil {
+		pr.MergeQueue = entry
+	}
 	in := IngestedPullRequest{PR: pr, CreatedAt: raw.CreatedAt, UpdatedAt: raw.UpdatedAt, ClosingRefs: raw.ClosingRefs}
 	if err := h.sink.PublishPullRequestUpdate(ctx, in); err != nil {
 		return fmt.Errorf("ingest: publish pull request #%d for %q: %w", number, repo, err)

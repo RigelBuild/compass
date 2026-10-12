@@ -272,10 +272,10 @@ func prepareMergeQueueSweeper(ctx context.Context, cfg ServeConfig, st *store.St
 	if fc.TrunkTokenSecretName == "" {
 		return mergeQueueRunner{}, errors.New("--forge-trunk-token-secret is required when merge queues are configured")
 	}
-	queues := mergeQueueProviders(fc.Host, newDeclaredSecretResolver(resolver, fc.TrunkTokenSecretName), fc.TrunkHTTP)
+	queues := mergeQueueProviders(fc.Host, newTrunkTokenResolver(resolver, fc.TrunkTokenSecretName), fc.TrunkHTTP)
 	cfgs := &mergeQueueConfigStore{st: st, host: fc.Host}
 	storeAdapter := mergeQueuePullRequestStore{st: st, host: fc.Host}
-	sink := mergeQueueProjection{st: st, brd: issueBrd}
+	sink := mergeQueueProjection{brd: issueBrd}
 	every := cfg.MergeQueueInterval
 	if every <= 0 {
 		every = defaultMergeQueueSweepInterval
@@ -1506,6 +1506,7 @@ func buildLinearWebhookWiring(
 	return handler, nil
 }
 
+// buildBoardIngestLane assembles the GitHub board-ingestion pipeline with optional queue lookup.
 func buildBoardIngestLane(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1520,41 +1521,22 @@ func buildBoardIngestLane(
 	if err := reconcileForgeSeed(ctx, st, provider, fc.Host, cfg.Forge.SeedRepos); err != nil {
 		return nil, err
 	}
-	if len(fc.MergeQueues) == 0 {
-		ref := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: fc.Host}
-		ing := ingest.NewIngester(client, issueBrd, ref)
-		pulls := ingest.NewPullRequestHydrator(client, issueBrd, ref, nil, nil, log)
-		arm := ingest.NewBoardWebhookArm(client, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{
-			Log:         log,
-			Pulls:       pulls,
-			PullNumbers: pullNumbers,
-		})
-		reconciler := ingest.NewBoardReconciler(client, ing, &boardReconcileStore{st: st, provider: provider, host: fc.Host}, ingest.BoardReconcileConfig{
-			Backstop: fc.App.ReconcileBackstop,
-			Log:      log,
-			Pulls:    pulls,
-		})
-		return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm, client: client}, nil
+	var queues map[string]forge.MergeQueue
+	var queueConfigs ingest.QueueConfigs
+	if len(fc.MergeQueues) > 0 {
+		queues = mergeQueueProviders(fc.Host, newTrunkTokenResolver(buildServerSecretResolver(st, cfg), fc.TrunkTokenSecretName), fc.TrunkHTTP)
+		queueConfigs = &mergeQueueConfigStore{st: st, host: fc.Host}
 	}
-	queues := mergeQueueProviders(fc.Host, newDeclaredSecretResolver(buildServerSecretResolver(st, cfg), fc.TrunkTokenSecretName), fc.TrunkHTTP)
-	queueConfigs := &mergeQueueConfigStore{st: st, host: fc.Host}
 	ref := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: fc.Host}
 	ing := ingest.NewIngester(client, issueBrd, ref)
 	pulls := ingest.NewPullRequestHydrator(client, issueBrd, ref, queues, queueConfigs, log)
 	arm := ingest.NewBoardWebhookArm(client, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{
-		Log:         log,
-		Pulls:       pulls,
-		PullNumbers: pullNumbers,
+		Log: log, Pulls: pulls, PullNumbers: pullNumbers,
 	})
 	reconciler := ingest.NewBoardReconciler(client, ing, &boardReconcileStore{st: st, provider: provider, host: fc.Host}, ingest.BoardReconcileConfig{
-		Backstop:     fc.App.ReconcileBackstop,
-		Log:          log,
-		Pulls:        pulls,
-		Queues:       queues,
-		QueueConfigs: queueConfigs,
+		Backstop: fc.App.ReconcileBackstop, Log: log, Pulls: pulls,
 	})
 	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm, client: client}, nil
-
 }
 
 // boardTargetStore adapts *store.Store to ingest.TargetChecker: the point
@@ -2027,18 +2009,26 @@ func buildLinearNotifyLane(
 // and verifies webhook HMACs, so an unwrapped comparison here fails every
 // resolve at runtime, not at boot.
 func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	return resolveDeclaredSecret(resolver, name, "board webhook")
+}
+
+func newTrunkTokenResolver(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	return resolveDeclaredSecret(resolver, name, "Trunk API")
+}
+
+func resolveDeclaredSecret(resolver secrets.Resolver, name, label string) func(ctx context.Context) ([]byte, error) {
 	want := serverSecretName(name)
 	return func(ctx context.Context) ([]byte, error) {
-		resolved, err := resolver.Resolve(ctx, "board webhook")
+		resolved, err := resolver.Resolve(ctx, label)
 		if err != nil {
-			return nil, fmt.Errorf("board webhook secret resolve: %w", err)
+			return nil, fmt.Errorf("%s secret resolve: %w", label, err)
 		}
-		for _, s := range resolved {
-			if s.Name == want {
-				return []byte(s.Value), nil
+		for _, secret := range resolved {
+			if secret.Name == want {
+				return []byte(secret.Value), nil
 			}
 		}
-		return nil, fmt.Errorf("board webhook secret %q not declared", name)
+		return nil, fmt.Errorf("%s secret %q not declared", label, name)
 	}
 }
 

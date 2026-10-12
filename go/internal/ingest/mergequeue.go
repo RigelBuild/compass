@@ -14,7 +14,8 @@ import (
 
 const mergeQueueBatchSize = 50
 
-// QueueConfigs resolves the queue config for each configured repository.
+// QueueConfigs resolves the queue config for each configured repository and
+// lists the repositories the sweep refreshes.
 type QueueConfigs interface {
 	MergeQueueFor(ctx context.Context, repo string) (provider, branch string, err error)
 	MergeQueueRepos(ctx context.Context) ([]string, error)
@@ -99,7 +100,7 @@ func (s *MergeQueueSweeper) sweep(ctx context.Context) {
 				s.log.ErrorContext(ctx, "merge queue sweep: read provider entries", "repo", repo, "error", err)
 				break
 			}
-			if err := s.publishChanged(ctx, repo, provider, numbers[start:end], entries); err != nil {
+			if err := s.publishChanged(ctx, s.cfgs.MergeQueueHost(), repo, provider, numbers[start:end], entries); err != nil {
 				s.log.ErrorContext(ctx, "merge queue sweep: publish entries", "repo", repo, "error", err)
 				break
 			}
@@ -107,14 +108,14 @@ func (s *MergeQueueSweeper) sweep(ctx context.Context) {
 	}
 }
 
-func (s *MergeQueueSweeper) publishChanged(ctx context.Context, repo, provider string, numbers []uint64, entries map[uint64]forge.QueueEntry) error {
+func (s *MergeQueueSweeper) publishChanged(ctx context.Context, host, repo, provider string, numbers []uint64, entries map[uint64]forge.QueueEntry) error {
 	for _, number := range numbers {
 		entry, ok := entries[number]
 		var wire *compassv1.MergeQueueEntry
 		if ok {
 			wire = &compassv1.MergeQueueEntry{Provider: provider, State: queueStateName(entry.State), ChangedAt: timestamppb.New(entry.ChangedAt)}
 		}
-		coord := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: s.cfgs.MergeQueueHost(), Repo: repo, Number: number}
+		coord := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: host, Repo: repo, Number: number}
 		if err := s.sink.PublishPullRequestMergeQueue(ctx, coord, wire); err != nil {
 			return fmt.Errorf("publish pull request #%d queue state: %w", number, err)
 		}

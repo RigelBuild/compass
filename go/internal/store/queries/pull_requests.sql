@@ -14,15 +14,25 @@ ON CONFLICT (tenant_id, forge_provider, forge_host, repo, number) DO NOTHING;
 -- name: UpsertPullRequestGuarded :execrows
 -- Zero rows affected means the stored row is newer and the write was skipped.
 INSERT INTO pull_requests
-    (forge_provider, forge_host, repo, number, forge_state,
-     forge_created_at, forge_updated_at, pr)
+	(forge_provider, forge_host, repo, number, forge_state,
+	 forge_created_at, forge_updated_at, pr)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (tenant_id, forge_provider, forge_host, repo, number) DO UPDATE
-   SET forge_state = EXCLUDED.forge_state,
-       forge_created_at = EXCLUDED.forge_created_at,
-       forge_updated_at = EXCLUDED.forge_updated_at,
-       pr = EXCLUDED.pr
- WHERE EXCLUDED.forge_updated_at >= pull_requests.forge_updated_at;
+	SET forge_state = EXCLUDED.forge_state,
+	    forge_created_at = EXCLUDED.forge_created_at,
+	    forge_updated_at = EXCLUDED.forge_updated_at,
+	    pr = CASE
+	        WHEN EXCLUDED.pr ? 'mergeQueue' THEN
+	            CASE
+	                WHEN COALESCE((EXCLUDED.pr -> 'mergeQueue' ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
+	                     >= COALESCE((pull_requests.pr -> 'mergeQueue' ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
+	                THEN EXCLUDED.pr
+	                ELSE jsonb_set(EXCLUDED.pr, '{mergeQueue}', pull_requests.pr -> 'mergeQueue', true)
+	            END
+	        WHEN NOT (pull_requests.pr ? 'mergeQueue') THEN EXCLUDED.pr
+	        ELSE jsonb_set(EXCLUDED.pr, '{mergeQueue}', pull_requests.pr -> 'mergeQueue', true)
+	    END
+WHERE EXCLUDED.forge_updated_at >= pull_requests.forge_updated_at;
 
 -- name: UpsertExplicitPullRequestLink :exec
 INSERT INTO pull_request_issue_links
@@ -108,6 +118,11 @@ SELECT issue_forge_provider, issue_forge_host, issue_repo, issue_number
  WHERE pr_forge_provider = $1 AND pr_forge_host = $2 AND pr_repo = $3 AND pr_number = $4;
 -- name: SetPullRequestMergeQueue :execrows
 UPDATE pull_requests
-   SET pr = jsonb_set(pr, '{mergeQueue}', $5::jsonb, true)
- WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4
-   AND pr -> 'mergeQueue' IS DISTINCT FROM $5::jsonb;
+	SET pr = jsonb_set(pr, '{mergeQueue}', $5::jsonb, true)
+	WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4
+	  AND COALESCE(pr -> 'mergeQueue', 'null'::jsonb) IS DISTINCT FROM $5::jsonb
+	  AND (
+	      $5::jsonb = 'null'::jsonb
+	      OR COALESCE((pr -> 'mergeQueue' ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
+	         <= COALESCE(($5::jsonb ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
+	  );

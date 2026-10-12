@@ -198,6 +198,24 @@ func TestForgeRepoSubscriptionCRUD(t *testing.T) {
 	sentinelIs(t, err, ErrNotFound, "set enabled on unknown coordinate")
 }
 
+func TestMergeQueueConfigForReturnsDisabledRowsForHydrator(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo", Enabled: true}); err != nil {
+		t.Fatalf("EnsureForgeRepoSubscription: %v", err)
+	}
+	if err := s.SetForgeRepoMergeQueueConfig(ctx, "github.com", "owner/repo", "trunk", "main"); err != nil {
+		t.Fatalf("SetForgeRepoMergeQueueConfig: %v", err)
+	}
+	if err := s.SetForgeRepoSubscriptionEnabled(ctx, ForgeProviderGitHub, "github.com", "owner/repo", false); err != nil {
+		t.Fatalf("disable forge repo: %v", err)
+	}
+	provider, branch, err := s.MergeQueueConfigFor(ctx, "github.com", "owner/repo")
+	if err != nil || provider != "trunk" || branch != "main" {
+		t.Fatalf("disabled merge queue config = %q/%q, %v; want trunk/main", provider, branch, err)
+	}
+}
+
 // ── Test 9: invalid input → ErrInvalidArgument on every method ────────────────
 
 func TestForgeCursorInvalidArgument(t *testing.T) {

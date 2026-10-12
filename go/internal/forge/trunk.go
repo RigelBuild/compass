@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"net/url"
@@ -36,8 +35,16 @@ func NewTrunk(cfg TrunkConfig) *Trunk {
 	}
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 30 * time.Second}
+	} else {
+		copyClient := *cfg.HTTP
+		cfg.HTTP = &copyClient
 	}
+	cfg.HTTP.CheckRedirect = noTrunkRedirects
 	return &Trunk{cfg: cfg}
+}
+
+func noTrunkRedirects(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // Name returns the provider key used by merge-queue configuration.
@@ -105,11 +112,7 @@ func (t *Trunk) entriesAt(ctx context.Context, base, repo, targetBranch string, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		message, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if readErr != nil {
-			return nil, fmt.Errorf("forge: read Trunk error response: %w", readErr)
-		}
-		return nil, fmt.Errorf("forge: Trunk merge queue returned %s: %s", resp.Status, strings.TrimSpace(string(message)))
+		return nil, fmt.Errorf("forge: Trunk merge queue returned %s", resp.Status)
 	}
 	var result trunkResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -124,9 +127,10 @@ func (t *Trunk) entriesAt(ctx context.Context, base, repo, targetBranch string, 
 		if !slices.Contains(numbers, item.PRNumber) {
 			return nil, fmt.Errorf("forge: Trunk returned unrequested pull request #%d", item.PRNumber)
 		}
-		if state != QueueRemoved && state != QueueMerged && !item.IsCurrentlySubmittedToQueue {
+		if !item.IsCurrentlySubmittedToQueue && (state == QueueQueued || state == QueueTesting) {
 			state = QueueRemoved
 		}
+
 		changedAt, err := time.Parse(time.RFC3339Nano, item.StateChangedAt)
 		if err != nil {
 			return nil, fmt.Errorf("forge: parse Trunk stateChangedAt for pull request #%d: %w", item.PRNumber, err)

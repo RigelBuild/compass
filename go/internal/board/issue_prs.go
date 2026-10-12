@@ -29,7 +29,7 @@ func (p *IssueProjection) PublishPullRequestUpdate(ctx context.Context, in inges
 	return p.republishPrs(ctx, affected)
 }
 
-// PublishPullRequestMergeQueue republishes issues after the sweeper stores a queue entry.
+// PublishPullRequestMergeQueue republishes issues after a changed stored queue entry.
 func (p *IssueProjection) PublishPullRequestMergeQueue(
 	ctx context.Context,
 	coord store.ForgeCoord,
@@ -42,7 +42,7 @@ func (p *IssueProjection) PublishPullRequestMergeQueue(
 	return p.republishPrs(ctx, links)
 }
 
-// UpdatePullRequestMergeQueue persists the entry and reports whether it changed.
+// UpdatePullRequestMergeQueue persists an entry and reports whether it changed.
 func (p *IssueProjection) UpdatePullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, entry []byte) (bool, error) {
 	return p.store.SetPullRequestMergeQueue(ctx, coord, entry)
 }

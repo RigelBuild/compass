@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestPullRequestHydratorMergeQueue(t *testing.T) {
 	}{
 		{name: "configured queue attaches entry", configs: fixedQueueConfig{provider: "trunk", branch: "main", repos: []string{"owner/repo"}}, queue: &fixedQueue{entry: queueEntry}, wantCalls: 1, wantState: "testing", wantProvider: "trunk"},
 		{name: "configured queue failure keeps hydration green", configs: fixedQueueConfig{provider: "trunk", branch: "main", repos: []string{"owner/repo"}}, queue: &fixedQueue{err: errors.New("offline")}, wantCalls: 1, wantLogError: true},
-		{name: "unconfigured repo makes no provider call"},
+		{name: "unconfigured repo makes no provider call", queue: &fixedQueue{entry: queueEntry}, wantCalls: 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.queue != nil {
@@ -104,6 +105,33 @@ func (h *queueLogHandler) Handle(_ context.Context, r slog.Record) error {
 }
 func (h *queueLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *queueLogHandler) WithGroup(string) slog.Handler      { return h }
+
+func TestMergeQueueSweeperBatchesAtFifty(t *testing.T) {
+	numbers := make([]uint64, 51)
+	for i := range numbers {
+		numbers[i] = uint64(i + 1)
+	}
+	queue := &recordingBatchQueue{}
+	store := &fixedQueuePRStore{numbers: numbers}
+	sink := &recordingQueueSink{}
+	configs := fixedQueueConfig{provider: "trunk", branch: "main", repos: []string{"owner/repo"}}
+	NewMergeQueueSweeper(map[string]forge.MergeQueue{"trunk": queue}, configs, store, sink, time.Hour).sweep(context.Background())
+	if !slices.Equal(queue.batchSizes, []int{50, 1}) {
+		t.Fatalf("provider batch sizes = %v, want [50 1]", queue.batchSizes)
+	}
+	if len(sink.entries) != 51 {
+		t.Fatalf("published entries = %d, want 51", len(sink.entries))
+	}
+}
+
+type recordingBatchQueue struct{ batchSizes []int }
+
+func (*recordingBatchQueue) Name() string { return "trunk" }
+
+func (q *recordingBatchQueue) Entries(_ context.Context, _, _ string, numbers []uint64) (map[uint64]forge.QueueEntry, error) {
+	q.batchSizes = append(q.batchSizes, len(numbers))
+	return map[uint64]forge.QueueEntry{}, nil
+}
 
 func TestMergeQueueSweeperPublishesConfiguredEntries(t *testing.T) {
 	entry := forge.QueueEntry{Number: 7, State: forge.QueueTesting, ChangedAt: time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)}

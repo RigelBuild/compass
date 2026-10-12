@@ -8,6 +8,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -399,15 +400,26 @@ func TestSetPullRequestMergeQueueChangesOnlyOnDifferentEntry(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	coord := ghCoord("owner/repo", 7)
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: coord.Repo, Enabled: true}); err != nil {
+		t.Fatalf("seed forge repo subscription: %v", err)
+	}
 	mustUpsertPR(t, ctx, s, prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(time.Hour)))
+	changed, err := s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
+	if err != nil || changed {
+		t.Fatalf("null on absent SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+	}
 	entry := []byte(`{"provider":"trunk","state":"testing","changedAt":"2026-10-11T12:34:56Z"}`)
-	changed, err := s.SetPullRequestMergeQueue(ctx, coord, entry)
+	changed, err = s.SetPullRequestMergeQueue(ctx, coord, entry)
 	if err != nil || !changed {
 		t.Fatalf("first SetPullRequestMergeQueue = %v, %v; want changed", changed, err)
 	}
 	changed, err = s.SetPullRequestMergeQueue(ctx, coord, entry)
 	if err != nil || changed {
 		t.Fatalf("same SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+	}
+	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte(`{"provider":"trunk","state":"failed","changedAt":"2026-10-11T11:34:56Z"}`))
+	if err != nil || changed {
+		t.Fatalf("older SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
 	}
 	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
 	if err != nil || !changed {
@@ -416,5 +428,36 @@ func TestSetPullRequestMergeQueueChangesOnlyOnDifferentEntry(t *testing.T) {
 	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
 	if err != nil || changed {
 		t.Fatalf("repeat clear SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+	}
+}
+
+func TestPullRequestHydratePreservesMergeQueueOnTransientLookupError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	coord := ghCoord("owner/repo", 7)
+	issue := ghCoord("owner/repo", 1)
+	seedBoardIssue(t, ctx, s, issue)
+	first := prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(time.Hour))
+	first.PR = []byte(`{"state":"open","mergeQueue":{"provider":"trunk","state":"testing","changedAt":"2026-10-11T12:34:56Z"}}`)
+	mustUpsertPR(t, ctx, s, first, issue)
+	second := prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(2*time.Hour))
+	mustUpsertPR(t, ctx, s, second, issue)
+	rows, err := s.PullRequestsForIssues(ctx, []ForgeCoord{ghCoord("owner/repo", 1)})
+	if err != nil {
+		t.Fatalf("PullRequestsForIssues: %v", err)
+	}
+	if len(rows[ghCoord("owner/repo", 1)]) != 1 {
+		t.Fatalf("linked PR rows = %d, want one", len(rows[ghCoord("owner/repo", 1)]))
+	}
+	var got struct {
+		MergeQueue struct {
+			State string `json:"state"`
+		} `json:"mergeQueue"`
+	}
+	if err := json.Unmarshal(rows[ghCoord("owner/repo", 1)][0].PR, &got); err != nil {
+		t.Fatalf("decode PR JSON: %v", err)
+	}
+	if got.MergeQueue.State != "testing" {
+		t.Fatalf("hydrated PR mergeQueue = %q, want testing", got.MergeQueue.State)
 	}
 }

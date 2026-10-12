@@ -273,7 +273,6 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		TranscriptSafetyValveCapBytes: positiveCap(*f.transcriptSafetyValveCapBytes, os.Getenv("COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES")),
 		UsageEventRetention:           usageRetention,
 		RunnerClustersPath:            firstNonEmpty(*f.runnerClusters, os.Getenv("COMPASS_RUNNER_CLUSTERS")),
-		MergeQueueInterval:            0,
 	}
 	keepListenListener = true
 	return config, false, nil
@@ -561,8 +560,12 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 			"Comma-separated user scope grants seeded at boot, each "+
 				"account:provider:host:repo with provider github or linear and repo * for a "+
 				"whole host. Insert only. Defaults to $COMPASS_FORGE_SCOPE_GRANTS."),
-		mergeQueues:      fs.String("forge-merge-queues", "", "Comma-separated owner/name=trunk:branch entries. Defaults to $COMPASS_FORGE_MERGE_QUEUES."),
-		trunkTokenSecret: fs.String("forge-trunk-token-secret", "", "Declared server-only secret NAME for Trunk API access. Defaults to $COMPASS_FORGE_TRUNK_TOKEN_SECRET."),
+		mergeQueues: fs.String("forge-merge-queues", "",
+			"Comma-separated owner/name=trunk:branch entries for merge-queue polling. "+
+				"Defaults to $COMPASS_FORGE_MERGE_QUEUES."),
+		trunkTokenSecret: fs.String("forge-trunk-token-secret", "",
+			"Declared server-only secret NAME for the Trunk API token. Required when "+
+				"merge queues are configured; defaults to $COMPASS_FORGE_TRUNK_TOKEN_SECRET."),
 	}
 }
 

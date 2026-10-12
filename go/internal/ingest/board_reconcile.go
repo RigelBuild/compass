@@ -58,19 +58,10 @@ type updatedLister interface {
 
 // BoardReconcileConfig configures the board reconciliation sweep.
 type BoardReconcileConfig struct {
-	// Backstop is the ticker cadence between sweeps; <= 0 uses defaultBackstop.
 	Backstop time.Duration
-	// Pace is the inter-repo delay within a sweep (anti-burst); 0 uses
-	// defaultPace, negative disables pacing.
-	Pace time.Duration
-	// Log is the sweep logger; nil uses slog.Default().
-	Log *slog.Logger
-	// Pulls hydrates listed PR rows and runs the backfill; nil skips PR rows.
-	Pulls *PullRequestHydrator
-	// Queues maps queue provider names to their Trunk-style readers.
-	Queues map[string]forge.MergeQueue
-	// QueueConfigs resolves queue provider and target branch per repository.
-	QueueConfigs QueueConfigs
+	Pace     time.Duration
+	Log      *slog.Logger
+	Pulls    *PullRequestHydrator
 }
 
 // BoardReconciler drives the backstop sweep over the enabled-repo set, listing

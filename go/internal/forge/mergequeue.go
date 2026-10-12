@@ -9,7 +9,8 @@ import (
 type QueueState int
 
 const (
-	QueueQueued QueueState = iota
+	QueueUnknown QueueState = iota
+	QueueQueued
 	QueueTesting
 	QueueFailed
 	QueueRemoved
