@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -478,5 +479,43 @@ func assertUnknownTokenReregisteredWithoutRotating(t *testing.T) {
 	}
 	if want := sha256.Sum256([]byte("pre-existing-token")); fake.calls[0].hash != want {
 		t.Errorf("re-registered hash != sha256(existing file token)")
+	}
+}
+
+// TestMintToFileWarnsOnLooseTokenFile checks the existing-file path warns on a
+// loose token file and leaves its mode, and stays quiet at 0600.
+func TestMintToFileWarnsOnLooseTokenFile(t *testing.T) {
+	for _, tc := range []struct {
+		mode     os.FileMode
+		wantWarn bool
+	}{{0o600, false}, {0o640, true}} {
+		t.Run(tc.mode.String(), func(t *testing.T) {
+			fake := &fakeTokenPutter{}
+			path := filepath.Join(t.TempDir(), "runner.token")
+			if err := mintToFile(context.Background(), fake, "runner-1", path, false); err != nil {
+				t.Fatalf("seed mint: %v", err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			if err := mintToFile(context.Background(), fake, "runner-1", path, false); err != nil {
+				t.Fatalf("mintToFile: %v", err)
+			}
+			if got := strings.Contains(logs.String(), "level=WARN"); got != tc.wantWarn {
+				t.Errorf("warned = %v, want %v; logs:\n%s", got, tc.wantWarn, logs.String())
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat token: %v", err)
+			}
+			if info.Mode().Perm() != tc.mode {
+				t.Errorf("token mode = %v, want %v unchanged", info.Mode().Perm(), tc.mode)
+			}
+		})
 	}
 }

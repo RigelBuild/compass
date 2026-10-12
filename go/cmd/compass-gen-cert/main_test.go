@@ -9,8 +9,11 @@ package main
 // owns, so it is extracted and tested directly.
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +83,118 @@ func TestParseHosts(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Errorf("parseHosts(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
 				}
+			}
+		})
+	}
+}
+
+// TestCheckOutputPaths rejects a missing flag and one file named twice, which
+// would let the certificate write overwrite the private key.
+func TestCheckOutputPaths(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	cert := filepath.Join(dir, "tls.crt")
+	if err := os.WriteFile(cert, []byte("cert"), 0o644); err != nil {
+		t.Fatalf("seed cert: %v", err)
+	}
+	link := filepath.Join(dir, "link.pem")
+	if err := os.Symlink(cert, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "linkdir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("symlink dir: %v", err)
+	}
+	for _, tc := range []struct {
+		name, cert, key string
+		wantErr         bool
+	}{
+		{"distinct paths pass", "tls.crt", "tls.key", false},
+		{"missing cert flag fails", "", "tls.key", true},
+		{"missing key flag fails", "tls.crt", "", true},
+		{"identical paths fail", "tls.crt", "tls.crt", true},
+		{"relative and absolute spellings of one path fail", "tls.crt", cert, true},
+		{"a symlink to the cert fails", cert, link, true},
+		{"absent files through a symlinked parent fail", filepath.Join(realDir, "a.pem"), filepath.Join(linkDir, "a.pem"), true},
+		{"distinct absent files through a symlinked parent pass", filepath.Join(realDir, "a.pem"), filepath.Join(linkDir, "b.pem"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := checkOutputPaths(tc.cert, tc.key); (err != nil) != tc.wantErr {
+				t.Errorf("checkOutputPaths(%q, %q) = %v, wantErr %v", tc.cert, tc.key, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLooseMode flags any group or other bit on an existing file, and nothing else.
+func TestLooseMode(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		mode os.FileMode
+		want bool
+	}{{0o600, false}, {0o400, false}, {0o640, true}, {0o604, true}, {0o602, true}} {
+		path := filepath.Join(dir, tc.mode.String())
+		if err := os.WriteFile(path, []byte("k"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, tc.mode); err != nil {
+			t.Fatal(err)
+		}
+		if got := looseMode(path); got != tc.want {
+			t.Errorf("looseMode(%v) = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+	if looseMode(filepath.Join(dir, "absent")) {
+		t.Error("looseMode(absent) = true, want false")
+	}
+}
+
+// captureLog routes slog's default logger into a buffer for the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// TestSkipExistingWarnsOnLooseKey checks the skip path warns on a loose key and
+// leaves its mode, and stays quiet on a 0600 key.
+func TestSkipExistingWarnsOnLooseKey(t *testing.T) {
+	for _, tc := range []struct {
+		mode     os.FileMode
+		wantWarn bool
+	}{{0o600, false}, {0o644, true}} {
+		t.Run(tc.mode.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			cert, key := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
+			if err := os.WriteFile(cert, []byte("cert"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(key, []byte("key"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(key, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			logs := captureLog(t)
+			if !skipExisting(cert, key, false) {
+				t.Fatal("skipExisting = false, want a skip with both files present")
+			}
+			if got := strings.Contains(logs.String(), "level=WARN"); got != tc.wantWarn {
+				t.Errorf("warned = %v, want %v; logs:\n%s", got, tc.wantWarn, logs)
+			}
+			info, err := os.Stat(key)
+			if err != nil {
+				t.Fatalf("stat key: %v", err)
+			}
+			if info.Mode().Perm() != tc.mode {
+				t.Errorf("key mode = %v, want %v unchanged", info.Mode().Perm(), tc.mode)
 			}
 		})
 	}

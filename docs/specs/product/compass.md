@@ -1052,8 +1052,8 @@ The server SHALL open the network door only when `--listen` is given, and only
 with a TLS certificate and key (`--tls-cert` / `--tls-key`). A bearer token over
 cleartext is credential disclosure, so `--listen` without both SHALL be refused
 up front — enforced by the server itself, not only the CLI, since the serving
-entry point is an exported package function. The door SHALL require a minimum of
-TLS 1.3.
+entry point is an exported package function. A whitespace-only value for any
+of the three flags counts as unset. The door SHALL require a minimum of TLS 1.3.
 
 #### Scenario: `--listen` without a keypair is rejected
 
@@ -1165,7 +1165,7 @@ fails, so a failed mint never leaves a new hash with no file. A failed rotation
 of an existing file removes the file but does not revoke the earlier hash. When
 the file already exists and `--force` is not given, the binary SHALL decide by
 the existing token's state in the store, and SHALL leave the file's mode as it
-found it:
+found it, logging a warning when the mode grants any group or other permission:
 
 | Existing token in the store | Action |
 | -- | -- |
@@ -1194,12 +1194,15 @@ serves as the Server's `--tls-cert` and the Runner's `--ca`. Its SANs come from
 become IP SANs, other values DNS SANs; at least one entry is required). It is
 valid for `--validity` (default one year; a non-positive value uses the
 default), backdated one hour for clock skew. Both output flags are required,
-and their parent directories must already exist. The key SHALL be written at
+and their parent directories must already exist. The binary SHALL reject two
+flags that name the same file, including through a symlink, so the certificate
+never overwrites the key. The key SHALL be written at
 `0600` and the certificate at `0644`, as it is a public trust anchor. Each file
 is written atomically, and the key first, so a write failure never leaves a new
 certificate beside a missing key. When both files already exist the binary
 SHALL skip generation unless `--force` is given, and SHALL leave both files'
-modes as it found them. When only one exists, it SHALL regenerate both.
+modes as it found them, logging a warning when the key's mode grants any group
+or other permission. When only one exists, it SHALL regenerate both.
 
 #### Scenario: A re-run keeps a live keypair
 

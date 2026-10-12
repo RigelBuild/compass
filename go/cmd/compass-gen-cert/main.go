@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/certgen"
@@ -71,8 +72,8 @@ func run() error {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	if *certOut == "" || *keyOut == "" {
-		return errors.New("both --cert-out and --key-out are required")
+	if err := checkOutputPaths(*certOut, *keyOut); err != nil {
+		return err
 	}
 	hostList := parseHosts(*hosts)
 	if len(hostList) == 0 {
@@ -82,9 +83,7 @@ func run() error {
 	// Idempotent by default: when both files already exist, leave them be so a
 	// restart does not swap the cert out from under a live Server/Runner pair
 	// mid-session. --force overrides to regenerate unconditionally.
-	if shouldSkipGen(*certOut, *keyOut, *force) {
-		slog.Info("network-door certificate already present; skipping (pass --force to regenerate)",
-			"cert", *certOut, "key", *keyOut)
+	if skipExisting(*certOut, *keyOut, *force) {
 		return nil
 	}
 
@@ -127,6 +126,60 @@ func parseHosts(csv string) []string {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// checkOutputPaths requires both output paths and rejects one file named twice,
+// where the certificate write would overwrite the private key.
+func checkOutputPaths(certPath, keyPath string) error {
+	if certPath == "" || keyPath == "" {
+		return errors.New("both --cert-out and --key-out are required")
+	}
+	if canonicalPath(certPath) == canonicalPath(keyPath) {
+		return fmt.Errorf("--cert-out %q and --key-out %q name the same file", certPath, keyPath)
+	}
+	certInfo, certErr := os.Stat(certPath)
+	keyInfo, keyErr := os.Stat(keyPath)
+	if certErr == nil && keyErr == nil && os.SameFile(certInfo, keyInfo) {
+		return fmt.Errorf("--cert-out %q and --key-out %q are the same file", certPath, keyPath)
+	}
+	return nil
+}
+
+// canonicalPath resolves symlinks in path's parent directory, which must exist
+// for the write anyway; an unresolvable parent falls back to the cleaned path.
+func canonicalPath(path string) string {
+	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return filepath.Join(dir, filepath.Base(path))
+}
+
+// looseMode reports whether path exists with any group or other permission bit.
+func looseMode(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().Perm()&0o077 != 0
+}
+
+// skipExisting applies shouldSkipGen and, on a skip, logs it and warns about a
+// loose key mode, which it leaves unchanged.
+func skipExisting(certPath, keyPath string, force bool) bool {
+	if !shouldSkipGen(certPath, keyPath, force) {
+		return false
+	}
+	slog.Info("network-door certificate already present; skipping (pass --force to regenerate)",
+		"cert", certPath, "key", keyPath)
+	if looseMode(keyPath) {
+		slog.Warn("existing private key is readable or writable by group or others; tighten it to 0600",
+			"key", keyPath)
+	}
+	return true
 }
 
 // shouldSkipGen reports whether generation should be skipped: without --force,

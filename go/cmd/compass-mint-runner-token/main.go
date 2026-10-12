@@ -164,6 +164,10 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 			return fmt.Errorf("reading existing token file %q: %w", path, err)
 		}
 		token := string(existing)
+		if looseMode(path) {
+			slog.Warn("existing runner token file is readable or writable by group or others; tighten it to 0600",
+				"token_out", path)
+		}
 		state, prior, err := runnerhub.RunnerTokenStatus(ctx, st, token, runnerID)
 		if err != nil {
 			return err
@@ -260,6 +264,15 @@ func subjectKindName(k store.SubjectKind) string {
 		return "service"
 	}
 	return fmt.Sprintf("unknown(%d)", k)
+}
+
+// looseMode reports whether path exists with any group or other permission bit.
+func looseMode(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().Perm()&0o077 != 0
 }
 
 // fileExists reports whether path names an existing file. A stat error other
