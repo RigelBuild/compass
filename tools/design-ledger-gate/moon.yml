@@ -36,6 +36,7 @@ tasks:
       - '/docs/designs/**/*.md'
       - 'index.ts'
       - 'decision-files.ts'
+      - 'claim-check.ts'
   ci:
     deps: ['typecheck', 'test', 'check']
     options:
