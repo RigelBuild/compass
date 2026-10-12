@@ -8,9 +8,11 @@ to the §Global Constraints "Compass boot entrypoint" bullet of
 [`compass-gateway-credential-door-agent-token`](./compass-gateway-credential-door-agent-token.md).
 
 The fork's compass boot entrypoint (`packages/coding-agent/src/cli/gateway-boot.ts`
-in RigelBuild/oh-my-pi) calls `runAuthGatewayCommand({ action: "serve" })`,
-whose `runServe` throws without `OMP_AUTH_BROKER_URL`. So the published image
-cannot serve under the stack. This record wires that entrypoint to the Compass
+in RigelBuild/oh-my-pi) calls `runAuthGatewayCommand({ action: "serve" })`.
+Its `runServe` (`packages/coding-agent/src/cli/auth-gateway-cli.ts`) throws
+without a broker, under `if (!brokerConfig) {`:
+`` "`omp auth-gateway serve` requires OMP_AUTH_BROKER_URL …" ``. So the
+published image cannot serve under the stack. This record wires that entrypoint to the Compass
 Server's doors: agent tokens are verified by `GatewayAuth.VerifyAgentToken`,
 each owner gets its own `AuthStorage` over `CompassAuthCredentialStore`, and
 the stack mints, registers and mounts the `llm-gateway` service bearer those
@@ -28,8 +30,7 @@ spec that gives the boot what it needs.
 `packages/coding-agent/src/cli/auth-gateway-cli.ts` stays the broker path for
 upstream `omp auth-gateway serve`. The boot reuses `registerGatewayShutdown`
 and the `GATEWAY_MODEL_KINDS` list (exported by this change). Two new modules
-go in `packages/ai/src/compass/`, next to the store, so the managed plane can
-reuse them:
+go in `packages/ai/src/compass/`, next to the store, as gateway adapters:
 
 - **`agent-verifier.ts`: the authorizer.** It sends the presented bearer to
   `POST <COMPASS_SERVER_URL>/compass.v1.GatewayAuth/VerifyAgentToken`, using
@@ -41,11 +42,13 @@ reuse them:
   - 200 → `{ kind: "agent", agentAccountId, ownerUserId }`. An empty id
     throws.
   - `unauthenticated` with message `invalid agent token` → `null`. That
-    message is `errGatewayTokenInvalid` in `go/server/gateway_auth.go`; S0
+    message is `errGatewayTokenInvalid` in `go/server/gateway_auth.go`
+    (`var errGatewayTokenInvalid = errors.New("invalid agent token")`); S0
     pins it as a wire contract (OQ4).
   - Any other `unauthenticated` → throw (503). A bad service bearer gets
-    `errServiceUnauthenticated` ("unauthenticated") from
-    `ServiceBearerInterceptor` (`go/internal/auth/service_door.go`).
+    `errServiceUnauthenticated` from `ServiceBearerInterceptor`
+    (`go/internal/auth/service_door.go`:
+    `connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))`).
     Mapped to 401, a broken gateway would look like a bad agent token.
   - `internal`, `unavailable`, a timeout or a transport error → throw.
   - The deadline is `AbortSignal.any([req.signal, AbortSignal.timeout(5_000)])`.
@@ -62,14 +65,18 @@ reuse them:
     3. `storage.credentials.reload()`.
 
     Concurrent first requests share one open, and a failed open is not
-    cached. The open runs inside `routeScope`, because on `rigel-release`
-    `routeScope` wraps the router `body`, `resolveStorage` included. So
-    `open()` sees the agent token.
-  - **Per-request leases.** A stream outlives `route`: Bun idles a response up
-    to 255 s (`idleTimeout: 255` in `startAuthGateway`). A mid-stream OAuth
-    refresh then writes back through the store. A store closed under it throws
-    `closed` (`#request` in `credential-store.ts`), and the rotated refresh
-    token is lost. So:
+    cached. The open runs inside `routeScope`. On `rigel-release`,
+    `createAuthGatewayRouter` (`packages/ai/src/auth-gateway/server.ts`) wraps
+    the router body, `resolveStorage` included:
+    `return opts.routeScope ? await opts.routeScope(req, body) : await body();`.
+    So `open()` sees the agent token.
+  - **Per-request leases.** A stream outlives `route`. Bun idles a response up
+    to 255 s (`startAuthGateway` in `server.ts`: `idleTimeout: 255,`). A
+    mid-stream OAuth refresh then writes back through the store. A store
+    closed under it throws (`#request` in
+    `packages/ai/src/compass/credential-store.ts`:
+    `if (this.#closed) throw new CompassRpcError("closed", "Compass credential store is closed");`),
+    and the rotated refresh token is lost. So:
     - `routeScope` runs each routed request in a lease scope.
     - Each `get` inside it takes a lease on the entry.
     - The lease ends when the response body ends, errors or is cancelled. The
@@ -98,12 +105,12 @@ reuse them:
   boot builds one map from `getBundledProviders()` and `getBundledModels()`
   (`@oh-my-pi/pi-catalog`), keeping kinds in `GATEWAY_MODEL_KINDS`, keyed
   `` `${provider}/${id}` `` only.
-  - **No bare-id fallback.** `indexModelsByRequestId` adds one (`if
-    (!modelById.has(model.id)) modelById.set(model.id, model);`). Across every
-    bundled provider, that fallback would route a bare id to the first
-    provider in catalog order, which the owner may hold no credential for.
-    A bare id gets the router's 404 `Unknown model` instead (`resolveModel`
-    callers in `server.ts`).
+  - **No bare-id fallback.** `indexModelsByRequestId` (`auth-gateway-cli.ts`)
+    adds one: `if (!modelById.has(model.id)) modelById.set(model.id, model);`.
+    Across every bundled provider, that fallback would route a bare id to the
+    first provider in catalog order, which the owner may hold no credential
+    for. A bare id gets the router's 404 instead (`server.ts`:
+    `` formatError(404, "invalid_request_error", `Unknown model: ${modelId}`) ``).
   - A model whose provider is not in the owner's pool fails in dispatch with
     401 `No credential available for provider X` (`resolveGatewayApiKey`).
   - `pickProbeCandidates` already sends `getBundledModels` output straight to
@@ -127,7 +134,8 @@ reuse them:
   expects `unauthenticated` with the message `invalid agent token`. On the
   Server, `GatewayTokens.Verify` (`go/internal/auth/gateway_token.go`) returns
   `ErrGatewayTokenInvalid` for a malformed token before any store read
-  (`if !wellFormedToken(token)`). Any other result exits non-zero. The probe proves network
+  (`if !wellFormedToken(token) { return store.GatewayCaller{}, ErrGatewayTokenInvalid }`).
+  Any other result exits non-zero. The probe proves network
   reach, TLS and a live service bearer. It reads no credentials, so door
   rule 1 ("no door call with no request behind it") still holds. After the
   bounded restarts the container stays down, and `waitGateway` fails `up`
@@ -138,15 +146,16 @@ reuse them:
 - **The service bearer.** Its file is `<state>/gateway/service.token`,
   mounted at `/run/compass/service.token` and named by
   `COMPASS_SERVICE_TOKEN_FILE`. S1 deletes the old `<state>/gateway/gateway.token`.
-  The rename keeps the old hex inbound secret from being adopted through the
-  "unknown → re-register" arm. It also makes version skew fail before bind:
+  The rename keeps the old hex inbound secret (`ensureGatewayToken`:
+  `os.WriteFile(path, []byte(hex.EncodeToString(raw[:])), 0o600)`) from being
+  adopted through the "unknown → re-register" arm. It also makes version skew fail before bind:
   an old image reads the missing `gateway.token`, and a new image finds no
   `COMPASS_SERVER_URL`.
 
   `EnsureServiceToken` uses the file-before-store shape of `ensure` in
-  `adapters/token.go`. S1 makes the status check generic over
-  `store.Subject`; `RunnerTokenStatus` hardcodes `subj.Kind ==
-  store.SubjectRunner && subj.ID == runnerID`. The want is
+  `go/internal/stack/adapters/token.go`. S1 makes the status check generic
+  over `store.Subject`. `RunnerTokenStatus` (`go/internal/runnerhub/mint.go`)
+  hardcodes `if subj.Kind == store.SubjectRunner && subj.ID == runnerID {`. The want is
   `{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID}`:
   - **Registered under that subject:** keep the token.
   - **Unknown** (database replaced): re-register the same token.
@@ -167,9 +176,11 @@ reuse them:
 - **Server address (Linux).** The container runs with
   `--network pasta:-T,<door port>` and dials
   `https://127.0.0.1:<door port>`. The cert's `127.0.0.1` SAN matches
-  (`certHosts` in `adapters/cert.go`). By default pasta does not forward
-  container loopback to the host (`pastaHostGateway` comment in
-  `go/e2e/fixture.go`). Local rootless podman 5.8.6 probes showed:
+  (`go/internal/stack/adapters/cert.go`:
+  `var certHosts = []string{"127.0.0.1", "::1", "localhost"}`). By default pasta
+  does not forward container loopback to the host (`pastaHostGateway` comment
+  in `go/e2e/fixture.go`: "pasta does not forward 127.0.0.1"). Local rootless
+  podman 5.8.6 probes showed:
   - the default network is refused;
   - `-T` reaches the host listener, and `-p` publishing still works.
 
@@ -179,6 +190,12 @@ reuse them:
   There `-T` would reach the VM's loopback [INFERENCE]: OQ7. The spec carries
   the URL and network args as fields, so the OQ7 choice changes only S2 and
   `certHosts`.
+
+  The door host must be one that `-T` forwards to the fixed
+  `127.0.0.1` URL. `overlapsLoopbackPublish` (`go/internal/stack/config.go`) is
+  too wide for this, because it also passes every DNS name:
+  `return ip == nil || ip.IsUnspecified() || ip.Equal(net.IPv4(127, 0, 0, 1))`.
+  S2 therefore adds its own check (Global Constraints, Door listen host).
 - **Start order.** Today `spawnChain` (`stack.go`) starts the gateway at step
   1e, before the TLS anchor (step 2) and the server (step 3). On a first run
   that leaves no CA file and no store to register the token in. The gateway
@@ -248,9 +265,11 @@ reuse them:
   | `COMPASS_GATEWAY_DRAIN_MS` | `20000` | stack, existing |
   | `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` | optional | E2/E3 lane, later |
 
-- **Door listen host.** S2 accepts any `ListenAddr` host for which
-  `overlapsLoopbackPublish` (`config.go`) is true: `127.0.0.1`, an
-  unspecified address, or a hostname. Any other host errors in the spec.
+- **Door listen host.** S2 accepts only a `ListenAddr` host of `127.0.0.1`,
+  `localhost`, or an unspecified IP (`0.0.0.0`, `::`). Each one accepts on
+  `127.0.0.1`, which is the URL the gateway dials. Any other host, including
+  any other DNS name, errors in the spec and names `--gateway-external`.
+  Option A of OQ7 changes the URL, not this host rule.
 - **Order.** Each line below is linear.
   - Compass: S0 → S1 → S2 → P1. S2 calls `EnsureServiceToken`.
   - Fork: #146 rebased → F1 → F2 → F3. F1 has no code dependency on #146.
@@ -444,7 +463,7 @@ func gatewayContainerSpec(cfg Config, listenAddr string, cert CertResult) (Gatew
 ```
 
 - **Spec.** `TokenFile` becomes `<state>/gateway/service.token`. Env as in
-  the table. A `listenAddr` whose host fails `overlapsLoopbackPublish` errors.
+  the table. A `listenAddr` host outside the Door listen host set errors.
 - **Run args.** `gatewayRunArgs` appends `NetworkArgs`
   (`--network pasta:-T,<port>` on Linux) and mounts the token at
   `GatewayServiceTokenMountPath` and the CA at `GatewayCAMountPath` (`:ro,z`;
@@ -458,7 +477,8 @@ func gatewayContainerSpec(cfg Config, listenAddr string, cert CertResult) (Gatew
 Test cycle:
 
 - `gateway_container_test.go`: spec env, mounts and run args pinned; a
-  non-loopback door host errors; `0.0.0.0` is accepted.
+  DNS hostname (`compass.example`) and a non-loopback IP both error;
+  `127.0.0.1`, `localhost`, `0.0.0.0` and `::` are accepted.
 - Harness: server ready before gateway start; gateway drained before server;
   service token ensured and old file removed before the container starts.
 - `downdetached` tests stay green.
