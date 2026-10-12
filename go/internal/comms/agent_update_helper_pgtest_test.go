@@ -98,7 +98,12 @@ func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBloc
 			if body == nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
 			}
-			out = append(out, store.MessageBlock{Ask: &store.Ask{AskID: body.Ask.GetAskId(), Questions: askQuestionsFromWire(body.Ask)}})
+			ask, err := askFromWire(body.Ask)
+			if err != nil {
+				return nil, err
+			}
+			ask.AskID = body.Ask.GetAskId()
+			out = append(out, store.MessageBlock{Ask: ask})
 		case *compassv1.MessageBlock_AskAnswer:
 			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock)
 		default:

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"testing"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -40,7 +41,7 @@ func fieldSet(names ...protoreflect.Name) map[protoreflect.Name]struct{} {
 
 var (
 	askOwnership = askFieldOwnership{
-		content:     fieldSet("questions"),
+		content:     fieldSet("questions", "ref"),
 		serverOwned: fieldSet("ask_id", "answered"),
 	}
 	askQuestionOwnership = askFieldOwnership{
@@ -76,7 +77,14 @@ func TestAskFromWireDropsEveryServerOwnedField(t *testing.T) {
 		t.Fatalf("reflection populated %d questions, want 2", len(wire.GetQuestions()))
 	}
 
-	got := askFromWire(wire)
+	// Reflection fills ref with text that is not a ref; use a valid mixed-case
+	// one so the content assertion also checks canonicalization.
+	wire.Ref = "RigelBuild/Compass#12"
+
+	got, err := askFromWire(wire)
+	if err != nil {
+		t.Fatalf("askFromWire: %v", err)
+	}
 
 	// Server-owned: dropped.
 	if got.AskID != "" {
@@ -87,6 +95,9 @@ func TestAskFromWireDropsEveryServerOwnedField(t *testing.T) {
 	}
 
 	// Content: survives, with the values reflection set.
+	if got.Ref != "rigelbuild/compass#12" {
+		t.Errorf("Ref = %q, want the canonical %q", got.Ref, "rigelbuild/compass#12")
+	}
 	if len(got.Questions) != len(wire.GetQuestions()) {
 		t.Fatalf("Questions length = %d, want %d", len(got.Questions), len(wire.GetQuestions()))
 	}
@@ -266,5 +277,37 @@ func nonZeroScalar(t *testing.T, fd protoreflect.FieldDescriptor, suffix string)
 	default:
 		t.Fatalf("%s has kind %s, which populateEveryField cannot set to a non-zero value; teach it that kind", fd.FullName(), fd.Kind())
 		return protoreflect.Value{}
+	}
+}
+
+// TestAskFromWireRef pins the ref edge: an absent ref stays empty, a ref is
+// stored canonical, and anything that is not exactly one ref is refused.
+func TestAskFromWireRef(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		wantErr        bool
+	}{
+		{name: "absent", in: "", want: ""},
+		{name: "tracker key", in: "RIG-12", want: "RIG-12"},
+		{name: "forge ref lowercased", in: "Owner/Repo#7", want: "owner/repo#7"},
+		{name: "free text", in: "see RIG-12", wantErr: true},
+		{name: "two refs", in: "RIG-12 RIG-13", wantErr: true},
+		{name: "url", in: "https://github.com/o/r/pull/1", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := askFromWire(&compassv1.Ask{Ref: tc.in})
+			if tc.wantErr {
+				if connect.CodeOf(err) != connect.CodeInvalidArgument {
+					t.Fatalf("askFromWire(%q) err = %v, want invalid_argument", tc.in, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("askFromWire(%q): %v", tc.in, err)
+			}
+			if got.Ref != tc.want {
+				t.Fatalf("Ref = %q, want %q", got.Ref, tc.want)
+			}
+		})
 	}
 }

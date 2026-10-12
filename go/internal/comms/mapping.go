@@ -10,6 +10,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
+	"github.com/RigelBuild/compass/go/internal/refs"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -285,7 +286,7 @@ func askToWire(a *store.Ask) *compassv1.Ask {
 			TimedOut:        q.TimedOut,
 		}
 	}
-	return &compassv1.Ask{AskId: a.AskID, Questions: questions, Answered: a.Answered}
+	return &compassv1.Ask{AskId: a.AskID, Questions: questions, Answered: a.Answered, Ref: a.Ref}
 }
 
 func accountIDsToWire(ids []store.AccountID) []string {
@@ -418,7 +419,11 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 			if body == nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
 			}
-			out = append(out, store.MessageBlock{Ask: askFromWire(body.Ask)})
+			ask, err := askFromWire(body.Ask)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, store.MessageBlock{Ask: ask})
 		case *compassv1.MessageBlock_AskAnswer:
 			// ask_answer is server-owned: constructed only by RespondToAsk. An
 			// inbound one on the POST path is rejected at this edge — the only
@@ -432,12 +437,28 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 	return out, nil
 }
 
-func askFromWire(a *compassv1.Ask) *store.Ask {
+func askFromWire(a *compassv1.Ask) (*store.Ask, error) {
+	ref, err := askRefFromWire(a.GetRef())
+	if err != nil {
+		return nil, err
+	}
 	// ask_id is server-owned on the POST path: drop any caller-supplied value so
 	// the store's mintAskIDs assigns a fresh, globally-unique id on append. Honoring
 	// a wire value would let two posts share an ask_id, making RespondToAsk's
 	// containment SELECT match multiple rows and answer a nondeterministic one.
-	return &store.Ask{AskID: "", Questions: askQuestionsFromWire(a)}
+	return &store.Ask{AskID: "", Ref: ref, Questions: askQuestionsFromWire(a)}, nil
+}
+
+// askRefFromWire canonicalizes an ask's optional ref; "" means no ref.
+func askRefFromWire(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	r, err := refs.Parse(raw)
+	if err != nil {
+		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("ask ref: %w", err))
+	}
+	return r.String(), nil
 }
 
 // askQuestionsFromWire maps an ask's questions onto store types.
