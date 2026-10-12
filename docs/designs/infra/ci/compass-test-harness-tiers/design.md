@@ -482,6 +482,12 @@ docs.
 - Interfaces: none (prose); MUST cite the same seams this record does.
 - Test cycle: markdownlint.
 
+*Errata (as shipped).* The page is `docs/architecture/testing-tiers.md`, the
+eng-docs Architecture section. It documents `sharedFixture` vs plain
+`NewFixture` (no `WithOwnStack`, per the T3 errata), `WithSite`, and
+`WithEmbeddedPostgres`. The `-count>1` caveat lives in that page, not in the
+`fixture.go` package doc; the `go/e2e` and `pgtest` package docs link to it.
+
 ## Tasks
 
 - [x] T1 — extract `go/internal/pgshare` (acquisition + schema isolation +
@@ -494,8 +500,8 @@ docs.
 - [x] T4 — `TestEmbeddedPostgresSmoke` + `WithEmbeddedPostgres()`.
 - [x] T5 — forge-injection convergence (`mountForgeForTest`). Satisfied on
       main by `newForgeE2EWire`; see T5 errata.
-- [ ] T6 — tier-pyramid contributor doc. Owner: implement lane (depends
-      T3/T4 landing so the doc describes reality).
+- [x] T6 — tier-pyramid contributor doc. Shipped as
+      `docs/architecture/testing-tiers.md`; see T6 errata.
 
 ## Open Questions (1–2 RULED by Matt at freeze; 3–4 deferred)
 

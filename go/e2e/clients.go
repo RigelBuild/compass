@@ -5,7 +5,8 @@
 // CLI drives) and hands the harness's later legs (RIG-1785 H2-H6) a Fixture with
 // authenticated Connect clients and the store DSN. It is podman-build-tagged —
 // it drives real child processes and the real agent image, so it is out of the
-// hermetic unit lane and runs only under `-tags podman`.
+// hermetic unit lane and runs only under `-tags podman`. Which tier to test at,
+// and sharedFixture vs NewFixture: docs/architecture/testing-tiers.md.
 package e2e
 
 import (

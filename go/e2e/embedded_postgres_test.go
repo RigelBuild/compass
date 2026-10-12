@@ -19,10 +19,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
-// TestEmbeddedPostgresSmoke is the one e2e leg that runs the product-default
-// postgres: the stack spawns and owns it, so this is the only dedicated e2e
-// coverage of the supervisor-owns-postgres lifecycle and its pgid-record
-// teardown. Every other leg attaches to the suite postgres instead.
+// TestEmbeddedPostgresSmoke is the only e2e leg that asserts the
+// supervisor-owns-postgres lifecycle and its pgid-record teardown. Shared legs
+// use the suite postgres; other own-stack legs run the stack-owned postgres but
+// never check how it is recorded or reaped.
 func TestEmbeddedPostgresSmoke(t *testing.T) {
 	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
