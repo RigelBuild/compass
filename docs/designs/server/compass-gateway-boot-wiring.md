@@ -88,7 +88,7 @@ to the store.
   type `(modelId) => Model<Api> | undefined` never sees the caller, and
   `/v1/models` skips the pool. The boot indexes `getBundledModels()` for
   every bundled provider, keeping `GATEWAY_MODEL_KINDS` only. OQ1 option B
-  would replace this with a per-owner registry.
+  would replace the resolver with a per-owner one.
   - **No bare ids.** `indexModelsByRequestId` would add a bare-id fallback:
     `if (!modelById.has(model.id)) modelById.set(model.id, model);`. Over all
     providers, that routes a shared bare id to whichever provider comes
@@ -158,9 +158,10 @@ to the store.
 - **Start order.** `spawnChain` (`stack.go`) starts the gateway at step 1e,
   before the TLS anchor and the server. So on a first run there is no CA file
   and no store to register the token in. The gateway moves to after
-  `waitReady` and before `startRunner`. In-process drain becomes runner →
+  `waitReady` and before `startRunner`. `drainChildren` uses a hard-coded
+  list (runner, server, llm-gateway, …), so S2 reorders it to runner →
   gateway → server. That gain is small: agents are gone by then, and T5
-  revokes their tokens on stop (OQ6).
+  revokes their tokens on stop. Detached down is unchanged (OQ6).
 
 ## Alternatives considered
 
@@ -191,7 +192,8 @@ to the store.
   - one export from `auth-gateway-cli.ts`;
   - option types and call sites in `dispatch.ts` and `server.ts`, for F2's
     `routeScope` narrowing and, only if OQ1 picks B, the caller-aware
-    `resolveModel` and `listModels`.
+    `resolveModel`. A caller-aware `listModels` (B2) also needs a
+    stable-name amendment first.
 
   No routing-core change, and no change to `auth-storage.ts` or
   `packages/ai/src/auth/`.
@@ -227,11 +229,14 @@ to the store.
   | `COMPASS_GATEWAY_ENROLL_TOKEN_FILE` | optional | E2/E3, later |
 
 - **Door listen host.** Both host mappings deliver to the host's IPv4
-  `127.0.0.1`. So S2 accepts only `127.0.0.1`, `localhost`, `0.0.0.0` or `::`,
-  which all accept there:
-  - `localhost` binds its first IPv4 (`la := addrs.first(isIPv4)` in Go's
-    `net/dial.go`);
-  - `::` binds dual-stack.
+  `127.0.0.1`. The door binds through `Stack.listenTCP` (`stack.go`), which
+  calls `net.ResolveTCPAddr` and then `net.ListenTCP`. S2 accepts only hosts
+  that accept on `127.0.0.1`:
+  - `127.0.0.1`;
+  - `localhost`, which resolves IPv4 first (`forResolve` in Go's
+    `net/ipsock.go`: "IPv4 is preferred, unless addr contains an IPv6
+    literal");
+  - `0.0.0.0`, `::` and an empty host (`:port`), which bind a wildcard.
 
   Any other host, including `::1`, `127.0.0.2` and every DNS name, errors and
   names `--gateway-external`.
@@ -295,7 +300,9 @@ Required tests:
   and the two owners get different instances. Each selects only its own
   credential.
 - **Lease.** A stream held past both idle limits, with the cap exceeded,
-  survives, and becomes evictable once its body ends.
+  survives. The lease is released, and the owner becomes evictable, when the
+  body ends, when it errors, and when it is cancelled. #151 already has these
+  cases.
 - **Parked write.** An idle owner with a parked write survives the sweep. The
   next live-token request commits it, using a real store over a fake door.
 - **Basics:** single-flight open, retried after a failure, and closed by
@@ -360,19 +367,31 @@ var certHosts = []string{"127.0.0.1", "::1", "localhost", "host.containers.inter
 func (e *CertEnsurer) needsRotation(certPath, keyPath string, now time.Time) bool // also true when a certHosts SAN is missing
 ```
 
-- The spec sets the env table, `NetworkArgs`
-  (`--network pasta:--map-host-loopback,169.254.1.2`) and the two `:ro,z`
-  mounts.
+- `TokenFile` becomes `<state>/gateway/service.token`, mounted at
+  `GatewayServiceTokenMountPath`. `GatewayTokenMountPath` and the
+  `COMPASS_GATEWAY_TOKEN_FILE` env are removed.
+- The spec sets the env table and `NetworkArgs`
+  (`--network pasta:--map-host-loopback,169.254.1.2`).
+- Mount labels:
+  - the service token uses `:ro,Z`, a private label, like today's
+    `spec.TokenFile+":"+stack.GatewayTokenMountPath+":ro,Z"` in
+    `gatewayRunArgs`;
+  - the CA uses `:ro,z`, a shared label, because the host server reads the
+    same `tls.crt`.
 - `startGateway` runs `MkdirAll(TokenDir, 0o700)`, removes `gateway.token`,
   then calls `EnsureServiceToken`, then `Start`.
+- `drainChildren` order becomes runner, llm-gateway, server. Detached
+  `liveTargets` keeps its order, and `drainTargets` still signals the
+  consumer tier together.
 - `ensureGatewayToken` is deleted.
 - The gateway step moves as in the Approach.
 
 Tests:
 
-- args and mounts are pinned;
-- `::1`, `127.0.0.2` and `compass.example` error, and the four allowed hosts
-  pass;
+- the argv test pins the service-token mount (`:ro,Z`) and the CA mount
+  (`:ro,z`), and finds no `COMPASS_GATEWAY_TOKEN_FILE`;
+- `::1`, `127.0.0.2` and `compass.example` error. `127.0.0.1`, `localhost`,
+  `0.0.0.0`, `::` and an empty host (`:port`) pass;
 - `cert_test.go`: a fresh anchor carries the DNS SAN. An unexpired anchor
   without it rotates once, and the next ensure keeps it;
 - harness: on fresh state, server ready → token → container start, and the
@@ -412,8 +431,9 @@ T5, so this test is not end-to-end proof.
 - [ ] Ledger: claim these with `bun tools/dl-claim` when this PR is ready;
       the design pass does not claim them.
   - DL (server): the `llm-gateway` service bearer is
-    `<state>/gateway/service.token`, and agents are admitted only through
-    `VerifyAgentToken`.
+    `<state>/gateway/service.token`. Agents are admitted only through
+    `VerifyAgentToken`; the optional enroll token admits only the enroll
+    caller, on `/internal/enroll/*`.
   - DL (server): the bundled gateway reaches the Server at
     `host.containers.internal` through `pasta:--map-host-loopback`, and the
     stack anchor carries that DNS SAN (OQ7).
@@ -422,8 +442,9 @@ T5, so this test is not end-to-end proof.
 ## Resolved decisions
 
 **OQ2: drop the inbound shared bearer (Matt, 2026-10-12).** This reverses
-the T1 contract ("token file = inbound bearer"). Agents are admitted only
-through `VerifyAgentToken`.
+the T1 contract agreed in the RIG-2862 comment of 2026-09-29, under which
+the boot loaded the token file `/run/compass/gateway.token` as the single
+inbound bearer. Agents are now admitted only through `VerifyAgentToken`.
 
 **OQ7: A, `host.containers.internal` on both OSes (Matt, 2026-10-12).**
 One network spec, `--network pasta:--map-host-loopback,169.254.1.2`, with the
@@ -453,13 +474,19 @@ probe machine was removed afterwards.
 
 - **A (recommended):** every bundled provider by `provider/id`, with a
   dispatch 401 when a credential is missing.
-- **B:** a per-owner `ModelRegistry`, built in the owner pool. It needs no
-  parent amendment: the stable-name record (Global Constraints, "Fork changes
-  are seam-shaped") already ratified widening `resolveModel` to
-  `(modelId, identity) => Promise<Model<Api> | undefined>` as an
-  injection-point change. B pulls that widening forward from stable-name P1.
-  It also needs a caller-aware `listModels`, because today's
-  `listModels?: () => Iterable<Model<Api>>` (`dispatch.ts`) skips the pool.
+- **B:** a per-owner `ModelRegistry`, built in the owner pool, behind the
+  `resolveModel` widening that the stable-name record already ratified
+  (Global Constraints, "Fork changes are seam-shaped"):
+  `(modelId, identity) => Promise<Model<Api> | undefined>`. That record keeps
+  `listModels?: () => Iterable<Model<Api>>` caller-independent and lists the
+  stable-name vocabulary on it. Two variants:
+  - **B1 (recommended if B):** the resolver only, pulled forward from
+    stable-name P1, with the listing unchanged. No amendment is needed.
+    Dispatch is per owner, but `/v1/models` is not: a listed model the owner
+    holds no credential for gets a 404 from the resolver.
+  - **B2:** B1 plus a caller-aware listing. This adds a second seam and
+    changes the `/v1/models` contract that stable-name discovery relies on,
+    so it needs a stable-name amendment.
 - **C:** a union of live pools. It leaks between owners and is
   nondeterministic.
 - **D:** A, limited to the parent's day-1 set. This makes a new provider a
@@ -468,7 +495,7 @@ probe machine was removed afterwards.
 - **E:** read `GetGatewayModelRegistry` now. This duplicates stable-name P1:
   a sync resolver would need a boot fetch, a poll and a model mapping.
 
-Decision needed: B (Matt leaning) or A.
+Decision needed: B (Matt leaning) or A; if B, then B1 or B2.
 
 **OQ3 (deferred): verify cache.** Revisit after dev measures the load.
 
