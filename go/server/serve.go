@@ -154,6 +154,7 @@ type ServeConfig struct {
 	// RunnerClustersPath is the Runner cluster file (--runner-clusters). When
 	// set, the RunnerService door also accepts projected ServiceAccount tokens.
 	RunnerClustersPath string
+	MergeQueueInterval time.Duration
 }
 
 // ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
@@ -206,12 +207,25 @@ type ForgeConfig struct {
 	// INDEPENDENT of the GitHub App gate (a deployment can run Linear
 	// notifications without a GitHub App and vice versa).
 	LinearWebhookSecretName string
+	// TrunkTokenSecretName is the declared server-only secret name for Trunk API access.
+	TrunkTokenSecretName string
+	// MergeQueues maps GitHub repositories to Trunk target branches.
+	MergeQueues []MergeQueueConfig
+	// TrunkHTTP overrides the Trunk API client in tests.
+	TrunkHTTP *http.Client
 	// ScopeEnforcementDisabled opts out of grant-gated forge writes. The zero
 	// value enforces; Dogfood opts out to keep the single-trust-domain posture.
 	ScopeEnforcementDisabled bool
 	// ScopeGrants are boot-reconciled into account_forge_scopes in the bootstrap
 	// tenant (insert only; removing a row here does not revoke it).
 	ScopeGrants []store.ForgeScope
+}
+
+// MergeQueueConfig binds a repository to a provider and queue target branch.
+type MergeQueueConfig struct {
+	Repo     string
+	Provider string
+	Branch   string
 }
 
 // ForgeAppConfig is the GitHub App credential the board webhook-ingestion lane
@@ -233,6 +247,40 @@ type ForgeAppConfig struct {
 	AppWebhookSecretName string
 	// ReconcileBackstop is the board reconciler's sweep cadence (default 30m).
 	ReconcileBackstop time.Duration
+}
+
+const defaultMergeQueueSweepInterval = 2 * time.Minute
+
+type mergeQueueRunner struct {
+	sweeper *ingest.MergeQueueSweeper
+}
+
+func (r mergeQueueRunner) start(g *errgroup.Group, ctx context.Context) {
+	if r.sweeper != nil {
+		g.Go(func() error { return r.sweeper.Run(ctx) })
+	}
+}
+
+func prepareMergeQueueSweeper(ctx context.Context, cfg ServeConfig, st *store.Store, issueBrd *board.IssueProjection, resolver secrets.Resolver) (mergeQueueRunner, error) {
+	fc := cfg.Forge.resolved()
+	if err := reconcileMergeQueueConfigs(ctx, st, fc.Host, fc.MergeQueues); err != nil {
+		return mergeQueueRunner{}, fmt.Errorf("configure forge merge queues: %w", err)
+	}
+	if len(fc.MergeQueues) == 0 {
+		return mergeQueueRunner{}, nil
+	}
+	if fc.TrunkTokenSecretName == "" {
+		return mergeQueueRunner{}, errors.New("--forge-trunk-token-secret is required when merge queues are configured")
+	}
+	queues := mergeQueueProviders(fc.Host, newTrunkTokenResolver(resolver, fc.TrunkTokenSecretName), fc.TrunkHTTP)
+	cfgs := &mergeQueueConfigStore{st: st, host: fc.Host}
+	storeAdapter := mergeQueuePullRequestStore{st: st, host: fc.Host}
+	sink := mergeQueueProjection{brd: issueBrd}
+	every := cfg.MergeQueueInterval
+	if every <= 0 {
+		every = defaultMergeQueueSweepInterval
+	}
+	return mergeQueueRunner{sweeper: ingest.NewMergeQueueSweeper(queues, cfgs, storeAdapter, sink, every)}, nil
 }
 
 // Forge config defaults, applied by resolveForge when a field is zero.
@@ -602,7 +650,9 @@ func declareServerSecretNames(ctx context.Context, st *store.Store, cfg ServeCon
 	if raw.LinearWebhookSecretName != "" {
 		names = append(names, raw.LinearWebhookSecretName)
 	}
-
+	if fc.TrunkTokenSecretName != "" {
+		names = append(names, fc.TrunkTokenSecretName)
+	}
 	for _, name := range names {
 		if name == "" {
 			// An unset name is "not configured", never a bare prefix.
@@ -886,6 +936,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
+	mergeQueueRunner, err := prepareMergeQueueSweeper(ctx, cfg, st, issueBrd, serverResolver)
+	if err != nil {
+		return failStartup(udsListener, listeners, err)
+	}
 
 	// The forge-WRITE caller: enabled iff BOTH primary and reviewer Apps are
 	// configured (the 2-App cutover). The author leg REUSES the shared primary App
@@ -900,19 +954,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// error and always ends by Wait, so the verifier's key refresh never outlives
 	// Serve. The UDS door is primary; its error wins over the drain result below.
 	g, gctx := newServeGroup(ctx, doors.runnerVerifier)
-	g.Go(func() error { return classifyServe(doors.uds.Serve(udsListener), "compass.v1 UDS server") })
-	if doors.dev != nil {
-		g.Go(func() error { return classifyServe(doors.dev.Serve(devListener), "dev gRPC-Web server") })
-	}
-	if doors.net != nil {
-		// ServeTLS wraps the pre-bound listener with the configured keypair
-		// (already in TLSConfig, so the empty cert/key args skip a file load) and
-		// advertises ALPN h2 from Protocols. A clean shutdown returns
-		// ErrServerClosed, mapped to nil by classifyServe.
-		g.Go(func() error {
-			return classifyServe(doors.net.ServeTLS(netListener, "", ""), "compass.v1 network door")
-		})
-	}
+	startServeDoors(g, gctx, doors, udsListener, devListener, netListener, mergeQueueRunner)
 	// The forge webhook-ingestion lanes (RIG-2883 board + RIG-2732 T7 notify):
 	// each lane joins the SAME scoped group so it inherits the doors' lifecycle.
 	// The board + GitHub notify lanes are nil when the GitHub App is absent; the
@@ -945,6 +987,19 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	})
 
 	return g.Wait()
+}
+
+func startServeDoors(g *errgroup.Group, ctx context.Context, doors serveDoors, uds, dev, network net.Listener, mergeQueue mergeQueueRunner) {
+	g.Go(func() error { return classifyServe(doors.uds.Serve(uds), "compass.v1 UDS server") })
+	if doors.dev != nil {
+		g.Go(func() error { return classifyServe(doors.dev.Serve(dev), "dev gRPC-Web server") })
+	}
+	if doors.net != nil {
+		g.Go(func() error {
+			return classifyServe(doors.net.ServeTLS(network, "", ""), "compass.v1 network door")
+		})
+	}
+	mergeQueue.start(g, ctx)
 }
 
 // serveDoors holds the three compass.v1 doors Serve drives: the shipped Unix
@@ -1451,20 +1506,7 @@ func buildLinearWebhookWiring(
 	return handler, nil
 }
 
-// buildBoardIngestLane assembles the App-only board webhook-ingestion lane
-// (RIG-2883 T5) over the shared GitHub client. The caller
-// (buildBoardWebhookWiring) owns the App gate, the two App-secret validations,
-// and the client construction — this builder is only reached when the App is
-// configured and validated, so it assembles unconditionally.
-//
-// In order it: (1) reconciles the seed repos into forge_repo_subscriptions
-// (bootstrap-only insert, ON CONFLICT DO NOTHING, lowercased for GITHUB) so the
-// target rows are visible before the first sweep; (2) assembles the pipeline
-// over the shared client — the Ingester (sharing issueBrd) -> the T1 webhook arm
-// (over the store's IsEnabledForgeRepo target check) and the T3 reconciler (over
-// the store's enabled-repo + watermark seam). Both ingest seams are adapted onto
-// *store.Store binding (provider, host) — the ingest package owns no store type,
-// so go/server supplies these thin adapters.
+// buildBoardIngestLane assembles the GitHub board-ingestion pipeline with optional queue lookup.
 func buildBoardIngestLane(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1475,35 +1517,24 @@ func buildBoardIngestLane(
 	log *slog.Logger,
 ) (*boardIngestLane, error) {
 	fc := cfg.Forge.resolved()
-	// The board lane ships a GitHub client only this slice (Global Constraints);
-	// the bound provider is GITHUB.
 	const provider = store.ForgeProviderGitHub
-
-	// (1) Seed reconcile BEFORE the first sweep: each seed repo lowercased (for
-	// GITHUB) and inserted enabled under ON CONFLICT DO NOTHING — additive, never
-	// destructive, never re-enabling. Bad repo format fails startup.
 	if err := reconcileForgeSeed(ctx, st, provider, fc.Host, cfg.Forge.SeedRepos); err != nil {
 		return nil, err
 	}
-
-	// (2) Assemble the pipeline over the shared client: the Ingester (sharing the
-	// existing issue projection), and the two arms over store adapters binding
-	// (provider, host).
-	ref := &compassv1.ForgeRef{
-		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
-		Host:     fc.Host,
+	var queues map[string]forge.MergeQueue
+	var queueConfigs ingest.QueueConfigs
+	if len(fc.MergeQueues) > 0 {
+		queues = mergeQueueProviders(fc.Host, newTrunkTokenResolver(buildServerSecretResolver(st, cfg), fc.TrunkTokenSecretName), fc.TrunkHTTP)
+		queueConfigs = &mergeQueueConfigStore{st: st, host: fc.Host}
 	}
+	ref := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: fc.Host}
 	ing := ingest.NewIngester(client, issueBrd, ref)
-	pulls := ingest.NewPullRequestHydrator(client, issueBrd, ref)
+	pulls := ingest.NewPullRequestHydrator(client, issueBrd, ref, queues, queueConfigs, log)
 	arm := ingest.NewBoardWebhookArm(client, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{
-		Log:         log,
-		Pulls:       pulls,
-		PullNumbers: pullNumbers,
+		Log: log, Pulls: pulls, PullNumbers: pullNumbers,
 	})
 	reconciler := ingest.NewBoardReconciler(client, ing, &boardReconcileStore{st: st, provider: provider, host: fc.Host}, ingest.BoardReconcileConfig{
-		Backstop: fc.App.ReconcileBackstop,
-		Log:      log,
-		Pulls:    pulls,
+		Backstop: fc.App.ReconcileBackstop, Log: log, Pulls: pulls,
 	})
 	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm, client: client}, nil
 }
@@ -1978,18 +2009,26 @@ func buildLinearNotifyLane(
 // and verifies webhook HMACs, so an unwrapped comparison here fails every
 // resolve at runtime, not at boot.
 func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	return resolveDeclaredSecret(resolver, name, "board webhook")
+}
+
+func newTrunkTokenResolver(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	return resolveDeclaredSecret(resolver, name, "Trunk API")
+}
+
+func resolveDeclaredSecret(resolver secrets.Resolver, name, label string) func(ctx context.Context) ([]byte, error) {
 	want := serverSecretName(name)
 	return func(ctx context.Context) ([]byte, error) {
-		resolved, err := resolver.Resolve(ctx, "board webhook")
+		resolved, err := resolver.Resolve(ctx, label)
 		if err != nil {
-			return nil, fmt.Errorf("board webhook secret resolve: %w", err)
+			return nil, fmt.Errorf("%s secret resolve: %w", label, err)
 		}
-		for _, s := range resolved {
-			if s.Name == want {
-				return []byte(s.Value), nil
+		for _, secret := range resolved {
+			if secret.Name == want {
+				return []byte(secret.Value), nil
 			}
 		}
-		return nil, fmt.Errorf("board webhook secret %q not declared", name)
+		return nil, fmt.Errorf("%s secret %q not declared", label, name)
 	}
 }
 

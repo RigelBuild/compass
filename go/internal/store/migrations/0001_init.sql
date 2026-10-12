@@ -1041,6 +1041,8 @@ CREATE TABLE forge_repo_subscriptions (
     forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
     forge_host     TEXT     NOT NULL,
     repo           TEXT     NOT NULL,
+    merge_queue        TEXT     NOT NULL DEFAULT '',
+    merge_queue_branch TEXT     NOT NULL DEFAULT '',
     enabled        BOOLEAN  NOT NULL DEFAULT TRUE,
     swept_updated_at TIMESTAMPTZ,              -- last swept forge updated_at watermark; NULL = never swept
     list_etag      TEXT     NOT NULL DEFAULT '', -- conditional-GET etag for the repo LIST walk
@@ -1062,6 +1064,7 @@ CREATE TABLE pull_requests (
     forge_created_at TIMESTAMPTZ NOT NULL,
     forge_updated_at TIMESTAMPTZ NOT NULL,
     pr               JSONB       NOT NULL,
+    merge_queue_observed_at TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,

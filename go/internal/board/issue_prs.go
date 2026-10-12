@@ -6,11 +6,13 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // PublishPullRequestUpdate stores a hydrated PR and its closing references, then
@@ -26,12 +28,51 @@ func (p *IssueProjection) PublishPullRequestUpdate(ctx context.Context, in inges
 	if err != nil {
 		return fmt.Errorf("board: upsert pull request: %w", err)
 	}
+	if in.MergeQueueObserved {
+		entry := []byte("null")
+		if in.PR.GetMergeQueue() != nil {
+			entry, err = protojson.Marshal(in.PR.GetMergeQueue())
+			if err != nil {
+				return fmt.Errorf("board: marshal merge queue entry: %w", err)
+			}
+		}
+		changed, err := p.store.SetPullRequestMergeQueue(ctx, row.Coord, entry, in.MergeQueueObservedAt)
+		if err != nil {
+			return err
+		}
+		if changed {
+			affected = append(affected, row.Coord)
+		}
+	}
 	return p.republishPrs(ctx, affected)
 }
 
+// PublishPullRequestMergeQueue republishes issues after a changed stored queue entry.
+func (p *IssueProjection) PublishPullRequestMergeQueue(
+	ctx context.Context,
+	coord store.ForgeCoord,
+	_ *compassv1.MergeQueueEntry,
+) error {
+	links, err := p.store.PullRequestLinks(ctx, coord)
+	if err != nil {
+		return fmt.Errorf("board: load pull request links for queue update: %w", err)
+	}
+	return p.republishPrs(ctx, links)
+}
+
+// UpdatePullRequestMergeQueue persists an observed entry and reports whether it changed.
+func (p *IssueProjection) UpdatePullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, entry []byte, observedAt time.Time) (bool, error) {
+	return p.store.SetPullRequestMergeQueue(ctx, coord, entry, observedAt)
+}
+
 // pullRequestRow maps an ingested PR to the store row plus its closing refs on the PR's forge.
+// The queue entry is stripped: only SetPullRequestMergeQueue writes it, under its observation guard.
 func pullRequestRow(in ingest.IngestedPullRequest) (store.PullRequestRow, []store.ForgeCoord, error) {
 	pr := in.PR
+	if pr.GetMergeQueue() != nil {
+		pr = proto.CloneOf(pr)
+		pr.MergeQueue = nil
+	}
 	body, err := protojson.Marshal(pr)
 	if err != nil {
 		return store.PullRequestRow{}, nil, fmt.Errorf("board: marshal pull request: %w", err)

@@ -19,10 +19,12 @@ import (
 // (OQ-C's table model). Enabled=false soft-disables the target without deleting
 // its watermark history.
 type ForgeRepoSubscription struct {
-	Provider ForgeProvider
-	Host     string
-	Repo     string
-	Enabled  bool
+	Provider    ForgeProvider
+	Host        string
+	Repo        string
+	Enabled     bool
+	MergeQueue  string
+	MergeBranch string
 }
 
 // validCoordinate rejects the zero/empty coordinate fields every forge method
@@ -106,10 +108,12 @@ func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSu
 		return err
 	}
 	if err := s.q.EnsureForgeRepoSubscription(ctx, db.EnsureForgeRepoSubscriptionParams{
-		ForgeProvider: int16(sub.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
-		ForgeHost:     sub.Host,
-		Repo:          sub.Repo,
-		Enabled:       sub.Enabled,
+		ForgeProvider:    int16(sub.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:        sub.Host,
+		Repo:             sub.Repo,
+		Enabled:          sub.Enabled,
+		MergeQueue:       sub.MergeQueue,
+		MergeQueueBranch: sub.MergeBranch,
 	}); err != nil {
 		return fmt.Errorf("store: ensure forge repo subscription: %w", err)
 	}
@@ -170,10 +174,12 @@ func (s *Store) ListEnabledForgeRepoSubscriptions(ctx context.Context, provider 
 	var out []ForgeRepoSubscription
 	for _, r := range rows {
 		out = append(out, ForgeRepoSubscription{
-			Provider: ForgeProvider(r.ForgeProvider),
-			Host:     r.ForgeHost,
-			Repo:     r.Repo,
-			Enabled:  r.Enabled,
+			Provider:    ForgeProvider(r.ForgeProvider),
+			Host:        r.ForgeHost,
+			Repo:        r.Repo,
+			Enabled:     r.Enabled,
+			MergeQueue:  r.MergeQueue,
+			MergeBranch: r.MergeQueueBranch,
 		})
 	}
 	return out, nil

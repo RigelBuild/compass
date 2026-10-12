@@ -250,6 +250,56 @@ func (q *Queries) PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequest
 	return forge_updated_at, err
 }
 
+const pullRequestLinks = `-- name: PullRequestLinks :many
+SELECT issue_forge_provider, issue_forge_host, issue_repo, issue_number
+  FROM pull_request_issue_links
+ WHERE pr_forge_provider = $1 AND pr_forge_host = $2 AND pr_repo = $3 AND pr_number = $4
+`
+
+type PullRequestLinksParams struct {
+	PrForgeProvider int16
+	PrForgeHost     string
+	PrRepo          string
+	PrNumber        int64
+}
+
+type PullRequestLinksRow struct {
+	IssueForgeProvider int16
+	IssueForgeHost     string
+	IssueRepo          string
+	IssueNumber        int64
+}
+
+func (q *Queries) PullRequestLinks(ctx context.Context, arg PullRequestLinksParams) ([]PullRequestLinksRow, error) {
+	rows, err := q.db.Query(ctx, pullRequestLinks,
+		arg.PrForgeProvider,
+		arg.PrForgeHost,
+		arg.PrRepo,
+		arg.PrNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PullRequestLinksRow
+	for rows.Next() {
+		var i PullRequestLinksRow
+		if err := rows.Scan(
+			&i.IssueForgeProvider,
+			&i.IssueForgeHost,
+			&i.IssueRepo,
+			&i.IssueNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const pullRequestsForIssues = `-- name: PullRequestsForIssues :many
 WITH want AS (
     SELECT unnest($1::smallint[]) AS provider,
@@ -344,6 +394,52 @@ func (q *Queries) PullRequestsForIssues(ctx context.Context, arg PullRequestsFor
 	return items, nil
 }
 
+const setPullRequestMergeQueue = `-- name: SetPullRequestMergeQueue :one
+WITH current AS MATERIALIZED (
+	SELECT tenant_id, forge_provider, forge_host, repo, number,
+	       COALESCE(pr -> 'mergeQueue', 'null'::jsonb) IS DISTINCT FROM $5::jsonb AS changed
+	FROM pull_requests
+	WHERE pull_requests.forge_provider = $1 AND pull_requests.forge_host = $2 AND pull_requests.repo = $3 AND pull_requests.number = $4
+	  AND $6 >= COALESCE(pull_requests.merge_queue_observed_at, '-infinity'::timestamptz)
+	FOR UPDATE
+), updated AS (
+	UPDATE pull_requests AS p
+	SET pr = jsonb_set(p.pr, '{mergeQueue}', $5::jsonb, true),
+	    merge_queue_observed_at = $6
+	FROM current
+	WHERE p.tenant_id = current.tenant_id
+	  AND p.forge_provider = current.forge_provider
+	  AND p.forge_host = current.forge_host
+	  AND p.repo = current.repo
+	  AND p.number = current.number
+	RETURNING current.changed
+)
+SELECT changed FROM updated
+`
+
+type SetPullRequestMergeQueueParams struct {
+	ForgeProvider        int16
+	ForgeHost            string
+	Repo                 string
+	Number               int64
+	Column5              []byte
+	MergeQueueObservedAt pgtype.Timestamptz
+}
+
+func (q *Queries) SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, setPullRequestMergeQueue,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+		arg.Number,
+		arg.Column5,
+		arg.MergeQueueObservedAt,
+	)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
 const upsertExplicitPullRequestLink = `-- name: UpsertExplicitPullRequestLink :exec
 INSERT INTO pull_request_issue_links
     (pr_forge_provider, pr_forge_host, pr_repo, pr_number,
@@ -381,15 +477,19 @@ func (q *Queries) UpsertExplicitPullRequestLink(ctx context.Context, arg UpsertE
 
 const upsertPullRequestGuarded = `-- name: UpsertPullRequestGuarded :execrows
 INSERT INTO pull_requests
-    (forge_provider, forge_host, repo, number, forge_state,
-     forge_created_at, forge_updated_at, pr)
+	(forge_provider, forge_host, repo, number, forge_state,
+	 forge_created_at, forge_updated_at, pr)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (tenant_id, forge_provider, forge_host, repo, number) DO UPDATE
-   SET forge_state = EXCLUDED.forge_state,
-       forge_created_at = EXCLUDED.forge_created_at,
-       forge_updated_at = EXCLUDED.forge_updated_at,
-       pr = EXCLUDED.pr
- WHERE EXCLUDED.forge_updated_at >= pull_requests.forge_updated_at
+	SET forge_state = EXCLUDED.forge_state,
+	    forge_created_at = EXCLUDED.forge_created_at,
+	    forge_updated_at = EXCLUDED.forge_updated_at,
+	    pr = CASE
+	        WHEN pull_requests.pr ? 'mergeQueue' THEN
+	            jsonb_set(EXCLUDED.pr - 'mergeQueue', '{mergeQueue}', pull_requests.pr -> 'mergeQueue', true)
+	        ELSE EXCLUDED.pr - 'mergeQueue'
+	    END
+WHERE EXCLUDED.forge_updated_at >= pull_requests.forge_updated_at
 `
 
 type UpsertPullRequestGuardedParams struct {

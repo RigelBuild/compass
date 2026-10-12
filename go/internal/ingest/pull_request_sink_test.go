@@ -74,7 +74,7 @@ func newPRArm(t *testing.T, pulls *fakePulls, numbers PullNumberResolver) (*Boar
 func newPRArmFor(t *testing.T, pulls *fakePulls, numbers PullNumberResolver, targets TargetChecker) (*BoardWebhookArm, *recordingPRSink) {
 	t.Helper()
 	sink := &recordingPRSink{}
-	h := NewPullRequestHydrator(pulls, sink, testForgeRef())
+	h := NewPullRequestHydrator(pulls, sink, testForgeRef(), nil, nil, nil)
 	ing := NewIngester(forge.NewFakeProvider("gh"), &recordingSink{}, testForgeRef())
 	arm := NewBoardWebhookArm(&fakeHydrator{}, ing, targets, BoardArmConfig{QueueSize: 64, Pulls: h, PullNumbers: numbers})
 	return arm, sink
@@ -224,7 +224,7 @@ func TestArmIssueAndPRSameNumberStayDistinct(t *testing.T) {
 
 func newPRReconciler(l updatedLister, st *fakeBoardStore, pulls *fakePulls) (*BoardReconciler, *recordingSink) {
 	sink := &recordingSink{}
-	h := NewPullRequestHydrator(pulls, &recordingPRSink{}, testForgeRef())
+	h := NewPullRequestHydrator(pulls, &recordingPRSink{}, testForgeRef(), nil, nil, nil)
 	return NewBoardReconciler(l, NewIngester(nil, sink, testForgeRef()), st, BoardReconcileConfig{Pace: -1, Pulls: h}), sink
 }
 

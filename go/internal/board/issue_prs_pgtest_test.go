@@ -7,6 +7,8 @@ package board
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -37,6 +39,78 @@ func ingestedPR(number uint32, age, updated time.Duration, closes ...uint64) ing
 		UpdatedAt:   prT0.Add(updated),
 		ClosingRefs: refs,
 	}
+}
+
+func TestPullRequestHydrateLookupErrorPreservesStoredMergeQueue(t *testing.T) {
+	ctx := context.Background()
+	p, _, st := newIssueBoard(t)
+	mustPublishIssue(t, p, 1)
+	initial := ingestedPR(10, 0, time.Hour, 1)
+	initial.PR.MergeQueue = &compassv1.MergeQueueEntry{Provider: "trunk", State: "testing"}
+	initial.MergeQueueObserved = true
+	initial.MergeQueueObservedAt = prT0.Add(90 * time.Minute)
+	mustPublishPR(t, p, initial)
+	ref := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com"}
+	hydrator := ingest.NewPullRequestHydrator(
+		errorQueuePullReader{}, p, ref,
+		map[string]forge.MergeQueue{"trunk": errorMergeQueue{}}, errorQueueConfig{}, nil,
+	)
+	if err := hydrator.Hydrate(ctx, "RigelBuild/compass", 10); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	issue := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "RigelBuild/compass", Number: 1}
+	rows, err := st.PullRequestsForIssues(ctx, []store.ForgeCoord{issue})
+	if err != nil {
+		t.Fatalf("PullRequestsForIssues: %v", err)
+	}
+	prs := rows[issue.Normalized()]
+	if len(prs) != 1 {
+		t.Fatalf("linked pull requests = %d, want 1", len(prs))
+	}
+	var got struct {
+		MergeQueue *struct {
+			State string `json:"state"`
+		} `json:"mergeQueue"`
+	}
+	if err := json.Unmarshal(prs[0].PR, &got); err != nil {
+		t.Fatalf("decode PR JSON: %v", err)
+	}
+	if got.MergeQueue == nil || got.MergeQueue.State != "testing" {
+		t.Fatalf("hydrated PR mergeQueue = %v, want testing", got.MergeQueue)
+	}
+}
+
+type errorQueuePullReader struct{}
+
+func (errorQueuePullReader) GetPullRequest(_ context.Context, repo string, number uint64) (forge.PullRequest, error) {
+	return forge.PullRequest{
+		Number: number, State: "open", CreatedAt: prT0, UpdatedAt: prT0.Add(2 * time.Hour),
+		ClosingRefs: []forge.IssueRef{{Repo: repo, Number: 1}},
+	}, nil
+}
+
+func (errorQueuePullReader) ListOpenPullRequests(context.Context, string) ([]forge.UpdatedPull, error) {
+	return nil, nil
+}
+
+type errorQueueConfig struct{}
+
+func (errorQueueConfig) MergeQueueFor(context.Context, string) (string, string, error) {
+	return "trunk", "main", nil
+}
+
+func (errorQueueConfig) MergeQueueRepos(context.Context) ([]string, error) {
+	return []string{"RigelBuild/compass"}, nil
+}
+
+func (errorQueueConfig) MergeQueueHost() string { return "github.com" }
+
+type errorMergeQueue struct{}
+
+func (errorMergeQueue) Name() string { return "trunk" }
+
+func (errorMergeQueue) Entries(context.Context, string, string, []uint64) (map[uint64]forge.QueueEntry, error) {
+	return nil, errors.New("offline")
 }
 
 func prNumbers(iss *compassv1.Issue) []uint32 {

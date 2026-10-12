@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestBoardReconcileBackfillAttachesOpenPR(t *testing.T) {
 		ClosingRefs: []forge.IssueRef{{Repo: repo, Number: 2}}}}
 	marked := &markSignal{boardReconcileStore: adapter, done: make(chan struct{})}
 	rc := ingest.NewBoardReconciler(notModifiedLister{}, ingest.NewIngester(nil, brd, ref), marked, ingest.BoardReconcileConfig{
-		Pace: -1, Pulls: ingest.NewPullRequestHydrator(reads, brd, ref),
+		Pace: -1, Pulls: ingest.NewPullRequestHydrator(reads, brd, ref, nil, nil, slog.Default()),
 	})
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

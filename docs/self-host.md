@@ -321,7 +321,7 @@ overwritten by accident.
 
 ### Forge secrets
 
-The forge integration adds up to six more secrets. Each row below is a *name*
+The forge integration adds up to seven more secrets. Each row below is a *name*
 you choose (via the flag or its environment variable), whose *value* you then
 set in the provider under the `SERVER_`-prefixed spelling. Compass declares a
 name only when the feature that needs it is configured, so you only provision
@@ -335,9 +335,11 @@ the rows for the lanes you run.
 | `--forge-linear-client-id` | Linear OAuth client id | Set, together with the client secret |
 | `--forge-linear-client-secret` | Linear OAuth client secret | Set, together with the client id |
 | `--forge-linear-webhook-secret` | Linear webhook signing secret | Set |
+| `--forge-trunk-token-secret` | Trunk API token | Merge-queue polling is configured with `--forge-merge-queues` |
 
 Each flag also reads an environment variable when the flag is unset:
-`$COMPASS_FORGE_APP_KEY_SECRET` and so on, one per row.
+`$COMPASS_FORGE_APP_KEY_SECRET` and so on, one per row. The Trunk token name
+uses `$COMPASS_FORGE_TRUNK_TOKEN_SECRET`.
 
 Set every name you intend to use. The two Linear rows have built-in default
 names in the code, but those apply only when compass looks a value *up* --

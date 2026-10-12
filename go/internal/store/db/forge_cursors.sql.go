@@ -11,17 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearForgeRepoMergeQueueConfigs = `-- name: ClearForgeRepoMergeQueueConfigs :exec
+UPDATE forge_repo_subscriptions
+   SET merge_queue = '', merge_queue_branch = ''
+ WHERE forge_provider = $1 AND forge_host = $2
+`
+
+type ClearForgeRepoMergeQueueConfigsParams struct {
+	ForgeProvider int16
+	ForgeHost     string
+}
+
+func (q *Queries) ClearForgeRepoMergeQueueConfigs(ctx context.Context, arg ClearForgeRepoMergeQueueConfigsParams) error {
+	_, err := q.db.Exec(ctx, clearForgeRepoMergeQueueConfigs, arg.ForgeProvider, arg.ForgeHost)
+	return err
+}
+
 const ensureForgeRepoSubscription = `-- name: EnsureForgeRepoSubscription :exec
-INSERT INTO forge_repo_subscriptions (forge_provider, forge_host, repo, enabled)
-VALUES ($1, $2, $3, $4)
+INSERT INTO forge_repo_subscriptions (forge_provider, forge_host, repo, enabled, merge_queue, merge_queue_branch)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (tenant_id, forge_provider, forge_host, repo) DO NOTHING
 `
 
 type EnsureForgeRepoSubscriptionParams struct {
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Enabled       bool
+	ForgeProvider    int16
+	ForgeHost        string
+	Repo             string
+	Enabled          bool
+	MergeQueue       string
+	MergeQueueBranch string
 }
 
 func (q *Queries) EnsureForgeRepoSubscription(ctx context.Context, arg EnsureForgeRepoSubscriptionParams) error {
@@ -30,8 +48,34 @@ func (q *Queries) EnsureForgeRepoSubscription(ctx context.Context, arg EnsureFor
 		arg.ForgeHost,
 		arg.Repo,
 		arg.Enabled,
+		arg.MergeQueue,
+		arg.MergeQueueBranch,
 	)
 	return err
+}
+
+const getForgeRepoMergeQueueConfig = `-- name: GetForgeRepoMergeQueueConfig :one
+SELECT merge_queue, merge_queue_branch
+  FROM forge_repo_subscriptions
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3
+`
+
+type GetForgeRepoMergeQueueConfigParams struct {
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+}
+
+type GetForgeRepoMergeQueueConfigRow struct {
+	MergeQueue       string
+	MergeQueueBranch string
+}
+
+func (q *Queries) GetForgeRepoMergeQueueConfig(ctx context.Context, arg GetForgeRepoMergeQueueConfigParams) (GetForgeRepoMergeQueueConfigRow, error) {
+	row := q.db.QueryRow(ctx, getForgeRepoMergeQueueConfig, arg.ForgeProvider, arg.ForgeHost, arg.Repo)
+	var i GetForgeRepoMergeQueueConfigRow
+	err := row.Scan(&i.MergeQueue, &i.MergeQueueBranch)
+	return i, err
 }
 
 const isEnabledForgeRepo = `-- name: IsEnabledForgeRepo :one
@@ -48,7 +92,7 @@ func (q *Queries) IsEnabledForgeRepo(ctx context.Context, repo string) (bool, er
 }
 
 const listEnabledForgeRepoSubscriptions = `-- name: ListEnabledForgeRepoSubscriptions :many
-SELECT forge_provider, forge_host, repo, enabled
+SELECT forge_provider, forge_host, repo, enabled, merge_queue, merge_queue_branch
 FROM forge_repo_subscriptions
 WHERE forge_provider = $1 AND forge_host = $2 AND enabled = TRUE
 ORDER BY repo ASC
@@ -60,10 +104,12 @@ type ListEnabledForgeRepoSubscriptionsParams struct {
 }
 
 type ListEnabledForgeRepoSubscriptionsRow struct {
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Enabled       bool
+	ForgeProvider    int16
+	ForgeHost        string
+	Repo             string
+	Enabled          bool
+	MergeQueue       string
+	MergeQueueBranch string
 }
 
 func (q *Queries) ListEnabledForgeRepoSubscriptions(ctx context.Context, arg ListEnabledForgeRepoSubscriptionsParams) ([]ListEnabledForgeRepoSubscriptionsRow, error) {
@@ -80,6 +126,8 @@ func (q *Queries) ListEnabledForgeRepoSubscriptions(ctx context.Context, arg Lis
 			&i.ForgeHost,
 			&i.Repo,
 			&i.Enabled,
+			&i.MergeQueue,
+			&i.MergeQueueBranch,
 		); err != nil {
 			return nil, err
 		}
@@ -111,6 +159,77 @@ func (q *Queries) ListEnabledForgeRepos(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		items = append(items, repo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listForgeRepoMergeQueueConfigs = `-- name: ListForgeRepoMergeQueueConfigs :many
+SELECT repo, merge_queue, merge_queue_branch
+  FROM forge_repo_subscriptions
+ WHERE forge_provider = $1 AND forge_host = $2 AND enabled AND merge_queue <> ''
+ ORDER BY repo ASC
+`
+
+type ListForgeRepoMergeQueueConfigsParams struct {
+	ForgeProvider int16
+	ForgeHost     string
+}
+
+type ListForgeRepoMergeQueueConfigsRow struct {
+	Repo             string
+	MergeQueue       string
+	MergeQueueBranch string
+}
+
+func (q *Queries) ListForgeRepoMergeQueueConfigs(ctx context.Context, arg ListForgeRepoMergeQueueConfigsParams) ([]ListForgeRepoMergeQueueConfigsRow, error) {
+	rows, err := q.db.Query(ctx, listForgeRepoMergeQueueConfigs, arg.ForgeProvider, arg.ForgeHost)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListForgeRepoMergeQueueConfigsRow
+	for rows.Next() {
+		var i ListForgeRepoMergeQueueConfigsRow
+		if err := rows.Scan(&i.Repo, &i.MergeQueue, &i.MergeQueueBranch); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenPullRequests = `-- name: ListOpenPullRequests :many
+SELECT number
+  FROM pull_requests
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND forge_state = 'open'
+ ORDER BY number ASC
+`
+
+type ListOpenPullRequestsParams struct {
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+}
+
+func (q *Queries) ListOpenPullRequests(ctx context.Context, arg ListOpenPullRequestsParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listOpenPullRequests, arg.ForgeProvider, arg.ForgeHost, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var number int64
+		if err := rows.Scan(&number); err != nil {
+			return nil, err
+		}
+		items = append(items, number)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -186,6 +305,35 @@ func (q *Queries) MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledPa
 		arg.ForgeHost,
 		arg.Repo,
 		arg.PrsBackfilledAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setForgeRepoMergeQueue = `-- name: SetForgeRepoMergeQueue :execrows
+UPDATE forge_repo_subscriptions
+   SET merge_queue = $4,
+       merge_queue_branch = $5
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3
+`
+
+type SetForgeRepoMergeQueueParams struct {
+	ForgeProvider    int16
+	ForgeHost        string
+	Repo             string
+	MergeQueue       string
+	MergeQueueBranch string
+}
+
+func (q *Queries) SetForgeRepoMergeQueue(ctx context.Context, arg SetForgeRepoMergeQueueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setForgeRepoMergeQueue,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+		arg.MergeQueue,
+		arg.MergeQueueBranch,
 	)
 	if err != nil {
 		return 0, err

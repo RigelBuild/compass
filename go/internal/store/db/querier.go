@@ -102,6 +102,7 @@ type Querier interface {
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	// The unique key makes concurrent first-run attempts a single-winner claim.
 	ClaimTourStart(ctx context.Context, arg ClaimTourStartParams) (string, error)
+	ClearForgeRepoMergeQueueConfigs(ctx context.Context, arg ClearForgeRepoMergeQueueConfigsParams) error
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
 	// Close intervals only after the binding and matching end event are absent.
 	// The tenant id comes from each start because this sweep has no tenant GUC.
@@ -235,6 +236,7 @@ type Querier interface {
 	// DeleteChannelMember (channels.sql) — the statements are identical.
 	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
 	GetDMChannelByName(ctx context.Context, arg GetDMChannelByNameParams) (GetDMChannelByNameRow, error)
+	GetForgeRepoMergeQueueConfig(ctx context.Context, arg GetForgeRepoMergeQueueConfigParams) (GetForgeRepoMergeQueueConfigRow, error)
 	GetGatewayCredentialForUpdate(ctx context.Context, id string) (GetGatewayCredentialForUpdateRow, error)
 	// Feeds isReservedGroupTx: the reserved-group discriminator (top-level AND a reserved name AND
 	// VisibilityOwner) the CreateChannel and CreateChannelGroup create-guards key on.
@@ -407,10 +409,12 @@ type Querier interface {
 	// observed) and the subscriber rows, container-scope rows collapsed per
 	// (repo, kind) to coord_number 0. The Go groups the flat rows into targets.
 	ListForgeNotifyTargets(ctx context.Context, arg ListForgeNotifyTargetsParams) ([]ListForgeNotifyTargetsRow, error)
+	ListForgeRepoMergeQueueConfigs(ctx context.Context, arg ListForgeRepoMergeQueueConfigsParams) ([]ListForgeRepoMergeQueueConfigsRow, error)
 	ListForgeScopeRepos(ctx context.Context, arg ListForgeScopeReposParams) ([]string, error)
 	ListGatewayCredentials(ctx context.Context, arg ListGatewayCredentialsParams) ([]ListGatewayCredentialsRow, error)
 	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
+	ListOpenPullRequests(ctx context.Context, arg ListOpenPullRequestsParams) ([]int64, error)
 	ListPullRequestLinks(ctx context.Context, arg ListPullRequestLinksParams) ([]ListPullRequestLinksRow, error)
 	// ListTenantIDs lists every tenant. tenants has no row-level security, so the
 	// app role sees them all without the BYPASSRLS system role.
@@ -540,6 +544,7 @@ type Querier interface {
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) (int64, error)
 	PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error)
+	PullRequestLinks(ctx context.Context, arg PullRequestLinksParams) ([]PullRequestLinksRow, error)
 	// Explicit links attach directly; a closing reference attaches only when none
 	// of the PR's explicit targets is an issue on the board.
 	PullRequestsForIssues(ctx context.Context, arg PullRequestsForIssuesParams) ([]PullRequestsForIssuesRow, error)
@@ -676,8 +681,10 @@ type Querier interface {
 	// AgentActivity domain struct (agentActivityFromRow-equivalent, done inline in
 	// the Go — absent-from-table means absent-from-map).
 	SetActivity(ctx context.Context, arg SetActivityParams) error
+	SetForgeRepoMergeQueue(ctx context.Context, arg SetForgeRepoMergeQueueParams) (int64, error)
 	SetForgeRepoSubscriptionEnabled(ctx context.Context, arg SetForgeRepoSubscriptionEnabledParams) (int64, error)
 	SetIssueState(ctx context.Context, arg SetIssueStateParams) (int64, error)
+	SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (bool, error)
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
 	SetTourState(ctx context.Context, arg SetTourStateParams) error
 	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)

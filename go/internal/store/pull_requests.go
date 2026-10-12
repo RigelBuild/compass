@@ -323,6 +323,29 @@ func (s *Store) FallbackIssuesForTarget(ctx context.Context, issue ForgeCoord) (
 	return out, nil
 }
 
+// PullRequestLinks returns every issue coordinate linked to a pull request.
+func (s *Store) PullRequestLinks(ctx context.Context, pr ForgeCoord) ([]ForgeCoord, error) {
+	pr = pr.Normalized()
+	if err := pr.valid(); err != nil {
+		return nil, err
+	}
+	p := pr.db()
+	rows, err := s.q.PullRequestLinks(ctx, db.PullRequestLinksParams{
+		PrForgeProvider: p.provider,
+		PrForgeHost:     p.host,
+		PrRepo:          p.repo,
+		PrNumber:        p.number,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: pull request links: %w", err)
+	}
+	out := make([]ForgeCoord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, coordFromDB(row.IssueForgeProvider, row.IssueForgeHost, row.IssueRepo, row.IssueNumber))
+	}
+	return out, nil
+}
+
 // PullRequestUpdatedAt reads the stored forge_updated_at of pr; ok is false when
 // the PR was never stored. The sweep hydrates only rows newer than this.
 func (s *Store) PullRequestUpdatedAt(ctx context.Context, pr ForgeCoord) (time.Time, bool, error) {
