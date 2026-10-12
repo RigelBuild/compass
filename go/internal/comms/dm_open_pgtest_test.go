@@ -63,6 +63,83 @@ func TestOpenDMSameOwnerCreatesDMChannel(t *testing.T) {
 	}
 }
 
+// TestOpenDMSurvivesOwnerHandleRename ensures an owner is not treated as a party
+// when its handle overlaps an agent handle in an agent-agent DM.
+func TestOpenDMSurvivesOwnerHandleRename(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := t.Context()
+	owner := mustUser(t, st, "alice")
+	alice := mustAgent(t, st, owner.ID, "alice")
+	bob := mustAgent(t, st, owner.ID, "bob")
+
+	first, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+		PeerHandle: bob.Handle,
+	}))
+	if err != nil {
+		t.Fatalf("OpenDM before owner rename: %v", err)
+	}
+	original := first.Msg.GetChannel()
+	if original.GetName() != store.DMChannelName(alice.Handle, bob.Handle) {
+		t.Fatalf("initial DM name = %q, want %q", original.GetName(), store.DMChannelName(alice.Handle, bob.Handle))
+	}
+
+	if _, _, err := st.RenameHandle(ctx, owner.ID, "alice-owner-new"); err != nil {
+		t.Fatalf("RenameHandle(owner): %v", err)
+	}
+
+	second, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+		PeerHandle: bob.Handle,
+	}))
+	if err != nil {
+		t.Fatalf("OpenDM after owner rename: %v", err)
+	}
+	if second.Msg.GetCreated() || second.Msg.GetChannel().GetId() != original.GetId() {
+		t.Fatalf("OpenDM after owner rename = (id %q, created %t), want original channel %q resumed",
+			second.Msg.GetChannel().GetId(), second.Msg.GetCreated(), original.GetId())
+	}
+	if second.Msg.GetChannel().GetName() != original.GetName() {
+		t.Fatalf("agent DM name after owner rename = %q, want unchanged %q", second.Msg.GetChannel().GetName(), original.GetName())
+	}
+}
+
+// TestOpenOwnerAgentDMSurvivesOwnerHandleRename preserves owner-agent DMs when
+// the user is an actual party, not a pulled-in owner member.
+func TestOpenOwnerAgentDMSurvivesOwnerHandleRename(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := t.Context()
+	owner := mustUser(t, st, "owner-before")
+	agent := mustAgent(t, st, owner.ID, "agent")
+
+	first, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+		PeerHandle: agent.Handle,
+	}))
+	if err != nil {
+		t.Fatalf("OpenDM before owner rename: %v", err)
+	}
+	original := first.Msg.GetChannel()
+	if !first.Msg.GetCreated() {
+		t.Fatal("first owner-agent OpenDM reported created=false")
+	}
+
+	if _, _, err := st.RenameHandle(ctx, owner.ID, "owner-after"); err != nil {
+		t.Fatalf("RenameHandle(owner): %v", err)
+	}
+	second, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+		PeerHandle: agent.Handle,
+	}))
+	if err != nil {
+		t.Fatalf("OpenDM after owner rename: %v", err)
+	}
+	if second.Msg.GetCreated() || second.Msg.GetChannel().GetId() != original.GetId() {
+		t.Fatalf("OpenDM after owner rename = (id %q, created %t), want original channel %q resumed",
+			second.Msg.GetChannel().GetId(), second.Msg.GetCreated(), original.GetId())
+	}
+	if second.Msg.GetChannel().GetName() != store.DMChannelName("owner-after", agent.Handle) {
+		t.Fatalf("owner-agent DM name after owner rename = %q, want %q",
+			second.Msg.GetChannel().GetName(), store.DMChannelName("owner-after", agent.Handle))
+	}
+}
+
 // TestOpenDMRevokeWaitsForLockedPeering keeps a stale authorization from creating a DM.
 func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
 	svc, st := newHandler(t)

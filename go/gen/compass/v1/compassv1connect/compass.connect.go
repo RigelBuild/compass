@@ -240,7 +240,8 @@ type CompassServiceClient interface {
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
 	// Admin-gated: only an admin may rename an account; non-admin callers get
-	// permission_denied. Same-owner DMs are re-keyed; freed handles may be
+	// permission_denied. Same-owner DM, agent home, and coordination channel names
+	// follow the new handle; freed handles may be
 	// reclaimed, and an agent's owner does not change. The bootstrap admin and
 	// its root supervisor are protected from rename with failed_precondition.
 	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)
@@ -731,7 +732,8 @@ type CompassServiceHandler interface {
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
 	// Admin-gated: only an admin may rename an account; non-admin callers get
-	// permission_denied. Same-owner DMs are re-keyed; freed handles may be
+	// permission_denied. Same-owner DM, agent home, and coordination channel names
+	// follow the new handle; freed handles may be
 	// reclaimed, and an agent's owner does not change. The bootstrap admin and
 	// its root supervisor are protected from rename with failed_precondition.
 	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)

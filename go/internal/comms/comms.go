@@ -84,16 +84,16 @@ func NewComms(st *store.Store, bus commsBus, fab fabric.EventFabric, adminID sto
 	return &Comms{store: st, bus: bus, fabric: fab, fabricPublishFailures: failures, adminID: adminID}
 }
 
-// PublishAccountRename emits account and same-owner DM changes after the
-// rename transaction commits. Channels are fetched in the committed state so
-// every event carries their new deterministic names.
+// PublishAccountRename emits account and renamed-channel changes after the store
+// transaction commits. Renamed channels include same-owner DMs, agent home
+// channels, and manager coordination channels. Each event carries committed state.
 func (c *Comms) PublishAccountRename(ctx context.Context, account store.Account, channelIDs []store.ChannelID) {
 	ctx = context.WithoutCancel(ctx)
 	c.publishAccountChanged(account)
 	for _, channelID := range channelIDs {
 		channel, err := c.store.GetChannel(ctx, channelID)
 		if err != nil {
-			slog.ErrorContext(ctx, "comms: reading renamed dm channel for event", "channel_id", channelID, "err", err)
+			slog.ErrorContext(ctx, "comms: reading renamed channel for event", "channel_id", channelID, "err", err)
 			continue
 		}
 		c.publishChannelChanged(channel, nil)

@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // ---- T0: uniqueness invariants ----
@@ -185,8 +186,8 @@ func TestRenameHandleRekeysSameOwnerDMWithoutChangingMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenameHandle: %v", err)
 	}
-	if renamed.Handle != "alice-new" || len(rekeyed) != 1 || rekeyed[0] != channelID {
-		t.Fatalf("RenameHandle = (%q, %v), want handle alice-new and the same DM ID %q", renamed.Handle, rekeyed, channelID)
+	if renamed.Handle != "alice-new" || !slices.Contains(rekeyed, channelID) {
+		t.Fatalf("RenameHandle = (%q, %v), want handle alice-new and DM ID %q", renamed.Handle, rekeyed, channelID)
 	}
 	channel, err := s.GetChannel(ctx, channelID)
 	if err != nil {
@@ -197,6 +198,157 @@ func TestRenameHandleRekeysSameOwnerDMWithoutChangingMembership(t *testing.T) {
 	}
 	if !slices.Contains(channel.MemberAccountIDs, alice.ID) || !slices.Contains(channel.MemberAccountIDs, bob.ID) || !slices.Contains(channel.MemberAccountIDs, owner.ID) {
 		t.Fatalf("renamed DM members = %v, want both agents and their owner", channel.MemberAccountIDs)
+	}
+}
+
+// TestRenameHandleDoesNotRekeyAgentDMForOwnerHandle verifies that an owner
+// pulled into an agent DM is not treated as a party when its handle changes.
+func TestRenameHandleDoesNotRekeyAgentDMForOwnerHandle(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "alice")
+	alice := mustAgent(t, s, owner.ID, "alice")
+	bob := mustAgent(t, s, owner.ID, "bob")
+	var channelID ChannelID
+	if err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		if err := LockOwnerDMTx(ctx, tx, owner.ID); err != nil {
+			return err
+		}
+		group, err := s.EnsureOwnerDMGroupTx(ctx, tx, owner.ID)
+		if err != nil {
+			return err
+		}
+		channelID, _, err = s.UpsertDMChannelTx(ctx, tx, DMChannelSpec{
+			GroupID: group,
+			Name:    DMChannelName(alice.Handle, bob.Handle),
+			Members: []AccountID{alice.ID, bob.ID},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("open agent DM: %v", err)
+	}
+
+	_, renamedIDs, err := s.RenameHandle(ctx, owner.ID, "alice-owner-new")
+	if err != nil {
+		t.Fatalf("RenameHandle(owner): %v", err)
+	}
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if channel.Name != DMChannelName(alice.Handle, bob.Handle) {
+		t.Fatalf("agent DM name after owner rename = %q, want %q", channel.Name, DMChannelName(alice.Handle, bob.Handle))
+	}
+	if slices.Contains(renamedIDs, channelID) {
+		t.Fatalf("renamed channel ids %v include agent DM %q for an owner handle change", renamedIDs, channelID)
+	}
+	var reopenedID ChannelID
+	var created bool
+	if err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		if err := LockOwnerDMTx(ctx, tx, owner.ID); err != nil {
+			return err
+		}
+		group, err := s.EnsureOwnerDMGroupTx(ctx, tx, owner.ID)
+		if err != nil {
+			return err
+		}
+		reopenedID, created, err = s.UpsertDMChannelTx(ctx, tx, DMChannelSpec{
+			GroupID: group,
+			Name:    DMChannelName(alice.Handle, bob.Handle),
+			Members: []AccountID{alice.ID, bob.ID},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("reopen agent DM after owner rename: %v", err)
+	}
+	if reopenedID != channelID || created {
+		t.Fatalf("reopen agent DM after owner rename = (%q, %t), want original %q resumed", reopenedID, created, channelID)
+	}
+}
+
+// TestRenameHandleRenamesAgentHomeChannel proves a rename updates the channel
+// name through the stable home_channel_id.
+func TestRenameHandleRenamesAgentHomeChannel(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "home-owner")
+	agent := mustAgent(t, s, owner.ID, "home-old")
+	homeID := agent.Agent.HomeChannelID
+
+	_, renamedIDs, err := s.RenameHandle(ctx, agent.ID, "home-new")
+	if err != nil {
+		t.Fatalf("RenameHandle: %v", err)
+	}
+	if !slices.Contains(renamedIDs, homeID) {
+		t.Fatalf("RenameHandle channel ids = %v, want home channel %q", renamedIDs, homeID)
+	}
+	home, err := s.GetChannel(ctx, homeID)
+	if err != nil {
+		t.Fatalf("GetChannel(home): %v", err)
+	}
+	if home.ID != homeID || home.Name != "home-new" {
+		t.Fatalf("renamed home channel = (%q, %q), want same id %q and name home-new", home.ID, home.Name, homeID)
+	}
+}
+
+// TestRenameSkipsDMConvertedAfterScan protects a user-selected name from a
+// concurrent conversion that wins after the rename scan.
+func TestRenameSkipsDMConvertedAfterScan(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "convert-owner")
+	alice := mustAgent(t, s, owner.ID, "convert-alice")
+	bob := mustAgent(t, s, owner.ID, "convert-bob")
+	var (
+		channelID  ChannelID
+		renamedIDs []ChannelID
+	)
+	if err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		if err := LockOwnerDMTx(ctx, tx, owner.ID); err != nil {
+			return err
+		}
+		groupID, err := s.EnsureOwnerDMGroupTx(ctx, tx, owner.ID)
+		if err != nil {
+			return err
+		}
+		channelID, _, err = s.UpsertDMChannelTx(ctx, tx, DMChannelSpec{
+			GroupID: groupID,
+			Name:    DMChannelName(alice.Handle, bob.Handle),
+			Members: []AccountID{alice.ID, bob.ID},
+		})
+		if err != nil {
+			return err
+		}
+		rows, err := db.New(tx).AccountDMChannelsForRename(ctx, string(alice.ID))
+		if err != nil {
+			return err
+		}
+		if len(rows) != 1 || rows[0].ID != string(channelID) {
+			t.Fatalf("DM rename scan = %+v, want channel %q", rows, channelID)
+		}
+		if err := db.New(tx).ConvertDMChannel(ctx, db.ConvertDMChannelParams{
+			Kind: int16(ChannelKindChannel), Name: "Chosen after scan", ID: string(channelID),
+		}); err != nil {
+			return err
+		}
+		renamedIDs, err = renameHandleTx(ctx, tx, db.New(tx), alice.ID, alice.Handle, "convert-alice-new", rows, nil, nil)
+		if err != nil {
+			return err
+		}
+		var name string
+		var kind int16
+		if err := tx.QueryRow(ctx, "SELECT name, kind FROM channels WHERE id = $1", string(channelID)).Scan(&name, &kind); err != nil {
+			return err
+		}
+		if name != "Chosen after scan" || ChannelKind(kind) != ChannelKindChannel {
+			t.Fatalf("converted channel = (%q, %d), want its chosen name and CHANNEL kind", name, kind)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("convert and rename in transaction: %v", err)
+	}
+	if slices.Contains(renamedIDs, channelID) {
+		t.Fatalf("renamed channel ids %v include converted channel %q", renamedIDs, channelID)
 	}
 }
 

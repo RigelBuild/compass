@@ -3801,7 +3801,8 @@ export const CompassService: GenService<{
   },
   /**
    * Admin-gated: only an admin may rename an account; non-admin callers get
-   * permission_denied. Same-owner DMs are re-keyed; freed handles may be
+   * permission_denied. Same-owner DM, agent home, and coordination channel names
+   * follow the new handle; freed handles may be
    * reclaimed, and an agent's owner does not change. The bootstrap admin and
    * its root supervisor are protected from rename with failed_precondition.
    *

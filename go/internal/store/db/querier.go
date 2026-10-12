@@ -11,9 +11,10 @@ import (
 )
 
 type Querier interface {
-	// AccountDMChannelsForRename reads the same-owner DMs (agent-agent and
-	// owner-agent) keyed by the renamed account's current handle. Cross-owner DMs use
-	// account IDs and do not change.
+	// AccountDMChannelsForRename reads same-owner DMs by actual agent-party handles.
+	// An agent subject is a party directly. A user subject is a party only in an
+	// owner-agent DM with exactly one agent party; user members of agent-agent DMs
+	// are pulled-in owners and do not affect the deterministic pair name.
 	//
 	AccountDMChannelsForRename(ctx context.Context, accountID string) ([]AccountDMChannelsForRenameRow, error)
 	// The tenant an account belongs to. A system-role caller (the delivery loop) reads
@@ -48,6 +49,7 @@ type Querier interface {
 	// file passed its SQL as a const identifier). The hand-written Store methods keep
 	// their signatures and error mapping.
 	AgentHasOpenAsk(ctx context.Context, authorAccountID string) (bool, error)
+	AgentHomeChannelForRename(ctx context.Context, accountID string) (AgentHomeChannelForRenameRow, error)
 	// Agent-tree queries (sqlc adoption T2, RIG-3034). These replace the
 	// const-hoisted `agentTreeProjection` + per-caller WHERE composition that lived
 	// in internal/store/agent_tree.go and was run through the `queryAgents` helper —
@@ -116,6 +118,7 @@ type Querier interface {
 	// which is the correct answer for every human/external transition.
 	ConsumeStateTransition(ctx context.Context, arg ConsumeStateTransitionParams) (string, error)
 	ConvertDMChannel(ctx context.Context, arg ConvertDMChannelParams) error
+	CoordinationChannelsForRename(ctx context.Context, arg CoordinationChannelsForRenameParams) ([]CoordinationChannelsForRenameRow, error)
 	CoordinationReports(ctx context.Context, parentAgentID pgtype.Text) ([]string, error)
 	CountAgentForgeSubscriptionsForArtifact(ctx context.Context, arg CountAgentForgeSubscriptionsForArtifactParams) (int64, error)
 	CountAgentMembers(ctx context.Context, channelID string) (int64, error)
@@ -589,6 +592,8 @@ type Querier interface {
 	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
 	RenameAccountDisplayHandle(ctx context.Context, arg RenameAccountDisplayHandleParams) (int64, error)
 	RenameAccountHandle(ctx context.Context, arg RenameAccountHandleParams) (int64, error)
+	RenameAgentHomeChannel(ctx context.Context, arg RenameAgentHomeChannelParams) (int64, error)
+	RenameCoordinationChannel(ctx context.Context, arg RenameCoordinationChannelParams) (int64, error)
 	RenameDMChannel(ctx context.Context, arg RenameDMChannelParams) (int64, error)
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
 	RequireAgentSessionOwner(ctx context.Context, arg RequireAgentSessionOwnerParams) (bool, error)

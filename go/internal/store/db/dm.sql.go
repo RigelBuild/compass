@@ -17,11 +17,51 @@ FROM channels c
 JOIN channel_groups cg ON cg.id = c.group_id AND cg.name = '__dm__'
     AND cg.parent_group_id IS NULL AND cg.visibility = 0
 JOIN channel_members subject ON subject.channel_id = c.id AND subject.account_id = $1
+LEFT JOIN agent_accounts subject_party ON subject_party.account_id = subject.account_id
 JOIN channel_members other ON other.channel_id = c.id AND other.account_id <> $1
+LEFT JOIN agent_accounts other_party ON other_party.account_id = other.account_id
 JOIN account_handles other_handle ON other_handle.account_id = other.account_id
 JOIN account_handles subject_handle ON subject_handle.account_id = subject.account_id
 WHERE c.kind = 1
   AND cg.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
+  AND (
+      (
+          subject_party.account_id IS NULL
+          AND other_party.account_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM channel_members party_member
+              JOIN agent_accounts party ON party.account_id = party_member.account_id
+              WHERE party_member.channel_id = c.id
+                AND party_member.account_id <> other.account_id
+          )
+      )
+      OR (
+          subject_party.account_id IS NOT NULL
+          AND (
+              (
+                  other_party.account_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM channel_members party_member
+                      JOIN agent_accounts party ON party.account_id = party_member.account_id
+                      WHERE party_member.channel_id = c.id
+                        AND party_member.account_id NOT IN (subject.account_id, other.account_id)
+                  )
+              )
+              OR (
+                  other.account_id = subject_party.owner_user_id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM channel_members party_member
+                      JOIN agent_accounts party ON party.account_id = party_member.account_id
+                      WHERE party_member.channel_id = c.id
+                        AND party_member.account_id <> subject.account_id
+                  )
+              )
+          )
+      )
+  )
   AND c.name IN (
       'dm:' || subject_handle.handle || ':' || other_handle.handle,
       'dm:' || other_handle.handle || ':' || subject_handle.handle
@@ -35,9 +75,10 @@ type AccountDMChannelsForRenameRow struct {
 	Handle    string
 }
 
-// AccountDMChannelsForRename reads the same-owner DMs (agent-agent and
-// owner-agent) keyed by the renamed account's current handle. Cross-owner DMs use
-// account IDs and do not change.
+// AccountDMChannelsForRename reads same-owner DMs by actual agent-party handles.
+// An agent subject is a party directly. A user subject is a party only in an
+// owner-agent DM with exactly one agent party; user members of agent-agent DMs
+// are pulled-in owners and do not affect the deterministic pair name.
 func (q *Queries) AccountDMChannelsForRename(ctx context.Context, accountID string) ([]AccountDMChannelsForRenameRow, error) {
 	rows, err := q.db.Query(ctx, accountDMChannelsForRename, accountID)
 	if err != nil {
@@ -202,16 +243,18 @@ func (q *Queries) ReassertDMMandatory(ctx context.Context, id string) error {
 }
 
 const renameDMChannel = `-- name: RenameDMChannel :execrows
-UPDATE channels SET name = $2 WHERE id = $1
+UPDATE channels SET name = $2
+WHERE id = $1 AND kind = 1 AND name = $3
 `
 
 type RenameDMChannelParams struct {
-	ID   string
-	Name string
+	ID     string
+	Name   string
+	Name_2 string
 }
 
 func (q *Queries) RenameDMChannel(ctx context.Context, arg RenameDMChannelParams) (int64, error) {
-	result, err := q.db.Exec(ctx, renameDMChannel, arg.ID, arg.Name)
+	result, err := q.db.Exec(ctx, renameDMChannel, arg.ID, arg.Name, arg.Name_2)
 	if err != nil {
 		return 0, err
 	}

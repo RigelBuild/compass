@@ -107,15 +107,15 @@ the only path by which the server pushes state to a UI.
 
 `RenameAccount` SHALL resolve a bare user handle or an owner-qualified agent
 handle without viewer-scoped filtering. It SHALL rename the account's resolution
-handle and display copy in one store transaction. Same-owner DMs SHALL be
-re-keyed in that transaction while their messages remain with the original
-accounts. The new handle MUST be valid and bare; an agent's owner does not
-change. Unknown accounts return `NotFound`, invalid input returns
-`InvalidArgument`, and a collision in the account's handle tier returns
-`AlreadyExists`. The system account cannot be renamed. The bootstrap admin and
-its root supervisor return `FailedPrecondition` and remain unchanged. The
-response returns the account id and its current address, qualified by the owner's
-current handle for agents. A freed handle is immediately available for reuse.
+handle and display copy in one store transaction. Same-owner DMs, agent home
+channels, and coordination channels SHALL be renamed in that transaction while
+their channel ids and message history remain unchanged. The new handle MUST be
+valid and bare; an agent's owner does not change. Unknown accounts return
+`NotFound`, invalid input returns `InvalidArgument`, and a collision in the account's handle tier returns `AlreadyExists`.
+The system account cannot be renamed. The bootstrap admin and its root
+supervisor return `FailedPrecondition` and remain unchanged. The response
+returns the account id and its current address, qualified by the owner's current
+handle for agents. A freed handle is immediately available for reuse.
 
 #### Scenario: Rename an account at either handle tier
 
@@ -147,11 +147,12 @@ current handle for agents. A freed handle is immediately available for reuse.
 
 #### Scenario: Account rename publishes updated account and DM state
 
-- **Given** an account with a same-owner DM and a subscriber entitled to both
+- **Given** an account with a same-owner DM and a subscriber entitled to its
+  account and channel changes
 - **When** an admin renames the account
 - **Then** the subscriber receives `AccountChanged` with the new handle and
-  `ChannelChanged` with the re-keyed DM name, while the channel ID and message
-  history remain unchanged
+  `ChannelChanged` for each renamed same-owner DM, home, or coordination channel;
+  each channel retains its id and message history
 
 ### Requirement: A generated client is the only door to the server
 

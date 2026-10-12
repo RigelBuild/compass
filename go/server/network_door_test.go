@@ -863,6 +863,27 @@ func TestRenameAccountPublishesAccountAndDMChanges(t *testing.T) {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(st, commsBus, nil, adminID)
+	commsSvc.RegisterCoordinationHook(st)
+	if _, err := st.CreateAgent(ctx, member, store.NewAgent{
+		Handle: "rename-report", DisplayName: "Rename Report", ParentAgentID: agent.ID,
+	}); err != nil {
+		t.Fatalf("CreateAgent(rename-report): %v", err)
+	}
+	channels, err := st.ListChannels(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("ListChannels(manager): %v", err)
+	}
+	var coordinationID store.ChannelID
+	for _, channel := range channels {
+		if channel.Policy.OwnerAccountID == agent.ID && channel.Policy.MandatorySubscription &&
+			channel.Policy.PostPolicy == store.ChannelPostPolicyOwnerOnly {
+			coordinationID = channel.ID
+			break
+		}
+	}
+	if coordinationID == "" {
+		t.Fatal("manager has no coordination channel")
+	}
 	svc := newService("test", bus, st, nil, nil, nil, nil).withAccountRenamer(commsSvc, adminID)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 	resp, err := client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
@@ -895,9 +916,15 @@ func TestRenameAccountPublishesAccountAndDMChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("comms bus Subscribe after agent rename: %v", err)
 	}
-	assertOnlyAccountRenameEvent(t, agentEvents.Replay, "renamed-agent")
+	if len(agentEvents.Replay) != 3 {
+		t.Fatalf("events after agent rename = %d, want AccountChanged followed by home and coordination ChannelChanged", len(agentEvents.Replay))
+	}
+	assertRenameAccountEvent(t, agentEvents.Replay[0].Payload, agent.ID, "renamed-agent")
+	assertRenameChannelEvents(t, agentEvents.Replay[1:], map[string]string{
+		string(agent.Agent.HomeChannelID): "renamed-agent",
+		string(coordinationID):            "renamed-agent-coordination",
+	})
 	agentEvents.Cancel()
-
 	bob, err := st.CreateAgent(ctx, member, store.NewAgent{Handle: "rename-peer", DisplayName: "Rename Peer"})
 	if err != nil {
 		t.Fatalf("CreateAgent(rename-peer): %v", err)
@@ -923,17 +950,15 @@ func TestRenameAccountPublishesAccountAndDMChanges(t *testing.T) {
 		t.Fatalf("comms bus Subscribe after DM rename: %v", err)
 	}
 	defer dmRenameEvents.Cancel()
-	if len(dmRenameEvents.Replay) != 2 {
-		t.Fatalf("events after DM rename = %d, want AccountChanged followed by ChannelChanged", len(dmRenameEvents.Replay))
+	if len(dmRenameEvents.Replay) != 4 {
+		t.Fatalf("events after DM rename = %d, want AccountChanged followed by home, coordination, and DM ChannelChanged", len(dmRenameEvents.Replay))
 	}
-	accountChange := dmRenameEvents.Replay[0].Payload.GetAccountChanged()
-	if accountChange == nil || accountChange.GetAccount().GetId() != string(agent.ID) || accountChange.GetAccount().GetHandle() != "renamed-agent-two" {
-		t.Fatalf("first DM rename event = %v, want AccountChanged for renamed agent", dmRenameEvents.Replay[0].Payload.GetPayload())
-	}
-	channelChange := dmRenameEvents.Replay[1].Payload.GetChannelChanged()
-	if channelChange == nil || channelChange.GetChannel().GetId() != dmID || channelChange.GetChannel().GetName() != store.DMChannelName("rename-peer", "renamed-agent-two") {
-		t.Fatalf("second DM rename event = %v, want same channel ID with re-keyed DM name", dmRenameEvents.Replay[1].Payload.GetPayload())
-	}
+	assertRenameAccountEvent(t, dmRenameEvents.Replay[0].Payload, agent.ID, "renamed-agent-two")
+	assertRenameChannelEvents(t, dmRenameEvents.Replay[1:], map[string]string{
+		string(agent.Agent.HomeChannelID): "renamed-agent-two",
+		string(coordinationID):            "renamed-agent-two-coordination",
+		dmID:                              store.DMChannelName("rename-peer", "renamed-agent-two"),
+	})
 
 }
 
@@ -945,6 +970,34 @@ func assertOnlyAccountRenameEvent(t *testing.T, replay []events.Stamped[*compass
 	changed := replay[0].Payload.GetAccountChanged()
 	if changed == nil || changed.GetAccount().GetHandle() != wantHandle {
 		t.Fatalf("rename account event = %v, want AccountChanged with handle %q", replay[0].Payload.GetPayload(), wantHandle)
+	}
+}
+
+func assertRenameAccountEvent(t *testing.T, payload *compassv1.SubscribeCommsResponse, id store.AccountID, handle string) {
+	t.Helper()
+	changed := payload.GetAccountChanged()
+	if changed == nil || changed.GetAccount().GetId() != string(id) || changed.GetAccount().GetHandle() != handle {
+		t.Fatalf("account rename event = %v, want account %q with handle %q", payload.GetPayload(), id, handle)
+	}
+}
+
+func assertRenameChannelEvents(t *testing.T, replay []events.Stamped[*compassv1.SubscribeCommsResponse], want map[string]string) {
+	t.Helper()
+	if len(replay) != len(want) {
+		t.Fatalf("channel rename events = %d, want %d: %v", len(replay), len(want), replay)
+	}
+	got := make(map[string]string, len(replay))
+	for _, event := range replay {
+		changed := event.Payload.GetChannelChanged()
+		if changed == nil {
+			t.Fatalf("rename payload = %v, want ChannelChanged", event.Payload.GetPayload())
+		}
+		got[changed.GetChannel().GetId()] = changed.GetChannel().GetName()
+	}
+	for id, name := range want {
+		if got[id] != name {
+			t.Fatalf("rename channel events = %v, want channel %q named %q", got, id, name)
+		}
 	}
 }
 

@@ -48,6 +48,17 @@ WHERE id = $1;
 INSERT INTO channels (id, name, group_id, kind)
 VALUES ($1, $2, NULL, $3);
 
+-- name: AgentHomeChannelForRename :one
+SELECT ch.id, ch.name
+FROM agent_accounts aa
+JOIN channels ch ON ch.id = aa.home_channel_id AND ch.kind = 0
+WHERE aa.account_id = $1;
+
+-- name: RenameAgentHomeChannel :execrows
+UPDATE channels ch SET name = $2
+FROM agent_accounts aa
+WHERE aa.account_id = $1 AND ch.id = aa.home_channel_id AND ch.kind = 0 AND ch.name = $3;
+
 -- name: SeedHomeChannelMembers :exec
 INSERT INTO channel_members (channel_id, account_id, subscribed)
 VALUES ($1, $2, FALSE), ($1, $3, TRUE);

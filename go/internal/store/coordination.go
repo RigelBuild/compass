@@ -172,10 +172,7 @@ func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec
 
 	qtx := db.New(tx)
 	for suffix := 1; ; suffix++ {
-		name := spec.BaseName
-		if suffix > 1 {
-			name = fmt.Sprintf("%s-%d", spec.BaseName, suffix)
-		}
+		name := coordinationChannelName(spec.BaseName, suffix)
 
 		existing, err := qtx.GetCoordinationChannelByName(ctx, db.GetCoordinationChannelByNameParams{
 			GroupID: pgtype.Text{String: string(spec.GroupID), Valid: true},
@@ -222,6 +219,14 @@ func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec
 			return "", fmt.Errorf("store: insert coordination channel: %w", err)
 		}
 	}
+}
+
+// coordinationChannelName is the collision-suffixed name: base, then base-2, base-3, ...
+func coordinationChannelName(baseName string, suffix int) string {
+	if suffix <= 1 {
+		return baseName
+	}
+	return fmt.Sprintf("%s-%d", baseName, suffix)
 }
 
 // SetCoordinationMembersTx resyncs channelID's membership to exactly want on tx:
