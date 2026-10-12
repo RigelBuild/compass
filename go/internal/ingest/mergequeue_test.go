@@ -23,9 +23,10 @@ func TestPullRequestHydratorMergeQueue(t *testing.T) {
 		wantCalls    int
 		wantState    string
 		wantProvider string
+		wantObserved bool
 		wantLogError bool
 	}{
-		{name: "configured queue attaches entry", configs: fixedQueueConfig{provider: "trunk", branch: "main", repos: []string{"owner/repo"}}, queue: &fixedQueue{entry: queueEntry}, wantCalls: 1, wantState: "testing", wantProvider: "trunk"},
+		{name: "configured queue attaches entry", configs: fixedQueueConfig{provider: "trunk", branch: "main", repos: []string{"owner/repo"}}, queue: &fixedQueue{entry: queueEntry}, wantCalls: 1, wantState: "testing", wantProvider: "trunk", wantObserved: true},
 		{name: "configured queue failure keeps hydration green", configs: fixedQueueConfig{provider: "trunk", branch: "main", repos: []string{"owner/repo"}}, queue: &fixedQueue{err: errors.New("offline")}, wantCalls: 1, wantLogError: true},
 		{name: "unconfigured repo makes no provider call", queue: &fixedQueue{entry: queueEntry}, wantCalls: 0},
 	} {
@@ -46,13 +47,17 @@ func TestPullRequestHydratorMergeQueue(t *testing.T) {
 			if len(sink.got) != 1 {
 				t.Fatalf("sink calls = %d, want 1", len(sink.got))
 			}
-			entry := sink.got[0].PR.GetMergeQueue()
+			in := sink.got[0]
+			entry := in.PR.GetMergeQueue()
 			if tt.wantProvider == "" {
 				if entry != nil {
 					t.Fatalf("merge queue = %v, want nil", entry)
 				}
 			} else if entry.GetProvider() != tt.wantProvider || entry.GetState() != tt.wantState || entry.GetChangedAt().AsTime() != queueEntry.ChangedAt {
 				t.Fatalf("merge queue = %v, want provider=%s state=%s changed_at=%v", entry, tt.wantProvider, tt.wantState, queueEntry.ChangedAt)
+			}
+			if in.MergeQueueObserved != tt.wantObserved {
+				t.Fatalf("queue observed = %v, want %v", in.MergeQueueObserved, tt.wantObserved)
 			}
 			if log.errors != tt.wantLogError {
 				t.Fatalf("queue error logged = %v, want %v", log.errors, tt.wantLogError)
@@ -71,7 +76,9 @@ func (c fixedQueueConfig) MergeQueueFor(context.Context, string) (string, string
 	return c.provider, c.branch, nil
 }
 
-func (c fixedQueueConfig) MergeQueueRepos(context.Context) ([]string, error) { return c.repos, nil }
+func (c fixedQueueConfig) MergeQueueRepos(context.Context) ([]string, error) {
+	return c.repos, nil
+}
 
 func (c fixedQueueConfig) MergeQueueHost() string { return "github.com" }
 
@@ -115,13 +122,29 @@ func TestMergeQueueSweeperBatchesAtFifty(t *testing.T) {
 	store := &fixedQueuePRStore{numbers: numbers}
 	sink := &recordingQueueSink{}
 	configs := fixedQueueConfig{provider: "trunk", branch: "main", repos: []string{"owner/repo"}}
-	NewMergeQueueSweeper(map[string]forge.MergeQueue{"trunk": queue}, configs, store, sink, time.Hour).sweep(context.Background())
+	clock := &batchClock{at: time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)}
+	sweeper := NewMergeQueueSweeper(map[string]forge.MergeQueue{"trunk": queue}, configs, store, sink, time.Hour)
+	sweeper.now = clock.Now
+	sweeper.sweep(context.Background())
 	if !slices.Equal(queue.batchSizes, []int{50, 1}) {
 		t.Fatalf("provider batch sizes = %v, want [50 1]", queue.batchSizes)
 	}
 	if len(sink.entries) != 51 {
 		t.Fatalf("published entries = %d, want 51", len(sink.entries))
 	}
+	if len(sink.observedAt) != 51 || !sink.observedAt[0].Equal(sink.observedAt[49]) || sink.observedAt[49].Equal(sink.observedAt[50]) {
+		t.Fatalf("observedAt = %v; want one timestamp per batch", sink.observedAt)
+	}
+}
+
+type batchClock struct {
+	at    time.Time
+	calls int
+}
+
+func (c *batchClock) Now() time.Time {
+	c.calls++
+	return c.at.Add(time.Duration(c.calls) * time.Second)
 }
 
 type recordingBatchQueue struct{ batchSizes []int }
@@ -170,9 +193,13 @@ func (s *fixedQueuePRStore) OpenPullRequests(context.Context, string) ([]uint64,
 	return s.numbers, nil
 }
 
-type recordingQueueSink struct{ entries []*compassv1.MergeQueueEntry }
+type recordingQueueSink struct {
+	entries    []*compassv1.MergeQueueEntry
+	observedAt []time.Time
+}
 
-func (s *recordingQueueSink) PublishPullRequestMergeQueue(_ context.Context, _ store.ForgeCoord, entry *compassv1.MergeQueueEntry) error {
+func (s *recordingQueueSink) PublishPullRequestMergeQueue(_ context.Context, _ store.ForgeCoord, entry *compassv1.MergeQueueEntry, observedAt time.Time) error {
 	s.entries = append(s.entries, entry)
+	s.observedAt = append(s.observedAt, observedAt)
 	return nil
 }

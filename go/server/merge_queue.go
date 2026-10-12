@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
@@ -51,7 +52,7 @@ type mergeQueueProjection struct {
 	brd *board.IssueProjection
 }
 
-func (p mergeQueueProjection) PublishPullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, entry *compassv1.MergeQueueEntry) error {
+func (p mergeQueueProjection) PublishPullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, entry *compassv1.MergeQueueEntry, observedAt time.Time) error {
 	body := []byte("null")
 	if entry != nil {
 		var err error
@@ -60,7 +61,7 @@ func (p mergeQueueProjection) PublishPullRequestMergeQueue(ctx context.Context, 
 			return fmt.Errorf("marshal merge queue entry: %w", err)
 		}
 	}
-	changed, err := p.brd.UpdatePullRequestMergeQueue(ctx, coord, body)
+	changed, err := p.brd.UpdatePullRequestMergeQueue(ctx, coord, body, observedAt)
 	if err != nil {
 		return err
 	}

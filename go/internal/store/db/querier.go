@@ -670,7 +670,7 @@ type Querier interface {
 	SetForgeRepoMergeQueue(ctx context.Context, arg SetForgeRepoMergeQueueParams) (int64, error)
 	SetForgeRepoSubscriptionEnabled(ctx context.Context, arg SetForgeRepoSubscriptionEnabledParams) (int64, error)
 	SetIssueState(ctx context.Context, arg SetIssueStateParams) (int64, error)
-	SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (int64, error)
+	SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (bool, error)
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
 	SetTourState(ctx context.Context, arg SetTourStateParams) error
 	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)

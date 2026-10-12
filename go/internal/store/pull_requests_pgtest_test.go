@@ -396,68 +396,100 @@ func TestPullRequestMixedCaseBoardIssueResolvesExplicitLink(t *testing.T) {
 	}
 }
 
-func TestSetPullRequestMergeQueueChangesOnlyOnDifferentEntry(t *testing.T) {
+func TestSetPullRequestMergeQueueRejectsStaleClear(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	coord := ghCoord("owner/repo", 7)
-	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: coord.Repo, Enabled: true}); err != nil {
-		t.Fatalf("seed forge repo subscription: %v", err)
+	s, coord, issue := seedMergeQueuePullRequest(t)
+	entry := []byte(`{"provider":"trunk","state":"testing"}`)
+	observedAt := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	if changed, err := s.SetPullRequestMergeQueue(ctx, coord, entry, observedAt); err != nil || !changed {
+		t.Fatalf("store entry = %v, %v; want changed", changed, err)
 	}
-	mustUpsertPR(t, ctx, s, prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(time.Hour)))
-	changed, err := s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
+	changed, err := s.SetPullRequestMergeQueue(ctx, coord, []byte("null"), observedAt.Add(-time.Second))
 	if err != nil || changed {
-		t.Fatalf("null on absent SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+		t.Fatalf("stale clear = %v, %v; want unchanged", changed, err)
 	}
-	entry := []byte(`{"provider":"trunk","state":"testing","changedAt":"2026-10-11T12:34:56Z"}`)
-	changed, err = s.SetPullRequestMergeQueue(ctx, coord, entry)
-	if err != nil || !changed {
-		t.Fatalf("first SetPullRequestMergeQueue = %v, %v; want changed", changed, err)
-	}
-	changed, err = s.SetPullRequestMergeQueue(ctx, coord, entry)
-	if err != nil || changed {
-		t.Fatalf("same SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
-	}
-	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte(`{"provider":"trunk","state":"failed","changedAt":"2026-10-11T11:34:56Z"}`))
-	if err != nil || changed {
-		t.Fatalf("older SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
-	}
-	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
-	if err != nil || !changed {
-		t.Fatalf("clear SetPullRequestMergeQueue = %v, %v; want changed", changed, err)
-	}
-	changed, err = s.SetPullRequestMergeQueue(ctx, coord, []byte("null"))
-	if err != nil || changed {
-		t.Fatalf("repeat clear SetPullRequestMergeQueue = %v, %v; want unchanged", changed, err)
+	if got := storedQueueState(t, ctx, s, issue); got != "testing" {
+		t.Fatalf("queue after stale clear = %q, want testing", got)
 	}
 }
 
-func TestPullRequestHydratePreservesMergeQueueOnTransientLookupError(t *testing.T) {
+func TestSetPullRequestMergeQueueRejectsStaleEntryAfterClear(t *testing.T) {
+	ctx := context.Background()
+	s, coord, issue := seedMergeQueuePullRequest(t)
+	observedAt := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	if changed, err := s.SetPullRequestMergeQueue(ctx, coord, []byte("null"), observedAt); err != nil || changed {
+		t.Fatalf("store clear = %v, %v; want unchanged", changed, err)
+	}
+	entry := []byte(`{"provider":"trunk","state":"testing"}`)
+	changed, err := s.SetPullRequestMergeQueue(ctx, coord, entry, observedAt.Add(-time.Second))
+	if err != nil || changed {
+		t.Fatalf("stale entry = %v, %v; want unchanged", changed, err)
+	}
+	if got := storedQueueState(t, ctx, s, issue); got != "" {
+		t.Fatalf("queue after stale entry = %q, want absent", got)
+	}
+}
+
+func TestSetPullRequestMergeQueueEqualValueAdvancesObservation(t *testing.T) {
+	ctx := context.Background()
+	s, coord, issue := seedMergeQueuePullRequest(t)
+	entry := []byte(`{"provider":"trunk","state":"testing"}`)
+	observedAt := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	if changed, err := s.SetPullRequestMergeQueue(ctx, coord, entry, observedAt); err != nil || !changed {
+		t.Fatalf("store entry = %v, %v; want changed", changed, err)
+	}
+	changed, err := s.SetPullRequestMergeQueue(ctx, coord, entry, observedAt.Add(time.Second))
+	if err != nil || changed {
+		t.Fatalf("equal newer entry = %v, %v; want unchanged", changed, err)
+	}
+	var watermark time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT merge_queue_observed_at FROM pull_requests WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4`, int16(coord.Provider), coord.Host, coord.Repo, int64(coord.Number)).Scan(&watermark); err != nil {
+		t.Fatalf("read observation watermark: %v", err)
+	}
+	if !watermark.Equal(observedAt.Add(time.Second)) {
+		t.Fatalf("watermark = %v, want %v", watermark, observedAt.Add(time.Second))
+	}
+	olderEntry := []byte(`{"provider":"trunk","state":"failed"}`)
+	changed, err = s.SetPullRequestMergeQueue(ctx, coord, olderEntry, observedAt.Add(500*time.Millisecond))
+	if err != nil || changed {
+		t.Fatalf("entry older than equal observation = %v, %v; want unchanged", changed, err)
+	}
+	if got := storedQueueState(t, ctx, s, issue); got != "testing" {
+		t.Fatalf("queue after old entry = %q, want testing", got)
+	}
+}
+
+func seedMergeQueuePullRequest(t *testing.T) (*Store, ForgeCoord, ForgeCoord) {
+	t.Helper()
 	ctx := context.Background()
 	s := newTestStore(t)
 	coord := ghCoord("owner/repo", 7)
 	issue := ghCoord("owner/repo", 1)
 	seedBoardIssue(t, ctx, s, issue)
-	first := prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(time.Hour))
-	first.PR = []byte(`{"state":"open","mergeQueue":{"provider":"trunk","state":"testing","changedAt":"2026-10-11T12:34:56Z"}}`)
-	mustUpsertPR(t, ctx, s, first, issue)
-	second := prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(2*time.Hour))
-	mustUpsertPR(t, ctx, s, second, issue)
-	rows, err := s.PullRequestsForIssues(ctx, []ForgeCoord{ghCoord("owner/repo", 1)})
+	mustUpsertPR(t, ctx, s, prRow(coord.Repo, coord.Number, "open", prBase, prBase.Add(time.Hour)), issue)
+	return s, coord, issue
+}
+
+func storedQueueState(t *testing.T, ctx context.Context, s *Store, issue ForgeCoord) string {
+	t.Helper()
+	rows, err := s.PullRequestsForIssues(ctx, []ForgeCoord{issue})
 	if err != nil {
 		t.Fatalf("PullRequestsForIssues: %v", err)
 	}
-	if len(rows[ghCoord("owner/repo", 1)]) != 1 {
-		t.Fatalf("linked PR rows = %d, want one", len(rows[ghCoord("owner/repo", 1)]))
+	prs := rows[issue]
+	if len(prs) != 1 {
+		t.Fatalf("linked pull requests = %d, want 1", len(prs))
 	}
 	var got struct {
-		MergeQueue struct {
+		MergeQueue *struct {
 			State string `json:"state"`
 		} `json:"mergeQueue"`
 	}
-	if err := json.Unmarshal(rows[ghCoord("owner/repo", 1)][0].PR, &got); err != nil {
+	if err := json.Unmarshal(prs[0].PR, &got); err != nil {
 		t.Fatalf("decode PR JSON: %v", err)
 	}
-	if got.MergeQueue.State != "testing" {
-		t.Fatalf("hydrated PR mergeQueue = %q, want testing", got.MergeQueue.State)
+	if got.MergeQueue == nil {
+		return ""
 	}
+	return got.MergeQueue.State
 }

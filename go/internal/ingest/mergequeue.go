@@ -29,7 +29,7 @@ type MergeQueueStore interface {
 
 // MergeQueueSink stores a queue entry and republishes linked board issues when it changes.
 type MergeQueueSink interface {
-	PublishPullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, entry *compassv1.MergeQueueEntry) error
+	PublishPullRequestMergeQueue(ctx context.Context, coord store.ForgeCoord, entry *compassv1.MergeQueueEntry, observedAt time.Time) error
 }
 
 // MergeQueueSweeper polls configured queue providers and publishes state changes.
@@ -40,6 +40,7 @@ type MergeQueueSweeper struct {
 	sink   MergeQueueSink
 	every  time.Duration
 	log    *slog.Logger
+	now    func() time.Time
 }
 
 // NewMergeQueueSweeper builds the periodic merge-queue refresh worker.
@@ -47,7 +48,7 @@ func NewMergeQueueSweeper(queues map[string]forge.MergeQueue, cfgs QueueConfigs,
 	if every <= 0 {
 		every = 2 * time.Minute
 	}
-	return &MergeQueueSweeper{queues: queues, cfgs: cfgs, store: st, sink: sink, every: every, log: slog.Default()}
+	return &MergeQueueSweeper{queues: queues, cfgs: cfgs, store: st, sink: sink, every: every, log: slog.Default(), now: time.Now}
 }
 
 // Run sweeps once at startup, then at every cadence until ctx ends.
@@ -95,12 +96,13 @@ func (s *MergeQueueSweeper) sweep(ctx context.Context) {
 		}
 		for start := 0; start < len(numbers); start += mergeQueueBatchSize {
 			end := min(start+mergeQueueBatchSize, len(numbers))
+			observedAt := s.now()
 			entries, err := queue.Entries(ctx, repo, branch, numbers[start:end])
 			if err != nil {
 				s.log.ErrorContext(ctx, "merge queue sweep: read provider entries", "repo", repo, "error", err)
 				break
 			}
-			if err := s.publishChanged(ctx, s.cfgs.MergeQueueHost(), repo, provider, numbers[start:end], entries); err != nil {
+			if err := s.publishChanged(ctx, s.cfgs.MergeQueueHost(), repo, provider, numbers[start:end], entries, observedAt); err != nil {
 				s.log.ErrorContext(ctx, "merge queue sweep: publish entries", "repo", repo, "error", err)
 				break
 			}
@@ -108,7 +110,7 @@ func (s *MergeQueueSweeper) sweep(ctx context.Context) {
 	}
 }
 
-func (s *MergeQueueSweeper) publishChanged(ctx context.Context, host, repo, provider string, numbers []uint64, entries map[uint64]forge.QueueEntry) error {
+func (s *MergeQueueSweeper) publishChanged(ctx context.Context, host, repo, provider string, numbers []uint64, entries map[uint64]forge.QueueEntry, observedAt time.Time) error {
 	for _, number := range numbers {
 		entry, ok := entries[number]
 		var wire *compassv1.MergeQueueEntry
@@ -116,7 +118,7 @@ func (s *MergeQueueSweeper) publishChanged(ctx context.Context, host, repo, prov
 			wire = &compassv1.MergeQueueEntry{Provider: provider, State: queueStateName(entry.State), ChangedAt: timestamppb.New(entry.ChangedAt)}
 		}
 		coord := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: host, Repo: repo, Number: number}
-		if err := s.sink.PublishPullRequestMergeQueue(ctx, coord, wire); err != nil {
+		if err := s.sink.PublishPullRequestMergeQueue(ctx, coord, wire, observedAt); err != nil {
 			return fmt.Errorf("publish pull request #%d queue state: %w", number, err)
 		}
 	}

@@ -238,7 +238,8 @@ func TestMergeQueueProjectionPublishesOnlyChangedQueueEntries(t *testing.T) {
 	projection := mergeQueueProjection{brd: issueBrd}
 	coord := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: forgeTestHost, Repo: "owner/repo", Number: 7}
 	entry := &compassv1.MergeQueueEntry{Provider: "trunk", State: "testing"}
-	if err := projection.PublishPullRequestMergeQueue(ctx, coord, entry); err != nil {
+	observedAt := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	if err := projection.PublishPullRequestMergeQueue(ctx, coord, entry, observedAt); err != nil {
 		t.Fatalf("publish new entry: %v", err)
 	}
 	select {
@@ -249,7 +250,7 @@ func TestMergeQueueProjectionPublishesOnlyChangedQueueEntries(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("changed queue entry did not republish linked issue")
 	}
-	if err := projection.PublishPullRequestMergeQueue(ctx, coord, entry); err != nil {
+	if err := projection.PublishPullRequestMergeQueue(ctx, coord, entry, observedAt.Add(time.Second)); err != nil {
 		t.Fatalf("publish unchanged entry: %v", err)
 	}
 	select {

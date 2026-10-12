@@ -382,17 +382,18 @@ type OwedMention struct {
 }
 
 type PullRequest struct {
-	ForgeProvider  int16
-	ForgeHost      string
-	Repo           string
-	Number         int64
-	ForgeState     string
-	ForgeCreatedAt pgtype.Timestamptz
-	ForgeUpdatedAt pgtype.Timestamptz
-	Pr             []byte
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	TenantID       string
+	ForgeProvider        int16
+	ForgeHost            string
+	Repo                 string
+	Number               int64
+	ForgeState           string
+	ForgeCreatedAt       pgtype.Timestamptz
+	ForgeUpdatedAt       pgtype.Timestamptz
+	Pr                   []byte
+	MergeQueueObservedAt pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	TenantID             string
 }
 
 type PullRequestIssueLink struct {

@@ -1064,6 +1064,7 @@ CREATE TABLE pull_requests (
     forge_created_at TIMESTAMPTZ NOT NULL,
     forge_updated_at TIMESTAMPTZ NOT NULL,
     pr               JSONB       NOT NULL,
+    merge_queue_observed_at TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,

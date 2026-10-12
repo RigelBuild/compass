@@ -394,38 +394,50 @@ func (q *Queries) PullRequestsForIssues(ctx context.Context, arg PullRequestsFor
 	return items, nil
 }
 
-const setPullRequestMergeQueue = `-- name: SetPullRequestMergeQueue :execrows
-UPDATE pull_requests
-	SET pr = jsonb_set(pr, '{mergeQueue}', $5::jsonb, true)
-	WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4
-	  AND COALESCE(pr -> 'mergeQueue', 'null'::jsonb) IS DISTINCT FROM $5::jsonb
-	  AND (
-	      $5::jsonb = 'null'::jsonb
-	      OR COALESCE((pr -> 'mergeQueue' ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
-	         <= COALESCE(($5::jsonb ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
-	  )
+const setPullRequestMergeQueue = `-- name: SetPullRequestMergeQueue :one
+WITH current AS MATERIALIZED (
+	SELECT tenant_id, forge_provider, forge_host, repo, number,
+	       COALESCE(pr -> 'mergeQueue', 'null'::jsonb) IS DISTINCT FROM $5::jsonb AS changed
+	FROM pull_requests
+	WHERE pull_requests.forge_provider = $1 AND pull_requests.forge_host = $2 AND pull_requests.repo = $3 AND pull_requests.number = $4
+	  AND $6 >= COALESCE(pull_requests.merge_queue_observed_at, '-infinity'::timestamptz)
+	FOR UPDATE
+), updated AS (
+	UPDATE pull_requests AS p
+	SET pr = jsonb_set(p.pr, '{mergeQueue}', $5::jsonb, true),
+	    merge_queue_observed_at = $6
+	FROM current
+	WHERE p.tenant_id = current.tenant_id
+	  AND p.forge_provider = current.forge_provider
+	  AND p.forge_host = current.forge_host
+	  AND p.repo = current.repo
+	  AND p.number = current.number
+	RETURNING current.changed
+)
+SELECT changed FROM updated
 `
 
 type SetPullRequestMergeQueueParams struct {
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Number        int64
-	Column5       []byte
+	ForgeProvider        int16
+	ForgeHost            string
+	Repo                 string
+	Number               int64
+	Column5              []byte
+	MergeQueueObservedAt pgtype.Timestamptz
 }
 
-func (q *Queries) SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setPullRequestMergeQueue,
+func (q *Queries) SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, setPullRequestMergeQueue,
 		arg.ForgeProvider,
 		arg.ForgeHost,
 		arg.Repo,
 		arg.Number,
 		arg.Column5,
+		arg.MergeQueueObservedAt,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
 }
 
 const upsertExplicitPullRequestLink = `-- name: UpsertExplicitPullRequestLink :exec
@@ -473,15 +485,9 @@ ON CONFLICT (tenant_id, forge_provider, forge_host, repo, number) DO UPDATE
 	    forge_created_at = EXCLUDED.forge_created_at,
 	    forge_updated_at = EXCLUDED.forge_updated_at,
 	    pr = CASE
-	        WHEN EXCLUDED.pr ? 'mergeQueue' THEN
-	            CASE
-	                WHEN COALESCE((EXCLUDED.pr -> 'mergeQueue' ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
-	                     >= COALESCE((pull_requests.pr -> 'mergeQueue' ->> 'changedAt')::timestamptz, '-infinity'::timestamptz)
-	                THEN EXCLUDED.pr
-	                ELSE jsonb_set(EXCLUDED.pr, '{mergeQueue}', pull_requests.pr -> 'mergeQueue', true)
-	            END
-	        WHEN NOT (pull_requests.pr ? 'mergeQueue') THEN EXCLUDED.pr
-	        ELSE jsonb_set(EXCLUDED.pr, '{mergeQueue}', pull_requests.pr -> 'mergeQueue', true)
+	        WHEN pull_requests.pr ? 'mergeQueue' THEN
+	            jsonb_set(EXCLUDED.pr - 'mergeQueue', '{mergeQueue}', pull_requests.pr -> 'mergeQueue', true)
+	        ELSE EXCLUDED.pr - 'mergeQueue'
 	    END
 WHERE EXCLUDED.forge_updated_at >= pull_requests.forge_updated_at
 `

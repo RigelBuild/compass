@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
@@ -98,8 +99,8 @@ func (s *Store) OpenPullRequests(ctx context.Context, host, repo string) ([]uint
 	return out, nil
 }
 
-// SetPullRequestMergeQueue replaces only pr.mergeQueue, returning true when the value changed.
-func (s *Store) SetPullRequestMergeQueue(ctx context.Context, coord ForgeCoord, entry []byte) (bool, error) {
+// SetPullRequestMergeQueue stores an observation, returning true only when the value changed.
+func (s *Store) SetPullRequestMergeQueue(ctx context.Context, coord ForgeCoord, entry []byte, observedAt time.Time) (bool, error) {
 	coord = coord.Normalized()
 	if err := coord.valid(); err != nil {
 		return false, err
@@ -108,15 +109,19 @@ func (s *Store) SetPullRequestMergeQueue(ctx context.Context, coord ForgeCoord, 
 		return false, fmt.Errorf("%w: merge queue entry is required", ErrInvalidArgument)
 	}
 	p := coord.db()
-	affected, err := s.q.SetPullRequestMergeQueue(ctx, db.SetPullRequestMergeQueueParams{
-		ForgeProvider: p.provider,
-		ForgeHost:     p.host,
-		Repo:          p.repo,
-		Number:        p.number,
-		Column5:       entry,
+	changed, err := s.q.SetPullRequestMergeQueue(ctx, db.SetPullRequestMergeQueueParams{
+		ForgeProvider:        p.provider,
+		ForgeHost:            p.host,
+		Repo:                 p.repo,
+		Number:               p.number,
+		Column5:              entry,
+		MergeQueueObservedAt: timestamptz(observedAt),
 	})
 	if err != nil {
+		if noRows(err) {
+			return false, nil
+		}
 		return false, fmt.Errorf("store: set pull request merge queue: %w", err)
 	}
-	return affected > 0, nil
+	return changed, nil
 }
