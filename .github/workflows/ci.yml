@@ -2260,9 +2260,18 @@ jobs:
         #     PATH) and is written here, while root, because it must exist before
         #     the first podman step and only root can install it and chown the
         #     runner's file-command files.
+        #   - /etc/resolv.conf as a plain file: the engine bind-mounts it from a
+        #     host file, and a host-side atomic rewrite leaves the mount on a
+        #     deleted inode, so rootless podman's netns bind of it fails ENOENT.
         shell: bash -e {0}
         run: |
           dnf install -y --setopt=install_weak_deps=False gcc jq xz procps-ng
+          if mountpoint -q /etc/resolv.conf; then
+            resolv=$(cat /etc/resolv.conf)
+            umount /etc/resolv.conf
+            printf '%s\n' "$resolv" >/etc/resolv.conf
+            chmod 0644 /etc/resolv.conf
+          fi
           install -d -m 0755 -o podman -g podman /nix
           install -d -m 0700 -o podman -g podman /run/user/1000
           install -d -m 0755 -o podman -g podman \
