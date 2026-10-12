@@ -37,6 +37,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -840,6 +841,251 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 			t.Fatalf("IssueToken for the system account returned a response %+v — no token may be minted for @compass", resp.Msg)
 		}
 	})
+}
+
+func TestRenameAccountPublishesAccountAndDMChanges(t *testing.T) {
+	ctx := t.Context()
+	st, adminID, member := newNetworkStore(t)
+	owner, err := st.GetAccount(ctx, member)
+	if err != nil {
+		t.Fatalf("GetAccount(member): %v", err)
+	}
+	agent, err := st.CreateAgent(ctx, member, store.NewAgent{Handle: "rename-agent", DisplayName: "Rename Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent(member/rename-agent): %v", err)
+	}
+	_, err = st.CreateUser(ctx, store.NewUser{Handle: "rename-taken", DisplayName: "Taken"})
+	if err != nil {
+		t.Fatalf("CreateUser(rename-taken): %v", err)
+	}
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	commsSvc := comms.NewComms(st, commsBus, nil, adminID)
+	commsSvc.RegisterCoordinationHook(st)
+	if _, err := st.CreateAgent(ctx, member, store.NewAgent{
+		Handle: "rename-report", DisplayName: "Rename Report", ParentAgentID: agent.ID,
+	}); err != nil {
+		t.Fatalf("CreateAgent(rename-report): %v", err)
+	}
+	channels, err := st.ListChannels(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("ListChannels(manager): %v", err)
+	}
+	var coordinationID store.ChannelID
+	for _, channel := range channels {
+		if channel.Policy.OwnerAccountID == agent.ID && channel.Policy.MandatorySubscription &&
+			channel.Policy.PostPolicy == store.ChannelPostPolicyOwnerOnly {
+			coordinationID = channel.ID
+			break
+		}
+	}
+	if coordinationID == "" {
+		t.Fatal("manager has no coordination channel")
+	}
+	svc := newService("test", bus, st, nil, nil, nil, nil).withAccountRenamer(commsSvc, adminID)
+	client := newH2CClient(t, newH2CTestServer(t, svc))
+	resp, err := client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: owner.Handle,
+		NewHandle:     "renamed-member",
+	}))
+	if err != nil || resp.Msg.GetAccountId() != string(member) || resp.Msg.GetHandle() != "renamed-member" {
+		t.Fatalf("RenameAccount(user) = (%+v, %v), want id %q and handle renamed-member", resp, err, member)
+	}
+	accountEvents, err := commsBus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("comms bus Subscribe after user rename: %v", err)
+	}
+	assertOnlyAccountRenameEvent(t, accountEvents.Replay, "renamed-member")
+	accountEvents.Cancel()
+	agentCursor, err := commsBus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("comms bus Subscribe before agent rename: %v", err)
+	}
+	lastAgentSeq, agentEpoch := agentCursor.HeadSeq, agentCursor.Epoch
+	agentCursor.Cancel()
+	resp, err = client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: "renamed-member/rename-agent",
+		NewHandle:     "renamed-agent",
+	}))
+	if err != nil || resp.Msg.GetAccountId() != string(agent.ID) || resp.Msg.GetHandle() != "renamed-member/renamed-agent" {
+		t.Fatalf("RenameAccount(agent) = (%+v, %v), want qualified renamed handle", resp, err)
+	}
+	agentEvents, err := commsBus.Subscribe(lastAgentSeq, agentEpoch)
+	if err != nil {
+		t.Fatalf("comms bus Subscribe after agent rename: %v", err)
+	}
+	if len(agentEvents.Replay) != 3 {
+		t.Fatalf("events after agent rename = %d, want AccountChanged followed by home and coordination ChannelChanged", len(agentEvents.Replay))
+	}
+	assertRenameAccountEvent(t, agentEvents.Replay[0].Payload, agent.ID, "renamed-agent")
+	assertRenameChannelEvents(t, agentEvents.Replay[1:], map[string]string{
+		string(agent.Agent.HomeChannelID): "renamed-agent",
+		string(coordinationID):            "renamed-agent-coordination",
+	})
+	agentEvents.Cancel()
+	bob, err := st.CreateAgent(ctx, member, store.NewAgent{Handle: "rename-peer", DisplayName: "Rename Peer"})
+	if err != nil {
+		t.Fatalf("CreateAgent(rename-peer): %v", err)
+	}
+	dm, err := commsSvc.OpenDM(comms.WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: bob.Handle}))
+	if err != nil {
+		t.Fatalf("OpenDM(rename-agent -> peer): %v", err)
+	}
+	dmID := dm.Msg.GetChannel().GetId()
+	dmCursor, err := commsBus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("comms bus Subscribe before DM rename: %v", err)
+	}
+	lastSeq, epoch := dmCursor.HeadSeq, dmCursor.Epoch
+	dmCursor.Cancel()
+	if _, err := client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: "renamed-member/renamed-agent", NewHandle: "renamed-agent-two",
+	})); err != nil {
+		t.Fatalf("RenameAccount(agent with DM): %v", err)
+	}
+	dmRenameEvents, err := commsBus.Subscribe(lastSeq, epoch)
+	if err != nil {
+		t.Fatalf("comms bus Subscribe after DM rename: %v", err)
+	}
+	defer dmRenameEvents.Cancel()
+	if len(dmRenameEvents.Replay) != 4 {
+		t.Fatalf("events after DM rename = %d, want AccountChanged followed by home, coordination, and DM ChannelChanged", len(dmRenameEvents.Replay))
+	}
+	assertRenameAccountEvent(t, dmRenameEvents.Replay[0].Payload, agent.ID, "renamed-agent-two")
+	assertRenameChannelEvents(t, dmRenameEvents.Replay[1:], map[string]string{
+		string(agent.Agent.HomeChannelID): "renamed-agent-two",
+		string(coordinationID):            "renamed-agent-two-coordination",
+		dmID:                              store.DMChannelName("rename-peer", "renamed-agent-two"),
+	})
+
+}
+
+func assertOnlyAccountRenameEvent(t *testing.T, replay []events.Stamped[*compassv1.SubscribeCommsResponse], wantHandle string) {
+	t.Helper()
+	if len(replay) != 1 {
+		t.Fatalf("comms bus events after account rename = %d, want only AccountChanged", len(replay))
+	}
+	changed := replay[0].Payload.GetAccountChanged()
+	if changed == nil || changed.GetAccount().GetHandle() != wantHandle {
+		t.Fatalf("rename account event = %v, want AccountChanged with handle %q", replay[0].Payload.GetPayload(), wantHandle)
+	}
+}
+
+func assertRenameAccountEvent(t *testing.T, payload *compassv1.SubscribeCommsResponse, id store.AccountID, handle string) {
+	t.Helper()
+	changed := payload.GetAccountChanged()
+	if changed == nil || changed.GetAccount().GetId() != string(id) || changed.GetAccount().GetHandle() != handle {
+		t.Fatalf("account rename event = %v, want account %q with handle %q", payload.GetPayload(), id, handle)
+	}
+}
+
+func assertRenameChannelEvents(t *testing.T, replay []events.Stamped[*compassv1.SubscribeCommsResponse], want map[string]string) {
+	t.Helper()
+	if len(replay) != len(want) {
+		t.Fatalf("channel rename events = %d, want %d: %v", len(replay), len(want), replay)
+	}
+	got := make(map[string]string, len(replay))
+	for _, event := range replay {
+		changed := event.Payload.GetChannelChanged()
+		if changed == nil {
+			t.Fatalf("rename payload = %v, want ChannelChanged", event.Payload.GetPayload())
+		}
+		got[changed.GetChannel().GetId()] = changed.GetChannel().GetName()
+	}
+	for id, name := range want {
+		if got[id] != name {
+			t.Fatalf("rename channel events = %v, want channel %q named %q", got, id, name)
+		}
+	}
+}
+
+func TestRenameAccountErrorCodesAndProtectedAccounts(t *testing.T) {
+	ctx := t.Context()
+	st, adminID, member := newNetworkStore(t)
+	owner, err := st.GetAccount(ctx, member)
+	if err != nil {
+		t.Fatalf("GetAccount(member): %v", err)
+	}
+	if _, err := st.CreateUser(ctx, store.NewUser{Handle: "rename-taken", DisplayName: "Taken"}); err != nil {
+		t.Fatalf("CreateUser(rename-taken): %v", err)
+	}
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	svc := newService("test", bus, st, nil, nil, nil, nil).withAccountRenamer(nil, adminID)
+	client := newH2CClient(t, newH2CTestServer(t, svc))
+	tests := []struct {
+		name string
+		req  *compassv1.RenameAccountRequest
+		code connect.Code
+	}{
+		{
+			name: "conflict maps to AlreadyExists",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: owner.Handle, NewHandle: "rename-taken"},
+			code: connect.CodeAlreadyExists,
+		},
+		{
+			name: "empty handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: "", NewHandle: "valid-name"},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "invalid new handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: owner.Handle, NewHandle: "Bad Handle"},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "qualified new handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: owner.Handle, NewHandle: "other/agent"},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "malformed qualified account handle maps to InvalidArgument",
+			req:  &compassv1.RenameAccountRequest{AccountHandle: "owner/agent/nested", NewHandle: "valid-name"},
+			code: connect.CodeInvalidArgument,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := client.RenameAccount(ctx, connect.NewRequest(tc.req))
+			if got := connect.CodeOf(err); got != tc.code {
+				t.Fatalf("RenameAccount error code = %v, want %v", got, tc.code)
+			}
+		})
+	}
+	system, err := st.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureSystemAccount: %v", err)
+	}
+	_, err = client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: system.Handle, NewHandle: "renamed-system",
+	}))
+	if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
+		t.Fatalf("RenameAccount(system account) = %v, want PermissionDenied", code)
+	}
+	admin, err := st.GetAccount(ctx, adminID)
+	if err != nil {
+		t.Fatalf("GetAccount(admin): %v", err)
+	}
+	adminResp, err := client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: admin.Handle, NewHandle: "renamed-admin",
+	}))
+	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition || adminResp != nil {
+		t.Fatalf("RenameAccount(admin) = (%+v, %v), want FailedPrecondition and no response", adminResp, err)
+	}
+	supervisor, err := st.CreateAgent(ctx, adminID, store.NewAgent{
+		Handle: rootSupervisorHandle, DisplayName: rootSupervisorDisplayName, Role: rootSupervisorRole,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent(root supervisor): %v", err)
+	}
+	supervisorResp, err := client.RenameAccount(ctx, connect.NewRequest(&compassv1.RenameAccountRequest{
+		AccountHandle: admin.Handle + "/" + supervisor.Handle, NewHandle: "renamed-supervisor",
+	}))
+	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition || supervisorResp != nil {
+		t.Fatalf("RenameAccount(root supervisor) = (%+v, %v), want FailedPrecondition and no response", supervisorResp, err)
+	}
 }
 
 // TestServeWithListenWritesAdminToken0600: on a --listen start, Serve mints the

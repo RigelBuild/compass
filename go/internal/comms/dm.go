@@ -8,26 +8,6 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// dmChannelName derives the deterministic sorted-handle pair name for a peer DM.
-// Handles are sorted lexicographically so open(a,b) and open(b,a) resolve the
-// same channel (store dm_pgtest_test.go proves reversed member order → same name).
-//
-// The separator is `:`, a byte the handle grammar (store handle.go handleRE
-// `^[a-z0-9][a-z0-9._-]*$`) excludes — so no handle can contain it and the split
-// is unambiguous. A hyphen delimiter would NOT be injective: handles may contain
-// `--` (the grammar permits consecutive hyphens), so `dm--a--b--c` is ambiguous
-// between the pairs {a, b--c} and {a--b, c}, which would resolve two distinct
-// logical DMs onto ONE channel and cross-add members (a same-owner private-DM
-// confidentiality break). `:` cannot appear in a handle, so `dm:<lo>:<hi>` maps
-// each unordered pair to exactly one name.
-func dmChannelName(h1, h2 string) string {
-	lo, hi := h1, h2
-	if lo > hi {
-		lo, hi = hi, lo
-	}
-	return "dm:" + lo + ":" + hi
-}
-
 // crossOwnerDMName keys a peer DM on both party ids, not reclaimable handles.
 func crossOwnerDMName(a, b store.AccountID) string {
 	lo, hi := string(a), string(b)
@@ -47,6 +27,17 @@ func (c *Comms) openDMTx(ctx context.Context, owner, callerOwner, peerOwner stor
 	if err := c.store.WithTx(ctx, func(tx pgx.Tx) error {
 		if err := store.LockOwnerDMTx(ctx, tx, owner); err != nil {
 			return err
+		}
+		if callerOwner == peerOwner {
+			callerHandle, err := c.store.AccountHandleTx(ctx, tx, members[0])
+			if err != nil {
+				return err
+			}
+			peerCurrentHandle, err := c.store.AccountHandleTx(ctx, tx, members[1])
+			if err != nil {
+				return err
+			}
+			name = store.DMChannelName(callerHandle, peerCurrentHandle)
 		}
 		if callerOwner != peerOwner {
 			peered, err := c.store.OwnersPeeredTx(ctx, tx, callerOwner, peerOwner)

@@ -11,9 +11,11 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -73,6 +75,106 @@ func TestCreateAgentWithParentProvisionsCoordinationChannel(t *testing.T) {
 	evts := drainReplayAsActor(t, h, manager.ID, canary)
 	if !hasChannelChangedFor(evts, string(chs[0].ID)) {
 		t.Fatalf("no coordination ChannelChanged emitted for %s", chs[0].ID)
+	}
+}
+
+// TestReconcileReadsRenamedManagerHandleAfterCoordinationLock proves a reconcile
+// queued behind RenameHandle uses the new manager handle rather than creating a
+// second channel under the old name.
+func TestReconcileReadsRenamedManagerHandleAfterCoordinationLock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	st, dsn := newTestStoreDSN(t)
+	owner := mustUser(t, st, "rename-race-owner")
+	manager := mustAgent(t, st, owner.ID, "manager-before")
+	if _, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "report", DisplayName: "Report", ParentAgentID: manager.ID}); err != nil {
+		t.Fatalf("create manager report: %v", err)
+	}
+	svc := NewComms(st, newBus(t), nil, owner.ID)
+	originalChannelID, err := svc.EnsureCoordinationChannel(ctx, manager.ID)
+	if err != nil {
+		t.Fatalf("EnsureCoordinationChannel: %v", err)
+	}
+	observer, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open lock observer pool: %v", err)
+	}
+	t.Cleanup(observer.Close)
+	blocker, err := observer.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin coordination lock blocker: %v", err)
+	}
+	defer func() { _ = blocker.Rollback(ctx) }()
+	var blockerPID int32
+	if err := blocker.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+		t.Fatalf("read coordination blocker pid: %v", err)
+	}
+	if err := store.LockOwnerCoordinationTx(ctx, blocker, owner.ID); err != nil {
+		t.Fatalf("lock coordination namespace: %v", err)
+	}
+
+	renameDone := make(chan error, 1)
+	go func() {
+		_, _, err := st.RenameHandle(ctx, manager.ID, "manager-after")
+		renameDone <- err
+	}()
+	waitForBlockedCoordinationTransactions(t, ctx, observer, blockerPID, 1)
+
+	reconcileDone := make(chan error, 1)
+	go func() {
+		err := st.WithTx(ctx, func(tx pgx.Tx) error {
+			return svc.reconcileCoordinationTx(ctx, tx, manager.ID)
+		})
+		reconcileDone <- err
+	}()
+	waitForBlockedCoordinationTransactions(t, ctx, observer, blockerPID, 2)
+
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("release coordination lock: %v", err)
+	}
+	for name, done := range map[string]<-chan error{"rename": renameDone, "reconcile": reconcileDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("%s did not finish after coordination lock release: %v", name, ctx.Err())
+		}
+	}
+
+	channels := coordChannelsFor(t, st, manager.ID)
+	if len(channels) != 1 || channels[0].ID != originalChannelID || channels[0].Name != "manager-after-coordination" {
+		t.Fatalf("coordination channels after queued rename/reconcile = %+v, want only original channel %q named manager-after-coordination", channels, originalChannelID)
+	}
+}
+
+func waitForBlockedCoordinationTransactions(t *testing.T, ctx context.Context, pool *pgxpool.Pool, blockerPID int32, want int64) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		var blocked int64
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*)
+			FROM pg_stat_activity
+			WHERE $1 = ANY(pg_blocking_pids(pid))
+			  AND query LIKE '%coordination:%'
+		`, blockerPID).Scan(&blocked); err != nil {
+			t.Fatalf("check coordination lock waiters: %v", err)
+		}
+		if blocked >= want {
+			return
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("coordination lock waiters = %d, want at least %d", blocked, want)
+		case <-ctx.Done():
+			t.Fatalf("waiting for coordination lock waiters: %v", ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 

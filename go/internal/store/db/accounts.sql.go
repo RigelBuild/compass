@@ -67,6 +67,25 @@ func (q *Queries) AcquireOwnerTreeLock(ctx context.Context, hashtext string) err
 	return err
 }
 
+const agentHomeChannelForRename = `-- name: AgentHomeChannelForRename :one
+SELECT ch.id, ch.name
+FROM agent_accounts aa
+JOIN channels ch ON ch.id = aa.home_channel_id AND ch.kind = 0
+WHERE aa.account_id = $1
+`
+
+type AgentHomeChannelForRenameRow struct {
+	ID   string
+	Name string
+}
+
+func (q *Queries) AgentHomeChannelForRename(ctx context.Context, accountID string) (AgentHomeChannelForRenameRow, error) {
+	row := q.db.QueryRow(ctx, agentHomeChannelForRename, accountID)
+	var i AgentHomeChannelForRenameRow
+	err := row.Scan(&i.ID, &i.Name)
+	return i, err
+}
+
 const countRootAgents = `-- name: CountRootAgents :one
 SELECT COUNT(*)
 FROM agent_accounts
@@ -457,6 +476,64 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, id string) ([]ListVis
 		return nil, err
 	}
 	return items, nil
+}
+
+const renameAccountDisplayHandle = `-- name: RenameAccountDisplayHandle :execrows
+UPDATE accounts
+SET handle = $2
+WHERE id = $1
+`
+
+type RenameAccountDisplayHandleParams struct {
+	ID     string
+	Handle string
+}
+
+func (q *Queries) RenameAccountDisplayHandle(ctx context.Context, arg RenameAccountDisplayHandleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameAccountDisplayHandle, arg.ID, arg.Handle)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renameAccountHandle = `-- name: RenameAccountHandle :execrows
+UPDATE account_handles
+SET handle = $2
+WHERE account_id = $1
+`
+
+type RenameAccountHandleParams struct {
+	AccountID string
+	Handle    string
+}
+
+func (q *Queries) RenameAccountHandle(ctx context.Context, arg RenameAccountHandleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameAccountHandle, arg.AccountID, arg.Handle)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renameAgentHomeChannel = `-- name: RenameAgentHomeChannel :execrows
+UPDATE channels ch SET name = $2
+FROM agent_accounts aa
+WHERE aa.account_id = $1 AND ch.id = aa.home_channel_id AND ch.kind = 0 AND ch.name = $3
+`
+
+type RenameAgentHomeChannelParams struct {
+	AccountID string
+	Name      string
+	Name_2    string
+}
+
+func (q *Queries) RenameAgentHomeChannel(ctx context.Context, arg RenameAgentHomeChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameAgentHomeChannel, arg.AccountID, arg.Name, arg.Name_2)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resolveGlobalHandles = `-- name: ResolveGlobalHandles :many

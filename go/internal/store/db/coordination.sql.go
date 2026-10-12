@@ -35,6 +35,45 @@ func (q *Queries) ChannelMemberIDs(ctx context.Context, channelID string) ([]str
 	return items, nil
 }
 
+const coordinationChannelsForRename = `-- name: CoordinationChannelsForRename :many
+SELECT id, name
+FROM channels
+WHERE group_id = $1 AND kind = 0 AND owner_account_id = $2
+  AND (name = $3 OR left(name, length($3) + 1) = $3 || '-')
+ORDER BY id
+`
+
+type CoordinationChannelsForRenameParams struct {
+	GroupID        pgtype.Text
+	OwnerAccountID pgtype.Text
+	Name           string
+}
+
+type CoordinationChannelsForRenameRow struct {
+	ID   string
+	Name string
+}
+
+func (q *Queries) CoordinationChannelsForRename(ctx context.Context, arg CoordinationChannelsForRenameParams) ([]CoordinationChannelsForRenameRow, error) {
+	rows, err := q.db.Query(ctx, coordinationChannelsForRename, arg.GroupID, arg.OwnerAccountID, arg.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CoordinationChannelsForRenameRow
+	for rows.Next() {
+		var i CoordinationChannelsForRenameRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const coordinationReports = `-- name: CoordinationReports :many
 SELECT account_id FROM agent_accounts WHERE parent_agent_id = $1 ORDER BY account_id
 `
@@ -168,6 +207,31 @@ SELECT pg_advisory_xact_lock(hashtext('coordination:' || $1))
 func (q *Queries) LockOwnerCoordination(ctx context.Context, dollar_1 pgtype.Text) error {
 	_, err := q.db.Exec(ctx, lockOwnerCoordination, dollar_1)
 	return err
+}
+
+const renameCoordinationChannel = `-- name: RenameCoordinationChannel :execrows
+UPDATE channels SET name = $2
+WHERE id = $1 AND kind = 0 AND owner_account_id = $3 AND name = $4
+`
+
+type RenameCoordinationChannelParams struct {
+	ID             string
+	Name           string
+	OwnerAccountID pgtype.Text
+	Name_2         string
+}
+
+func (q *Queries) RenameCoordinationChannel(ctx context.Context, arg RenameCoordinationChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameCoordinationChannel,
+		arg.ID,
+		arg.Name,
+		arg.OwnerAccountID,
+		arg.Name_2,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resolveCoordinationManager = `-- name: ResolveCoordinationManager :one

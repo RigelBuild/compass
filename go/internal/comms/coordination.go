@@ -72,28 +72,31 @@ func (c *Comms) RegisterCoordinationHook(st *store.Store) {
 
 // reconcileCoordinationTx is the in-tx coordination reconcile registered as the
 // store's CoordinationHook: on the passed tx (mid-parent-edge-write) it (a)
-// resolves the manager's handle + owning user; (b) get-or-creates the per-owner
-// coordination namespace group and UPSERTs the `<handle>-coordination` channel in
-// it (owner=manager, OWNER_ONLY, mandatory_subscription), suffixing around a
-// user-owned name collision; (c) resyncs membership to manager + current reports,
-// seeding each agent member's D2 cursor in this tx; (d) records the change for the
-// post-commit emit. Idempotent per manager: a re-run with the tree unchanged
-// upserts nothing new and resyncs to the same set. ALL reads/writes use tx, never
-// the pool — the tx is mid-flight.
+// resolves the manager's owning user; (b) locks that owner's coordination
+// namespace and re-reads the manager handle; (c) get-or-creates the namespace
+// group and UPSERTs the `<handle>-coordination` channel in it (owner=manager,
+// OWNER_ONLY, mandatory_subscription), suffixing around a user-owned name
+// collision; (d) resyncs membership to manager + current reports, seeding each
+// agent member's D2 cursor in this tx; (e) records the change for the post-commit
+// emit. Idempotent per manager: a re-run with the tree unchanged upserts nothing
+// new and resyncs to the same set. ALL reads/writes use tx, never the pool — the
+// tx is mid-flight.
 func (c *Comms) reconcileCoordinationTx(ctx context.Context, tx pgx.Tx, managerAgentID store.AccountID) error {
-	handle, ownerUserID, err := c.store.ResolveCoordinationManagerTx(ctx, tx, managerAgentID)
+	_, ownerUserID, err := c.store.ResolveCoordinationManagerTx(ctx, tx, managerAgentID)
 	if err != nil {
 		return err
 	}
 
-	// Serialize every coordination reconcile under this owner so the group
-	// get-or-create and the channel provision cannot race a concurrent
-	// first-report for a different manager of the same owner into two groups or
-	// two channels (design.md fork-2 resolution). Auto-released at tx end.
+	// Serialize every coordination reconcile under this owner. Resolve the handle
+	// again after locking so a queued reconcile cannot restore an old name after a
+	// concurrent account rename commits.
 	if err := store.LockOwnerCoordinationTx(ctx, tx, ownerUserID); err != nil {
 		return err
 	}
-
+	handle, _, err := c.store.ResolveCoordinationManagerTx(ctx, tx, managerAgentID)
+	if err != nil {
+		return err
+	}
 	groupID, err := c.store.EnsureOwnerCoordinationGroupTx(ctx, tx, ownerUserID)
 	if err != nil {
 		return err

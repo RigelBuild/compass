@@ -848,7 +848,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// summary the drain logs, so both land on the same sink.
 	hubLog := slog.Default()
 	hub := newRunnerHub(st, brd, tail, commsSvc, hubLog)
-	svc := newService(cfg.Version, bus, st, hub, brd, issueBrd, tail).withRev(cfg.Rev)
+	svc := newService(cfg.Version, bus, st, hub, brd, issueBrd, tail).withRev(cfg.Rev).withAccountRenamer(commsSvc, admin.ID)
 	// Break the hub<->lifecycle (RIG-1618 T5), hub<->board (agent primary
 	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (RIG-1577)
 	// construction cycles; see wireHubServiceCycles in sinks.go.

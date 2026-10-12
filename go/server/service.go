@@ -63,6 +63,10 @@ var errNoSessionID = errors.New("runner returned no session id to stop")
 // onto a copy at the stream edge.
 type busPayload = *compassv1.SubscribeEventsResponse
 
+type accountRenamePublisher interface {
+	PublishAccountRename(ctx context.Context, account store.Account, channelIDs []store.ChannelID)
+}
+
 // service is the server's compass.v1 service. The event bus and the store of
 // record are shared by pointer and the version is a small owned string. The
 // store backs IssueToken: it verifies the target account against the store, then
@@ -91,7 +95,9 @@ type service struct {
 	// so a frame the hub relays reaches this service's stream subscribers. nil on
 	// a server built with no Runner door (SubscribeAgentSession then Unavailable,
 	// like the other Runner-backed RPCs).
-	tail *sessionTail
+	tail           *sessionTail
+	accountRenamer accountRenamePublisher
+	adminID        store.AccountID
 	// signaler emits a ConfigVersion signal to every live session after a
 	// successful config write (PutAgentConfig / DeleteAgentConfig), so live
 	// Runners re-fetch the bundle. *runnerhub.Hub satisfies it; the service
@@ -435,6 +441,69 @@ func (s *service) IssueToken(
 	return connect.NewResponse(&compassv1.IssueTokenResponse{Token: token}), nil
 }
 
+// RenameAccount changes an account's handle through the admin-only operator door.
+func (s *service) RenameAccount(
+	ctx context.Context,
+	req *connect.Request[compassv1.RenameAccountRequest],
+) (*connect.Response[compassv1.RenameAccountResponse], error) {
+	raw := req.Msg.GetAccountHandle()
+	newHandle := req.Msg.GetNewHandle()
+	if raw == "" || newHandle == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("account_handle and new_handle are required"))
+	}
+	qh := store.ParseQualifiedHandle(raw)
+	if qh.Malformed() {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("account_handle has invalid qualified-handle syntax"))
+	}
+	var acc store.Account
+	var err error
+	if qh.Qualified() {
+		acc, err = s.resolveQualifiedAgent(ctx, raw)
+	} else if acc, err = s.store.UserByHandle(ctx, raw); err != nil {
+		err = handleLookupError(raw, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if acc.System != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("account %q is the system account and cannot be renamed", raw))
+	}
+
+	if acc.ID == s.adminID || isAdminRootSupervisor(acc, s.adminID) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("account %q is a protected bootstrap account", raw))
+	}
+	renamed, rekeyedChannels, err := s.store.RenameHandle(ctx, acc.ID, newHandle)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrInvalidArgument):
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		case errors.Is(err, store.ErrConflict):
+			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		case errors.Is(err, store.ErrNotFound):
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		default:
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	if s.accountRenamer != nil {
+		s.accountRenamer.PublishAccountRename(ctx, renamed, rekeyedChannels)
+	}
+	handle := renamed.Handle
+	if renamed.Agent != nil {
+		owner, err := s.store.GetAccount(ctx, renamed.Agent.OwnerUserID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		handle = owner.Handle + "/" + renamed.Handle
+	}
+	return connect.NewResponse(&compassv1.RenameAccountResponse{
+		AccountId: string(renamed.ID),
+		Handle:    handle,
+	}), nil
+}
+
 // RevokeToken withdraws a bearer token by its presented plaintext (network door,
 // admin-gated by classifyProcedure). The CLI sends the plaintext over the
 // authenticated door and this handler hashes it (auth.RevokeToken → hashToken):
@@ -564,6 +633,12 @@ func (s *service) SubscribeAgentSession(
 			}
 		}
 	}
+}
+
+func (s *service) withAccountRenamer(p accountRenamePublisher, adminID store.AccountID) *service {
+	s.accountRenamer = p
+	s.adminID = adminID
+	return s
 }
 
 // withRev sets the build git rev GetServerInfo reports; only Serve stamps it.

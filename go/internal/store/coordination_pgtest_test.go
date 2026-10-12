@@ -14,6 +14,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -206,6 +207,64 @@ func TestFirstReportProvisionsExactlyOnce(t *testing.T) {
 			t.Fatalf("agent member %s has no seeded delivery cursor on the coordination channel", m)
 		}
 	}
+}
+
+func TestRenameManagerKeepsCoordinationChannel(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "rename-coord-owner")
+	h := &recordingHook{s: s}
+	s.SetCoordinationHook(h.reconcile)
+	manager := mustAgent(t, s, owner.ID, "manager-before")
+	if _, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "report-before", ParentAgentID: manager.ID}); err != nil {
+		t.Fatalf("CreateAgent(first report): %v", err)
+	}
+	channels := coordChannels(t, s, owner.ID)
+	if len(channels) != 1 {
+		t.Fatalf("coordination channels before rename = %d, want 1", len(channels))
+	}
+	coordID := channels[0].ID
+	var userChannelID ChannelID
+	if err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		groupID, err := s.EnsureOwnerCoordinationGroupTx(ctx, tx, owner.ID)
+		if err != nil {
+			return err
+		}
+		userChannelID, err = s.UpsertCoordinationChannelTx(ctx, tx, CoordinationChannelSpec{
+			GroupID: groupID, BaseName: "manager-after-coordination", OwnerAccountID: owner.ID,
+			Policy: ChannelPolicy{OwnerAccountID: owner.ID},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("create destination-name collision: %v", err)
+	}
+
+	_, renamedIDs, err := s.RenameHandle(ctx, manager.ID, "manager-after")
+	if err != nil {
+		t.Fatalf("RenameHandle(manager): %v", err)
+	}
+	if _, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "report-after", ParentAgentID: manager.ID}); err != nil {
+		t.Fatalf("CreateAgent(second report): %v", err)
+	}
+
+	channels = coordChannels(t, s, owner.ID)
+	if len(channels) != 2 {
+		t.Fatalf("coordination channels after rename and report = %+v, want user collision and manager channel", channels)
+	}
+	byID := make(map[ChannelID]Channel, len(channels))
+	for _, channel := range channels {
+		byID[channel.ID] = channel
+	}
+	if byID[coordID].Name != "manager-after-coordination-2" || byID[userChannelID].Name != "manager-after-coordination" {
+		t.Fatalf("coordination channels after rename = %+v, want manager suffixed without changing user channel", channels)
+	}
+	if !containsChannelID(renamedIDs, coordID) || !containsChannelID(renamedIDs, manager.Agent.HomeChannelID) || containsChannelID(renamedIDs, userChannelID) {
+		t.Fatalf("RenameHandle channel ids = %v, want manager coordination and home only (coord %q, home %q)", renamedIDs, coordID, manager.Agent.HomeChannelID)
+	}
+}
+
+func containsChannelID(ids []ChannelID, want ChannelID) bool {
+	return slices.Contains(ids, want)
 }
 
 // TestReparentMovesCoordinationMembership pins reparent-in adds and reparent-out

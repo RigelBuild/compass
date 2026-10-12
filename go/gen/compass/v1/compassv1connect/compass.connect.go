@@ -96,6 +96,9 @@ const (
 	// CompassServiceIssueTokenProcedure is the fully-qualified name of the CompassService's IssueToken
 	// RPC.
 	CompassServiceIssueTokenProcedure = "/compass.v1.CompassService/IssueToken"
+	// CompassServiceRenameAccountProcedure is the fully-qualified name of the CompassService's
+	// RenameAccount RPC.
+	CompassServiceRenameAccountProcedure = "/compass.v1.CompassService/RenameAccount"
 	// CompassServiceRevokeTokenProcedure is the fully-qualified name of the CompassService's
 	// RevokeToken RPC.
 	CompassServiceRevokeTokenProcedure = "/compass.v1.CompassService/RevokeToken"
@@ -236,6 +239,12 @@ type CompassServiceClient interface {
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	// Admin-gated: only an admin may rename an account; non-admin callers get
+	// permission_denied. Same-owner DM, agent home, and coordination channel names
+	// follow the new handle; freed handles may be
+	// reclaimed, and an agent's owner does not change. The bootstrap admin and
+	// its root supervisor are protected from rename with failed_precondition.
+	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)
 	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
 	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
 	// account: the caller presents the token plaintext and the server hashes it,
@@ -406,6 +415,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
 			connect.WithClientOptions(opts...),
 		),
+		renameAccount: connect.NewClient[v1.RenameAccountRequest, v1.RenameAccountResponse](
+			httpClient,
+			baseURL+CompassServiceRenameAccountProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("RenameAccount")),
+			connect.WithClientOptions(opts...),
+		),
 		revokeToken: connect.NewClient[v1.RevokeTokenRequest, v1.RevokeTokenResponse](
 			httpClient,
 			baseURL+CompassServiceRevokeTokenProcedure,
@@ -471,6 +486,7 @@ type compassServiceClient struct {
 	getAgentStatus          *connect.Client[v1.GetAgentStatusRequest, v1.GetAgentStatusResponse]
 	subscribeAgentSession   *connect.Client[v1.SubscribeAgentSessionRequest, v1.AgentSessionFrame]
 	issueToken              *connect.Client[v1.IssueTokenRequest, v1.IssueTokenResponse]
+	renameAccount           *connect.Client[v1.RenameAccountRequest, v1.RenameAccountResponse]
 	revokeToken             *connect.Client[v1.RevokeTokenRequest, v1.RevokeTokenResponse]
 	putAgentConfig          *connect.Client[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse]
 	getAgentConfigInfo      *connect.Client[v1.GetAgentConfigInfoRequest, v1.GetAgentConfigInfoResponse]
@@ -568,6 +584,11 @@ func (c *compassServiceClient) SubscribeAgentSession(ctx context.Context, req *c
 // IssueToken calls compass.v1.CompassService.IssueToken.
 func (c *compassServiceClient) IssueToken(ctx context.Context, req *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
 	return c.issueToken.CallUnary(ctx, req)
+}
+
+// RenameAccount calls compass.v1.CompassService.RenameAccount.
+func (c *compassServiceClient) RenameAccount(ctx context.Context, req *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error) {
+	return c.renameAccount.CallUnary(ctx, req)
 }
 
 // RevokeToken calls compass.v1.CompassService.RevokeToken.
@@ -710,6 +731,12 @@ type CompassServiceHandler interface {
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	// Admin-gated: only an admin may rename an account; non-admin callers get
+	// permission_denied. Same-owner DM, agent home, and coordination channel names
+	// follow the new handle; freed handles may be
+	// reclaimed, and an agent's owner does not change. The bootstrap admin and
+	// its root supervisor are protected from rename with failed_precondition.
+	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)
 	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
 	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
 	// account: the caller presents the token plaintext and the server hashes it,
@@ -876,6 +903,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceRenameAccountHandler := connect.NewUnaryHandler(
+		CompassServiceRenameAccountProcedure,
+		svc.RenameAccount,
+		connect.WithSchema(compassServiceMethods.ByName("RenameAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceRevokeTokenHandler := connect.NewUnaryHandler(
 		CompassServiceRevokeTokenProcedure,
 		svc.RevokeToken,
@@ -956,6 +989,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceSubscribeAgentSessionHandler.ServeHTTP(w, r)
 		case CompassServiceIssueTokenProcedure:
 			compassServiceIssueTokenHandler.ServeHTTP(w, r)
+		case CompassServiceRenameAccountProcedure:
+			compassServiceRenameAccountHandler.ServeHTTP(w, r)
 		case CompassServiceRevokeTokenProcedure:
 			compassServiceRevokeTokenHandler.ServeHTTP(w, r)
 		case CompassServicePutAgentConfigProcedure:
@@ -1049,6 +1084,10 @@ func (UnimplementedCompassServiceHandler) SubscribeAgentSession(context.Context,
 
 func (UnimplementedCompassServiceHandler) IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.IssueToken is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.RenameAccount is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) RevokeToken(context.Context, *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error) {

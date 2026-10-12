@@ -24,6 +24,17 @@ VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)
 ON CONFLICT (group_id, name) WHERE group_id IS NOT NULL DO NOTHING
 RETURNING id;
 
+-- name: CoordinationChannelsForRename :many
+SELECT id, name
+FROM channels
+WHERE group_id = $1 AND kind = 0 AND owner_account_id = $2
+  AND (name = $3 OR left(name, length($3) + 1) = $3 || '-')
+ORDER BY id;
+
+-- name: RenameCoordinationChannel :execrows
+UPDATE channels SET name = $2
+WHERE id = $1 AND kind = 0 AND owner_account_id = $3 AND name = $4;
+
 -- name: ChannelMemberIDs :many
 SELECT account_id FROM channel_members WHERE channel_id = $1;
 

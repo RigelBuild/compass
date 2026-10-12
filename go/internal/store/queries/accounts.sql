@@ -34,9 +34,30 @@ VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''));
 INSERT INTO account_handles (account_id, handle, owner_user_id)
 VALUES ($1, $2, NULLIF($3, ''));
 
+-- name: RenameAccountHandle :execrows
+UPDATE account_handles
+SET handle = $2
+WHERE account_id = $1;
+
+-- name: RenameAccountDisplayHandle :execrows
+UPDATE accounts
+SET handle = $2
+WHERE id = $1;
+
 -- name: InsertHomeChannel :exec
 INSERT INTO channels (id, name, group_id, kind)
 VALUES ($1, $2, NULL, $3);
+
+-- name: AgentHomeChannelForRename :one
+SELECT ch.id, ch.name
+FROM agent_accounts aa
+JOIN channels ch ON ch.id = aa.home_channel_id AND ch.kind = 0
+WHERE aa.account_id = $1;
+
+-- name: RenameAgentHomeChannel :execrows
+UPDATE channels ch SET name = $2
+FROM agent_accounts aa
+WHERE aa.account_id = $1 AND ch.id = aa.home_channel_id AND ch.kind = 0 AND ch.name = $3;
 
 -- name: SeedHomeChannelMembers :exec
 INSERT INTO channel_members (channel_id, account_id, subscribed)
