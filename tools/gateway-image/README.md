@@ -15,7 +15,8 @@ bun tools/gateway-image/smoke.ts
 
 Both commands accept `--out <dir>`; the default is `tools/gateway-image/out`.
 The build needs a reachable rootless BuildKit daemon and `BUILDKIT_HOST`. The
-smoke needs `skopeo` and `podman`.
+smoke needs `skopeo`, `podman`, Go, and Bun. It starts a local TLS fake Compass
+Server and checks the gateway's health and agent-token handling.
 
 `moon run gateway-image:ci` runs the lane's typecheck and tests. The build and
 smoke tasks are not part of CI.
@@ -31,8 +32,8 @@ It refuses to overwrite an existing tag with different content.
 ## Credentials
 
 Build and smoke need no registry credentials: the fork is public, and the smoke
-mints a throwaway gateway token per run and deletes it on exit. Publish needs
-GHCR write access through `REGISTRY_AUTH_FILE`.
+uses throwaway service and agent tokens per run, then removes the mounted files.
+Publish needs GHCR write access through `REGISTRY_AUTH_FILE`.
 
 ## Rotate
 

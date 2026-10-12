@@ -278,12 +278,8 @@ export function blobPath(layoutDir: string, digest: string): string {
 	return join(layoutDir, "blobs", "sha256", digest.slice("sha256:".length));
 }
 
-/** Benign names the gateway config ships: a public-key fingerprint the
- * `python` base sets, and a path. Exempt on an exact match only. */
-export const SECRET_NAME_ALLOWLIST: readonly string[] = [
-	"GPG_KEY",
-	"COMPASS_GATEWAY_TOKEN_FILE",
-];
+/** Benign name shipped by the `python` base. Exempt on an exact match only. */
+export const SECRET_NAME_ALLOWLIST: readonly string[] = ["GPG_KEY"];
 
 /** Credential-shaped name segments. The boundary spans `_`, `.` and `-` so it
  * also reads label keys (`org.example.registry-token`), and keeps `PAT` from
@@ -368,7 +364,72 @@ export function tagDisposition(
 	};
 }
 
-/** The gateway's `/healthz`: 200 with `{"ok": true}`. */
+const VERIFY_AGENT_TOKEN_PATH = "/compass.v1.GatewayAuth/VerifyAgentToken";
+
+export interface FakeCompassDoorOptions {
+	readonly serviceToken: string;
+	readonly agentToken: string;
+}
+
+/** The fake network door used by the gateway-image smoke. */
+export async function fakeCompassDoorResponse(
+	request: Request,
+	options: FakeCompassDoorOptions,
+): Promise<Response> {
+	if (new URL(request.url).pathname !== VERIFY_AGENT_TOKEN_PATH) {
+		return new Response(null, { status: 404 });
+	}
+	if (request.method !== "POST") return new Response(null, { status: 405 });
+	if (
+		request.headers.get("connect-protocol-version") !== "1" ||
+		request.headers.get("content-type")?.split(";")[0]?.trim() !==
+			"application/json"
+	) {
+		return new Response(null, { status: 415 });
+	}
+	if (
+		request.headers.get("authorization") !== `Bearer ${options.serviceToken}`
+	) {
+		return Response.json(
+			{ code: "unauthenticated", message: "unauthenticated" },
+			{ status: 401 },
+		);
+	}
+
+	let body: unknown;
+	try {
+		body = await request.json();
+	} catch {
+		return Response.json(
+			{ code: "invalid_argument", message: "invalid JSON" },
+			{ status: 400 },
+		);
+	}
+	const token =
+		typeof body === "object" &&
+		body !== null &&
+		"token" in body &&
+		typeof body.token === "string"
+			? body.token
+			: undefined;
+	if (token === undefined) {
+		return Response.json(
+			{ code: "invalid_argument", message: "token is required" },
+			{ status: 400 },
+		);
+	}
+	if (token !== options.agentToken) {
+		return Response.json(
+			{ code: "unauthenticated", message: "invalid agent token" },
+			{ status: 401 },
+		);
+	}
+	return Response.json({
+		agentAccountId: "agent-smoke",
+		ownerUserId: "owner-smoke",
+	});
+}
+
 export function healthzOk(status: number, body: string): boolean {
 	return status === 200 && jsonField(body, "ok") === true;
 }

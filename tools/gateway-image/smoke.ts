@@ -2,10 +2,15 @@
 
 import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXIT, healthzOk, modelsListOk } from "./core.ts";
+import {
+	EXIT,
+	fakeCompassDoorResponse,
+	healthzOk,
+	modelsListOk,
+} from "./core.ts";
 
 const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const laneDir = dirname(fileURLToPath(import.meta.url));
@@ -14,18 +19,29 @@ const laneDir = dirname(fileURLToPath(import.meta.url));
 const COMMAND_TIMEOUT_MS = 300_000;
 
 type CommandResult = { status: number | null; stdout: string; stderr: string };
+type SmokeServer = {
+	port: number | undefined;
+	stop(closeActiveConnections?: boolean): void;
+};
 
 function failUsage(): never {
 	console.error(
-		"usage: smoke.ts [--out <dir>] [--fault no-broker-env|wrong-token]",
+		"usage: smoke.ts [--out <dir>] [--fault no-server-env|wrong-token]",
 	);
 	process.exit(EXIT.usage);
 }
 
 /** A deliberate fault proves the smoke can fail: each must exit 7. */
-type Fault = "no-broker-env" | "wrong-token";
+type Fault = "no-server-env" | "wrong-token";
 
 function parseArgs(argv: readonly string[]): { out: string; fault?: Fault } {
+	if (argv.length === 1 && argv[0] === "--help") {
+		console.log(
+			"usage: smoke.ts [--out <dir>] [--fault no-server-env|wrong-token]",
+		);
+		process.exit(0);
+	}
+
 	const values = new Map<string, string>();
 	for (let index = 0; index < argv.length; index += 2) {
 		const name = argv[index];
@@ -43,7 +59,7 @@ function parseArgs(argv: readonly string[]): { out: string; fault?: Fault } {
 	const fault = values.get("--fault");
 	if (
 		fault !== undefined &&
-		fault !== "no-broker-env" &&
+		fault !== "no-server-env" &&
 		fault !== "wrong-token"
 	) {
 		failUsage();
@@ -57,11 +73,11 @@ function parseArgs(argv: readonly string[]): { out: string; fault?: Fault } {
 function run(
 	command: string,
 	args: readonly string[],
-	options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+	options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; cwd?: string } = {},
 ): CommandResult {
 	// A stalled podman client must not hang the smoke past its budget.
 	const result = spawnSync(command, [...args], {
-		cwd: workspaceRoot,
+		cwd: options.cwd ?? workspaceRoot,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: options.env,
@@ -114,12 +130,15 @@ const { out: outDir, fault } = parseArgs(process.argv.slice(2));
 const suffix = randomUUID().slice(0, 8);
 const smokeDir = join(outDir, `smoke-${suffix}`);
 const tarPath = join(outDir, `smoke-${suffix}.tar`);
-const tokenPath = join(smokeDir, "gateway.token");
+const serviceTokenPath = join(smokeDir, "service.token");
+const certPath = join(smokeDir, "server-ca.crt");
+const keyPath = join(smokeDir, "server-ca.key");
 const image = `compass-gateway-smoke:${suffix}`;
-const network = `gw-smoke-${suffix}`;
-const broker = `gw-broker-${suffix}`;
 const gateway = `gw-gateway-${suffix}`;
+const serviceToken = randomBytes(32).toString("hex");
+const agentToken = randomBytes(32).toString("hex");
 let failed = false;
+let activeFakeServer: SmokeServer | undefined;
 
 function check(name: string, passed: boolean): void {
 	console.error(`gateway-image smoke: ${passed ? "PASS" : "FAIL"} ${name}`);
@@ -128,6 +147,48 @@ function check(name: string, passed: boolean): void {
 
 try {
 	mkdirSync(outDir, { recursive: true });
+	mkdirSync(smokeDir, { recursive: true });
+	writeFileSync(serviceTokenPath, `${serviceToken}\n`, { mode: 0o600 });
+	const certResult = run(
+		"go",
+		[
+			"run",
+			"./cmd/compass-gen-cert",
+			"--cert-out",
+			certPath,
+			"--key-out",
+			keyPath,
+			"--hosts",
+			"host.containers.internal,127.0.0.1",
+		],
+		{ cwd: join(workspaceRoot, "go") },
+	);
+	if (certResult.status !== 0) {
+		throw new Error(
+			`compass-gen-cert failed (exit ${certResult.status ?? 1}): ${certResult.stderr.trim()}`,
+		);
+	}
+	if (certResult.stderr !== "") console.error(certResult.stderr.trimEnd());
+
+	const fakeServer = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		tls: { cert: readFileSync(certPath), key: readFileSync(keyPath) },
+		// The wrong-token fault makes the door reject the mounted service token.
+		fetch: (request) =>
+			fakeCompassDoorResponse(request, {
+				serviceToken:
+					fault === "wrong-token"
+						? randomBytes(32).toString("hex")
+						: serviceToken,
+				agentToken,
+			}),
+	});
+	const fakeServerPort = fakeServer.port;
+	if (fakeServerPort === undefined)
+		throw new Error("fake Compass Server did not bind a port");
+	activeFakeServer = fakeServer;
+
 	const copied = requireCommand("skopeo", [
 		"copy",
 		`oci:${join(outDir, "oci")}`,
@@ -135,83 +196,62 @@ try {
 	]);
 	if (copied.stderr !== "") console.error(copied.stderr.trimEnd());
 	requireCommand("podman", ["load", "-i", tarPath]);
-	requireCommand("podman", ["network", "create", network]);
-	requireCommand("podman", [
+
+	const gatewayRunArgs = [
 		"run",
 		"-d",
 		"--name",
-		broker,
+		gateway,
 		"--network",
-		network,
-		"--entrypoint",
-		"/usr/local/bin/omp",
+		"pasta:--map-host-loopback,169.254.1.2",
+		"-p",
+		"127.0.0.1::4000",
+		"-v",
+		`${serviceTokenPath}:/run/compass/service.token:ro,Z`,
+		"-v",
+		`${certPath}:/run/compass/server-ca.crt:ro,z`,
+		"-e",
+		"COMPASS_SERVICE_TOKEN_FILE=/run/compass/service.token",
+		"-e",
+		`COMPASS_SERVER_CA_FILE=/run/compass/server-ca.crt`,
+		"-e",
+		`COMPASS_GATEWAY_BIND=0.0.0.0:4000`,
+		"-e",
+		"COMPASS_GATEWAY_DRAIN_MS=20000",
+		...(fault === "no-server-env"
+			? []
+			: [
+					"-e",
+					`COMPASS_SERVER_URL=https://host.containers.internal:${fakeServerPort}`,
+				]),
 		image,
-		"auth-broker",
-		"serve",
-		"--bind=0.0.0.0:8765",
-	]);
-
-	const brokerReady = await waitFor(async (remainingMs) => {
-		const probe = run(
-			"podman",
-			[
-				"exec",
-				broker,
-				"bun",
-				"-e",
-				"fetch('http://127.0.0.1:8765/v1/healthz', { signal: AbortSignal.timeout(2000) }).then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
-			],
-			{ timeoutMs: Math.max(remainingMs, 1) },
-		);
-		return probe.status === 0;
-	}, 30_000);
-	if (!brokerReady) {
-		throw new Error("broker health check timed out after 30 seconds");
-	}
-	const brokerToken = requireCommand("podman", [
-		"exec",
-		broker,
-		"cat",
-		"/tmp/.omp/auth-broker.token",
-	]).stdout.trim();
-	if (brokerToken === "") throw new Error("broker returned an empty token");
-
-	mkdirSync(smokeDir, { recursive: true });
-	writeFileSync(tokenPath, randomBytes(32).toString("hex"), { mode: 0o600 });
-	const gatewayToken =
-		fault === "wrong-token"
-			? randomBytes(32).toString("hex")
-			: (await Bun.file(tokenPath).text()).trim();
-	const gatewayRun = run(
-		"podman",
-		[
-			"run",
-			"-d",
-			"--name",
-			gateway,
-			"--network",
-			network,
-			"-p",
-			"127.0.0.1::4000",
-			"-v",
-			`${tokenPath}:/run/compass/gateway.token:ro,Z`,
-			...(fault === "no-broker-env"
-				? []
-				: [
-						"-e",
-						`OMP_AUTH_BROKER_URL=http://gw-broker-${suffix}:8765`,
-						"-e",
-						"OMP_AUTH_BROKER_TOKEN",
-					]),
-			image,
-		],
-		{ env: { ...process.env, OMP_AUTH_BROKER_TOKEN: brokerToken } },
-	);
+	];
+	const gatewayRun = run("podman", gatewayRunArgs);
 	if (gatewayRun.status !== 0) {
 		throw new Error(
 			`podman run gateway failed (exit ${gatewayRun.status ?? 1}): ${gatewayRun.stderr.trim()}`,
 		);
 	}
+
+	if (fault === "no-server-env") {
+		const waited = run("podman", ["wait", gateway], { timeoutMs: 30_000 });
+		const state = run("podman", [
+			"inspect",
+			"--format",
+			"{{.State.ExitCode}} {{.State.Status}}",
+			gateway,
+		]);
+		const exitedBeforeBind =
+			waited.status === 0 &&
+			state.status === 0 &&
+			/^[1-9][0-9]* exited$/.test(state.stdout.trim());
+		check(
+			"unset COMPASS_SERVER_URL exits non-zero before the gateway binds",
+			exitedBeforeBind,
+		);
+		throw new Error("fault --fault no-server-env verified the pre-bind exit");
+	}
+
 	const portText = requireCommand("podman", [
 		"port",
 		gateway,
@@ -231,28 +271,29 @@ try {
 	}, 30_000);
 	check("/healthz returns ok within 30 seconds", healthy);
 
-	let unauthorized = false;
-	try {
-		const response = await fetch(`${baseUrl}/v1/models`, {
-			signal: AbortSignal.timeout(5000),
-		});
-		unauthorized = response.status === 401;
-	} catch {
-		unauthorized = false;
-	}
-	check("/v1/models rejects missing authorization", unauthorized);
-
 	let authorized = false;
 	try {
 		const response = await fetch(`${baseUrl}/v1/models`, {
-			headers: { Authorization: `Bearer ${gatewayToken}` },
+			headers: { Authorization: `Bearer ${agentToken}` },
 			signal: AbortSignal.timeout(5000),
 		});
 		authorized = modelsListOk(response.status, await response.text());
 	} catch {
 		authorized = false;
 	}
-	check("/v1/models accepts the mounted gateway token", authorized);
+	check("/v1/models returns a model list for a valid agent token", authorized);
+
+	let unauthorized = false;
+	try {
+		const response = await fetch(`${baseUrl}/v1/models`, {
+			headers: { Authorization: `Bearer ${randomBytes(32).toString("hex")}` },
+			signal: AbortSignal.timeout(5000),
+		});
+		unauthorized = response.status === 401;
+	} catch {
+		unauthorized = false;
+	}
+	check("/v1/models rejects a bad agent token with 401", unauthorized);
 
 	const stopped = run("podman", ["stop", "-t", "25", gateway]);
 	const exitCode =
@@ -271,18 +312,17 @@ try {
 		`gateway-image smoke: FAIL ${error instanceof Error ? error.message : String(error)}`,
 	);
 } finally {
+	activeFakeServer?.stop(true);
 	if (failed) {
-		for (const name of [broker, gateway]) {
-			const logs = run("podman", ["logs", name]);
-			if (logs.status !== 0 && logs.stderr !== "") continue;
-			console.error(`gateway-image smoke: podman logs ${name}`);
+		const logs = run("podman", ["logs", gateway]);
+		if (logs.status === 0 || logs.stderr === "") {
+			console.error(`gateway-image smoke: podman logs ${gateway}`);
 			if (logs.stdout !== "") console.error(logs.stdout.trimEnd());
 			if (logs.stderr !== "") console.error(logs.stderr.trimEnd());
 		}
 	}
 	for (const args of [
-		["rm", "-f", broker, gateway],
-		["network", "rm", network],
+		["rm", "-f", gateway],
 		["rmi", image],
 	]) {
 		const result = run("podman", args);
