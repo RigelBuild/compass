@@ -29,7 +29,7 @@ writes no ids.
 
 ### Leg 1 — a trace-aware `slog.Handler` in `go/internal/otel`
 
-`otel.TraceHandler` wraps the existing text handler. In `Handle` it reads
+`otelx.TraceHandler` wraps the existing text handler. In `Handle` it reads
 `trace.SpanContextFromContext(ctx)`. When the span context is valid, it
 adds `trace_id` and `span_id` to the record. Otherwise it changes nothing.
 `WithAttrs` and `WithGroup` re-wrap, so a logger derived with `With` still
@@ -70,7 +70,7 @@ ctx with no request behind it has no trace to join.
 
 | ctx class | Span today | This record |
 | --- | --- | --- |
-| Unary inbound Connect RPC, server (all services, all doors) | yes, except SecretsService on the socket and dev doors — `buildDoors` (`go/server/serve.go`) mounts it with only `auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)` (dev door also `auth.NewAdminGate`). Every other mount lists `otelIC` first by hand. | T2 routes every server mount through one helper, `otel.HandlerInterceptors`, that always puts `otelIC` first |
+| Unary inbound Connect RPC, server (all services, all doors) | yes, except SecretsService on the socket and dev doors — `buildDoors` (`go/server/serve.go`) mounts it with only `auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)` (dev door also `auth.NewAdminGate`). Every other mount lists `otelIC` first by hand. | T2 routes every server mount through one helper, `otelx.HandlerInterceptors`, that always puts `otelIC` first |
 | Long-lived inbound streams: RunnerService `Sessions` and `PublishEvents`; `SubscribeEvents`, `SubscribeAgentSession`, `SubscribeComms`; runner AgentGateway `Publish` and `Control` (after T3) | one `otelconnect` span for the stream's whole life. `WrapStreamingHandler` in `connectrpc.com/otelconnect` v0.9.0 starts it and ends it only when the handler returns. | keep that span for RPC metrics; strip it from the work ctx at handler entry; per-unit spans or restores where a unit carries a parent (Open Question 1). T2 (server), T3 (AgentGateway), T8 (runnerhub). |
 | Short server streams `FetchAgentConfig`, `FetchSessionBlobs` | per call; ends with the fetch | no change |
 | Inbound HTTP: GitHub webhook, Linear webhook, Linear session link | **no** — plain `netMux.Handle` in `buildNetworkServer` (`go/server/network_door.go`) | T2 wraps with `otelhttp` |
@@ -79,6 +79,7 @@ ctx with no request behind it has no trace to join.
 | Queued unit, shipped: fabric delivery, held deliver | yes — the fabric restores the publisher's traceparent (`go/internal/fabric/event_fabric.go`); `heldEntry` carries `traceparent: otelx.Traceparent(ctx)` (`go/internal/delivery/dispatch.go`) | no change; never re-rooted |
 | Runner command from the Sessions stream | **no** — `ServerLink.RunSessions` passes the caller's ctx; `otelconnect` `WrapStreamingClient` starts its span on an internal ctx, so `dispatcher.handle`/`execute` see no span | T4 |
 | Lifetime work spawned by a runner command: stderr drains and reaper in `ServerLink.StartAgent`, `agentHost.retireOnExit` goroutines | inherits the Start command's ctx | T5 class (c): strip the span at the spawn |
+| Stored lifetime ctx: `Gateway.baseCtx`, set by `gateway.Serve` from the Provision command's ctx; the shared `PublishEvents` client stream opens on it | inherits the command ctx for the socket's life | T5 class (c): strip in `Serve` |
 | Outbound runner→server calls | yes — `otelconnect` client interceptor in `runner.Dial` | no change |
 | Background unit of work (delivery sweeps) | yes — `delivery.sweep.*` roots in `go/internal/delivery/settle.go` | no change |
 | Other background goroutines (40 sites, T5 census) | mixed | T5 classifies each one |
@@ -93,7 +94,7 @@ Rules for a ctx with no span:
   ends and exports only when the loop ends (never, on a crash), and every
   line in the loop would share one id.
 - A stream handler keeps the `otelconnect` stream span for metrics, but
-  clears it from its work ctx at entry with `otel.WithoutSpan` (T2). This is
+  clears it from its work ctx at entry with `otelx.WithoutSpan` (T2). This is
   the idiom the fabric already uses:
   `trace.ContextWithSpanContext(context.WithoutCancel(ctx), trace.SpanContext{})`
   then `otelx.ContextWithTraceparent` (`go/internal/fabric/event_fabric.go`).
@@ -228,6 +229,11 @@ pkg.go.dev, and a release in the last year.
 - **All-Go, one convention.** All span and log-trace code lives in
   `go/internal/otel` or uses it. No second provider, exporter, or handler
   type.
+- **Import names.** In this record `otelx.` is the internal package
+  `github.com/RigelBuild/compass/go/internal/otel` (Go package name `otel`),
+  imported as `otelx` wherever the upstream package is also in scope, as
+  `go/internal/delivery` already does. `otel.` is upstream
+  `go.opentelemetry.io/otel` (for example `otel.Tracer`).
 - **Off by default, per process.** A process with an unset
   `OTEL_EXPORTER_OTLP_ENDPOINT` installs no provider and sends nothing. Its
   lines carry ids only when its ctx holds a valid remote span context from an
@@ -243,14 +249,14 @@ pkg.go.dev, and a release in the last year.
   forbidigo enforces this from T1. Detached work uses
   `context.WithoutCancel(ctx)`.
 - **Reserved log keys.** `trace_id` and `span_id` are written only by
-  `otel.TraceHandler`. Lowercase hex, as `TraceID.String()` and
+  `otelx.TraceHandler`. Lowercase hex, as `TraceID.String()` and
   `SpanID.String()` write them.
 - **Span lifetime.** One span per request or unit of work. A long-lived
   stream or loop never lends its span to its work: stream handlers clear it
-  with `otel.WithoutSpan`, and class (c) spawns clear it at the spawn.
+  with `otelx.WithoutSpan`, and class (c) spawns clear it at the spawn.
   `trace.WithNewRoot()` only where no parent is carried.
 - **One interceptor helper.** Every Connect handler mount uses
-  `otel.HandlerInterceptors`. A raw `connect.WithInterceptors` on a handler
+  `otelx.HandlerInterceptors`. A raw `connect.WithInterceptors` on a handler
   mount is a review reject.
 - **Span attributes stay bounded.** Command kind, op kind, and session id
   only, as T4b already uses. Never a message body or a secret. Metric labels
@@ -267,14 +273,20 @@ pkg.go.dev, and a release in the last year.
 
 ## Plan
 
-Stack order: T1, T2, T3, T5, T4, T6, T7, T8, T9, in one linear stack.
+Stack order: T1, T2, T3, T6, T5, T4, T7, T8, T9, in one linear stack.
 
 - The handler goes live in T2, the same PR that clears the stream span from
   server stream handlers. No build has the handler stamping a stream span.
-- T5 lands before T4. T4 puts a span on the Start command's ctx, and T5's
-  class (c) strips must already keep that span out of lifetime work.
+- T6 lands before T5 and T4. Rule: every log line that a T2–T5 test reads
+  already passes its ctx at the commit where the test lands. At
+  `bd9a75d2` the runner lines T5 pins (`logDrainLine`, `flushDropped`,
+  `logUnexpectedExit` in `go/internal/runner/agent_exec.go`) take no ctx. T6
+  is safe this early: before T4, no runner ctx carries a span except the
+  AgentGateway unary requests from T3.
+- T5 lands before T4. T4 puts a span on every command ctx, and T5's class
+  (c) strips must already keep that span out of lifetime work.
 
-### T1 — `otel.TraceHandler` and the lint gates
+### T1 — `otelx.TraceHandler` and the lint gates
 
 Owner: compass-ux.
 
@@ -284,21 +296,34 @@ tests. The tests cover seven cases:
 - the four base cases: a sampled SDK span, a derived `WithAttrs` logger, a
   `WithGroup` logger (the ids sit inside the group), and a bare ctx;
 - provider-off with no parent: no ids;
-- provider-off with a remote parent from `otel.ContextWithTraceparent`: the
+- provider-off with a remote parent from `otelx.ContextWithTraceparent`: the
   remote trace id and parent span id;
 - unsampled (`sdktrace.WithSampler(sdktrace.NeverSample())`): both ids.
 
 Add `forbidden-keys: [trace_id, span_id]` to the `sloglint` block in
-`go/.golangci.yml`. If sloglint flags the handler's own
-`slog.String("trace_id", …)`, suppress that one site with a reason.
+`go/.golangci.yml`. sloglint v0.12.0 checks every `log/slog.String` key
+against `forbidden-keys`, so the handler's own `slog.String("trace_id", …)` and
+`slog.String("span_id", …)` will be flagged. Each carries
+`//nolint:sloglint // TraceHandler is the one writer of the reserved trace keys`.
 
-Add the forbidigo pattern `^context\.(Background|TODO)$` with a message that
-cites go-thread-context, plus an exclusion rule scoped to forbidigo, that text
-and path `(_test\.go|cmd/[^/]+/main\.go)$`. Fix the two sites it hits:
+Add the forbidigo pattern `^context\.(Background|TODO)$`. Its message cites
+go-thread-context. Add an exclusion rule scoped to forbidigo, that text, and
+path `(_test\.go|cmd/[^/]+/main\.go)$`. Fix the two sites it hits:
 
-- `pgshare.IsolatedSchemaDSN` uses `t.Context()`;
-- the shutdown ctx in `go/server/serve.go` uses
-  `context.WithoutCancel(ctx)` as the parent of its `drainTimeout`.
+- `pgshare.IsolatedSchemaDSN` (`go/internal/pgshare/pgshare.go`). Use
+  `ctx := t.Context()` for the create path only. `t.Context()` is canceled
+  before Cleanup functions run, so the `t.Cleanup` closure must use
+  `cctx := context.WithoutCancel(ctx)` for its `pgx.Connect` and
+  `DROP SCHEMA`. Today a failed cleanup connect returns silently
+  (`return // best-effort teardown`), so without this every pgtest would leak
+  its schema and nothing would fail.
+- `drainDoors` (`go/server/serve.go`). It takes a ctx and derives its bound
+  from `context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)`. Its
+  three callers change: the production caller in `go/server/serve.go`,
+  `go/server/drain_test.go`, and `go/server/serve_seed_pgtest_test.go`. The
+  production caller's `//nolint:contextcheck // drainDoors deliberately takes
+  no ctx …` is removed. nolintlint runs with `allow-unused: false`, so a stale
+  directive would be a finding.
 
 T1 does not change the two mains. T2 wires the handler.
 
@@ -306,7 +331,7 @@ Interfaces:
 
 - Consumes: `log/slog`, `go.opentelemetry.io/otel/trace`.
 - Produces (package `otel`, import path
-  `github.com/RigelBuild/compass/go/internal/otel`):
+  `github.com/RigelBuild/compass/go/internal/otel`, written `otelx.` here):
 
   ```go
   // TraceHandler adds trace_id and span_id from the record's ctx to every
@@ -324,20 +349,36 @@ Interfaces:
   func (h *TraceHandler) WithGroup(name string) slog.Handler
   ```
 
-Test cycle: `TestTraceHandlerStampsActiveSpan` fails before (no
-`NewTraceHandler`). After: all seven cases pass. A lint fixture line
-`slog.InfoContext(ctx, "x", "trace_id", "y")` is flagged, and so is
-`context.Background()` in a non-main, non-test file.
+- Changes (package `server`, unexported):
+
+  ```go
+  func drainDoors(ctx context.Context, d drainSet) error
+  ```
+
+Test cycle:
+
+- `TestTraceHandlerStampsActiveSpan` fails before, because `NewTraceHandler`
+  does not exist. After, all seven cases pass.
+- An `IsolatedSchemaDSN` pgtest runs a subtest that calls the helper. After
+  the subtest ends and its cleanup has run, the parent queries
+  `information_schema.schemata` for that schema and asserts zero rows. If
+  only `t.Context()` were used, the schema would remain and this would fail.
+- The lint gates have no fixture harness. They are proven by the gate itself,
+  in the PR. First commit: the `forbidden-keys` and forbidigo config, with no
+  nolint and no fixes. Its red `compass-go:lint` output names the two
+  handler `slog.String` sites and the two `context.Background()` sites. The
+  PR body quotes that output. The next commit adds the nolints and the fixes,
+  and lint goes green.
 
 Acceptance: the handler stamps exactly when ctx holds a valid span context.
 The linter rejects a caller-written `trace_id` and a mid-tree
-`context.Background()`.
+`context.Background()`. pgtest schemas are dropped.
 
 ### T2 — Server: one interceptor helper, stream span strip, HTTP ingress, wiring
 
 Owner: compass-ux.
 
-- **Helper.** Add `otel.HandlerInterceptors`. It always puts `ic` first, then
+- **Helper.** Add `otelx.HandlerInterceptors`. It always puts `ic` first, then
   `NewTraceResponseInterceptor()`, then the caller's interceptors in order.
   Every server handler mount uses it:
   - `buildDoors` (`go/server/serve.go`): socket and dev doors, all four
@@ -347,11 +388,11 @@ Owner: compass-ux.
   - `runnerhub.NewMountedHandler` (`go/internal/runnerhub/handler.go`).
 
   The auth order stays as it is. For example the network door becomes
-  `otel.HandlerInterceptors(otelIC, otel.NewSessionIDInterceptor(),
+  `otelx.HandlerInterceptors(otelIC, otelx.NewSessionIDInterceptor(),
   auth.BearerInterceptor(st), auth.BearerStreamInterceptor(st),
   auth.NewAdminGate(adminID))`.
-- **Stream strip.** Add `otel.WithoutSpan`. The long-lived stream handlers
-  call `ctx = otel.WithoutSpan(ctx)` on entry, so their work ctx carries no
+- **Stream strip.** Add `otelx.WithoutSpan`. The long-lived stream handlers
+  call `ctx = otelx.WithoutSpan(ctx)` on entry, so their work ctx carries no
   span. The `otelconnect` stream span stays, so stream RPC metrics are kept.
   The handlers are:
   - `service.SubscribeEvents` and `service.SubscribeAgentSession`
@@ -370,13 +411,13 @@ Owner: compass-ux.
   `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0` to
   `go/go.mod`. Its version is tied to the otel v1.46.0 pin.
 - **Wiring.** Set
-  `slog.SetDefault(slog.New(otel.NewTraceHandler(slog.NewTextHandler(os.Stderr, nil))))`
+  `slog.SetDefault(slog.New(otelx.NewTraceHandler(slog.NewTextHandler(os.Stderr, nil))))`
   in `go/cmd/compass-server/main.go` and `go/cmd/compass-runner/main.go`.
 
 Interfaces:
 
 - Consumes: `connectrpc.com/otelconnect` v0.9.0, `otelhttp` v0.71.0.
-- Produces (package `otel`):
+- Produces (package `otel`, written `otelx.`):
 
   ```go
   // HandlerInterceptors is the one interceptor option for a Connect handler
@@ -419,9 +460,30 @@ Test cycle:
 
   AgentGateway (runner, T3) and GuestControl (guest binary) are not server
   mounts. Before T2: the socket and dev SecretsService rows fail.
-- **Stream strip proof (pgtest).** Open `SubscribeEvents` and log from
-  inside the handler through a `TraceHandler`. The line has no `trace_id`,
-  and the recorder still has one stream span when the stream closes.
+- **Stream strip proof.** Each test reads the ctx at a seam that already
+  receives the handler's ctx. Each fails without the strip, because the seam
+  then sees the stream span.
+  - Default lane, `go/internal/runnerhub`. Mount `Handler` with
+    `otelx.HandlerInterceptors` and a span recorder. Give the hub a fake
+    `SessionBindingStore` that records the ctx of each call.
+    - `PublishEvents`: an enrolled runner sends one session frame for a
+      session id the hub has not cached. `Hub.Deliver` reaches
+      `ResolveSessionBinding(ctx, …)` through `frameSession` and
+      `lookupSessionBinding`. The recorded ctx has an invalid span context.
+    - `Sessions`: answer a deliver with NotFound, as
+      `lost_session_test.go` does. The `setSessionUnknown` hook calls
+      `dropLostSessionDetached(ctx, …)`, which reaches
+      `SessionBindingTenant`. The recorded ctx has an invalid span context.
+    - The recorder holds one stream span per RPC after close.
+  - pgtest lane. Open the store with `store.OpenTraced` and a
+    `pgx.QueryTracer` that records the ctx of each query, keyed by sqlc
+    query name as `pgtest.SQLCQueryCounter` does. Queries from the auth
+    interceptors run before handler entry and still carry the stream span,
+    so the test reads only the handler body's queries: the subscriber check
+    in `SubscribeAgentSession` and `MessagesHeadSeq` in `SubscribeComms`.
+  - `SubscribeEvents` has no seam. Its body passes ctx only to `forward`,
+    which only selects on `ctx.Done()`. Its strip follows the Leg 2 rule and
+    no test pins it, because no test could fail.
 
 Acceptance:
 
@@ -436,31 +498,31 @@ Owner: compass-ux.
 
 `gateway.Serve` builds an `otelconnect` interceptor with
 `otelconnect.WithoutTraceEvents()`. It passes the interceptor to
-`agentGatewayHandlerOptions`, which puts `otel.HandlerInterceptors(ic)`
+`agentGatewayHandlerOptions`, which puts `otelx.HandlerInterceptors(ic)`
 first. A construction error returns from `Serve` before the socket exists.
 `Gateway.Publish` (`go/internal/runner/gateway/publish.go`) and
 `Gateway.Control` (`go/internal/runner/gateway/control.go`) call
-`otel.WithoutSpan(ctx)` on entry.
+`otelx.WithoutSpan(ctx)` on entry.
 
 Interfaces:
 
-- Consumes: `otel.HandlerInterceptors`, `otel.WithoutSpan`.
+- Consumes: `otelx.HandlerInterceptors`, `otelx.WithoutSpan`.
 - Produces (package `gateway`, unexported):
 
   ```go
   func agentGatewayHandlerOptions(ic *otelconnect.Interceptor) []connect.HandlerOption
   ```
 
-Test cycle: a test calls `Serve` on a temp socket path. It uses an in-memory
-span recorder and a `TraceHandler` over a buffer.
+Test cycle: a test calls `Serve` on a temp socket path with an in-memory
+span recorder. Unary `Comms` gives one server span, and the outbound
+`RelayCommsCall` client span is its child. A streaming `Control` RPC gives
+one server span when it closes. Before T3: no spans.
 
-- Unary `Comms` gives one server span, and the outbound `RelayCommsCall`
-  client span is its child.
-- A streaming `Control` RPC gives one server span when it closes. A log line
-  written in the handler while the stream is open has no `trace_id`.
-
-Before T3: no spans. Without the strip: the `Control` line carries the
-stream span id.
+The strip in `Publish` and `Control` has no seam at `bd9a75d2`. `Control`
+passes ctx to `controlProducer.serve`, which only selects on `ctx.Done()`.
+`Publish` does not read ctx. `acquirePublisher` opens on `Gateway.baseCtx`
+(T5), not on the handler ctx. The strip follows the Leg 2 rule, and no test
+pins it, because no test could fail.
 
 Acceptance:
 
@@ -469,9 +531,11 @@ Acceptance:
 
 ### T5 — Background work: classify every goroutine site
 
-Owner: compass-ux. Lands before T4.
+Owner: compass-ux. Lands after T6 and before T4.
 
-Census predicate: a non-test `go` statement, or a `.Go(` call
+The census has two predicates.
+
+Goroutine sites: a non-test `go` statement, or a `.Go(` call
 (`errgroup.Group.Go`, `sync.WaitGroup.Go`), under these roots:
 
 - `go/server`;
@@ -507,9 +571,9 @@ The PR body re-runs the command and gives every site a class:
   start a root span per unit with `trace.WithNewRoot()`, named
   `<pkg>.<unit>`, like `delivery.sweep.*`.
 - **(b′) queued unit that carries its enqueuer's trace.** The queue entry
-  stores `otel.Traceparent(ctx)` at enqueue, as `heldEntry` does in
+  stores `otelx.Traceparent(ctx)` at enqueue, as `heldEntry` does in
   `go/internal/delivery/dispatch.go`. At dequeue the worker builds
-  `otel.ContextWithTraceparent(otel.WithoutSpan(loopCtx), tp)` and starts a
+  `otelx.ContextWithTraceparent(otelx.WithoutSpan(loopCtx), tp)` and starts a
   span from it. An empty `tp` gives a root. Never `WithNewRoot` here.
   - `ingest.NotifyWebhookArm`: `Enqueue` uses its ctx (today `_`). Each
     dequeued event's span is a **child** of the webhook's `otelhttp` span.
@@ -523,18 +587,37 @@ The PR body re-runs the command and gives every site a class:
     (`fireHeld`, `go/internal/delivery/settle.go`) are shipped (b′) paths.
     They are listed here and not changed.
 - **(c) loop or lifetime work.** No span. When it is spawned from a ctx that
-  holds a span, it calls `otel.WithoutSpan(ctx)` at the spawn. This covers:
+  holds a span, it calls `otelx.WithoutSpan(ctx)` at the spawn. This covers:
   - the two pipe drains and the reaper started in `ServerLink.StartAgent`
-    (`go/internal/runner/agent_exec.go`, after
-    `drainCtx, stopDrains := context.WithCancel(ctx)`);
+    (`go/internal/runner/agent_exec.go`). `StartAgent` builds
+    `lifeCtx := otelx.WithoutSpan(ctx)` after `engine.ExecStreaming`, then
+    `drainCtx, stopDrains := context.WithCancel(lifeCtx)`. The reaper uses
+    `lifeCtx` for `shouldLogExit` and `logUnexpectedExit`;
   - the two `agentHost.retireOnExit` goroutines
-    (`go/internal/runner/host.go`);
+    (`go/internal/runner/host.go`), which pass `otelx.WithoutSpan(ctx)`;
   - sender pumps, watchers, and signal handlers.
+
+Stored lifetime ctxs: a non-test struct field that holds a
+`context.Context`. `containedctx` is on (`default: all`), so each one carries
+a `nolint:containedctx`. Command, run from the repo root:
+
+```sh
+rg -n --type go -g '!*_test.go' 'nolint:containedctx' go
+```
+
+At `bd9a75d2` it prints four fields:
+
+| Field | Set from | Class |
+| --- | --- | --- |
+| `Gateway.baseCtx` (`go/internal/runner/gateway/gateway.go`) | `gateway.Serve(ctx, …)` builds `socketCtx, socketCancel := context.WithCancel(ctx)`. Its callers in `go/internal/runner/host.go` pass the Provision command ctx. `acquirePublisher` opens the shared `PublishEvents` client stream on it. | (c): `Serve` builds `socketCtx` from `otelx.WithoutSpan(ctx)`. Without this, after T4 every shared stream is parented on one Provision span for the socket's life. |
+| `sessionPublisher.ctx` (`go/internal/runner/gateway/publisher.go`) | `g.baseCtx` (shared publisher), or the `sendCtx` in `SocketListener.PublishSessionState` | covered: the first source is stripped in `Serve`; the only caller of the second is `agentHost.markErrored`, reached from a stripped `retireOnExit` ctx |
+| `GuestStream.ctx` (`go/internal/runtime/microvm/exec.go`) | `GuestExec.ExecStream(ctx, …)`, from `StartAgent`'s ctx | (c): stored as `otelx.WithoutSpan(ctx)`. No pin: the guest control client has no `otelconnect` interceptor and the file has no log call, so no test could fail. |
+| `supervisor.serveCtx` (`go/internal/guestd/supervisor.go`) | guest binary | out of scope: the guest binary installs no provider |
 
 Interfaces:
 
-- Consumes: `otel.Traceparent`, `otel.ContextWithTraceparent`,
-  `otel.WithoutSpan`, `otel.Tracer(<package instrumentation scope>)`.
+- Consumes: `otelx.Traceparent`, `otelx.ContextWithTraceparent`,
+  `otelx.WithoutSpan`, `otel.Tracer(<package instrumentation scope>)`.
 - Produces:
 
   ```go
@@ -552,9 +635,21 @@ Test cycle:
 - Per (b′) arm: `Enqueue` under a known span, then dequeue. The notify and
   Linear spans have that span as parent. The board pass links to it.
   Before: no span, or an unrelated root.
-- Regression pin for (c): call `StartAgent` under a span, with a fake engine
-  whose stderr writes one line. The drain's log line has no `trace_id`. With
-  the strip removed, it carries the Start span's id.
+- Regression pins for (c). Each reads a log line that T6 already gave a ctx.
+  Each runs under a known span and a `TraceHandler` over a buffer.
+  - `StartAgent` with a fake engine whose stderr writes one line. After T6,
+    `logDrainLine` passes `drainCtx`. The line has no `trace_id`. With the
+    strip removed, it carries the known span's id.
+  - `retireOnExit`, through `newHostGatewayFixture`
+    (`go/internal/runner/host_gateway_test.go`) with a relay whose
+    `PublishEvents` returns an error. After T6, `markErrored` logs
+    "reporting agent exit to server" with its ctx. The line has no
+    `trace_id`. With the strip removed, it carries the span's id.
+  - `Serve`, in package `gateway`. `Deps.Events` is a wrapper `EventRelay`
+    that records the ctx passed to `PublishEvents` and then delegates to a
+    real client. Call `Serve` under the span, then open the shared
+    publisher. The recorded ctx has an invalid span context. With the strip
+    removed, it holds the span.
 
 Acceptance:
 
@@ -565,20 +660,34 @@ Acceptance:
 
 ### T4 — Runner: one span per Sessions command, parented by the server
 
-Owner: compass-ux. Lands after T5.
+Owner: compass-ux. Lands after T6 and T5.
 
 Add `string traceparent = 16;` to `SessionsResponse` in
 `proto/compass/v1/runner.proto`, with a comment in the style of the T4b
 fields, and regenerate.
 
-The server stamps it with `otel.Traceparent(ctx)` at each place in
+The server stamps it with `otelx.Traceparent(ctx)` at each place in
 `go/internal/runnerhub` that builds a `SessionsResponse`:
 
 - `Hub.relay`, which covers `Provision`, `Start`, `Stop`, `StartResume`,
   and the other relay callers;
 - `Hub.DispatchControl`, which today discards its ctx with `_ = ctx`;
-- `config_signal.go` and `secrets_signal.go`. Where a builder has no ctx,
-  thread one in.
+- `Hub.SignalConfigVersion` (`config_signal.go`) and
+  `Hub.SignalSecretsVersion` (`secrets_signal.go`). Today neither takes a
+  ctx. Both gain one:
+  - the `configSignaler` interface (`go/server/agent_config_service.go`)
+    and its caller `service.signalConfigVersion(ctx, version)`;
+  - the `secretsSignaler` interface (`go/server/secrets_service.go`) and its
+    caller `secretsService.bumpSecretsVersion(ctx)`;
+  - the `gitCredentialBroker.signal` field (`go/server/git_credential.go`)
+    becomes `func(context.Context) error`. The wiring
+    `signal: hub.SignalSecretsVersion` is unchanged. Its two callers pass
+    their ctx. `credential(ctx, …)` runs under the git-credential RPC span.
+    `refreshSnapshot(ctx, …)` runs on the background path
+    `startGitCredentialRefresh` → `group.Go` → `run` → `refreshDue`. T5
+    gives that `group.Go` site class (b), so each tick has its own root span
+    and the signal envelope carries it.
+  - every test fake of the two interfaces, which the compiler lists.
 
 In the runner, `commandSpan` starts span `runner.sessions.command`. It sets
 `compass.runner.command` to the oneof arm name, a bounded set. Both
@@ -596,31 +705,56 @@ Parent precedence:
 
 Interfaces:
 
-- Consumes: `otel.Traceparent`, `otel.ContextWithTraceparent`,
-  `otel.WithoutSpan`.
+- Consumes: `otelx.Traceparent`, `otelx.ContextWithTraceparent`,
+  `otelx.WithoutSpan`.
 - Produces: proto field `SessionsResponse.traceparent` (tag 16, internal)
   and generated `func (x *SessionsResponse) GetTraceparent() string`.
+- Produces (package `runnerhub`, changed signatures):
+
+  ```go
+  func (h *Hub) SignalConfigVersion(ctx context.Context, version string) error
+  func (h *Hub) SignalSecretsVersion(ctx context.Context) error
+  ```
+
+- Produces (package `server`, unexported, changed):
+
+  ```go
+  type configSignaler interface {
+      SignalConfigVersion(ctx context.Context, version string) error
+  }
+  type secretsSignaler interface {
+      SignalSecretsVersion(ctx context.Context) error
+  }
+  // gitCredentialBroker field
+  signal func(context.Context) error
+  ```
+
 - Produces (package `runner`, unexported):
 
   ```go
-  // commandSpan starts the per-command span on otel.WithoutSpan(ctx). The
+  // commandSpan starts the per-command span on otelx.WithoutSpan(ctx). The
   // parent is the op traceparent for deliver_control, else the envelope
   // traceparent; empty or malformed gives a fresh root.
   func commandSpan(ctx context.Context, cmd *compassv1internal.SessionsResponse) (context.Context, trace.Span)
   ```
 
 Test cycle: a runner test drives `runSessions` with a fake `sessionStream`,
-an in-memory span recorder, and a `TraceHandler` over a buffer.
+an in-memory span recorder, and a `TraceHandler` over a buffer. The fake
+`SessionHost` returns an error from `Start`, so `dispatcher.errorResult`
+logs "session command failed" with `d.log.Log(ctx, …)`. That line passes its
+ctx at `bd9a75d2`, so the test does not depend on T6.
 
-- A `start` command with envelope traceparent `E`: the span's parent is `E`,
-  and the host's log line carries `E`'s trace id.
+- A `start` command with envelope traceparent `E`: the recorder's command
+  span has parent `E`, and the "session command failed" line carries `E`'s
+  trace id and the command span's id.
 - A `deliver_control` with op traceparent `O` and envelope `E`: the parent
   is `O`, never `E`.
-- Provider-off case: with no SDK provider, the log line for the `start`
-  command still carries `E`'s trace id.
+- Provider-off case: with no SDK provider, the same line still carries `E`'s
+  trace id.
 
-Before: no span and no ids. A runnerhub test asserts that `Hub.relay` and
-`Hub.DispatchControl` stamp their ctx's traceparent on the envelope.
+Before: no span and no ids. A runnerhub test asserts that `Hub.relay`,
+`Hub.DispatchControl`, and the two signal methods stamp their ctx's
+traceparent on the envelope.
 
 Acceptance:
 
@@ -632,7 +766,9 @@ Acceptance:
 
 Owner: compass-ux.
 
-Four PRs, split by package so each has about 30–40 sites.
+Four PRs, split by package so each has about 30–40 sites. T6 lands right
+after T3, before T5 and T4, so the runner lines their tests read already pass
+ctx. T7–T9 land after T4.
 
 - Where a ctx is in scope, use the `scope` fix (`XContext(ctx, …)`).
 - Otherwise add `ctx context.Context` as the first parameter of the
@@ -643,7 +779,10 @@ Four PRs, split by package so each has about 30–40 sites.
 
 The PRs:
 
-- **T6:** `internal/runner` (36) and `cmd/compass-runner` (2).
+- **T6:** `internal/runner` (36) and `cmd/compass-runner` (2). This includes
+  `logDrainLine`, `flushDropped`, and `logUnexpectedExit`
+  (`go/internal/runner/agent_exec.go`), which gain a leading ctx, and the
+  `markErrored` error line in `go/internal/runner/host.go`.
 - **T7:** `server` (25) and `cmd/compass-server` (3).
 - **T8:** `internal/runnerhub` (19), `internal/fabric` (9),
   `internal/ingest` (3), `internal/delivery` (1), `internal/comms` (1).
@@ -663,7 +802,7 @@ The PRs:
 
 Interfaces:
 
-- Consumes: `otel.WithoutSpan` (T8).
+- Consumes: `otelx.WithoutSpan` (T8).
 - Produces: changed signatures only, each with a new leading
   `ctx context.Context`. Each PR body lists every changed signature.
 
@@ -676,22 +815,25 @@ the linter rejects a new one.
 
 ## Tasks
 
-Stack order: T1, T2, T3, T5, T4, T6, T7, T8, T9.
+Stack order: T1, T2, T3, T6, T5, T4, T7, T8, T9.
 
-- [ ] T1 — `otel.TraceHandler` (seven cases), sloglint `forbidden-keys`,
-  forbidigo `context.Background`/`TODO` (Owner: compass-ux)
-- [ ] T2 — `otel.HandlerInterceptors` on every server mount,
-  `otel.WithoutSpan` in server stream handlers, `otelhttp` on three HTTP
+- [ ] T1 — `otelx.TraceHandler` (seven cases), sloglint `forbidden-keys`,
+  forbidigo `context.Background`/`TODO`, `pgshare` cleanup ctx,
+  `drainDoors(ctx, …)` (Owner: compass-ux)
+- [ ] T2 — `otelx.HandlerInterceptors` on every server mount,
+  `otelx.WithoutSpan` in server stream handlers, `otelhttp` on three HTTP
   ingresses, handler wiring in both mains (Owner: compass-ux)
 - [ ] T3 — runner AgentGateway spans; stream span stripped; a test that
   covers a streaming RPC (Owner: compass-ux)
-- [ ] T5 — classify the 40 goroutine sites; (b′) traceparent on the
-  webhook and Linear queues; (c) strips with a regression pin
-  (Owner: compass-ux)
-- [ ] T4 — `SessionsResponse.traceparent` (tag 16), server stamping, runner
-  per-command span, op-first parent for `deliver_control` (Owner: compass-ux)
 - [ ] T6 — ctx into log calls: `internal/runner`, `cmd/compass-runner`
   (Owner: compass-ux)
+- [ ] T5 — classify the 40 goroutine sites and the 4 stored lifetime
+  ctxs; (b′) traceparent on the webhook and Linear queues; (c) strips in
+  `StartAgent`, `retireOnExit`, and `gateway.Serve`, with regression pins
+  (Owner: compass-ux)
+- [ ] T4 — `SessionsResponse.traceparent` (tag 16), server stamping, ctx on
+  the two signal methods, runner per-command span, op-first parent for
+  `deliver_control` (Owner: compass-ux)
 - [ ] T7 — ctx into log calls: `server`, `cmd/compass-server`
   (Owner: compass-ux)
 - [ ] T8 — ctx into log calls: `runnerhub`, `fabric`, `ingest`,
@@ -712,7 +854,7 @@ Stack order: T1, T2, T3, T5, T4, T6, T7, T8, T9.
      filter and returns `next(ctx, conn)` before it builds any stream state,
      so these RPCs also lose their duration and count metrics.
    - (b) Keep the stream span, and clear it from the work ctx at handler
-     entry with `otel.WithoutSpan`, the idiom in
+     entry with `otelx.WithoutSpan`, the idiom in
      `go/internal/fabric/event_fabric.go`. Add per-unit spans where a unit
      exists (T4 commands, T5 queues). Cost: one long span per stream in
      the backend. Work lines on the stream itself carry no ids.
