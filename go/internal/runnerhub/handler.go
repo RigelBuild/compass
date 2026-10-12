@@ -21,6 +21,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -117,6 +118,7 @@ func (h *Handler) Enroll(ctx context.Context, req *connect.Request[compassv1inte
 // the stream ends (client hang-up or ctx cancel), the router detaches and every
 // in-flight command fails, feeding the OQ6 disconnect path.
 func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+	ctx = otelx.WithoutSpan(ctx)
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return errUnauthenticated
@@ -165,6 +167,7 @@ const lostSessionTimeout = 30 * time.Second
 // the stream with the error so the Runner can retry the relay; a well-formed but
 // unknown frame is not an error (Deliver logs+counts it).
 func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+	ctx = otelx.WithoutSpan(ctx)
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
@@ -484,18 +487,9 @@ func kindToProto(k secrets.SecretKind) compassv1.SecretKind {
 // surface FetchAgentConfig delegates to (either may be nil on a server built
 // without that surface).
 //
-// otelIC produces the server RPC span every handler on this door runs under —
-// notably the RelayCommsCall origin span the cross-turn causal link hangs off
-// (relay_comms.go). It is mounted FIRST (outermost) so the span envelopes the
-// security-critical bearer pair, matching every other door's chain
-// (server/serve.go, server/network_door.go); the bearer pair's order relative to
-// itself is unchanged. It is inert when no tracer provider is installed (a
-// no-op global ⇒ no recording span), so it mounts unconditionally.
-//
-// otelIC must be non-nil. connect's chain skips only a nil INTERFACE element
-// (connect interceptor.go:87); a typed-nil *otelconnect.Interceptor is a
-// non-nil interface whose WrapUnary dereferences i.config and panics on the
-// first RPC (otelconnect interceptor.go:86). Callers construct their own.
+// otelIC is mounted outermost so its span envelopes the bearer pair. It must be
+// non-nil: a typed-nil *otelconnect.Interceptor passes connect's nil check and
+// panics on the first RPC.
 func NewMountedHandler(
 	hub *Hub,
 	resolve TokenResolver,
@@ -506,7 +500,7 @@ func NewMountedHandler(
 	auth := &bearerAuth{resolve: resolve}
 	return compassv1internalconnect.NewRunnerServiceHandler(
 		NewHandler(hub, resolver, configStore),
-		connect.WithInterceptors(otelIC, auth.unaryInterceptor(), auth.streamInterceptor()),
+		otelx.HandlerInterceptors(otelIC, auth.unaryInterceptor(), auth.streamInterceptor()),
 		connect.WithReadMaxBytes(runnerMaxReadBytes),
 	)
 }

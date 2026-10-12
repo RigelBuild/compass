@@ -14,6 +14,10 @@ import (
 	"testing"
 
 	"connectrpc.com/otelconnect"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -180,6 +184,14 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
+	previousProvider := otel.GetTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		_ = provider.Shutdown(context.WithoutCancel(t.Context()))
+	})
 	linkHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/l/session/session-123" {
 			t.Errorf("request path = %q, want /l/session/session-123", r.URL.Path)
@@ -220,5 +232,8 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 	}
 	if got, want := rec.Header().Get("Location"), "https://compass.example.com/#/channel/home"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
+	}
+	if spans := recorder.Ended(); len(spans) != 1 || spans[0].SpanKind() != trace.SpanKindServer {
+		t.Fatalf("session-link ingress spans = %+v, want one server span", spans)
 	}
 }

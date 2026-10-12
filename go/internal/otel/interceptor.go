@@ -6,9 +6,19 @@ import (
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// HandlerInterceptors is the one interceptor option for a Connect handler mount:
+// ic first (it must be non-nil), then NewTraceResponseInterceptor, then rest in order.
+func HandlerInterceptors(ic *otelconnect.Interceptor, rest ...connect.Interceptor) connect.HandlerOption {
+	interceptors := make([]connect.Interceptor, 0, len(rest)+2)
+	interceptors = append(interceptors, ic, NewTraceResponseInterceptor())
+	interceptors = append(interceptors, rest...)
+	return connect.WithInterceptors(interceptors...)
+}
 
 // traceResponseHeader is the W3C trace-context response header (still a draft;
 // DECIDED by compass-obs to use the standard name + "00-…" grammar anyway).

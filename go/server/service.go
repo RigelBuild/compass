@@ -23,6 +23,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/board"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -546,6 +547,7 @@ func (s *service) SubscribeEvents(
 	req *connect.Request[compassv1.SubscribeEventsRequest],
 	stream *connect.ServerStream[compassv1.SubscribeEventsResponse],
 ) error {
+	ctx = otel.WithoutSpan(ctx)
 	sub, err := s.bus.Subscribe(req.Msg.GetSinceSeq(), req.Msg.GetInstanceEpoch())
 	if err != nil {
 		if errors.Is(err, events.ErrBufferUnderflow) {
@@ -591,6 +593,7 @@ func (s *service) SubscribeAgentSession(
 	req *connect.Request[compassv1.SubscribeAgentSessionRequest],
 	stream *connect.ServerStream[compassv1.AgentSessionFrame],
 ) error {
+	ctx = otel.WithoutSpan(ctx)
 	if s.tail == nil {
 		return connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}

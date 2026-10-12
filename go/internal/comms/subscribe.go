@@ -10,6 +10,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -34,6 +35,7 @@ func (c *Comms) SubscribeComms(
 	req *connect.Request[compassv1.SubscribeCommsRequest],
 	stream *connect.ServerStream[compassv1.SubscribeCommsResponse],
 ) error {
+	ctx = otelx.WithoutSpan(ctx)
 	sub, err := c.bus.Subscribe(req.Msg.GetSinceSeq(), req.Msg.GetInstanceEpoch())
 	if err != nil {
 		if errors.Is(err, events.ErrBufferUnderflow) {

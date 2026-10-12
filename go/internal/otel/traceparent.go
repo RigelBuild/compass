@@ -44,3 +44,8 @@ func ContextWithTraceparent(ctx context.Context, tp string) context.Context {
 	}
 	return out
 }
+
+// WithoutSpan clears the active span while preserving ctx values and cancellation.
+func WithoutSpan(ctx context.Context) context.Context {
+	return trace.ContextWithSpanContext(ctx, trace.SpanContext{})
+}
