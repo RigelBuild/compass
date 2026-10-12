@@ -199,6 +199,21 @@ SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
                    (CASE WHEN a.forge_provider = 1 THEN lower(a.repo) ELSE a.repo END)
                AND i.number = a.number AND i.forge_state = 'open')))
  ORDER BY a.created_at_unix_ms, a.forge_provider, a.forge_host, a.repo, a.kind, a.number;
+-- name: AuthoredCoordsForAgent :many
+WITH want AS (
+    SELECT unnest(@forge_providers::smallint[]) AS provider,
+           unnest(@forge_hosts::text[]) AS host,
+           unnest(@forge_repos::text[]) AS repo,
+           unnest(@forge_numbers::bigint[]) AS number
+)
+SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+  FROM forge_authored_artifacts a
+  JOIN want w ON a.forge_provider = w.provider AND a.forge_host = w.host
+             AND (CASE WHEN a.forge_provider = 1 THEN lower(a.repo) ELSE a.repo END) = w.repo
+             AND a.number = w.number
+ WHERE a.agent_account_id = @agent_account_id
+ ORDER BY a.forge_provider, a.forge_host, a.repo, a.kind, a.number;
+
 
 -- name: PullRequestsByCoords :many
 WITH want AS (
@@ -224,7 +239,7 @@ WITH want AS (
 )
 SELECT i.id, i.forge_provider, i.forge_host, i.repo, i.number,
        i.title, i.body, i.forge_state, i.url, i.forge_account, i.labels, i.agent_handle,
-       i.state, i.priority, i.assignee, i.summary, i.branch
+       i.forge_updated_at, i.state, i.priority, i.assignee, i.summary, i.branch
   FROM issues i
   JOIN want w ON i.forge_provider = w.provider AND i.forge_host = w.host
              AND (CASE WHEN i.forge_provider = 1 THEN lower(i.repo) ELSE i.repo END) = w.repo

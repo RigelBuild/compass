@@ -775,6 +775,46 @@ func (s *Store) AsksByAuthor(ctx context.Context, viewer, author AccountID, answ
 	return out, nil
 }
 
+// AuthoredCoordsForAgent returns authored coordinates that intersect a batch.
+func (s *Store) AuthoredCoordsForAgent(ctx context.Context, agent AccountID, coords []ForgeCoord) ([]AuthoredRef, error) {
+	if agent == "" {
+		return nil, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+	}
+	want, err := normalizeCoords(coords)
+	if err != nil {
+		return nil, err
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	arg := db.AuthoredCoordsForAgentParams{
+		AgentAccountID: string(agent),
+		ForgeProviders: make([]int16, 0, len(want)),
+		ForgeHosts:     make([]string, 0, len(want)),
+		ForgeRepos:     make([]string, 0, len(want)),
+		ForgeNumbers:   make([]int64, 0, len(want)),
+	}
+	for _, coord := range want {
+		value := coord.db()
+		arg.ForgeProviders = append(arg.ForgeProviders, value.provider)
+		arg.ForgeHosts = append(arg.ForgeHosts, value.host)
+		arg.ForgeRepos = append(arg.ForgeRepos, value.repo)
+		arg.ForgeNumbers = append(arg.ForgeNumbers, value.number)
+	}
+	rows, err := s.q.AuthoredCoordsForAgent(ctx, arg)
+	if err != nil {
+		return nil, fmt.Errorf("store: authored coordinates for agent: %w", err)
+	}
+	out := make([]AuthoredRef, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, AuthoredRef{
+			Coord: coordFromDB(row.ForgeProvider, row.ForgeHost, row.Repo, row.Number),
+			Kind:  ForgeArtifactKind(row.Kind),
+		})
+	}
+	return out, nil
+}
+
 // OpenAuthoredRefs returns the agent's authored issues and PRs that remain open.
 func (s *Store) OpenAuthoredRefs(ctx context.Context, agent AccountID) ([]AuthoredRef, error) {
 	if agent == "" {
@@ -858,7 +898,7 @@ func (s *Store) IssuesByCoords(ctx context.Context, coords []ForgeCoord) ([]Issu
 		out = append(out, issueFromColumns(
 			row.ID, row.ForgeProvider, row.ForgeHost, row.Repo, row.Number,
 			row.Title, row.Body, row.ForgeState, row.Url, row.ForgeAccount, row.Labels, row.AgentHandle,
-			row.State, row.Priority, row.Assignee, row.Summary, row.Branch,
+			row.ForgeUpdatedAt, row.State, row.Priority, row.Assignee, row.Summary, row.Branch,
 		))
 	}
 	return out, nil

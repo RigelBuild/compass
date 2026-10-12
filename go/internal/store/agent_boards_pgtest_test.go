@@ -670,6 +670,25 @@ func TestBoardCoordinateReadsAndOpenAuthoredRefs(t *testing.T) {
 		open[1].Coord.Number != openPR.Number || open[1].Kind != ForgeArtifactKindPullRequest {
 		t.Fatalf("open authored refs = %+v, want open issue and PR only", open)
 	}
+	owned, err := s.AuthoredCoordsForAgent(t.Context(), agent, []ForgeCoord{openIssue, closedIssue, openPR, closedPR, mergedPR})
+	if err != nil {
+		t.Fatalf("AuthoredCoordsForAgent: %v", err)
+	}
+	ownedByArtifact := make(map[uint64]ForgeArtifactKind, len(owned))
+	for _, ref := range owned {
+		coord := ref.Coord.Normalized()
+		ownedByArtifact[coord.Number] = ref.Kind
+	}
+	for _, number := range []uint64{openIssue.Number, closedIssue.Number} {
+		if ownedByArtifact[number] != ForgeArtifactKindIssue {
+			t.Errorf("authored issue %d = %v, want ownership regardless of forge state", number, ownedByArtifact[number])
+		}
+	}
+	for _, number := range []uint64{openPR.Number, closedPR.Number, mergedPR.Number} {
+		if ownedByArtifact[number] != ForgeArtifactKindPullRequest {
+			t.Errorf("authored PR %d = %v, want ownership regardless of forge state", number, ownedByArtifact[number])
+		}
+	}
 	mixedCasePRs, err := s.PullRequestsByCoords(t.Context(), []ForgeCoord{ghCoord("OWNER/REPO", openPR.Number)})
 	if err != nil {
 		t.Fatalf("PullRequestsByCoords(mixed-case repo): %v", err)
