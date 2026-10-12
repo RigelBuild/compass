@@ -417,6 +417,7 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 		{"models.yml headers !command indirection", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: \"!op read secret\"\n"}}},
 		{"models.yml empty headers mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers: {}\n"}}},
 		{"models.yml null headers", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers: ~\n"}}},
+		{"models.yml model-level headers env reference", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    models:\n      - id: m\n        headers:\n          X-Org: MY_ORG_ENV\n    modelOverrides:\n      m:\n        headers:\n          Authorization: \"!op read secret\"\n"}}},
 		// Symmetric to the shielded-credential models.yml reject cases: a nested
 		// non-string key with NO credential leaf must still be ACCEPTED. Guards
 		// against yamlMapEntries over-rejecting benign models config.
@@ -491,15 +492,10 @@ func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 
 // TestValidateConfigBundleRejectsCredentialKeys pins the credential denylist at
 // the store door: a settings/config.yml setting a credential-marked key, a
-// models.yml with providers.<name>.apiKey, and a models.yml with a
-// providers.<name>.headers.* literal secret are each rejected with the offending
-// key path named in the error; an env-referenced header value passes.
+// models.yml with providers.<name>.apiKey, and a provider-level literal-secret
+// header are each rejected with the offending key path named in the error.
 func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
-	cases := []struct {
-		name    string
-		member  tarEntry
-		wantSub string // substring the error must name
-	}{
+	cases := []bundleRejectCase{
 		{
 			name:    "settings credential key",
 			member:  tarEntry{name: "settings/config.yml", content: "auth:\n  broker:\n    token: sekret\n"},
@@ -562,6 +558,48 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			member:  tarEntry{name: "models.yml", content: "providers:\n  0: junk\n  openai:\n    1: junk\n    apiKey: sk-secret\n"},
 			wantSub: "providers.openai.apiKey",
 		},
+		{
+			// The only denylist entry whose leaf is a RECORD not a scalar — the
+			// first case where yamlPathIsSet terminates on a map node. Pins the
+			// door against a future change that treats a container leaf as "not
+			// set". Added by the SDK 18.x bump.
+			name:    "settings record-valued credential leaf",
+			member:  tarEntry{name: "settings/config.yml", content: "images:\n  urls:\n    credentials:\n      s3: {key: v}\n"},
+			wantSub: "images.urls.credentials",
+		},
+	}
+	assertBundleRejects(t, cases)
+}
+
+type bundleRejectCase struct {
+	name    string
+	member  tarEntry
+	wantSub string // substring the error must name
+}
+
+// assertBundleRejects runs each case through the store door and requires an
+// ErrInvalidArgument naming the offending key.
+func assertBundleRejects(t *testing.T, cases []bundleRejectCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.member)
+			_, _, err := validateAndHashConfigBundle(b)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("want ErrInvalidArgument, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("error %q does not name offending key %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestValidateConfigBundleRejectsModelsHeaderShapes pins the models.yml header
+// rule at every site the SDK reads headers from (provider, model definition,
+// model override) and the non-mapping nodes the SDK schema would coerce.
+func TestValidateConfigBundleRejectsModelsHeaderShapes(t *testing.T) {
+	assertBundleRejects(t, []bundleRejectCase{
 		// The SDK schema types every header value as a string, so a value of any
 		// other shape is not checked by isEnvIndirection; reject it here.
 		{
@@ -591,28 +629,51 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      - \"Bearer sk-live-123\"\n"},
 			wantSub: "providers.x.headers",
 		},
+		// Model definitions and model overrides carry their own headers; the SDK
+		// merges them onto the model's headers and sends them the same way.
 		{
-			// The only denylist entry whose leaf is a RECORD not a scalar — the
-			// first case where yamlPathIsSet terminates on a map node. Pins the
-			// door against a future change that treats a container leaf as "not
-			// set". Added by the SDK 18.x bump.
-			name:    "settings record-valued credential leaf",
-			member:  tarEntry{name: "settings/config.yml", content: "images:\n  urls:\n    credentials:\n      s3: {key: v}\n"},
-			wantSub: "images.urls.credentials",
+			name:    "models model-definition header literal secret",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    models:\n      - id: m\n        headers:\n          Authorization: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.models[0].headers.Authorization",
 		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.member)
-			_, _, err := validateAndHashConfigBundle(b)
-			if !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("want ErrInvalidArgument, got %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.wantSub) {
-				t.Fatalf("error %q does not name offending key %q", err, tc.wantSub)
-			}
-		})
-	}
+		{
+			name:    "models model-definition header non-string value",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    models:\n      - id: ok\n      - id: m\n        headers:\n          X-Key: 1234567890\n"},
+			wantSub: "providers.x.models[1].headers.X-Key",
+		},
+		{
+			name:    "models model-override header literal secret",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    modelOverrides:\n      m:\n        headers:\n          Authorization: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.modelOverrides.m.headers.Authorization",
+		},
+		{
+			name:    "models model-override headers list",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    modelOverrides:\n      m:\n        headers:\n          - \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.modelOverrides.m.headers",
+		},
+		{
+			name:    "models model-override header shielded by non-string sibling",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    modelOverrides:\n      0: junk\n      m:\n        headers:\n          Authorization: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.modelOverrides.m.headers.Authorization",
+		},
+		{
+			name:    "models model-definition header shielded by non-string sibling in the item",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    models:\n      - id: m\n        0: junk\n        headers:\n          Authorization: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.models[0].headers.Authorization",
+		},
+		// The SDK schema coerces a list at providers or modelOverrides into an
+		// index-keyed record, so a list there still reaches the registry.
+		{
+			name:    "models modelOverrides list",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    modelOverrides:\n      - headers:\n          Authorization: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.modelOverrides",
+		},
+		{
+			name:    "models providers list",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  - apiKey: sk-live-123\n"},
+			wantSub: "sets providers to a non-mapping",
+		},
+	})
 }
 
 // TestCredentialKeysMatchSchema guards the generated denylist against a
