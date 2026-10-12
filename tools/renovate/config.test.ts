@@ -787,9 +787,9 @@ describe("tools/renovate Meissa lint toolchain lockstep", () => {
 });
 
 describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
-	// Both compass devenv scopes resolve github:RigelBuild/devenv by default
-	// branch. Separate regex managers surface each lock's fork rev, while one
-	// package rule groups both updates and relocks every changed scope.
+	// Both compass devenv scopes resolve github:RigelBuild/devenv/rigel-release.
+	// Separate regex managers surface each lock's fork rev, while one package
+	// rule groups both updates and relocks every changed scope.
 	//
 	// Found by the dep each stamps, never by index or a bare "devenv" file-pattern
 	// substring (the devenv-nixpkgs channel manager pattern-matches the same root
@@ -831,8 +831,8 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			expect(manager?.packageNameTemplate).toBe(
 				"https://github.com/RigelBuild/devenv",
 			);
-			// The locks name no ref, so the tracked value is the default branch.
-			expect(manager?.currentValueTemplate).toBe("main");
+			// Both locks name rigel-release, the tracked branch for this fork.
+			expect(manager?.currentValueTemplate).toBe("rigel-release");
 
 			// The file pattern must be ANCHORED to exactly this lock: a loose
 			// pattern would make the root manager extract from the agent-image lock
