@@ -1,3 +1,4 @@
+import { $ } from "bun";
 import { KEY_LINE, type Violation } from "./index.ts";
 
 export type ClaimState = "lane" | "not-lane";
@@ -31,13 +32,16 @@ function rateLimitError(): Error {
 
 const responseReason = (status: number) => `HTTP ${status}`;
 
-/** Delta-seconds or an HTTP-date; anything else falls back to 60 s. */
+/** RFC 9110 IMF-fixdate, the HTTP-date form servers send. */
+const IMF_FIXDATE =
+	/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/** Delta-seconds or an IMF-fixdate; anything else falls back to 60 s. */
 function readRetryAfter(response: Response, nowMs: number): number {
-	const header = response.headers.get("retry-after")?.trim();
-	if (header === undefined || header === "") return 60_000;
+	const header = response.headers.get("retry-after")?.trim() ?? "";
 	if (/^\d+$/.test(header)) return Number(header) * 1_000;
-	const at = Date.parse(header);
-	return Number.isNaN(at) ? 60_000 : Math.max(0, at - nowMs);
+	if (!IMF_FIXDATE.test(header)) return 60_000;
+	return Math.max(0, Date.parse(header) - nowMs);
 }
 
 async function readVerdicts(
@@ -191,4 +195,33 @@ export function claimCheckViolations(
 		});
 	}
 	return violations;
+}
+
+/**
+ * DL ids at the merge base of HEAD and origin/main: the main commit the
+ * checked-out tree contains, even after origin/main has moved on.
+ */
+export async function mergeBaseDecisionIds(root: string): Promise<Set<string>> {
+	const base = await $`git merge-base HEAD origin/main`
+		.cwd(root)
+		.nothrow()
+		.quiet();
+	const listing =
+		base.exitCode === 0
+			? await $`git ls-tree -r --name-only ${base.stdout.toString().trim()} -- docs/designs/decisions`
+					.cwd(root)
+					.nothrow()
+					.quiet()
+			: base;
+	if (listing.exitCode !== 0) {
+		throw new Error(
+			"design-ledger-gate: cannot list decision ids at the merge base with origin/main; origin/main must resolve in this checkout.",
+		);
+	}
+	const ids = new Set<string>();
+	for (const path of listing.stdout.toString().split("\n")) {
+		const id = /(?:^|\/)(DL-(?:\d{3}|[1-9]\d{3,}))\.md$/.exec(path)?.[1];
+		if (id !== undefined) ids.add(id);
+	}
+	return ids;
 }

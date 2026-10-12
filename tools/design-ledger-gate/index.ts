@@ -8,6 +8,7 @@ import {
 	type ClaimState,
 	claimCheckViolations,
 	fetchClaims,
+	mergeBaseDecisionIds,
 } from "./claim-check.ts";
 import { type DecisionRow, parseDecisionFile } from "./decision-files.ts";
 /** The design-corpus root the gate governs (all buckets beneath it). */
@@ -736,34 +737,7 @@ if (import.meta.main) {
 			log: (message) => console.log(message),
 			...(ctx.kind === "pr"
 				? {
-						// The merge base, not origin/main: a main that moved since the
-						// merge ref was built would hide an id this tree does not contain.
-						mainDecisionIds: async () => {
-							const base = await $`git merge-base HEAD origin/main`
-								.nothrow()
-								.quiet();
-							const result =
-								base.exitCode === 0
-									? await $`git ls-tree -r --name-only ${base.stdout.toString().trim()} -- docs/designs/decisions`
-											.nothrow()
-											.quiet()
-									: base;
-							if (result.exitCode !== 0) {
-								throw new Error(
-									"design-ledger-gate: cannot list decision ids at the merge base with origin/main; origin/main must resolve in this checkout.",
-								);
-							}
-							return new Set(
-								result.stdout
-									.toString()
-									.split("\n")
-									.map(
-										(path) =>
-											/(?:^|\/)(DL-(?:\d{3}|[1-9]\d{3,}))\.md$/.exec(path)?.[1],
-									)
-									.filter((id): id is string => id !== undefined),
-							);
-						},
+						mainDecisionIds: () => mergeBaseDecisionIds(root),
 						claims: (lane, ids) => fetchClaims(lane, ids),
 					}
 				: {}),

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { claimCheckViolations, fetchClaims } from "./claim-check.ts";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { $ } from "bun";
+import {
+	claimCheckViolations,
+	fetchClaims,
+	mergeBaseDecisionIds,
+} from "./claim-check.ts";
 import { type Changed, type Deps, KEY_LINE, runOnce } from "./index.ts";
 
 const claimed = new Map([["DL-123", "lane" as const]]);
@@ -259,6 +267,29 @@ describe("fetchClaims", () => {
 		}
 	});
 
+	test("Retry-After that is fractional or malformed falls back to 60 s", async () => {
+		for (const header of ["1.5", "soon", "2026-10-12"]) {
+			let calls = 0;
+			const sleeps: number[] = [];
+			await fetchClaims(
+				"feature/ui",
+				["DL-123"],
+				claimDeps({
+					fetchFn: async () => {
+						calls += 1;
+						return calls === 1
+							? jsonResponse({}, 429, { headers: { "retry-after": header } })
+							: jsonResponse({ claims: [{ id: "DL-123", state: "lane" }] });
+					},
+					sleep: async (milliseconds) => {
+						sleeps.push(milliseconds);
+					},
+				}),
+			);
+			expect(sleeps).toEqual([60_000]);
+		}
+	});
+
 	test("400 fails immediately", async () => {
 		let calls = 0;
 		await expect(
@@ -468,5 +499,61 @@ describe("runOnce claim leg", () => {
 		expect(errors).toContain(
 			"design-ledger-gate: cannot reach the DL claim service at https://dl.rigel.build (HTTP 503). Re-run the pipeline when it answers. Do not hand-pick an id: an unclaimed id fails.",
 		);
+	});
+});
+
+describe("mergeBaseDecisionIds", () => {
+	test("lists the merge ref's base, not a main that moved after it", async () => {
+		const repo = await mkdtemp(join(tmpdir(), "ledger-merge-base-"));
+		try {
+			// Identity per call: CI runners have no global git user.
+			const git = (args: string[]) =>
+				$`git -c user.name=t -c user.email=t@t ${args}`.cwd(repo).quiet();
+			const decisions = join(repo, "docs/designs/decisions/ui");
+			const addDecision = async (id: string) => {
+				await mkdir(decisions, { recursive: true });
+				await writeFile(join(decisions, `${id}.md`), `# ${id}\n`);
+				await git(["add", "-A"]);
+				await git(["commit", "-q", "-m", id]);
+			};
+			await git(["init", "-q", "-b", "main"]);
+			await addDecision("DL-001");
+			await git(["switch", "-q", "-c", "pr"]);
+			await addDecision("DL-003");
+			await git(["switch", "-q", "main"]);
+			await addDecision("DL-002");
+			// The merge ref GitHub builds: main at DL-002 merged with the PR.
+			await git(["switch", "-q", "--detach", "main"]);
+			await git(["merge", "--no-ff", "-q", "pr", "-m", "merge"]);
+			const mergeRef = (await git(["rev-parse", "HEAD"]).text()).trim();
+			// main then moves on and lands the PR's id for itself.
+			await git(["switch", "-q", "main"]);
+			await addDecision("DL-003");
+			await git(["update-ref", "refs/remotes/origin/main", "main"]);
+			await git(["checkout", "-q", mergeRef]);
+
+			expect([...(await mergeBaseDecisionIds(repo))].sort()).toEqual([
+				"DL-001",
+				"DL-002",
+			]);
+
+			// A plain local branch checkout: its fork point with main.
+			await git(["checkout", "-q", "pr"]);
+			expect([...(await mergeBaseDecisionIds(repo))]).toEqual(["DL-001"]);
+		} finally {
+			await rm(repo, { recursive: true, force: true });
+		}
+	});
+
+	test("fails when origin/main does not resolve", async () => {
+		const repo = await mkdtemp(join(tmpdir(), "ledger-no-main-"));
+		try {
+			await $`git init -q -b main`.cwd(repo).quiet();
+			await expect(mergeBaseDecisionIds(repo)).rejects.toThrow(
+				"origin/main must resolve",
+			);
+		} finally {
+			await rm(repo, { recursive: true, force: true });
+		}
 	});
 });
