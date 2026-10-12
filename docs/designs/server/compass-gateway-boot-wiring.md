@@ -209,7 +209,8 @@ to the store.
   which added `--map-host-loopback`. Ubuntu 24.04's passt lacks it, and
   26.04's has it (Resolved decisions). Below the floor, `up` fails at S2's
   preflight; `--gateway-external` still works. The existing passt floor in
-  `MicroVMFloors` (`go/internal/hostcheck/hostcheck.go`, `2025_09_19`)
+  `MicroVMFloors` (`go/internal/hostcheck/hostcheck.go`:
+  `{Binary: "passt", Fields: []int{2025, 9, 19}, Display: "2025_09_19"}`)
   covers only the microVM backend's `passt` on PATH, not podman's pasta.
 - **Fail before bind.** The boot exits non-zero and never binds when:
   - `COMPASS_SERVER_URL` is unset or fails `normalizeCompassBaseUrl`;
@@ -501,13 +502,16 @@ probe machine was removed afterwards.
 Host floor evidence. A holds, with a floor:
 
 - `--map-host-loopback` landed in upstream passt on 2024-08-21 (commit
-  e813a4df, "conf: Allow address remapped to host to be configured").
+  [e813a4df](https://passt.top/passt/commit/?id=e813a4df7da28a69ef32642f42fd625aea798967),
+  "conf: Allow address remapped to host to be configured").
 - Ubuntu noble (24.04) ships passt `0.0~git20240220`, and its pasta(1) has
   no `--map-host-loopback`. Resolute (26.04, passt 20260120) has it
-  (manpages.ubuntu.com `noble`/`resolute` `man1/pasta.1`;
-  launchpad.net/ubuntu/+source/passt).
+  ([noble](https://manpages.ubuntu.com/manpages/noble/man1/pasta.1.html),
+  [resolute](https://manpages.ubuntu.com/manpages/resolute/man1/pasta.1.html),
+  [Launchpad](https://launchpad.net/ubuntu/+source/passt)).
 - GitHub `ubuntu-latest` moves to 26.04 gradually, from 2026-10-19 to
-  2026-11-19 (github.blog changelog, 2026-09-17).
+  2026-11-19
+  ([changelog](https://github.blog/changelog/2026-09-17-ubuntu-26-generally-available-and-latest-migration/)).
 - This box's podman 5.8.6 bundles `pasta 2026_07_16`, whose `--help` lists
   the option.
 
