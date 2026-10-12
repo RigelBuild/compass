@@ -80,23 +80,32 @@ func configureForgeStub(tb testing.TB, secretsPath string) *forgeStub {
 	// Scrub every ambient knob that could redirect the leg off the loopback
 	// stub. The S3 and OTLP names are env-only fallbacks the server reads
 	// directly, so an operator's shell would otherwise reach a real endpoint.
-	for _, name := range []string{
-		"COMPASS_FORGE_REPOS", "COMPASS_FORGE_HOST", "COMPASS_FORGE_APP_ID", "COMPASS_FORGE_INSTALLATION_ID",
-		"COMPASS_FORGE_APP_KEY_SECRET", "COMPASS_FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID",
-		"COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET",
-		"COMPASS_FORGE_LINEAR_CLIENT_ID", "COMPASS_FORGE_LINEAR_CLIENT_SECRET", "COMPASS_FORGE_LINEAR_WEBHOOK_SECRET",
-		"COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT", "COMPASS_SECRET_PROVIDER", "LINEAR_FORGE_CLIENT_ID", "LINEAR_FORGE_CLIENT_SECRET", "LINEAR_FORGE_WEBHOOK_SECRET",
-		"COMPASS_S3_ENDPOINT", "COMPASS_S3_BUCKET", "COMPASS_S3_ACCESS_KEY", "COMPASS_S3_SECRET_KEY",
-		"COMPASS_S3_REGION", "COMPASS_S3_USE_TLS", "OTEL_EXPORTER_OTLP_ENDPOINT",
-	} {
-		tb.Setenv(name, "")
-	}
+	scrubForgeEnv(tb)
 	// Dogfood forge writes use the single-trust-domain posture, with no grant seed.
 	tb.Setenv("COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT", "true")
 	for k, v := range map[string]string{"COMPASS_FORGE_HOST": stub.Host(), "COMPASS_FORGE_APP_ID": "1001", "COMPASS_FORGE_INSTALLATION_ID": "1", "COMPASS_FORGE_APP_KEY_SECRET": "FORGE_APP_PRIVATE_KEY", "COMPASS_FORGE_APP_WEBHOOK_SECRET": "FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID": "1002", "COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID": "2", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET": "FORGE_REVIEWER_APP_PRIVATE_KEY", "COMPASS_FORGE_CA": stub.CAPath()} { //nolint:gosec // G101 false positive: secret-store key names and stub app IDs, not credentials
 		tb.Setenv(k, v)
 	}
 	return stub
+}
+
+// forgeEnvNames are the ambient knobs the server reads for forge, S3 and OTLP.
+var forgeEnvNames = []string{
+	"COMPASS_FORGE_REPOS", "COMPASS_FORGE_HOST", "COMPASS_FORGE_APP_ID", "COMPASS_FORGE_INSTALLATION_ID",
+	"COMPASS_FORGE_APP_KEY_SECRET", "COMPASS_FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID",
+	"COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET",
+	"COMPASS_FORGE_LINEAR_CLIENT_ID", "COMPASS_FORGE_LINEAR_CLIENT_SECRET", "COMPASS_FORGE_LINEAR_WEBHOOK_SECRET",
+	"COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT", "COMPASS_SECRET_PROVIDER", "LINEAR_FORGE_CLIENT_ID", "LINEAR_FORGE_CLIENT_SECRET", "LINEAR_FORGE_WEBHOOK_SECRET",
+	"COMPASS_S3_ENDPOINT", "COMPASS_S3_BUCKET", "COMPASS_S3_ACCESS_KEY", "COMPASS_S3_SECRET_KEY",
+	"COMPASS_S3_REGION", "COMPASS_S3_USE_TLS", "OTEL_EXPORTER_OTLP_ENDPOINT",
+}
+
+// scrubForgeEnv blanks forgeEnvNames for tb's lifetime.
+func scrubForgeEnv(tb testing.TB) {
+	tb.Helper()
+	for _, name := range forgeEnvNames {
+		tb.Setenv(name, "")
+	}
 }
 
 // agentImage is the REAL agent image the dogfood stack runs — present in the
@@ -350,6 +359,10 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	var forgeStub *forgeStub
 	if fc.forge {
 		forgeStub = configureForgeStub(tb, secretsPath)
+	} else {
+		// The shared stack sets the forge env process-wide for the whole run, and
+		// a server that inherits it declares forge secrets this file lacks.
+		scrubForgeEnv(tb)
 	}
 
 	var garage *garageFixture
