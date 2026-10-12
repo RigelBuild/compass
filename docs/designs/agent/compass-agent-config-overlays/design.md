@@ -6,39 +6,35 @@ Refs: RIG-3112
 > (convention: `../../agent/compass-agent-config-delivery/design.md` header).
 
 **Named decisions this record introduces:** D1–D14 in
-[Decisions](#decisions). The driver claims ledger ids with `bun tools/dl-claim`
-and lands the rows under `docs/designs/decisions/agent/` in this same PR.
+[Decisions](#decisions).
 
 ## Problem / Intent
 
-Agent config is one fleet-wide bundle: `agent_config_bundle` is a singleton
-row, fetched with no agent key, so every agent in every tenant gets the same
-config. This record keeps that bundle as the global **default** layer, adds
-a **tenant** and a **user** overlay on top, and has the Server resolve one
-effective bundle per agent over the existing fetch and mount spine.
+Agent config is one fleet-wide bundle: `agent_config_bundle` is a singleton,
+so every agent in every tenant gets the same config. This record keeps it as
+the **default** layer, adds **tenant** and **user** overlays, and has the
+Server resolve one effective bundle per agent.
 
 ## Approach
 
 ### Ground truth
 
 - **Default layer.** `agent_config_bundle` (`0001_init.sql`) is a
-  credential-free singleton with no `tenant_id`, in the RLS-exempt `bucketA`
-  list of `go/internal/store/rls_pgtest_test.go`.
+  credential-free singleton with no `tenant_id`, RLS-exempt (`bucketA` in
+  `go/internal/store/rls_pgtest_test.go`).
 - **Writers and roles.** `PutAgentConfig`/`DeleteAgentConfig` are `adminOnly`
-  (`go/internal/auth/admin_gate.go`; `AdminGate.check` admits one account).
-  Only `BootstrapAdmin` writes `UserRoleAdmin` (`go/internal/store/accounts.go`).
+  (`go/internal/auth/admin_gate.go`); only `BootstrapAdmin` writes
+  `UserRoleAdmin` (`go/internal/store/accounts.go`).
 - **User coordinate.** `agent_accounts.owner_user_id` is set at insert and
   never updated; `SecretRecordsForAgent` already layers on it
-  (`OR (s.scope_kind = 1 AND s.scope_id = a.owner_user_id)`). No other user
-  model exists, so the user layer is the agent's owning user.
+  (`s.scope_kind = 1 AND s.scope_id = a.owner_user_id`).
 
 ### Design
 
 **Layers and order (D1, assumes OQ-4 A).** Effective bundle =
-default → tenant → user; a missing layer is skipped. CD-1's post-MVP seam
-("config keys on a persona / agent-level role, never an individual agent
-id") stays open: a user is not an agent id, and a role layer would later add
-a key column and a version-tuple slot (D9). A profile is not a layer (D6).
+default → tenant → user; a missing layer is skipped, and with no overlay the
+effective bundle is the default bytes. A user is not an agent id, so CD-1's
+seam ("never an individual agent id") stays open (OQ-4).
 
 **Storage (D2).** One tenant-owned table holds whole-bundle overlays, shaped
 like `account_handles` (nullable owner FK plus two partial unique indexes):
@@ -59,8 +55,8 @@ CREATE UNIQUE INDEX agent_config_overlays_tenant_key ON agent_config_overlays (t
 CREATE UNIQUE INDEX agent_config_overlays_user_key ON agent_config_overlays (tenant_id, owner_user_id) WHERE owner_user_id IS NOT NULL;
 ```
 
-It ships in a new migration (Global Constraints). A user write always sets
-`owner_user_id = caller`, so the owner is in the writer's tenant.
+A user write sets `owner_user_id = caller`, so the owner is in the writer's
+tenant.
 
 **Merge rules (D3, assumes OQ-1 B).**
 
@@ -71,59 +67,57 @@ It ships in a new migration (Global Constraints). A user write always sets
 | `mcp/*.json` | Kept per layer as `mcp/<layer>-<name>.json` (`default-` < `tenant-` < `user-` in sort order), so `readMountedMcpConfigs` merges by server name, later wins, and keeps per-file provenance. Drops follow D4. |
 | `AGENTS.md` | Concatenate default, tenant, user with a blank line between. |
 | `skills/<name>/` | Whole directory from the highest layer that has it. |
-| `extensions/` | Keyed by id: `<id>` for `extensions/<id>.ts`, `extensions/<id>.js`, or `extensions/<id>/`. The highest layer with the id wins its whole entry; lower entries for that id, in either form, are dropped. |
+| `extensions/<id>/` | Whole directory from the highest layer that has it; the only extension form (below). |
 | `rules/*`, `agents/*`, `prompts/*` | Whole file by path from the highest layer that has it. |
 | `profiles/` | Default layer only (D6). |
 
-With no overlay row, the effective bundle is the default bytes, unchanged.
+**Extension identity (D3).** Extensions are directories only. The store door
+(`validateRegularMember`, `go/internal/store/agent_config.go`), the Runner
+(`validateNestedRegularMember`), and the CLI (`validateMemberGrammar`) match
+the name after `extensions/` against `^[A-Za-z0-9_-]+$`, so a dotted
+`extensions/foo.ts` already fails; the door also rejects a file at
+`extensions/<id>`. A `package.json` can still rename: `resolveExtensionEntries`
+loads each `omp.extensions` (else `pi.extensions`) path, and
+`getExtensionNameFromPath` names it by basename, or parent directory for
+`index.*`. The door requires each entry under `extensions/<id>/` to derive
+`<id>`, so merge, removal, and SDK ids agree.
 
-**Removal (D4, assumes OQ-2 B).** Overlays add or replace members. Removal:
+**Removal (D4, assumes OQ-2 B).** Overlays only add or replace; removal is:
 
-- **MCP.** When an overlay applies, the resolver removes every server whose
-  winning merged entry has `"enabled": false` from every layer file. It must
-  run here: the agent connects through `MCPManager.connectServers`, which
-  ignores `enabled`. With no overlay the default bytes pass through and a
-  default `enabled: false` stays inert, as today (byte-identical default).
+- **MCP.** With an overlay, the resolver drops each server whose winning entry
+  has `"enabled": false` from every layer file, since
+  `MCPManager.connectServers` ignores `enabled`; with none, nothing changes.
 - **Rules.** `ttsr.disabledRules` in any settings layer (the SDK applies it).
 - **Skills and extensions.** `cli.ts` passes `skills: mounted.skills` and
   `disableExtensionDiscovery: true`, so `createAgentSession` (`sdk.ts`) skips
-  both knobs. compass-agent filters first, with the SDK's rules: skill names
-  match `skills.includeSkills`/`skills.ignoredSkills` by `new Bun.Glob(pattern)`,
-  and `disabledExtensions` entry `skill:<name>` drops a skill
-  (`extensibility/skills.ts`); `extension-module:<id>` drops an extension
-  path whose `getExtensionNameFromPath` is `<id>` (`discoverExtensionPaths`).
+  both knobs. compass-agent filters first, matching the SDK:
+  `skills.includeSkills`/`skills.ignoredSkills` match names by
+  `new Bun.Glob(pattern)`, `skill:<name>` in `disabledExtensions` drops a
+  skill (`extensibility/skills.ts`), and `extension-module:<id>` drops an entry
+  whose `getExtensionNameFromPath` is `<id>` (`discoverExtensionPaths`).
 
 **Settings layered by the SDK (D5).** `#loadOverlayYaml` (`settings.ts`) runs
-`#migrateRawSettings` per file before `#deepMerge`, so a Server-side YAML
-merge could invert layer order across legacy and current keys. The tree
-carries one settings file per layer, and `buildFleetSettings`
-(`packages/compass-agent/src/cli.ts`) passes those present as `configFiles`,
-in layer order. The put door still accepts only `settings/config.yml`; the
-Runner validator accepts all three paths (T3).
+`#migrateRawSettings` per file before `#deepMerge`, so a Server-side merge
+could invert layer order across legacy and current keys. `buildFleetSettings`
+(`packages/compass-agent/src/cli.ts`) gets each layer's file as `configFiles`,
+in order; the put door still accepts only `settings/config.yml`.
 
 **One door, one effective cap (D6).** Every layer write runs the
-`validateAndHashConfigBundle` door, MCP lint (D13) included. Overlays may not
-carry `profiles/`, so the registry's orphan guard in `PutAgentConfig` stays
-default-only; `COMPASS_PROFILE` selects from the effective bundle.
-
-The effective bundle keeps today's door limit, 64 MiB / 4096 files
-(`maxDecompressedBytes`, `maxFileCount`), within the Runner's unchanged
-`maxConfigBytes`. Layer caps make every combination fit, so no write reads
-another layer: the default door drops to 48 MiB / 3000 files, and each
-overlay caps at 4 MiB / 512 files. The merge adds no files, and adds bytes
-only through `AGENTS.md` separators and the re-encoded `models.yml`, which
-the door counts at re-encoded size (aliases expand).
+`validateAndHashConfigBundle` door with its layer's cap. Overlays carry no
+`profiles/`, so the orphan guard in `PutAgentConfig` stays default-only. A
+48 MiB / 3000-file default plus two 4 MiB / 512-file overlays fit the door's
+64 MiB / 4096 (`maxDecompressedBytes`, `maxFileCount`) and the Runner's
+`maxConfigBytes` with no cross-layer read. The merge adds no files; it adds
+bytes only in `AGENTS.md` separators and the re-encoded `models.yml`, counted
+at re-encoded size.
 
 **Cross-layer checks (D14).** Per-value lints hold for a merge of clean
-layers, because each value comes from one layer. The one cross-layer lint,
-`lintProfileAgentKeys`, runs on the default at its door, so an overlay
-`agents/x.md` with a new frontmatter `name:` can orphan a profile key. The
-resolver logs a Warn naming the key and layer versions and delivers; the
-lint calls such a key "a silent no-op at spawn". The fetch re-checks only the
-cap and member paths, so a lint added later cannot fail a stored row. A
-breach fails closed: `CodeInternal`, "effective config for agent %s invalid
-(default %s, tenant %s, user %s): %v". Only a row written around the door,
-or a pre-T1 default above 48 MiB under overlays, reaches it.
+layers. The one cross-layer lint, `lintProfileAgentKeys`, runs on the default
+only, so an overlay `agents/x.md` can orphan a profile key; the resolver logs
+a Warn and delivers. The fetch re-checks only the cap and member paths, so a
+new lint never fails a stored row. A breach, possible only for a row written
+around the door or a pre-T1 oversize default, fails closed with `CodeInternal`
+(`effective config for agent %s invalid (default %s, tenant %s, user %s): %v`).
 
 **Keyed fetch, one snapshot (D7).** `FetchAgentConfigRequest`
 (`proto/compass/v1/runner.proto`) gains a required `container_name = 2`; the
@@ -142,36 +136,31 @@ SELECT CASE WHEN o.owner_user_id IS NULL THEN 2 ELSE 3 END, o.version, o.bundle
 ```
 
 A version-only variant answers `if_version`; on a miss the full statement
-runs and the version is recomputed from its rows (one snapshot).
+recomputes the version from its rows. The keyed fetch needs the binding
+`Hub.enroll` clears; none is lost, since Runner `Run`
+(`go/internal/runner/run.go`) sweeps stale containers on each dial and
+`lifecycleService.reprovision` (`go/server/lifecycle.go`) binds a re-created
+container before Start.
 
-The keyed fetch needs a container binding, which `Hub.enroll` clears. No
-rebind path is needed: Runner `Run` (`go/internal/runner/run.go`) dials once,
-sweeps this Runner's stale containers, and returns when `RunSessions` ends,
-so no container outlives an enrollment. `lifecycleService.reprovision`
-(`go/server/lifecycle.go`) re-creates a lost container, binding it before Start.
+**Materialize at Start (D8).** `Hub.Provision` binds the container after the
+relay returns, so `Host.Provision` (`go/internal/runner/host.go`) cannot
+fetch keyed and only runs `ensureRoot`. Start fetches with `if_version`,
+materializes before exec next to `FetchSecretsByContainer`, and records
+`h.configVersions[name]`. Podman uses the live `MountLabel`; vsock is skipped.
+The `CodeFailedPrecondition` "no config surface" degrade stays; other fetch
+errors fail Start.
 
-**Materialize at Start (D8).** `Hub.Provision` binds the container only after
-the relay returns, so `Host.Provision` (`go/internal/runner/host.go`) cannot
-fetch keyed; it now only runs `ensureRoot`. Start fetches (tracked version as
-`if_version`) and materializes before exec, next to
-`FetchSecretsByContainer`, then records `h.configVersions[name] =
-mount.Version` for the refresh fast path. Podman uses the live `MountLabel`;
-the host tier is unchanged; vsock is skipped, as `refreshOneContainer` skips
-it. The `CodeFailedPrecondition` "no config surface" degrade stays; any other
-fetch error fails the Start.
-
-**Effective version (D9).** With no overlay row it is the default version;
-otherwise lowercase hex sha256 (a path segment for `ConfigMaterializer`) over
-the length-framed tuple (`configMergeEpoch`, default, tenant, user; `""` when
-absent). A matched version with a missing `root/<version>` forces a full
-re-fetch. An epoch bump sends no signal; it reaches a container at its next
-Start or the next config write's nudge.
+**Effective version (D9).** With no overlay row, the default version; else
+lowercase hex sha256 (a `ConfigMaterializer` path segment) over the
+length-framed tuple (`configMergeEpoch`, default, tenant, user; `""` when
+absent). A matched version with no `root/<version>` forces a re-fetch. An
+epoch bump sends no signal; containers see it at the next Start or nudge.
 
 **Refresh signal (D10).** `SignalConfigVersion(version)` becomes
-`SignalConfigChanged()`, a payload-free fleet-wide nudge sent by every
-default or overlay put and delete. `refreshOneContainer` fetches with the
-tracked version before `MountLabel`, and on a version-only response skips
-the inspect, relabel, and Reload.
+`SignalConfigChanged()`, a payload-free fleet-wide nudge sent by every put and
+delete on any layer. `refreshOneContainer` fetches with the tracked version
+before `MountLabel`; a version-only response skips the inspect, relabel, and
+Reload.
 
 **Write and read surface (D11, D12, assumes OQ-3 A).** The default RPCs stay
 unchanged and `adminOnly`. New `authenticatedOpen` RPCs carry the overlays:
@@ -206,59 +195,68 @@ addresses the caller's own layer. Agents have no write door.
 | Overlay info (names only, as `GetAgentConfigInfo`) | any user in the tenant, since all their agents consume it | caller |
 | Effective info | the caller's own agent, via `AgentByHandle(ctx, caller, handle)` | same |
 
-Only the bootstrap tenant has an admin today, so the tenant layer is writable
-only there until a path grants `UserRoleAdmin` elsewhere (out of scope).
+Granting `UserRoleAdmin` beyond the bootstrap tenant is out of scope.
 
-**MCP credential lint (D13).** The delivery record says "an MCP config MUST
-NOT embed a credential", yet `validateMCPMember` checks only JSON. The door
-gains `rejectCredentialMCP` on every layer, the default included: each string
-under `mcpServers.<name>.headers` and `.env` must pass `isEnvIndirection`
-(env name or `!command`), as `rejectCredentialModels` requires for
-`models.yml` headers. Cost: a literal such as `PORT: "8080"` needs the
-`!command` form. Existing limit kept: an identifier-shaped literal passes.
+**MCP credential lint (D13, assumes OQ-5 A).** The delivery record says "an
+MCP config MUST NOT embed a credential"; `validateMCPMember` checks only JSON.
+The door gains `rejectCredentialMCP` on every layer, rejecting per server:
 
-**Trust boundary.** A user layer reaches only that user's agents; a tenant
-layer reaches only its tenant and needs a tenant admin. Code-bearing members
-(extensions, MCP `!command` values) run only for agents the writer controls.
+- `oauth.clientSecret` and `auth.clientSecret` (`MCPServerConfigBase`, SDK
+  `src/mcp/types.ts`);
+- `envPolicy` and `headerPolicy`, which make every `env` or `headers` value a
+  literal (`MCPManager.#resolveAuthConfig`);
+- in `url` or a URL-shaped `args` element, userinfo or a query key matching
+  `SENSITIVE_QUERY_PARAM` (`/key|token|secret|auth/i`, `src/mcp/json-rpc.ts`);
+- an `args` element matching `EXA_API_KEY_PATTERN` (`/exaApiKey=([^&\s]+)/i`),
+  which `extractExaApiKey` (`src/mcp/config.ts`) reads from `url`, `args`,
+  and `env`;
+- an `env` or `headers` value that is not an indirection.
+
+An indirection is exactly what `isEnvIndirection` admits: a leading `!`, or a
+value matching `^[A-Za-z_][A-Za-z0-9_]*$`. That is shape, not proof:
+`resolveConfigValue` (`src/config/resolve-config-value.ts`) "checks
+environment variable first, then treats as literal", so an identifier-shaped
+token, a `!command` that prints one, or a token in `command` or other `args`
+passes (OQ-5). `PORT: "8080"` needs the `!command` form. A pre-T1 default is
+linted at its next put; the fetch never lints (D14).
+
+**Trust boundary.** A user layer reaches only its user's agents; a tenant
+layer, only its tenant, and only a tenant admin writes it. Code-bearing
+members (extensions, MCP `!command` values) run only for the writer's agents.
 
 ## Alternatives considered
 
-- **Member-granular overlay rows.** Rejected: a new per-member API and
-  validator, and no atomic whole-layer push.
-- **Layered mount, merge in the agent.** Rejected: Server-side resolution
-  keeps one `current/` tree and one validated bundle to report (D12). D5
-  keeps this hybrid for settings alone.
-- **Revalidate dependent layers on every write.** Rejected for D14: a default
-  write would read every tenant's overlays, and the only cross-layer lint
-  guards a no-op.
-- **Pending binding at Provision.** Rejected: a second binding lifecycle;
-  Start already holds one.
+- **Member-granular overlay rows.** Rejected: a per-member API and validator,
+  and no atomic layer push.
+- **Merge in the agent.** Rejected: a Server-side merge gives one tree and one
+  reportable bundle (D12); D5 keeps settings hybrid.
+- **Revalidate dependent layers per write.** Rejected (D14): a default write
+  would read every tenant's overlays.
+- **Pending binding at Provision.** Rejected: a second binding lifecycle.
 
 ## Plan
 
 ### Global Constraints
 
-- Public repo: no private-product detail. The capability is "multi-tenant in
-  one deployment" (`docs/designs/meta/oss-core-managed-boundary/design.md`).
-- Schema: new `go/internal/store/migrations/0002_agent_config_overlays.sql`.
-  Never edit `0001_init.sql`: `verifyChecksum` (`go/internal/store/store.go`)
-  refuses an applied migration that changed. 0002 creates the table and
-  indexes, grants table and sequence privileges to `compass_app,
-  compass_system` (0001's grant covered only its own tables), enables and
-  forces RLS with 0001's `tenant_isolation` policy, and adds the
-  `set_updated_at` trigger. Add the table to `tenantOwned` in
-  `rls_pgtest_test.go`. Never set `updated_at` by hand.
-- RLS: overlay, owner, and default reads run as `compass_app` under the tenant
-  GUC. The only system-role step on the fetch path is the existing
-  `accountTenantContext` `AccountTenant` lookup `FetchSecrets` uses.
-- No overlay passes a weaker door than `PutAgentConfig`.
+- Public repo: no private-product detail
+  (`docs/designs/meta/oss-core-managed-boundary/design.md`).
+- Schema phase: `runMigrationCheck` (`tools/sql-migration-gate/index.ts`) is
+  the switch. While it is the stub ("Suspended while open migration PRs fold
+  into 0001_init.sql"), edit `0001_init.sql` in place: the table before the
+  schema-wide grant, named in `tenant_tables` and `updated_at_tables` (as
+  `docs/designs/server/compass-workstream-repository-source/design.md` does).
+  Once it calls `checkMigrationImmutability`, add the next numbered migration
+  with its own grants, forced `tenant_isolation` policy, and `set_updated_at`
+  trigger. Either way, list the table in `tenantOwned` (`rls_pgtest_test.go`).
+- RLS: layer reads run as `compass_app` under the tenant GUC; the fetch's
+  only system-role step is the `AccountTenant` lookup `FetchSecrets` uses.
 - Clean cutover: no unkeyed `FetchAgentConfig`, `SignalConfigVersion`, or
-  Provision-time fetch remain; migrate the fakes and test clients
+  Provision-time fetch remains; migrate the fakes and test clients
   (`go/internal/runnerhub/config_fetch_test.go`,
   `go/server/runner_config_compose_pgtest_test.go`).
-- Every PR builds and passes alone; red → green within each task.
+- One linear stack, T1 → T6; each PR builds and passes alone, red → green.
 
-### T1 — Store: migration, lints, merge, resolve
+### T1 — Store: schema, lints, merge, resolve
 
 ```go
 // go/internal/store/agent_config_overlay.go — tenant from ctx; owner "" = tenant layer.
@@ -272,31 +270,42 @@ type EffectiveMember struct { Path string; Layer ConfigLayer }
 // go/internal/store/agent_config_merge.go — pure; nil = absent layer.
 func MergeConfigBundles(def, tenant, user []byte) (bundle []byte, members []EffectiveMember, err error)
 func EffectiveConfigVersion(def, tenant, user string) string // includes configMergeEpoch
-// go/internal/store/agent_config.go — every layer's door.
+// go/internal/store/agent_config.go — every layer's door, capped per D6. maxDecompressedBytes
+// and maxFileCount stay as the effective-bundle cap the fetch re-checks (D14).
+type layerCaps struct { bytes int64; files int }
+var defaultLayerCaps, overlayLayerCaps = layerCaps{48 << 20, 3000}, layerCaps{4 << 20, 512}
+func validateAndHashConfigBundle(bundle []byte, caps layerCaps) (version string, profiles map[string][]byte, err error)
+// PutAgentConfig and ValidateConfigBundle pass defaultLayerCaps; PutAgentConfigOverlay passes overlayLayerCaps.
 func rejectCredentialMCP(doc map[string]any, joined string) error
+// After the member stream. manifests: extensions/<id>/package.json bodies keyed by <id>;
+// members: every regular member path. Rejects a file at extensions/<id>; each omp (else pi)
+// .extensions entry must be a member under extensions/<id>/ whose extensionIDFromPath is <id>
+// (D3). An unparseable package.json is skipped, as the SDK's readExtensionManifest skips it.
+func lintExtensionManifests(manifests map[string][]byte, members map[string]bool) error
+func extensionIDFromPath(p string) string // ports the SDK's getExtensionNameFromPath
 ```
 
-Tests: each merge-table row, including one extension id as a file in one
-layer and a directory in another; MCP drop only with an overlay; max-size
-layers (alias-heavy `models.yml` included) fit the effective cap;
-`profiles/`, oversize layers, and literal MCP `headers`/`env` rejected; an
-orphaned profile key delivers with a Warn; an oversize row written around the
-door fails closed; no overlay → default version and bytes; a put between the
-two statements still ships a matching pair; tenant isolation.
+Tests: each merge-table row; under `extensions/foo/`, entries `src/index.ts`
+(id `src`) and `../bar/index.ts` rejected, `foo.ts` accepted; a file at
+`extensions/foo` rejected; each D13 carrier rejected, an env name and a
+`!command` accepted; MCP drop only with an overlay; max-size layers fit the
+effective cap (alias-heavy `models.yml`); `profiles/` and oversize layers
+rejected; an orphan profile key warns; a row written around the door fails
+closed; no overlay → default bytes; a put between the two statements ships a
+matching pair; tenant isolation.
 
 ### T2 — Signal cutover
 
-`ConfigVersion.version` is removed (number reserved) with every call site:
+Remove `ConfigVersion.version` (number reserved) and its call sites:
 `Hub.SignalConfigChanged() error` replaces `SignalConfigVersion`
-(`go/internal/runnerhub/config_signal.go`); the `signaler` interface and
-`signalConfigVersion` in `go/server/agent_config_service.go`; the
-`GetVersion()` log field in `go/internal/runner/dispatch.go`. Tests: a nudge
+(`go/internal/runnerhub/config_signal.go`), plus the `signaler` interface,
+`signalConfigVersion` (`go/server/agent_config_service.go`), and the
+`GetVersion()` log field (`go/internal/runner/dispatch.go`). Tests: a nudge
 reaches each attached router; no-op with no live sessions.
 
 ### T3 — Keyed fetch and Start materialize
 
-One PR, because the handler rejects an unkeyed request. Proto
-`FetchAgentConfigRequest.container_name = 2`; handler per D7.
+One PR: the handler rejects an unkeyed request.
 
 ```go
 type AgentConfigStore interface { // go/internal/runnerhub/handler.go
@@ -309,55 +318,59 @@ type configFetcher interface { // go/internal/runner/config_materialize.go
 func (m *ConfigMaterializer) Materialize(ctx context.Context, containerName, ifVersion string, mcsLabel func(context.Context) (string, error)) (ConfigMount, error)
 ```
 
-Runner: Provision runs `ensureRoot` only; Start per D8.
-`validateNestedRegularMember` and the YAML-mapping check accept all three
-settings paths. Tests: an empty, unknown, or other-Runner container gets
-InvalidArgument or PermissionDenied; a match returns only the version frame;
-other fetch errors fail Start; an unchanged nudge after Start skips
-`MountLabel` and Reload; a missing matched dir forces a full re-fetch; both
-new settings paths unpack, and a non-mapping one is rejected.
+Runner per D8; `validateNestedRegularMember` and the YAML-mapping check
+accept all three settings paths. Tests: an empty, unknown, or other-Runner
+container rejected; a match returns only the version; other fetch errors fail
+Start; an unchanged nudge skips `MountLabel` and Reload; a missing matched dir
+re-fetches; a non-mapping settings layer fails.
 
 ### T4 — Agent: settings layers and removal filter
 
 `readMountedSettingsPaths(currentDir): Promise<string[]>` replaces
 `readMountedSettingsPath`; `buildFleetSettings` passes the list as
-`configFiles`. Before `createAgentSession`, filter skills and extension entry
-paths per D4. Tests in `cli.config-passthrough.test.ts`: a user layer
-overrides a tenant setting spelled with a legacy key; `ignoredSkills:
-["web-*"]` removes `web-search`; `disabledExtensions: ["skill:foo"]` removes
-skill `foo`; `disabledExtensions: ["extension-module:bar"]` removes `bar`
-while `baz` loads.
+`configFiles`. Before `createAgentSession`, filter skills and extension entries
+per D4. Tests (`cli.config-passthrough.test.ts`): a user layer overrides a
+tenant setting spelled with a legacy key; `includeSkills: ["web-*"]` keeps
+`web-search` and drops `notes`; `ignoredSkills: ["web-*"]` drops
+`web-search`; `disabledExtensions: ["skill:foo"]` drops skill `foo`;
+`disabledExtensions: ["extension-module:bar"]` drops `bar` and keeps `baz`.
 
 ### T5 — Server: overlay RPCs and effective read
 
-Proto messages per D11/D12; handlers in `go/server/agent_config_service.go`;
-the four procedures are `authenticatedOpen` in `go/internal/auth/admin_gate.go`.
-Every put and delete, the default included, calls `SignalConfigChanged`.
-Tests: the authorization table row by row (UNSPECIFIED and DEFAULT rejected; a
-member reads tenant info but cannot write it); an agent caller is denied; the
-effective read reports the winning layer for a default-only, a
-tenant-replaced, and a user-replaced member, and refuses another user's agent.
+Handlers in `go/server/agent_config_service.go`, all four `authenticatedOpen`;
+every put and delete, default included, calls `SignalConfigChanged`. Tests:
+each authorization-table row, UNSPECIFIED and DEFAULT rejected; an agent
+caller denied; the effective read names winning layers and refuses another
+user's agent.
 
 ### T6 — CLI and docs
 
 `compass agent-config overlay push|delete|info --layer tenant|user` (required)
 and `compass agent-config effective <agent-handle>`; default verbs unchanged.
-Document layer order, the merge table, removal rules, and the MCP lint in the
-agent-config docs.
+`maxBundleFileCount` and `maxBundleContentBytes` become the D6 layer caps:
+
+```go
+// go/cmd/compass/bundle.go
+type bundleCaps struct { files int; contentBytes int64 }
+var (
+    defaultBundleCaps = bundleCaps{files: 3000, contentBytes: 48 << 20}
+    overlayBundleCaps = bundleCaps{files: 512, contentBytes: 4 << 20}
+)
+func buildBundle(dir string, caps bundleCaps) ([]byte, error)
+func checkBundleCaps(caps bundleCaps, fileCount int, contentBytes int64) error
+```
+
+Tests: a 3001-file default, a 513-file overlay, and a 4 MiB + 1-byte overlay
+fail, naming the cap. Docs: layer order, merge table, removal rules, MCP lint.
 
 ## Tasks
 
-- [ ] T1 Store: migration 0002, MCP lint, layer caps, merge, one-snapshot resolve
-- [ ] T2 Signal cutover: payload-free `ConfigVersion` with all call sites
-- [ ] T3 Keyed fetch, Start materialize, Runner settings paths
-- [ ] T4 Agent: per-layer `configFiles`, skills/extensions filter
-- [ ] T5 Server: overlay RPCs, authorization, effective read, nudges
-- [ ] T6 CLI verbs, docs
-
-Order: one linear stack, T1 → T2 → T3 → T4 → T5 → T6. T3 needs T1
-(`EffectiveAgentConfig`) and T2. T5 needs T2 (`SignalConfigChanged`) and
-lands after T3 and T4, so no overlay can be written before the Runner and
-the agent consume it.
+- [ ] T1 Store
+- [ ] T2 Signal cutover
+- [ ] T3 Keyed fetch and Start materialize
+- [ ] T4 Agent settings layers and removal filter
+- [ ] T5 Server RPCs
+- [ ] T6 CLI and docs
 
 ## Decisions
 
@@ -366,8 +379,9 @@ the agent consume it.
 - **D2** (DL-496) — Overlays are whole bundles in tenant-owned, FORCE-RLS
   `agent_config_overlays`; NULL `owner_user_id` is the tenant layer.
 - **D3** (DL-497) — Members merge per type as the Merge rules table defines;
-  MCP files stay per layer; extensions merge by id across file and directory
-  forms.
+  MCP files stay per layer; an extension is a whole `extensions/<id>/`
+  directory, and the door requires each manifest entry's SDK-derived id to
+  equal `<id>`.
 - **D4** (DL-498) — Removal: MCP `enabled: false` over the merged result when
   an overlay applies; rules by `ttsr.disabledRules`; skills and extensions by
   an agent-side filter that reproduces the SDK's matching rules.
@@ -388,8 +402,11 @@ the agent consume it.
   required TENANT|USER layer; the default RPCs stay `adminOnly`.
 - **D12** (DL-506) — `GetEffectiveAgentConfigInfo` reports each member's
   winning layer.
-- **D13** (DL-511) — The door rejects literal MCP `headers` and `env` values on every
-  layer; each must pass `isEnvIndirection`.
+- **D13** (DL-511) — The door rejects, on every layer, MCP
+  `oauth.clientSecret`, `auth.clientSecret`, `envPolicy`, `headerPolicy`, URL
+  userinfo and secret-named query keys in `url` and URL-shaped `args`,
+  `exaApiKey=` in `args`, and any `env` or `headers` value that is neither a
+  `!command` nor an env name.
 - **D14** (DL-512) — The fetch re-checks only the Runner's rules and fails closed with
   a named error; an orphaned profile key on the effective bundle logs a Warn
   and delivers.
@@ -442,7 +459,23 @@ the agent consume it.
     surface this record does not design.
   - **Recommendation: A.** The ask is tenant and user scope; the role layer
     composes later without a fetch or storage redesign.
-- **OQ-5 (non-load-bearing) — tenant profiles.** D6 bars `profiles/` in
+- **OQ-5 (load-bearing) — closing the MCP credential MUST.** No door rule over
+  free-form strings proves a value is not a credential.
+  - A. Field lint (D13). Residual: an identifier-shaped token, a `!command`
+    that prints one, a token in `command` or another `args` element; the
+    writer owns it, as today.
+  - B. A, plus each overlay `env` or `headers` value must name an
+    env-delivery secret visible at that layer's scope; no `!command`. Closes
+    those two fields only, couples the door to secret declarations, and bars
+    plain values such as `LOG_LEVEL: debug`.
+  - C. A, plus a known-prefix scan (`ghp_`, `github_pat_`, `sk_live_`,
+    `xoxb-`, `AKIA`) of every MCP string, `args` included. Unknown formats
+    pass; the list needs upkeep.
+  - **Recommendation: A.** No rule closes `command` or free-form `args`, so B
+    still leaves the MUST with the writer. A closes every credential-only
+    field and every literal `env` or `headers` value; C can follow with no
+    storage or fetch change.
+- **OQ-6 (non-load-bearing) — tenant profiles.** D6 bars `profiles/` in
   overlays; lifting it means the registry guard reads every tenant's overlays.
-- **OQ-6 (non-load-bearing) — scoped nudge.** An unchanged container costs one
+- **OQ-7 (non-load-bearing) — scoped nudge.** An unchanged container costs one
   version-only round-trip (D10); targeting can wait for fetch metrics.
