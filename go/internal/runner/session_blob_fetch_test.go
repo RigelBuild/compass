@@ -173,6 +173,7 @@ func TestResumeBlobsTreatsOnlyUnimplementedAsAbsent(t *testing.T) {
 		{name: "unsupported blob store marks images unavailable", code: connect.CodeUnimplemented, wantMarked: true},
 		{name: "unbound session preserves image references", code: connect.CodeFailedPrecondition},
 		{name: "unverifiable binding preserves image references", code: connect.CodeUnavailable},
+		{name: "container authorization miss preserves image references", code: connect.CodePermissionDenied},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

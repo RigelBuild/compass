@@ -671,9 +671,9 @@ func (h *Hub) RelayCommsCall(
 // response messages keep the established CommitConversationFrame shape.
 //
 // Unknown and foreign sessions share FailedPrecondition; unverifiable bindings
-// return Unavailable. Store faults map through transcriptCommitError. Successful
-// commits and replays return committed=true; message_id and seq are empty for
-// transcript entries.
+// return Unavailable. Store faults map through transcriptCommitError; the archive
+// flush runs later on the store's flusher. Commits and replays return
+// committed=true; message_id and seq are empty for transcript entries.
 func (h *Hub) CommitConversationFrame(
 	ctx context.Context,
 	runnerID string,

@@ -6,7 +6,7 @@
 // Trust model (load-bearing security leg): the Runner is a pure forwarder and
 // asserts NO account. The SERVER resolves session_id -> caller account and
 // fails closed with a generic FailedPrecondition; unverifiable bindings are
-// Unavailable so the Runner can retry.
+// Unavailable, which the agent may retry.
 package runnerhub
 
 import (

@@ -2,31 +2,8 @@
 
 package runnerhub
 
-// The durable transcript lane (#24 / OQ-3, RIG-1667 T4): Hub.CommitConversationFrame
-// resolves the relayed session to its bound agent account as the fail-closed
-// liveness gate (exactly as RelayCommsCall does), then writes the relayed
-// transcript_entry to the transcript store keyed at most once on the agent-minted
-// idempotency_key. The conversation_posted / conversation_updated write-through was
-// removed with the Zulip threading model, so the durable lane now carries ONLY the
-// transcript_entry variant — the exact frame the Runner's Gateway forwards
-// (runner/gateway/post_conversation_frame.go). Every test here defends one contract
-// clause the downstream Runner depends on:
-//
-//   - a hub with no transcript store wired fails CodeUnavailable, checked BEFORE
-//     resolution (a Deliver-only hub);
-//   - an unbound session fails with FailedPrecondition and NEVER reaches the store;
-//   - a frame with no transcript_entry variant is CodeInvalidArgument, and never
-//     reaches the store;
-//   - a transcript_entry under a bound session forwards to AppendTranscriptEntry
-//     with the entry's (session_id, seq, checkpoint, json, key) verbatim, and the
-//     ack is committed=true (message_id/seq empty — the Runner reads neither);
-//   - a store sentinel error maps to its Connect code (ErrInvalidArgument →
-//     InvalidArgument, ErrConflict → AlreadyExists, other → Internal), never
-//     swallowed into a committed=false nil-error ack.
-//
-// White-box (package runnerhub) so the tests drive the unexported binding
-// lifecycle and assert the store write through a fake TranscriptStore, matching
-// relay_comms_test.go. Sleep-free: the hub calls the store inline.
+// Contract tests for Hub.CommitConversationFrame: the binding gate, the
+// no-store and bad-frame refusals, verbatim forwarding, and store-error mapping.
 
 import (
 	"context"
