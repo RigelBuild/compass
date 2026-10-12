@@ -6,8 +6,8 @@ Tracker: RIG-5191
 
 Compass has no health endpoint. The stack probes liveness with `GetServerInfo`
 over the socket (`HealthProber.Probe`, `go/internal/stack/adapters/health.go`);
-on the network door it needs a bearer (`classifyProcedure`,
-`go/internal/auth/admin_gate.go`). Nothing reports "not serving" or an attached
+on the network door it needs a bearer (`auth.BearerInterceptor` in
+`buildNetworkServer`, `go/server/network_door.go`). Nothing reports "not serving" or an attached
 Runner. This record adds the gRPC health service and a `/healthz` view of one
 checker.
 
@@ -49,7 +49,7 @@ Any other name returns NotFound.
 
 **Drain.** `drainDoors` marks draining, closes the buses, then calls
 `Shutdown`, which closes listeners at once; H1 pins only the mark before
-`Shutdown`. Probers rarely see NOT_SERVING until the T5 drain grace (Rulings)
+`Shutdown`. Probers rarely see NOT_SERVING until a drain grace (Rulings)
 or Watch lands (DL-312). Without Watch, grpc-go client-side health treats
 `Unimplemented` as Ready (`health/client.go`) through a drain.
 
@@ -122,7 +122,7 @@ The kubelet `grpc` probe is plaintext (TLS needs an alpha gate).
   `health *serverHealth` on `buildNetworkServer`, `netMux`. `drainDoors` calls
   `d.health.markDraining()` first. Update the `buildNetworkServer` and
   `drainSet` call sites. Amend `docs/specs/product/compass.md` §The network
-  door to exempt Health `Check`, `Watch` and `GET /healthz` from the bearer,
+  door to exempt Health `Check`, `Watch` and `GET`/`HEAD /healthz` from the bearer,
   with a token-less health scenario.
 - **Red → green:**
   1. `TestServerHealthCheck` (`health_test.go`): over h2c, `""` and
@@ -183,8 +183,8 @@ The kubelet `grpc` probe is plaintext (TLS needs an alpha gate).
 
 Matt ruled on RIG-5230, 2026-10-12.
 
-1. **Drain grace: A, none here.** It belongs to the managed T5 multi-Server
-   work, which adds a pre-cancel phase ahead of the NOT_SERVING mark.
+1. **Drain grace: A, out of scope.** A grace would mark NOT_SERVING, wait,
+   then cancel the serve group; it needs its own design.
 2. **HTTP prober contract: A.** Add `/healthz`.
 3. **Network-door auth: A.** Both views are anonymous on every door, and H1
    amends §The network door, which says the server "SHALL authenticate every
