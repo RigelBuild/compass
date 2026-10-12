@@ -22,7 +22,8 @@ export const IssueCard: Component<{
 	onOpenPr?: () => void;
 	/** Dormant hook (T5, D2): when a future store accessor marks this card as
 	 *  advancing a column, it renders `data-advancing="1"` and the board paints
-	 *  the chase-light. No live data sets it yet (the Issue model carries no
+	 *  the chase-light, and a visually hidden "advancing" token names the state
+	 *  for assistive tech. No live data sets it yet (the Issue model carries no
 	 *  transition timestamp), so it is unwired — every caller omits it today. */
 	advancing?: boolean;
 	/** Board wiring (T4, DL-221): when the card is a stop in the Bridge's
@@ -114,6 +115,9 @@ export const IssueCard: Component<{
 				<span class="cx-tour-demo-badge">Demo</span>
 			</Show>
 			<span class="card-title">{props.issue.title}</span>
+			<Show when={props.advancing}>
+				<span class="card-advancing-cue">, advancing</span>
+			</Show>
 			<span class="card-foot">
 				<span class="card-author">
 					{assignee() ? `@${assignee()}` : "unassigned"}

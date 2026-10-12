@@ -712,6 +712,16 @@
 	line-height: 1.35;
 }
 
+/* Names the advancing state for assistive tech; the chase-light is visual only. */
+.card-advancing-cue {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
 .card-foot {
 	display: flex;
 	align-items: center;

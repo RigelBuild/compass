@@ -44,3 +44,21 @@ describe("IssueCard advancing seam (T5, D2)", () => {
 		expect(card.hasAttribute("data-advancing")).toBe(false);
 	});
 });
+
+// The chase-light is colour and motion only, so an advancing card must also
+// name its state in the button's text, which forms its accessible name.
+describe("IssueCard advancing screen-reader cue", () => {
+	const cue = (card: HTMLElement) =>
+		card.querySelector<HTMLElement>(".card-advancing-cue");
+
+	test("an advancing card names the state in its accessible text", () => {
+		const card = mountCard(true);
+		expect(card.textContent).toContain("advancing");
+		expect(cue(card)?.closest("[aria-hidden]")).toBeNull();
+	});
+
+	test("a card that is not advancing carries no cue", () => {
+		expect(mountCard().textContent).not.toContain("advancing");
+		expect(cue(mountCard(false))).toBeNull();
+	});
+});
