@@ -211,6 +211,9 @@ func (s *Store) FlushTranscript(ctx context.Context, sessionID string) error {
 // rows: the oldest rows until the rest fit capBytes, never the newest row, and
 // never a checkpoint row or anything after it. upto == 0 means no cut.
 func valveCut(rows []db.HotTailSizesRow, capBytes int64) (from, upto uint64) {
+	if len(rows) == 0 {
+		return 0, 0
+	}
 	var total int64
 	for _, r := range rows {
 		total += r.Bytes
