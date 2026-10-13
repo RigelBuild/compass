@@ -43,6 +43,9 @@ func TestTracedIngressLinksPublicTraceparent(t *testing.T) {
 	if span.SpanKind != trace.SpanKindServer {
 		t.Fatalf("span kind = %v, want server", span.SpanKind)
 	}
+	if span.Name != "public-hook" {
+		t.Fatalf("span name = %q, want public-hook", span.Name)
+	}
 	if span.Parent.SpanID().IsValid() {
 		t.Fatalf("remote traceparent became parent %s, want only a link", span.Parent.SpanID())
 	}

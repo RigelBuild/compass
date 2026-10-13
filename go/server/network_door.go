@@ -36,11 +36,12 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// tracedIngress creates a server span linked to, never parented by, remote context.
+// tracedIngress creates a server span named operation, linked to, never parented
+// by, any inbound traceparent: these endpoints face the internet.
 func tracedIngress(h http.Handler, operation string) http.Handler {
-	return otelhttp.NewHandler(h, operation, otelhttp.WithPublicEndpointFn(func(*http.Request) bool {
-		return true
-	}))
+	return otelhttp.NewHandler(h, operation,
+		otelhttp.WithPublicEndpointFn(func(*http.Request) bool { return true }),
+		otelhttp.WithSpanNameFormatter(func(op string, _ *http.Request) string { return op }))
 }
 
 // adminTokenFile is the basename of the 0600 file the bootstrap-admin token is
