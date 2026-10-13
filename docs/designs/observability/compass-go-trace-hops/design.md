@@ -8,7 +8,8 @@ goroutine site, and puts ctx on every log line. This record does not edit it.
 It adds the outbound hops the parent leaves out.
 
 Ledger-impact: none — internal Go wiring, two internal config fields, and lint
-config. No proto change, no public wire, and no decision-ledger row changes.
+config. No proto change in H1–H7 (Open Question 10 would add one internal
+field), no public wire, and no decision-ledger row changes.
 
 ## Problem / Intent
 
@@ -44,8 +45,9 @@ What does not change:
   "Fresh-root invariant"). The server mints a new root and links the
   runner's span, because there is no `WithTrustRemote` in `go/`. The header
   is still passed on every hop, so the link is there.
-- No proto field. A Connect hop uses the header, so no hop in this record
-  needs a field.
+- No proto field in H1–H7. A Connect hop uses the header. The one gap a
+  header cannot close, runner frames on the long-lived `PublishEvents`
+  stream, is Open Question 10.
 
 ### Hop census
 
@@ -186,8 +188,8 @@ and a release in the last year.
   kept for its span.
 - **ctx threading (go-thread-context).** No new `context.Background()` or
   `context.TODO()`. The parent's forbidigo rule enforces it.
-- **No proto change.** If Open Question 5 flips, the fields are additive and
-  regenerate with `moon run compass-proto:gen`.
+- **No proto change in H1–H7.** If Open Question 5 or 10 flips, the fields
+  are additive and regenerate with `moon run compass-proto:gen`.
 - **Lint posture (F1).** A per-site suppression is
   `//nolint:forbidigo // <reason>` (nolintlint `require-explanation`,
   `require-specific`).
@@ -543,11 +545,14 @@ Owner: compass-ux.
   - Traced: `enroll` (the `Enroll` RPC span), `promoteSession` (the Start
     or Resume command's span), and `releaseSession` reached from
     `unbindSession` (the Stop command's span).
-  - Untraced: `deliverSession` and the `dropLostSession` paths. They run on
-    the `Sessions` or `PublishEvents` work ctx, which parent T2 strips, and
-    `PublishEventsRequest` and `SessionFrame` carry no traceparent. Their
-    edges stamp `""`, so the drain runs with no span. A per-frame carrier
-    is a proto change, Open Question 10.
+  - Untraced without a carrier: `deliverSession` and the `dropLostSession`
+    paths. They run on the `Sessions` or `PublishEvents` work ctx, which
+    parent T2 strips, and `PublishEventsRequest` and `SessionFrame` carry no
+    traceparent. Some of these frames are caused by a traced command: a
+    failed Reload reaches `agentHost.markErrored` and `PublishSessionState`
+    on the Reload command's ctx (`go/internal/runner/host.go`). Open
+    Question 10 adds a per-frame carrier for them. Frames with no command
+    behind them, such as an agent exit, stay untraced.
 
 Interfaces:
 
@@ -716,10 +721,14 @@ Stack order: H1, H2, H3, H4, H5, H6, H7, on the parent's T9.
    these gates.
 10. **A per-frame traceparent on `PublishEvents`?** Load-bearing: no. Runner
     frames carry no trace, so presence edges from `deliverSession` and
-    `dropLostSession` have none (H6).
-    - (a) Leave them untraced.
-    - (b) Add `traceparent` to `PublishEventsRequest`. The runner stamps the
-      ctx of the command that produced the frame. Internal proto change,
-      buf-breaking clean, and a runner change for every frame source.
-    - **Recommendation: (a).** These edges are runner-initiated state
-      changes with no server request to join. Revisit if a trace is needed.
+    `dropLostSession` have none (H6), even when a traced command caused the
+    frame, such as a failed Reload.
+    - (a) Leave them untraced. The Reload failure edge drops the trace.
+    - (b) Add `traceparent` to `PublishEventsRequest`, as parent T4 did for
+      `SessionsResponse`. `PublishSessionState` and the event publisher
+      stamp `otelx.Traceparent(ctx)`; it is empty when no command span is
+      active. `Hub.Deliver` restores it on the stripped work ctx before
+      `deliverSession`. Internal proto, buf-breaking clean.
+    - **Recommendation: (b)**, as its own task after H6, because Matt asked
+      for traceparents on every hop. Until it is ruled, H6 promises traces
+      only for the edges it lists as traced.
