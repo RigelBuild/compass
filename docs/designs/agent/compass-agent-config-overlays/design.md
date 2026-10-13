@@ -93,7 +93,7 @@ merges inside a member.
 
 | Member | Rule |
 |---|---|
-| Any file: `settings/config.yml`, `models.yml`, `AGENTS.md`, `mcp/<name>.json`, `rules/*`, `agents/*`, `prompts/<role>/SYSTEM.md` | Whole file by path from the highest layer that has it. |
+| Any file: `settings/config.yml`, `models.yml`, `AGENTS.md`, `mcp/<server>.json`, `rules/*`, `agents/*`, `prompts/<role>/SYSTEM.md` | Whole file by path from the highest layer that has it. |
 | `skills/<name>/`, `extensions/<id>/` | Whole directory from the highest layer that has it; files never mix across layers. `extensions/<id>/` is the only extension form (below). |
 | `profiles/` | Default layer only (D6). |
 | `locks.yml` | Tenant layer only; the Server reads it and never ships it. |
@@ -108,20 +108,30 @@ path, which `getExtensionNameFromPath` names by basename (parent directory for
 `index.*`). The door requires each entry under `extensions/<id>/` to derive
 `<id>`, so merge, removal, and SDK ids agree.
 
+**MCP identity (D3).** `readMountedMcpConfigs`
+(`packages/compass-agent/src/config-reader.ts`) reads files in sorted name
+order and does `configs[serverName] = config`, so two files naming one server
+collide by file name, not layer. The door makes path identity server
+identity: `validateMCPMember` requires `mcp/<server>.json` to hold an
+`mcpServers` object whose only key is `<server>`, or no key. Whole-file
+replace by path then gives each server layer precedence. The repo's shipped
+`config/` has no `mcp/`; any default MCP file comes from an operator's
+`agent-config push --dir`. A stored default with another shape fails the D14
+boot lint, so T6's docs tell operators to split it, one file per server,
+before upgrading.
+
 **Tenant locks (D3).** The tenant's `locks.yml` lists `paths:`, each a member
 path or a `/`-ended prefix (`prompts/`, `skills/web/`); an entry inside a
 directory member is rejected. A user or role put reads the tenant row's locks
 in its transaction and rejects a covered member. A later lock never breaks a
 stored row: the merge drops the covered user or role member, and the resolver
-logs a Warn naming layer and path. Locks are path-level only, so a user or
-role file at another path can still declare a locked file's MCP server name;
-`readMountedMcpConfigs` keeps the later file name's entry. Locking `mcp/`
-closes that.
+logs a Warn naming layer and path. Locks are path-level; locking
+`mcp/<server>.json` locks that server.
 
 **Removal (D4).** Overlays only add or replace; removal is:
 
-- **MCP.** Replace the file by path; an empty `mcpServers` drops its servers,
-  since `MCPManager.connectServers` ignores `enabled`.
+- **MCP.** `mcp/<server>.json` with an empty `mcpServers` drops `<server>`;
+  `MCPManager.connectServers` ignores `enabled`.
 - **Rules.** `ttsr.disabledRules` in the winning `settings/config.yml` (the
   SDK applies it).
 - **Skills and extensions.** `cli.ts` passes `skills: mounted.skills` and
@@ -331,6 +341,7 @@ type layerCaps struct { bytes int64; files int }
 var defaultLayerCaps, overlayLayerCaps = layerCaps{48 << 20, 2560}, layerCaps{4 << 20, 512}
 func validateAndHashConfigBundle(bundle []byte, layer ConfigLayer) (version string, profiles map[string][]byte, locks ConfigLocks, err error)
 // PutAgentConfig, ValidateConfigBundle, and LintStoredAgentConfig pass LayerDefault.
+// validateMCPMember (D3): mcp/<server>.json's mcpServers object has no key or only <server>.
 func rejectCredentialMCP(doc map[string]any, joined string) error
 // After the member stream. manifests: extensions/<id>/package.json bodies keyed by <id>;
 // members: every regular member path. Rejects a file at extensions/<id>; each omp (else pi)
@@ -341,18 +352,23 @@ func extensionIDFromPath(p string) string // ports the SDK's getExtensionNameFro
 ```
 
 Tests: a user `settings/config.yml` drops a tenant-only key; a user
-`skills/x/` keeps none of the default's `skills/x/` files; under
-`extensions/foo/`, `src/index.ts` (id `src`) and `../bar/index.ts` rejected,
-`foo.ts` accepted; a file at `extensions/foo` rejected; each D13 carrier
-rejected, `auth.tokenUrl` userinfo and `?token=` included; an env name and
-`!command` accepted; a user or role put under an exact or prefix lock
-rejected; a lock added after a put drops that member with a Warn; `locks.yml`
-outside the tenant layer, and a lock inside `skills/x/`, rejected; an empty
-role gets no role layer, and another user's or role's row never applies; an
-off-taxonomy role rejected; four max-size layers fit the effective cap;
-`profiles/` and oversize layers rejected; an orphan profile key warns; a row
-written around the door fails closed; no overlay → default bytes; a put
-between the two statements ships a matching pair; tenant isolation.
+`skills/x/` keeps none of the default's `skills/x/` files; a two-server
+`mcp/a.json`, an `mcp/a.json` keyed `b`, and one with no `mcpServers` rejected;
+a user `mcp/fetch.json` overrides the default's, and one with empty
+`mcpServers` removes `fetch`; under `extensions/foo/`, `src/index.ts` (id
+`src`) and `../bar/index.ts` rejected, `foo.ts` accepted; a file at
+`extensions/foo` rejected; each D13 carrier rejected, `auth.tokenUrl` userinfo
+and `?token=` included; an env name and `!command` accepted; a user or role put
+under an exact or prefix lock rejected; a lock added after a put drops that
+member with a Warn; `locks.yml` outside the tenant layer, and a lock inside
+`skills/x/`, rejected; an empty role gets no role layer, and another user's or
+role's row never applies; an off-taxonomy role rejected; four max-size layers
+fit the effective cap; `profiles/` and oversize layers rejected; an orphan
+profile key warns; a row written around the door fails closed; no overlay →
+default bytes; a put between the two statements ships a matching pair; tenant
+isolation. T1 migrates door-crossing MCP fixtures (`{"url":"https://x"}`,
+`{"a":1}`, `{"ok":true}`) in the store, server, and `TestBuildBundleDoorParity`
+tests to the D3 shape.
 
 ### T2 — Signal cutover
 
@@ -412,16 +428,17 @@ func (s *Store) LintStoredAgentConfig(ctx context.Context) error
 Tests: each authorization-table row; UNSPECIFIED and DEFAULT, ROLE with an
 empty or off-taxonomy role, and TENANT or USER with a role rejected; an agent
 caller denied; the effective read names winning layers and refuses another
-user's agent; `Serve` fails on a stored default with a literal MCP `env` value
-or 2561 files, and starts on an absent or clean one.
+user's agent; `Serve` fails on a stored default with a literal MCP `env` value,
+a two-server MCP file, or 2561 files, and starts on an absent or clean one.
 
 ### T6 — CLI and docs
 
 `compass agent-config overlay push|delete|info --layer tenant|user|role`
 (required, with `--role <role>` for `role`) and
 `compass agent-config effective <agent-handle>`; default verbs unchanged.
-`maxBundleFileCount` and `maxBundleContentBytes` become the D6 layer caps, and
-only the tenant layer admits `locks.yml`:
+`maxBundleFileCount` and `maxBundleContentBytes` become the D6 layer caps,
+only the tenant layer admits `locks.yml`, and `validateMemberGrammar` mirrors
+the D3 MCP shape:
 
 ```go
 // go/cmd/compass/bundle.go
@@ -435,9 +452,10 @@ func buildBundle(dir string, layer bundleLayer) ([]byte, error)
 func checkBundleCaps(layer bundleLayer, fileCount int, contentBytes int64) error
 ```
 
-Tests: a 2561-file default, a 513-file overlay, a 4 MiB + 1-byte overlay, and
-`locks.yml` in a user dir fail, naming the cause. Docs: layer order, merge
-table, locks, removal rules, MCP lint.
+Tests: a 2561-file default, a 513-file overlay, a 4 MiB + 1-byte overlay,
+`locks.yml` in a user dir, and a two-server MCP file fail, naming the cause.
+Docs: layer order, merge table, locks, removal rules, MCP lint, and splitting a
+multi-server MCP file.
 
 ## Tasks
 
@@ -459,14 +477,16 @@ table, locks, removal rules, MCP lint.
   owner with a non-empty `role` is that user's role layer.
 - **D3** (DL-497) — The highest layer with a member wins it whole: a file, or
   a whole `skills/<name>/` or `extensions/<id>/` directory; nothing merges
-  inside a member. The tenant's `locks.yml` lists paths and `/`-ended prefixes
-  the user and role layers may not set: their door rejects a covered member,
-  and the merge drops a stored one with a Warn. The door requires each
-  extension manifest entry's SDK-derived id to equal `<id>`.
-- **D4** (DL-498) — Removal: MCP servers by replacing their file by path;
-  rules by `ttsr.disabledRules`; skills and extensions by an agent-side filter
-  that reads the winning `settings/config.yml` and reproduces the SDK's
-  matching rules.
+  inside a member. An MCP file is `mcp/<server>.json` whose `mcpServers` holds
+  only `<server>` or nothing, so path identity is server identity. The
+  tenant's `locks.yml` lists paths and `/`-ended prefixes the user and role
+  layers may not set: their door rejects a covered member, and the merge drops
+  a stored one with a Warn. The door requires each extension manifest entry's
+  SDK-derived id to equal `<id>`.
+- **D4** (DL-498) — Removal: an MCP server by its `mcp/<server>.json` with an
+  empty `mcpServers`; rules by `ttsr.disabledRules`; skills and extensions by
+  an agent-side filter that reads the winning `settings/config.yml` and
+  reproduces the SDK's matching rules.
 - **D5** (DL-499) — Settings are whole-file: the winning `settings/config.yml`
   is the agent's only settings file, loaded by the unchanged
   `buildFleetSettings`.
