@@ -559,11 +559,10 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 		scopeEnforcementDisabled: fs.String("forge-disable-scope-enforcement", "",
 			"Disable per-account grant enforcement for agent forge writes (single-trust-domain Dogfood only). Defaults to $COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT, then false."),
 		scopeGrants: fs.String("forge-scope-grants", "",
-			"Comma-separated user scope grants seeded at boot to bring up a new "+
-				"server, each account:provider:host:repo with provider github or linear "+
-				"and repo * for a whole host. Insert only: removing an entry does not "+
-				"revoke its grant; manage grants through the running Server. "+
-				"Defaults to $COMPASS_FORGE_SCOPE_GRANTS."),
+			"Comma-separated user scope grants seeded at every start to bring a "+
+				"server up, each account:provider:host:repo with provider github or "+
+				"linear and repo * for a whole host. Insert only: removing an entry does "+
+				"not revoke its grant. Defaults to $COMPASS_FORGE_SCOPE_GRANTS."),
 		mergeQueues: fs.String("forge-merge-queues", "",
 			"Comma-separated owner/name=trunk:branch entries for merge-queue polling. "+
 				"Defaults to $COMPASS_FORGE_MERGE_QUEUES."),

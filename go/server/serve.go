@@ -216,8 +216,8 @@ type ForgeConfig struct {
 	// ScopeEnforcementDisabled opts out of grant-gated forge writes. The zero
 	// value enforces; Dogfood opts out to keep the single-trust-domain posture.
 	ScopeEnforcementDisabled bool
-	// ScopeGrants seed account_forge_scopes in the bootstrap tenant at boot. They
-	// bring a server up; they never revoke, and grants are managed on the Server.
+	// ScopeGrants seed account_forge_scopes in the bootstrap tenant on every boot
+	// with forge writes on. Insert only: a server-up aid, not a maintained config.
 	ScopeGrants []store.ForgeScope
 }
 
