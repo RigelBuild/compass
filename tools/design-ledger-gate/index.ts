@@ -4,8 +4,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { posix as pathPosix } from "node:path";
 import { $ } from "bun";
+import {
+	type ClaimState,
+	claimCheckViolations,
+	fetchClaims,
+	mergeBaseDecisionIds,
+} from "./claim-check.ts";
 import { type DecisionRow, parseDecisionFile } from "./decision-files.ts";
-
 /** The design-corpus root the gate governs (all buckets beneath it). */
 export const DESIGNS_ROOT = "docs/designs";
 /** Every record lives under exactly one of these governed buckets. */
@@ -436,12 +441,7 @@ export function evaluate(
 		}
 	}
 
-	const exemptBranch =
-		!changed.crossRepository &&
-		EXEMPT_BRANCHES.some(
-			({ prefix, author }) =>
-				changed.headBranch.startsWith(prefix) && changed.author === author,
-		);
+	const exemptBranch = isExemptBranch(changed);
 	const declared = LEDGER_IMPACT_RE.test(changed.body ?? "");
 	const touchedRecord = !exemptBranch && changed.files.some(touchesRecord);
 	const touchedDecision = changed.files.some(
@@ -456,6 +456,52 @@ export function evaluate(
 	}
 
 	return violations;
+}
+
+/** A bot branch is exempt only when its own app opened it from this repo. */
+function isExemptBranch(changed: Changed): boolean {
+	return (
+		!changed.crossRepository &&
+		EXEMPT_BRANCHES.some(
+			({ prefix, author }) =>
+				changed.headBranch.startsWith(prefix) && changed.author === author,
+		)
+	);
+}
+
+/**
+ * Every DL id the PR adds must be claimed from the shared counter for its head
+ * branch, so two open PRs cannot both land the same id. Throws on service failure.
+ */
+async function claimLegViolations(
+	corpus: DecisionCorpus,
+	changed: Changed,
+	mainDecisionIds: () => Promise<Set<string>>,
+	claims: (lane: string, ids: string[]) => Promise<Map<string, ClaimState>>,
+): Promise<Violation[]> {
+	if (isExemptBranch(changed)) return [];
+	const changedPaths = new Set(
+		changed.files.filter((path) => classifyDesignPath(path) === "decision"),
+	);
+	const pathById = new Map(
+		corpus.rows
+			.filter((row) => changedPaths.has(row.path))
+			.map((row) => [row.id, row.path] as const),
+	);
+	if (pathById.size === 0) return [];
+	const mainIds = await mainDecisionIds();
+	const addedIds = [...pathById.keys()].filter((id) => !mainIds.has(id));
+	if (addedIds.length === 0) return [];
+	// A fork's branch name is not a lane the counter issued.
+	if (changed.crossRepository) {
+		return addedIds.map((id) => ({
+			file: pathById.get(id) ?? "(pull request)",
+			line: KEY_LINE.id,
+			message: `${id}: open the pull request from a branch in this repository.`,
+		}));
+	}
+	const verdicts = await claims(changed.headBranch, addedIds);
+	return claimCheckViolations(addedIds, verdicts, changed.headBranch, pathById);
 }
 
 // ---------------------------------------------------------------------------
@@ -473,11 +519,24 @@ export interface Deps {
 	changed: Changed;
 	log: (msg: string) => void;
 	err: (msg: string) => void;
+	/** List DL ids in the main commit this checkout was built on. */
+	mainDecisionIds?: () => Promise<Set<string>>;
+	/** Fetch lane claim verdicts for newly added decision ids. */
+	claims?: (lane: string, ids: string[]) => Promise<Map<string, ClaimState>>;
 }
 
 export async function runOnce(deps: Deps): Promise<number> {
-	const { root, readText, listDesignFiles, readRecord, changed, log, err } =
-		deps;
+	const {
+		root,
+		readText,
+		listDesignFiles,
+		readRecord,
+		changed,
+		log,
+		err,
+		mainDecisionIds,
+		claims,
+	} = deps;
 	let paths: string[];
 	try {
 		paths = await listDesignFiles(root);
@@ -529,6 +588,16 @@ export async function runOnce(deps: Deps): Promise<number> {
 	violations.push(
 		...evaluate(corpus, records, changed, (path) => readRecord(root, path)),
 	);
+	if (mainDecisionIds !== undefined && claims !== undefined) {
+		try {
+			violations.push(
+				...(await claimLegViolations(corpus, changed, mainDecisionIds, claims)),
+			);
+		} catch (error) {
+			err(error instanceof Error ? error.message : String(error));
+			return 2;
+		}
+	}
 	if (violations.length === 0) {
 		log(
 			`design-ledger-gate: OK — ${corpus.rows.length} decision file(s), ${records.length} record(s) status-checked.`,
@@ -666,6 +735,12 @@ if (import.meta.main) {
 			},
 			changed,
 			log: (message) => console.log(message),
+			...(ctx.kind === "pr"
+				? {
+						mainDecisionIds: () => mergeBaseDecisionIds(root),
+						claims: (lane, ids) => fetchClaims(lane, ids),
+					}
+				: {}),
 			err: (message) => console.error(message),
 		}),
 	);
