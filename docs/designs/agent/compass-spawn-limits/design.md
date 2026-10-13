@@ -41,15 +41,17 @@
   free them.
   - (a) Ship as designed. Cost: a container leaked by a failed `Launch`
     cleanup, or a failed host or microVM kill, releases its slot uncounted.
-  - (b) On a registry miss, `removeLocked` fails while
-    `h.engine.Exists(ctx, containerName)` is true. Host and microVM `Remove`
-    keeps its entry, marked removing, until teardown succeeds, so `Exists`
-    stays true; start and exec lookups, including the race re-checks, skip
-    it. A failed teardown keeps its slot until a retry succeeds or that
-    server restarts. MicroVM is partial: `(*microvm.VM).Shutdown`
-    (`microvm/launch.go`) "runs at most once", so no retry succeeds after it
-    fails, and `MicroVMRuntime.Start` drops a partial-boot `Shutdown` error.
-    Tests 11 and 12.
+  - (b) On a registry miss, `removeLocked` fails while `h.engine.Exists` is
+    true. Host and microVM `Remove` keeps its entry, marked removing, until
+    teardown succeeds, so `Exists` stays true; start and exec lookups,
+    including the `h.handles[id]` and `m.sessions[id]` re-checks, skip it.
+    `MicroVMRuntime.Start` keeps, marked removing, a partial boot whose
+    `Shutdown` failed, and joins that error, so
+    `AgentRuntime.createAndStart`'s Remove fails. A failed teardown keeps its
+    slot until a retry succeeds or that server restarts. MicroVM is partial:
+    `(*microvm.VM).Shutdown` (`microvm/launch.go`) "runs at most once", so no
+    retry succeeds, and a failed `microvm.Launch` drops its cleanup error.
+    Tests 11–13.
   - (c) Follow-up proto change: the Runner reports its sweep result or its
     owned containers at enroll, so a new enrollment can release.
 
@@ -140,8 +142,8 @@ A container may exist after three exits:
 - **A failed rollback Remove.** `rollbackSpawn` logs it and goes on.
 - **A dropped enrollment**, below.
 
-No timed release is safe. `provisionAndStart` hands the row to `go
-settleSpawn` on `context.WithoutCancel(ctx)`. It renews the lease every
+`provisionAndStart` hands the row to `go settleSpawn` on
+`context.WithoutCancel(ctx)`. It renews the lease every
 `spawnReservationLease / 3` and releases only when:
 
 1. **The Provision succeeds.** After a timeout, `settleSpawn` re-sends the
@@ -154,10 +156,10 @@ settleSpawn` on `context.WithoutCancel(ctx)`. It renews the lease every
    the Runner replays recorded failures.
 
 One exception: a first Provision that `dispatch` refuses before it enqueues,
-with no live stream or a full queue, is `runnerhub.ErrNotSent` (T2) and
-releases at once.
+with no live stream or a full queue, is `runnerhub.ErrNotSent` and releases
+at once.
 
-`settleSpawn` talks only to the spawn's own enrollment, through T2's
+`settleSpawn` talks only to the spawn's own enrollment, through
 `runnerhub.Pin`. A new enrollment fronts a Runner whose `handled` map is
 empty, so a re-push there provisions a second container.
 
@@ -169,7 +171,7 @@ Apple container `Exists` ask the engine, but `HostRuntime.Exists`
 (`go/internal/runtime/host_backend.go`) checks "handle-existence" and
 `MicroVMRuntime.Exists` (`microvm_lifecycle.go`) the session table. Each
 `Remove` drops that entry before it kills, so after a failed kill the next
-Remove succeeds. A confirmed Remove proves removal only where OQ-9 (b) holds.
+Remove succeeds (OQ-9).
 
 **No Runner signal confirms removal after a drop.** `agentHost.Close` "logs
 each per-container error and discards it", the restart sweep
@@ -178,8 +180,8 @@ and `EnrollRequest` carries no container list. After the pin's stream drops,
 `RemoveOn` returns `ErrNotSent`, so the row stays charged while this server
 lives (OQ-9).
 
-The `5 * time.Minute` lease is only the crash backstop: it lapses once the
-holding server stops renewing, or early if a Postgres outage outlasts it.
+The lease is only the crash backstop: it lapses once renewal stops, or early
+if a Postgres outage outlasts it.
 
 ### Scope decisions
 
@@ -195,15 +197,14 @@ holding server stops renewing, or early if a Postgres outage outlasts it.
 
 ### Configuration and ledger
 
-The flag is `--max-agents-per-owner`, then `$COMPASS_MAX_AGENTS_PER_OWNER`, in
-the flag-then-env order of `resolveUsageEventRetention`
-(`go/cmd/compass-server/main.go`). Empty is 16 (OQ-5). A non-integer or a
-value below 1 fails boot (OQ-2). DL-479 records this. DL-077 stays Active: its
-"no spawn rate cap" clause names this issue as the follow-up.
+The flag `--max-agents-per-owner` beats `$COMPASS_MAX_AGENTS_PER_OWNER`, as in
+`resolveUsageEventRetention` (`go/cmd/compass-server/main.go`). Empty is 16
+(OQ-5). A non-integer or a value below 1 fails boot (OQ-2). DL-479 records
+this. DL-077 stays Active: its "no spawn rate cap" clause names this issue as
+the follow-up.
 
 ## Alternatives considered
 
-- **Count sessions.** A spawn-then-stop loop passes while containers pile up.
 - **Reserve with an `agent_placements` row.** A wake during the spawn would
   Start a container that does not exist yet.
 - **A timed release.** The Runner has no end-to-end Provision bound, and one
@@ -243,7 +244,6 @@ value below 1 fails boot (OQ-2). DL-479 records this. DL-077 stays Active: its
 - **RIG-5110 (Done, #2123).** `RelayLifecycleCall` runs under the session's
   tenant (`runnerSessionAccount`, `go/internal/runnerhub/relay_lifecycle.go`);
   test 9 pins the cap there.
-- **DL-312 (Active).** Servers run as replicas (OQ-8).
 
 ## Plan
 
@@ -504,15 +504,18 @@ attempt runs on
 11. Under OQ-9 (b): `TestRemoveFailsWhileUnregisteredContainerExists`
     (runner, stub engine, `newHostFixtureWithRecordingExec`, `liveSpec`).
     With `execErr` and `removeErr` set, Provision fails and leaves an
-    unregistered container that `engine.Exists` reports; `host.Remove` then
+    unregistered container that `engine.Exists` reports; `host.Remove`
     errors. A never-provisioned name still removes as nil.
 12. Under OQ-9 (b), `Test*FailedRemoveStaysVisible` per backend: `Remove`
     errors and `Exists` stays true. Podman and Apple container: an engine stub
     (`WithProgram`, `AppleContainerConfig.Program`) whose `rm` fails, which
     proves decoding only. Host, skipped as root: a `0o500` state-root `host`
-    dir fails the state-dir delete and `ExecStreaming` is refused; restored,
-    `Remove` succeeds. No seam fails `killGroup`. MicroVM: `seamStart`, with
-    `fakeGuestVM` gaining `shutdownErr`.
+    dir fails the state-dir delete; restored, `Remove` succeeds. No seam fails
+    `killGroup`. MicroVM: `seamStart` and a new `fakeGuestVM.shutdownErr`,
+    started or with `provErr` failing `Start`.
+13. Under OQ-9 (b), `Test*RemovingEntryRefused`: host and microVM `Start`
+    and `ExecStreaming` refuse a removing entry, also one marked mid-call by
+    `afterSpawn` or `launchFunc`, and publish no live process or VM.
 
 **Spec and docs, same PR.** `docs/specs/product/compass.md` gains
 `### Requirement: Agent-initiated spawn is capped per owner` after "One
@@ -522,7 +525,7 @@ rule, and the exempt operator door, with refusal and retry scenarios. The
 `resource_exhausted` and despawn.
 
 **Smoke and done.** From `go/`, with `COMPASS_TEST_DATABASE_DSN` set, run
-`go test -race -tags pgtest -run 'ReserveSpawn|UpgradesV1|ProvisionOn|SpawnSlot|SpawnLimit|SpawnRetry|SpawnSettles|RemoveFailsWhileUnregistered|FailedRemoveStaysVisible' ./internal/store/ ./internal/runnerhub/ ./internal/runner/ ./internal/runtime/ ./server/`.
+`go test -race -tags pgtest -run 'ReserveSpawn|UpgradesV1|ProvisionOn|SpawnSlot|SpawnLimit|SpawnRetry|SpawnSettles|RemoveFailsWhileUnregistered|FailedRemoveStaysVisible|RemovingEntryRefused' ./internal/store/ ./internal/runnerhub/ ./internal/runner/ ./internal/runtime/ ./server/`.
 Done when this passes and `moon run compass-go:ci` is green.
 
 ### T3 — Configure the cap
@@ -573,7 +576,7 @@ when the test passes and `moon run compass-go:ci` is green.
 - [ ] T1: `compass agent despawn`, `qualifiedAgentHandle` account id,
       self-host doc
 - [ ] T2: the migration, `ReserveSpawn`, `runnerhub.Pin` and `ErrNotSent`,
-      the gate, `settleSpawn`, tests 1–10 (11–12 under OQ-9 (b)), spec, and
+      the gate, `settleSpawn`, tests 1–10 (11–13 under OQ-9 (b)), spec, and
       tools doc
 - [ ] T3: flag and env, `ServeConfig.MaxAgentsPerOwner`, startup log,
       self-host upgrade note
