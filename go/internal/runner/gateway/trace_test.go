@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,5 +180,40 @@ func TestServeControlEmitsServerSpanAfterStreamCloses(t *testing.T) {
 	}
 	if serverSpans != 1 {
 		t.Fatalf("recorded server spans = %d, want exactly one after Control closes (total spans %d)", serverSpans, len(recorder.Ended()))
+	}
+}
+
+// Publish streams live for the agent's life, so per-message span events would grow without bound.
+func TestServePublishSpanHasNoMessageEvents(t *testing.T) {
+	recorder := installGatewaySpanRecorder(t)
+	capture := newCapturePublish()
+	events := newRunnerServiceServer(t, capture)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	client := newAgentGatewayServer(t, g)
+
+	stream := client.Publish(context.Background())
+	for _, text := range []string{"alpha", "bravo", "charlie"} {
+		if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame(text)}); err != nil {
+			t.Fatalf("send %q: %v", text, err)
+		}
+	}
+	if _, err := stream.CloseAndReceive(); err != nil {
+		t.Fatalf("close publish stream: %v", err)
+	}
+
+	var publishSpan sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		if span.SpanKind() == trace.SpanKindServer && strings.HasSuffix(span.Name(), "AgentGateway/Publish") {
+			if publishSpan != nil {
+				t.Fatalf("recorded multiple AgentGateway Publish server spans")
+			}
+			publishSpan = span
+		}
+	}
+	if publishSpan == nil {
+		t.Fatalf("no ended AgentGateway Publish server span recorded (total spans %d)", len(recorder.Ended()))
+	}
+	if got := len(publishSpan.Events()); got != 0 {
+		t.Errorf("AgentGateway Publish server span events = %d, want 0", got)
 	}
 }
