@@ -11,6 +11,7 @@ import {
 	adaptAgentBoard,
 	adaptChannel,
 	adaptChannelGroup,
+	adaptRosterEntry,
 	adaptTopic,
 	agentHomeChannelIds,
 	presenceLifecycle,
@@ -102,6 +103,27 @@ export async function fetchSnapshot(
 		messages,
 		roster: rosterResp.entries,
 	};
+}
+
+/** Re-read one agent's roster entry for the server-derived board summary that
+ *  an AgentBoardChanged cannot carry. A failure keeps the event's summary. */
+async function readRosterEntry(
+	client: CommsClient,
+	accountId: string,
+	signal: AbortSignal | undefined,
+	onError: ((error: unknown) => void) | undefined,
+): Promise<AgentPresenceInfo | undefined> {
+	try {
+		const resp = await client.getRoster(
+			{ scope: RosterScope.OWNER },
+			{ signal },
+		);
+		const entry = resp.entries.find((e) => e.agentAccountId === accountId);
+		return entry ? adaptRosterEntry(entry)[1] : undefined;
+	} catch (error) {
+		if (!signal?.aborted) onError?.(error);
+		return undefined;
+	}
 }
 
 /** Page one channel's messages fully at the snapshot boundary. ListMessages is
@@ -341,6 +363,22 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 				if (event) {
 					state = applyEvent(state, event);
 					onState(state);
+				}
+				if (event?.kind === "boardChanged") {
+					const info = await readRosterEntry(
+						client,
+						event.accountId,
+						signal,
+						onError,
+					);
+					if (info?.board) {
+						state = applyEvent(state, {
+							kind: "boardSummary",
+							accountId: event.accountId,
+							board: info.board,
+						});
+						onState(state);
+					}
 				}
 			}
 			// A clean close that made no forward tail progress — zero responses,

@@ -175,18 +175,19 @@ describe("LeftSidebar — live roster (T4/T5)", () => {
 	});
 
 	test("An agentBoardChanged event updates the sidebar badge", async () => {
+		const entry = (waitingOnOperator: number, halt?: BoardHaltKind) =>
+			create(RosterEntrySchema, {
+				agentAccountId: "acc-cook",
+				presence: AgentPresence.WORKING,
+				board: create(AgentBoardSummarySchema, {
+					taskCount: 1,
+					waitingOnOperator,
+					halt: halt ? create(BoardHaltSchema, { kind: halt }) : undefined,
+				}),
+			});
 		const fake = createFakeComms({
 			accounts: [wireUserAccount(CALLER), wireAgentAccount("acc-cook")],
-			roster: [
-				create(RosterEntrySchema, {
-					agentAccountId: "acc-cook",
-					presence: AgentPresence.WORKING,
-					board: create(AgentBoardSummarySchema, {
-						taskCount: 1,
-						waitingOnOperator: 2,
-					}),
-				}),
-			],
+			roster: [entry(2)],
 		});
 		const { container } = await mountLive(fake);
 		const count = () =>
@@ -196,6 +197,7 @@ describe("LeftSidebar — live roster (T4/T5)", () => {
 		const leaf = () => container.querySelector(".tree-agent");
 		expect(count()).toBe("2 waiting on you");
 		expect(leaf()?.querySelector(".agent-halt-dot")).toBeNull();
+		fake.setRoster([entry(1, BoardHaltKind.BLOCKED)]);
 		await fake.emit(
 			{
 				case: "agentBoardChanged",
@@ -217,6 +219,6 @@ describe("LeftSidebar — live roster (T4/T5)", () => {
 		expect(
 			leaf()?.querySelector(".agent-halt-dot")?.getAttribute("data-halt"),
 		).toBe("blocked");
-		expect(count()).toBe("2 waiting on you");
+		expect(count()).toBe("1 waiting on you");
 	});
 });

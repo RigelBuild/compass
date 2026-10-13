@@ -17,7 +17,7 @@ import type {
 	Message,
 	Topic,
 } from "../comms-stub";
-import type { AgentBoard } from "../stub-data";
+import type { AgentBoard, AgentBoardSummary } from "../stub-data";
 import {
 	type AgentPresenceInfo,
 	adaptAccount,
@@ -197,6 +197,11 @@ export type CommsEvent =
 			readonly kind: "boardChanged";
 			readonly accountId: string;
 			readonly board: AgentBoard;
+	  }
+	| {
+			readonly kind: "boardSummary";
+			readonly accountId: string;
+			readonly board: AgentBoardSummary;
 	  };
 
 /** Apply one decoded event to the state, returning the next state. Pure: upserts
@@ -254,6 +259,14 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 			presence.set(event.accountId, {
 				...prev,
 				board: applyBoardEvent(prev?.board, event.board),
+			});
+			return { ...state, presence };
+		}
+		case "boardSummary": {
+			const presence = new Map(state.presence);
+			presence.set(event.accountId, {
+				...presence.get(event.accountId),
+				board: event.board,
 			});
 			return { ...state, presence };
 		}
