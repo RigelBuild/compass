@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -156,4 +157,60 @@ func TestRunSessionsEmptyEnvelopeStartsRoot(t *testing.T) {
 		}
 	}
 	t.Fatal("no runner.sessions.command span recorded")
+}
+
+// runCommandSpans drives cmd through runSessions and returns every ended
+// command span.
+func runCommandSpans(t *testing.T, cmd *compassv1internal.SessionsResponse) []sdktrace.ReadOnlySpan {
+	t.Helper()
+	recorder := installCommandTracer(t)
+	stream := newScriptStream()
+	stream.pushCmd(cmd)
+	stream.recv <- recvItem{err: io.EOF}
+	if err := runSessions(t.Context(), stream, &fakeSessionHost{}, discardLoggerRunner()); err != nil {
+		t.Fatalf("runSessions: %v", err)
+	}
+	var spans []sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		if span.Name() == "runner.sessions.command" {
+			spans = append(spans, span)
+		}
+	}
+	return spans
+}
+
+func TestRunSessionsCommandSpanParentPrecedence(t *testing.T) {
+	envelope := trace.SpanContextFromContext(otelx.ContextWithTraceparent(t.Context(), commandEnvelopeTraceparent))
+	op := trace.SpanContextFromContext(otelx.ContextWithTraceparent(t.Context(), commandOpTraceparent))
+	steer := func(tp string) *compassv1internal.SessionsResponse {
+		cmd := deliverControlCommand("trace-test", "session-op", "message-op")
+		cmd.GetDeliverControl().Op = &compassv1internal.AgentControl{
+			Control: &compassv1internal.AgentControl_Steer{Steer: &compassv1internal.SteerControl{Traceparent: tp}},
+		}
+		return cmd
+	}
+	deliver := func(tp string) *compassv1internal.SessionsResponse {
+		cmd := deliverControlCommand("trace-test", "session-op", "message-op")
+		cmd.GetDeliverControl().GetOp().GetDeliver().Traceparent = tp
+		return cmd
+	}
+	for name, tc := range map[string]struct {
+		cmd  *compassv1internal.SessionsResponse
+		want trace.SpanContext
+	}{
+		"malformed deliver op falls back to envelope": {deliver("00-not-a-traceparent"), envelope},
+		"steer op wins over envelope":                 {steer(commandOpTraceparent), op},
+		"config version inline uses envelope":         {configVersionCommand("v1"), envelope},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.cmd.Traceparent = commandEnvelopeTraceparent
+			spans := runCommandSpans(t, tc.cmd)
+			if len(spans) != 1 {
+				t.Fatalf("command spans = %d, want exactly 1", len(spans))
+			}
+			if got := spans[0].Parent(); got.TraceID() != tc.want.TraceID() || got.SpanID() != tc.want.SpanID() {
+				t.Fatalf("command parent = %s/%s, want %s/%s", got.TraceID(), got.SpanID(), tc.want.TraceID(), tc.want.SpanID())
+			}
+		})
+	}
 }
