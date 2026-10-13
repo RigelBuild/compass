@@ -88,7 +88,7 @@ func TestServerDoorsEmitSpanForEveryServiceMount(t *testing.T) {
 	}
 	doorsToTest := []door{{name: "socket", http: gotDoors.uds.Handler}, {name: "dev", http: gotDoors.dev.Handler}, {name: "network", http: gotDoors.net.Handler}}
 	for _, currentDoor := range doorsToTest {
-		for _, serviceName := range []string{"CompassService", "CommsService", "SecretsService", "UsageService"} {
+		for _, serviceName := range []string{"CompassService", "CommsService", "SecretsService", "UsageService", "AgentRepositoryService"} {
 			name, service := currentDoor.name, serviceName
 			t.Run(name+"/"+service, func(t *testing.T) {
 				recorder.Reset()
@@ -136,6 +136,8 @@ func doorProbe(service string) string {
 		path = compassv1connect.SecretsServiceListServerSecretsProcedure
 	case "UsageService":
 		path = compassv1connect.UsageServiceGetUsageSeriesProcedure
+	case "AgentRepositoryService":
+		path = compassv1connect.AgentRepositoryServiceListAgentRepositoriesProcedure
 	case "RunnerService":
 		path = compassv1internalconnect.RunnerServiceEnrollProcedure
 	case "GatewayCredentials":
