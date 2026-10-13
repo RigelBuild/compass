@@ -10,6 +10,8 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
+
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
 )
 
 const healthzPattern = "GET /healthz"
@@ -18,14 +20,17 @@ const healthMaxReadBytes = 1 << 10
 //nolint:gosec // This is the public health service name, not a credential.
 const compassHealthService = "compass.v1.CompassService"
 
+const runnerHealthService = "compass.runner"
+
 type serverHealth struct {
 	draining atomic.Bool
 	grpcPath string
 	grpc     http.Handler
+	hub      *runnerhub.Hub
 }
 
-func newServerHealth() *serverHealth {
-	health := new(serverHealth)
+func newServerHealth(hub *runnerhub.Hub) *serverHealth {
+	health := &serverHealth{hub: hub}
 	health.grpcPath, health.grpc = grpchealth.NewHandler(health,
 		connect.WithReadMaxBytes(healthMaxReadBytes),
 	)
@@ -33,6 +38,15 @@ func newServerHealth() *serverHealth {
 }
 
 func (h *serverHealth) Check(_ context.Context, req *grpchealth.CheckRequest) (*grpchealth.CheckResponse, error) {
+	if req.Service == runnerHealthService {
+		if h.draining.Load() || h.hub == nil {
+			return &grpchealth.CheckResponse{Status: grpchealth.StatusNotServing}, nil
+		}
+		if h.hub.RunnerEnrolled() {
+			return &grpchealth.CheckResponse{Status: grpchealth.StatusServing}, nil
+		}
+		return &grpchealth.CheckResponse{Status: grpchealth.StatusNotServing}, nil
+	}
 	if req.Service != "" && req.Service != compassHealthService {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("unknown health service %q", req.Service))
 	}

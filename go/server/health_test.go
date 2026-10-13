@@ -5,18 +5,28 @@ package server
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
+	"connectrpc.com/otelconnect"
+
+	"github.com/RigelBuild/compass/go/events"
+	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/runnertest"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 func TestServerHealthCheck(t *testing.T) {
-	health := newServerHealth()
+	health := newServerHealth(nil)
 	mux := http.NewServeMux()
 	health.mount(mux)
 	server := httptest.NewUnstartedServer(mux)
@@ -59,8 +69,118 @@ func TestServerHealthCheck(t *testing.T) {
 	}
 }
 
+func TestServerHealthRunnerService(t *testing.T) {
+	nilHealth, err := newServerHealth(nil).Check(t.Context(), &grpchealth.CheckRequest{Service: "compass.runner"})
+	if err != nil {
+		t.Fatalf("Check(compass.runner) with nil hub: %v", err)
+	}
+	if nilHealth.Status != grpchealth.StatusNotServing {
+		t.Fatalf("Check(compass.runner) with nil hub = %s, want not_serving", nilHealth.Status)
+	}
+	health, hub, srv, attached := newServerHealthRunnerServer(t)
+	assertStatus := func(wantServing bool, wantHTTP int) {
+		t.Helper()
+		response, err := health.Check(t.Context(), &grpchealth.CheckRequest{Service: "compass.runner"})
+		if err != nil {
+			t.Fatalf("Check(compass.runner): %v", err)
+		}
+		wantStatus, wantBody := grpchealth.StatusNotServing, "not_serving"
+		if wantServing {
+			wantStatus, wantBody = grpchealth.StatusServing, "serving"
+		}
+		if response.Status != wantStatus {
+			t.Errorf("Check(compass.runner) status = %s, want %s", response.Status, wantStatus)
+		}
+		assertHealthzResponse(t, srv.Client(), srv.URL+"/healthz?service=compass.runner", http.MethodGet, wantHTTP, wantBody)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	link, err := runner.Dial(ctx, runner.RunnerConfig{RunnerID: "runner-1", ServerAddr: srv.URL,
+		Token: runner.StaticToken("runner-tok"), HTTPClient: runnertest.H2CClient(t)})
+	if err != nil {
+		t.Fatalf("runner.Dial: %v", err)
+	}
+	assertStatus(false, http.StatusServiceUnavailable)
+	done := make(chan error, 1)
+	go func() { done <- link.RunSessions(ctx, idleHost{}, slog.New(slog.DiscardHandler)) }()
+	select {
+	case <-attached:
+	case <-timeAfter():
+		t.Fatal("Sessions stream never attached")
+	}
+	assertStatus(true, http.StatusOK)
+	cancel()
+	select {
+	case <-done:
+	case <-timeAfter():
+		t.Fatal("RunSessions did not exit after cancel")
+	}
+	deadline := timeAfter()
+	for hub.RunnerEnrolled() {
+		select {
+		case <-deadline:
+			t.Fatal("hub still enrolled after the Sessions stream closed")
+		default:
+			runtime.Gosched()
+		}
+	}
+	assertStatus(false, http.StatusServiceUnavailable)
+	ctx, cancel = context.WithCancel(t.Context())
+	link, err = runner.Dial(ctx, runner.RunnerConfig{RunnerID: "runner-1", ServerAddr: srv.URL,
+		Token: runner.StaticToken("runner-tok"), HTTPClient: runnertest.H2CClient(t)})
+	if err != nil {
+		t.Fatalf("runner.Dial after detach: %v", err)
+	}
+	done = make(chan error, 1)
+	go func() { done <- link.RunSessions(ctx, idleHost{}, slog.New(slog.DiscardHandler)) }()
+	select {
+	case <-attached:
+	case <-timeAfter():
+		t.Fatal("Sessions stream never reattached")
+	}
+	if !hub.RunnerEnrolled() {
+		t.Fatal("Runner is not enrolled after the Sessions stream attached")
+	}
+	health.markDraining()
+	assertStatus(false, http.StatusServiceUnavailable)
+	cancel()
+	select {
+	case <-done:
+	case <-timeAfter():
+		t.Fatal("RunSessions did not exit after cancel while draining")
+	}
+}
+
+func newServerHealthRunnerServer(t *testing.T) (*serverHealth, *runnerhub.Hub, *httptest.Server, <-chan struct{}) {
+	t.Helper()
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	hub := runnerhub.NewHub(board.NewProjection(bus), nil, nil, slog.New(slog.DiscardHandler))
+	health := newServerHealth(hub)
+	attached := make(chan struct{}, 2)
+	hub.SetRunnerReadyHook(func() { attached <- struct{}{} })
+	interceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	path, handler := runnerhub.NewMountedHandler(hub,
+		func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
+			if presented != "runner-tok" || want != store.SubjectRunner {
+				return store.Subject{}, store.ErrNotFound
+			}
+			return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, nil
+		}, nil, nil, interceptor)
+	mux := http.NewServeMux()
+	health.mount(mux)
+	mux.Handle(path, handler)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = cleartextHTTP2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return health, hub, srv, attached
+}
+
 func TestHealthzStatusMapping(t *testing.T) {
-	health := newServerHealth()
+	health := newServerHealth(nil)
 	mux := http.NewServeMux()
 	health.mount(mux)
 	server := httptest.NewServer(mux)
