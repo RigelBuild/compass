@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // Publish forwards agent frames through the ordered per-session publisher and
@@ -24,6 +25,8 @@ func (g *Gateway) Publish(
 	ctx context.Context,
 	stream *connect.ClientStream[compassv1internal.PublishFrameRequest],
 ) (*connect.Response[compassv1internal.PublishFrameResponse], error) {
+	//nolint:ineffassign,staticcheck,wastedassign // no read today; keeps any future ctx use off the stream span
+	ctx = otelx.WithoutSpan(ctx)
 	sessionID, ok := g.sessions.Session(g.containerName)
 	// An empty session id is unbound too (mirrors Comms): never forward telemetry
 	// under an empty session id.

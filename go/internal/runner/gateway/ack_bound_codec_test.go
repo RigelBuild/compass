@@ -10,12 +10,22 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
+
+func testGatewayInterceptor(t *testing.T) *otelconnect.Interceptor {
+	t.Helper()
+	ic, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	return ic
+}
 
 // oversizedAckFrame is a ControlAck whose packed applied_above is one-byte varints,
 // the cheapest wire shape per decoded uint64, just past maxControlAckBytes.
@@ -134,7 +144,7 @@ func TestAgentGatewayRejectsJSON(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	router := &fakeControlRouter{}
 	g.SetControlRouter(router)
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions()...)
+	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)
@@ -174,7 +184,7 @@ func TestControlAckBytesDoesNotAllocate(t *testing.T) {
 // RED without either override: protojson decodes and the handler answers instead.
 func TestAgentGatewayRejectsJSONContentTypes(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions()})
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions()...)
+	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewServer(mux)
@@ -210,7 +220,7 @@ func TestAgentGatewayRejectsJSONContentTypes(t *testing.T) {
 func TestAgentGatewayKeepsJSONForNonFrameCalls(t *testing.T) {
 	// Unbound: Comms answers FailedPrecondition after decoding, with no relay.
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: staticSessions{}})
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions()...)
+	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewServer(mux)
