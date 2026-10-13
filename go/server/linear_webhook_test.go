@@ -35,7 +35,7 @@ type recordingSessionSink struct {
 	enqErr error
 }
 
-func (s *recordingSessionSink) Enqueue(ev *linearagent.SessionEvent) error {
+func (s *recordingSessionSink) Enqueue(_ context.Context, ev *linearagent.SessionEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.enqErr != nil {

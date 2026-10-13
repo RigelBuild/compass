@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
@@ -186,8 +187,10 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	}
 
 	// Derived from the caller's ctx, never re-rooted: a Runner shutdown reaches
-	// the drains, and Stop can end them on its own.
-	drainCtx, stopDrains := context.WithCancel(ctx)
+	// the drains, and Stop can end them on its own. The drains and reaper outlive
+	// the Start command, so they drop its span.
+	lifeCtx := otelx.WithoutSpan(ctx)
+	drainCtx, stopDrains := context.WithCancel(lifeCtx)
 	grace := l.drainGrace
 	if grace == 0 {
 		grace = drainGrace
@@ -230,9 +233,9 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		}
 		waitErr := stream.wait()
 		stream.joinDrains()
-		stream.closeDrains(ctx)
-		if shouldLogExit(ctx, waitErr) {
-			logUnexpectedExit(ctx, log, stream, waitErr)
+		stream.closeDrains(lifeCtx)
+		if shouldLogExit(lifeCtx, waitErr) {
+			logUnexpectedExit(lifeCtx, log, stream, waitErr)
 		}
 	}()
 

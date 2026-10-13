@@ -16,6 +16,9 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -116,6 +119,8 @@ func (rc *NotifyReconciler) sweep(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "ingest.notify.reconcile", trace.WithNewRoot())
+	defer span.End()
 	targets, err := rc.store.ListNotifyTargets(ctx)
 	if err != nil {
 		rc.log.ErrorContext(ctx, "forge reconcile: list targets", "error", err)

@@ -52,7 +52,7 @@ type SessionEventSink interface {
 	// Enqueue offers a verified session event to the dispatcher without
 	// blocking; a full queue returns linearagent.ErrQueueFull, which the handler
 	// maps to a 500 so Linear retries the delivery.
-	Enqueue(ev *linearagent.SessionEvent) error
+	Enqueue(ctx context.Context, ev *linearagent.SessionEvent) error
 }
 
 // linearWebhookHandler serves POST /webhooks/linear.
@@ -187,7 +187,7 @@ func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.Response
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if err := h.sessionSink.Enqueue(ev); err != nil {
+	if err := h.sessionSink.Enqueue(ctx, ev); err != nil {
 		if errors.Is(err, linearagent.ErrQueueFull) {
 			// A full queue is a 500 so Linear retries rather than the event
 			// being silently dropped (dispatcher.go:30-33).

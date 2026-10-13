@@ -4,7 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// instrumentationScope names this package's tracer, as delivery and comms do.
+const instrumentationScope = "github.com/RigelBuild/compass/go/internal/usage"
 
 // DefaultRetention is the server's default window for raw events. The rollups
 // outlive it, so the usage charts keep their history.
@@ -67,6 +73,8 @@ func (w *RetentionSweeper) Run(ctx context.Context) error {
 
 // sweep runs one prune for each raw usage log.
 func (w *RetentionSweeper) sweep(ctx context.Context) {
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "usage.retention.sweep", trace.WithNewRoot())
+	defer span.End()
 	cutoff := time.Now().Add(-w.retention).UnixMilli()
 	if deleted, err := w.store.PruneTokenUsageBefore(ctx, cutoff); err != nil {
 		if ctx.Err() == nil {

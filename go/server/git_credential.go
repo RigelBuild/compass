@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
@@ -636,10 +638,15 @@ func sameRepositorySet(want, got []string) bool {
 	return slices.Equal(normalize(want), normalize(got))
 }
 
+// instrumentationScope names this package's tracer, as delivery and comms do.
+const instrumentationScope = "github.com/RigelBuild/compass/go/server"
+
 func (b *gitCredentialBroker) refreshDue(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "server.gitcredential.refresh", trace.WithNewRoot())
+	defer span.End()
 	now := b.clock()
 	b.retryPendingRevokes(ctx, now)
 	b.mu.Lock()

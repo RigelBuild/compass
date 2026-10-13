@@ -17,6 +17,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/forge"
 )
 
+// instrumentationScope names this package's tracer, as delivery and comms do.
+const instrumentationScope = "github.com/RigelBuild/compass/go/internal/ingest"
+
 // forgeReader is the read surface ingestion needs — a narrow view of
 // forge.Provider (satisfied by *forge.FakeProvider and the real provider). Kept
 // narrow so a test drives it without the write half of Provider.

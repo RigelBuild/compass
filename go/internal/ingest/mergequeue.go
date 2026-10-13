@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -70,6 +73,8 @@ func (s *MergeQueueSweeper) sweep(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "ingest.mergequeue.sweep", trace.WithNewRoot())
+	defer span.End()
 	repos, err := s.cfgs.MergeQueueRepos(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "merge queue sweep: list configured repos", "error", err)

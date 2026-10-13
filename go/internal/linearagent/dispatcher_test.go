@@ -230,7 +230,7 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 	stop := runDispatcher(t, d)
 	defer stop()
 
-	if err := d.Enqueue(&SessionEvent{
+	if err := d.Enqueue(t.Context(), &SessionEvent{
 		Action:        "created",
 		PromptContext: "please do the thing",
 		DeliveryID:    "delivery-0",
@@ -288,7 +288,7 @@ func TestDispatcherCreatedTopicNameFallsBackToSession(t *testing.T) {
 	stop := runDispatcher(t, d)
 	defer stop()
 
-	if err := d.Enqueue(&SessionEvent{Action: "created", AgentSession: AgentSession{ID: "sess-noissue"}}); err != nil {
+	if err := d.Enqueue(t.Context(), &SessionEvent{Action: "created", AgentSession: AgentSession{ID: "sess-noissue"}}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	<-comms.posted
@@ -313,7 +313,7 @@ func TestDispatcherReplayKeysOnDeliveryID(t *testing.T) {
 
 	for range 2 {
 		ev := &SessionEvent{Action: "created", DeliveryID: "delivery-1", AgentSession: AgentSession{ID: "sess-1"}}
-		if err := d.Enqueue(ev); err != nil {
+		if err := d.Enqueue(t.Context(), ev); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
 		<-comms.posted
@@ -356,7 +356,7 @@ func TestDispatcherRecordedDeliverySkipsEverything(t *testing.T) {
 				// Undeduped, so it always runs: once it posts, the events before it were handled.
 				{Action: "created", AgentSession: AgentSession{ID: "sess-2"}},
 			} {
-				if err := d.Enqueue(ev); err != nil {
+				if err := d.Enqueue(t.Context(), ev); err != nil {
 					t.Fatalf("Enqueue: %v", err)
 				}
 			}
@@ -393,7 +393,7 @@ func TestDispatcherNoDeliveryIDSkipsDedup(t *testing.T) {
 	defer stop()
 
 	for _, id := range []string{"sess-a", "sess-b"} {
-		if err := d.Enqueue(&SessionEvent{Action: "created", AgentSession: AgentSession{ID: id}}); err != nil {
+		if err := d.Enqueue(t.Context(), &SessionEvent{Action: "created", AgentSession: AgentSession{ID: id}}); err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
 		<-comms.posted
@@ -422,7 +422,7 @@ func TestDispatcherPromptedFollowUp(t *testing.T) {
 	stop := runDispatcher(t, d)
 	defer stop()
 
-	if err := d.Enqueue(&SessionEvent{
+	if err := d.Enqueue(t.Context(), &SessionEvent{
 		Action:        "prompted",
 		DeliveryID:    "delivery-2",
 		AgentSession:  AgentSession{ID: "sess-1"},
@@ -458,7 +458,7 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 	stop := runDispatcher(t, d)
 	defer stop()
 
-	if err := d.Enqueue(&SessionEvent{
+	if err := d.Enqueue(t.Context(), &SessionEvent{
 		Action:        "prompted",
 		DeliveryID:    "delivery-9",
 		AgentSession:  AgentSession{ID: "sess-orphan", Issue: Issue{ID: "iss-orphan", Identifier: "RIG-77"}},
@@ -500,10 +500,10 @@ func TestDispatcherEnqueueWhenFull(t *testing.T) {
 		SessionLinkFor: func(string) string { return "" },
 		Bridge:         testBridge,
 	})
-	if err := d.Enqueue(&SessionEvent{Action: "created"}); err != nil {
+	if err := d.Enqueue(t.Context(), &SessionEvent{Action: "created"}); err != nil {
 		t.Fatalf("first Enqueue: %v", err)
 	}
-	if err := d.Enqueue(&SessionEvent{Action: "created"}); !errors.Is(err, ErrQueueFull) {
+	if err := d.Enqueue(t.Context(), &SessionEvent{Action: "created"}); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("second Enqueue error = %v, want ErrQueueFull", err)
 	}
 }
@@ -527,12 +527,12 @@ func TestDispatcherPerEventFailureKeepsDraining(t *testing.T) {
 	stop := runDispatcher(t, d)
 	defer stop()
 
-	if err := d.Enqueue(&SessionEvent{Action: "created", AgentSession: AgentSession{ID: "bad"}}); err != nil {
+	if err := d.Enqueue(t.Context(), &SessionEvent{Action: "created", AgentSession: AgentSession{ID: "bad"}}); err != nil {
 		t.Fatalf("Enqueue(bad): %v", err)
 	}
 	<-client.errCh // the failing event emitted an `error` activity
 
-	if err := d.Enqueue(&SessionEvent{Action: "created", AgentSession: AgentSession{ID: "good", Issue: Issue{Identifier: "RIG-1"}}}); err != nil {
+	if err := d.Enqueue(t.Context(), &SessionEvent{Action: "created", AgentSession: AgentSession{ID: "good", Issue: Issue{Identifier: "RIG-1"}}}); err != nil {
 		t.Fatalf("Enqueue(good): %v", err)
 	}
 	<-comms.posted // the loop kept draining and handled the good event
@@ -634,7 +634,7 @@ func TestDispatcherManagerReplyEmitsResponse(t *testing.T) {
 	})
 	stop := runDispatcher(t, d)
 	defer stop()
-	if err := d.Enqueue(&SessionEvent{Action: "created", AgentSession: AgentSession{ID: "sess-1"}}); err != nil {
+	if err := d.Enqueue(t.Context(), &SessionEvent{Action: "created", AgentSession: AgentSession{ID: "sess-1"}}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	<-comms.posted
@@ -669,7 +669,7 @@ func TestDispatcherPromptRearmsResponse(t *testing.T) {
 	defer stop()
 
 	d.OnCommsEvent(t.Context(), managerPost("topic-1", "mgr-1")) // not armed yet
-	if err := d.Enqueue(&SessionEvent{Action: "prompted", AgentSession: AgentSession{ID: "sess-1"}}); err != nil {
+	if err := d.Enqueue(t.Context(), &SessionEvent{Action: "prompted", AgentSession: AgentSession{ID: "sess-1"}}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	<-comms.posted

@@ -22,6 +22,9 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/RigelBuild/compass/go/internal/forge"
 )
 
@@ -131,6 +134,8 @@ func (rc *BoardReconciler) sweep(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "ingest.board.reconcile", trace.WithNewRoot())
+	defer span.End()
 	repos, err := rc.store.ListEnabledRepos(ctx)
 	if err != nil {
 		rc.log.ErrorContext(ctx, "board reconcile: list enabled repos", "error", err)

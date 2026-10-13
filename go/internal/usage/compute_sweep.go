@@ -4,6 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const computeSweepInterval = time.Hour
@@ -43,6 +46,8 @@ func (w *ComputeUsageSweeper) Run(ctx context.Context) error {
 }
 
 func (w *ComputeUsageSweeper) sweep(ctx context.Context) {
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "usage.compute.sweep", trace.WithNewRoot())
+	defer span.End()
 	closed, err := w.store.CloseOrphanedComputeIntervals(ctx)
 	switch {
 	case ctx.Err() != nil:

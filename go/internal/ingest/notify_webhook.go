@@ -14,7 +14,10 @@ import (
 	"log/slog"
 	"sync/atomic"
 
+	"go.opentelemetry.io/otel"
+
 	"github.com/RigelBuild/compass/go/internal/forge"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // notifyWebhookDrops is the exported queue-full/drop metric: a sustained
@@ -47,9 +50,16 @@ type NotifyArmConfig struct {
 // each through the shared NotifyRouter's notify hot path.
 type NotifyWebhookArm struct {
 	router  eventRouter
-	queue   chan forge.ForgeEvent
+	queue   chan queuedEvent
 	log     *slog.Logger
 	dropped atomic.Int64
+}
+
+// queuedEvent carries the enqueuer's trace across the queue, so the routed
+// event's span joins the webhook delivery that accepted it.
+type queuedEvent struct {
+	ev          forge.ForgeEvent
+	traceparent string
 }
 
 // NewNotifyWebhookArm returns an arm that routes each accepted event through r.
@@ -64,7 +74,7 @@ func NewNotifyWebhookArm(r eventRouter, cfg NotifyArmConfig) *NotifyWebhookArm {
 	}
 	return &NotifyWebhookArm{
 		router: r,
-		queue:  make(chan forge.ForgeEvent, size),
+		queue:  make(chan queuedEvent, size),
 		log:    log,
 	}
 }
@@ -77,9 +87,9 @@ func (a *NotifyWebhookArm) Dropped() int64 { return a.dropped.Load() }
 // it MUST NOT block. It channel try-sends; a full queue DROPS the event with the
 // drop metric + a Warn (the reconcile sweep heals it). Unlike the board arm it
 // applies no kind/change filter — the router handles all forge kinds.
-func (a *NotifyWebhookArm) Enqueue(_ context.Context, ev forge.ForgeEvent) {
+func (a *NotifyWebhookArm) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 	select {
-	case a.queue <- ev:
+	case a.queue <- queuedEvent{ev: ev, traceparent: otelx.Traceparent(ctx)}:
 	default:
 		a.dropped.Add(1)
 		notifyWebhookDrops.Add(1)
@@ -97,11 +107,21 @@ func (a *NotifyWebhookArm) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case ev := <-a.queue:
-			if err := a.router.Route(ctx, ev); err != nil {
-				a.log.Warn("notify route failed",
-					"err", err, "repo", ev.Repo, "number", ev.Number, "change", ev.Change)
-			}
+		case q := <-a.queue:
+			a.route(ctx, q)
 		}
+	}
+}
+
+// route runs one dequeued event under a span parented by its enqueuer's trace;
+// an event enqueued with no span gets a root.
+func (a *NotifyWebhookArm) route(ctx context.Context, q queuedEvent) {
+	ctx, span := otel.Tracer(instrumentationScope).Start(
+		otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), q.traceparent), "ingest.notify.route")
+	defer span.End()
+	ev := q.ev
+	if err := a.router.Route(ctx, ev); err != nil {
+		a.log.Warn("notify route failed",
+			"err", err, "repo", ev.Repo, "number", ev.Number, "change", ev.Change)
 	}
 }

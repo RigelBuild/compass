@@ -6,9 +6,15 @@ import (
 	"log/slog"
 	"sync"
 
+	"go.opentelemetry.io/otel"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+// instrumentationScope names this package's tracer, as delivery and comms do.
+const instrumentationScope = "github.com/RigelBuild/compass/go/internal/linearagent"
 
 // ackThoughtBody is the receipt the dispatcher emits on a `created` event — the
 // 10-second liveness SLA leg (linear.app/developers/agent-interaction §Session
@@ -109,7 +115,7 @@ type DispatcherParams struct {
 // moves on. It does not mirror agent output: beyond the two `created` emits, it
 // emits one `response` on the Manager's first reply after each prompt.
 type Dispatcher struct {
-	ch             chan *SessionEvent
+	ch             chan queuedSessionEvent
 	resolve        ResolveFunc
 	poster         CommsPoster
 	members        Memberships
@@ -132,6 +138,13 @@ type awaitedReply struct {
 	manager   store.AccountID
 }
 
+// queuedSessionEvent carries the webhook's trace across the queue, so the
+// handled event's span joins the delivery that accepted it.
+type queuedSessionEvent struct {
+	ev          *SessionEvent
+	traceparent string
+}
+
 // NewDispatcher builds a Dispatcher from params. Buffer defaults to 1 when
 // non-positive.
 func NewDispatcher(p DispatcherParams) *Dispatcher {
@@ -140,7 +153,7 @@ func NewDispatcher(p DispatcherParams) *Dispatcher {
 		buf = 1
 	}
 	return &Dispatcher{
-		ch:             make(chan *SessionEvent, buf),
+		ch:             make(chan queuedSessionEvent, buf),
 		resolve:        p.Resolve,
 		poster:         p.Poster,
 		members:        p.Members,
@@ -179,9 +192,9 @@ func (d *Dispatcher) OnCommsEvent(ctx context.Context, resp *compassv1.Subscribe
 // Enqueue offers a verified event to the bounded channel without blocking. A
 // full channel returns ErrQueueFull so the HTTP handler returns 500 and Linear
 // retries — an event is never silently dropped.
-func (d *Dispatcher) Enqueue(ev *SessionEvent) error {
+func (d *Dispatcher) Enqueue(ctx context.Context, ev *SessionEvent) error {
 	select {
-	case d.ch <- ev:
+	case d.ch <- queuedSessionEvent{ev: ev, traceparent: otelx.Traceparent(ctx)}:
 		return nil
 	default:
 		return ErrQueueFull
@@ -195,10 +208,19 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case ev := <-d.ch:
-			d.handle(ctx, ev)
+		case q := <-d.ch:
+			d.handleQueued(ctx, q)
 		}
 	}
+}
+
+// handleQueued runs one event under a span parented by its enqueuer's trace; an
+// event enqueued with no span gets a root.
+func (d *Dispatcher) handleQueued(ctx context.Context, q queuedSessionEvent) {
+	ctx, span := otel.Tracer(instrumentationScope).Start(
+		otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), q.traceparent), "linearagent.dispatch")
+	defer span.End()
+	d.handle(ctx, q.ev)
 }
 
 // armReply waits for the Manager's next post in topicID to end sessionID's
