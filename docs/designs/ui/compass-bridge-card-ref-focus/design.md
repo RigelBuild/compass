@@ -11,33 +11,11 @@ Builds on: `compass-bridge-keyboard-nav/design.md`, DL-220, DL-221, DL-224,
 DL-252, `compass-leader-chords/design.md` §A4.
 Ledger: one candidate decision (§A5). It refines DL-221.
 
-## Open Questions
+## Decisions (RIG-5330, Matt, 2026-10-13)
 
-1. **Key letter.** The options are `R` with `Shift+R`, or `L` ("links"), which
-   is also free. **Recommendation:** `R` / `Shift+R`. The code, spec and ruling
-   all say "refs", and on a board `L` reads as "lane".
-2. **Routing the in-ref keys.** Either option can be executed as written.
-
-   **Option A: a grid `onKeyDown`.**
-   - `onRefKeyDown` sits on both `.bridge-grid` elements. Solid delegates
-     `keydown` to the app render root, so it runs before the window
-     dispatcher.
-   - When `focusedRef()` is set, it maps the event to a walk or move row, or to
-     a literal `Escape` (exit). It runs `onRefCommand` or `exitRef`, then
-     `preventDefault()`.
-   - On a move it also calls `stopPropagation()`. Otherwise the dispatcher,
-     which now sees the board focused, would move a second time.
-   - On Escape it does not stop propagation. The dispatcher then sees the board
-     active, and only disarms a pending leader.
-
-   Costs:
-   - It relies on the delegation order and on a focus change during dispatch.
-     Tests (e) and Leader pin both.
-   - Any future Escape row would also fire on the card.
-   - An arrow on a ref leaves a pending leader armed.
-   - Escape cannot be remapped.
-
-   **Option B: a ref handle on the spine.**
+1. **Key letter: `R` / `Shift+R`** (option A). `L` was the alternative. The
+   code, spec and ruling all say "refs", and on a board `L` reads as "lane".
+2. **Routing the in-ref keys: a ref handle on the spine** (option B).
    - A hand-built `RovingGroupHandle`, `refGroup`, is registered and retracted
      beside the board group. It does not use `createRovingGroup`, whose effect
      writes tabindex. Refs are not stops, so spine invariant (a) holds.
@@ -53,27 +31,21 @@ Ledger: one candidate decision (§A5). It refines DL-221.
    };
    ```
 
-   Benefits:
    - There is one keydown path, with the same leader and editable-guard order
-     as every other key.
-   - Escape is listed in the overlay and can be remapped.
-
-   Costs:
+     as every other key. Escape is listed in the overlay and can be remapped.
    - This is the first Escape row. On a focused card, Escape reaches tier 3,
      and its `run` declines, but the dispatcher still calls
      `preventDefault()`.
    - A ref gets a focused card's zone exposure. The `when: "main"` rows are all
      Enter chords, which `RefLink` stops first.
-   - Like Option A, Escape on a ref leaves the tour callout open. Both paths
-     call `preventDefault()`, and Kobalte dismisses only an Escape that is not
+   - Escape on a ref leaves the tour callout open: the dispatcher calls
+     `preventDefault()`, and Kobalte dismisses only an Escape that is not
      default-prevented.
-
-   **Recommendation:** B, unless Matt does not want an app-wide Escape row.
-3. **Screen-reader announcement inside a `<button>`.** ARIA makes a button's
-   children presentational, so the focused `role="link"` span may not be
-   announced (DL-097's chip compromise). T4 makes this an acceptance check.
-   **Recommendation:** if T4 fails, keep the PR in draft and write a record that
-   moves title refs out of the card button. The key model stays.
+3. **Screen-reader announcement inside a `<button>`: T4 acceptance check**
+   (option A). ARIA makes a button's children presentational, so the focused
+   `role="link"` span may not be announced (DL-097's chip compromise). If T4
+   fails, the PR stays in draft and a new record moves title refs out of the
+   card button. The key model stays.
 
 ## Problem / Intent
 
@@ -141,8 +113,8 @@ nothing here.
   The roving effect does not pull it back.
 
 The identity gate cannot see a ref. `isFocused()` is `stops().some((s) =>
-s.el === document.activeElement)`, so `activeGroup()` is null on a ref. How
-the keys above reach a handler is Open Question 2.
+s.el === document.activeElement)`, so `activeGroup()` is null on a ref. The
+keys above reach a handler through `refGroup` (Decision 2).
 
 ### A4 — Announcement
 
@@ -171,9 +143,10 @@ Candidate text for the driver to claim:
 > reached from the focused card by `R` / `Shift+R` (`board.focusCardRef` /
 > `board.focusCardRefPrev`, keymap rows, group-relative, `scope: "main"`). On
 > a ref, `R` / `Shift+R` cycle the owner's linked title refs with wrap,
-> Enter/Space open the ref, Escape focuses the owner and makes it the cursor,
-> and `list.move*` chords exit to the owner and move. Chips keep `Space`.
-> `aria-keyshortcuts` names only chords with a target.
+> Enter/Space open the ref, and Escape (`board.exitCardRef`, a keymap row)
+> focuses the owner and makes it the cursor. `list.move*` chords exit to the
+> owner and move. These keys reach the board through a `refGroup` spine handle.
+> Chips keep `Space`. `aria-keyshortcuts` names only chords with a target.
 
 ## Alternatives considered
 
@@ -194,6 +167,9 @@ Candidate text for the driver to claim:
    - `F2` needs `Fn` on a Mac.
    - Tab cycling traps Tab.
    - A global scope would run from any surface.
+6. **A grid `onKeyDown` for the in-ref keys** (RIG-5330, not chosen). It
+   relied on delegation order and a focus change during dispatch, left a
+   pending leader armed on an arrow, and could not remap Escape.
 
 ## Global Constraints
 
@@ -263,8 +239,8 @@ FIXTURE_REF_LINK_RULES })`):
 
 - The fixture sets `ws-965`'s title to `"Port RIG-12 from
   rigelbuild/compass#3 and OPS-4"`.
-- With ten commands today, there are twelve registered board commands. Under
-  OQ2 option B there are thirteen. All of them retract on unmount.
+- With ten commands today, there are thirteen registered board commands. All
+  of them retract on unmount.
 - With stub titles, `ws-1022` gives `"Space"` and `ws-965` has no attribute.
   With the fixture title, `ws-965` gives `"R"`. With a ref added to its
   title, `ws-1022` gives `"Space R"`.
@@ -275,7 +251,7 @@ FIXTURE_REF_LINK_RULES })`):
 
 ### T3 — The in-ref keys
 
-Add these helpers, then the routing option chosen in Open Question 2.
+Add these helpers and register `refGroup` and `board.exitCardRef` (Decision 2).
 
 ```ts
 // apps/ui/src/components/Bridge.tsx — inside Bridge
@@ -285,7 +261,7 @@ const exitRef = (owner: Stop, dir?: BoardDirection): void;
 // target = dir ? (moveCursor(stops(), owner.id, dir) ?? owner.id) : owner.id;
 // setCursorId(target); (els.get(target) ?? owner.el).focus()
 const onRefCommand = (id: CommandId): boolean;
-// false unless focusedRef(); the two walk ids step; exitCardRef (B) exits;
+// false unless focusedRef(); the two walk ids step; exitCardRef exits;
 // a DIRECTIONS id exits and moves; else false.
 // The new commands' run: () => onRefCommand(id) || onCommand(id)
 ```
@@ -317,15 +293,11 @@ Tests (same mount; option-specific results are marked):
   - In a fresh mount, `ArrowLeft` lands on "compass-ui lane".
 - **(d) Tour callout.** Open the board callout as `startCallout` does, then
   press `Escape` on a ref. Focus moves to the card, and `store.tour.open()`
-  stays `true` under both options.
-- **(e) Ordering (A only).** A window `keydown` listener added after mount
-  records `store.keyboard.activeGroup()?.group.id` on `Escape` from a ref. It
-  records `"bridge-board"`.
-- **Leader.** On a ref, press `g`, `Escape`, `s`. The view stays `bridge`.
-  Under A, focus is now on the card. Under B, it is still on the ref, and a
-  second `Escape` exits.
-- **Overlay** (`keyboard-e2e.test.tsx`). After `?`, the rows list both titles,
-  and under B also "Return to card — Escape".
+  stays `true`.
+- **Leader.** On a ref, press `g`, `Escape`, `s`. The view stays `bridge`, and
+  focus is still on the ref. A second `Escape` exits.
+- **Overlay** (`keyboard-e2e.test.tsx`). After `?`, the rows list both titles
+  and "Return to card — Escape".
 
 ### T4 — Screen-reader acceptance check
 
