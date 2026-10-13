@@ -654,7 +654,9 @@ jobs:
       github.event.inputs.pr != '') &&
       (github.event_name != 'pull_request' ||
       needs.setup.outputs.pgtest_affected == 'true')
-    timeout-minutes: 20
+    # Passing runs take 18-19.5m (the -race suite alone is ~17m); at 20, a run
+    # whose packages had all passed was cancelled during the sqlc-vet bootstrap.
+    timeout-minutes: 30
     env:
       # The Real-Postgres suites bind AF_UNIX sockets under t.TempDir(); the
       # runner's default TMPDIR overflows sun_path's 108-byte cap. Same reason as
