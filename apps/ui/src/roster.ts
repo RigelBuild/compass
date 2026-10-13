@@ -37,6 +37,7 @@ export function joinAgents(
 			lifecycle,
 			activity: info?.activity,
 			runtime: runtime.get(account.id),
+			board: info?.board,
 			terminals: [],
 		});
 	}

@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentBoardSchema,
+	AgentBoardSummarySchema,
 	AgentPresence,
+	BoardHaltKind,
+	BoardHaltSchema,
+	BoardTaskSchema,
 	create,
 	RosterEntrySchema,
 	UserAccountSchema,
@@ -167,5 +172,51 @@ describe("LeftSidebar — live roster (T4/T5)", () => {
 
 		expect(container.querySelector(".tree-empty")).toBeNull();
 		expect(container.querySelectorAll(".tree-agent").length).toBeGreaterThan(0);
+	});
+
+	test("An agentBoardChanged event updates the sidebar badge", async () => {
+		const fake = createFakeComms({
+			accounts: [wireUserAccount(CALLER), wireAgentAccount("acc-cook")],
+			roster: [
+				create(RosterEntrySchema, {
+					agentAccountId: "acc-cook",
+					presence: AgentPresence.WORKING,
+					board: create(AgentBoardSummarySchema, {
+						taskCount: 1,
+						waitingOnOperator: 2,
+					}),
+				}),
+			],
+		});
+		const { container } = await mountLive(fake);
+		const count = () =>
+			container
+				.querySelector(".tree-agent .agent-waiting-count")
+				?.getAttribute("aria-label");
+		const leaf = () => container.querySelector(".tree-agent");
+		expect(count()).toBe("2 waiting on you");
+		expect(leaf()?.querySelector(".agent-halt-dot")).toBeNull();
+		await fake.emit(
+			{
+				case: "agentBoardChanged",
+				value: {
+					agentAccountId: "acc-cook",
+					board: create(AgentBoardSchema, {
+						agentAccountId: "acc-cook",
+						halt: create(BoardHaltSchema, {
+							kind: BoardHaltKind.BLOCKED,
+							ref: "RIG-9",
+						}),
+						tasks: [create(BoardTaskSchema, { key: "a", title: "A" })],
+						writtenAtUnixMs: 1n,
+					}),
+				},
+			},
+			1n,
+		);
+		expect(
+			leaf()?.querySelector(".agent-halt-dot")?.getAttribute("data-halt"),
+		).toBe("blocked");
+		expect(count()).toBe("2 waiting on you");
 	});
 });

@@ -11,6 +11,8 @@ import {
 	UserAccountSchema,
 } from "@compass/client";
 import type { Account, Channel, ChannelGroup, Message } from "../comms-stub";
+import type { AgentBoard } from "../stub-data";
+import type { AgentPresenceInfo } from "./adapt";
 import {
 	applyEvent,
 	type CommsEvent,
@@ -334,5 +336,79 @@ describe("applyEvent — presence upsert", () => {
 		expect(next.channelGroups).toBe(base.channelGroups);
 		expect(next.messages).toBe(base.messages);
 		expect(next).not.toBe(base);
+	});
+});
+
+describe("applyEvent — board update", () => {
+	const board: AgentBoard = {
+		agentId: "acc-cook",
+		handle: "cook",
+		focusTaskKey: "task-a",
+		halt: { kind: "blocked", ref: "RIG-9" },
+		tasks: [
+			{
+				key: "task-a",
+				title: "Write adapter",
+				primaryRef: "RIG-12",
+				refs: [],
+				state: "active",
+				waiting: [],
+				subagents: [],
+			},
+			{ key: "task-b", title: "Docs", refs: [], waiting: [], subagents: [] },
+		],
+		refs: [],
+		untrackedRefs: [],
+		asks: [],
+		writtenAtUnixMs: 20,
+		stale: false,
+	};
+	const presence: AgentPresenceInfo = {
+		lifecycle: "working",
+		activity: "writing tests",
+		board: {
+			taskCount: 1,
+			waitingOnOperator: 3,
+			writtenAtUnixMs: 5,
+			stale: true,
+		},
+	};
+
+	test("updates the written summary and keeps the server's waiting count", () => {
+		const seeded = {
+			...baseState(),
+			presence: new Map([["acc-cook", presence]]),
+		};
+		const next = applyEvent(seeded, {
+			kind: "boardChanged",
+			accountId: "acc-cook",
+			board,
+		});
+		expect(next.presence.get("acc-cook")).toEqual({
+			lifecycle: "working",
+			activity: "writing tests",
+			board: {
+				focus: "RIG-12 Write adapter",
+				taskCount: 2,
+				waitingOnOperator: 3,
+				halt: { kind: "blocked", ref: "RIG-9" },
+				writtenAtUnixMs: 20,
+				stale: false,
+			},
+		});
+		expect(next.presence).not.toBe(seeded.presence);
+	});
+
+	test("a presence delta keeps the board summary", () => {
+		const seeded = {
+			...baseState(),
+			presence: new Map([["acc-cook", presence]]),
+		};
+		const next = applyEvent(seeded, {
+			kind: "presenceChanged",
+			accountId: "acc-cook",
+			info: { lifecycle: "waiting", activity: "asked" },
+		});
+		expect(next.presence.get("acc-cook")?.board).toBe(presence.board);
 	});
 });

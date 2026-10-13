@@ -8,6 +8,7 @@ import { RosterScope } from "@compass/client";
 import {
 	type AgentPresenceInfo,
 	adaptAccount,
+	adaptAgentBoard,
 	adaptChannel,
 	adaptChannelGroup,
 	adaptTopic,
@@ -152,6 +153,13 @@ function decodeEvent(
 	mapMessage: MapMessage,
 ): CommsEvent | null {
 	switch (payload.case) {
+		case "agentBoardChanged":
+			if (!payload.value.board) return null;
+			return {
+				kind: "boardChanged",
+				accountId: payload.value.agentAccountId,
+				board: adaptAgentBoard(payload.value.board),
+			};
 		case "messagePosted":
 		case "messageUpdated": {
 			// Singular message fields carry proto3 presence (X | undefined); a

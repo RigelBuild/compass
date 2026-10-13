@@ -100,6 +100,23 @@ describe("joinAgents", () => {
 		// The join is UI-agnostic about terminals: a live agent has none.
 		expect(agents[0]?.terminals).toEqual([]);
 	});
+	test("joins a board summary from roster presence", () => {
+		const board = {
+			focus: "Write adapter",
+			taskCount: 2,
+			waitingOnOperator: 1,
+			writtenAtUnixMs: 100,
+			stale: false,
+		};
+		const [agent] = joinAgents(
+			[agentAccount("acc-cook")],
+			new Map([["acc-cook", { board }]]),
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
+		expect(agent?.board).toEqual(board);
+	});
 
 	test("a presence-map MISS projects lifecycle 'stopped' (R2/DL-194)", () => {
 		// An account present in `accounts` but absent from the presence seed — a
