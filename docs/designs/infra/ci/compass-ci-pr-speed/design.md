@@ -275,6 +275,7 @@ Baseline (2026-10-10T21:47Z to 2026-10-12T22:49Z, 346 kept runs):
 | `pr` failure | 38 | 1353 | 2163 | 8 | 115 | 76 |
 | `push` success | 7 | 1408 | 2124 | 6 | 80 | 118 |
 | `dispatch` success | 7 | 2111 | 2196 | 8 | 329 | 124 |
+| other (push, schedule, dispatch failures; schedule success) | 4 | — | — | — | — | — |
 
 ## Plan
 
@@ -488,7 +489,12 @@ Test cycle: a `parity-core` test on the scope parse. In CI, `moon (bun)` and
   `permissions: { contents: read, issues: write }`, the pinned bun step of
   `dl-reconcile.yml`, then `bun tools/ci-backstop/index.ts` with
   `ROLLUP_RESULT: ${{ needs.rollup.result }}`. A cancelled (superseded)
-  push never touches the issue.
+  push never touches the issue. The job sets `concurrency: { group:
+  ci-backstop, cancel-in-progress: false }`, so push and schedule runs
+  never edit the issue at once. The core also gets the newest finished
+  full-sweep run's `run_started_at`. If that run is newer than this one,
+  the action is `none`, so an older red run cannot reopen an issue a
+  newer green run closed.
 - **`tools/ci-backstop/`**, a bun project like T1. The edge lists the run's
   failed jobs and the open `ci-backstop` issue through `gh`, creating the
   label with `gh label create --force`, and applies the core's action.
@@ -504,11 +510,13 @@ export type BackstopAction =
 export function backstopAction(input: {
   result: "success" | "failure"; event: "push" | "schedule"; runUrl: string;
   failedJobs: readonly string[]; openIssue: number | null;
+  runStartedAt: string; newestSweepStartedAt: string;
 }): BackstopAction;
 ```
 
 Test cycle: a unit table over result × open issue (red with none opens, red
-with one comments, green with one closes, green with none does nothing),
+with one comments, green with one closes, green with none does nothing;
+any result with a newer finished sweep does nothing),
 and `--dry-run` against the live repo prints the action.
 
 ## Tasks
