@@ -357,11 +357,11 @@ func TestMalformedBindingChangeIsDropped(t *testing.T) {
 func TestRoutingFabricFailsClosedAfterClose(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
-	f, err := New(Config{URL: testServer(t)})
+	f, err := New(t.Context(), Config{URL: testServer(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -572,7 +572,7 @@ func TestSubscribeBindingChangesWatchdogExitsOnClose(t *testing.T) {
 
 	// New directly rather than newFabric: this test closes the fabric itself,
 	// and newFabric's cleanup would then fail the test on the second Close.
-	f, err := New(Config{URL: testServer(t)})
+	f, err := New(t.Context(), Config{URL: testServer(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestSubscribeBindingChangesWatchdogExitsOnClose(t *testing.T) {
 		return countGoroutinesWith(t, bindingWatchdogMarker) > baseline
 	})
 
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	pollUntil(t, "the binding-change watchdog to exit after Close", func() bool {

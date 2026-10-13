@@ -372,7 +372,7 @@ func TestDispatchControlSendOnlyDoesNotBlock(t *testing.T) {
 	// A live stream that accepts the push and returns NO result (a successful
 	// deliver sends no SessionsRequest back).
 	sent := make(chan *compassv1internal.SessionsResponse, 1)
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		sent <- cmd
 		return nil
 	})
@@ -434,7 +434,7 @@ func TestDispatchControlNoLiveStreamRefuses(t *testing.T) {
 func TestSendOnlyRefusalIsObservedNotDropped(t *testing.T) {
 	r := newCommandRouter()
 	captured := make(chan *compassv1internal.SessionsResponse, 1)
-	r.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	r.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		captured <- cmd
 		return nil
 	})
@@ -462,7 +462,7 @@ func TestSendOnlyRefusalIsObservedNotDropped(t *testing.T) {
 	}
 
 	// A RunnerError result for the deliver's id: complete observes it as a refusal.
-	r.complete(&compassv1internal.SessionsRequest{
+	r.complete(t.Context(), &compassv1internal.SessionsRequest{
 		RequestId: "req-deliver",
 		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 			Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED,
@@ -473,7 +473,7 @@ func TestSendOnlyRefusalIsObservedNotDropped(t *testing.T) {
 	}
 
 	// A truly-unknown id is still ignored (the original contract), not counted.
-	r.complete(&compassv1internal.SessionsRequest{
+	r.complete(t.Context(), &compassv1internal.SessionsRequest{
 		RequestId: "ghost",
 		Result:    &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{}},
 	})

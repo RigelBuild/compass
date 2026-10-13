@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
@@ -137,7 +138,7 @@ func (r *commandRouter) RefusedDelivers() uint64 {
 // fresh senderState (queue + done) and spawns runSender, the sole caller of send
 // for this attachment. See
 // docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
-func (r *commandRouter) attach(send func(*compassv1internal.SessionsResponse) error) {
+func (r *commandRouter) attach(ctx context.Context, send func(*compassv1internal.SessionsResponse) error) {
 	s := &senderState{
 		queue: make(chan outFrame, sendQueueCap),
 		done:  make(chan struct{}),
@@ -145,7 +146,7 @@ func (r *commandRouter) attach(send func(*compassv1internal.SessionsResponse) er
 	r.mu.Lock()
 	r.sender = s
 	r.mu.Unlock()
-	go r.runSender(s, send)
+	go r.runSender(ctx, s, send)
 }
 
 // setSessionUnknown installs the hook complete() fires on a NotFound deliver refusal.
@@ -189,11 +190,11 @@ func (r *commandRouter) detach(cause error) {
 // detach semantics — a command's pendingCall is failed by detach, a deliver's
 // cursor was never advanced, a signal is best-effort). See
 // docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
-func (r *commandRouter) runSender(s *senderState, send func(*compassv1internal.SessionsResponse) error) {
+func (r *commandRouter) runSender(ctx context.Context, s *senderState, send func(*compassv1internal.SessionsResponse) error) {
 	defer close(s.done)
 	for f := range s.queue {
 		if err := send(f.cmd); err != nil {
-			r.failFrameOnSendError(f, err)
+			r.failFrameOnSendError(ctx, f, err)
 			return
 		}
 	}
@@ -208,8 +209,10 @@ func (r *commandRouter) runSender(s *senderState, send func(*compassv1internal.S
 // double-closing against detach's in-flight sweep). A deliver's refusal entry is
 // removed and the failure warn-logged (no command reached the Runner, so no
 // refusal can arrive). A signal is warn-logged only, best-effort by contract.
-func (r *commandRouter) failFrameOnSendError(f outFrame, err error) {
+func (r *commandRouter) failFrameOnSendError(ctx context.Context, f outFrame, err error) {
 	id := f.cmd.GetRequestId()
+	// The stream is dying, so drop its cancel; log under the trace that enqueued the frame.
+	ctx = otelx.ContextWithTraceparent(context.WithoutCancel(ctx), f.cmd.GetTraceparent())
 	switch f.class {
 	case frameCommand:
 		r.mu.Lock()
@@ -223,10 +226,10 @@ func (r *commandRouter) failFrameOnSendError(f outFrame, err error) {
 		r.mu.Lock()
 		r.deliverRefusals.Remove(id)
 		r.mu.Unlock()
-		r.logger().Warn("pushing deliver to runner failed; cursor left unadvanced for the reconnect sweep",
+		r.logger().WarnContext(ctx, "pushing deliver to runner failed; cursor left unadvanced for the reconnect sweep",
 			"request_id", id, "error", err)
 	case frameSignal:
-		r.logger().Warn("pushing signal to runner failed; best-effort, the runner refetches on reconnect",
+		r.logger().WarnContext(ctx, "pushing signal to runner failed; best-effort, the runner refetches on reconnect",
 			"error", err)
 	}
 }
@@ -301,13 +304,13 @@ func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.Ses
 // loses nothing permanent. A full queue is the same best-effort outcome with a
 // warn log for observability — the signal is advisory. A real Send error is
 // handled asynchronously in runSender.
-func (r *commandRouter) push(cmd *compassv1internal.SessionsResponse) error {
+func (r *commandRouter) push(ctx context.Context, cmd *compassv1internal.SessionsResponse) error {
 	r.mu.Lock()
 	live := r.sender != nil
 	enqueued := r.enqueue(outFrame{cmd: cmd, class: frameSignal})
 	r.mu.Unlock()
 	if live && !enqueued {
-		r.logger().Warn("runner send queue full for signal; dropped, the runner refetches on reconnect")
+		r.logger().WarnContext(ctx, "runner send queue full for signal; dropped, the runner refetches on reconnect")
 	}
 	return nil
 }
@@ -382,7 +385,7 @@ func waitCall(ctx context.Context, call *pendingCall) (*compassv1internal.Sessio
 //     original contract.
 //
 // Called by the Sessions handler for each SessionsRequest result.
-func (r *commandRouter) complete(result *compassv1internal.SessionsRequest) {
+func (r *commandRouter) complete(ctx context.Context, result *compassv1internal.SessionsRequest) {
 	id := result.GetRequestId()
 	r.mu.Lock()
 	call, ok := r.inflight[id]
@@ -412,13 +415,13 @@ func (r *commandRouter) complete(result *compassv1internal.SessionsRequest) {
 		log = slog.Default()
 	}
 	if runnerErr := result.GetError(); runnerErr != nil {
-		log.Warn("deliver refused by runner; cursor left unadvanced for the reconnect sweep",
+		log.WarnContext(ctx, "deliver refused by runner; cursor left unadvanced for the reconnect sweep",
 			"request_id", id, "code", runnerErr.GetCode().String(), "message", runnerErr.GetMessage())
 		if runnerErr.GetCode() == compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND && onUnknown != nil && sessionID != "" {
 			onUnknown(sessionID)
 		}
 	} else {
-		log.Warn("deliver returned an unexpected non-error result; cursor left unadvanced",
+		log.WarnContext(ctx, "deliver returned an unexpected non-error result; cursor left unadvanced",
 			"request_id", id)
 	}
 }

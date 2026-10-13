@@ -27,7 +27,7 @@ func newHeldGapConsumer(t *testing.T, settleAt time.Time) (*Consumer, *blockCapt
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), reads, disp, res, newFakeFabric(), discardLogger())
 	c.now = func() time.Time { return settleAt }
 	reads.subscribers["chan-1"] = []store.AccountID{"agent-recip"}
 	reads.agents["agent-author"] = true
@@ -388,7 +388,7 @@ func TestSettleSequenceCompatibilityAndLateHold(t *testing.T) {
 		disp := newBlockCapturingDispatcher()
 		res := newFakeResolver()
 		reads := newFakeReads()
-		c := NewConsumer(reads, disp, res, newFakeFabric(), logger)
+		c := NewConsumer(t.Context(), reads, disp, res, newFakeFabric(), logger)
 		reads.subscribers["chan-1"] = []store.AccountID{"agent-recip"}
 		reads.agents["agent-author"] = true
 		res.bind("agent-author", "sess-author")
@@ -548,7 +548,7 @@ func TestStartSweepSkipsHeldMessage(t *testing.T) {
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), reads, disp, res, newFakeFabric(), discardLogger())
 	const ch store.ChannelID = "chan-1"
 	const recipient store.AccountID = "agent-recip"
 
@@ -594,7 +594,7 @@ func deadAuthorFixture(t *testing.T) (*Consumer, *blockCapturingDispatcher, *fak
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), reads, disp, res, newFakeFabric(), discardLogger())
 	c.hold(t.Context(), "sess-dead", "m1", 0, 0)
 	reads.owed["agent-recip"] = map[store.ChannelID][]store.Message{"chan-1": {
 		textMessage("m1", "agent-author", "stored body"),

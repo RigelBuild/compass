@@ -521,7 +521,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	}
 	// The fake Runner answers a Provision with a container name and a Start with
 	// a session id, correlated by the pushed request id.
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		var result *compassv1internal.SessionsRequest
 		switch cmd.GetCommand().(type) {
 		case *compassv1internal.SessionsResponse_Provision:
@@ -535,7 +535,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 				Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-live"}},
 			}
 		}
-		go router.complete(result)
+		go router.complete(t.Context(), result)
 		return nil
 	})
 
@@ -565,7 +565,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		var result *compassv1internal.SessionsRequest
 		switch cmd.GetCommand().(type) {
 		case *compassv1internal.SessionsResponse_Provision:
@@ -579,7 +579,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 				Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-live"}},
 			}
 		}
-		go router.complete(result)
+		go router.complete(t.Context(), result)
 		return nil
 	})
 

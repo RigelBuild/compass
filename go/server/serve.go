@@ -885,7 +885,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// agent-initiated comms calls through this handler (the CommsCaller).
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	defer commsBus.Close()
-	commsSvc := comms.NewComms(st, commsBus, fab, admin.ID)
+	commsSvc := comms.NewComms(ctx, st, commsBus, fab, admin.ID)
 	setCommsForges(commsSvc, cfg.Forge)
 	// Register the coordination-channel reconcile as the store's in-tx hook, so
 	// the two parent-edge writers auto-provision/reconcile a manager's
@@ -2481,7 +2481,7 @@ func failStartup(udsListener net.Listener, listeners boundListeners, err error) 
 // openFabricAndStore connects the event fabric, then opens the store, so an
 // unreachable broker fails before migrations run. A store failure closes the fabric.
 func openFabricAndStore(ctx context.Context, cfg ServeConfig) (*fabric.Fabric, *store.Store, error) {
-	fab, err := fabric.New(fabric.Config{URL: cfg.NatsURL})
+	fab, err := fabric.New(ctx, fabric.Config{URL: cfg.NatsURL})
 	if err != nil {
 		return nil, nil, fmt.Errorf("connecting event fabric: %w", err)
 	}
@@ -2496,9 +2496,10 @@ func openFabricAndStore(ctx context.Context, cfg ServeConfig) (*fabric.Fabric, *
 // closeFabric drains the event fabric on shutdown. Serve has already chosen its
 // return value by then, so a failed drain is logged, not returned.
 func closeFabric(ctx context.Context, fab *fabric.Fabric) {
-	if err := fab.Close(); err != nil {
-		// Runs after shutdown cancels ctx; keep its values, drop the cancel.
-		slog.Default().WarnContext(context.WithoutCancel(ctx), "draining event fabric on shutdown", "error", err)
+	// Runs after shutdown cancels ctx; keep its values, drop the cancel.
+	ctx = context.WithoutCancel(ctx)
+	if err := fab.Close(ctx); err != nil {
+		slog.Default().WarnContext(ctx, "draining event fabric on shutdown", "error", err)
 	}
 }
 

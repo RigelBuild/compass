@@ -93,7 +93,7 @@ func (a *NotifyWebhookArm) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 	default:
 		a.dropped.Add(1)
 		notifyWebhookDrops.Add(1)
-		a.log.Warn("notify webhook: queue full, dropping event (reconciler heals)",
+		a.log.WarnContext(ctx, "notify webhook: queue full, dropping event (reconciler heals)",
 			"repo", ev.Repo, "number", ev.Number, "change", ev.Change)
 	}
 }
@@ -121,7 +121,7 @@ func (a *NotifyWebhookArm) route(ctx context.Context, q queuedEvent) {
 	defer span.End()
 	ev := q.ev
 	if err := a.router.Route(ctx, ev); err != nil {
-		a.log.Warn("notify route failed",
+		a.log.WarnContext(ctx, "notify route failed",
 			"err", err, "repo", ev.Repo, "number", ev.Number, "change", ev.Change)
 	}
 }

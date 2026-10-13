@@ -36,8 +36,8 @@ func TestProvisionRelaySurfacesOperatorFaultAsFailedPrecondition(t *testing.T) {
 	// string — the gateway package is deliberately not imported.
 	const diag = "serving agent socket for container \"cont-op\": agent socket path \"/run/compass/containers/cont-op/agent.sock\" is 120 bytes, over the 108-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id: operator-fault runner configuration"
 
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
-		go router.complete(&compassv1internal.SessionsRequest{
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 				Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION,

@@ -318,7 +318,7 @@ func TestSignalSecretsVersionPushesMonotonicToken(t *testing.T) {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
@@ -385,7 +385,7 @@ func TestSignalSecretsVersionForTargetsAccount(t *testing.T) {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersionFor(t.Context(), "acct-a"); err != nil {
@@ -474,7 +474,7 @@ func TestSignalSecretsVersionForNoSessionOrRunnerIsNoop(t *testing.T) {
 			}
 			rec := newRecordingSend()
 			if router != nil {
-				router.attach(rec.send)
+				router.attach(t.Context(), rec.send)
 				defer router.detach(errStreamClosed)
 			}
 			if err := hub.SignalSecretsVersionFor(t.Context(), "acct-missing"); err != nil {
@@ -499,7 +499,7 @@ func TestSignalSecretsVersionForMonotonic(t *testing.T) {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
@@ -525,7 +525,7 @@ func TestSignalSecretsVersionNoLiveSessionsIsNoop(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersion(context.Background()); err != nil {

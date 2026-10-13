@@ -377,7 +377,7 @@ func TestRecoverySweepSkipsHeldMessage(t *testing.T) {
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), reads, disp, res, newFakeFabric(), discardLogger())
 	const ch store.ChannelID = "chan-1"
 	const authorAgent store.AccountID = "agent-author"
 	const human store.AccountID = "human-1"
@@ -792,7 +792,7 @@ func TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks(t *testing.T) {
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), reads, disp, res, newFakeFabric(), discardLogger())
 
 	const ch store.ChannelID = "chan-1"
 	const authorAgent store.AccountID = "agent-author"

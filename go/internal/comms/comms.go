@@ -85,14 +85,14 @@ type MirrorDriver interface {
 // bootstrap-admin account the local-socket door attributes callers to until the
 // T3 interceptor sets a real identity (design.md:1219-1222). A nil fab keeps
 // message_posted on the bus only.
-func NewComms(st *store.Store, bus commsBus, fab fabric.EventFabric, adminID store.AccountID) *Comms {
+func NewComms(ctx context.Context, st *store.Store, bus commsBus, fab fabric.EventFabric, adminID store.AccountID) *Comms {
 	// A metric miss must never fail construction, matching the delivery counter.
 	failures, err := otel.Meter(instrumentationScope).Int64Counter(
 		"compass.delivery.fabric_publish_failures",
 		metric.WithDescription("Count of message_posted fabric publishes that failed after commit."),
 	)
 	if err != nil {
-		slog.Warn("comms: failed to create fabric publish failure counter; metric disabled", "err", err)
+		slog.WarnContext(ctx, "comms: failed to create fabric publish failure counter; metric disabled", "err", err)
 		failures = nil
 	}
 	return &Comms{store: st, bus: bus, fabric: fab, fabricPublishFailures: failures, adminID: adminID}

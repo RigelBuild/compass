@@ -89,7 +89,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 			// on the Runner: log it and fall back to the in-RAM cache so the session
 			// resolves at least on this instance. The next re-enroll sweep or a
 			// cache-miss re-read reconciles against the table.
-			h.log.Error("record session binding failed; falling back to in-RAM cache",
+			h.log.ErrorContext(ctx, "record session binding failed; falling back to in-RAM cache",
 				"session_id", sessionID, "account", string(account), "error", err)
 		} else {
 			displaced, version = d, v
@@ -154,7 +154,7 @@ func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, t
 		SessionID: sessionID,
 		Op:        op,
 	}); err != nil {
-		h.log.Warn("publish binding change failed (peers re-read on cache miss)",
+		h.log.WarnContext(ctx, "publish binding change failed (peers re-read on cache miss)",
 			"tenant", tenant, "session_id", sessionID, "op", string(op), "error", err)
 	}
 }
@@ -216,7 +216,7 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 			// A durable-delete fault must not fail the Stop that already
 			// succeeded on the Runner: log and continue to evict the cache. The
 			// next re-enroll sweep retires any surviving row.
-			h.log.Error("delete session binding failed; evicting cache anyway",
+			h.log.ErrorContext(ctx, "delete session binding failed; evicting cache anyway",
 				"session_id", sessionID, "error", err)
 		case !removed:
 			// The row was re-bound since only was read: the session is not lost.
@@ -963,7 +963,7 @@ func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string, s
 	lost := h.lost
 	h.mu.Unlock()
 	h.archiveEnded(ctx, sessionID)
-	h.log.Warn("runner reports bound session lost; released binding",
+	h.log.WarnContext(ctx, "runner reports bound session lost; released binding",
 		"session_id", sessionID, "agent_account_id", binding.account, "errored", errored)
 	if lost != nil {
 		lost.OnSessionLost(sessionID, binding.account, errored)
@@ -1009,10 +1009,10 @@ func (h *Hub) runnerSessionAccountError(ctx context.Context, runnerID, sessionID
 		if err != nil {
 			code := bindingTenantCode(err)
 			if code == connect.CodeFailedPrecondition {
-				h.logBindingTenantError(runnerID, sessionID, err)
+				h.logBindingTenantError(ctx, runnerID, sessionID, err)
 				return ctx, "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound)
 			}
-			h.logBindingTenantError(runnerID, sessionID, err)
+			h.logBindingTenantError(ctx, runnerID, sessionID, err)
 			return ctx, "", connect.NewError(connect.CodeUnavailable, errSessionBindingUnverifiable)
 		}
 		ctx = store.WithTenant(ctx, tenant)
@@ -1050,10 +1050,10 @@ func (h *Hub) runnerSessionCtx(ctx context.Context, runnerID, sessionID string) 
 	}
 	code := bindingTenantCode(err)
 	if code == connect.CodeFailedPrecondition {
-		h.logBindingTenantError(runnerID, sessionID, err)
+		h.logBindingTenantError(ctx, runnerID, sessionID, err)
 		return ctx, false
 	}
-	h.log.Warn("resolve session tenant failed; continuing unscoped",
+	h.log.WarnContext(ctx, "resolve session tenant failed; continuing unscoped",
 		"session_id", sessionID, "error", err)
 	return ctx, true
 }
@@ -1067,9 +1067,9 @@ func bindingTenantCode(err error) connect.Code {
 	}
 }
 
-func (h *Hub) logBindingTenantError(runnerID, sessionID string, err error) {
+func (h *Hub) logBindingTenantError(ctx context.Context, runnerID, sessionID string, err error) {
 	if errors.Is(err, store.ErrConflict) {
-		h.log.Error("session bound in several tenants; refusing the runner call",
+		h.log.ErrorContext(ctx, "session bound in several tenants; refusing the runner call",
 			"session_id", sessionID, "runner_id", runnerID)
 	}
 }

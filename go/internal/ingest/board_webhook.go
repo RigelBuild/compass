@@ -148,7 +148,7 @@ func (a *BoardWebhookArm) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 	default:
 		a.dropped.Add(1)
 		boardWebhookDrops.Add(1)
-		a.log.Warn("board webhook: queue full, dropping event (reconciler heals)",
+		a.log.WarnContext(ctx, "board webhook: queue full, dropping event (reconciler heals)",
 			"repo", ev.Repo, "number", ev.Number, "change", ev.Change)
 	}
 }

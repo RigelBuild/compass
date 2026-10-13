@@ -186,7 +186,7 @@ func TestSubscribeCommsHeadQueryHasNoSpan(t *testing.T) {
 	recorder, ic := installStreamSpanRecorder(t)
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(bus.Close)
-	service := comms.NewComms(st, bus, nil, admin.ID)
+	service := comms.NewComms(t.Context(), st, bus, nil, admin.ID)
 	path, handler := compassv1connect.NewCommsServiceHandler(service, otelx.HandlerInterceptors(ic,
 		auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
 	mux := http.NewServeMux()

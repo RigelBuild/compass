@@ -750,14 +750,14 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	// RLock deadlocks behind a pending enroll.
 	h.enrollMu.RLock()
 	defer h.enrollMu.RUnlock()
-	stale := h.staleEnrollmentLocked(ev)
+	stale := h.staleEnrollmentLocked(ctx, ev)
 	// A lifecycle frame holds its session's lock from before its seq is recorded,
 	// so a higher seq the hub has already seen is never overtaken.
 	if !stale && sessionState(ev.Frame) != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
 		defer h.lockSession(ev.SessionID)()
 	}
 	if !stale {
-		h.recordSeq(ev.RunnerSeq)
+		h.recordSeq(ctx, ev.RunnerSeq)
 	}
 
 	frame := ev.Frame
@@ -765,7 +765,7 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	if oneof == nil {
 		// Unset oneof — the "unknown frame". Log + count so a contract skew is
 		// observable (agent.proto:38-39), but never drop it silently.
-		h.countUnknown(ev)
+		h.countUnknown(ctx, ev)
 		return nil
 	}
 	switch f := oneof.(type) {
@@ -785,7 +785,7 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 		// Unset or unrecognized oneof — the "unknown frame". Log + count so a
 		// contract skew (a new variant the Server does not yet handle) is
 		// observable, but never drop it silently.
-		h.countUnknown(ev)
+		h.countUnknown(ctx, ev)
 		return nil
 	}
 }
@@ -887,7 +887,7 @@ func (h *Hub) StopReadyHooks() <-chan struct{} {
 // The goroutine is load-bearing: the seed drives Provision→Start back through this
 // hub's router down the very stream calling this, so running it inline would deadlock.
 // The body recovers a panic; StopReadyHooks joins it at shutdown.
-func (h *Hub) fireRunnerReady() {
+func (h *Hub) fireRunnerReady(ctx context.Context) {
 	h.mu.Lock()
 	hook := h.runnerReadyHook
 	ready := h.ready
@@ -909,7 +909,7 @@ func (h *Hub) fireRunnerReady() {
 		defer h.hookReturned()
 		defer func() {
 			if r := recover(); r != nil {
-				h.log.Error("runner-ready hook panicked; recovered (server stays up)",
+				h.log.ErrorContext(ctx, "runner-ready hook panicked; recovered (server stays up)",
 					slog.Any("panic", r))
 			}
 		}()
@@ -939,7 +939,7 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	// lifecycle, settle and presence edges would all speak for another Runner's agent.
 	binding, hasAccount, allowed := h.frameSession(ctx, runnerID, sessionID, lifecycle)
 	if !allowed {
-		h.log.Warn("dropped session frame from a Runner that does not own the session",
+		h.log.WarnContext(ctx, "dropped session frame from a Runner that does not own the session",
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
 		return
 	}
@@ -955,7 +955,7 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	}
 	h.lifecycleMu.Unlock()
 	if seen && seq <= last {
-		h.log.Debug("ignored lifecycle frame older than the session's latest",
+		h.log.DebugContext(ctx, "ignored lifecycle frame older than the session's latest",
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID),
 			slog.String("state", state.String()), slog.Uint64("runner_seq", seq), slog.Uint64("latest_seq", last))
 		return
@@ -1011,7 +1011,7 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 	}
 	messageID := ack.GetMessageId()
 	if messageID == "" {
-		h.countDroppedAck(ev, "delivery_ack carries no message id")
+		h.countDroppedAck(ctx, ev, "delivery_ack carries no message id")
 		return
 	}
 	// RIG-3108 hazard fix: resolve the acking session's account on the REQUEST ctx,
@@ -1020,12 +1020,12 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 	// ARBITRARY tenant. Resolving here keeps it tenant-scoped and fail-closed.
 	ctx, scoped := h.runnerSessionCtx(ctx, ev.RunnerID, ev.SessionID)
 	if !scoped {
-		h.countDroppedAck(ev, "acking session is bound in several tenants")
+		h.countDroppedAck(ctx, ev, "acking session is bound in several tenants")
 		return
 	}
 	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
-		h.countDroppedAck(ev, "no agent account bound to the acking session")
+		h.countDroppedAck(ctx, ev, "no agent account bound to the acking session")
 		return
 	}
 	// N5/OQ-4: the cursor advance is a cross-tenant system path (the ack's tenant is
@@ -1039,7 +1039,7 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 	if err != nil {
 		// An unknown or foreign message id: fail-closed no-op, never a teardown.
 		// A fabricated id cannot advance a cursor; the resolution IS the guard.
-		h.countDroppedAck(ev, "delivery_ack for an unresolvable message: "+err.Error())
+		h.countDroppedAck(ctx, ev, "delivery_ack for an unresolvable message: "+err.Error())
 		return
 	}
 	if err := delivery.AckDelivery(sysCtx, agent, channel, messageID); err != nil {
@@ -1047,7 +1047,7 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 		// costs only a redundant redeliver on the recipient's next reconnect
 		// sweep (the cursor stays where it was), so it never justifies tearing
 		// down the relay.
-		h.countDroppedAck(ev, "delivery_ack cursor advance failed: "+err.Error())
+		h.countDroppedAck(ctx, ev, "delivery_ack cursor advance failed: "+err.Error())
 		return
 	}
 }
@@ -1065,7 +1065,7 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	}
 	subscriptionID := ack.GetSubscriptionId()
 	if subscriptionID == "" {
-		h.countDroppedAck(ev, "forge_notification_ack carries no subscription id")
+		h.countDroppedAck(ctx, ev, "forge_notification_ack carries no subscription id")
 		return
 	}
 	// RIG-3108 hazard fix (mirrors deliverAck): resolve the acking session's
@@ -1074,12 +1074,12 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	// under BYPASSRLS. Only the cursor advance below runs under the system role.
 	ctx, scoped := h.runnerSessionCtx(ctx, ev.RunnerID, ev.SessionID)
 	if !scoped {
-		h.countDroppedAck(ev, "acking session is bound in several tenants")
+		h.countDroppedAck(ctx, ev, "acking session is bound in several tenants")
 		return
 	}
 	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
-		h.countDroppedAck(ev, "no agent account bound to the acking session")
+		h.countDroppedAck(ctx, ev, "no agent account bound to the acking session")
 		return
 	}
 	// N5/OQ-4: the forge-delivery cursor advance is a cross-tenant system path —
@@ -1091,7 +1091,7 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 		// A store fault (or ErrNotFound of a subscription unsubscribed mid-flight /
 		// owned by a different agent): log + count and drop. A missed advance costs
 		// only a redundant re-notify on the next reconciliation pass.
-		h.countDroppedAck(ev, "forge_notification_ack cursor advance failed: "+err.Error())
+		h.countDroppedAck(ctx, ev, "forge_notification_ack cursor advance failed: "+err.Error())
 		return
 	}
 }
@@ -1142,11 +1142,11 @@ func sessionState(frame *compassv1internal.AgentFrame) compassv1.AgentSessionSta
 
 // staleEnrollmentLocked reports, and logs, an event whose stream predates the
 // current enrollment. Zero EnrollGen means unfenced. Caller holds enrollMu.
-func (h *Hub) staleEnrollmentLocked(ev RunnerEvent) bool {
+func (h *Hub) staleEnrollmentLocked(ctx context.Context, ev RunnerEvent) bool {
 	if ev.EnrollGen == 0 || ev.EnrollGen == h.enrollGen {
 		return false
 	}
-	h.log.Debug("dropped event from a stream opened before re-enroll",
+	h.log.DebugContext(ctx, "dropped event from a stream opened before re-enroll",
 		slog.String("runner_id", ev.RunnerID), slog.String("session_id", ev.SessionID))
 	return true
 }
@@ -1157,7 +1157,7 @@ const maxMissingSeqs = 4096
 // recordSeq advances the accepted-sequence high-water mark and records the seqs
 // a jump skipped; a late arrival fills its gap. The first event (lastSeq == 0)
 // establishes the baseline without flagging.
-func (h *Hub) recordSeq(seq uint64) {
+func (h *Hub) recordSeq(ctx context.Context, seq uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if seq <= h.lastSeq {
@@ -1165,7 +1165,7 @@ func (h *Hub) recordSeq(seq uint64) {
 		return
 	}
 	if h.lastSeq != 0 && seq > h.lastSeq+1 {
-		h.log.Warn("runner event sequence gap",
+		h.log.WarnContext(ctx, "runner event sequence gap",
 			slog.Uint64("expected", h.lastSeq+1), slog.Uint64("got", seq))
 		for missing := h.lastSeq + 1; missing < seq; missing++ {
 			if len(h.missingSeqs) >= maxMissingSeqs {
@@ -1184,12 +1184,12 @@ func (h *Hub) seenGapLocked() bool {
 }
 
 // countUnknown records and logs an unknown frame.
-func (h *Hub) countUnknown(ev RunnerEvent) {
+func (h *Hub) countUnknown(ctx context.Context, ev RunnerEvent) {
 	h.mu.Lock()
 	h.unknownFrames++
 	n := h.unknownFrames
 	h.mu.Unlock()
-	h.log.Warn("unknown runner frame (unset or unrecognized variant)",
+	h.log.WarnContext(ctx, "unknown runner frame (unset or unrecognized variant)",
 		slog.String("session_id", ev.SessionID),
 		slog.Uint64("runner_seq", ev.RunnerSeq),
 		slog.Uint64("unknown_total", n))
@@ -1199,12 +1199,12 @@ func (h *Hub) countUnknown(ev RunnerEvent) {
 // the drop is COUNTED and LOGGED so it is observable, and the stream lives. A
 // missed ack costs only a redundant redeliver on the recipient's next reconnect
 // sweep, never a teardown.
-func (h *Hub) countDroppedAck(ev RunnerEvent, reason string) {
+func (h *Hub) countDroppedAck(ctx context.Context, ev RunnerEvent, reason string) {
 	h.mu.Lock()
 	h.droppedAcks++
 	n := h.droppedAcks
 	h.mu.Unlock()
-	h.log.Warn("dropped delivery ack (stream continues)",
+	h.log.WarnContext(ctx, "dropped delivery ack (stream continues)",
 		slog.String("session_id", ev.SessionID),
 		slog.Uint64("runner_seq", ev.RunnerSeq),
 		slog.String("reason", reason),
@@ -1289,7 +1289,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 		rows, reapErr = bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
 		if reapErr != nil {
 			// Fall back to the in-RAM snapshot so this enroll still drives edges; the caller sees the error.
-			h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled for this Runner until a reap succeeds",
+			h.log.ErrorContext(ctx, "durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled for this Runner until a reap succeeds",
 				"runner_id", id, "error", reapErr)
 		} else {
 			durableReaped = rows

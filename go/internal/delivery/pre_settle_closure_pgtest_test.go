@@ -39,7 +39,7 @@ func newPgConsumer(t *testing.T, s *store.Store) (*Consumer, *fakeDispatcher, *f
 	t.Helper()
 	disp := newFakeDispatcher()
 	res := newFakeResolver()
-	c := NewConsumer(s, disp, res, newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), s, disp, res, newFakeFabric(), discardLogger())
 	return c, disp, res
 }
 

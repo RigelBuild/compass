@@ -101,12 +101,12 @@ func signalCmd(id string) *compassv1internal.SessionsResponse {
 func TestWedgedRouterDoesNotBlockAnother(t *testing.T) {
 	a := newCommandRouter()
 	pa := newParkedSend(nil)
-	a.attach(pa.send)
+	a.attach(t.Context(), pa.send)
 	t.Cleanup(func() { close(pa.release); a.detach(errStreamClosed) })
 
 	b := newCommandRouter()
 	rec := newRecordingSend()
-	b.attach(rec.send)
+	b.attach(t.Context(), rec.send)
 	t.Cleanup(func() { b.detach(errStreamClosed) })
 
 	// Wedge A: enqueue a deliver, then wait for the sender goroutine to be parked
@@ -136,7 +136,7 @@ func TestWedgedRouterDoesNotBlockAnother(t *testing.T) {
 func TestWedgedSendDoesNotBlockCaller(t *testing.T) {
 	r := newCommandRouter()
 	p := newParkedSend(nil)
-	r.attach(p.send)
+	r.attach(t.Context(), p.send)
 	t.Cleanup(func() { close(p.release); r.detach(errStreamClosed) })
 
 	// Wedge the sender on a first frame.
@@ -159,7 +159,7 @@ func TestWedgedSendDoesNotBlockCaller(t *testing.T) {
 
 	// push returns promptly.
 	pushDone := make(chan error, 1)
-	go func() { pushDone <- r.push(signalCmd("s-1")) }()
+	go func() { pushDone <- r.push(t.Context(), signalCmd("s-1")) }()
 	select {
 	case err := <-pushDone:
 		if err != nil {
@@ -194,7 +194,7 @@ func TestWedgedSendDoesNotBlockCaller(t *testing.T) {
 func TestFullQueueDeliverRefuses(t *testing.T) {
 	r := newCommandRouter()
 	p := newParkedSend(nil)
-	r.attach(p.send)
+	r.attach(t.Context(), p.send)
 	t.Cleanup(func() { close(p.release); r.detach(errStreamClosed) })
 
 	// Wedge the sender, then fill the queue to capacity. The first frame is the
@@ -227,7 +227,7 @@ func TestFullQueueDeliverRefuses(t *testing.T) {
 	if r.deliverRefusals.Contains(overflowID) {
 		t.Fatal("overflowing deliver left its refusal entry registered; it must be removed")
 	}
-	r.complete(&compassv1internal.SessionsRequest{
+	r.complete(t.Context(), &compassv1internal.SessionsRequest{
 		RequestId: overflowID,
 		Result:    &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{}},
 	})
@@ -242,7 +242,7 @@ func TestFullQueueDeliverRefuses(t *testing.T) {
 func TestFullQueueCommandFailsFast(t *testing.T) {
 	r := newCommandRouter()
 	p := newParkedSend(nil)
-	r.attach(p.send)
+	r.attach(t.Context(), p.send)
 	t.Cleanup(func() { close(p.release); r.detach(errStreamClosed) })
 
 	if err := r.send1(deliverCmd("wedge")); err != nil {
@@ -288,7 +288,7 @@ func TestFullQueueCommandFailsFast(t *testing.T) {
 func TestFullQueueSignalDropsBestEffort(t *testing.T) {
 	r := newCommandRouter()
 	p := newParkedSend(nil)
-	r.attach(p.send)
+	r.attach(t.Context(), p.send)
 	t.Cleanup(func() { close(p.release); r.detach(errStreamClosed) })
 
 	if err := r.send1(deliverCmd("wedge")); err != nil {
@@ -302,7 +302,7 @@ func TestFullQueueSignalDropsBestEffort(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- r.push(signalCmd("sig-overflow")) }()
+	go func() { done <- r.push(t.Context(), signalCmd("sig-overflow")) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -319,7 +319,7 @@ func TestFullQueueSignalDropsBestEffort(t *testing.T) {
 func TestFIFOOrderToWire(t *testing.T) {
 	r := newCommandRouter()
 	p := newParkedSend(nil)
-	r.attach(p.send)
+	r.attach(t.Context(), p.send)
 
 	// The sender pulls the first frame and parks; that frame is first on the
 	// wire. Enqueue an interleaved sequence.
@@ -330,7 +330,7 @@ func TestFIFOOrderToWire(t *testing.T) {
 		case 'd':
 			err = r.send1(deliverCmd(id))
 		case 's':
-			err = r.push(signalCmd(id))
+			err = r.push(t.Context(), signalCmd(id))
 		case 'c':
 			// A command registers a pendingCall and blocks in waitCall; enqueue
 			// it from a goroutine so this loop keeps the enqueue order.
@@ -418,7 +418,7 @@ func waitOrder(t *testing.T, p *parkedSend, want []string) {
 func TestDetachJoinsSenderAndFailsQueuedCommands(t *testing.T) {
 	r := newCommandRouter()
 	p := newParkedSend(errors.New("stream torn down"))
-	r.attach(p.send)
+	r.attach(t.Context(), p.send)
 
 	// Queue a command behind the wedged head, wait for it to register.
 	const wedgeID = "wedge"
@@ -471,7 +471,7 @@ func TestDetachJoinsSenderAndFailsQueuedCommands(t *testing.T) {
 func TestQueuedDeliverAtDetachNeverSends(t *testing.T) {
 	r := newCommandRouter()
 	p := newParkedSend(errors.New("stream torn down"))
-	r.attach(p.send)
+	r.attach(t.Context(), p.send)
 
 	const wedgeID = "wedge"
 	const deliverID = "queued-deliver"
@@ -499,7 +499,7 @@ func TestQueuedDeliverAtDetachNeverSends(t *testing.T) {
 	// observable-refusal miss, never a panic. detach does NOT clean deliverRefusals
 	// entries (per design (e)); the entry is left to LRU eviction, so it may or may
 	// not still be resident — the contract asserted here is only non-panic.
-	r.complete(&compassv1internal.SessionsRequest{
+	r.complete(t.Context(), &compassv1internal.SessionsRequest{
 		RequestId: deliverID,
 		Result:    &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{}},
 	})
@@ -514,7 +514,7 @@ func TestSendFailurePerClassTeardown(t *testing.T) {
 		r := newCommandRouter()
 		sendErr := errors.New("send failed")
 		p := newParkedSend(sendErr)
-		r.attach(p.send)
+		r.attach(t.Context(), p.send)
 		t.Cleanup(func() { r.detach(errStreamClosed) })
 
 		const cmdID = "cmd-1"
@@ -543,7 +543,7 @@ func TestSendFailurePerClassTeardown(t *testing.T) {
 		r := newCommandRouter()
 		sendErr := errors.New("send failed")
 		p := newParkedSend(sendErr)
-		r.attach(p.send)
+		r.attach(t.Context(), p.send)
 		t.Cleanup(func() { r.detach(errStreamClosed) })
 
 		const deliverID = "deliver-1"

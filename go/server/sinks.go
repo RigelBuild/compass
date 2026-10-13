@@ -120,7 +120,7 @@ func (h hubPresenceSource) PresenceFor(accountIDs []store.AccountID) map[store.A
 // SessionResolver; hub takes consumer as SettleSink and SessionStartSink), and
 // starts its Run on gctx, which ends at shutdown.
 func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, fab fabric.EventFabric, st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
-	c := delivery.NewConsumer(st, hub, hub, fab, log)
+	c := delivery.NewConsumer(gctx, st, hub, hub, fab, log)
 	// The wake seam (RIG-1641 T3): a FRESH lifecycleService, not the instance
 	// wireHubServiceCycles wired. lifecycleService is stateless besides its own
 	// singleflight group, and only the waker path drives WakeAgent, so this

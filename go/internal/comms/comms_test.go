@@ -65,7 +65,7 @@ func newHandler(t *testing.T) (*Comms, *store.Store) {
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
-	return NewComms(st, bus, nil, admin.ID), st
+	return NewComms(t.Context(), st, bus, nil, admin.ID), st
 }
 func TestCreateAgentStoresRoleAndPersona(t *testing.T) {
 	svc, st := newHandler(t)

@@ -34,7 +34,7 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	const version = "deadbeefcafe"
@@ -68,7 +68,7 @@ func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalConfigVersion(context.Background(), ""); err != nil {
@@ -91,7 +91,7 @@ func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalConfigVersion(context.Background(), "v1"); err != nil {

@@ -840,6 +840,6 @@ func newTestConsumer(t *testing.T) (*Consumer, *fakeDispatcher, *fakeResolver, *
 	disp := newFakeDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), reads, disp, res, newFakeFabric(), discardLogger())
 	return c, disp, res, reads
 }

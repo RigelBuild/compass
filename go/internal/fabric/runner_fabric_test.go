@@ -249,19 +249,19 @@ func TestEventsClosesTheChannelOnContextDone(t *testing.T) {
 // process, not a slow one.
 func TestEventsChannelClosesOnClose(t *testing.T) {
 	t.Parallel()
-	f, err := New(Config{URL: testServer(t)})
+	f, err := New(t.Context(), Config{URL: testServer(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
 	// Rooted at context.Background() because this is a test root, and its never
 	// being cancelled is the invariant under test: Close is the only teardown.
-	events, err := f.Events(context.Background())
+	events, err := f.Events(t.Context())
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
 
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	select {

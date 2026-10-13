@@ -79,19 +79,19 @@ func startDeliveryInstance(t *testing.T, dsn, natsURL string, admin store.Accoun
 		t.Fatalf("store Open: %v", err)
 	}
 	t.Cleanup(st.Close)
-	fab, err := fabric.New(fabric.Config{URL: natsURL})
+	fab, err := fabric.New(ctx, fabric.Config{URL: natsURL})
 	if err != nil {
 		t.Fatalf("fabric.New: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := fab.Close(); err != nil {
+		if err := fab.Close(ctx); err != nil {
 			t.Errorf("fabric Close: %v", err)
 		}
 	})
 
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, fab, admin)
+	commsSvc := comms.NewComms(ctx, st, commsBus, fab, admin)
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	hub := newRunnerHub(st, board.NewProjection(bus), newSessionTail(), commsSvc, slog.New(slog.DiscardHandler))

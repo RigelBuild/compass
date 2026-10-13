@@ -284,7 +284,7 @@ func TestRunnerEnrolledFalseAfterReenrollUntilAttach(t *testing.T) {
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v", err)
 	}
-	old.attach(func(*compassv1internal.SessionsResponse) error { return nil })
+	old.attach(t.Context(), func(*compassv1internal.SessionsResponse) error { return nil })
 	t.Cleanup(func() { old.detach(errStreamClosed) })
 	if !hub.RunnerEnrolled() {
 		t.Fatal("RunnerEnrolled() = false with the router attached, want true")
@@ -334,8 +334,8 @@ func TestRunnerReadyHookFiresOnEachStreamAttach(t *testing.T) {
 	fired := make(chan struct{}, 2)
 	hub.SetRunnerReadyHook(func() { fired <- struct{}{} })
 
-	hub.fireRunnerReady() // first stream attach
-	hub.fireRunnerReady() // reconnect re-attach
+	hub.fireRunnerReady(t.Context()) // first stream attach
+	hub.fireRunnerReady(t.Context()) // reconnect re-attach
 
 	for i := range 2 {
 		select {
@@ -346,7 +346,7 @@ func TestRunnerReadyHookFiresOnEachStreamAttach(t *testing.T) {
 	}
 
 	// A hub with no hook wired must fire without panicking (nil-safe).
-	newHubOnly().fireRunnerReady()
+	newHubOnly().fireRunnerReady(t.Context())
 }
 
 // TestRunnerReadyHookPanicDoesNotCrash pins the non-fatal contract: a hook that
@@ -367,7 +367,7 @@ func TestRunnerReadyHookPanicDoesNotCrash(t *testing.T) {
 		panicked <- struct{}{}
 		panic("seed blew up")
 	})
-	hub.fireRunnerReady()
+	hub.fireRunnerReady(t.Context())
 	select {
 	case <-panicked:
 	case <-time.After(2 * time.Second):
@@ -376,7 +376,7 @@ func TestRunnerReadyHookPanicDoesNotCrash(t *testing.T) {
 	// Give the recover path a moment; the process is still alive if we reach here.
 	// Now prove the hub still fires a subsequent (non-panicking) hook.
 	hub.SetRunnerReadyHook(func() { recovered <- struct{}{} })
-	hub.fireRunnerReady()
+	hub.fireRunnerReady(t.Context())
 	select {
 	case <-recovered:
 	case <-time.After(2 * time.Second):
@@ -397,7 +397,7 @@ func TestStopReadyHooksJoinsRunningHookAndBarsLateFires(t *testing.T) {
 				<-release
 			}
 		})
-		hub.fireRunnerReady()
+		hub.fireRunnerReady(t.Context())
 		synctest.Wait() // the hook is durably blocked on release
 
 		done := hub.StopReadyHooks()
@@ -408,7 +408,7 @@ func TestStopReadyHooksJoinsRunningHookAndBarsLateFires(t *testing.T) {
 		default:
 		}
 
-		hub.fireRunnerReady() // a stream attach racing shutdown
+		hub.fireRunnerReady(t.Context()) // a stream attach racing shutdown
 		close(release)
 		<-done
 		synctest.Wait()

@@ -888,7 +888,7 @@ func TestCallbackErrorThenSuccessIsAcked(t *testing.T) {
 		return info.NumAckPending == 0 && info.NumPending == 0
 	})
 	// Close flushes any park publish; the raw flush orders it ahead of the check.
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if err := raw.FlushWithContext(ctx); err != nil {
@@ -1616,7 +1616,7 @@ func TestSubscribeWatchdogExitsOnClose(t *testing.T) {
 		return countGoroutinesWith(t, marker) > baseline
 	})
 
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	pollUntil(t, "the subscribe watchdog to exit after Close", func() bool {
@@ -2106,7 +2106,7 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	// Close drains the released callbacks and flushes any park they published;
 	// the raw flush then orders every routed DLQ message ahead of the check.
 	for name, f := range map[string]*Fabric{"a": a, "b": b} {
-		if err := f.Close(); err != nil {
+		if err := f.Close(t.Context()); err != nil {
 			t.Fatalf("Close %s: %v", name, err)
 		}
 	}

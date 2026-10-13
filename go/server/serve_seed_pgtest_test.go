@@ -90,7 +90,7 @@ func newSeedHarness(t *testing.T) *seedHarness {
 	tail := newSessionTail()
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
+	commsSvc := comms.NewComms(t.Context(), st, commsBus, nil, admin.ID)
 	hub := newRunnerHub(st, brd, tail, commsSvc, slog.New(slog.DiscardHandler))
 	svc := newService("test", bus, st, hub, brd, nil, tail)
 
