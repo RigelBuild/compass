@@ -134,6 +134,7 @@ linters:
       kv-only: false
       key-naming-case: snake
       static-msg: false
+      forbidden-keys: [trace_id, span_id]
 
     # F-ttsr: forbid `time.Sleep` — the CI teeth behind rule://go-no-sleep-in-test.
     # A fixed sleep to wait for async work is a flaky race (too short → false red
@@ -154,6 +155,8 @@ linters:
         # Restore forbidigo's default identifiers (dropped once `forbid` is set).
         - pattern: '^(fmt\.Print(|f|ln)|print|println)$'
           msg: "avoid debug prints in shipped code; use log/slog"
+        - pattern: '^context\.(Background|TODO)$'
+          msg: "pass the caller's context (rule://go-thread-context)"
 
     # nolintlint governs the inline `//nolint` directives themselves — the
     # per-site suppression form this module uses for architectural false
@@ -203,6 +206,10 @@ linters:
           - errorlint # a direct != on an unwrapped local sentinel is fine in a test
           - predeclared # a test-local may shadow a builtin (e.g. a var named recover)
           - depguard # tests freely use fenced imports (math/rand fixtures, os/exec harnesses for podman/microVM); the import fence is a production concern
+      # Test roots and the top of a main may mint the root context.
+      - path: '(_test\.go|cmd/[^/]+/main\.go)$'
+        linters: [forbidigo]
+        text: 'go-thread-context'
       # staticcheck's SA-class real-bug checks stay ON for tests (a broken test is
       # load-bearing); only the QF* quickfix *suggestions* are advisory noise there.
       - path: _test\.go
