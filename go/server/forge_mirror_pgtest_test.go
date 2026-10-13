@@ -419,6 +419,11 @@ func (d forgeMirrorSignalDriver) DriveAsks(ctx context.Context, askIDs []string)
 	d.done <- struct{}{}
 }
 
+func (d forgeMirrorSignalDriver) DriveAgent(ctx context.Context, agent store.AccountID) {
+	d.inner.DriveAgent(ctx, agent)
+	d.done <- struct{}{}
+}
+
 func waitForForgeMirrorDrive(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
@@ -769,5 +774,77 @@ func TestForgeMirrorSettingsHandlersEnforceTenantAdmin(t *testing.T) {
 	}
 	if !adminList.Msg.GetCanEdit() || len(adminList.Msg.GetSettings()) != 1 {
 		t.Fatalf("admin settings response = %+v, want one setting and can_edit=true", adminList.Msg)
+	}
+}
+
+type driveAgentMirrorPoster struct {
+	bodies []string
+}
+
+func (p *driveAgentMirrorPoster) PostMirror(_ context.Context, _ store.AccountID, _ store.ForgeMirrorMode, _ refs.Ref, _ string, _ string, body string) (forge.Comment, error) {
+	p.bodies = append(p.bodies, body)
+	return forge.Comment{ID: 17, Key: "agent-comment", URL: "https://github.com/owner/auto/issues/12#issuecomment-17"}, nil
+}
+
+func (*driveAgentMirrorPoster) ListMirrorComments(context.Context, store.AccountID, refs.Ref, time.Time) ([]forge.Comment, error) {
+	return nil, nil
+}
+
+func (*driveAgentMirrorPoster) DeleteMirrorComment(context.Context, store.AccountID, refs.Ref, string) error {
+	return nil
+}
+
+func (*driveAgentMirrorPoster) BodyLimit(refs.Ref) int { return 4096 }
+
+func TestForgeMirrorDriveAgentDeliversOpenAskRow(t *testing.T) {
+	st := forgeTestStore(t)
+	tenant := st.EffectiveTenant(context.Background())
+	ctx := store.WithTenant(context.Background(), tenant)
+	owner, err := st.CreateUser(ctx, store.NewUser{Handle: "mirror-open-row-owner", DisplayName: "Mirror Open Row Owner"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	agent, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "mirror-open-row-agent", DisplayName: "Mirror Open Row Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	channel, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "mirror-open-row", Kind: store.ChannelKindChannel, MemberAccountIDs: []store.AccountID{owner.ID, agent.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	coord := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/auto", Number: 12}
+	if err := st.SetForgeMirrorSetting(ctx, owner.ID, store.ForgeMirrorSetting{
+		Provider: coord.Provider, Host: coord.Host, Repo: coord.Repo, Mode: store.ForgeMirrorAuto,
+	}); err != nil {
+		t.Fatalf("SetForgeMirrorSetting: %v", err)
+	}
+	message, _, err := st.AppendMessage(ctx, store.Message{
+		AuthorAccountID: agent.ID,
+		Blocks: []store.MessageBlock{{Ask: &store.Ask{
+			Ref: "owner/auto#12", RefCoord: &coord,
+			Questions: []store.AskQuestion{{QuestionID: "q1", Question: "Re-drive this ask?", Options: []store.AskOption{{ID: "yes", Label: "Yes"}}}},
+		}}},
+	}, string(channel.ID), store.TopicRef{Name: "open-ask", Create: true}, "")
+	if err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	askID := message.Blocks[0].Ask.AskID
+	rows, err := st.AskForgeMirrors(ctx, []string{askID})
+	if err != nil || len(rows) != 1 || rows[0].State != 1 {
+		t.Fatalf("AskForgeMirrors before drive = (%+v, %v), want one pending row", rows, err)
+	}
+	poster := &driveAgentMirrorPoster{}
+	svc, _ := newForgeServiceForTest(t, forge.NewFakeProvider("gh-author"), forge.NewFakeProvider("gh-reviewer"))
+	svc.mirrorStoreDB = st
+	svc.mirrorPoster = poster
+	svc.DriveAgent(ctx, agent.ID)
+	if len(poster.bodies) != 1 || !strings.Contains(poster.bodies[0], "Re-drive this ask?") {
+		t.Fatalf("DriveAgent post bodies = %q, want the open ask delivered", poster.bodies)
+	}
+	row, err := st.ForgeMirrorByID(ctx, rows[0].ID)
+	if err != nil || row.State != 2 || row.PostedRev != 1 || row.CommentKey != "agent-comment" {
+		t.Fatalf("ForgeMirrorByID after DriveAgent = (%+v, %v), want delivered row", row, err)
 	}
 }

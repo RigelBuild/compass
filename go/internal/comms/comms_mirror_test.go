@@ -32,6 +32,37 @@ func (m mirrorDriverRecorder) DriveAsks(_ context.Context, askIDs []string) {
 	m.calls <- append([]string(nil), askIDs...)
 }
 
+func (m mirrorDriverRecorder) DriveAgent(context.Context, store.AccountID) {}
+
+type agentMirrorDriverRecorder struct {
+	calls chan store.AccountID
+}
+
+func (m agentMirrorDriverRecorder) DriveAsks(context.Context, []string) {}
+
+func (m agentMirrorDriverRecorder) DriveAgent(_ context.Context, agent store.AccountID) {
+	m.calls <- agent
+}
+
+func TestBoardWriteDrivesAgentMirrors(t *testing.T) {
+	svc, st := newHandler(t)
+	owner := mustUser(t, st, "board-mirror-driver-owner")
+	agent := mustAgent(t, st, owner.ID, "board-mirror-driver-agent")
+	driver := agentMirrorDriverRecorder{calls: make(chan store.AccountID, 1)}
+	svc.SetMirrorer(nil, driver)
+	if _, err := svc.UpdateBoardAsAccount(t.Context(), agent.ID, &compassv1.UpdateAgentBoardRequest{}); err != nil {
+		t.Fatalf("UpdateBoardAsAccount: %v", err)
+	}
+	select {
+	case got := <-driver.calls:
+		if got != agent.ID {
+			t.Fatalf("DriveAgent account = %q, want %q", got, agent.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DriveAgent did not receive board-writing agent")
+	}
+}
+
 func TestCommittedAskMessagesDriveMirrors(t *testing.T) {
 	svc, st := newHandler(t)
 	owner := mustUser(t, st, "mirror-driver-owner")

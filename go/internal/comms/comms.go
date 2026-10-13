@@ -79,6 +79,7 @@ type Mirrorer interface {
 // MirrorDriver delivers ask rows after their source messages commit.
 type MirrorDriver interface {
 	DriveAsks(ctx context.Context, askIDs []string)
+	DriveAgent(ctx context.Context, agent store.AccountID)
 }
 
 // NewComms constructs the CommsService handler over store and bus. adminID is the

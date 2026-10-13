@@ -465,6 +465,24 @@ func (s *forgeService) DriveAsks(ctx context.Context, askIDs []string) {
 		s.scheduleMirrorRecheck(life, result, nil, err != nil)
 	}
 }
+
+func (s *forgeService) DriveAgent(ctx context.Context, agent store.AccountID) {
+	life, done, ok := s.beginMirrorWork(ctx)
+	if !ok {
+		return
+	}
+	defer done()
+	rows, err := s.mirrorStoreDB.OpenForgeMirrors(life, agent)
+	if err != nil {
+		slog.Default().ErrorContext(life, "list open forge mirrors for agent", "agent_account_id", string(agent), "error", err)
+		return
+	}
+	for _, row := range rows {
+		result, err := s.driveMirrorRow(life, row.ID, nil)
+		s.scheduleMirrorRecheck(life, result, nil, err != nil)
+	}
+}
+
 func (s *forgeService) MirrorAsUser(ctx context.Context, account store.Account, req *compassv1.MirrorToForgeRequest) (string, error) {
 	fail := func(code connect.Code, err error) (string, error) { return "", connect.NewError(code, err) }
 	if req == nil {
