@@ -40,6 +40,10 @@ var boardWebhookDrops = expvar.NewInt("compass_board_webhook_drops")
 // next event.
 const defaultBoardQueueSize = 1024
 
+// maxHeldTraceparents caps the traces a held PR key collects, so a busy PR
+// held through a long budget pause cannot grow its slice without bound.
+const maxHeldTraceparents = 32
+
 // defaultBoardRetryWait re-drains held PR keys when the budget error gave no
 // reset hint.
 const defaultBoardRetryWait = time.Minute
@@ -228,6 +232,9 @@ func (a *BoardWebhookArm) drainBatch(ctx context.Context, first queuedEvent) (ti
 			c.headSHA = ev.HeadSHA
 		}
 		if _, held := a.pending[c]; held {
+			if q.traceparent != "" && len(a.pending[c]) < maxHeldTraceparents {
+				a.pending[c] = append(a.pending[c], q.traceparent)
+			}
 			return
 		}
 		if _, ok := seen[c]; !ok {
