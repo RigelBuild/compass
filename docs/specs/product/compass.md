@@ -712,9 +712,10 @@ agent-gateway `update_board` relay arm, not a CommsService RPC.
 
 An agent writes only its own board, through the agent-gateway `update_board`
 arm; a non-agent caller gets `permission_denied`. In each `upsert_tasks`
-entry an unset field keeps the stored value and a set field (including `""`)
-replaces it. A present `refs` or `waiting` op replaces the list, and an empty
-op clears it. A new task needs a `title`, and its `state` defaults to `ACTIVE`.
+entry an unset field keeps the stored value and a set field replaces it; `""`
+clears `note` or `primary_ref`, but a task's `title` is never empty. A present
+`refs` or `waiting` op replaces the list, and an empty op clears it. A new task
+needs a `title`, and its `state` defaults to `ACTIVE`.
 `remove_task_keys` drops tasks (removing the focus task clears the focus), and
 `halt` and `clear_halt` are mutually exclusive. An `automatic` patch never
 refreshes the board's written turn or time; an empty one returns the board
