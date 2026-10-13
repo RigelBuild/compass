@@ -6,7 +6,7 @@ Amendment record of the observability-architecture design
 ([`../compass-observability-architecture/design.md`](../compass-observability-architecture/design.md),
 §D3 and §T4). The parent stays frozen.
 
-Ledger-impact: DL-514.
+Ledger-impact: DL-515.
 
 ## Problem / Intent
 
