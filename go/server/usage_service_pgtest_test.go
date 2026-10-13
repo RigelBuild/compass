@@ -219,6 +219,7 @@ func TestUsageSeriesNetworkDoor(t *testing.T) {
 		nil,
 		nil,
 		gatewayServices{},
+		newServerHealth(),
 	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)

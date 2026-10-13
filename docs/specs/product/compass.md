@@ -1124,8 +1124,8 @@ A distinct authenticated door for clients that reach the server over an
 untrusted network rather than the local Unix socket. Unlike the socket (whose
 `0600` mode is its whole credential) and the dev endpoint (loopback, ambient
 identity, no bearer auth — so its admin-only RPCs are denied), the network door
-is the internet-facing surface: it terminates TLS, authenticates every RPC with
-a bearer token, and gates the admin-only RPCs. It is off by default and opened
+is the internet-facing surface: it terminates TLS, authenticates every RPC except
+health with a bearer token, and gates the admin-only RPCs. It is off by default and opened
 only with `--listen`.
 
 ### Requirement: The network door requires TLS
@@ -1146,18 +1146,28 @@ of the three flags counts as unset. The door SHALL require a minimum of TLS 1.3.
 
 ### Requirement: The network door authenticates a bearer token and gates admin RPCs
 
-The server SHALL authenticate every network-door RPC with a bearer token: a
+The server SHALL authenticate network-door RPCs with a bearer token: a
 request with no token or an unresolvable token SHALL be rejected
-`Unauthenticated`, on both unary and streaming RPCs. The admin-only RPCs
-(`IssueToken`, `RenameAccount`, and the agent-session lifecycle RPCs) SHALL
-additionally require the caller to resolve to the admin account, rejecting a
-non-admin `PermissionDenied`; the authenticated-open RPCs (`GetServerInfo`,
-`SubscribeEvents`) SHALL admit any valid bearer.
+`Unauthenticated`, on both unary and streaming RPCs, except the gRPC health
+service's `Check` and `Watch` methods. `GET` and `HEAD /healthz` are also
+anonymous. The admin-only RPCs (`IssueToken`, `RenameAccount`, and the
+agent-session lifecycle RPCs) SHALL additionally require the caller to resolve
+to the admin account, rejecting a non-admin `PermissionDenied`; the
+authenticated-open RPCs (`GetServerInfo`, `SubscribeEvents`) SHALL admit any
+valid bearer.
+
+#### Scenario: Health checks require no network-door bearer
+
+- **Given** a running network door
+- **When** a client calls health `Check` or `Watch`, or sends
+  `GET`/`HEAD /healthz`, without a bearer token
+- **Then** `Check` reports the current status, `Watch` returns `Unimplemented`,
+  and `/healthz` returns 200 when serving or 503 when not serving.
 
 #### Scenario: A token-less call on the network door is rejected
 
 - **Given** a running network door
-- **When** a client calls any RPC with no bearer token
+- **When** a client calls any non-health RPC with no bearer token
 - **Then** the server rejects it `Unauthenticated` before the handler runs.
 
 #### Scenario: A non-admin token calls an admin-only RPC

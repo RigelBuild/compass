@@ -222,6 +222,7 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 		nil,
 		nil,
 		gatewayServices{},
+		newServerHealth(),
 	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
@@ -291,6 +292,7 @@ func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 		nil,
 		nil,
 		gatewayServices{},
+		newServerHealth(),
 	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
@@ -376,6 +378,7 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 		nil,
 		nil,
 		gatewayServices{},
+		newServerHealth(),
 	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
