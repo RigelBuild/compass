@@ -20,9 +20,9 @@ import (
 
 func testGatewayInterceptor(t *testing.T) *otelconnect.Interceptor {
 	t.Helper()
-	ic, err := otelconnect.NewInterceptor()
+	ic, err := newAgentGatewayInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("newAgentGatewayInterceptor: %v", err)
 	}
 	return ic
 }

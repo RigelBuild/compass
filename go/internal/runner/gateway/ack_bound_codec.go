@@ -138,6 +138,12 @@ func (frameJSONCodec) Unmarshal(data []byte, message any) error {
 	return nil
 }
 
+// newAgentGatewayInterceptor drops per-message trace events: a long Publish stream
+// would otherwise grow one span by an event per frame.
+func newAgentGatewayInterceptor() (*otelconnect.Interceptor, error) {
+	return otelconnect.NewInterceptor(otelconnect.WithoutTraceEvents())
+}
+
 // agentGatewayHandlerOptions registers tracing first so every AgentGateway call gets a server span.
 func agentGatewayHandlerOptions(ic *otelconnect.Interceptor) []connect.HandlerOption {
 	return []connect.HandlerOption{

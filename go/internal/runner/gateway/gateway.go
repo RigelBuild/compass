@@ -15,7 +15,6 @@ import (
 	"sync"
 
 	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
@@ -290,7 +289,7 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // container starts; the returned listener's Close tears the socket down at
 // container teardown.
 func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketListener, error) {
-	ic, err := otelconnect.NewInterceptor(otelconnect.WithoutTraceEvents())
+	ic, err := newAgentGatewayInterceptor()
 	if err != nil {
 		return nil, fmt.Errorf("otel: connect interceptor: %w", err)
 	}
