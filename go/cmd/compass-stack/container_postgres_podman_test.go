@@ -238,6 +238,15 @@ func (c containerCfg) args(sub string, extra ...string) []string {
 // lives under one unique per-pid dir.
 func newContainerFixture(ctx context.Context, t *testing.T, root string) containerFixture {
 	t.Helper()
+	ports := freePorts(ctx, t, 2)
+	return newContainerFixtureOnPorts(t, root, ports[0], ports[1])
+}
+
+// newContainerFixtureOnPorts takes its ports from the caller, so a caller that
+// needs more ports draws them all in one freePorts call; separate calls can
+// hand back a port the previous call just released.
+func newContainerFixtureOnPorts(t *testing.T, root string, listenPort, pgPort int) containerFixture {
+	t.Helper()
 	pgSockDir := filepath.Join(root, "pgsock")
 	runtimeDir := filepath.Join(root, "rt")
 	serverSock := filepath.Join(root, "s.sock")
@@ -248,8 +257,6 @@ func newContainerFixture(ctx context.Context, t *testing.T, root string) contain
 		}
 	}
 
-	ports := freePorts(ctx, t, 2)
-	listenPort, pgPort := ports[0], ports[1]
 	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 
 	cfg := containerCfg{

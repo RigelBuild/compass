@@ -59,8 +59,8 @@ type bundledStack struct {
 // bundled collector, every host port drawn from freePorts.
 func upBundledStack(ctx context.Context, t *testing.T, root string) bundledStack {
 	t.Helper()
-	fx := newContainerFixture(ctx, t, root)
-	ports := freePorts(ctx, t, 5)
+	ports := freePorts(ctx, t, 7)
+	fx := newContainerFixtureOnPorts(t, root, ports[5], ports[6])
 	cfg := stack.Config{
 		StateDir:            fx.cfg.StateDir,
 		SocketPath:          fx.cfg.SocketPath,
