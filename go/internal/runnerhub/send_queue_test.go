@@ -16,13 +16,17 @@ package runnerhub
 // elapsed time. All run under -race.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
+	"strings"
 	"testing"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // parkedSend is a stream send that blocks on release until the test unparks it,
@@ -571,4 +575,41 @@ func TestSendFailurePerClassTeardown(t *testing.T) {
 			t.Fatal("a Send-failed deliver left its refusal entry registered; it must be removed")
 		}
 	})
+}
+
+func TestSendFailureLogCarriesCommandTrace(t *testing.T) {
+	const (
+		traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+		traceID     = "4bf92f3577b34da6a3ce929d0e0e4736"
+		spanID      = "00f067aa0ba902b7"
+	)
+
+	var logs bytes.Buffer
+	r := newCommandRouter()
+	r.log = slog.New(otelx.NewTraceHandler(slog.NewTextHandler(&logs, nil)))
+	p := newParkedSend(errors.New("send failed"))
+	r.attach(t.Context(), p.send)
+	t.Cleanup(func() { r.detach(errStreamClosed) })
+
+	cmd := deliverCmd("deliver-trace")
+	cmd.Traceparent = traceparent
+	if err := r.send1(cmd); err != nil {
+		t.Fatalf("send1 = %v, want nil (queued)", err)
+	}
+	r.mu.Lock()
+	s := r.sender
+	r.mu.Unlock()
+	<-p.entered
+
+	close(p.release)
+	select {
+	case <-s.done:
+	case <-timeAfter():
+		t.Fatal("sender did not finish logging after a Send failure")
+	}
+
+	line := logs.String()
+	if !strings.Contains(line, "trace_id="+traceID) || !strings.Contains(line, "span_id="+spanID) {
+		t.Fatalf("Send failure log = %q, want trace_id=%s span_id=%s", line, traceID, spanID)
+	}
 }
