@@ -15,7 +15,7 @@
 // Bypass knobs:
 //   HK=0 git push           // skip all hooks (emergency)
 //   git push --no-verify    // hk respects this too
-amends "package://github.com/jdx/hk/releases/download/v1.45.0/hk@1.45.0#/Config.pkl"
+amends "package://github.com/jdx/hk/releases/download/v1.48.0/hk@1.48.0#/Config.pkl"
 
 // Pin the default-branch reference. Without this, hk's auto-detect reads
 // `refs/remotes/origin/HEAD`, which is not always set on fresh clones (and in
