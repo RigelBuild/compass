@@ -729,7 +729,7 @@ jobs:
         # array. upload-artifact and download-artifact are independent actions
         # with independent version numbers; this upload (v7) and the consumer's
         # download (v8) interoperate on the shared v4+ artifact backend.
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: compass-app-darwin-arm64-dmg
           path: compass-app_${{ env.TAG }}_darwin-arm64.dmg
@@ -897,7 +897,7 @@ jobs:
         # alongside the linux assets (design §18). This download (v8) and the
         # producer's upload (v7) interoperate on the shared v4+ artifact backend
         # (the two actions version independently).
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: compass-app-darwin-arm64-dmg
           path: .
