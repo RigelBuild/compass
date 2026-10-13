@@ -48,7 +48,12 @@ func agentRepository(raw string) (string, error) {
 	return repo, nil
 }
 
+// githubOwnerPart follows GitHub's login rule: 1-39 alphanumerics or hyphens,
+// not starting with a hyphen.
 func githubOwnerPart(part string) bool {
+	if len(part) > 39 || part[0] == '-' {
+		return false
+	}
 	for _, c := range part {
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
 			continue
@@ -58,7 +63,12 @@ func githubOwnerPart(part string) bool {
 	return true
 }
 
+// githubRepositoryPart follows GitHub's repository rule: up to 100 of
+// [a-z0-9._-], never "." or "..".
 func githubRepositoryPart(part string) bool {
+	if len(part) > 100 || part == "." || part == ".." {
+		return false
+	}
 	for _, c := range part {
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
 			continue
