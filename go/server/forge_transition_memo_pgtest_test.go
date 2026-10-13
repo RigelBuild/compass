@@ -93,6 +93,9 @@ func TestForgeTransitionMemoResolvesFromWebhookCoordinate(t *testing.T) {
 		{"github issue, canonical repo", githubIssue, "octo/repo", "octo/repo", 11, true},
 		{"github pull request, canonical repo", githubPR, "octo/repo", "octo/repo", 12, true},
 		{"linear issue, canonical team key", linearIssue, "RIG", "RIG", 13, true},
+		{"github issue, second canonical repo", githubIssue, "acme/tools", "acme/tools", 14, true},
+		{"github pull request, second canonical repo", githubPR, "acme/tools", "acme/tools", 15, true},
+		{"linear issue, second canonical team key", linearIssue, "SEA", "SEA", 16, true},
 		{"github issue, caller casing differs", githubIssue, "Octo/Repo", "octo/repo", 21, false},
 		{"github pull request, caller casing differs", githubPR, "Octo/Repo", "octo/repo", 22, false},
 		{"linear issue, caller casing differs", linearIssue, "rig", "RIG", 23, false},
@@ -108,6 +111,9 @@ func TestForgeTransitionMemoResolvesFromWebhookCoordinate(t *testing.T) {
 			}
 			if ev.Change != compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_STATE {
 				t.Fatalf("parsed change = %v, want STATE", ev.Change)
+			}
+			if ev.Repo != tc.webhookRepo {
+				t.Fatalf("parsed repo = %q, want the payload's %q", ev.Repo, tc.webhookRepo)
 			}
 
 			got, ok, err := st.ConsumeStateTransition(ctx, store.ForgeProvider(ev.Provider), ev.Host, ev.Repo, store.ForgeArtifactKind(ev.Kind), ev.Number, ev.State, fresh)
