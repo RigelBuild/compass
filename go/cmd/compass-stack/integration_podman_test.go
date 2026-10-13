@@ -94,12 +94,23 @@ func podmanUsable(t *testing.T) bool {
 	t.Helper()
 	out, err := exec.CommandContext(t.Context(), "podman", "run", "--rm", agentImage, "true").CombinedOutput()
 	if err != nil {
-		// The skip message alone cannot tell a missing image from a broken userns.
+		// The skip message alone cannot tell a missing image from a broken userns,
+		// and a broken rootless netns is diagnosable only from its state dir.
 		podmanProbeLog.Do(func() {
-			fmt.Fprintf(os.Stderr, "podmanUsable: podman run %s: %v\n%s\n", agentImage, err, out)
+			fmt.Fprintf(os.Stderr, "podmanUsable: podman run %s: %v\n%s\n%s\n", agentImage, err, out, rootlessNetnsState(t))
 		})
 	}
 	return err == nil
+}
+
+// rootlessNetnsState lists podman's rootless-netns dir and every container, so a
+// netns setup failure shows which file was missing and what still held the netns.
+func rootlessNetnsState(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "containers", "networks", "rootless-netns")
+	ls, lsErr := exec.CommandContext(t.Context(), "ls", "-la", "--full-time", dir).CombinedOutput()
+	ps, psErr := exec.CommandContext(t.Context(), "podman", "ps", "-a", "--format", "{{.Names}} {{.Status}}").CombinedOutput()
+	return fmt.Sprintf("rootless-netns %s (%v):\n%s\npodman ps -a (%v):\n%s", dir, lsErr, ls, psErr, ps)
 }
 
 // buildBinaries compiles the three stack child binaries from the current tree
