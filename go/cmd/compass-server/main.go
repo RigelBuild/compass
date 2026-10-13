@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/RigelBuild/compass/go/internal/otel"
+	"github.com/RigelBuild/compass/go/internal/otel/otelsetup"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"github.com/RigelBuild/compass/go/internal/usage"
 	"github.com/RigelBuild/compass/go/server"
@@ -106,12 +107,12 @@ func run() error {
 	// OTel emission (T4b): endpoint-gated off the ENV-only knob. When
 	// OTEL_EXPORTER_OTLP_ENDPOINT is empty, Setup* install no provider and return
 	// no-op shutdowns, so this is zero-overhead on the shipped socket-only path.
-	otelCfg := otel.Config{
+	otelCfg := otelsetup.Config{
 		ServiceName:    "compass-server",
 		ServiceVersion: version,
 		Endpoint:       cfg.OtelEndpoint,
 	}
-	traceShutdown, err := otel.SetupTracerProvider(ctx, otelCfg)
+	traceShutdown, err := otelsetup.SetupTracerProvider(ctx, otelCfg)
 	if err != nil {
 		return fmt.Errorf("otel: tracer provider: %w", err)
 	}
@@ -126,7 +127,7 @@ func run() error {
 		defer cancel()
 		_ = traceShutdown(sctx) // best-effort flush on drain; a collector error here is not actionable at exit
 	}()
-	meterShutdown, err := otel.SetupMeterProvider(ctx, otelCfg)
+	meterShutdown, err := otelsetup.SetupMeterProvider(ctx, otelCfg)
 	if err != nil {
 		return fmt.Errorf("otel: meter provider: %w", err)
 	}

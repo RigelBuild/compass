@@ -1,7 +1,8 @@
-// Package otel is the single Go OTel convention for the Compass backend
-// (compass-server and compass-runner). It is the only place a TracerProvider
-// or MeterProvider is constructed, so the repo keeps exactly one
-// tracer/exporter posture.
+// Package otelsetup is the only place a TracerProvider or MeterProvider is
+// constructed for the Compass backend (compass-server and compass-runner), so
+// the repo keeps exactly one tracer/exporter posture. It is split from
+// internal/otel because it links the OTel SDK and OTLP exporters; binaries
+// that install no provider (the compass CLI) import only internal/otel.
 //
 // Off by default, endpoint-gated: when cfg.Endpoint (the
 // OTEL_EXPORTER_OTLP_ENDPOINT value) is empty, Setup* installs NO global
@@ -10,7 +11,7 @@
 // endpoint is set, exporters read OTEL_EXPORTER_OTLP_ENDPOINT themselves
 // (standard OTLP base-endpoint per-signal path suffixing), so cfg.Endpoint
 // serves purely as the on/off switch and is never passed as an explicit URL.
-package otel
+package otelsetup
 
 // Config carries the per-binary identity and the endpoint gate.
 type Config struct {

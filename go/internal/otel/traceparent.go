@@ -1,3 +1,6 @@
+// Package otel holds the Compass Go span and log-trace helpers. It never
+// imports the OTel SDK, so any binary may link it; provider setup lives in
+// internal/otel/otelsetup.
 package otel
 
 import (
