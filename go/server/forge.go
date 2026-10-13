@@ -160,13 +160,15 @@ type forgeService struct {
 	mirrorCancel        context.CancelFunc
 	mirrorClosing       bool
 	mirrorWG            sync.WaitGroup
-	mirrorTimers        map[*mirrorTimer]struct{}
+	mirrorTimers        map[string]*mirrorTimer
 	scheduleMirrorAfter func(time.Duration, func()) func() bool
 	mirrorPoster        mirror.Poster
+	mirrorRecheckRetry  map[string]int
 }
 
 type mirrorTimer struct {
 	stop func() bool
+	due  time.Time
 	once sync.Once
 }
 

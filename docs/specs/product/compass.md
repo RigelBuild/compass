@@ -1001,8 +1001,6 @@ remove the stored setting, and an absent setting SHALL behave as OFF.
 - **When** a user answers the ask
 - **Then** the same forge comment is edited to include the answer and answerer
 
-### Requirement: A user click mirrors visible source text only to an allowed ref
-
 `MirrorToForge` SHALL accept exactly one ask, topic, or one-to-fifty-message
 source. The caller SHALL be a user who can see the source channel. The destination
 mode SHALL be MANUAL or AUTO. The agent scope check applies only to agent posts.
@@ -1011,6 +1009,9 @@ permission-denied. Invalid source combinations SHALL receive invalid-argument.
 The user header SHALL name the clicking user and source text SHALL not be
 allowed to forge an owner header. A second user mirroring the same source to the
 same ref SHALL be refused while the first user's mirror exists.
+
+Topic mirrors SHALL carry at most the newest 50 messages. If a topic has more
+than 50, the mirror SHALL state, "Showing the newest 50 messages."
 
 ### Requirement: Automatic mirroring follows the ask's explicit ref
 

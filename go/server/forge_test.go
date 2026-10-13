@@ -1666,13 +1666,48 @@ func TestForgeMirrorRecheckTimerIsStoppedOnShutdown(t *testing.T) {
 	}
 	svc.SetMirrorLifetime(context.Background())
 	recheckAt := time.Now().Add(time.Hour)
-	svc.scheduleMirrorRecheck(context.Background(), store.ForgeMirrorRow{ID: "recheck-row", RecheckAt: &recheckAt}, nil)
+	svc.scheduleMirrorRecheck(context.Background(), store.ForgeMirrorRow{ID: "recheck-row", RecheckAt: &recheckAt}, nil, false)
 	if gotDelay <= 0 || gotDelay > time.Hour {
 		t.Fatalf("scheduled delay = %s, want a positive delay up to one hour", gotDelay)
 	}
 	svc.StopMirrorLifetime()
 	if !stopped {
 		t.Fatal("shutdown did not stop pending mirror recheck")
+	}
+}
+
+func TestForgeMirrorRecheckKeepsOneEarlierPendingTimer(t *testing.T) {
+	svc, _ := newForgeServiceForTest(t, forge.NewFakeProvider("gh-author"), forge.NewFakeProvider("gh-reviewer"))
+	delays := make([]time.Duration, 0, 3)
+	stops := make([]bool, 0, 3)
+	callbacks := make([]func(), 0, 3)
+	svc.scheduleMirrorAfter = func(delay time.Duration, fn func()) func() bool {
+		delays = append(delays, delay)
+		callbacks = append(callbacks, fn)
+		stopped := false
+		stops = append(stops, false)
+		index := len(stops) - 1
+		return func() bool {
+			stops[index] = true
+			stopped = true
+			return stopped
+		}
+	}
+	svc.SetMirrorLifetime(context.Background())
+	t.Cleanup(svc.StopMirrorLifetime)
+	now := time.Now()
+	for _, due := range []time.Time{now.Add(time.Hour), now.Add(2 * time.Hour), now.Add(30 * time.Minute)} {
+		svc.scheduleMirrorRecheck(context.Background(), store.ForgeMirrorRow{ID: "coalesced", RecheckAt: &due}, nil, false)
+	}
+	if len(delays) != 2 || delays[0] < 59*time.Minute || delays[1] < 29*time.Minute || delays[1] > 30*time.Minute {
+		t.Fatalf("scheduled delays = %v, want original timer kept for later due time and replaced by earlier due time", delays)
+	}
+	if len(svc.mirrorTimers) != 1 || !stops[0] {
+		t.Fatalf("pending timers = %d, first stopped = %v; want one pending timer and replaced timer stopped", len(svc.mirrorTimers), stops[0])
+	}
+	callbacks[0]()
+	if len(svc.mirrorTimers) != 1 {
+		t.Fatalf("pending timers after firing replaced callback = %d, want current timer retained", len(svc.mirrorTimers))
 	}
 }
 

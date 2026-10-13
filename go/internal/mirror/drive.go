@@ -65,23 +65,33 @@ func Drive(ctx context.Context, st *store.Store, p Poster, rows []store.ForgeMir
 // DriveOne leases and processes one row, then returns the tenant-scoped stored row.
 func DriveOne(ctx context.Context, st *store.Store, p Poster, candidate store.ForgeMirrorRow, link LinkFunc, bodyFn BodyFunc) (store.ForgeMirrorRow, error) {
 	log := slog.Default()
-	if ctx.Err() != nil {
-		return store.ForgeMirrorRow{}, ctx.Err()
+	for {
+		if ctx.Err() != nil {
+			return store.ForgeMirrorRow{}, ctx.Err()
+		}
+		token, err := newLeaseToken()
+		if err != nil {
+			return store.ForgeMirrorRow{}, fmt.Errorf("mirror: create lease token: %w", err)
+		}
+		row, ok, err := st.LeaseForgeMirror(ctx, candidate.ID, token, leaseTTL)
+		if err != nil {
+			return store.ForgeMirrorRow{}, fmt.Errorf("mirror: lease row %q: %w", candidate.ID, err)
+		}
+		if !ok {
+			return st.ForgeMirrorByID(ctx, candidate.ID)
+		}
+		processErr := processLeasedRow(ctx, st, p, row, token, link, bodyFn, log)
+		finalRow, readErr := st.ForgeMirrorByID(ctx, candidate.ID)
+		if readErr != nil {
+			return finalRow, errors.Join(processErr, readErr)
+		}
+		repointedComment := finalRow.State == pendingState && finalRow.CommentKey != row.CommentKey
+		refusedCurrentRevision := errors.Is(processErr, ErrRefused) && finalRow.BodyRev <= row.BodyRev
+		if refusedCurrentRevision || finalRow.BodyRev <= row.BodyRev && !repointedComment {
+			return finalRow, processErr
+		}
+		candidate = finalRow
 	}
-	token, err := newLeaseToken()
-	if err != nil {
-		return store.ForgeMirrorRow{}, fmt.Errorf("mirror: create lease token: %w", err)
-	}
-	row, ok, err := st.LeaseForgeMirror(ctx, candidate.ID, token, leaseTTL)
-	if err != nil {
-		return store.ForgeMirrorRow{}, fmt.Errorf("mirror: lease row %q: %w", candidate.ID, err)
-	}
-	if !ok {
-		return st.ForgeMirrorByID(ctx, candidate.ID)
-	}
-	processErr := processLeasedRow(ctx, st, p, row, token, link, bodyFn, log)
-	finalRow, readErr := st.ForgeMirrorByID(ctx, candidate.ID)
-	return finalRow, errors.Join(processErr, readErr)
 }
 
 func processLeasedRow(ctx context.Context, st *store.Store, p Poster, row store.ForgeMirrorRow, token string, link LinkFunc, bodyFn BodyFunc, log *slog.Logger) error {
@@ -119,15 +129,15 @@ func processLeasedRow(ctx context.Context, st *store.Store, p Poster, row store.
 	if row.Agent == "" {
 		need = store.ForgeMirrorManual
 	}
-	if err := deliverRow(ctx, st, p, row, token, ref, need, body, leaseLost); err != nil {
+	if err := deliverRow(ctx, st, p, row, token, ref, need, body, leaseLost, row.BodyRev); err != nil {
 		return fmt.Errorf("mirror: deliver row %q: %w", row.ID, err)
 	}
 	return nil
 }
 
-func deliverRow(ctx context.Context, st *store.Store, p Poster, row store.ForgeMirrorRow, token string, ref refs.Ref, need store.ForgeMirrorMode, body string, leaseLost *atomic.Bool) error {
+func deliverRow(ctx context.Context, st *store.Store, p Poster, row store.ForgeMirrorRow, token string, ref refs.Ref, need store.ForgeMirrorMode, body string, leaseLost *atomic.Bool, renderedRev int16) error {
 	if row.CommentKey != "" && row.PostedRev == row.BodyRev {
-		return markDelivered(ctx, st, row, token, row.CommentID, row.CommentKey, row.CommentURL, false)
+		return markDelivered(ctx, st, row, token, row.CommentID, row.CommentKey, row.CommentURL, false, renderedRev)
 	}
 
 	state := deliveryState{
@@ -139,7 +149,7 @@ func deliverRow(ctx context.Context, st *store.Store, p Poster, row store.ForgeM
 		if lostOrCanceled(ctx, leaseLost) {
 			return nil
 		}
-		retry, err := deliverAttempt(ctx, st, p, token, ref, need, body, leaseLost, &state)
+		retry, err := deliverAttempt(ctx, st, p, token, ref, need, body, leaseLost, &state, renderedRev)
 		if err != nil {
 			state.lastErr = err
 		}
@@ -165,7 +175,7 @@ type deliveryState struct {
 	lastErr   error
 }
 
-func deliverAttempt(ctx context.Context, st *store.Store, p Poster, token string, ref refs.Ref, need store.ForgeMirrorMode, body string, leaseLost *atomic.Bool, state *deliveryState) (bool, error) {
+func deliverAttempt(ctx context.Context, st *store.Store, p Poster, token string, ref refs.Ref, need store.ForgeMirrorMode, body string, leaseLost *atomic.Bool, state *deliveryState, renderedRev int16) (bool, error) {
 	commentKey, comment, adopted, err := recoverPriorComment(ctx, p, state.row, ref, state.isGitHub, leaseLost)
 	if err != nil {
 		return true, err
@@ -194,10 +204,10 @@ func deliverAttempt(ctx context.Context, st *store.Store, p Poster, token string
 	}
 	comment, err = p.PostMirror(ctx, state.row.Actor, need, ref, commentKey, state.row.ClientCommentID, body)
 	if err == nil {
-		return false, markDelivered(ctx, st, state.row, token, comment.ID, comment.Key, comment.URL, state.uncertain)
+		return false, markDelivered(ctx, st, state.row, token, comment.ID, comment.Key, comment.URL, state.uncertain, renderedRev)
 	}
 	if errors.Is(err, ErrRefused) {
-		return false, markFailed(ctx, st, state.row, token, err)
+		return false, errors.Join(ErrRefused, markFailed(ctx, st, state.row, token, err))
 	}
 	if state.isGitHub {
 		state.uncertain = true
@@ -259,7 +269,7 @@ func renderBody(ctx context.Context, st *store.Store, p Poster, row store.ForgeM
 	}
 	linkValue := Link{Channel: ask.Channel, Topic: ask.Topic}
 	if link != nil {
-		linkValue = link(string(ask.ChannelID), ask.Message.TopicID)
+		linkValue.URL = link(string(ask.ChannelID), ask.Message.TopicID).URL
 	}
 	return WithMarker(renderAskWithinLimit(*askContent, ask.AnsweredBy, linkValue, limit), row.ID), nil
 }
@@ -359,9 +369,9 @@ func recheckComments(ctx context.Context, st *store.Store, p Poster, row store.F
 	return nil
 }
 
-func markDelivered(ctx context.Context, st *store.Store, row store.ForgeMirrorRow, token string, id uint64, key, url string, recheck bool) error {
+func markDelivered(ctx context.Context, st *store.Store, row store.ForgeMirrorRow, token string, id uint64, key, url string, recheck bool, renderedRev int16) error {
 	if err := st.MarkForgeMirror(ctx, row.ID, token, store.ForgeMirrorMark{
-		PostedRev: row.BodyRev, State: doneState, CommentID: id,
+		PostedRev: renderedRev, State: doneState, CommentID: id,
 		CommentKey: key, URL: url, Recheck: recheck,
 	}); err != nil {
 		return fmt.Errorf("mirror: mark delivered: %w", err)

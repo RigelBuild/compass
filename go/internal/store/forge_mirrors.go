@@ -308,6 +308,16 @@ func (s *Store) MarkForgeMirror(ctx context.Context, id, token string, mark Forg
 }
 
 func insertAskMirrors(ctx context.Context, q *db.Queries, msg Message, author AccountID) error {
+	hasMirrorAsk := false
+	for _, block := range msg.Blocks {
+		if block.Ask != nil && block.Ask.RefCoord != nil {
+			hasMirrorAsk = true
+			break
+		}
+	}
+	if !hasMirrorAsk {
+		return nil
+	}
 	isAgent, err := q.IsAgentAccount(ctx, string(author))
 	if err != nil {
 		return fmt.Errorf("store: identify ask mirror author: %w", err)
