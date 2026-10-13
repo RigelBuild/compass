@@ -354,8 +354,9 @@ func extensionIDFromPath(p string) string // ports the SDK's getExtensionNameFro
 Tests: a user `settings/config.yml` drops a tenant-only key; a user
 `skills/x/` keeps none of the default's `skills/x/` files; a two-server
 `mcp/a.json`, an `mcp/a.json` keyed `b`, and one with no `mcpServers` rejected;
-a user `mcp/fetch.json` overrides the default's, and one with empty
-`mcpServers` removes `fetch`; under `extensions/foo/`, `src/index.ts` (id
+`mcp/fetch.json` set differently in all four layers resolves to the role's,
+a tenant lock on it rejects user and role puts and drops a stored one, and one
+with empty `mcpServers` removes `fetch`; under `extensions/foo/`, `src/index.ts` (id
 `src`) and `../bar/index.ts` rejected, `foo.ts` accepted; a file at
 `extensions/foo` rejected; each D13 carrier rejected, `auth.tokenUrl` userinfo
 and `?token=` included; an env name and `!command` accepted; a user or role put
@@ -453,7 +454,8 @@ func checkBundleCaps(layer bundleLayer, fileCount int, contentBytes int64) error
 ```
 
 Tests: a 2561-file default, a 513-file overlay, a 4 MiB + 1-byte overlay,
-`locks.yml` in a user dir, and a two-server MCP file fail, naming the cause.
+`locks.yml` in a user dir, and a two-server, mis-keyed, or `mcpServers`-less
+MCP file fail, naming the cause; an empty `mcpServers` passes.
 Docs: layer order, merge table, locks, removal rules, MCP lint, and splitting a
 multi-server MCP file.
 
