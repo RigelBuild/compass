@@ -126,6 +126,9 @@ func netnsConnLiveness(dir string) string {
 	if err != nil {
 		return fmt.Sprintf("conn pid %q: %v", raw, err)
 	}
+	if pid <= 0 {
+		return fmt.Sprintf("conn pid %d: invalid, not probed", pid)
+	}
 	return fmt.Sprintf("conn pid %d: kill(0) = %v", pid, syscall.Kill(pid, 0))
 }
 
