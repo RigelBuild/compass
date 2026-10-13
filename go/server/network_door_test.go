@@ -1298,8 +1298,8 @@ func TestServeWithListenNeverLogsSuppliedAdminToken(t *testing.T) {
 		t.Fatalf("write supplied token file: %v", err)
 	}
 	socketPath := filepath.Join(dir, "compass.sock")
-	certPath, keyPath, _ := writeSelfSignedCert(t, dir)
-	serveInBackground(t, ServeConfig{
+	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
+	addr := serveInBackground(t, ServeConfig{
 		SocketPath:     socketPath,
 		DatabaseDSN:    pgtest.RequireDSN(t),
 		Version:        "net-test",
@@ -1307,9 +1307,17 @@ func TestServeWithListenNeverLogsSuppliedAdminToken(t *testing.T) {
 		TLS:            &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:       stateDir,
 		AdminTokenFile: operatorTokenFile,
-	})
+	}).network
 	waitServing(t, socketPath)
 
+	client := newTLSClient(t, addr, pool)
+	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownHandle})
+	req.Header().Set("Authorization", "Bearer "+token)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	if _, err := client.IssueToken(ctx, req); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("supplied token on admin-only IssueToken = %v, want CodeNotFound (proves it resolves to the admin and clears the gate)", err)
+	}
 	logs := sb.String()
 	if strings.Contains(logs, token) {
 		t.Fatal("supplied admin token value leaked into server logs")

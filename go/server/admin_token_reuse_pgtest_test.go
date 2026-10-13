@@ -228,26 +228,94 @@ func TestIssueAndWriteAdminTokenRegistersSuppliedToken(t *testing.T) {
 	}
 }
 
+func TestIssueAndWriteAdminTokenReplacesSuppliedStateFiles(t *testing.T) {
+	ctx := context.Background()
+	st, adminID, _ := newNetworkStore(t)
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, path string)
+	}{
+		{"different valid token", func(t *testing.T, path string) {
+			t.Helper()
+			token, err := auth.IssueAccountToken(ctx, st, adminID)
+			if err != nil {
+				t.Fatalf("issue pre-existing admin token: %v", err)
+			}
+			writeAdminTokenFile(t, path, token)
+		}},
+		{"symlink", func(t *testing.T, path string) {
+			t.Helper()
+			target := filepath.Join(t.TempDir(), "target")
+			writeAdminTokenFile(t, target, newSuppliedAdminToken(t))
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatalf("create state token symlink: %v", err)
+			}
+		}},
+		{"group readable", func(t *testing.T, path string) {
+			t.Helper()
+			writeAdminTokenFile(t, path, newSuppliedAdminToken(t))
+			if err := os.Chmod(path, 0o640); err != nil {
+				t.Fatalf("chmod pre-existing state token: %v", err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			token := newSuppliedAdminToken(t)
+			tokenFile := filepath.Join(t.TempDir(), "operator-token")
+			writeAdminTokenFile(t, tokenFile, token)
+			stateDir := t.TempDir()
+			statePath := filepath.Join(stateDir, adminTokenFile)
+			tc.setup(t, statePath)
+
+			if _, minted, err := issueAndWriteAdminToken(ctx, st, adminID, stateDir, tokenFile); err != nil || minted {
+				t.Fatalf("issueAndWriteAdminToken = minted=%v, %v; want minted=false", minted, err)
+			}
+			info, err := os.Lstat(statePath)
+			if err != nil {
+				t.Fatalf("lstat resulting state token: %v", err)
+			}
+			if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Fatalf("state token mode = %v, want regular file mode 0600", info.Mode())
+			}
+			if got := readAdminToken(t, stateDir); got != token {
+				t.Fatal("state token file does not contain supplied token")
+			}
+		})
+	}
+}
+
 func TestIssueAndWriteAdminTokenRejectsMalformedSuppliedFiles(t *testing.T) {
 	ctx := context.Background()
 	st, adminID, _ := newNetworkStore(t)
 	cases := []struct {
-		name string
-		mode os.FileMode
-		body string
+		name    string
+		mode    os.FileMode
+		body    string
+		symlink bool
 	}{
 		{name: "malformed", mode: 0o600, body: "not-base64!"},
+		{name: "embedded newline", mode: 0o600, body: "AAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAA"},
 		{name: "wrong length", mode: 0o600, body: base64.RawURLEncoding.EncodeToString([]byte("short"))},
 		{name: "group readable", mode: 0o640, body: newSuppliedAdminToken(t)},
+		{name: "symlink input", symlink: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tokenFile := filepath.Join(t.TempDir(), "operator-token")
-			if err := os.WriteFile(tokenFile, []byte(tc.body), 0o600); err != nil {
-				t.Fatalf("write supplied token file: %v", err)
-			}
-			if err := os.Chmod(tokenFile, tc.mode); err != nil {
-				t.Fatalf("chmod supplied token file: %v", err)
+			if tc.symlink {
+				target := filepath.Join(t.TempDir(), "valid-token")
+				writeAdminTokenFile(t, target, newSuppliedAdminToken(t))
+				if err := os.Symlink(target, tokenFile); err != nil {
+					t.Fatalf("create supplied token symlink: %v", err)
+				}
+			} else {
+				if err := os.WriteFile(tokenFile, []byte(tc.body), 0o600); err != nil {
+					t.Fatalf("write supplied token file: %v", err)
+				}
+				if err := os.Chmod(tokenFile, tc.mode); err != nil {
+					t.Fatalf("chmod supplied token file: %v", err)
+				}
 			}
 			_, _, err := issueAndWriteAdminToken(ctx, st, adminID, t.TempDir(), tokenFile)
 			if err == nil || !strings.Contains(err.Error(), tokenFile) {

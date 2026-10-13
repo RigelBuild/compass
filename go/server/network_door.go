@@ -473,10 +473,7 @@ func newRunnerResolve(lookup runnerhub.TokenResolver, verifier runnerTokenVerifi
 	}
 }
 
-// issueAndWriteAdminToken ensures stateDir holds a 0600 bootstrap-admin token and
-// reports whether it minted one. A supplied token file wins and survives a DB
-// recreate; otherwise a still-valid private file is reused, else a new token is
-// minted. Runs only with the network door; the token is never logged.
+// issueAndWriteAdminToken keeps a 0600 admin token under stateDir; a supplied token file stays stable across DB recreates.
 func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store.AccountID, stateDir, suppliedTokenFile string) (string, bool, error) {
 	final := filepath.Join(stateDir, adminTokenFile)
 	if suppliedTokenFile != "" {
@@ -521,7 +518,7 @@ func readSuppliedAdminToken(path string) (string, error) {
 	}
 	token := strings.TrimSpace(string(raw))
 	decoded, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil || len(decoded) != 32 {
+	if err != nil || len(decoded) != 32 || token != base64.RawURLEncoding.EncodeToString(decoded) {
 		return "", fmt.Errorf("supplied admin token file %q must contain a base64url token encoding exactly 32 bytes", path)
 	}
 	return token, nil
