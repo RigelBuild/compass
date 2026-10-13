@@ -142,3 +142,40 @@ func TestBoardWebhookArmPassLinksEveryEnqueuer(t *testing.T) {
 		}
 	}
 }
+
+func TestBoardWebhookArmRetryKeepsEnqueuerLinkAcrossHolds(t *testing.T) {
+	rec, tracer := installSpanRecorder(t)
+	pulls := &fakePulls{errFor: map[uint64]error{9: forge.ErrBudgetExhausted}}
+	arm, _ := newPRArm(t, pulls, nil)
+	ctx, webhook := tracer.Start(t.Context(), "webhook")
+	arm.Enqueue(ctx, prEvent(9, changeUpdate))
+	webhook.End()
+	if _, paused := arm.drainBatch(t.Context(), <-arm.queue); !paused {
+		t.Fatal("first pass did not pause")
+	}
+	key := boardCoord{repo: "owner/repo", kind: boardKindPR, number: 9}
+	for i := range 3 {
+		if _, paused := arm.retryPending(t.Context()); !paused {
+			t.Fatalf("retry %d did not pause with the gate shut", i)
+		}
+		if n := len(arm.pending[key]); n != 1 {
+			t.Fatalf("after retry %d held traceparents = %d, want 1", i, n)
+		}
+	}
+	pulls.mu.Lock()
+	pulls.errFor = nil
+	pulls.mu.Unlock()
+	if _, paused := arm.retryPending(t.Context()); paused {
+		t.Fatal("retry paused with the gate open")
+	}
+
+	passes := endedNamed(rec, "ingest.board.drain")
+	if len(passes) != 5 {
+		t.Fatalf("pass spans = %d, want 5 (first, 3 held retries, final)", len(passes))
+	}
+	for i, p := range passes {
+		if l := p.Links(); len(l) != 1 || l[0].SpanContext.SpanID() != webhook.SpanContext().SpanID() {
+			t.Fatalf("pass %d links %v, want only the webhook span %s", i, l, webhook.SpanContext().SpanID())
+		}
+	}
+}
