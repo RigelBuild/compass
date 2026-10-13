@@ -256,7 +256,7 @@ func withBodyReadDeadline(next http.Handler, timeout time.Duration) http.Handler
 			// silently disable slow-body protection, so log the load-bearing failure.
 			rc := http.NewResponseController(w)
 			if err := rc.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-				slog.Warn("network door body-read deadline not armed; slow-body protection disabled for this request",
+				slog.WarnContext(r.Context(), "network door body-read deadline not armed; slow-body protection disabled for this request",
 					"err", err, "path", r.URL.Path)
 			}
 		}
@@ -316,9 +316,9 @@ func buildNetworkServer(
 	// Log the path, never the token: a logged bearer credential lets anyone who can
 	// read process output or aggregated logs impersonate the admin. minted tells
 	// the operator whether clients need the new file contents.
-	slog.Info("network door bootstrap admin token ready",
+	slog.InfoContext(ctx, "network door bootstrap admin token ready",
 		"path", tokenPath, "minted", minted, "handle", handle, "listen", networkListenAddr(cfg))
-	warnIfSharedTokenDir(slog.Default(), filepath.Dir(tokenPath))
+	warnIfSharedTokenDir(ctx, slog.Default(), filepath.Dir(tokenPath))
 
 	// otelconnect (outermost) produces the RPC span and stamps traceresponse,
 	// prepended to the shared bearer + admin-gate chain (inert when no provider).
@@ -578,14 +578,14 @@ func reusableAdminToken(ctx context.Context, st *store.Store, adminID store.Acco
 // warnIfSharedTokenDir logs when the admin token's dir grants any group or
 // other permission bit: ensurePrivateDir keeps an existing dir's mode, so such
 // a dir exposes the file's presence and may let those users delete or replace it.
-func warnIfSharedTokenDir(log *slog.Logger, dir string) {
+func warnIfSharedTokenDir(ctx context.Context, log *slog.Logger, dir string) {
 	fi, err := os.Stat(dir)
 	if err != nil {
-		log.Warn("network door admin-token dir could not be checked", "path", dir, "err", err)
+		log.WarnContext(ctx, "network door admin-token dir could not be checked", "path", dir, "err", err)
 		return
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-		log.Warn("network door admin-token dir is accessible to other users; use a 0700 --state-dir",
+		log.WarnContext(ctx, "network door admin-token dir is accessible to other users; use a 0700 --state-dir",
 			"path", dir, "mode", fmt.Sprintf("%#o", perm))
 	}
 }

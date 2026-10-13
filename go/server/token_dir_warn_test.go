@@ -38,7 +38,7 @@ func TestWarnIfSharedTokenDir(t *testing.T) {
 				t.Fatal(err)
 			}
 			var buf bytes.Buffer
-			warnIfSharedTokenDir(slog.New(slog.NewTextHandler(&buf, nil)), dir)
+			warnIfSharedTokenDir(t.Context(), slog.New(slog.NewTextHandler(&buf, nil)), dir)
 			out := buf.String()
 			if !tc.warn {
 				if out != "" {
@@ -60,7 +60,7 @@ func TestWarnIfSharedTokenDir(t *testing.T) {
 func TestWarnIfSharedTokenDirStatError(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "gone")
 	var buf bytes.Buffer
-	warnIfSharedTokenDir(slog.New(slog.NewTextHandler(&buf, nil)), dir)
+	warnIfSharedTokenDir(t.Context(), slog.New(slog.NewTextHandler(&buf, nil)), dir)
 	if out := buf.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "path="+dir) {
 		t.Fatalf("stat failure logged %q", out)
 	}
