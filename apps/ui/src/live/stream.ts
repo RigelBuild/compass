@@ -106,9 +106,8 @@ export async function fetchSnapshot(
 	};
 }
 
-/** Re-read the board summary an AgentBoardChanged cannot carry. An agent absent
- *  from the caller's OWNER roster waits on someone else, so its count is zero.
- *  Undefined on failure, which keeps the event's summary. */
+/** Re-read the board summary an AgentBoardChanged cannot carry; an agent not in
+ *  the caller's OWNER roster waits on no one. Undefined on failure. */
 async function readBoardSummary(
 	client: CommsClient,
 	accountId: string,
@@ -376,7 +375,7 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 						signal,
 						onError,
 					);
-					if (read) {
+					if (read && !signal?.aborted) {
 						state = applyEvent(state, {
 							kind: "boardSummary",
 							accountId: event.accountId,

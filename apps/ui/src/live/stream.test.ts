@@ -231,6 +231,8 @@ interface FakeConfig {
 	readonly rosterAfter?: WireRosterEntry[];
 	/** When set, every GetRoster after the first rejects with this error. */
 	readonly rosterAfterError?: Error;
+	/** Runs inside every GetRoster after the first, before it returns. */
+	readonly onRosterAfter?: () => void;
 	/** When set, GetRoster rejects with this error instead of returning — the
 	 *  read-failure path (the snapshot must abort, not seed an empty map). */
 	readonly getRosterError?: Error;
@@ -283,6 +285,7 @@ function createFakeClient(
 			if (config.getRosterError) throw config.getRosterError;
 			if (calls.getRosterScopes.length === 1)
 				return { entries: config.roster ?? [] };
+			config.onRosterAfter?.();
 			if (config.rosterAfterError) throw config.rosterAfterError;
 			return { entries: config.rosterAfter ?? config.roster ?? [] };
 		},
@@ -1171,8 +1174,10 @@ describe("runCommsStream — board summary re-read", () => {
 			},
 		},
 	});
-	const run = async (config: Omit<FakeConfig, "subscribeScripts">) => {
-		const controller = new AbortController();
+	const run = async (
+		config: Omit<FakeConfig, "subscribeScripts">,
+		controller = new AbortController(),
+	) => {
 		const { client, calls } = createFakeClient(controller, {
 			accounts: [wireUserAccount(CALLER)],
 			...config,
@@ -1199,6 +1204,20 @@ describe("runCommsStream — board summary re-read", () => {
 			?.board?.waitingOnOperator;
 		return { calls, waiting, errors };
 	};
+
+	test("a re-read that resolves after teardown applies nothing", async () => {
+		const controller = new AbortController();
+		const { calls, waiting } = await run(
+			{
+				roster: [entry(1)],
+				rosterAfter: [entry(0)],
+				onRosterAfter: () => controller.abort(),
+			},
+			controller,
+		);
+		expect(calls.getRosterScopes).toEqual([2, 2]);
+		expect(waiting).toBe(1);
+	});
 
 	test("an agentBoardChanged re-reads GetRoster for the server's waiting count", async () => {
 		const { calls, waiting } = await run({
