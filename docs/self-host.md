@@ -443,6 +443,52 @@ This reports the server, not Runner health. It is not a read-only probe: if the
 stack is not running, `status` starts it instead of reporting it down. See
 [Runner enrollment](#runner-enrollment) for Runner startup and recovery.
 
+## Health checks
+
+The server answers health checks on every door without credentials: the
+socket, the dev endpoint and the network door. Two views share one checker:
+
+- gRPC `grpc.health.v1.Health/Check`. `Watch` is not implemented.
+- `GET /healthz` (or `HEAD`), with an optional `?service=`.
+
+| Service | SERVING when |
+|---|---|
+| `""` or `compass.v1.CompassService` | The server is up and not draining |
+| `compass.runner` | A Runner holds a live Sessions stream and the server is not draining |
+
+`/healthz` answers `200 serving`, `503 not_serving`, or `404` for an unknown
+service. On shutdown, the server reports NOT_SERVING before it closes its
+listeners.
+
+Probe the socket as the stack user, since the socket is `0600`. The unit above
+runs as `User=compass` with no `XDG_RUNTIME_DIR`, so the socket is
+`~compass/.compass/server.sock`:
+
+```console
+sudo -u compass curl --unix-socket ~compass/.compass/server.sock http://localhost/healthz
+```
+
+With `XDG_RUNTIME_DIR` set to an absolute path, the socket is
+`$XDG_RUNTIME_DIR/compass/server.sock`. Pass `compass-stack up --socket` to
+choose another path.
+
+A gRPC Check reports NOT_SERVING inside an OK response, so only probers that
+read the status see a drain:
+
+| Prober | Door | Sees NOT_SERVING |
+|---|---|---|
+| `grpc-health-probe -tls`, blackbox_exporter `grpc` | network | yes |
+| Status-code-only gRPC load-balancer check | network | no |
+| kubelet `httpGet` with `scheme: HTTPS` on `/healthz` | network | yes (503) |
+| Status-code HTTP load-balancer check on `/healthz` | network | yes (503) |
+| `curl --unix-socket` on `/healthz` (exec probe) | socket | yes |
+| Stock kubelet `grpc` probe | none | does not work (plaintext only) |
+
+Point a load balancer's status-code check at `/healthz` on the network door.
+The door accepts TLS 1.3 only, so the balancer needs a TLS 1.3 listener policy.
+Rate-limit the health routes upstream, because the server does not limit them
+yet. Alert on `compass.runner`, which goes `not_serving` when the Runner detaches.
+
 ## Model registry
 
 Profiles name models by stable name, and the Server maps each name to a
