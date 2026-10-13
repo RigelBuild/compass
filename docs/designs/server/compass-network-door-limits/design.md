@@ -4,28 +4,25 @@ Tracker: RIG-5243
 
 ## Open Questions
 
-1. **Webhook bucket (load-bearing).** A rejected delivery may be lost: GitHub
-   does not redeliver, and Linear's 1-minute retry may fail the 60 s
-   `CheckTimestamp` (unverified). Under any option, 64 slow senders fill the
-   group cap.
-   - **A (recommended):** charge on failure. Signed deliveries never drain the
-     bucket; garbage is stopped before buffering.
-   - **B:** caps and the 10 s deadline only; each garbage request costs a
-     1 MiB read and an HMAC.
-   - **C:** charge every request; a GitHub burst over 500 loses events.
+1. **Webhook bucket (load-bearing).** A rejected delivery may be lost (GitHub
+   does not redeliver; Linear's retry may fail `CheckTimestamp`, unverified).
+   64 slow senders fill the group cap under any option.
+   - **A (recommended):** charge on failure; signed deliveries never drain
+     it, garbage stops before buffering.
+   - **B:** caps and the 10 s deadline; garbage costs a 1 MiB read and an
+     HMAC each.
+   - **C:** charge every request; a GitHub burst past 500 loses events.
 2. **Health over budget (load-bearing).**
-   - **A:** reject. A flood via a shared LB or tunnel fails the operator's
-     probe.
-   - **B (recommended):** serve the cached status, bounding `Hub.mu`
-     contention without failing a probe.
-   - **C:** always cache, no limiter or per-client counts.
-3. **Pre-auth cost (load-bearing).** `NewUnaryHandler` calls
-   `receiveUnaryRequest` before `untyped(ctx, request)`, so a tokenless caller
-   can make the door buffer 128 MiB, or drip a body to the exempt Runner
-   paths.
+   - **A:** reject; a flood via a shared LB or tunnel fails probes.
+   - **B (recommended):** serve the cached status; bounds `Hub.mu`
+     contention, never fails a probe.
+   - **C:** always cache; no limiter or client counts.
+3. **Pre-auth cost (load-bearing).** `receiveUnaryRequest` runs before
+   `untyped`, so a tokenless caller can make the door buffer 128 MiB, or drip
+   a body to the exempt Runner paths.
    - **A (recommended):** a new issue. A header-shape guard passes `Bearer x`;
-     the real fix verifies the token before decode and keeps the deadline
-     until the Runner authenticates.
+     the fix verifies the token before decode and keeps the deadline until
+     the Runner authenticates.
    - **B:** add the header-shape guard here as L2b.
 4. **Trusted-proxy model (load-bearing).**
    - **A (recommended):** CIDRs and the right-to-left walk.
@@ -35,16 +32,15 @@ Tracker: RIG-5243
    - **A (recommended):** constants plus the kill switch.
    - **B:** a flag per group.
    - **C:** shadow mode first (kill switch default-on for one release).
-6. **IPv6 width (non-load-bearing).** A /48 holds 65,536 /64s, so rotation
-   lands on the shared bucket. If `compass.door.clients` sits at its cap,
-   widen the key or add a /48 bucket.
+6. **IPv6 width (non-load-bearing).** Rotating within a /48 lands on the
+   shared bucket, which keeps the limit bounded; a wider key or /48 bucket is
+   an optional later optimization.
 
 ## Problem / Intent
 
-Three anonymous network-door routes have no limits or counters: the signed
-GitHub and Linear webhooks, and `GET /l/session/{id}`, which reads the store
-per click. This record adds both, and a group for the RIG-5191 health routes
-(anonymous per RIG-5230 OQ-3 A).
+Three anonymous network-door routes lack limits and counters: the signed
+GitHub and Linear webhooks, and `GET /l/session/{id}`. This record adds both,
+plus a group for the RIG-5191 health routes (anonymous per RIG-5230 OQ-3 A).
 
 ## Global Constraints
 
@@ -60,16 +56,16 @@ per click. This record adds both, and a group for the RIG-5191 health routes
 
 **Wrapping.** `buildNetworkServer` mounts each anonymous route as
 `netMux.Handle(p, limits.wrap(group, h, overflow))` inside
-`withBodyReadDeadline`, before the body read. `wrap` swaps the door's 30 s
-deadline for the group's `readTimeout` via
-`http.NewResponseController(w).SetReadDeadline`. Its status writer keeps
-`Unwrap` and `Flush` for the webhooks' early ack.
+`withBodyReadDeadline`. `wrap` sets the group's `readTimeout` with
+`http.NewResponseController(w).SetReadDeadline`; its writer keeps `Unwrap`
+and `Flush` for the webhooks' early ack.
 
-**Client key.** The TCP peer, unmapped and zone-stripped. From a trusted
-proxy, join all XFF lines in wire order and walk right to left with
-`netip.ParseAddr`, skipping trusted entries; the first untrusted one is the
-key; entries left of it are never parsed. A malformed entry or an all-trusted
-chain keys the last trusted hop. Keys mask to /32 or /64.
+**Client key.** The TCP peer. From a trusted proxy, split all XFF lines in
+wire order on commas, trim spaces and tabs, and walk right to left. Parse
+each entry with `netip.ParseAddr`, then unmap and strip its zone, as for the
+peer, before the trust check. Skip trusted entries; the first untrusted one
+is the key, and entries left of it are never parsed. A malformed entry or an
+all-trusted chain keys the last trusted hop. Keys mask to /32 or /64.
 
 **Algorithm.** A `golang.org/x/time/rate` bucket per client, behind
 per-client and group in-flight caps; `webhook` covers both paths. Each
@@ -84,11 +80,10 @@ group's shared row serves keys the table cannot hold (Memory), same caps.
 | `health` (L3) | 5/s, 20 | 4 | 32 | always |
 | `health` shared | 5/s, 20 | same | same | always |
 
-Under OQ 1 A, each unsettled webhook request holds a token on its own or the
-shared bucket: admission needs `TokensAt(now()) >= 1 + held`, so concurrent
-requests cannot share the last token. Webhook reads stop at 10 s, GitHub's
-timeout; the group cap bounds buffered bodies to 64 MiB. The
-link cap holds clicks to 4 of the store's 10 connections.
+Under OQ 1 A, each unsettled webhook request holds a token on its bucket:
+admission needs `TokensAt(now()) >= 1 + held`. Webhook reads stop at 10 s,
+GitHub's timeout; the group cap bounds buffered bodies to 64 MiB. The link
+cap holds clicks to 4 of the store's 10 connections.
 
 **Overflow.** Rate or per-client cap: 429. Group cap: 503. Both set
 `Retry-After`. Health over budget gets a 1 s cached status (OQ 2).
@@ -96,11 +91,10 @@ link cap holds clicks to 4 of the store's 10 connections.
 **Memory.** Each group's mutex guards a
 `simplelru.LRU[netip.Prefix, *rate.Limiter]` of 16,384 entries and per-key
 in-flight counts, deleted at zero. A miss on a full table probes the 8 oldest
-entries, moving each ineligible one to the front (`Get`). The first full
-(`TokensAt(now()) >= burst`) and idle one is replaced by a new bucket, which
-loses nothing as `rate.NewLimiter` starts full. Otherwise it spends from the
-shared bucket. Pinning the table costs `rate × maxClients` requests a second
-(819,200 on webhook).
+entries, moving each ineligible one to the front (`Get`), and replaces the
+first full (`TokensAt(now()) >= burst`) and idle one with a new, full bucket.
+Otherwise it spends from the shared bucket. Pinning the table costs
+`rate × maxClients` requests a second (819,200 on webhook).
 
 **Connections.** `MaxHeaderBytes` is `64 << 10`, which also sets Go's HTTP/2
 header-list limit; `MaxConcurrentStreams` stays 250.
@@ -109,27 +103,22 @@ header-list limit; `MaxConcurrentStreams` stays 250.
 `NewConsumer`): `compass.door.requests` with outcomes `ok`, `client_error`,
 `server_error`, `rate_limited`, `client_concurrency`, `group_concurrency`,
 `cached`, and `would_*` forms when disabled; `compass.door.inflight`,
-`compass.door.clients`, `compass.door.evictions`; and
-`compass.door.untrusted_xff` for XFF from an untrusted loopback or private
-peer, which warns once.
+`.clients`, `.evictions`; and `.untrusted_xff` for XFF from an untrusted
+loopback or private peer, warned once.
 
-**Flags.** `fs.String` with a `firstNonEmpty` env fallback, like
-`--forge-disable-scope-enforcement`.
+**Flags.** `fs.String` with a `firstNonEmpty` env fallback.
 
 | Flag | Env | Default |
 |---|---|---|
 | `--trusted-proxy` (CIDR list) | `COMPASS_TRUSTED_PROXIES` | none; `/0` rejected |
 | `--disable-anon-route-limits` (`ParseBool`) | `COMPASS_DISABLE_ANON_ROUTE_LIMITS` | `false` |
 
-Disabled limits still count; budgets are constants.
-
-**Authenticated routes are out of scope:** per-IP limits there would throttle
-users behind NAT, and the Runner.
+Disabled limits still count; budgets are constants. Authenticated routes are
+out of scope: per-IP limits would throttle NAT users and the Runner.
 
 ## Alternatives considered
 
-- `go-chi/httprate` (293 importers): unbounded maps, no concurrency cap,
-  spoofable header keys.
+- `go-chi/httprate` (293 importers): unbounded maps, no concurrency cap.
 - `ulule/limiter/v3` (341 importers): stale since 2023.
 - A per-IP connection cap: door-wide.
 
@@ -169,20 +158,21 @@ users behind NAT, and the Runner.
      429; 2×burst 200s pass; with one token left, a concurrent second gets 429.
   3. `TestDoorLimitsConcurrency`: perClient+1 gets 429, the group cap 503; an
      overflow handler serves both; a panic frees the slot.
-  4. `TestDoorLimitsClientKey` (table): a /64 is one key, from the peer or
-     XFF; v4-mapped is unmapped, a zone stripped; a chain across two XFF
-     lines gives its first untrusted entry despite malformed text to its
-     left; a walked malformed entry or all-trusted chain gives the last
-     trusted hop; untrusted loopback XFF is ignored and counted.
-  5. `TestDoorLimitsBounded` (`maxClients` 2, both drained, clock frozen): 100
-     rotating peers get exactly the shared burst, then 429, and the table is
-     unchanged; after a shared refill a new peer passes; a refilled entry is
-     evicted for a new peer with a full bucket, an in-flight one never.
+  4. `TestDoorLimitsClientKey` (table): a /64 is one key; `client, proxy`
+     keys the client; mapped or zoned peer and XFF values are canonicalized
+     before the trust check; a two-line chain gives its first untrusted
+     entry despite malformed text to its left; a walked malformed entry or
+     all-trusted chain gives the last trusted hop; untrusted loopback XFF is
+     ignored and counted.
+  5. `TestDoorLimitsBounded` (`maxClients` 2, every burst 10,
+     `chargeOnFailure`, clock frozen): with both entries drained, 100 rotating
+     peers get exactly 10 admissions, then 429, table unchanged; a shared
+     refill admits a new peer. In a fresh table, with full buckets, A admitted
+     first and in flight, then B served and idle, a new peer evicts B, not A.
   6. `TestDoorLimitsMetrics`: a `ManualReader` sees every outcome, `would_*`
      forms included, and each other instrument; no point has another attribute.
-  7. `TestDoorLimitsWriter` (`httptest`): a body still arriving at
-     `readTimeout` fails; a flush reaches the client before the handler
-     returns.
+  7. `TestDoorLimitsWriter`: a body still arriving at `readTimeout` fails; a
+     flush reaches the client before the handler returns.
 
 ### L2 — Door wiring, flags, spec
 
@@ -199,11 +189,16 @@ users behind NAT, and the Runner.
   - Amend `docs/specs/product/compass.md` §The network door.
 - **Red → green:**
   1. `TestNetworkDoorLimitsAnonymousRoutes` (pgtest): link request burst+1
-     gets 429; a bearer `GetServerInfo` from the same peer passes.
+     gets 429; a bearer `GetServerInfo` from the same peer passes; burst
+     bad-signature GitHub POSTs make the peer's next Linear POST 429; with
+     `DisableAnonRouteLimits`, link burst+1 passes and counts
+     `would_rate_limited`.
   2. `TestNetworkDoorHeaderBound` (TLS): HTTP/1.1 gets 431 at 128 KiB and
-     passes 32 KiB. Go's client refuses over-limit lists, so HTTP/2 uses
-     `x/net/http2`'s `Framer`: one HEADERS frame of 32 4 KiB fields gets 431;
-     one 128 KiB field exceeds HPACK's string limit and gets GOAWAY
+     passes 32 KiB. HTTP/2 sends one HEADERS frame via `x/net/http2`'s
+     `Framer` and `hpack.NewEncoder` (Huffman-coded `a` runs), each fragment
+     under Go's 131,712-byte cutoff (twice the 65,856-byte list limit; GOAWAY
+     `PROTOCOL_ERROR` past it). 32 fields of 4 KiB (82,288 bytes encoded) get
+     431; one 128 KiB field (81,946) exceeds HPACK's string limit: GOAWAY
      `COMPRESSION_ERROR`.
   3. `TestBuildServeConfigDoorLimits`: flags and env vars parse; `/0`, a bad
      CIDR and `maybe` fail.
@@ -216,19 +211,18 @@ users behind NAT, and the Runner.
     caches each known service's status for `ttl`, bypassed while draining.
   - `func healthzHandler(c grpchealth.Checker) http.Handler`.
   - `func (h *serverHealth) mountLimited(mux *http.ServeMux, l *doorLimits)`
-    uses cached overflow on the network door.
+    overflows to the cache.
 - **Red → green:**
-  1. `TestCachedHealth`: the inner checker runs once per `ttl`, and a drain
-     shows at once.
+  1. `TestCachedHealth`: the inner checker runs once per `ttl`; a drain shows
+     at once.
   2. `TestNetworkDoorHealthOverflow`: request burst+1 succeeds on both views
      and counts as `cached`.
 
 ### L4 — Operator docs
 
 - **Interfaces:** `## Network door limits` in `docs/self-host.md`: groups,
-  flags, counters; tunnels need `--trusted-proxy 127.0.0.1/32,::1/128`; a lost
-  GitHub event is redelivered from Recent Deliveries or
-  `POST /app/hook/deliveries/{delivery_id}/attempts`.
+  flags, counters; tunnels need `--trusted-proxy 127.0.0.1/32,::1/128`; lost
+  GitHub events are redelivered from Recent Deliveries.
 - **Red → green:** `rumdl check` passes.
 
 ## Tasks
