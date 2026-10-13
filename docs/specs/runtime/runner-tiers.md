@@ -11,7 +11,7 @@ Two records carry the why:
 - [Runner adoption strategy](../../designs/infra/runtime/compass-runner-adoption-strategy/design.md)
   — the trust-model split ruling (DL-325) and its execution plan.
 - [Host runtime tier](../../designs/infra/runtime/compass-host-runtime-tier/design.md)
-  — the host tier's design record (the third tier, not yet built).
+  — the host tier's design record (the third tier).
 
 ## The trust-model axis
 
@@ -41,26 +41,31 @@ what the agent is trusted with.
 
 ## The tiers
 
-Tiers are selected at constructor time through the single backend seam,
-`SelectBackend` (`go/internal/runtime/microvm.go:117`:
-`func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error)`), which
-today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
-(`go/internal/runtime/microvm.go:124`: `accepted values are "podman"
-(default) and "microvm"`). The **host** tier joins that seam as a third
-`SelectBackend` value, `"host"` — designed, not yet built (see
-[Not yet specified](#not-yet-specified)).
+Tiers are selected at Runner start through the single backend seam,
+`SelectBackend` in `go/internal/runtime/microvm.go`. The operator sets it with
+the Runner's `--backend` flag or `COMPASS_RUNTIME_BACKEND`; the flag wins when
+set. `ValidBackend` accepts `""`/`"podman"` (default), `"microvm"`,
+`"apple-container"` (the macOS runtime, DL-330) and `"host"`, and rejects
+anything else. This spec covers the host, podman, and microVM tiers.
 
 | Tier | Isolation boundary | Egress enforcement | Trust model served |
 | --- | --- | --- | --- |
-| **host** *(not yet built)* | None — the agent runs as a process on the operator's own machine | **Explicitly unenforced** (see below) | Single **trust domain**: the operator's own box, own code, own agents. Not scoped by deployment shape — available to any user running an agent on their own machine |
+| **host** | None — the agent runs as a process on the operator's own machine | **Explicitly unenforced** (see below) | Single **trust domain**: the operator's own box, own code, own agents. Not scoped by deployment shape — available to any user running an agent on their own machine |
 | **podman** | Rootless container (shared host kernel) | Enforced: default-deny nftables in the container's own netns | Self-host single-tenant — the permanent supported entry tier |
 | **microVM** | Hardware virtualization (cloud-hypervisor/KVM) | Enforced: armed in-guest by the backend | Required for untrusted multi-tenant; recommended self-host upgrade |
 
-### host *(not yet built)*
+### host
 
 - **Boundary:** none. The agent runs directly on the operator's machine, at
   the same host exposure as any CLI agent the user already runs. There is no
-  container, no separate kernel, no namespace boundary.
+  container, no separate kernel, no namespace boundary. `HostRuntime`
+  (`go/internal/runtime/host_backend.go`) runs each agent as a child of the
+  Runner, under the Runner's own uid. Root is refused.
+- **Select it:** `compass-runner --backend host` (or
+  `COMPASS_RUNTIME_BACKEND=host`). Each agent gets a private 0700 state dir
+  holding its socket, its config view, and its own `$HOME`, under
+  `$TMPDIR/compass-host`. That root is shared, so on a box with other local
+  users, set the Runner's `TMPDIR` to a private directory.
 - **Egress:** **explicitly unenforced** — not a degraded or partial arm.
   Compass's egress firewall is default-deny nftables applied to the
   container's own network namespace (`go/internal/runtime/egress.go:2-4`:
@@ -71,7 +76,9 @@ today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
   (`go/internal/runtime/agent.go:298-299`: `type inGuestEgressArmer interface
   { EgressArmedInGuest() bool }`), because that marker means a backend armed
   egress itself — claiming it would be false. Host mode states plainly that
-  egress policy is not enforced.
+  egress policy is not enforced. The runner refuses any configured egress
+  policy rather than ignore it, and `compass agent` and the agent roster show
+  the posture as `unenforced`, so a green launch is never read as contained.
 - **When to use:** two permanent cases, on the operator's own machine.
   **Onboarding** — near-zero setup, replicating the user's existing CLI-agent
   posture with Compass's server, comms, and config machinery on top. And
@@ -88,6 +95,15 @@ today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
   shared `$HOME` cannot separate parties. Also unsuitable wherever egress
   policy must actually bind. It is not the preferred steady state for
   general agent work (see [Standing guidance](#standing-guidance)).
+- **Protections that are absent, not weaker:**
+  - **Host filesystem:** the agent has the operator's full filesystem access.
+    No mount narrowing, no SELinux/MCS confinement, no private root.
+  - **Inter-agent isolation:** two host-tier agents are two processes under
+    one uid. Each can read the other's state dir, socket, and secrets. Run one
+    host-tier agent at a time unless that is acceptable.
+  - **Egress:** unenforced, as above.
+  - **Resource limits:** the backend owns no cgroup, so `Resize` returns an
+    error rather than pretend.
 - **What it does and does not protect:** per DL-024 the container was never
   credential avoidance — agents receive the user's own secrets on every tier.
   The host tier gives up only the blast-radius boundary; it does not hand the
@@ -137,7 +153,7 @@ today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
 
 Each stage is a graduation, never a gate — a user may stay at any stage.
 
-1. **Host tier** *(not yet built)* — the near-zero-setup front step: run
+1. **Host tier** — the near-zero-setup front step: run
    Compass agents at the same host exposure as the CLI agent you already use.
    The counterfactual is not "that user on a container tier"; it is that user
    staying on their existing agent with the same exposure and none of
@@ -169,19 +185,59 @@ The same guidance-not-gate posture holds one tier up: podman is the permanent
 self-host entry tier, microVM the recommended upgrade — recommended in the
 docs, never required for single-tenant self-host.
 
+### Graduating off the host tier
+
+Move up when an agent should not be able to touch the whole machine: when it
+runs code you did not write, when you share the box, or when egress policy
+must bind. Change only the Runner's backend: `--backend podman` (any Linux box
+or podman-machine, no `/dev/kvm`) or `--backend microvm` (KVM). The fleet
+config bundle, sessions, and Server are the same on every tier, so nothing
+else moves. Keep the host tier for work that needs the live session bus,
+display, or devices.
+
+## Host-tier first run: the config-import review
+
+The host tier's first useful job is to review the operator's existing agent
+config before it is imported. The built-in `config-import-review` skill
+(`config/skills/config-import-review/SKILL.md`) runs it:
+
+1. **Ingest.** The agent reads the operator's corpus where it lives (for
+   example `~/.agents` or `~/.claude`) and maps each file to the bundle member
+   it would become. Files with no member (hooks, other tools' state) are
+   listed as not importable.
+2. **Compare.** It reads each candidate against both baselines: Compass's
+   shipped `config/` corpus and the live fleet bundle, which can be empty or
+   differ from it. It classes each candidate **redundant**, **conflicting**, or
+   **complementary**, naming the built-in it overlaps. Overlap is judged on
+   content, not filenames. With no readable baseline it stops instead of
+   guessing.
+3. **Explain.** It states what import will do: the bundle is one fleet-wide
+   singleton that a push replaces; rules and `AGENTS.md` add to the project's
+   own; `settings/config.yml` replaces as a whole file; credential-bearing
+   members bounce at the store door.
+4. **Decide.** The operator marks each finding keep, drop, or rewrite. The
+   agent writes the report, assembles the approved members in a new bundle
+   dir, and runs `compass agent-config push --dir <dir>` only after an
+   explicit yes.
+
+The agent proposes; the operator disposes. The review never edits the source
+corpus. On a container tier the same skill works only on paths the operator
+mounts or copies in, which is why the host tier is where it fits.
+
 ## Not yet specified
 
 This spec mixes current behavior with ruled strategy. The line:
 
-- **Current:** the podman and microVM backends behind `SelectBackend`
-  (`go/internal/runtime/microvm.go:117-125`), podman as the default, egress
-  enforcement on both, the trust-model split itself (DL-325, Active), and the
-  native app's first-run chooser with one-time `app.toml` persistence (DL-406,
-  Active; DL-319 retains the embedded-local product direction).
-- **Not yet built:** the **host tier** in its entirety — there is today no
-  host/process backend and no `"host"` value in `SelectBackend`. Its design
-  lives in the
-  [host runtime tier record](../../designs/infra/runtime/compass-host-runtime-tier/design.md).
+- **Current:** the host, podman, and microVM backends behind `SelectBackend`
+  (`go/internal/runtime/microvm.go`), podman as the default, egress
+  enforcement on podman and microVM, the unenforced posture on host, the
+  trust-model split itself (DL-325, Active), and the native app's first-run
+  chooser with one-time `app.toml` persistence (DL-406, Active; DL-319 retains
+  the embedded-local product direction).
+- **Not yet built:** a host-tier default for secrets. The design pins the
+  SecretSpec `keyring://` provider for host-tier use, but nothing sets it
+  automatically today. An operator can set it by hand on the Server with
+  `--secret-provider keyring://` (or `COMPASS_SECRET_PROVIDER`).
 - **Future work, not designed:** an OS-sandbox egress mode for the host tier
   (bubblewrap / sandbox-exec) is a possible later addition; nothing in this
   spec depends on it.
