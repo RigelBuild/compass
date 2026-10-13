@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // imageTag is the image tag the test builds and runs the agent container from.
@@ -164,9 +165,14 @@ func TestPerAgentContainerLifecycle(t *testing.T) {
 		t.Fatalf("agent user must not be able to flush the firewall, got: %s", flush.Stdout)
 	}
 
-	// 5. Teardown removes the container.
+	// 5. Teardown removes the container, promptly: SIGTERM must reach PID 1
+	// rather than waiting out the stop grace for SIGKILL.
+	start := time.Now()
 	if err := facade.Teardown(ctx, handle); err != nil {
 		t.Fatalf("teardown: %v", err)
+	}
+	if took := time.Since(start); took >= stopTimeout/2 {
+		t.Fatalf("teardown took %v; PID 1 ignored SIGTERM and waited for the %v SIGKILL", took, stopTimeout)
 	}
 	if runtimeExists(t.Context(), name) {
 		t.Fatal("container must be gone after teardown")
