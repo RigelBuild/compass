@@ -64,6 +64,33 @@ func IssueAccountToken(ctx context.Context, st *store.Store, account store.Accou
 	return "", errors.New("persisting issued token: hash collision on two successive mints")
 }
 
+// RegisterAccountToken adds a supplied token without overriding another binding or revoke.
+func RegisterAccountToken(ctx context.Context, st *store.Store, account store.AccountID, token string) error {
+	hash := hashToken(token)
+	want := store.Subject{Kind: store.SubjectAccount, ID: string(account)}
+	for range 2 {
+		got, err := st.ResolveTokenHash(ctx, hash)
+		if err == nil {
+			if got.Kind != want.Kind || got.ID != want.ID {
+				return errors.New("supplied token is registered to another subject")
+			}
+			return nil
+		}
+		if errors.Is(err, store.ErrTokenRevoked) {
+			return fmt.Errorf("supplied token: %w", ErrTokenRevoked)
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("resolving supplied token: %w", err)
+		}
+		if err := st.PutTokenHash(ctx, hash, want); err == nil {
+			return nil
+		} else if !errors.Is(err, store.ErrConflict) {
+			return fmt.Errorf("registering supplied token: %w", err)
+		}
+	}
+	return errors.New("registering supplied token: conflicting token hash remained unresolved")
+}
+
 // Sentinel resolution failures returned by ResolveToken. The three credential
 // verdicts exist so the server can LOG which case fired (audit), NOT so a door
 // tells them apart to the client: a door MUST map them to the same bare

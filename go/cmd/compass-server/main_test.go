@@ -215,12 +215,14 @@ func TestBuildServeConfigClosesAdoptedListenerOnLaterError(t *testing.T) {
 func TestBuildServeConfigFlagRoundTrip(t *testing.T) {
 	t.Setenv("COMPASS_DATABASE_DSN", "")                  // isolate from an ambient env DSN
 	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222") // required; the env path leaves the args under test unchanged
+	t.Setenv("COMPASS_ADMIN_TOKEN_FILE", "/env/admin-token")
 
 	t.Run("new flags round-trip into their fields", func(t *testing.T) {
 		cfg, showVersion, err := buildServeConfig([]string{
 			"--database", "postgres://x/db",
 			"--socket", "/tmp/x.sock",
 			"--state-dir", "/var/lib/compass",
+			"--admin-token-file", "/flag/admin-token",
 			"--admin-handle", "matt",
 			"--cors-allowed-origin", "https://ui.example.ts.net",
 		})
@@ -233,6 +235,9 @@ func TestBuildServeConfigFlagRoundTrip(t *testing.T) {
 		if cfg.StateDir != "/var/lib/compass" {
 			t.Errorf("StateDir = %q, want %q (--state-dir)", cfg.StateDir, "/var/lib/compass")
 		}
+		if cfg.AdminTokenFile != "/flag/admin-token" {
+			t.Errorf("AdminTokenFile = %q, want %q (--admin-token-file takes precedence)", cfg.AdminTokenFile, "/flag/admin-token")
+		}
 		if cfg.AdminHandle != "matt" {
 			t.Errorf("AdminHandle = %q, want %q (--admin-handle)", cfg.AdminHandle, "matt")
 		}
@@ -240,15 +245,24 @@ func TestBuildServeConfigFlagRoundTrip(t *testing.T) {
 			t.Errorf("CORSAllowedOrigin = %q, want %q (--cors-allowed-origin)", cfg.CORSAllowedOrigin, "https://ui.example.ts.net")
 		}
 	})
-
-	t.Run("omitted new flags leave the shipped defaults", func(t *testing.T) {
+	t.Run("admin token file uses env fallback", func(t *testing.T) {
 		cfg, _, err := buildServeConfig([]string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"})
 		if err != nil {
 			t.Fatalf("buildServeConfig = %v, want nil", err)
 		}
-		if cfg.StateDir != "" || cfg.AdminHandle != "" || cfg.CORSAllowedOrigin != "" {
-			t.Errorf("unset flags = {StateDir:%q AdminHandle:%q CORSAllowedOrigin:%q}, want all empty (the socket-only shipped defaults)",
-				cfg.StateDir, cfg.AdminHandle, cfg.CORSAllowedOrigin)
+		if cfg.AdminTokenFile != "/env/admin-token" {
+			t.Errorf("AdminTokenFile = %q, want %q (COMPASS_ADMIN_TOKEN_FILE)", cfg.AdminTokenFile, "/env/admin-token")
+		}
+	})
+	t.Run("omitted new flags leave the shipped defaults", func(t *testing.T) {
+		t.Setenv("COMPASS_ADMIN_TOKEN_FILE", "")
+		cfg, _, err := buildServeConfig([]string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"})
+		if err != nil {
+			t.Fatalf("buildServeConfig = %v, want nil", err)
+		}
+		if cfg.StateDir != "" || cfg.AdminTokenFile != "" || cfg.AdminHandle != "" || cfg.CORSAllowedOrigin != "" {
+			t.Errorf("unset flags = {StateDir:%q AdminTokenFile:%q AdminHandle:%q CORSAllowedOrigin:%q}, want all empty (the socket-only shipped defaults)",
+				cfg.StateDir, cfg.AdminTokenFile, cfg.AdminHandle, cfg.CORSAllowedOrigin)
 		}
 	})
 

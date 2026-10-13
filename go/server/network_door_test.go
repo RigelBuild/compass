@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"log/slog"
@@ -1279,7 +1280,46 @@ func TestServeWithListenNeverLogsAdminToken(t *testing.T) {
 	}
 }
 
-// A --listen start whose existing state dir is group-accessible serves as
+func TestServeWithListenNeverLogsSuppliedAdminToken(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	sb := &syncBuffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(sb, nil)))
+
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	operatorTokenFile := filepath.Join(dir, "operator-token")
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		t.Fatalf("generate supplied token: %v", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw[:])
+	if err := os.WriteFile(operatorTokenFile, []byte(token), 0o600); err != nil {
+		t.Fatalf("write supplied token file: %v", err)
+	}
+	socketPath := filepath.Join(dir, "compass.sock")
+	certPath, keyPath, _ := writeSelfSignedCert(t, dir)
+	serveInBackground(t, ServeConfig{
+		SocketPath:     socketPath,
+		DatabaseDSN:    pgtest.RequireDSN(t),
+		Version:        "net-test",
+		Listen:         loopbackAny,
+		TLS:            &TLSConfig{CertPath: certPath, KeyPath: keyPath},
+		StateDir:       stateDir,
+		AdminTokenFile: operatorTokenFile,
+	})
+	waitServing(t, socketPath)
+
+	logs := sb.String()
+	if strings.Contains(logs, token) {
+		t.Fatal("supplied admin token value leaked into server logs")
+	}
+	tokenPath := filepath.Join(stateDir, adminTokenFile)
+	if !strings.Contains(logs, tokenPath) {
+		t.Fatalf("admin-token path %q not found in logs", tokenPath)
+	}
+}
+
 // usual but logs the shared-dir warning naming that dir. Owns the global
 // logger, so it MUST NOT call t.Parallel().
 func TestServeWithListenWarnsOnSharedStateDir(t *testing.T) {
