@@ -266,7 +266,7 @@ const onRefCommand = (id: CommandId): boolean;
 // The new commands' run: () => onRefCommand(id) || onCommand(id)
 ```
 
-Tests (same mount; option-specific results are marked):
+Tests (same mount):
 
 - **Flow.**
   1. From the cursor card, `ArrowLeft` lands on "Issue RIG-965".
