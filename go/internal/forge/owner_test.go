@@ -7,8 +7,10 @@ package forge
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -274,8 +276,23 @@ func TestOwnerSentinelSingleChokepoint(t *testing.T) {
 	sentinel := "compass" + ":owner"
 
 	moduleRoot := filepath.Join("..", "..") // internal/forge -> go/ (module root)
+	hits, err := sentinelFiles(moduleRoot, sentinel, os.ReadFile)
+	if err != nil {
+		t.Fatalf("walking the module tree: %v", err)
+	}
+	if len(hits) != 1 || hits[0] != "owner.go" {
+		t.Fatalf("sentinel %q found in %v non-test file(s); want exactly [owner.go]", sentinel, hits)
+	}
+}
+
+// sentinelFiles lists the base names of non-test .go files under root that
+// contain sentinel.
+func sentinelFiles(root, sentinel string, read func(string) ([]byte, error)) ([]string, error) {
 	var hits []string
-	err := filepath.WalkDir(moduleRoot, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // removed mid-walk by a concurrently running test
+		}
 		if err != nil {
 			return err
 		}
@@ -285,7 +302,10 @@ func TestOwnerSentinelSingleChokepoint(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		data, readErr := os.ReadFile(path)
+		data, readErr := read(path)
+		if errors.Is(readErr, fs.ErrNotExist) {
+			return nil
+		}
 		if readErr != nil {
 			return readErr
 		}
@@ -294,11 +314,42 @@ func TestOwnerSentinelSingleChokepoint(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking the module tree: %v", err)
+	return hits, err
+}
+
+// Other packages' tests create and remove temp dirs under go/ while this walk
+// runs; an entry that vanishes mid-walk must not fail the scan.
+func TestSentinelFilesSkipsEntriesRemovedMidWalk(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.go", "b/x.go", "c.go", "d/keep.go"} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("sentinel"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if len(hits) != 1 || hits[0] != "owner.go" {
-		t.Fatalf("sentinel %q found in %v non-test file(s); want exactly [owner.go]", sentinel, hits)
+	// WalkDir lists root, then visits in lexical order: removing b/ and c.go
+	// while a.go is read makes a listed dir and a listed file both vanish.
+	read := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "a.go" {
+			if err := os.RemoveAll(filepath.Join(root, "b")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(root, "c.go")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return os.ReadFile(path)
+	}
+
+	hits, err := sentinelFiles(root, "sentinel", read)
+	if err != nil {
+		t.Fatalf("sentinelFiles: %v", err)
+	}
+	if want := []string{"a.go", "keep.go"}; !slices.Equal(hits, want) {
+		t.Fatalf("hits = %v, want %v", hits, want)
 	}
 }
 
