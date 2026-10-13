@@ -5,6 +5,7 @@
 
 import type { CommsClient, SubscribeCommsResponse } from "@compass/client";
 import { RosterScope } from "@compass/client";
+import type { AgentBoardSummary } from "../stub-data";
 import {
 	type AgentPresenceInfo,
 	adaptAccount,
@@ -34,8 +35,8 @@ const SNAPSHOT_MESSAGE_PAGE = 200;
 /** What the driver needs to run: the comms client, who the caller is (scopes
  *  membership derivation), the injected message mapper, and the sink for each
  *  new reduced state. `signal` cancels the whole run (component unmount / app
- *  teardown); `onError` observes a non-fatal stream error before the driver
- *  reconnects (fatal = aborted). */
+ *  teardown); `onError` observes a non-fatal error: a stream error before the
+ *  driver reconnects, or a failed board re-read (fatal = aborted). */
 export interface CommsStreamOptions {
 	readonly client: CommsClient;
 	readonly callerId: string;
@@ -44,8 +45,8 @@ export interface CommsStreamOptions {
 	 *  once per applied tail event. The store sets its signals from this. */
 	readonly onState: (state: CommsState) => void;
 	readonly signal?: AbortSignal;
-	/** Observed on a stream error before reconnect; the run continues (retries
-	 *  the subscribe). Not called on a clean abort. */
+	/** Observed on a stream error before reconnect, or on a failed board
+	 *  re-read that leaves the stream running. Not called on a clean abort. */
 	readonly onError?: (error: unknown) => void;
 }
 
@@ -105,21 +106,24 @@ export async function fetchSnapshot(
 	};
 }
 
-/** Re-read one agent's roster entry for the server-derived board summary that
- *  an AgentBoardChanged cannot carry. A failure keeps the event's summary. */
-async function readRosterEntry(
+/** Re-read the board summary an AgentBoardChanged cannot carry. An agent absent
+ *  from the caller's OWNER roster waits on someone else, so its count is zero.
+ *  Undefined on failure, which keeps the event's summary. */
+async function readBoardSummary(
 	client: CommsClient,
 	accountId: string,
+	current: AgentBoardSummary | undefined,
 	signal: AbortSignal | undefined,
 	onError: ((error: unknown) => void) | undefined,
-): Promise<AgentPresenceInfo | undefined> {
+): Promise<{ readonly board: AgentBoardSummary | undefined } | undefined> {
 	try {
 		const resp = await client.getRoster(
 			{ scope: RosterScope.OWNER },
 			{ signal },
 		);
 		const entry = resp.entries.find((e) => e.agentAccountId === accountId);
-		return entry ? adaptRosterEntry(entry)[1] : undefined;
+		if (entry) return { board: adaptRosterEntry(entry)[1].board };
+		return { board: current && { ...current, waitingOnOperator: 0 } };
 	} catch (error) {
 		if (!signal?.aborted) onError?.(error);
 		return undefined;
@@ -365,17 +369,18 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 					onState(state);
 				}
 				if (event?.kind === "boardChanged") {
-					const info = await readRosterEntry(
+					const read = await readBoardSummary(
 						client,
 						event.accountId,
+						state.presence.get(event.accountId)?.board,
 						signal,
 						onError,
 					);
-					if (info?.board) {
+					if (read) {
 						state = applyEvent(state, {
 							kind: "boardSummary",
 							accountId: event.accountId,
-							board: info.board,
+							board: read.board,
 						});
 						onState(state);
 					}

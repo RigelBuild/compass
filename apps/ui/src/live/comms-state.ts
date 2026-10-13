@@ -201,7 +201,7 @@ export type CommsEvent =
 	| {
 			readonly kind: "boardSummary";
 			readonly accountId: string;
-			readonly board: AgentBoardSummary;
+			readonly board: AgentBoardSummary | undefined;
 	  };
 
 /** Apply one decoded event to the state, returning the next state. Pure: upserts

@@ -1218,4 +1218,13 @@ describe("runCommsStream — board summary re-read", () => {
 		expect(errors).toEqual([boom]);
 		expect(waiting).toBe(1);
 	});
+
+	test("an agent the re-read no longer lists waits on no one", async () => {
+		const { calls, waiting } = await run({
+			roster: [entry(2)],
+			rosterAfter: [],
+		});
+		expect(calls.getRosterScopes).toEqual([2, 2]);
+		expect(waiting).toBe(0);
+	});
 });
