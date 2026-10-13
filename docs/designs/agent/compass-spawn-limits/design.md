@@ -1,5 +1,58 @@
 # Spawn limits: live-placement caps at the spawn handler
 
+## Open Questions
+
+- **OQ-1: Owner only, or also per parent? Load-bearing.** A runaway subtree
+  can spend the owner's budget and starve its siblings. A per-parent limit
+  costs one more indexed count and a second knob. **Recommendation:** owner
+  only; T1 is the way out.
+- **OQ-2: No unlimited mode. Non-load-bearing.** **Recommendation:** keep it.
+  A large value is the escape hatch.
+- **OQ-3: Operator door exempt but counted. Non-load-bearing.** An exempt
+  spawn can push an owner past `N`. **Recommendation:** keep it. A capped seed
+  could stop the supervisor from booting.
+- **OQ-4: Per-Runner host ceiling. Non-load-bearing.** Only the Runner sees a
+  container outside every row, such as one whose cleanup failed (OQ-9), and
+  only it bounds several owners on one host. **Recommendation:** a follow-up
+  Runner-side refusal when the host is full.
+- **OQ-5: Default 16. Non-load-bearing.** It is unmeasured. Before ruling,
+  count placements per owner with the deployment's `compass.tenant_id` set
+  (RLS hides rows without it). **Recommendation:** 16, raised per deployment
+  if trees are larger.
+- **OQ-6: Human recovery path. Load-bearing.** (a) `compass agent despawn`
+  (T1), (b) a prerequisite issue, or (c) agent despawn only.
+  **Recommendation:** (a); without it, only an agent can free a slot.
+- **OQ-7: Loops of failing spawns. Non-load-bearing.** Each failure leaves an
+  account, a home channel, and a tree edge. **Recommendation:** a follow-up
+  per-owner attempt budget.
+- **OQ-8: Durable reservations, or an in-process limiter? Load-bearing.**
+  - (a) Postgres rows under a per-owner advisory lock, released on a
+    placement or a confirmed Remove, with a renewed lease as the crash
+    backstop. The cap holds across restarts and replicas, for one migration
+    and one transaction per spawn.
+  - (b) An in-process limiter. It needs no migration, but it conflicts with
+    DL-312 and forgets pending spawns on restart.
+
+  The cap is core capability
+  (`docs/designs/meta/oss-core-managed-boundary/design.md`:
+  "core-capability-under-managed-motivation"). **Recommendation:** (a).
+- **OQ-9: A Remove success does not prove removal. Load-bearing; depends on
+  OQ-8 (a).** Evidence is in §Ambiguous outcomes keep the slot. Unless (c)
+  lands, a dropped Runner holds an owner's slots until that server restarts,
+  and `compass agent despawn` cannot free them.
+  - (a) Ship as designed. Cost: a container leaked by a failed `Launch`
+    cleanup releases its slot and goes uncounted.
+  - (b) T2 also changes `removeLocked`: on a registry miss, it fails while
+    `h.engine.Exists(ctx, containerName)` is true, as `Provision` checks a
+    stale entry. A leaked container then keeps its slot until it is gone or
+    that server restarts. Test 11 pins it. No proto change.
+  - (c) Follow-up proto change: the Runner reports its sweep result or its
+    owned containers at enroll, so a new enrollment can release. No such
+    signal exists today.
+
+  **Recommendation:** (b) in T2, so the cap counts leaked containers, and
+  (c) as a follow-up issue.
+
 ## Problem / Intent
 
 Agent-driven spawn has no limit: the spawn/despawn record ruled "no limit for
@@ -78,23 +131,22 @@ the winner's container.
 A container may exist after three exits:
 
 - **A Provision error.** `waitCall` (`go/internal/runnerhub/router.go`): "A
-  ctx timeout leaves the call in-flight on purpose". The Runner's Provision
-  has no deadline: it queues on `provisionSem`, then runs engine commands. A
-  Runner error proves no more, because `AgentRuntime.Launch`
-  (`go/internal/runtime/agent.go`) cleans up "Best-effort".
+  ctx timeout leaves the call in-flight on purpose", and the Runner's
+  Provision has no deadline. A Runner error proves no more, because
+  `AgentRuntime.Launch` (`go/internal/runtime/agent.go`) cleans up
+  "Best-effort".
 - **A failed rollback Remove.** `rollbackSpawn` logs it and goes on.
 - **A dropped enrollment**, below.
 
 No timed release is safe. `provisionAndStart` hands the row to `go
-settleSpawn` on `context.WithoutCancel(ctx)`, like `dropLostSessionDetached`
-(`go/internal/runnerhub/relay_comms.go`). It renews the lease every
+settleSpawn` on `context.WithoutCancel(ctx)`. It renews the lease every
 `spawnReservationLease / 3` and releases on one of two outcomes:
 
 1. **The Provision succeeds.** After a timeout, `settleSpawn` re-sends the
    same id. The hub joins an in-flight call, and the Runner replays a
    completed one ("a completed id returns the recorded result",
-   `go/internal/runner/dispatch.go`). Success records the placement, and the
-   next message wakes the agent (`freshStart`). A Runner error goes to 2.
+   `go/internal/runner/dispatch.go`). Success records the placement. A Runner
+   error goes to 2.
 2. **A Remove succeeds.** `settleSpawn` retries Remove every
    `spawnSettleRetry`. It mints a fresh id after an answered failure, because
    the Runner replays recorded failures.
@@ -103,22 +155,25 @@ One exception: a first Provision that never left the server. `dispatch`
 refuses with no live stream or a full queue before it enqueues. T2 marks both
 `runnerhub.ErrNotSent`, and that Provision releases at once.
 
-`settleSpawn` talks only to the spawn's own enrollment. `enroll` builds a new
-router ("`router := newCommandRouter()`") for a Runner whose `handled` map is
-empty, so a re-push there would provision a second container. T2 adds
-`runnerhub.Pin`, the router and Runner id that `routerFor` reads together. The
-first Provision, the rejoin, and every Remove use it.
+`settleSpawn` talks only to the spawn's own enrollment, through T2's
+`runnerhub.Pin`. A new enrollment's router ("`router := newCommandRouter()`")
+fronts a Runner whose `handled` map is empty, so a re-push there would
+provision a second container.
 
-**No Runner signal confirms removal.** A Runner enrolls once per process. Its
-deferred `agentHost.Close` "logs each per-container error and discards it".
-The restart sweep (`sweepStaleAgentContainers`, `go/internal/runner/run.go`)
-returns nothing, and `EnrollRequest` carries only `runner_id`,
-`runtime_tier`, and `egress_posture`. After the pin's stream drops, `RemoveOn`
-returns `ErrNotSent`, so the row stays charged and renewed while this server
-lives. A new enrollment's Remove proves nothing either, because `removeLocked`
+**A Remove success is not yet proof.** `removeLocked`
 (`go/internal/runner/host.go`) treats "A container the registry no longer
-resolves" as "already gone". That gap also hides a container whose cleanup
-failed, since `Launch` registers only after it provisions. Both are OQ-9.
+resolves" as "already gone", and `Launch` registers only after it provisions.
+So after a failed `Launch` cleanup, a Remove on the spawn's own enrollment
+succeeds and releases a row whose container leaked. A confirmed Remove proves
+removal only once OQ-9 (b) lands.
+
+**No Runner signal confirms removal after a drop.** A Runner enrolls once per
+process. Its deferred `agentHost.Close` "logs each per-container error and
+discards it". The restart sweep (`sweepStaleAgentContainers`,
+`go/internal/runner/run.go`) returns nothing, and `EnrollRequest` carries only
+`runner_id`, `runtime_tier`, and `egress_posture`. After the pin's stream
+drops, `RemoveOn` returns `ErrNotSent`, so the row stays charged and renewed
+while this server lives (OQ-9).
 
 The lease, `5 * time.Minute`, lapses only after the holding server stops
 renewing, so it is only the crash backstop. A Postgres outage longer than the
@@ -126,13 +181,10 @@ lease can expire a held row early.
 
 ### Scope decisions
 
-- **Owner only.** An agent's owner is a user, so per-user is per-owner. A
-  per-parent limit is OQ-1.
+- **Owner only.** An agent's owner is a user, so per-user is per-owner (OQ-1).
 - **The operator door is exempt but counted.** `SpawnAgent`,
   `ProvisionAgentWorkspace`, and the root seed (`svc.spawnAccount`,
-  `go/server/serve_seed.go`) do not reserve. `classifyProcedure`
-  (`go/internal/auth/admin_gate.go`) lists
-  `CompassServiceSpawnAgentProcedure` under `adminOnly` (OQ-3).
+  `go/server/serve_seed.go`) do not reserve (OQ-3).
 - **The wake path adds no rows.** `freshStart` and `reprovision` reuse a
   placement. `RecordAgentPlacement` (`go/internal/store/agent_placements.go`)
   "is an UPSERT keyed on the agent".
@@ -188,10 +240,9 @@ value below 1 fails boot (OQ-2). DL-479 records this. DL-077 stays Active: its
 
 ## Deps
 
-- **RIG-5110 (Done, merged to `main` in #2123).** `RelayLifecycleCall` runs
-  under the session's tenant (`runnerSessionAccount`,
-  `go/internal/runnerhub/relay_lifecycle.go`). T2 rebases onto it, and test 9
-  pins the cap on that path.
+- **RIG-5110 (Done, #2123).** `RelayLifecycleCall` runs under the session's
+  tenant (`runnerSessionAccount`, `go/internal/runnerhub/relay_lifecycle.go`);
+  test 9 pins the cap there.
 - **DL-312 (Active).** Servers run as replicas (OQ-8).
 
 ## Plan
@@ -237,8 +288,8 @@ pgtest, and regenerated `db/`; add the table to `tenantOwned` and
 `TestUpdatedAtTriggerCatalogFloor`; fix the stale `applyV1Only` and
 `RecordAgentPlacement` comments. Runnerhub: `commands.go`, `hub.go`. Server:
 new `spawn_limit.go`, `spawn_limit_test.go`, `lifecycle_limit_pgtest_test.go`;
-`lifecycle.go`, `service_placement_pgtest_test.go`. Docs: the spec and
-`docs/concepts/tools.md`.
+`lifecycle.go`, `service_placement_pgtest_test.go`. Runner, under OQ-9 (b):
+`host.go`, `host_test.go`. Docs: the spec and `docs/concepts/tools.md`.
 
 **Interfaces.** The migration copies 0001's per-table RLS, grant, and trigger.
 The composite FK targets `user_accounts_account_tenant_key UNIQUE (account_id,
@@ -432,21 +483,28 @@ runs on `context.WithTimeout(context.WithoutCancel(ctx), spawnChainTimeout)`.
 7. `TestSpawnSettlesTimedOutProvision` (limit 1, Provision gated): the row
    outlives two leases with `provisionCount()` 1; opening the gate places the
    agent and drops the row. In a second run, `hangUp` with the Provision still
-   gated drops the Runner while its container may exist: the row outlives two
-   more leases, a new handle gets `resource_exhausted`, and no Remove is sent.
+   gated: the row outlives two more leases, a new handle gets
+   `resource_exhausted`, and no Remove is sent.
 8. `TestSpawnSettlesFailedRollback` (limit 1, `setFailRemove(true)`), once per
    rollback: a refused Provision (`setFailProvision(true)`), where the Remove
    names `runner.AgentContainerNamePrefix + agentID`; a refused Start; a
    failed `RecordAgentPlacement` or `RecordAgentSession` (`execSQL` of
    `REVOKE INSERT` on its table `FROM compass_app`; for the session, `stop
    <session>` precedes `remove <container>`). Each leaves no placement and a
-   row held past two leases; after `setFailRemove(false)` the row drops. A
-   refused-Provision run that calls `hangUp` while Remove still fails keeps
-   the row held past two more leases.
+   row held past two leases; after `setFailRemove(false)` the row drops.
 9. `TestSpawnLimitNonBootstrapTenant`: tenant B, seeded as
    `bearer_tenant_pgtest_test.go` does, spawns through
    `f.hub.RelayLifecycleCall` at limit 1. Its rows carry tenant B, and its
    second spawn gets an in-band `resource_exhausted`.
+10. `TestSpawnLimitReleasesUnsentProvision` (limit 1): after `hangUp` and a
+    `hub.Status` probe failing with `ErrMsgNoSessionsStream`, a spawn fails
+    `CodeUnavailable` and leaves no row; after a new `attachRecordingRunner`,
+    a second handle spawns.
+11. Under OQ-9 (b): `TestRemoveFailsWhileUnregisteredContainerExists`
+    (runner, `newHostFixtureWithRecordingExec`, `liveSpec`). With `execErr`
+    and `removeErr` set, Provision fails and leaves an unregistered container
+    that `engine.Exists` reports; `host.Remove` then errors. A never-provisioned
+    name still removes as nil.
 
 **Spec and docs, same PR.** `docs/specs/product/compass.md` gains
 `### Requirement: Agent-initiated spawn is capped per owner` after "One
@@ -457,7 +515,7 @@ scenario and a retry scenario. The `agents_spawn_peer` bullet in
 `docs/concepts/tools.md` names `resource_exhausted` and despawn.
 
 **Smoke and done.** From `go/`, with `COMPASS_TEST_DATABASE_DSN` set, run
-`go test -race -tags pgtest -run 'ReserveSpawn|UpgradesV1|ProvisionOn|SpawnSlot|SpawnLimit|SpawnRetry|SpawnSettles' ./internal/store/ ./internal/runnerhub/ ./server/`.
+`go test -race -tags pgtest -run 'ReserveSpawn|UpgradesV1|ProvisionOn|SpawnSlot|SpawnLimit|SpawnRetry|SpawnSettles|RemoveFailsWhileUnregistered' ./internal/store/ ./internal/runnerhub/ ./internal/runner/ ./server/`.
 Done when this passes and `moon run compass-go:ci` is green.
 
 ### T3 — Configure the cap
@@ -509,63 +567,9 @@ when the test passes and `moon run compass-go:ci` is green.
       self-host doc
 - [ ] T2: `0002_spawn_reservations.sql` with the composite owner FK,
       `ReserveSpawn` (in-flight before placed), `runnerhub.Pin` and
-      `ErrNotSent`, the gate, `settleSpawn` with lease renewal, tests 1–9,
-      spec requirement, and tools doc
+      `ErrNotSent`, the gate, `settleSpawn` with lease renewal, tests 1–10
+      (11 under OQ-9 (b)), spec requirement, and tools doc
 - [ ] T3: flag and env, `ServeConfig.MaxAgentsPerOwner`, startup log,
       self-host upgrade note
 - [ ] When Matt rules, set DL-479's status to `Active (Matt, <date>)`, or
       revise this record and DL-479 to match
-
-## Open Questions
-
-- **OQ-1: Owner only, or also per parent? Load-bearing.** One runaway subtree
-  can spend the owner's budget, so refusals hit its siblings. A per-parent
-  limit contains it for one more indexed count (`agent_accounts_parent_idx`)
-  and a second knob. **Recommendation:** owner only. The refusal is visible,
-  T1 is the way out, and a per-parent limit can be added later.
-- **OQ-2: No unlimited mode. Non-load-bearing.** **Recommendation:** keep it.
-  A large value is the escape hatch.
-- **OQ-3: Operator door exempt but counted. Non-load-bearing.** An exempt
-  spawn can push an owner past `N`. **Recommendation:** keep it. A capped seed
-  could stop the supervisor from booting.
-- **OQ-4: Per-Runner host ceiling. Non-load-bearing.** Only the Runner sees a
-  container outside every row, such as one whose cleanup failed (OQ-9), and
-  only it bounds several owners on one host. **Recommendation:** a follow-up
-  Runner-side refusal when the host is full.
-- **OQ-5: Default 16. Non-load-bearing.** It is unmeasured. Before ruling, run
-  `SELECT a.owner_user_id, count(*) FROM agent_placements p JOIN
-  agent_accounts a ON a.account_id = p.agent_account_id GROUP BY 1` with the
-  deployment's `compass.tenant_id` set (RLS hides rows without it).
-  **Recommendation:** 16, raised per deployment if trees are larger.
-- **OQ-6: Human recovery path. Load-bearing.** (a) `compass agent despawn`
-  (T1), (b) a prerequisite issue, or (c) agent despawn only.
-  **Recommendation:** (a). Without it, an owner at the cap recovers only by
-  having an agent tear down a sibling. Designed against (a).
-- **OQ-7: Loops of failing spawns. Non-load-bearing.** Each failure leaves an
-  account, a home channel, and a tree edge. **Recommendation:** a follow-up
-  per-owner attempt budget.
-- **OQ-8: Durable reservations, or an in-process limiter? Load-bearing.**
-  - (a) Postgres rows under a per-owner advisory lock, released on a
-    placement or a confirmed Remove, with a renewed lease as the crash
-    backstop. The cap holds across restarts and replicas, for one migration
-    and one transaction per spawn.
-  - (b) An in-process limiter. It needs no migration, but it conflicts with
-    DL-312 and forgets pending spawns on restart.
-
-  The cap is core capability
-  (`docs/designs/meta/oss-core-managed-boundary/design.md`:
-  "core-capability-under-managed-motivation"). **Recommendation:** (a). This
-  record is designed against (a).
-- **OQ-9: No Runner signal confirms removal. Load-bearing; depends on OQ-8
-  (a).** Evidence is in §Ambiguous outcomes keep the slot. This record holds
-  such a slot, renewed, until its server stops.
-  - (a) Ship as designed. A dropped Runner can hold an owner's slots until
-    that server restarts, and `compass agent despawn` cannot free them.
-  - (b) Follow-up: on a registry miss, `removeLocked` fails when
-    `h.engine.Exists(ctx, containerName)` is true, as `Provision` checks a
-    stale entry. No proto change.
-  - (c) Follow-up proto change: the Runner reports its sweep result or its
-    owned containers at enroll, so a new enrollment can release. No such
-    signal exists today.
-
-  **Recommendation:** (a) now, with (b) and (c) as one follow-up issue.
