@@ -2497,7 +2497,8 @@ func openFabricAndStore(ctx context.Context, cfg ServeConfig) (*fabric.Fabric, *
 // return value by then, so a failed drain is logged, not returned.
 func closeFabric(ctx context.Context, fab *fabric.Fabric) {
 	if err := fab.Close(); err != nil {
-		slog.Default().WarnContext(ctx, "draining event fabric on shutdown", "error", err)
+		// Runs after shutdown cancels ctx; keep its values, drop the cancel.
+		slog.Default().WarnContext(context.WithoutCancel(ctx), "draining event fabric on shutdown", "error", err)
 	}
 }
 

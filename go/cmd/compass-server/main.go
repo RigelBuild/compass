@@ -291,7 +291,8 @@ func logOnDrainSignal(ctx context.Context) func() {
 	signal.Notify(drainSig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		if _, ok := <-drainSig; ok {
-			slog.InfoContext(ctx, "shutdown signal received; draining")
+			// The signal also cancels ctx; log on its values without the cancel.
+			slog.InfoContext(context.WithoutCancel(ctx), "shutdown signal received; draining")
 		}
 	}()
 	return func() { signal.Stop(drainSig) }
