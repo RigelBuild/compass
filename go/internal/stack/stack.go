@@ -411,7 +411,7 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("duplicate stack network listener: %w", err)
 	}
-	server, err := s.deps.Supervisor.Start(ctx, serverSpec(s.cfg, cert, listenFile))
+	server, err := s.deps.Supervisor.Start(ctx, serverSpec(s.cfg, cert, listenFile, os.Getenv(secretProviderEnvVar)))
 	// The child holds its own copy now. Keeping ours open would let the kernel
 	// queue connections for a dead server instead of refusing them.
 	closeErr := errors.Join(listenFile.Close(), listen.Close())

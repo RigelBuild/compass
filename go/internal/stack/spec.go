@@ -16,6 +16,17 @@ const tokenEnvVar = "COMPASS_RUNNER_TOKEN"
 
 const microVMRunRootEnvVar = "COMPASS_MICROVM_RUNROOT"
 
+// secretProviderEnvVar is read by compass-server itself when no
+// --secret-provider flag is passed; the child inherits the stack's env.
+const secretProviderEnvVar = "COMPASS_SECRET_PROVIDER"
+
+// runtimeBackendHost is the RuntimeBackend value that selects the host tier.
+const runtimeBackendHost = "host"
+
+// hostSecretProvider is the at-rest provider the host tier pins: its agents
+// run on the operator's own desktop, where the OS keyring is available.
+const hostSecretProvider = "keyring://"
+
 // embeddedRunnerID is the fixed identity of the single embedded runner. Embedded
 // mode is single-user/single-runner by design (DL-106), so the id is an internal
 // constant rather than a Config knob; it is cross-checked against the minted
@@ -29,7 +40,8 @@ const embeddedRunnerID = "embedded"
 // door arrives as inherited fd 3 (--listen-fd): the stack holds the bound
 // listener, so no other process can take the port before the server starts.
 // --nats-url is unconditional because the server refuses to boot without it.
-func serverSpec(cfg Config, cert CertResult, listen *os.File) ProcessSpec {
+// secretProviderEnv is the stack's inherited COMPASS_SECRET_PROVIDER.
+func serverSpec(cfg Config, cert CertResult, listen *os.File, secretProviderEnv string) ProcessSpec {
 	args := []string{
 		"--socket", cfg.SocketPath,
 		"--database", cfg.DatabaseDSN,
@@ -39,8 +51,8 @@ func serverSpec(cfg Config, cert CertResult, listen *os.File) ProcessSpec {
 		"--tls-key", cert.KeyPath,
 	}
 	// Omit an empty provider so the server can use its own env-based resolution.
-	if cfg.SecretProvider != "" {
-		args = append(args, "--secret-provider", cfg.SecretProvider)
+	if provider := serverSecretProvider(cfg, secretProviderEnv); provider != "" {
+		args = append(args, "--secret-provider", provider)
 	}
 	env := []string{}
 	if cfg.S3Endpoint != "" {
@@ -55,6 +67,15 @@ func serverSpec(cfg Config, cert CertResult, listen *os.File) ProcessSpec {
 		env = append(env, "COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES="+strconv.Itoa(cfg.TranscriptSafetyValveCapBytes))
 	}
 	return ProcessSpec{Component: ComponentServer, Args: args, Env: env, ExtraFiles: []*os.File{listen}}
+}
+
+// serverSecretProvider returns the --secret-provider value: an explicit cfg or env
+// provider wins, and only an unset host-tier stack defaults to the keyring.
+func serverSecretProvider(cfg Config, secretProviderEnv string) string {
+	if cfg.SecretProvider != "" || secretProviderEnv != "" || cfg.RuntimeBackend != runtimeBackendHost {
+		return cfg.SecretProvider
+	}
+	return hostSecretProvider
 }
 
 // runnerSpec builds the compass-runner child spec (devenv.nix:497-502): it dials

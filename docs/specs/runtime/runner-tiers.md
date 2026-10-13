@@ -104,6 +104,11 @@ anything else. This spec covers the host, podman, and microVM tiers.
   - **Egress:** unenforced, as above.
   - **Resource limits:** the backend owns no cgroup, so `Resize` returns an
     error rather than pretend.
+- **Secrets at rest:** `compass-stack up --runtime-backend host` starts its
+  server with `--secret-provider keyring://`, so host-tier secrets live in the
+  OS keyring. `COMPASS_SECRET_PROVIDER` in the stack's environment still wins:
+  the stack then passes no flag and the server reads the variable itself.
+  Every other backend keeps the server's own default.
 - **What it does and does not protect:** per DL-024 the container was never
   credential avoidance — agents receive the user's own secrets on every tier.
   The host tier gives up only the blast-radius boundary; it does not hand the
@@ -230,14 +235,10 @@ This spec mixes current behavior with ruled strategy. The line:
 
 - **Current:** the host, podman, and microVM backends behind `SelectBackend`
   (`go/internal/runtime/microvm.go`), podman as the default, egress
-  enforcement on podman and microVM, the unenforced posture on host, the
-  trust-model split itself (DL-325, Active), and the native app's first-run
-  chooser with one-time `app.toml` persistence (DL-406, Active; DL-319 retains
-  the embedded-local product direction).
-- **Not yet built:** a host-tier default for secrets. The design pins the
-  SecretSpec `keyring://` provider for host-tier use, but nothing sets it
-  automatically today. An operator can set it by hand on the Server with
-  `--secret-provider keyring://` (or `COMPASS_SECRET_PROVIDER`).
+  enforcement on podman and microVM, the unenforced posture and `keyring://`
+  secrets default on host, the trust-model split itself (DL-325, Active), and
+  the native app's first-run chooser with one-time `app.toml` persistence
+  (DL-406, Active; DL-319 retains the embedded-local product direction).
 - **Future work, not designed:** an OS-sandbox egress mode for the host tier
   (bubblewrap / sandbox-exec) is a possible later addition; nothing in this
   spec depends on it.
