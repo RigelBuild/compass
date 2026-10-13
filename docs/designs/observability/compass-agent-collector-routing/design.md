@@ -95,11 +95,11 @@ appends `/v1/<signal>` by `path.Join`, as the Go SDK's `otlpconfig` does.
    One 8 s deadline (as `withBodyReadDeadline`, `go/server/network_door.go`)
    covers read and upstream.
 4. Reads at most 4 MiB (413). An allocation-free `protowire` pre-scan counts
-   messages and packed-varint bytes; over 65,536 messages or depth 32 is 413.
-   It reserves the decoded bound (416 B per message, 8 B per packed byte,
-   twice the body), else 503, then decodes with `go.opentelemetry.io/proto/otlp`
-   (direct; 400 if malformed). Measured: 4 MiB of empty attributes decodes to
-   244 MiB; an empty span, the costliest, to 331 B.
+   messages and repeated-scalar elements, packed or unpacked; over 65,536
+   messages or depth 32 is 413. It reserves 416 B per message, 16 B per
+   element (append doubling) and twice the body, else 503, then decodes with
+   `go.opentelemetry.io/proto/otlp` (direct; 400 if malformed). 4 MiB of empty
+   attributes measured 244 MiB decoded.
 5. Deletes `compass.session.id` from every scope, span, event, link, data
    point, exemplar and log record. On each resource it sets
    `compass.session.id` to the bound id, `compass.telemetry.origin=agent` and
@@ -201,7 +201,7 @@ Red→green (hermetic, fake relay):
   `TestOTLPRejectsCompressedBody` (415).
 - `TestOTLPSaturationShedsWith503`: a ninth request or empty budget, unread.
 - `TestOTLPDecodeBound`: 70,000 empty attributes is 413; `otlpscan.Bound`
-  covers measured decode allocation.
+  covers measured allocation, including two million unpacked `BucketCounts`.
 - `TestOTLPRelayFailure`: 400 stays 400, 503 keeps `Retry-After`, transport
   error is 502.
 - `TestOTLPUnmountedWhenRelayNil` (404); `TestRelayPostsWithHeaders`.
