@@ -269,12 +269,14 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 			continue
 		}
 		d.wg.Go(func() {
-			result := d.handle(ctx, cmd)
+			commandCtx, span := commandSpan(ctx, cmd)
+			defer span.End()
+			result := d.handle(commandCtx, cmd)
 			if result == nil {
 				return
 			}
 			if err := d.send(result); err != nil {
-				d.log.ErrorContext(ctx, "sending session result failed", slog.Any("error", err))
+				d.log.ErrorContext(commandCtx, "sending session result failed", slog.Any("error", err))
 				cancelCause(fmt.Errorf("session result send failed: %w", err))
 			}
 		})
@@ -355,9 +357,6 @@ func commandName(command any) string {
 // handle executes one command (or returns the recorded result for a retried
 // request id) and builds the correlated result message.
 func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
-	commandCtx, span := commandSpan(ctx, cmd)
-	defer span.End()
-	ctx = commandCtx
 	// A signal-only command (SecretsVersion, ConfigVersion) carries no request id and no
 	// result — it must never enter the dedup map, or the empty-id key would collapse every
 	// signal to one. Execute it directly, return no result frame; ConfigVersion is filtered

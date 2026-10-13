@@ -83,6 +83,32 @@ func TestRunSessionsCommandSpanUsesEnvelopeTraceparent(t *testing.T) {
 	}
 }
 
+func TestRunSessionsResultSendFailureLogCarriesCommandTrace(t *testing.T) {
+	installCommandTracer(t)
+	stream := newScriptStream()
+	stream.sendHook = func(msg *compassv1internal.SessionsRequest) error {
+		if msg.GetRequestId() == "trace-send-failure" {
+			return errors.New("stream write failed")
+		}
+		return nil
+	}
+	cmd := startCommand("trace-send-failure")
+	cmd.Traceparent = commandEnvelopeTraceparent
+	stream.pushCmd(cmd)
+
+	var output bytes.Buffer
+	logger := slog.New(otelx.NewTraceHandler(slog.NewTextHandler(&output, nil)))
+	if err := runSessions(t.Context(), stream, &fakeSessionHost{}, logger); err == nil {
+		t.Fatal("runSessions returned nil after a Send failure")
+	}
+
+	remote := trace.SpanContextFromContext(otelx.ContextWithTraceparent(t.Context(), commandEnvelopeTraceparent))
+	line := output.String()
+	if !strings.Contains(line, "sending session result failed") || !strings.Contains(line, "trace_id="+remote.TraceID().String()) {
+		t.Fatalf("send-failure log = %q, want command trace id %s", line, remote.TraceID())
+	}
+}
+
 func TestRunSessionsDeliverControlPrefersOpTraceparent(t *testing.T) {
 	recorder := installCommandTracer(t)
 	opParent := trace.SpanContextFromContext(otelx.ContextWithTraceparent(t.Context(), commandOpTraceparent))

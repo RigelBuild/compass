@@ -61,13 +61,14 @@ func (h *Hub) SignalSecretsVersion(ctx context.Context) error {
 	if router == nil {
 		return nil
 	}
+	tp := otelx.Traceparent(ctx)
 	// Single-Runner MVP: every live session pushes through the same router/stream,
 	// so a push failure is stream-wide and this early return is total, not partial.
 	// A future multi-Runner change giving sessions distinct routers MUST switch to
 	// accumulate-and-continue (errors.Join) so it does not silently under-notify.
 	for _, sessionID := range sessionIDs {
 		cmd := &compassv1internal.SessionsResponse{
-			Traceparent: otelx.Traceparent(ctx),
+			Traceparent: tp,
 			Command: &compassv1internal.SessionsResponse_SecretsVersion{
 				SecretsVersion: &compassv1internal.SecretsVersion{
 					SessionId: sessionID,
