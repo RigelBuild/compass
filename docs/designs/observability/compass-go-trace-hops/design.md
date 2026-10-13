@@ -545,8 +545,16 @@ Owner: compass-ux.
   - Traced: `enroll` (the `Enroll` RPC span), `promoteSession` (the Start
     or Resume command's span), and `releaseSession` reached from
     `unbindSession` (the Stop command's span).
+  - Deliver refusals: `commandRouter.complete` fires `onSessionUnknown` on a
+    `NOT_FOUND` result for a send-only deliver, and `Handler.Sessions` runs
+    `dropLostSessionDetached` on the stripped stream ctx. The server stamped
+    that deliver's traceparent itself (parent T4), so no wire field is
+    needed. `deliverRefusals` stores `{sessionID, traceparent}` instead of
+    the session id, `onSessionUnknown` takes the traceparent too, and the
+    callback restores it with the (b′) idiom before
+    `dropLostSessionDetached`.
   - Untraced without a carrier: `deliverSession` and the `dropLostSession`
-    paths. They run on the `Sessions` or `PublishEvents` work ctx, which
+    call in `deliverSession`. They run on the `PublishEvents` work ctx, which
     parent T2 strips, and `PublishEventsRequest` and `SessionFrame` carry no
     traceparent. Some of these frames are caused by a traced command: a
     failed Reload reaches `agentHost.markErrored` and `PublishSessionState`
@@ -567,6 +575,10 @@ Interfaces:
 
 - Changes (package `presence`, unexported): `hubEdge` gains
   `traceparent string`.
+- Changes (package `runnerhub`, unexported): `deliverRefusals` values become
+  `{sessionID, traceparent string}`, filled in `send1` from
+  `cmd.GetTraceparent()`, and `setSessionUnknown` takes
+  `func(sessionID, traceparent string)`.
 
 Test cycle:
 
@@ -582,8 +594,9 @@ Test cycle:
 - `runnerhub`, through the real path: a `Hub` with a recording
   `PresenceSink`. `Enroll` under a known span gives a lifecycle edge with
   that trace id. A `PublishEvents` lifecycle frame sent with a client span
-  gives an edge with an empty traceparent. Before: a compile error for the
-  edge signature.
+  gives an edge with an empty traceparent. A send-only deliver under a known
+  span, refused with `NOT_FOUND`, gives a `DISCONNECTED` edge with that trace
+  id. Before: the test does not compile against the old edge signature.
 
 Acceptance: bus-tail work and the traced edges join the trace of the request
 that caused them. Untraced edges carry no span. Loop spans never leak into
