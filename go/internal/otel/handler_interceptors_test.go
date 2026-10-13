@@ -59,10 +59,15 @@ func TestHandlerInterceptorsMountsSpanAndTraceResponseBeforeRest(t *testing.T) {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
 	var restSawSpan bool
+	var restSawEmptyTraceResponse bool
 	rest := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 			restSawSpan = trace.SpanFromContext(ctx).SpanContext().IsValid()
-			return next(ctx, req)
+			resp, err := next(ctx, req)
+			if resp != nil {
+				restSawEmptyTraceResponse = resp.Header().Get("traceresponse") == ""
+			}
+			return resp, err
 		}
 	})
 	handler := connect.NewUnaryHandler("/test.Service/Call", func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
@@ -80,6 +85,9 @@ func TestHandlerInterceptorsMountsSpanAndTraceResponseBeforeRest(t *testing.T) {
 	}
 	if !restSawSpan {
 		t.Fatal("caller interceptor did not run inside the server span")
+	}
+	if !restSawEmptyTraceResponse {
+		t.Fatal("traceresponse set before the caller interceptor returned")
 	}
 	// The outer trace-response interceptor adds this header after rest returns.
 	if got := response.Header().Get("traceresponse"); got == "" {
