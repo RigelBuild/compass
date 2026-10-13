@@ -23,3 +23,16 @@ func TestNetnsConnLivenessRejectsNonPositivePid(t *testing.T) {
 		}
 	}
 }
+
+// TestCapDiagBoundsOutput: output at the cap passes through; one byte over is cut
+// to the cap and marked, so a truncated log never reads as complete.
+func TestCapDiagBoundsOutput(t *testing.T) {
+	exact := strings.Repeat("a", diagCap)
+	if got := capDiag([]byte(exact)); got != exact {
+		t.Errorf("at cap: got %d bytes, want %d unchanged", len(got), diagCap)
+	}
+	got := capDiag([]byte(exact + "Z"))
+	if want := exact + "\n[truncated 1 of 4097 bytes]"; got != want {
+		t.Errorf("over cap: got tail %q, want the cap plus a truncation marker", got[diagCap:])
+	}
+}

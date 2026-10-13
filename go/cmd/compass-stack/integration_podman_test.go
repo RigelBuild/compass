@@ -112,7 +112,17 @@ func rootlessNetnsState(t *testing.T) string {
 	dir := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "containers", "networks", "rootless-netns")
 	ls, lsErr := exec.CommandContext(t.Context(), "ls", "-la", "--full-time", dir).CombinedOutput()
 	ps, psErr := exec.CommandContext(t.Context(), "podman", "ps", "-a", "--format", "{{.Names}} {{.Status}}").CombinedOutput()
-	return fmt.Sprintf("rootless-netns %s (%v):\n%s\n%s\npodman ps -a (%v):\n%s", dir, lsErr, ls, netnsConnLiveness(dir), psErr, ps)
+	return fmt.Sprintf("rootless-netns %s (%v):\n%s\n%s\npodman ps -a (%v):\n%s", dir, lsErr, capDiag(ls), netnsConnLiveness(dir), psErr, capDiag(ps))
+}
+
+// diagCap bounds each captured command output so a crowded host cannot flood the log.
+const diagCap = 4096
+
+func capDiag(out []byte) string {
+	if len(out) <= diagCap {
+		return string(out)
+	}
+	return fmt.Sprintf("%s\n[truncated %d of %d bytes]", out[:diagCap], len(out)-diagCap, len(out))
 }
 
 // netnsConnLiveness reports the pasta pid podman recorded and whether it runs:
