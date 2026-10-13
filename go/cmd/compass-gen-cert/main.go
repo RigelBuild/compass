@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -39,13 +40,14 @@ var version = "0.1.0"
 const defaultHosts = "127.0.0.1,::1,localhost"
 
 func main() {
-	if err := run(); err != nil {
-		slog.Error("compass-gen-cert exited with an error", "error", err)
+	ctx := context.Background()
+	if err := run(ctx); err != nil {
+		slog.ErrorContext(ctx, "compass-gen-cert exited with an error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	certOut := flag.String("cert-out", "",
 		"Path to write the PEM certificate to (0644, a public trust anchor). "+
 			"Required. This file is both the Server's --tls-cert and the Runner's "+
@@ -83,7 +85,7 @@ func run() error {
 	// Idempotent by default: when both files already exist, leave them be so a
 	// restart does not swap the cert out from under a live Server/Runner pair
 	// mid-session. --force overrides to regenerate unconditionally.
-	if skipExisting(*certOut, *keyOut, *force) {
+	if skipExisting(ctx, *certOut, *keyOut, *force) {
 		return nil
 	}
 
@@ -100,7 +102,7 @@ func run() error {
 	if actualValidity <= 0 {
 		actualValidity = certgen.DefaultValidity
 	}
-	slog.Info("generated self-signed network-door certificate",
+	slog.InfoContext(ctx, "generated self-signed network-door certificate",
 		"cert", *certOut, "key", *keyOut, "hosts", strings.Join(hostList, ","),
 		"validity", actualValidity.String())
 	return nil
@@ -169,14 +171,14 @@ func looseMode(path string) bool {
 
 // skipExisting applies shouldSkipGen and, on a skip, logs it and warns about a
 // loose key mode, which it leaves unchanged.
-func skipExisting(certPath, keyPath string, force bool) bool {
+func skipExisting(ctx context.Context, certPath, keyPath string, force bool) bool {
 	if !shouldSkipGen(certPath, keyPath, force) {
 		return false
 	}
-	slog.Info("network-door certificate already present; skipping (pass --force to regenerate)",
+	slog.InfoContext(ctx, "network-door certificate already present; skipping (pass --force to regenerate)",
 		"cert", certPath, "key", keyPath)
 	if looseMode(keyPath) {
-		slog.Warn("existing private key is readable or writable by group or others; tighten it to 0600",
+		slog.WarnContext(ctx, "existing private key is readable or writable by group or others; tighten it to 0600",
 			"key", keyPath)
 	}
 	return true

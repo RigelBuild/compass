@@ -1144,14 +1144,14 @@ func (l *Linear) actorAttribution(ctx context.Context) bool {
 	if probeErr != nil {
 		// Transient failure — degrade this write but do NOT cache, so a later
 		// write re-probes. Log the degrade line once per transient occurrence.
-		l.log.Warn("linear: actor attribution unavailable; degrading to stamp-only", "probe_error", probeErr)
+		l.log.WarnContext(ctx, "linear: actor attribution unavailable; degrading to stamp-only", "probe_error", probeErr)
 		return false
 	}
 	// Authoritative answer: cache it. A definitive not-capable also degrades.
 	l.probeDone = true
 	l.actorCapable = out.Viewer.App
 	if !l.actorCapable {
-		l.log.Warn("linear: actor attribution unavailable; degrading to stamp-only")
+		l.log.WarnContext(ctx, "linear: actor attribution unavailable; degrading to stamp-only")
 	}
 	return l.actorCapable
 }

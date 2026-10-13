@@ -22,7 +22,7 @@ func TestSetupServiceChooseEmbeddedPreflightFailure(t *testing.T) {
 		preflight: func(context.Context) error {
 			return preflightErr
 		},
-		save: func() error {
+		save: func(context.Context) error {
 			saves++
 			return nil
 		},
@@ -52,7 +52,7 @@ func TestSetupServiceChooseEmbeddedSuccess(t *testing.T) {
 		preflight: func(context.Context) error {
 			return nil
 		},
-		save: func() error {
+		save: func(context.Context) error {
 			saves++
 			return nil
 		},
@@ -91,7 +91,7 @@ func TestSetupServiceChooseEmbeddedSaveFailure(t *testing.T) {
 		preflight: func(context.Context) error {
 			return nil
 		},
-		save: func() error {
+		save: func(context.Context) error {
 			return saveErr
 		},
 	}
@@ -115,7 +115,7 @@ func TestSetupServiceChooseEmbeddedConfigExists(t *testing.T) {
 		preflight: func(context.Context) error {
 			return nil
 		},
-		save: func() error {
+		save: func(context.Context) error {
 			return appconfig.ErrConfigExists
 		},
 	}
@@ -155,7 +155,7 @@ func TestSetupServiceChooseEmbeddedGateRefusals(t *testing.T) {
 				preflights++
 				return nil
 			},
-			save: func() error { return nil },
+			save: func(context.Context) error { return nil },
 		}
 
 		result := setup.ChooseEmbedded(context.Background())
@@ -176,7 +176,7 @@ func TestSetupServiceChooseEmbeddedGateRefusals(t *testing.T) {
 			preflight: func(context.Context) error {
 				return nil
 			},
-			save: func() error { return nil },
+			save: func(context.Context) error { return nil },
 		}
 		if result := setup.ChooseEmbedded(context.Background()); !result.OK {
 			t.Fatalf("first ChooseEmbedded() = %+v, want success", result)

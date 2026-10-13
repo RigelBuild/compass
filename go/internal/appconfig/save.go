@@ -2,6 +2,7 @@ package appconfig
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -18,7 +19,7 @@ const saveFileMode = 0o600
 var syncDirectory = syncDir
 
 // SaveClient validates and writes a client config without replacing app.toml.
-func SaveClient(path string, cfg Config, caPEM []byte) (_ Config, retErr error) {
+func SaveClient(ctx context.Context, path string, cfg Config, caPEM []byte) (_ Config, retErr error) {
 	if cfg.Mode != ModeClient {
 		return Config{}, fmt.Errorf("appconfig: saving client config requires mode=client, got %s", cfg.Mode)
 	}
@@ -41,15 +42,16 @@ func SaveClient(path string, cfg Config, caPEM []byte) (_ Config, retErr error) 
 			}
 		}()
 	}
-	return saveConfig(path, cfg)
+	return saveConfig(ctx, path, cfg)
 }
 
 // SaveEmbedded writes embedded mode without replacing an existing app.toml.
-func SaveEmbedded(path string) error {
-	_, err := saveConfig(path, Config{Mode: ModeEmbedded})
+func SaveEmbedded(ctx context.Context, path string) error {
+	_, err := saveConfig(ctx, path, Config{Mode: ModeEmbedded})
 	return err
 }
-func saveConfig(path string, cfg Config) (_ Config, retErr error) {
+
+func saveConfig(ctx context.Context, path string, cfg Config) (_ Config, retErr error) {
 	dir := filepath.Dir(path)
 	if err := ensureConfigDir(dir); err != nil {
 		return Config{}, err
@@ -75,7 +77,7 @@ func saveConfig(path string, cfg Config) (_ Config, retErr error) {
 	tmpPath := tmp.Name()
 	defer func() {
 		if err := removeFile(tmpPath); err != nil {
-			slog.Error("appconfig: cleaning up config temp file", "path", tmpPath, "error", err)
+			slog.ErrorContext(ctx, "appconfig: cleaning up config temp file", "path", tmpPath, "error", err)
 		}
 	}()
 	if err := writeSyncedFile(tmp, data); err != nil {
@@ -92,10 +94,10 @@ func saveConfig(path string, cfg Config) (_ Config, retErr error) {
 		return Config{}, errors.Join(fmt.Errorf("appconfig: linking config into place: %w", err), removeErr)
 	}
 	if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		slog.Error("appconfig: removing linked config temp file", "path", tmpPath, "error", err)
+		slog.ErrorContext(ctx, "appconfig: removing linked config temp file", "path", tmpPath, "error", err)
 	}
 	if err := syncDirectory(dir); err != nil {
-		slog.Error("appconfig: syncing config directory after save", "path", dir, "error", err)
+		slog.ErrorContext(ctx, "appconfig: syncing config directory after save", "path", dir, "error", err)
 	}
 	return saved, nil
 }

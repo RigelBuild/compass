@@ -62,7 +62,7 @@ func (c quitController) stopStackAndQuit(ctx context.Context) {
 	defer cancel()
 	if err := c.stackDown(downCtx, embedded.StackDownArgs(c.params)); err != nil {
 		// Quit-anyway (OQ-6): log and fall through to quit.
-		logger.Error("stopping the embedded stack failed; quitting anyway "+
+		logger.ErrorContext(ctx, "stopping the embedded stack failed; quitting anyway "+
 			"(the stack lingers, which is the safe plain-quit default)", "error", err)
 	}
 	c.quit()

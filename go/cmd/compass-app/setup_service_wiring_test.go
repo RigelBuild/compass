@@ -42,7 +42,7 @@ func TestNewSetupServicesShareGateAndCAPicks(t *testing.T) {
 	if dialog.app != nil {
 		t.Error("dialog service app must be assigned after application.New")
 	}
-	if err := setup.save(); err != nil {
+	if err := setup.save(t.Context()); err != nil {
 		t.Fatalf("setup save: %v", err)
 	}
 	cfg, err := appconfig.Load(configHome, "", "")

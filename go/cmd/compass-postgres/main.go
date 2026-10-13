@@ -42,13 +42,14 @@ import (
 var version = "0.1.0"
 
 func main() {
-	if err := run(); err != nil {
-		slog.Error("compass-postgres exited with an error", "error", err)
+	ctx := context.Background()
+	if err := run(ctx); err != nil {
+		slog.ErrorContext(ctx, "compass-postgres exited with an error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	stateDir := flag.String("state-dir", "",
 		"The app state directory. The cluster's data dir is <state-dir>/postgres. Required.")
 	databaseFlag := flag.String("database", "",
@@ -81,7 +82,7 @@ func run() error {
 
 	// Process root context: cancelled on SIGTERM/SIGINT so the child postgres
 	// receives the same graceful stop the supervisor sent us.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	return serve(ctx, cfg)
@@ -207,7 +208,7 @@ func serve(ctx context.Context, cfg pgConfig) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting postgres: %w", err)
 	}
-	slog.Info("postgres started",
+	slog.InfoContext(ctx, "postgres started",
 		"datadir", cfg.DataDir, "socket", cfg.SocketDir, "port", cfg.Port, "pid", cmd.Process.Pid)
 
 	// Ensure the target database exists once the socket is accepting. A failure
@@ -216,7 +217,7 @@ func serve(ctx context.Context, cfg pgConfig) error {
 	// database when it opens the DSN.
 	go func() {
 		if err := ensureDatabase(ctx, cfg); err != nil {
-			slog.Error("ensuring database", "dbname", cfg.DBName, "error", err)
+			slog.ErrorContext(ctx, "ensuring database", "dbname", cfg.DBName, "error", err)
 		}
 	}()
 
@@ -229,9 +230,9 @@ func serve(ctx context.Context, cfg pgConfig) error {
 
 	select {
 	case <-ctx.Done():
-		slog.Info("shutdown signal received; forwarding SIGTERM to postgres", "pid", cmd.Process.Pid)
+		slog.InfoContext(ctx, "shutdown signal received; forwarding SIGTERM to postgres", "pid", cmd.Process.Pid)
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			slog.Error("forwarding SIGTERM to postgres", "error", err)
+			slog.ErrorContext(ctx, "forwarding SIGTERM to postgres", "error", err)
 		}
 		// Give postgres a bounded window to drain, then wait for its exit. We do
 		// not SIGKILL: a smart shutdown that overruns is the supervisor's kill to
@@ -240,7 +241,7 @@ func serve(ctx context.Context, cfg pgConfig) error {
 		case err := <-waitErr:
 			return childExitError(err)
 		case <-time.After(shutdownGrace):
-			slog.Warn("postgres still shutting down after grace window; awaiting its exit",
+			slog.WarnContext(ctx, "postgres still shutting down after grace window; awaiting its exit",
 				"grace", shutdownGrace)
 			return childExitError(<-waitErr)
 		}
@@ -285,7 +286,7 @@ func initCluster(ctx context.Context, cfg pgConfig) error {
 	cmd := exec.CommandContext(ctx, initdbBin, "-D", cfg.DataDir, "--auth=trust") //nolint:gosec // G204: the embedded-postgres seam — initdbBin is LookPath-resolved and args are wrapper-built, neither user-controlled
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	slog.Info("initializing postgres cluster", "datadir", cfg.DataDir)
+	slog.InfoContext(ctx, "initializing postgres cluster", "datadir", cfg.DataDir)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("running initdb: %w", err)
 	}
@@ -328,7 +329,7 @@ func ensureDatabase(ctx context.Context, cfg pgConfig) error {
 		cmd.Env = cLocaleEnv(os.Environ())
 		out, err := cmd.CombinedOutput()
 		if err == nil {
-			slog.Info("created database", "dbname", cfg.DBName)
+			slog.InfoContext(ctx, "created database", "dbname", cfg.DBName)
 			return nil
 		}
 		switch classifyCreatedbOutput(string(out)) {

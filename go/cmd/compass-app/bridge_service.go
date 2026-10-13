@@ -357,6 +357,7 @@ func (s *bridgeService) connectServerChoice(ctx context.Context, req connectRequ
 		return result
 	}
 	_, err = setup.saveClient(
+		ctx,
 		setup.configPath,
 		appconfig.Config{Mode: appconfig.ModeClient, ServerURL: serverURL},
 		caPEM,

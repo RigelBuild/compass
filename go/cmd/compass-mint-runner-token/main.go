@@ -38,13 +38,14 @@ import (
 var version = "0.1.0"
 
 func main() {
-	if err := run(); err != nil {
-		slog.Error("compass-mint-runner-token exited with an error", "error", err)
+	ctx := context.Background()
+	if err := run(ctx); err != nil {
+		slog.ErrorContext(ctx, "compass-mint-runner-token exited with an error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	runnerID := flag.String("runner-id", "",
 		"The Runner id to mint a token for (the token's subject). Required.")
 	databaseFlag := flag.String("database", "",
@@ -87,7 +88,6 @@ func run() error {
 		return err
 	}
 
-	ctx := context.Background()
 	st, err := store.Open(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
@@ -165,7 +165,7 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 		}
 		token := string(existing)
 		if looseMode(path) {
-			slog.Warn("existing runner token file is readable or writable by group or others; tighten it to 0600",
+			slog.WarnContext(ctx, "existing runner token file is readable or writable by group or others; tighten it to 0600",
 				"token_out", path)
 		}
 		state, prior, err := runnerhub.RunnerTokenStatus(ctx, st, token, runnerID)
@@ -174,24 +174,24 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 		}
 		switch state {
 		case runnerhub.TokenRegistered:
-			slog.Info("runner token file already present and registered; skipping (pass --force to re-mint)",
+			slog.InfoContext(ctx, "runner token file already present and registered; skipping (pass --force to re-mint)",
 				"token_out", path, "runner_id", runnerID)
 			return nil
 		case runnerhub.TokenRevoked:
-			slog.Warn("runner token file holds a revoked token; leaving it (pass --force to re-mint)",
+			slog.WarnContext(ctx, "runner token file holds a revoked token; leaving it (pass --force to re-mint)",
 				"token_out", path, "runner_id", runnerID)
 			return nil
 		case runnerhub.TokenUnknown:
 			if err := runnerhub.StoreRunnerTokenHash(ctx, st, token, runnerID); err != nil {
 				return fmt.Errorf("re-registering existing runner token: %w", err)
 			}
-			slog.Info("existing runner token re-registered in store (store had no record); file left unchanged",
+			slog.InfoContext(ctx, "existing runner token re-registered in store (store had no record); file left unchanged",
 				"token_out", path, "runner_id", runnerID)
 			return nil
 		case runnerhub.TokenOtherSubject:
 			// Name the replaced subject so a mistyped --runner-id or --token-out
 			// that overwrote another runner's credential is visible in the log.
-			slog.Warn("runner token file is registered to a different subject; rotating",
+			slog.WarnContext(ctx, "runner token file is registered to a different subject; rotating",
 				"token_out", path, "runner_id", runnerID,
 				"prior_subject_kind", subjectKindName(prior.Kind), "prior_subject_id", prior.ID)
 		}
@@ -211,7 +211,7 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 		_ = os.Remove(path)
 		return err
 	}
-	slog.Info("minted runner token", "token_out", path, "runner_id", runnerID)
+	slog.InfoContext(ctx, "minted runner token", "token_out", path, "runner_id", runnerID)
 	return nil
 }
 

@@ -159,7 +159,7 @@ func seedFullRecord(t *testing.T, cfg Config, h *harness) {
 			{Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)},
 		},
 	}
-	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(t.Context(), cfg.StateDir, rec); err != nil {
 		t.Fatalf("seed pgid file = %v", err)
 	}
 	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
@@ -626,7 +626,7 @@ func TestDownDetachedHalfSpawnedPrefix(t *testing.T) {
 		WriterPid: 1, Version: pgidFileVersion,
 		Entries: []pgidEntry{{Component: ComponentPostgres, Pgid: pgPgid, StartTime: pgToken(pgPgid)}},
 	}
-	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(t.Context(), cfg.StateDir, rec); err != nil {
 		t.Fatalf("seed prefix record = %v", err)
 	}
 	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
@@ -662,7 +662,7 @@ func TestDownDetachedNilContainersAllProcessRecord(t *testing.T) {
 			{Component: ComponentServer, Pgid: serverPgid, StartTime: pgToken(serverPgid)},
 		},
 	}
-	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(t.Context(), cfg.StateDir, rec); err != nil {
 		t.Fatalf("seed all-process record = %v", err)
 	}
 	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
@@ -774,7 +774,7 @@ func seedContainerRecord(t *testing.T, cfg Config, h *harness) {
 			{Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)},
 		},
 	}
-	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(t.Context(), cfg.StateDir, rec); err != nil {
 		t.Fatalf("seed container record = %v", err)
 	}
 	h.containers.setExists(true)
@@ -1113,7 +1113,7 @@ func seedCollectorRecord(t *testing.T, cfg Config, h *harness) {
 			{Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)},
 		},
 	}
-	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(t.Context(), cfg.StateDir, rec); err != nil {
 		t.Fatalf("seed collector record = %v", err)
 	}
 	h.containers.setExistsName(collectorContainerNameTest, true)
@@ -1230,7 +1230,7 @@ func seedNatsRecord(t *testing.T, cfg Config, h *harness) {
 			{Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)},
 		},
 	}
-	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(t.Context(), cfg.StateDir, rec); err != nil {
 		t.Fatalf("seed nats record = %v", err)
 	}
 	h.containers.setExistsName(natsContainerNameTest, true)
@@ -1306,7 +1306,7 @@ const gatewayContainerNameTest = "compass-gateway-test01"
 func seedGatewayRecord(t *testing.T, cfg Config, h *harness) {
 	t.Helper()
 	rec := pgidRecord{WriterPid: 4242, Version: pgidFileVersion, Entries: []pgidEntry{{Kind: entryProc, Component: ComponentPostgres, Pgid: pgPgid, StartTime: pgToken(pgPgid)}, {Kind: entryContainer, Component: ComponentGateway, ContainerName: gatewayContainerNameTest}, {Kind: entryProc, Component: ComponentServer, Pgid: serverPgid, StartTime: pgToken(serverPgid)}, {Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)}}}
-	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(t.Context(), cfg.StateDir, rec); err != nil {
 		t.Fatal(err)
 	}
 	h.containers.setExistsName(gatewayContainerNameTest, true)
@@ -1399,7 +1399,7 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 
 	stubBootID(t, testBootID)
 	survivors := survivorRecord(rec, []Component{ComponentServer, ComponentRunner})
-	if err := writePgidFile(dir, survivors); err != nil {
+	if err := writePgidFile(t.Context(), dir, survivors); err != nil {
 		t.Fatalf("writePgidFile survivor = %v", err)
 	}
 

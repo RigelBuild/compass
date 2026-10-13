@@ -25,7 +25,7 @@ func TestPgidFileRoundTrip(t *testing.T) {
 			{Component: ComponentRunner, Pgid: 1003, StartTime: 10030},
 		},
 	}
-	if err := writePgidFile(dir, rec); err != nil {
+	if err := writePgidFile(t.Context(), dir, rec); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 
@@ -54,7 +54,7 @@ func TestPgidFileRoundTripBothKinds(t *testing.T) {
 			{Kind: entryProc, Component: ComponentRunner, Pgid: 1003, StartTime: 10030},
 		},
 	}
-	if err := writePgidFile(dir, rec); err != nil {
+	if err := writePgidFile(t.Context(), dir, rec); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 	got, err := readPgidFile(dir)
@@ -78,7 +78,7 @@ func TestPgidFileV2ContainerLineGrammar(t *testing.T) {
 			{Kind: entryContainer, Component: ComponentPostgres, ContainerName: "compass-postgres-deadbeef"},
 		},
 	}
-	if err := writePgidFile(dir, rec); err != nil {
+	if err := writePgidFile(t.Context(), dir, rec); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, pgidFileName))
@@ -165,7 +165,7 @@ func TestReadPgidFileV2Malformed(t *testing.T) {
 // TestPgidFileMode0600 pins the record file's permissions.
 func TestPgidFileMode0600(t *testing.T) {
 	dir := t.TempDir()
-	if err := writePgidFile(dir, pgidRecord{Version: pgidFileVersion, WriterPid: 1}); err != nil {
+	if err := writePgidFile(t.Context(), dir, pgidRecord{Version: pgidFileVersion, WriterPid: 1}); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 	info, err := os.Stat(filepath.Join(dir, pgidFileName))
@@ -189,7 +189,7 @@ func TestPgidFileTrailingNewline(t *testing.T) {
 			{Component: ComponentPostgres, Pgid: 200, StartTime: 999},
 		},
 	}
-	if err := writePgidFile(dir, rec); err != nil {
+	if err := writePgidFile(t.Context(), dir, rec); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, pgidFileName))
@@ -214,7 +214,7 @@ func TestPgidFilePartialSequenceRewrite(t *testing.T) {
 	}
 	for n := 1; n <= len(entries); n++ {
 		rec := pgidRecord{WriterPid: 1, Version: pgidFileVersion, Entries: entries[:n]}
-		if err := writePgidFile(dir, rec); err != nil {
+		if err := writePgidFile(t.Context(), dir, rec); err != nil {
 			t.Fatalf("writePgidFile prefix %d = %v", n, err)
 		}
 		got, err := readPgidFile(dir)
@@ -236,7 +236,7 @@ func TestPgidFilePartialSequenceRewrite(t *testing.T) {
 func TestPgidFileNoLeftoverTemp(t *testing.T) {
 	dir := t.TempDir()
 	for n := range 3 {
-		if err := writePgidFile(dir, pgidRecord{Version: pgidFileVersion, WriterPid: n}); err != nil {
+		if err := writePgidFile(t.Context(), dir, pgidRecord{Version: pgidFileVersion, WriterPid: n}); err != nil {
 			t.Fatalf("writePgidFile = %v", err)
 		}
 	}
@@ -301,7 +301,7 @@ func TestRemovePgidFileIdempotent(t *testing.T) {
 	if err := removePgidFile(dir); err != nil {
 		t.Fatalf("removePgidFile on absent = %v, want nil", err)
 	}
-	if err := writePgidFile(dir, pgidRecord{Version: pgidFileVersion, WriterPid: 1}); err != nil {
+	if err := writePgidFile(t.Context(), dir, pgidRecord{Version: pgidFileVersion, WriterPid: 1}); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 	if err := removePgidFile(dir); err != nil {
@@ -348,7 +348,7 @@ func stubBootID(t *testing.T, id string) {
 func TestPgidFileStampsCurrentBootID(t *testing.T) {
 	stubBootID(t, testBootID)
 	dir := t.TempDir()
-	if err := writePgidFile(dir, pgidRecord{WriterPid: 7, Version: pgidFileVersion, BootID: "stale-boot"}); err != nil {
+	if err := writePgidFile(t.Context(), dir, pgidRecord{WriterPid: 7, Version: pgidFileVersion, BootID: "stale-boot"}); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 	got, err := readPgidFile(dir)
@@ -367,7 +367,7 @@ func TestPgidFileUnreadableBootIDWritesLegacyHeader(t *testing.T) {
 	readBootID = func() (string, error) { return "", errors.New("no boot id here") }
 	t.Cleanup(func() { readBootID = prev })
 	dir := t.TempDir()
-	if err := writePgidFile(dir, pgidRecord{WriterPid: 7, Version: pgidFileVersion}); err != nil {
+	if err := writePgidFile(t.Context(), dir, pgidRecord{WriterPid: 7, Version: pgidFileVersion}); err != nil {
 		t.Fatalf("writePgidFile = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, pgidFileName))

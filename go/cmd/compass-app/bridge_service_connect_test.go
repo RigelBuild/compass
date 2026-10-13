@@ -583,7 +583,7 @@ func setupTLSStub(t *testing.T, rpcReached chan<- struct{}) (*httptest.Server, [
 	return srv, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 }
 
-func newFirstRunService(t *testing.T, store tokenstore.Store, events eventEmitter, save func(string, appconfig.Config, []byte) (appconfig.Config, error)) (*bridgeService, *firstRunGate, *caPicks, string) {
+func newFirstRunService(t *testing.T, store tokenstore.Store, events eventEmitter, save func(ctx context.Context, path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error)) (*bridgeService, *firstRunGate, *caPicks, string) {
 	t.Helper()
 	configHome := t.TempDir()
 	configPath, err := appconfig.ConfigPath(configHome, "")
@@ -806,11 +806,11 @@ func TestConnectServerChoiceSaveErrorCanRetry(t *testing.T) {
 	}})
 	store := &memoryTokenStore{}
 	fail := true
-	save := func(path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error) {
+	save := func(ctx context.Context, path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error) {
 		if fail {
 			return appconfig.Config{}, errors.New("disk full")
 		}
-		return appconfig.SaveClient(path, cfg, caPEM)
+		return appconfig.SaveClient(ctx, path, cfg, caPEM)
 	}
 	svc, gate, picks, configHome := newFirstRunService(t, store, newFakeEmitter(), save)
 	ref := picks.add(certPEM)
@@ -903,7 +903,7 @@ func TestConnectServerChoiceConfigCreatedAfterChooser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := appconfig.SaveClient(configPath, appconfig.Config{Mode: appconfig.ModeClient, ServerURL: srv.URL}, certPEM); err != nil {
+	if _, err := appconfig.SaveClient(t.Context(), configPath, appconfig.Config{Mode: appconfig.ModeClient, ServerURL: srv.URL}, certPEM); err != nil {
 		t.Fatalf("racing SaveClient: %v", err)
 	}
 	before, err := os.ReadFile(configPath)
@@ -947,10 +947,10 @@ func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
 	events := &setupDecisionEmitter{frames: frames}
 	saving := make(chan struct{})
 	releaseSave := make(chan struct{})
-	save := func(path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error) {
+	save := func(ctx context.Context, path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error) {
 		close(saving)
 		<-releaseSave
-		return appconfig.SaveClient(path, cfg, caPEM)
+		return appconfig.SaveClient(ctx, path, cfg, caPEM)
 	}
 	svc, _, picks, _ := newFirstRunService(t, store, events, save)
 	events.svc = svc

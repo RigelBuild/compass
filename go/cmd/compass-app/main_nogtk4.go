@@ -19,12 +19,14 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 )
 
 func main() {
-	slog.Error("compass-app was built without the desktop shell; rebuild with -tags gtk4 "+
+	ctx := context.Background()
+	slog.ErrorContext(ctx, "compass-app was built without the desktop shell; rebuild with -tags gtk4 "+
 		"(the shell requires the GTK4 + WebKitGTK 6.0 stack)", "version", version)
 	os.Exit(1)
 }
