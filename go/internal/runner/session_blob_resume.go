@@ -28,7 +28,7 @@ func (h *agentHost) resumeBlobs(ctx context.Context, containerName, sessionID, r
 		if ctx.Err() != nil {
 			return "", nil, ctx.Err()
 		}
-		h.log.Warn("session blob fetch failed; starting with local references", "container", containerName, "session_id", sessionID, "error", err)
+		h.log.WarnContext(ctx, "session blob fetch failed; starting with local references", "container", containerName, "session_id", sessionID, "error", err)
 		return resumeBody, nil, nil
 	}
 	files := make([]runtime.AgentFile, 0, len(fetch.Blobs))
@@ -40,7 +40,7 @@ func (h *agentHost) resumeBlobs(ctx context.Context, containerName, sessionID, r
 	}
 	marked, n := markAbsentBlobs(resumeBody, absent)
 	if n > 0 {
-		h.log.Info("marked absent session images unavailable", "container", containerName, "session_id", sessionID, "images", n)
+		h.log.InfoContext(ctx, "marked absent session images unavailable", "container", containerName, "session_id", sessionID, "images", n)
 	}
 	return marked, files, nil
 }

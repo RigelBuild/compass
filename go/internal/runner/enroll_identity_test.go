@@ -186,7 +186,7 @@ type errorAfterEnrollToken struct {
 	calls int
 }
 
-func (s *errorAfterEnrollToken) Token() (string, error) {
+func (s *errorAfterEnrollToken) Token(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++

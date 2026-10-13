@@ -4,6 +4,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,13 +18,13 @@ import (
 
 // TokenSource returns the bearer token used for a Runner RPC.
 type TokenSource interface {
-	Token() (string, error)
+	Token(ctx context.Context) (string, error)
 }
 
 // StaticToken is a fixed bearer token.
 type StaticToken string
 
-func (t StaticToken) Token() (string, error) { return string(t), nil }
+func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
 
 // FileToken re-reads a projected token file and retains a still-valid token
 // across transient read failures.
@@ -49,21 +50,21 @@ func NewFileToken(path string, log *slog.Logger, now func() time.Time) *FileToke
 	return &FileToken{path: path, log: log, now: now}
 }
 
-func (t *FileToken) Token() (string, error) {
+func (t *FileToken) Token(ctx context.Context) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	contents, err := os.ReadFile(t.path)
 	if err != nil {
-		return t.cachedOrError(fmt.Errorf("reading runner token file: %w", err))
+		return t.cachedOrError(ctx, fmt.Errorf("reading runner token file: %w", err))
 	}
 	token := strings.TrimSpace(string(contents))
 	if token == "" {
-		return t.cachedOrError(errors.New("runner token file is empty"))
+		return t.cachedOrError(ctx, errors.New("runner token file is empty"))
 	}
 	exp, err := tokenExpiry(token)
 	if err != nil {
-		t.log.Warn("runner token file contains a token without a usable expiry", slog.Any("error", err))
+		t.log.WarnContext(ctx, "runner token file contains a token without a usable expiry", slog.Any("error", err))
 		return token, nil
 	}
 	if !t.now().Before(exp) {
@@ -74,8 +75,8 @@ func (t *FileToken) Token() (string, error) {
 	return token, nil
 }
 
-func (t *FileToken) cachedOrError(err error) (string, error) {
-	t.log.Warn("reading runner token file failed", slog.String("path", t.path), slog.Any("error", err))
+func (t *FileToken) cachedOrError(ctx context.Context, err error) (string, error) {
+	t.log.WarnContext(ctx, "reading runner token file failed", slog.String("path", t.path), slog.Any("error", err))
 	if t.lastToken != "" && t.now().Before(t.lastExp) {
 		return t.lastToken, nil
 	}

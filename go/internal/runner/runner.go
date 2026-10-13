@@ -91,7 +91,7 @@ type bearerToken struct {
 
 func (b *bearerToken) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		token, err := b.source.Token()
+		token, err := b.source.Token(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +104,7 @@ func (b *bearerToken) WrapStreamingClient(next connect.StreamingClientFunc) conn
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		conn := next(ctx, spec)
 		conn.RequestHeader().Del("Authorization")
-		if token, err := b.source.Token(); err == nil {
+		if token, err := b.source.Token(ctx); err == nil {
 			conn.RequestHeader().Set("Authorization", "Bearer "+token)
 		}
 		return conn

@@ -96,14 +96,14 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 		defer cancel()
 		names, err := lister.ListByOwner(sweepCtx, AgentContainerNamePrefix, runnerID)
 		if err != nil {
-			log.Warn("listing stale agent containers", slog.Any("error", err))
+			log.WarnContext(ctx, "listing stale agent containers", slog.Any("error", err))
 		} else {
 			var wg sync.WaitGroup
 			var removed atomic.Int64
 			for _, name := range names {
 				wg.Go(func() {
 					if err := engine.Remove(sweepCtx, name); err != nil {
-						log.Warn("removing stale agent container", slog.String("name", name.String()), slog.Any("error", err))
+						log.WarnContext(ctx, "removing stale agent container", slog.String("name", name.String()), slog.Any("error", err))
 						return
 					}
 					removed.Add(1)
@@ -111,7 +111,7 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 			}
 			wg.Wait()
 			if count := removed.Load(); count > 0 {
-				log.Info("removed stale agent containers", slog.Int64("count", count))
+				log.InfoContext(ctx, "removed stale agent containers", slog.Int64("count", count))
 			}
 		}
 	}
@@ -122,14 +122,14 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 	entries, err := os.ReadDir(containerDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			log.Warn("listing stale agent socket directories", slog.Any("error", err))
+			log.WarnContext(ctx, "listing stale agent socket directories", slog.Any("error", err))
 		}
 		return
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), AgentContainerNamePrefix) && entry.IsDir() {
 			if err := os.RemoveAll(filepath.Join(containerDir, entry.Name())); err != nil {
-				log.Warn("removing stale agent socket directory", slog.String("name", entry.Name()), slog.Any("error", err))
+				log.WarnContext(ctx, "removing stale agent socket directory", slog.String("name", entry.Name()), slog.Any("error", err))
 			}
 		}
 	}
@@ -166,7 +166,7 @@ func runDialWithRetry(ctx context.Context, cfg RunnerConfig, log *slog.Logger, d
 		lastErr = err
 		// The attempt's own deadline is a stalled server, which is retryable.
 		timedOut := attemptTimedOut && errors.Is(err, context.DeadlineExceeded)
-		log.Warn("runner enrollment attempt failed", slog.Int("attempt", attempt),
+		log.WarnContext(ctx, "runner enrollment attempt failed", slog.Int("attempt", attempt),
 			slog.Int("max_attempts", dialMaxAttempts), slog.Bool("timed_out", timedOut), slog.Any("error", err))
 		if !timedOut && !retryableDialError(err) {
 			return nil, fmt.Errorf("runner enrollment failed (not retryable, attempt %d): %w", attempt, err)
@@ -243,7 +243,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	if ctx.Err() != nil {
 		return nil
 	}
-	log.Info("runner enrolled", slog.String("runner_id", runnerID), slog.Bool("reattached", link.Reattached()))
+	log.InfoContext(ctx, "runner enrolled", slog.String("runner_id", runnerID), slog.Bool("reattached", link.Reattached()))
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(cfg.Engine, registry)
 	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, agentHostConfig(cfg, runnerID), log)

@@ -285,7 +285,7 @@ func TestSelfExitLogsErrorWithStderrTail(t *testing.T) {
 	if unexpected[0].level != slog.LevelError {
 		t.Fatalf("unexpected-exit level = %v, want Error", unexpected[0].level)
 	}
-	if err := stream.Stop(); err != nil {
+	if err := stream.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop after self-exit = %v, want nil", err)
 	}
 }
@@ -300,7 +300,7 @@ func TestDeliberateStopDoesNotLogUnexpectedExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
-	if err := stream.Stop(); err != nil {
+	if err := stream.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop = %v", err)
 	}
 	select {
@@ -393,7 +393,7 @@ func TestStopAndReaperShareSingleWait(t *testing.T) {
 		t.Fatal("reaper never reached Process.Wait")
 	}
 	stopped := make(chan error, 1)
-	go func() { stopped <- stream.Stop() }()
+	go func() { stopped <- stream.Stop(context.Background()) }()
 	select {
 	case err := <-stopped:
 		if err != nil {
@@ -513,7 +513,7 @@ func TestStderrRateLimitWarningsAreThrottled(t *testing.T) {
 	logs := newCaptureLog()
 	log := logs.logger()
 	writeLine := func() {
-		logDrainLine(log, "sess-flood", "agent stderr", "line", false, stderr)
+		logDrainLine(context.Background(), log, "sess-flood", "agent stderr", "line", false, stderr)
 	}
 
 	collectWarnings := func() int {
@@ -552,7 +552,7 @@ func TestStderrRateLimitWarningsAreThrottled(t *testing.T) {
 	}
 	limiter.tokens = 0
 	writeLine()
-	stderr.flushDropped(log, "sess-flood", true)
+	stderr.flushDropped(context.Background(), log, "sess-flood", true)
 	if got := collectWarnings(); got != 1 {
 		t.Fatalf("final flush warnings = %d, want 1", got)
 	}
@@ -586,7 +586,7 @@ func TestStderrUTF8ClippingAndTailTruncation(t *testing.T) {
 	stderr := &stderrLogger{limiter: limiter, onLine: func(string, bool) {}}
 	logs := newCaptureLog()
 	text := strings.Repeat("x", maxInfoStderrLine-1) + "€z"
-	logDrainLine(logs.logger(), "sess-utf8", "agent stderr", text, false, stderr)
+	logDrainLine(context.Background(), logs.logger(), "sess-utf8", "agent stderr", text, false, stderr)
 	var info *logLine
 	for draining := true; draining; {
 		select {
@@ -628,7 +628,7 @@ func TestStopAfterReapReturnsNil(t *testing.T) {
 	case <-timeAfter():
 		t.Fatal("reaper did not finish after the agent exited")
 	}
-	if err := stream.Stop(); err != nil {
+	if err := stream.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop after natural reap = %v, want nil", err)
 	}
 }
@@ -797,7 +797,7 @@ func TestCleanStopEmitsNoDrainWarning(t *testing.T) {
 
 	// Stop joins both drains before returning, so every record they will ever
 	// emit is already in the channel — draining it here races nothing.
-	if err := stream.Stop(); err != nil {
+	if err := stream.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop = %v", err)
 	}
 
@@ -833,7 +833,7 @@ func TestStopArmsTheStoppingDiscriminator(t *testing.T) {
 		t.Fatal("stopping is armed before Stop — a self-exit would be mistaken for a deliberate stop")
 	}
 
-	if err := stream.Stop(); err != nil {
+	if err := stream.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop = %v", err)
 	}
 	if !stream.stopping.Load() {

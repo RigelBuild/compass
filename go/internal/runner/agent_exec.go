@@ -211,12 +211,12 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	go func() {
 		defer stream.drains.Done()
 		stream.drainToLog(drainCtx, xs.IO.Stderr, "agent stderr", log, stderr)
-		stream.logPipeClose("agent stderr", stream.closeStderr())
+		stream.logPipeClose(drainCtx, "agent stderr", stream.closeStderr())
 	}()
 	go func() {
 		defer stream.drains.Done()
 		stream.drainToLog(drainCtx, xs.IO.Stdout, "agent stdout", log, nil)
-		stream.logPipeClose("agent stdout", stream.closeStdout())
+		stream.logPipeClose(drainCtx, "agent stdout", stream.closeStdout())
 	}()
 
 	// The reaper: reap first so a descendant holding a pipe cannot delay the exit
@@ -230,9 +230,9 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		}
 		waitErr := stream.wait()
 		stream.joinDrains()
-		stream.closeDrains()
+		stream.closeDrains(ctx)
 		if shouldLogExit(ctx, waitErr) {
-			logUnexpectedExit(log, stream, waitErr)
+			logUnexpectedExit(ctx, log, stream, waitErr)
 		}
 	}()
 
@@ -256,24 +256,24 @@ const drainGrace = 5 * time.Second
 // produces no line for a between-lines cancellation check to reach — so joining
 // BEFORE the kill waits on goroutines that cannot finish yet. Kill, reap, close
 // the pipes, then join.
-func (s *AgentStream) Stop() error {
-	return s.terminate()
+func (s *AgentStream) Stop(ctx context.Context) error {
+	return s.terminate(ctx)
 }
 
 // logPipeClose reports a failed read-end close. sync.OnceValue closes each end
 // once, so the drain and closeDrains share one result; os.ErrClosed means the
 // backend already closed it.
-func (s *AgentStream) logPipeClose(msg string, err error) {
+func (s *AgentStream) logPipeClose(ctx context.Context, msg string, err error) {
 	if err != nil && !errors.Is(err, os.ErrClosed) {
-		s.log.Debug(msg+" pipe close failed", slog.String("session_id", s.sessionID), slog.Any("error", err))
+		s.log.DebugContext(ctx, msg+" pipe close failed", slog.String("session_id", s.sessionID), slog.Any("error", err))
 	}
 }
 
-func (s *AgentStream) terminate() error {
+func (s *AgentStream) terminate(ctx context.Context) error {
 	s.stopping.Store(true)
 	select {
 	case <-s.waitDone:
-		s.closeDrains()
+		s.closeDrains(ctx)
 		s.joinDrains()
 		return nil
 	default:
@@ -285,12 +285,12 @@ func (s *AgentStream) terminate() error {
 	s.reap()
 	// The pipes are caller-owned, so the reap does not close them; closing them
 	// here keeps a descendant holding a pipe from stalling a deliberate stop.
-	s.closeDrains()
+	s.closeDrains(ctx)
 	s.joinDrains()
 	if killErr != nil {
 		// The reap says the agent is gone; a late kill error (e.g. a microVM Signal
 		// timeout) is not a Stop failure, as ChildHandle.Terminate treats it.
-		s.log.Debug("agent kill failed during stop", slog.String("session_id", s.sessionID), slog.Any("error", killErr))
+		s.log.DebugContext(ctx, "agent kill failed during stop", slog.String("session_id", s.sessionID), slog.Any("error", killErr))
 	}
 	// Reaped either way. A non-kill exit is the reaper's to log, so Stop reports
 	// nil whether it or the reaper reaped first.
@@ -319,15 +319,15 @@ func (s *AgentStream) reap() {
 
 // closeDrains cancels the drain ctx, then closes both read ends. Cancelling first
 // makes any closed-pipe error a drain reads an expected end on every backend.
-func (s *AgentStream) closeDrains() {
+func (s *AgentStream) closeDrains(ctx context.Context) {
 	if s.stopDrains != nil {
 		s.stopDrains()
 	}
 	if s.closeStdout != nil {
-		s.logPipeClose("agent stdout", s.closeStdout())
+		s.logPipeClose(ctx, "agent stdout", s.closeStdout())
 	}
 	if s.closeStderr != nil {
-		s.logPipeClose("agent stderr", s.closeStderr())
+		s.logPipeClose(ctx, "agent stderr", s.closeStderr())
 	}
 }
 
@@ -420,12 +420,12 @@ func (s *AgentStream) stderrTailText() string {
 	return strings.Join(lines, "\n")
 }
 
-func logUnexpectedExit(log *slog.Logger, s *AgentStream, err error) {
+func logUnexpectedExit(ctx context.Context, log *slog.Logger, s *AgentStream, err error) {
 	exitResult := "clean"
 	if err != nil {
 		exitResult = err.Error()
 	}
-	log.Error("agent exited unexpectedly", slog.String("session_id", s.sessionID),
+	log.ErrorContext(ctx, "agent exited unexpectedly", slog.String("session_id", s.sessionID),
 		slog.String("stderr_tail", s.stderrTailText()), slog.String("exit_result", exitResult))
 }
 
@@ -478,7 +478,7 @@ type stderrLogger struct {
 	onLine       stderrLineSink
 }
 
-func (s *stderrLogger) flushDropped(log *slog.Logger, sessionID string, final bool) {
+func (s *stderrLogger) flushDropped(ctx context.Context, log *slog.Logger, sessionID string, final bool) {
 	if s == nil || s.droppedLines == 0 {
 		return
 	}
@@ -486,7 +486,7 @@ func (s *stderrLogger) flushDropped(log *slog.Logger, sessionID string, final bo
 	if !final && !s.lastFlush.IsZero() && now.Sub(s.lastFlush) < time.Second {
 		return
 	}
-	log.Warn("agent stderr rate-limited", slog.String("session_id", sessionID), slog.Int("dropped_lines", s.droppedLines))
+	log.WarnContext(ctx, "agent stderr rate-limited", slog.String("session_id", sessionID), slog.Int("dropped_lines", s.droppedLines))
 	s.droppedLines = 0
 	s.lastFlush = now
 }
@@ -509,14 +509,14 @@ func (s *stderrLogger) flushDropped(log *slog.Logger, sessionID string, final bo
 func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string, log *slog.Logger, stderr *stderrLogger) {
 	sessionID := s.sessionID
 	r := bufio.NewReaderSize(pipe, drainReaderSize)
-	defer stderr.flushDropped(log, s.sessionID, true)
+	defer stderr.flushDropped(ctx, log, s.sessionID, true)
 	for {
 		if ctx.Err() != nil {
 			return // teardown: closeDrains is closing the pipe under us.
 		}
 		line, err := readBoundedLine(r, maxLoggedLine)
 		if len(line) > 0 || err == nil {
-			logDrainLine(log, s.sessionID, msg, string(line), errors.Is(err, errLineTruncated), stderr)
+			logDrainLine(ctx, log, s.sessionID, msg, string(line), errors.Is(err, errLineTruncated), stderr)
 		}
 		switch {
 		// The expected ends, tested FIRST: a truncated final line joins its error
@@ -535,20 +535,20 @@ func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string
 		default:
 			// Never silent: the pipe is no longer being drained, which stalls
 			// the agent's next write, so the reason has to reach the log.
-			log.Warn(msg+" drain ended early",
+			log.WarnContext(ctx, msg+" drain ended early",
 				slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return
 		}
 	}
 }
 
-func logDrainLine(log *slog.Logger, sessionID, msg, text string, truncated bool, stderr *stderrLogger) {
+func logDrainLine(ctx context.Context, log *slog.Logger, sessionID, msg, text string, truncated bool, stderr *stderrLogger) {
 	if stderr == nil {
 		attrs := []any{slog.String("session_id", sessionID), slog.String("line", text)}
 		if truncated {
 			attrs = append(attrs, slog.Bool("truncated", true))
 		}
-		log.Debug(msg, attrs...)
+		log.DebugContext(ctx, msg, attrs...)
 		return
 	}
 	stderr.onLine(text, truncated)
@@ -559,12 +559,12 @@ func logDrainLine(log *slog.Logger, sessionID, msg, text string, truncated bool,
 		attrs = append(attrs, slog.Bool("truncated", true))
 	}
 	if stderr.limiter.allow() {
-		log.Info(msg, attrs...)
-		stderr.flushDropped(log, sessionID, false)
+		log.InfoContext(ctx, msg, attrs...)
+		stderr.flushDropped(ctx, log, sessionID, false)
 		return
 	}
 	stderr.droppedLines++
-	log.Debug(msg, attrs...)
+	log.DebugContext(ctx, msg, attrs...)
 }
 
 func clipLine(line string, limit int) string {
