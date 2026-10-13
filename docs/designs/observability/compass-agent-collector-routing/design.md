@@ -20,17 +20,15 @@ Matt, RIG-5237 (2026-10-11 and 2026-10-12):
 
 1. **OQ1 B: a collector on each runner host** forwards upstream.
 2. **OQ2 B, transport A: agents export OTLP/HTTP over the agent socket.** The
-   Runner gateway serves `/v1/traces` and `/v1/metrics` and relays to the host
-   collector. No pasta, and no egress allowlist entry for OTLP.
+   Runner gateway serves `/v1/traces` and `/v1/metrics` (`/v1/logs`: Resolved
+   2) and relays to the host collector. No pasta, no OTLP egress entry.
 3. **The socket stays the agent's only channel to its Runner.**
 
 Amended frozen texts:
 
-- `docs/designs/repo/compass-agent-effect-otel/design.md`, Open Questions
-  item 1 and Decision 3 ("never the socket/vsock gateway"): lifted for agent
-  telemetry, for one transport on every tier, Runner-stamped attribution and
-  no agent egress.
-- `docs/designs/observability/compass-agent-loop-otel/design.md`, Decision 3a:
+- `docs/designs/repo/compass-agent-effect-otel/design.md` Open Questions item
+  1 and Decision 3: lifted for agent telemetry.
+- `docs/designs/observability/compass-agent-loop-otel/design.md` Decision 3a:
   the join key is the gateway-stamped `compass.session.id`; the SDK id moves
   to `compass.agent.sdk_session.id`.
 - Both agent deployer contracts
@@ -45,100 +43,102 @@ Amended frozen texts:
 - D3 holds: no export endpoint keeps today's `nop` config bytes; only config
   and headers files touch disk.
 - No secret in argv or the 0644 config. Upstream credentials live in the 0600
-  headers file and server or runner env, never in agents. The host tier shares
-  the Runner's uid (`go/internal/runtime/host_backend.go`): no such boundary.
+  headers file and server or runner env, never in agents.
+- Host-tier exception: agents share the Runner's uid
+  (`go/internal/runtime/host_backend.go`), so they can read its env and reach
+  any session's socket. Host-tier telemetry is one trust domain, not
+  per-session evidence.
 - Only the gateway sets `compass.session.id`, `compass.telemetry.origin` and
   the agent's `service.name` on relayed telemetry.
-- Every endpoint passes `otlpenv.ParseEndpoint` (CA1).
+- Every endpoint passes `otlpenv.ParseEndpoint` (CA1): plaintext only to
+  loopback.
 - Server and runner emit or relay only with an endpoint, and drop inherited
-  `OTEL_*`.
-- `DefaultCollectorImage` stays 0.140.0; devenv's 0.155.0 validates the same
-  config.
-- Name receivers generically, e.g. Grafana Alloy.
+  `OTEL_*`. `DefaultCollectorImage` stays 0.140.0.
 - Breaking (`!`): `--otel-external` takes a URL; env-file agent endpoints are
   ignored; compass-runner refuses per-signal and TLS `OTEL_EXPORTER_OTLP_*`
   keys.
 
 ## Approach
 
-**C-a: the collector exports.** `collectorConfigYAML`
+**C-a: the collector exports (CA1).** `collectorConfigYAML`
 (`go/internal/stack/collector_container.go`) hard-codes `nop: {}`. With
 `--otel-export-endpoint` (fallback `COMPASS_OTEL_EXPORT_ENDPOINT`) it renders
-`otlphttp` behind `memory_limiter` (256 MiB, 64 MiB spike) and an 8 MiB
-receiver cap. `--otel-export-headers-file` is copied 0600 to
-`/run/compass/otlp-headers.yaml` under `--userns=keep-id:uid=10001,gid=10001`
-and replaced on every `Start`.
+`otlphttp` behind `memory_limiter` (`check_interval: 1s`, 256 MiB, 64 MiB
+spike) and an 8 MiB receiver cap. `--otel-export-headers-file` is copied 0600
+to `/run/compass/otlp-headers.yaml` on every `Start`.
 
-**C-b: the host collector.** The Runner relays agent OTLP to the endpoint its
+**C-b, host collector (CB2).** The Runner relays agent OTLP to the endpoint its
 own SDK reads, `OTEL_EXPORTER_OTLP_ENDPOINT` plus `_HEADERS` (`setupOtel`,
-`go/cmd/compass-runner/main.go`). `compass-stack` sets it on server and runner:
+`go/cmd/compass-runner/main.go`). `compass-stack` sets it on server and runner;
+any two of these flags is a usage error:
 
 - `--otel-export-endpoint`: the bundled collector,
   `http://127.0.0.1:<CollectorHTTPPort>`. Without it nothing is set (D3).
-- `--otel-external <URL>`: the operator's own host collector, which owns
-  batching, retry and upstream (ruling 1). `--otel-export-headers-file` rides
-  it as `_HEADERS` in `Env`; adding `--otel-export-endpoint` is a usage error.
-- `--otel-off`: no collector, nothing set.
+- `--otel-external <URL>`: the operator's host collector, which owns batching,
+  retry and upstream (ruling 1); `--otel-export-headers-file` rides it in `Env`.
+- `--otel-off`: nothing set, overriding `COMPASS_OTEL_EXPORT_ENDPOINT`.
 
-A remote runner host's operator runs the collector (e.g. Grafana Alloy, or
-otelcol-contrib with `compass-stack collector-config`). compass-runner refuses
-a bad endpoint and per-signal or TLS keys, so relay and exporters agree.
+A remote runner host's operator runs the collector (e.g. Grafana Alloy).
+compass-runner refuses a bad endpoint and per-signal or TLS keys. The relay
+appends `/v1/<signal>` by `path.Join`, as the Go SDK's `otlpconfig` does.
 
-**C-b: the gateway handlers.** `gateway.Serve`
+**C-b, gateway handlers (CB1).** `gateway.Serve`
 (`go/internal/runner/gateway/gateway.go`) mounts `POST /v1/traces`,
-`/v1/metrics` and `/v1/logs` (Resolved 2) only when `Deps.OTLPRelay` is set.
-Each handler:
+`/v1/metrics` and `/v1/logs` only when `Deps.OTLPRelay` is set. Each handler:
 
-1. Resolves `g.sessions.Session(g.containerName)`; unbound or empty is 403, as
-   `(*Gateway).Publish` fails closed.
+1. Resolves `g.sessions.Session(g.containerName)`. Unbound is 503 with
+   `Retry-After: 1`: `agentHost.Start` starts the agent before recording its
+   session.
 2. Answers 415 unless `application/x-protobuf` with identity encoding.
-3. Takes one of 4 per-Gateway slots and 16 MiB of a Runner-wide 128 MiB
-   budget, else answers 503 with `Retry-After: 1` before reading.
-4. Arms a 5 s read deadline (as `withBodyReadDeadline`,
-   `go/server/network_door.go`), reads at most 4 MiB (413), and decodes with
-   `go.opentelemetry.io/proto/otlp`, promoted to direct (400 if malformed).
+3. Takes one of 8 per-Gateway slots (a flush exports five signals) and 4 MiB
+   of a Runner-wide 128 MiB budget, else 503 with `Retry-After: 1`, unread.
+   One 8 s deadline (as `withBodyReadDeadline`, `go/server/network_door.go`)
+   covers read and upstream.
+4. Reads at most 4 MiB (413). An allocation-free `protowire` pre-scan counts
+   messages and packed-varint bytes; over 65,536 messages or depth 32 is 413.
+   It reserves the decoded bound (416 B per message, 8 B per packed byte,
+   twice the body), else 503, then decodes with `go.opentelemetry.io/proto/otlp`
+   (direct; 400 if malformed). Measured: 4 MiB of empty attributes decodes to
+   244 MiB; an empty span, the costliest, to 331 B.
 5. Deletes `compass.session.id` from every scope, span, event, link, data
    point, exemplar and log record. On each resource it sets
-   `compass.session.id` to the bound id that server spans carry
-   (`go/internal/delivery/dispatch.go`), `compass.telemetry.origin=agent` and
+   `compass.session.id` to the bound id, `compass.telemetry.origin=agent` and
    `service.name=compass-agent`.
-6. Re-encodes (over 8 MiB is 413) and POSTs under `r.Context()` with an 8 s
-   deadline, inside OTel JS's 10 s timeout. Upstream 2xx is 200; 429, 502, 503
-   or 504 is 503 with its `Retry-After`; 413 stays; another 4xx is 400; else
-   502. Only transient failures retry (`isExportHTTPErrorRetryable`).
+6. Re-encodes (over 8 MiB is 413) and POSTs under `r.Context()`. Upstream 2xx
+   is 200; 429, 502, 503 or 504 is 503 with its `Retry-After`; 413 stays;
+   another 4xx is 400; else 502.
 
-**C-b: the agent.** When it relays, the Runner sets `COMPASS_AGENT_OTLP=1`, a
-reserved `COMPASS_*` key the env file cannot set. After the env-file merge the
-agent deletes every `OTEL_EXPORTER_OTLP_*` key and logs one `[compass-agent]`
-line naming them. With the flag it writes the SDK session id as
+**C-b, agent (CB3).** When relaying, the Runner sets the reserved
+`COMPASS_AGENT_OTLP=1`. After the env-file merge the agent deletes and logs
+every `OTEL_EXPORTER_OTLP_*` key, and records the SDK session id as
 `compass.agent.sdk_session.id`.
 
 - `makeOtelLayer` (`packages/compass-agent/src/transport/otel-layer.ts`) builds
   exporters with `url: "http://compass-agent/v1/<signal>"` and
-  `httpAgentOptions: { socketPath }` (Bun probe-proven).
+  `httpAgentOptions: { socketPath }`.
 - The SDK loop's exporters (`registerProviders`, `@oh-my-pi/pi-coding-agent`)
-  read env once, at construction. A `Bun.serve` proxy on `127.0.0.1:0` checks
-  a random per-process token header, caps bodies at 4 MiB and forwards with
-  `fetch(…, { unix })`, as `runInGuestProbe`
-  (`go/internal/runner/e2e_vsock_gateway_microvm_test.go`) does. Its endpoint
-  and token are set only around `await telemetryHooks.init()`, so tool
-  subprocesses never inherit them. Egress accepts `oif lo` (`NftScript`).
+  read env at construction. A `Bun.serve` proxy on `127.0.0.1:0` checks a
+  per-process token header, caps bodies at 4 MiB and forwards with
+  `fetch(…, { unix, signal: req.signal })`. Endpoint and token are set only
+  across `await telemetryHooks.init()`; a subprocess spawned during its
+  dynamic import gains only what its socket already gives. Egress accepts
+  `oif lo` (`NftScript`).
 
 | Tier | Socket reaches the agent by | OTLP |
 | --- | --- | --- |
-| podman | bind mount at `/run/compass/agent.sock` | covered |
-| microVM | guestd `gatewayProxy`, a byte splice to vsock | covered |
-| host | `COMPASS_AGENT_SOCKET_PATH` in the state dir | covered; no boundary |
-| apple-container | `--volume` over virtiofs | gap until the vsock transport lands (`docs/designs/platform/apple-container-macos-runner/design.md`) |
+| podman | bind mount at `/run/compass/agent.sock` | covered hermetically |
+| microVM | guestd `gatewayProxy` splice to vsock | covered |
+| host | `COMPASS_AGENT_SOCKET_PATH` | covered; one trust domain |
+| apple-container | `--volume` over virtiofs | none: DL-338's slow-roll holds the agent channel |
 
-OTLP adds no gap of its own.
+**C-c: dev wiring (CC1).** devenv runs the same collector config.
 
 ## Alternatives considered
 
 - **Pasta forward** (earlier draft): podman only, agent-asserted attribution;
-  its unshipped helpers are dropped and RIG-5249 becomes moot.
-- **Direct export through the egress allowlist** (effect-otel ruling (a)):
-  credentials in every agent, forgeable attribution.
+  RIG-5249 becomes moot.
+- **Direct export through the egress allowlist**: credentials in every agent,
+  forgeable attribution.
 
 ## Plan
 
@@ -155,24 +155,29 @@ Interfaces:
   `CollectorYAMLParams{GRPC, HTTP, Health, Export, HeadersPath string}`.
 - `CollectorContainerSpec.ExportHeadersFile string`;
   `const CollectorHeadersMountPath = "/run/compass/otlp-headers.yaml"`.
-- `otlpenv.ParseEndpoint(raw string, withHeaders bool) (*url.URL, error)`.
+- `otlpenv.ParseEndpoint(raw string) (*url.URL, error)`;
+  `otlpenv.SignalURL(base *url.URL, signal string) *url.URL`.
 
 Red→green:
 
 - `TestCollectorConfigYAMLExportsUpstream` (red today): `otlphttp` and
-  `memory_limiter` in all three pipelines, an 8388608 body cap, no `nop`.
-- `TestCollectorConfigYAMLRealizesD3Posture`: zero params give today's bytes.
-- `TestParseEndpoint`: accepts http(s) to `127.0.0.1`, `localhost` and remote
-  hosts; refuses bare `host:port`, `127.0.0.2`, `[::1]`, `0.0.0.0`, userinfo,
-  query, fragment, and remote `http` with headers.
+  `memory_limiter` with `check_interval` in all three pipelines, an 8388608
+  body cap, no `nop`.
+- `TestCollectorConfigYAMLRealizesD3Posture`: container ports, empty `Export`
+  and `HeadersPath`, today's bytes.
+- `TestParseEndpoint`: `http` only to `127.0.0.1` or `localhost`, `https`
+  anywhere; refuses bare `host:port`, `127.0.0.2`, `[::1]`, `0.0.0.0`,
+  userinfo, query, fragment.
+- `TestSignalURL`: `https://h/otlp` gives `/otlp/v1/traces`.
 - `TestCollectorStartReplacesHeadersCopy`; `TestCollectorRunArgsExportContract`
   (no header value in argv or config).
-- Smoke: `compass-stack up` delivers a span and the header to a local receiver.
+- Smoke: `otelcol validate` on the pinned image; `compass-stack up` delivers a
+  span and the header to a local receiver.
 
 ### CB1: gateway OTLP relay
 
 Files: `go/internal/runner/gateway/{gateway,otlp}.go`,
-`go/internal/otel/otlprelay`, `go/go.mod`.
+`go/internal/otel/{otlprelay,otlpscan}`, `go/go.mod`.
 
 Interfaces:
 
@@ -181,24 +186,27 @@ Interfaces:
   `Deps.OTLPBudget *semaphore.Weighted` (`golang.org/x/sync`).
 - `otlprelay.New(endpoint *url.URL, headers map[string]string) *Relay`; a
   non-2xx upstream returns `*otlprelay.StatusError{Code int, RetryAfter string}`.
-- `const maxOTLPBodyBytes = 4 << 20`, `maxOTLPInFlight = 4`.
-- Counter `compass.runner.otlp_relay.requests{signal,outcome}`, nil-guarded
-  like `compass.delivery.dispatched`; no session label.
+- `otlpscan.Bound(body []byte, signal string) (uint64, error)`.
+- `const maxOTLPBodyBytes = 4 << 20`, `maxOTLPInFlight = 8`,
+  `maxOTLPMessages = 1 << 16`, `otlpRequestDeadline = 8 * time.Second`.
+- Counter `compass.runner.otlp_relay.requests{signal,outcome}`, nil-guarded,
+  no session label.
 
 Red→green (hermetic, fake relay):
 
 - `TestOTLPStampOverridesAgentSession`: forged ids on a resource, span, data
   point and log record, and `service.name=compass-server`, arrive as the bound
   id and `compass-agent`.
-- `TestOTLPUnboundContainerForbidden` (403, relay uncalled); `TestOTLPBodyCap`
-  (413); `TestOTLPRejectsCompressedBody` (gzip is 415).
-- `TestOTLPSaturationShedsWith503`: a fifth request or empty budget, body unread.
+- `TestOTLPUnboundContainerRetryable` (503); `TestOTLPBodyCap` (413);
+  `TestOTLPRejectsCompressedBody` (415).
+- `TestOTLPSaturationShedsWith503`: a ninth request or empty budget, unread.
+- `TestOTLPDecodeBound`: 70,000 empty attributes is 413; `otlpscan.Bound`
+  covers measured decode allocation.
 - `TestOTLPRelayFailure`: 400 stays 400, 503 keeps `Retry-After`, transport
   error is 502.
 - `TestOTLPUnmountedWhenRelayNil` (404); `TestRelayPostsWithHeaders`.
-- microVM e2e `TestVsockGateway_InGuestOTLPStamped`: a guest POST reaches a
-  fake `AgentHostConfig.OTLPRelay` with the bound id. The podman leg joins
-  `TestSocketOwnedAndConnectableInContainer` once its probe image lands.
+- microVM e2e `TestVsockGateway_InGuestOTLPStamped` against a fake
+  `AgentHostConfig.OTLPRelay`.
 
 ### CB2: runner and stack wiring
 
@@ -209,8 +217,7 @@ Files: `go/cmd/compass-runner/main.go`, `go/internal/runner/{host,agent_exec}.go
 Interfaces:
 
 - `AgentHostConfig.OTLPRelay gateway.OTLPRelay`; `(*agentHost).gatewayDeps()
-  gateway.Deps` replaces both `gateway.Deps{…}` literals in `host.go` and
-  shares one budget.
+  gateway.Deps` replaces both `host.go` literals, sharing one budget.
 - `AgentEnv.Telemetry bool` sets `COMPASS_AGENT_OTLP=1`.
 - `otlpenv.HeadersValue(map[string]string) (string, error)`;
   `otlpenv.RunnerConfig(environ []string) (*url.URL, map[string]string, error)`.
@@ -220,13 +227,13 @@ Interfaces:
 
 Red→green:
 
-- `TestServerAndRunnerSpecOTLPEndpoint`: export, external and off; headers in
-  `Env`, never `Args`.
+- `TestServerAndRunnerSpecOTLPEndpoint`: each mode; headers in `Env`, never
+  `Args`.
 - `TestStartDropsInheritedOTELKeys`, `TestEnvSliceDropsInheritedOTELKeys`,
   `TestExecSpecTelemetryFlag`.
-- `TestResolveConfigOTelModes`: external plus export is refused.
-- `TestRunnerConfig`: refuses a bad endpoint, a per-signal or certificate key,
-  and remote `http` with headers.
+- `TestResolveConfigOTelModes`: two OTel flags are refused; `--otel-off` beats
+  the env fallback.
+- `TestRunnerConfig`: refuses a bad endpoint and per-signal or certificate keys.
 - Migration to `--otel-off`: `go/e2e/fixture.go`, `TestContainerPostgresUpDown`,
   `TestExternalDatabaseUpDown`, `TestNatsUpDown`, `TestExternalNatsUpDown`. To
   a URL: `TestExternalOTLPUpDown`, `TestResolveConfigCollectorFlags`,
@@ -249,12 +256,12 @@ Red→green (bun:test, a Unix-socket server in a temp dir):
 
 - A transport span reaches `/v1/traces` only with the flag.
 - A no-argument `OTLPTraceExporter` reaches the socket through the proxy; a
-  tokenless request is refused.
+  tokenless request is refused; a client abort cancels the forward.
 - A child spawned after init sees no `OTEL_EXPORTER_OTLP_*`.
 - `scrubOtlpEnv` drops and logs an env-file endpoint.
 - Migration to the flag: `cli.test.ts`'s env-file endpoint, "all four
   loop-OTel env keys…", "endpoint set ⇒ env defaults…" and "deployer-set
-  OTEL_SERVICE_NAME…" tests; `otel-layer.test.ts`'s three endpoint tests.
+  OTEL_SERVICE_NAME…"; `otel-layer.test.ts`'s three endpoint tests.
 
 ### CC1: devenv runs the collector
 
@@ -263,19 +270,17 @@ Interfaces: `compass-stack collector-config --grpc --http --health
 `CollectorConfigYAML`; `usageError` names five subcommands.
 
 devenv `processes.otel-collector` runs `otelcol-contrib` when the gitignored
-`devenv.local.nix` sets `env.COMPASS_OTEL_EXPORT_ENDPOINT`; server and runner
-then point at it.
+`devenv.local.nix` sets `env.COMPASS_OTEL_EXPORT_ENDPOINT`.
 
 Red→green: `TestRunCollectorConfig`; `devenv up` with an endpoint delivers an
-agent span upstream (none today).
+agent span upstream.
 
 ### CD1: operator docs
 
-Interfaces: none. `docs/self-host.md` gains an observability section (export
-flags, `--otel-external`, `--otel-off`, remote-runner `OTEL_EXPORTER_OTLP_*`);
-each deployer contract points there.
+Interfaces: none. `docs/self-host.md` gains an observability section (flags,
+remote-runner `OTEL_EXPORTER_OTLP_*`); each deployer contract points there.
 
-Red→green: none; rumdl and the design-ledger gate pass.
+Red→green: none; rumdl and the ledger gate pass.
 
 ## Tasks
 
@@ -288,10 +293,9 @@ Red→green: none; rumdl and the design-ledger gate pass.
 
 ## Resolved decisions
 
-1. **SDK-loop exporters use the token proxy, not an SDK patch:** no fork, no
-   new dependency. Agent-owned providers would miss the SDK's metric and log
-   hooks, which only `initTelemetryExport`'s private module registers.
-2. **`/v1/logs` is mounted with the same stamp.** An env-file endpoint enables
-   SDK logs today (`resolveSignalConfig`), so log content is unchanged.
-3. **The remote host collector is operator-run:** a runner-only
-   `compass-stack` mode stays additive until RIG-2485 needs it.
+1. **SDK-loop exporters use the token proxy, not an SDK patch:** no fork.
+   Agent-owned providers would miss the SDK's metric and log hooks, which
+   only its dynamically imported, unexported `telemetry-export-otlp` registers.
+2. **`/v1/logs` is mounted with the same stamp:** env-file endpoints enable SDK
+   logs (`resolveSignalConfig`).
+3. **The remote host collector is operator-run;** a runner-only mode is additive.
