@@ -289,7 +289,8 @@ func (a *BoardWebhookArm) hold(rest []boardCoord, carried map[boardCoord][]strin
 			boardWebhookDrops.Add(1)
 			continue
 		}
-		a.pending[c] = carried[c]
+		tps := carried[c]
+		a.pending[c] = tps[:min(len(tps), maxHeldTraceparents)]
 	}
 }
 

@@ -225,3 +225,23 @@ func TestBoardWebhookArmHeldEventLinksRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestBoardWebhookArmHoldCapsCarriedTraces(t *testing.T) {
+	_, tracer := installSpanRecorder(t)
+	pulls := &fakePulls{errFor: map[uint64]error{9: forge.ErrBudgetExhausted}}
+	arm, _ := newPRArm(t, pulls, nil)
+
+	for range maxHeldTraceparents + 8 {
+		ctx, webhook := tracer.Start(t.Context(), "webhook")
+		arm.Enqueue(ctx, prEvent(9, changeUpdate))
+		webhook.End()
+	}
+	if _, paused := arm.drainBatch(t.Context(), <-arm.queue); !paused {
+		t.Fatal("burst pass did not pause")
+	}
+	for c, tps := range arm.pending {
+		if len(tps) != maxHeldTraceparents {
+			t.Fatalf("held %v carries %d traces, want %d", c, len(tps), maxHeldTraceparents)
+		}
+	}
+}
