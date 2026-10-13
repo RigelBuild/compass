@@ -539,6 +539,15 @@ Owner: compass-ux.
   edge's traceparent before `applyLifecycle` or `applyPromoted`. The four
   hub callers (`deliverSession`, `enroll`, `promoteSession`,
   `releaseSession`) pass the ctx they hold.
+- Only some edges have a trace to carry:
+  - Traced: `enroll` (the `Enroll` RPC span), `promoteSession` (the Start
+    or Resume command's span), and `releaseSession` reached from
+    `unbindSession` (the Stop command's span).
+  - Untraced: `deliverSession` and the `dropLostSession` paths. They run on
+    the `Sessions` or `PublishEvents` work ctx, which parent T2 strips, and
+    `PublishEventsRequest` and `SessionFrame` carry no traceparent. Their
+    edges stamp `""`, so the drain runs with no span. A per-frame carrier
+    is a proto change, Open Question 10.
 
 Interfaces:
 
@@ -565,9 +574,15 @@ Test cycle:
   call under another, each give a recorded ctx with that trace id. An event
   with an empty traceparent gives an invalid span context. Before: the loop
   ctx, or a compile error for the edge signature.
+- `runnerhub`, through the real path: a `Hub` with a recording
+  `PresenceSink`. `Enroll` under a known span gives a lifecycle edge with
+  that trace id. A `PublishEvents` lifecycle frame sent with a client span
+  gives an edge with an empty traceparent. Before: a compile error for the
+  edge signature.
 
-Acceptance: bus-tail and edge work joins the trace of the request that caused
-it. Loop spans never leak into that work.
+Acceptance: bus-tail work and the traced edges join the trace of the request
+that caused them. Untraced edges carry no span. Loop spans never leak into
+that work.
 
 ### H7 — Gate: no new uncarried egress
 
@@ -587,10 +602,11 @@ Owner: compass-ux.
   it sees every build tag. It collects each call to a `New…Client` from a
   `…connect` package, each `http.Client` composite literal, and each
   `minio.New`, `pgxpool.NewWithConfig`, `pgx.Connect`, `pgx.ConnectConfig`,
-  and `nats.Connect`. Each is keyed by file and enclosing func. It compares
-  the set to a table of classes: `traced`, `noProvider`, or `testHelper`,
-  each with a reason. A new or removed site fails with a message that names
-  it.
+  and `nats.Connect`. Each is keyed by file, enclosing func, and callee, with
+  a count per key, so a second constructor in a classified func changes the
+  count. It compares the counts to a table of classes: `traced`,
+  `noProvider`, or `testHelper`, each with a reason. A new site, a removed
+  site, or a changed count fails with a message that names the key.
 
 Interfaces:
 
@@ -599,7 +615,7 @@ Interfaces:
   ```go
   // package otel, test only
   type egressClass int // traced, noProvider, testHelper
-  var egressSites map[string]egressClass // key: "<file>:<func>"
+  var egressSites map[string]struct{ class egressClass; count int } // key: "<file>:<func>:<callee>"
   func TestEgressCensus(t *testing.T)
   ```
 
@@ -607,7 +623,9 @@ Test cycle: as the parent's T1 gates. First commit: the forbidigo entry and
 the census test with an empty table. Its red `compass-go:lint` and
 `compass-go:test` output names the five `DefaultClient` sites and every
 census site. The PR body quotes it. The next commit adds the nolints and the
-table, and both go green.
+table, and both go green. A table-driven case runs the collector over
+fixture sources: one more constructor in a func that already has one, and
+one fewer, each fail.
 
 Acceptance: a new `http.DefaultClient`, Connect client, `http.Client`
 literal, or pool constructor fails CI until it is classified.
@@ -696,3 +714,12 @@ Stack order: H1, H2, H3, H4, H5, H6, H7, on the parent's T9.
    passes the interceptor or transport (review checks it), and egress inside
    a third-party SDK the census does not name. **Recommendation:** accept
    these gates.
+10. **A per-frame traceparent on `PublishEvents`?** Load-bearing: no. Runner
+    frames carry no trace, so presence edges from `deliverSession` and
+    `dropLostSession` have none (H6).
+    - (a) Leave them untraced.
+    - (b) Add `traceparent` to `PublishEventsRequest`. The runner stamps the
+      ctx of the command that produced the frame. Internal proto change,
+      buf-breaking clean, and a runner change for every frame source.
+    - **Recommendation: (a).** These edges are runner-initiated state
+      changes with no server request to join. Revisit if a trace is needed.
