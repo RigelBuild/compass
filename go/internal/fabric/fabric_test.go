@@ -79,7 +79,7 @@ func newFabric(t *testing.T, cfg Config) *Fabric {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := f.Close(t.Context()); err != nil {
+		if err := f.Close(context.WithoutCancel(t.Context())); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	})

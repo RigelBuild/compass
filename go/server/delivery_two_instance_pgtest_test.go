@@ -84,7 +84,7 @@ func startDeliveryInstance(t *testing.T, dsn, natsURL string, admin store.Accoun
 		t.Fatalf("fabric.New: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := fab.Close(ctx); err != nil {
+		if err := fab.Close(context.WithoutCancel(ctx)); err != nil {
 			t.Errorf("fabric Close: %v", err)
 		}
 	})

@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	natsd "github.com/nats-io/nats-server/v2/server"
@@ -45,7 +46,7 @@ func newTestFabric(t *testing.T) *fabric.Fabric {
 		t.Fatalf("fabric.New: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := fab.Close(t.Context()); err != nil {
+		if err := fab.Close(context.WithoutCancel(t.Context())); err != nil {
 			t.Errorf("fabric Close: %v", err)
 		}
 	})
