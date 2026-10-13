@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -46,7 +47,7 @@ func (h *Hub) mintSecretsVersion() string {
 // counter, so a single write mints one version that every notified session sees,
 // and the NEXT write mints a strictly greater one — the monotonicity the T6
 // rotation diff relies on.
-func (h *Hub) SignalSecretsVersion() error {
+func (h *Hub) SignalSecretsVersion(ctx context.Context) error {
 	version := h.mintSecretsVersion()
 
 	h.mu.Lock()
@@ -66,6 +67,7 @@ func (h *Hub) SignalSecretsVersion() error {
 	// accumulate-and-continue (errors.Join) so it does not silently under-notify.
 	for _, sessionID := range sessionIDs {
 		cmd := &compassv1internal.SessionsResponse{
+			Traceparent: otelx.Traceparent(ctx),
 			Command: &compassv1internal.SessionsResponse_SecretsVersion{
 				SecretsVersion: &compassv1internal.SecretsVersion{
 					SessionId: sessionID,
@@ -97,6 +99,7 @@ func (h *Hub) SignalSecretsVersionFor(ctx context.Context, account store.Account
 	}
 	h.mu.Unlock()
 	cmd := &compassv1internal.SessionsResponse{
+		Traceparent: otelx.Traceparent(ctx),
 		Command: &compassv1internal.SessionsResponse_SecretsVersion{
 			SecretsVersion: &compassv1internal.SecretsVersion{
 				SessionId: sessionID,

@@ -17,6 +17,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -178,6 +179,59 @@ func TestReloadFiresSessionStartSink(t *testing.T) {
 	if len(got) != 1 || got[0] != (startRecord{sessionID: "sess-reload", account: testAgentAccount}) {
 		t.Fatalf("session-start edges after Reload = %+v, want one edge for sess-reload", got)
 	}
+}
+
+func TestSessionsCommandsCarryCallerTraceparent(t *testing.T) {
+	const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	ctx := otelx.ContextWithTraceparent(t.Context(), traceparent)
+	hub := newHubOnly()
+	hub.enroll(ctx, "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindSession(hub, "session-trace")
+	router, _, err := hub.routerFor("session-trace")
+	if err != nil {
+		t.Fatalf("routerFor = %v", err)
+	}
+	sent := make(chan *compassv1internal.SessionsResponse, 4)
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		sent <- cmd
+		if cmd.GetRequestId() != "" {
+			go router.complete(&compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{}},
+			})
+		}
+		return nil
+	})
+	defer router.detach(errStreamClosed)
+
+	if _, _, err := hub.relay(ctx, "session-trace", startCmd("trace-relay")); err != nil {
+		t.Fatalf("relay: %v", err)
+	}
+	assertTraceparent := func(wantCommand string) {
+		t.Helper()
+		select {
+		case cmd := <-sent:
+			if got := cmd.GetTraceparent(); got != traceparent {
+				t.Errorf("%s traceparent = %q, want %q", wantCommand, got, traceparent)
+			}
+		case <-timeAfter():
+			t.Fatalf("%s command was not sent", wantCommand)
+		}
+	}
+	assertTraceparent("relay")
+
+	if err := hub.DispatchControl(ctx, "session-trace", &compassv1internal.AgentControl{}); err != nil {
+		t.Fatalf("DispatchControl: %v", err)
+	}
+	assertTraceparent("DispatchControl")
+	if err := hub.SignalConfigVersion(ctx, "v1"); err != nil {
+		t.Fatalf("SignalConfigVersion: %v", err)
+	}
+	assertTraceparent("SignalConfigVersion")
+	if err := hub.SignalSecretsVersion(ctx); err != nil {
+		t.Fatalf("SignalSecretsVersion: %v", err)
+	}
+	assertTraceparent("SignalSecretsVersion")
 }
 func TestStartRelayCarriesFreshIDOnlyForFreshStart(t *testing.T) {
 	hub := newHubOnly()

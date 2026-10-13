@@ -266,7 +266,7 @@ func TestSlowSecretsRefreshDoesNotBlockConcurrentStop(t *testing.T) {
 	bindSession(hub, "sess-a")
 
 	// Signal a rotation; the Runner dispatches it to RefreshSecrets, which parks.
-	if err := hub.SignalSecretsVersion(); err != nil {
+	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
 		t.Fatalf("SignalSecretsVersion = %v, want nil", err)
 	}
 	select {

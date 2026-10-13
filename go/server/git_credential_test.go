@@ -212,7 +212,7 @@ func (r *fakeAgentSecretResolver) ResolveFor(context.Context, store.AccountID, s
 	return append([]secrets.ResolvedSecret(nil), r.resolved...), r.err
 }
 
-func newGitCredentialTestBroker(credentialStore gitCredentialStore, minter gitCredentialMinter, now *time.Time, signal func() error) *gitCredentialBroker {
+func newGitCredentialTestBroker(credentialStore gitCredentialStore, minter gitCredentialMinter, now *time.Time, signal func(context.Context) error) *gitCredentialBroker {
 	return &gitCredentialBroker{
 		host:     "github.com",
 		store:    credentialStore,
@@ -430,7 +430,7 @@ func TestGitCredentialBrokerGrantsChangedRevokesRemovedScope(t *testing.T) {
 	grants.setRepos("agent-id", []string{"owner/base", "owner/removed"})
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_narrow"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error { signals++; return nil })
 	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
 		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
 	}
@@ -472,7 +472,7 @@ func TestGitCredentialBrokerGrantsChangedRetrySignalsAfterLimiterRefill(t *testi
 	grants.setRepos("agent-id", []string{"owner/base", "owner/removed"})
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_new"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error {
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error {
 		signals++
 		return nil
 	})
@@ -793,7 +793,7 @@ func TestGitCredentialBrokerMintsNarrowedGrant(t *testing.T) {
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/zeta", "owner/alpha"}}
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_scoped"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error { signals++; return nil })
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 
 	got := resolveBrokeredSecret(t, resolver)
@@ -1149,7 +1149,7 @@ func TestGitCredentialBrokerScopeRejectedRefreshSignals(t *testing.T) {
 		errByCall: []error{nil, &forge.StatusError{Status: http.StatusUnprocessableEntity, Message: "scope rejected"}},
 	}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error { signals++; return nil })
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
@@ -1171,7 +1171,7 @@ func TestGitCredentialBrokerRefreshSignalsOnce(t *testing.T) {
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/alpha"}}
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_new"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error { signals++; return nil })
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
@@ -1195,7 +1195,7 @@ func TestGitCredentialBrokerRefreshSkipsEntryRefreshedAfterSnapshot(t *testing.T
 		tokens: []string{"ghs_old", "ghs_request", "ghs_unexpected"}, expiresAt: now.Add(time.Hour),
 	}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error { signals++; return nil })
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
@@ -1332,7 +1332,7 @@ func TestGitCredentialBrokerRefreshFailureServesStaleToken(t *testing.T) {
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}}
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error { signals++; return nil })
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
@@ -1696,7 +1696,7 @@ func TestGitCredentialBrokerSignalsPendingRetryWhenBudgetReturns(t *testing.T) {
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/retry"}}
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_retried"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func() error {
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error {
 		signals++
 		return nil
 	})

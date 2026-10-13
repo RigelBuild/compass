@@ -38,7 +38,7 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 	defer router.detach(errStreamClosed)
 
 	const version = "deadbeefcafe"
-	if err := hub.SignalConfigVersion(version); err != nil {
+	if err := hub.SignalConfigVersion(context.Background(), version); err != nil {
 		t.Fatalf("SignalConfigVersion = %v, want nil", err)
 	}
 	// The fleet-wide frame is queued-not-pushed; gate on the sender draining it.
@@ -71,7 +71,7 @@ func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 	router.attach(rec.send)
 	defer router.detach(errStreamClosed)
 
-	if err := hub.SignalConfigVersion(""); err != nil {
+	if err := hub.SignalConfigVersion(context.Background(), ""); err != nil {
 		t.Fatalf("SignalConfigVersion(empty) = %v, want nil", err)
 	}
 	waitRecorded(t, rec, 1)
@@ -94,7 +94,7 @@ func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
 	router.attach(rec.send)
 	defer router.detach(errStreamClosed)
 
-	if err := hub.SignalConfigVersion("v1"); err != nil {
+	if err := hub.SignalConfigVersion(context.Background(), "v1"); err != nil {
 		t.Fatalf("SignalConfigVersion with no live sessions = %v, want nil", err)
 	}
 	if got := len(configVersionsPushed(t, rec)); got != 0 {
@@ -106,7 +106,7 @@ func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
 // clean no-op (best-effort — the Runner re-fetches on reconnect).
 func TestSignalConfigVersionNoRunnerIsNoop(t *testing.T) {
 	hub := newHubOnly() // no enroll
-	if err := hub.SignalConfigVersion("v1"); err != nil {
+	if err := hub.SignalConfigVersion(context.Background(), "v1"); err != nil {
 		t.Fatalf("SignalConfigVersion with no runner = %v, want nil", err)
 	}
 }

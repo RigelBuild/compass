@@ -106,7 +106,7 @@ type gitCredentialBroker struct {
 	store   gitCredentialStore
 	minter  gitCredentialMinter
 	log     *slog.Logger
-	signal  func() error
+	signal  func(context.Context) error
 	clock   func() time.Time
 	limiter *rate.Limiter
 
@@ -237,7 +237,7 @@ func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent stor
 		defer cancel()
 		tok, replaced, err := b.mint(mintCtx, key, names, generation)
 		if err == nil && replaced && b.signal != nil {
-			if signalErr := b.signal(); signalErr != nil {
+			if signalErr := b.signal(ctx); signalErr != nil {
 				b.log.ErrorContext(ctx, "signal replaced GitHub credential", "error", signalErr)
 			}
 		}
@@ -406,7 +406,7 @@ func (b *gitCredentialBroker) grantsChanged(ctx context.Context, agent store.Acc
 		b.credential(ctx, agent)
 	}
 	if b.signal != nil {
-		if err := b.signal(); err != nil {
+		if err := b.signal(ctx); err != nil {
 			b.log.ErrorContext(ctx, "signal GitHub credential grant change", "agent", agent, "error", err)
 		}
 	}
@@ -689,7 +689,7 @@ func (b *gitCredentialBroker) refreshDue(ctx context.Context) {
 	sort.Strings(keys)
 	b.refreshSnapshot(ctx, keys, previousTokens)
 	if retryPending && b.signal != nil {
-		if err := b.signal(); err != nil {
+		if err := b.signal(ctx); err != nil {
 			b.log.ErrorContext(ctx, "signal GitHub credential retry", "error", err)
 			b.mu.Lock()
 			b.retryPending = true
@@ -709,7 +709,7 @@ func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string
 		}
 	}
 	if changed && b.signal != nil {
-		if err := b.signal(); err != nil {
+		if err := b.signal(ctx); err != nil {
 			b.log.ErrorContext(ctx, "signal refreshed GitHub credential", "error", err)
 		}
 	}

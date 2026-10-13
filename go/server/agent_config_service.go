@@ -26,7 +26,7 @@ type configSignaler interface {
 	// SignalConfigVersion pushes a ConfigVersion signal carrying the given
 	// version to every live session (best-effort). An empty version marks the
 	// fleet cleared to no config.
-	SignalConfigVersion(version string) error
+	SignalConfigVersion(ctx context.Context, version string) error
 }
 
 // PutAgentConfig declares the fleet config bundle: it validates + hashes + upserts
@@ -153,7 +153,7 @@ func (s *service) signalConfigVersion(ctx context.Context, version string) {
 	if s.signaler == nil {
 		return
 	}
-	if err := s.signaler.SignalConfigVersion(version); err != nil {
+	if err := s.signaler.SignalConfigVersion(ctx, version); err != nil {
 		slog.WarnContext(ctx, "emitting config version signal", "err", err)
 	}
 }

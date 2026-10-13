@@ -7,7 +7,10 @@
 package runnerhub
 
 import (
+	"context"
+
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // SignalConfigVersion pushes ONE ConfigVersion frame per attached Runner stream,
@@ -28,7 +31,7 @@ import (
 // detached is a no-op (commandRouter.push), because the Runner re-fetches its
 // config on reconnect regardless — a dropped signal costs nothing permanent. No
 // Runner enrolled, or no live sessions, is a clean no-op success.
-func (h *Hub) SignalConfigVersion(version string) error {
+func (h *Hub) SignalConfigVersion(ctx context.Context, version string) error {
 	h.mu.Lock()
 	router := h.runner
 	hasLiveSessions := len(h.sessionAccounts) > 0
@@ -45,6 +48,7 @@ func (h *Hub) SignalConfigVersion(version string) error {
 	// multi-Runner change MUST push once PER ROUTER and accumulate-and-continue
 	// (errors.Join) so a wedged stream does not silently under-notify the fleet.
 	cmd := &compassv1internal.SessionsResponse{
+		Traceparent: otelx.Traceparent(ctx),
 		Command: &compassv1internal.SessionsResponse_ConfigVersion{
 			ConfigVersion: &compassv1internal.ConfigVersion{
 				Version: version,

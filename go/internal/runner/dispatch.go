@@ -18,7 +18,12 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runner/gateway"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SessionHost is the container-lifecycle surface the dispatcher drives — the
@@ -258,7 +263,9 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 		// but NOT cheap — it re-fetches and re-materializes synchronously — so it goes through
 		// the per-command goroutine like a correlated command (execute(ctx, ""), no result frame).
 		if _, ok := cmd.GetCommand().(*compassv1internal.SessionsResponse_ConfigVersion); ok {
-			d.execute(ctx, "", cmd)
+			commandCtx, span := commandSpan(ctx, cmd)
+			d.execute(commandCtx, "", cmd)
+			span.End()
 			continue
 		}
 		d.wg.Go(func() {
@@ -274,9 +281,83 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 	}
 }
 
+// commandSpan starts the per-command span on otelx.WithoutSpan(ctx). The
+// parent is the op traceparent for deliver_control, else the envelope
+// traceparent; empty or malformed gives a fresh root.
+func commandSpan(ctx context.Context, cmd *compassv1internal.SessionsResponse) (context.Context, trace.Span) {
+	commandCtx := otelx.WithoutSpan(ctx)
+	envelopeTraceparent := cmd.GetTraceparent()
+	parentTraceparent := envelopeTraceparent
+	op := cmd.GetDeliverControl().GetOp()
+	if tp := op.GetDeliver().GetTraceparent(); tp != "" {
+		parentTraceparent = tp
+	} else if tp := op.GetSteer().GetTraceparent(); tp != "" {
+		parentTraceparent = tp
+	}
+	commandCtx = otelx.ContextWithTraceparent(commandCtx, parentTraceparent)
+	if !trace.SpanContextFromContext(commandCtx).IsValid() && parentTraceparent != envelopeTraceparent {
+		commandCtx = otelx.ContextWithTraceparent(commandCtx, envelopeTraceparent)
+	}
+	tracer := otel.Tracer("github.com/RigelBuild/compass/go/internal/runner")
+	var span trace.Span
+	if trace.SpanContextFromContext(commandCtx).IsValid() {
+		commandCtx, span = tracer.Start(commandCtx, "runner.sessions.command")
+	} else {
+		commandCtx, span = tracer.Start(commandCtx, "runner.sessions.command", trace.WithNewRoot())
+	}
+	attrs := []attribute.KeyValue{attribute.String("compass.runner.command", commandName(cmd.GetCommand()))}
+	if deliver := cmd.GetDeliverControl(); deliver != nil {
+		opKind := "other"
+		if op := deliver.GetOp(); op != nil {
+			switch op.GetControl().(type) {
+			case *compassv1internal.AgentControl_Deliver:
+				opKind = "deliver"
+			case *compassv1internal.AgentControl_Steer:
+				opKind = "steer"
+			}
+		}
+		attrs = append(attrs,
+			attribute.String("compass.op.kind", opKind),
+			attribute.String("compass.session.id", deliver.GetSessionId()),
+		)
+	}
+	span.SetAttributes(attrs...)
+	return commandCtx, span
+}
+
+func commandName(command any) string {
+	switch command.(type) {
+	case *compassv1internal.SessionsResponse_Start:
+		return "start"
+	case *compassv1internal.SessionsResponse_Stop:
+		return "stop"
+	case *compassv1internal.SessionsResponse_Reload:
+		return "reload"
+	case *compassv1internal.SessionsResponse_Status:
+		return "status"
+	case *compassv1internal.SessionsResponse_Provision:
+		return "provision"
+	case *compassv1internal.SessionsResponse_ForgeNotification:
+		return "forge_notification"
+	case *compassv1internal.SessionsResponse_SecretsVersion:
+		return "secrets_version"
+	case *compassv1internal.SessionsResponse_ConfigVersion:
+		return "config_version"
+	case *compassv1internal.SessionsResponse_DeliverControl:
+		return "deliver_control"
+	case *compassv1internal.SessionsResponse_Remove:
+		return "remove"
+	default:
+		return "unknown"
+	}
+}
+
 // handle executes one command (or returns the recorded result for a retried
 // request id) and builds the correlated result message.
 func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
+	commandCtx, span := commandSpan(ctx, cmd)
+	defer span.End()
+	ctx = commandCtx
 	// A signal-only command (SecretsVersion, ConfigVersion) carries no request id and no
 	// result — it must never enter the dedup map, or the empty-id key would collapse every
 	// signal to one. Execute it directly, return no result frame; ConfigVersion is filtered

@@ -31,7 +31,7 @@ type recordingConfigSignaler struct {
 	versions []string
 }
 
-func (r *recordingConfigSignaler) SignalConfigVersion(version string) error {
+func (r *recordingConfigSignaler) SignalConfigVersion(_ context.Context, version string) error {
 	r.versions = append(r.versions, version)
 	return nil
 }
