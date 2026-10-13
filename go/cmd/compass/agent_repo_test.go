@@ -71,20 +71,21 @@ func startFakeAgentRepositoryServer(t *testing.T, fake *fakeAgentRepositoryServi
 func TestRunAgentRepoAdd(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
+		repo  string
 		added bool
 		want  string
 	}{
-		{name: "added", added: true, want: "added owner/workstream\n"},
-		{name: "already present", want: "already present owner/workstream\n"},
+		{name: "added", repo: "OWNER/WorkStream", added: true, want: "added owner/workstream\n"},
+		{name: "already present", repo: "OWNER/WorkStream", want: "already present owner/workstream\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeAgentRepositoryService{grantAdded: tc.added}
 			client := startFakeAgentRepositoryServer(t, fake)
 			var out strings.Builder
-			if err := runAgentRepoAdd(context.Background(), client, "owner/worker", "owner/workstream", &out); err != nil {
+			if err := runAgentRepoAdd(context.Background(), client, "owner/worker", tc.repo, &out); err != nil {
 				t.Fatalf("runAgentRepoAdd: %v", err)
 			}
-			if fake.grantRequest.GetAgentHandle() != "owner/worker" || fake.grantRequest.GetRepository() != "owner/workstream" {
+			if fake.grantRequest.GetAgentHandle() != "owner/worker" || fake.grantRequest.GetRepository() != tc.repo {
 				t.Fatalf("grant request = %v", fake.grantRequest)
 			}
 			if fake.gotAuth != "Bearer test-token" {
@@ -106,19 +107,20 @@ func TestRunAgentRepoAdd(t *testing.T) {
 func TestRunAgentRepoRemove(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
+		repo    string
 		removed bool
 		want    string
 	}{
-		{name: "removed", removed: true, want: "removed owner/workstream\n"},
-		{name: "not present", want: "not present owner/workstream\n"},
+		{name: "removed", repo: "OWNER/WorkStream", removed: true, want: "removed owner/workstream\n"},
+		{name: "not present", repo: "OWNER/WorkStream", want: "not present owner/workstream\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeAgentRepositoryService{revokeRemoved: tc.removed}
 			var out strings.Builder
-			if err := runAgentRepoRemove(context.Background(), startFakeAgentRepositoryServer(t, fake), "worker", "owner/workstream", &out); err != nil {
+			if err := runAgentRepoRemove(context.Background(), startFakeAgentRepositoryServer(t, fake), "worker", tc.repo, &out); err != nil {
 				t.Fatalf("runAgentRepoRemove: %v", err)
 			}
-			if fake.revokeRequest.GetAgentHandle() != "worker" || fake.revokeRequest.GetRepository() != "owner/workstream" {
+			if fake.revokeRequest.GetAgentHandle() != "worker" || fake.revokeRequest.GetRepository() != tc.repo {
 				t.Fatalf("revoke request = %v", fake.revokeRequest)
 			}
 			if got := out.String(); got != tc.want {
@@ -154,5 +156,37 @@ func TestRunAgentRepoList(t *testing.T) {
 	err := runAgentRepoList(context.Background(), startFakeAgentRepositoryServer(t, fake), "worker", &out)
 	if err == nil || out.Len() != 0 {
 		t.Fatalf("server error = %v, output = %q; want error and no success output", err, out.String())
+	}
+}
+
+func TestAgentRepoCommandTree(t *testing.T) {
+	root := newRootCmd()
+	for _, tc := range []struct {
+		verb  string
+		use   string
+		valid []string
+		bad   [][]string
+	}{
+		{verb: "add", use: "add <agent> <org/name>", valid: []string{"worker", "owner/repo"}, bad: [][]string{{"worker"}, {"worker", "owner/repo", "extra"}}},
+		{verb: "remove", use: "remove <agent> <org/name>", valid: []string{"worker", "owner/repo"}, bad: [][]string{{"worker"}, {"worker", "owner/repo", "extra"}}},
+		{verb: "list", use: "list <agent>", valid: []string{"worker"}, bad: [][]string{{}, {"worker", "extra"}}},
+	} {
+		t.Run(tc.verb, func(t *testing.T) {
+			cmd, _, err := root.Find([]string{"agent", "repo", tc.verb})
+			if err != nil || cmd.Name() != tc.verb || cmd.Use != tc.use {
+				t.Fatalf("command lookup = (%v, %v), want agent repo %s with Use %q", cmd, err, tc.verb, tc.use)
+			}
+			if cmd.Args == nil {
+				t.Fatalf("%s has no argument validator", tc.verb)
+			}
+			if err := cmd.Args(cmd, tc.valid); err != nil {
+				t.Fatalf("accepted args %v: %v", tc.valid, err)
+			}
+			for _, args := range tc.bad {
+				if err := cmd.Args(cmd, args); err == nil {
+					t.Errorf("accepted args %v, want argument-count rejection", args)
+				}
+			}
+		})
 	}
 }

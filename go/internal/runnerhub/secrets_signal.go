@@ -89,11 +89,13 @@ func (h *Hub) SignalSecretsVersionFor(ctx context.Context, account store.Account
 	}
 
 	h.mu.Lock()
+	binding, live := h.sessionAccounts[sessionID]
 	router := h.runner
-	h.mu.Unlock()
-	if router == nil {
+	if !live || router == nil || binding.runnerID != router.id {
+		h.mu.Unlock()
 		return nil
 	}
+	h.mu.Unlock()
 	cmd := &compassv1internal.SessionsResponse{
 		Command: &compassv1internal.SessionsResponse_SecretsVersion{
 			SecretsVersion: &compassv1internal.SecretsVersion{

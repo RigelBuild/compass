@@ -160,6 +160,7 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 // credentialForRepos returns the token and the cache key that supplied it.
 func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent store.AccountID, repos []string) (tok, servedKey string, rejected bool) {
 	if len(repos) == 0 {
+		b.clearLastCredential(agent)
 		return "", "", false
 	}
 	key, names, valid := gitCredentialScope(repos)
@@ -346,9 +347,36 @@ func gitCredentialScopeWithin(inner, outer string) bool {
 	if inner == "*" {
 		return false
 	}
-	granted := strings.Split(outer, ",")
-	for qualified := range strings.SplitSeq(inner, ",") {
-		if !slices.Contains(granted, qualified) {
+	innerRest, outerRest := inner, outer
+	for innerRest != "" {
+		innerRepo, nextInnerRepo, hasNextInner := strings.Cut(innerRest, ",")
+		if innerRepo == "" || (hasNextInner && nextInnerRepo == "") {
+			return false
+		}
+		innerRest = nextInnerRepo
+		matched := false
+		for outerRest != "" {
+			outerRepo, nextOuterRepo, hasNextOuter := strings.Cut(outerRest, ",")
+			if outerRepo == "" {
+				return false
+			}
+			if outerRepo >= innerRepo {
+				if outerRepo != innerRepo {
+					return false
+				}
+				outerRest = nextOuterRepo
+				if !hasNextOuter {
+					outerRest = ""
+				}
+				matched = true
+				break
+			}
+			outerRest = nextOuterRepo
+			if !hasNextOuter {
+				outerRest = ""
+			}
+		}
+		if !matched {
 			return false
 		}
 	}
@@ -411,24 +439,20 @@ func (b *gitCredentialBroker) refreshDue(ctx context.Context) {
 	b.mu.Lock()
 	keys := make([]string, 0, len(b.entries))
 	previousTokens := make(map[string]string, len(b.entries))
+	for key, entry := range b.negative {
+		if !now.Before(entry.expiresAt) {
+			delete(b.negative, key)
+		}
+	}
 	for key, entry := range b.entries {
 		if now.Sub(entry.lastUsed) > gitCredentialMaxAge {
 			delete(b.entries, key)
-			for agent, lastKey := range b.last {
-				if lastKey == key {
-					delete(b.last, agent)
-				}
-			}
+			b.dropLastFor(key)
 			continue
 		}
 		if !now.Before(entry.refreshAt) {
 			keys = append(keys, key)
 			previousTokens[key] = entry.token
-		}
-	}
-	for key, entry := range b.negative {
-		if !now.Before(entry.expiresAt) {
-			delete(b.negative, key)
 		}
 	}
 	b.mu.Unlock()
@@ -451,6 +475,20 @@ func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string
 			b.log.ErrorContext(ctx, "signal refreshed GitHub credential", "error", err)
 		}
 	}
+}
+
+func (b *gitCredentialBroker) dropLastFor(key string) {
+	for agent, lastKey := range b.last {
+		if lastKey == key {
+			delete(b.last, agent)
+		}
+	}
+}
+
+func (b *gitCredentialBroker) clearLastCredential(agent store.AccountID) {
+	b.mu.Lock()
+	delete(b.last, agent)
+	b.mu.Unlock()
 }
 
 func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previous string) bool {
@@ -481,13 +519,19 @@ func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previo
 		return gitCredentialFlightResult{token: token, minted: err == nil && token != ""}, err
 	})
 	if err != nil {
-		b.log.ErrorContext(ctx, "refresh scoped GitHub credential", "scope", key, "error", err)
+		if !errors.Is(err, errGitCredentialScopeCached) {
+			b.log.ErrorContext(ctx, "refresh scoped GitHub credential", "scope", key, "error", err)
+		}
 		if gitCredentialScopeRejected(err) {
 			b.mu.Lock()
+			removed := false
 			if entry, exists := b.entries[key]; exists && entry.token == previous {
 				delete(b.entries, key)
+				b.dropLastFor(key)
+				removed = true
 			}
 			b.mu.Unlock()
+			return removed
 		}
 		return false
 	}

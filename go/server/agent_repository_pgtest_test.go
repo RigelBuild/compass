@@ -182,6 +182,10 @@ func TestAgentRepositoryGrantRevokeInheritanceAndDespawn(t *testing.T) {
 		t.Fatalf("respawn id = %q, want existing child %q", got, child)
 	}
 	e.assertToken(child, "child-custom", "child after respawn")
+	e.assertRows(child, []string{"owner/child-only"}, "child after respawn")
 	e.assertMintRepos(4, []string{"base", "child-only"}, "child after grant")
+	if got := e.minter.callCount(); got != 5 {
+		t.Fatalf("credential mint count after respawn = %d, want 5", got)
+	}
 	e.assertSignals([]store.AccountID{e.f.agentID, e.f.agentID, e.f.agentID, child, child})
 }

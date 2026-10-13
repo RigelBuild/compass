@@ -398,6 +398,60 @@ func TestSignalSecretsVersionForTargetsAccount(t *testing.T) {
 	}
 }
 
+func TestSignalSecretsVersionForDurableBinding(t *testing.T) {
+	hub := newHubOnly()
+	if _, err := hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	bindings := newFakeBindingStore()
+	if _, _, err := bindings.RecordSessionBinding(t.Context(), "sess-durable", "acct-durable", "runner-1"); err != nil {
+		t.Fatalf("RecordSessionBinding = %v", err)
+	}
+	hub.SetSessionBindingStore(bindings)
+	router, _, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	rec := newRecordingSend()
+	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
+
+	if err := hub.SignalSecretsVersionFor(t.Context(), "acct-durable"); err != nil {
+		t.Fatalf("SignalSecretsVersionFor(durable account) = %v, want nil", err)
+	}
+	waitRecorded(t, rec, 1)
+	got := secretsVersionsPushed(t, rec)
+	if len(got) != 1 || got[0].GetSessionId() != "sess-durable" {
+		t.Fatalf("durable binding signals = %+v, want sess-durable", got)
+	}
+}
+
+func TestSignalSecretsVersionForRefusesSystemRoleReadThrough(t *testing.T) {
+	hub := newHubOnly()
+	if _, err := hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	bindings := newFakeBindingStore()
+	if _, _, err := bindings.RecordSessionBinding(t.Context(), "sess-durable", "acct-durable", "runner-1"); err != nil {
+		t.Fatalf("RecordSessionBinding = %v", err)
+	}
+	hub.SetSessionBindingStore(bindings)
+	router, _, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	rec := newRecordingSend()
+	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
+
+	if err := hub.SignalSecretsVersionFor(store.WithSystemRole(t.Context()), "acct-durable"); err != nil {
+		t.Fatalf("SignalSecretsVersionFor(system role) = %v, want nil", err)
+	}
+	if got := len(secretsVersionsPushed(t, rec)); got != 0 {
+		t.Fatalf("system-role read-through pushed %d frames, want 0", got)
+	}
+}
+
 func TestSignalSecretsVersionForNoSessionOrRunnerIsNoop(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -464,6 +518,8 @@ func TestSignalSecretsVersionForMonotonic(t *testing.T) {
 	}
 }
 
+// TestSignalSecretsVersionNoLiveSessionsIsNoop pins the clean no-op when the
+// Runner is enrolled but has no live sessions to notify.
 func TestSignalSecretsVersionNoLiveSessionsIsNoop(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)

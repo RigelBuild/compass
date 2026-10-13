@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
@@ -81,7 +82,7 @@ func runAgentRepoAdd(ctx context.Context, client compassv1connect.AgentRepositor
 	if resp.Msg.GetAdded() {
 		result = "added"
 	}
-	_, err = fmt.Fprintf(out, "%s %s\n", result, repo)
+	_, err = fmt.Fprintf(out, "%s %s\n", result, strings.ToLower(repo))
 	return err
 }
 
@@ -98,7 +99,7 @@ func runAgentRepoRemove(ctx context.Context, client compassv1connect.AgentReposi
 	if resp.Msg.GetRemoved() {
 		result = "removed"
 	}
-	_, err = fmt.Fprintf(out, "%s %s\n", result, repo)
+	_, err = fmt.Fprintf(out, "%s %s\n", result, strings.ToLower(repo))
 	return err
 }
 
