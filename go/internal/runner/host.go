@@ -1100,7 +1100,7 @@ func (h *agentHost) markErrored(ctx context.Context, sessionID, containerName st
 	publishCtx, cancel := context.WithTimeout(ctx, publishGrace)
 	defer cancel()
 	if err := listener.PublishSessionState(publishCtx, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
-		h.log.ErrorContext(publishCtx, "reporting agent exit to server", slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
+		h.log.ErrorContext(ctx, "reporting agent exit to server", slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
 	}
 }
 
