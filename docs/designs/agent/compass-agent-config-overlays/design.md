@@ -10,10 +10,10 @@ Refs: RIG-3112
 
 ## Problem / Intent
 
-Agent config is one fleet-wide bundle: `agent_config_bundle` is a singleton,
-so every agent in every tenant gets the same config. This record keeps it as
-the **default** layer, adds **tenant** and **user** overlays, and has the
-Server resolve one effective bundle per agent.
+`agent_config_bundle` is a singleton, so every agent in every tenant gets the
+same config. This record keeps it as the **default** layer, adds **tenant**
+and **user** overlays, and has the Server resolve one effective bundle per
+agent.
 
 ## Approach
 
@@ -32,9 +32,9 @@ Server resolve one effective bundle per agent.
 ### Design
 
 **Layers and order (D1, assumes OQ-4 A).** Effective bundle =
-default → tenant → user; a missing layer is skipped, and with no overlay the
-effective bundle is the default bytes. A user is not an agent id, so CD-1's
-seam ("never an individual agent id") stays open (OQ-4).
+default → tenant → user; a missing layer is skipped, and with no overlay it is
+the default bytes. A user is not an agent id, so CD-1's seam ("never an
+individual agent id") stays open (OQ-4).
 
 **Storage (D2).** One tenant-owned table holds whole-bundle overlays, shaped
 like `account_handles` (nullable owner FK plus two partial unique indexes):
@@ -71,15 +71,14 @@ tenant.
 | `rules/*`, `agents/*`, `prompts/*` | Whole file by path from the highest layer that has it. |
 | `profiles/` | Default layer only (D6). |
 
-**Extension identity (D3).** Extensions are directories only. The store door
-(`validateRegularMember`, `go/internal/store/agent_config.go`), the Runner
-(`validateNestedRegularMember`), and the CLI (`validateMemberGrammar`) match
-the name after `extensions/` against `^[A-Za-z0-9_-]+$`, so a dotted
-`extensions/foo.ts` already fails; the door also rejects a file at
-`extensions/<id>`. A `package.json` can still rename: `resolveExtensionEntries`
-loads each `omp.extensions` (else `pi.extensions`) path, and
-`getExtensionNameFromPath` names it by basename, or parent directory for
-`index.*`. The door requires each entry under `extensions/<id>/` to derive
+**Extension identity (D3).** Extensions are directories only: the store door
+(`validateRegularMember`, `go/internal/store/agent_config.go`), Runner
+(`validateNestedRegularMember`), and CLI (`validateMemberGrammar`) already
+reject a dotted `extensions/foo.ts` by `^[A-Za-z0-9_-]+$`; the door also
+rejects a file at `extensions/<id>`. A `package.json` can still rename:
+`resolveExtensionEntries` loads each `omp.extensions` (else `pi.extensions`)
+path, which `getExtensionNameFromPath` names by basename (parent directory for
+`index.*`). The door requires each entry under `extensions/<id>/` to derive
 `<id>`, so merge, removal, and SDK ids agree.
 
 **Removal (D4, assumes OQ-2 B).** Overlays only add or replace; removal is:
@@ -99,24 +98,24 @@ loads each `omp.extensions` (else `pi.extensions`) path, and
 **Settings layered by the SDK (D5).** `#loadOverlayYaml` (`settings.ts`) runs
 `#migrateRawSettings` per file before `#deepMerge`, so a Server-side merge
 could invert layer order across legacy and current keys. `buildFleetSettings`
-(`packages/compass-agent/src/cli.ts`) gets each layer's file as `configFiles`,
-in order; the put door still accepts only `settings/config.yml`.
+(`packages/compass-agent/src/cli.ts`) passes each layer's file, in order, as
+`configFiles`; the door still accepts only `settings/config.yml`.
 
 **One door, one effective cap (D6).** Every layer write runs the
-`validateAndHashConfigBundle` door with its layer's cap. Overlays carry no
-`profiles/`, so the orphan guard in `PutAgentConfig` stays default-only. A
-48 MiB / 3000-file default plus two 4 MiB / 512-file overlays fit the door's
+`validateAndHashConfigBundle` door at its layer's cap; overlays carry no
+`profiles/`, so `PutAgentConfig`'s orphan guard stays default-only. A
+48 MiB / 3000-file default and two 4 MiB / 512-file overlays fit the door's
 64 MiB / 4096 (`maxDecompressedBytes`, `maxFileCount`) and the Runner's
-`maxConfigBytes` with no cross-layer read. The merge adds no files; it adds
-bytes only in `AGENTS.md` separators and the re-encoded `models.yml`, counted
-at re-encoded size.
+`maxConfigBytes` without a cross-layer read. The merge adds no files; its
+added bytes (`AGENTS.md` separators, re-encoded `models.yml`) count.
 
-**Cross-layer checks (D14).** Per-value lints hold for a merge of clean
-layers. The one cross-layer lint, `lintProfileAgentKeys`, runs on the default
-only, so an overlay `agents/x.md` can orphan a profile key; the resolver logs
-a Warn and delivers. The fetch re-checks only the cap and member paths, so a
-new lint never fails a stored row. A breach, possible only for a row written
-around the door or a pre-T1 oversize default, fails closed with `CodeInternal`
+**Cross-layer checks (D14).** Per-value lints hold for merged clean
+layers. `lintProfileAgentKeys`, the only cross-layer lint, runs on the
+default, so an overlay `agents/x.md` orphaning a profile key gets a resolver
+Warn. No stored default is grandfathered: each boot runs
+`LintStoredAgentConfig` (T5) before mounting doors, and a hit fails startup
+and the overlay rollout. The fetch re-checks only the cap and member paths,
+failing closed with `CodeInternal`
 (`effective config for agent %s invalid (default %s, tenant %s, user %s): %v`).
 
 **Keyed fetch, one snapshot (D7).** `FetchAgentConfigRequest`
@@ -135,10 +134,9 @@ SELECT CASE WHEN o.owner_user_id IS NULL THEN 2 ELSE 3 END, o.version, o.bundle
  WHERE o.owner_user_id IS NULL OR o.owner_user_id = a.owner_user_id;
 ```
 
-A version-only variant answers `if_version`; on a miss the full statement
-recomputes the version from its rows. The keyed fetch needs the binding
-`Hub.enroll` clears; none is lost, since Runner `Run`
-(`go/internal/runner/run.go`) sweeps stale containers on each dial and
+A version-only variant answers `if_version`; a miss recomputes the version
+from the full rows. The fetch needs the binding `Hub.enroll` clears; Runner
+`Run` (`go/internal/runner/run.go`) sweeps stale containers each dial, and
 `lifecycleService.reprovision` (`go/server/lifecycle.go`) binds a re-created
 container before Start.
 
@@ -157,13 +155,13 @@ absent). A matched version with no `root/<version>` forces a re-fetch. An
 epoch bump sends no signal; containers see it at the next Start or nudge.
 
 **Refresh signal (D10).** `SignalConfigVersion(version)` becomes
-`SignalConfigChanged()`, a payload-free fleet-wide nudge sent by every put and
-delete on any layer. `refreshOneContainer` fetches with the tracked version
-before `MountLabel`; a version-only response skips the inspect, relabel, and
+`SignalConfigChanged()`, a payload-free fleet-wide nudge sent by every layer's
+put and delete. `refreshOneContainer` fetches with the tracked version
+before `MountLabel`; a version-only response skips inspect, relabel, and
 Reload.
 
 **Write and read surface (D11, D12, assumes OQ-3 A).** The default RPCs stay
-unchanged and `adminOnly`. New `authenticatedOpen` RPCs carry the overlays:
+`adminOnly`; new `authenticatedOpen` RPCs carry overlays:
 
 ```proto
 enum AgentConfigLayer {
@@ -186,8 +184,8 @@ message EffectiveConfigMember { string path = 1; AgentConfigLayer layer = 2; }  
 message GetEffectiveAgentConfigInfoResponse { string version = 1; repeated EffectiveConfigMember members = 2; }  // D9 version; members sorted by path
 ```
 
-Overlay RPCs accept only TENANT or USER (else `InvalidArgument`); USER always
-addresses the caller's own layer. Agents have no write door.
+Overlay RPCs accept only TENANT or USER (else `InvalidArgument`); USER is
+always the caller's own layer; agents have no write door.
 
 | RPC | TENANT | USER |
 |---|---|---|
@@ -197,16 +195,18 @@ addresses the caller's own layer. Agents have no write door.
 
 Granting `UserRoleAdmin` beyond the bootstrap tenant is out of scope.
 
-**MCP credential lint (D13, assumes OQ-5 A).** The delivery record says "an
-MCP config MUST NOT embed a credential"; `validateMCPMember` checks only JSON.
-The door gains `rejectCredentialMCP` on every layer, rejecting per server:
+**MCP credential lint (D13, assumes OQ-5 A).** CD-3 says "an MCP config MUST
+NOT embed a credential"; `validateMCPMember` checks only JSON. D13 narrows
+that MUST to what `rejectCredentialMCP` rejects, per server, on every layer:
 
 - `oauth.clientSecret` and `auth.clientSecret` (`MCPServerConfigBase`, SDK
   `src/mcp/types.ts`);
 - `envPolicy` and `headerPolicy`, which make every `env` or `headers` value a
   literal (`MCPManager.#resolveAuthConfig`);
-- in `url` or a URL-shaped `args` element, userinfo or a query key matching
-  `SENSITIVE_QUERY_PARAM` (`/key|token|secret|auth/i`, `src/mcp/json-rpc.ts`);
+- in `url`, `auth.tokenUrl` (`refreshManagedMcpOAuthCredential` hands it to
+  `refreshMCPOAuthToken`, which fetches it), or a URL-shaped `args` element,
+  userinfo or a query key matching `SENSITIVE_QUERY_PARAM`
+  (`/key|token|secret|auth/i`, `src/mcp/json-rpc.ts`);
 - an `args` element matching `EXA_API_KEY_PATTERN` (`/exaApiKey=([^&\s]+)/i`),
   which `extractExaApiKey` (`src/mcp/config.ts`) reads from `url`, `args`,
   and `env`;
@@ -216,20 +216,19 @@ An indirection is exactly what `isEnvIndirection` admits: a leading `!`, or a
 value matching `^[A-Za-z_][A-Za-z0-9_]*$`. That is shape, not proof:
 `resolveConfigValue` (`src/config/resolve-config-value.ts`) "checks
 environment variable first, then treats as literal", so an identifier-shaped
-token, a `!command` that prints one, or a token in `command` or other `args`
-passes (OQ-5). `PORT: "8080"` needs the `!command` form. A pre-T1 default is
-linted at its next put; the fetch never lints (D14).
+token or a `!command` that prints one passes (OQ-5). `PORT: "8080"` needs the
+`!command` form.
 
 **Trust boundary.** A user layer reaches only its user's agents; a tenant
-layer, only its tenant, and only a tenant admin writes it. Code-bearing
+layer, only its tenant, and only tenant admins write it. Code-bearing
 members (extensions, MCP `!command` values) run only for the writer's agents.
 
 ## Alternatives considered
 
-- **Member-granular overlay rows.** Rejected: a per-member API and validator,
-  and no atomic layer push.
-- **Merge in the agent.** Rejected: a Server-side merge gives one tree and one
-  reportable bundle (D12); D5 keeps settings hybrid.
+- **Member-granular overlay rows.** Rejected: per-member API and validator;
+  no atomic layer push.
+- **Merge in the agent.** Rejected: a Server-side merge gives one reportable
+  tree (D12); D5 keeps settings hybrid.
 - **Revalidate dependent layers per write.** Rejected (D14): a default write
   would read every tenant's overlays.
 - **Pending binding at Provision.** Rejected: a second binding lifecycle.
@@ -251,10 +250,10 @@ members (extensions, MCP `!command` values) run only for the writer's agents.
 - RLS: layer reads run as `compass_app` under the tenant GUC; the fetch's
   only system-role step is the `AccountTenant` lookup `FetchSecrets` uses.
 - Clean cutover: no unkeyed `FetchAgentConfig`, `SignalConfigVersion`, or
-  Provision-time fetch remains; migrate the fakes and test clients
+  Provision-time fetch remains; migrate fakes and test clients
   (`go/internal/runnerhub/config_fetch_test.go`,
   `go/server/runner_config_compose_pgtest_test.go`).
-- One linear stack, T1 → T6; each PR builds and passes alone, red → green.
+- One linear stack, T1 → T6; each PR passes alone, red → green.
 
 ### T1 — Store: schema, lints, merge, resolve
 
@@ -285,14 +284,15 @@ func lintExtensionManifests(manifests map[string][]byte, members map[string]bool
 func extensionIDFromPath(p string) string // ports the SDK's getExtensionNameFromPath
 ```
 
-Tests: each merge-table row; under `extensions/foo/`, entries `src/index.ts`
-(id `src`) and `../bar/index.ts` rejected, `foo.ts` accepted; a file at
-`extensions/foo` rejected; each D13 carrier rejected, an env name and a
-`!command` accepted; MCP drop only with an overlay; max-size layers fit the
-effective cap (alias-heavy `models.yml`); `profiles/` and oversize layers
-rejected; an orphan profile key warns; a row written around the door fails
-closed; no overlay → default bytes; a put between the two statements ships a
-matching pair; tenant isolation.
+Tests: each merge-table row; under `extensions/foo/`, `src/index.ts` (id
+`src`) and `../bar/index.ts` rejected, `foo.ts` accepted; a file at
+`extensions/foo` rejected; each D13 carrier rejected, `auth.tokenUrl`
+userinfo and `?token=` included; an env name and `!command` accepted; MCP
+drop only with an overlay; max-size layers fit the effective cap
+(alias-heavy `models.yml`); `profiles/` and oversize layers rejected; an
+orphan profile key warns; a row written around the door fails closed; no
+overlay → default bytes; a put between the two statements ships a matching
+pair; tenant isolation.
 
 ### T2 — Signal cutover
 
@@ -338,10 +338,20 @@ tenant setting spelled with a legacy key; `includeSkills: ["web-*"]` keeps
 ### T5 — Server: overlay RPCs and effective read
 
 Handlers in `go/server/agent_config_service.go`, all four `authenticatedOpen`;
-every put and delete, default included, calls `SignalConfigChanged`. Tests:
-each authorization-table row, UNSPECIFIED and DEFAULT rejected; an agent
+every put and delete, default included, calls `SignalConfigChanged`. The boot
+lint (D14):
+
+```go
+// go/internal/store/agent_config.go: validateAndHashConfigBundle(bundle, defaultLayerCaps) over
+// CurrentAgentConfig; ErrNotFound → nil. Serve (go/server/serve.go) calls it right after
+// seedBootstrapAccounts and passes a hit to failStartup.
+func (s *Store) LintStoredAgentConfig(ctx context.Context) error
+```
+
+Tests: each authorization-table row, UNSPECIFIED and DEFAULT rejected; an agent
 caller denied; the effective read names winning layers and refuses another
-user's agent.
+user's agent; `Serve` fails on a stored default with a literal MCP `env` value
+or 3001 files, and starts on an absent or clean one.
 
 ### T6 — CLI and docs
 
@@ -404,12 +414,14 @@ fail, naming the cap. Docs: layer order, merge table, removal rules, MCP lint.
   winning layer.
 - **D13** (DL-511) — The door rejects, on every layer, MCP
   `oauth.clientSecret`, `auth.clientSecret`, `envPolicy`, `headerPolicy`, URL
-  userinfo and secret-named query keys in `url` and URL-shaped `args`,
-  `exaApiKey=` in `args`, and any `env` or `headers` value that is neither a
-  `!command` nor an env name.
-- **D14** (DL-512) — The fetch re-checks only the Runner's rules and fails closed with
-  a named error; an orphaned profile key on the effective bundle logs a Warn
-  and delivers.
+  userinfo and secret-named query keys in `url`, `auth.tokenUrl`, and
+  URL-shaped `args`, `exaApiKey=` in `args`, and any `env` or `headers` value
+  that is neither a `!command` nor an env name; CD-3's MUST narrows to these
+  fields.
+- **D14** (DL-512) — Each boot lints the stored default with the default door
+  before mounting doors and fails startup on a hit; the fetch re-checks only
+  the Runner's rules, failing closed with a named error; an orphaned profile
+  key on the effective bundle logs a Warn and delivers.
 
 ## Open Questions
 
@@ -460,7 +472,9 @@ fail, naming the cap. Docs: layer order, merge table, removal rules, MCP lint.
   - **Recommendation: A.** The ask is tenant and user scope; the role layer
     composes later without a fetch or storage redesign.
 - **OQ-5 (load-bearing) — closing the MCP credential MUST.** No door rule over
-  free-form strings proves a value is not a credential.
+  free-form strings proves a value is not a credential, so A and C narrow
+  CD-3's "an MCP config MUST NOT embed a credential" to their listed fields;
+  choosing A revises that MUST.
   - A. Field lint (D13). Residual: an identifier-shaped token, a `!command`
     that prints one, a token in `command` or another `args` element; the
     writer owns it, as today.
@@ -471,10 +485,10 @@ fail, naming the cap. Docs: layer order, merge table, removal rules, MCP lint.
   - C. A, plus a known-prefix scan (`ghp_`, `github_pat_`, `sk_live_`,
     `xoxb-`, `AKIA`) of every MCP string, `args` included. Unknown formats
     pass; the list needs upkeep.
-  - **Recommendation: A.** No rule closes `command` or free-form `args`, so B
-    still leaves the MUST with the writer. A closes every credential-only
-    field and every literal `env` or `headers` value; C can follow with no
-    storage or fetch change.
+  - **Recommendation: A, revising CD-3's MUST to D13's fields.** No option
+    closes `command` or free-form `args`. A closes every credential-only field
+    and every literal `env` or `headers` value; C can follow with no storage
+    or fetch change.
 - **OQ-6 (non-load-bearing) — tenant profiles.** D6 bars `profiles/` in
   overlays; lifting it means the registry guard reads every tenant's overlays.
 - **OQ-7 (non-load-bearing) — scoped nudge.** An unchanged container costs one
