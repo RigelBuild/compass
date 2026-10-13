@@ -199,10 +199,30 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
-	srv, err := buildNetworkServer(ctx, ServeConfig{
-		StateDir:          t.TempDir(),
-		CORSAllowedOrigin: corsOriginForTest,
-	}, svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil, nil, gatewayServices{})
+	srv, err := buildNetworkServer(
+		ctx,
+		ServeConfig{
+			StateDir:          t.TempDir(),
+			CORSAllowedOrigin: corsOriginForTest,
+		},
+		svc,
+		commsSvc,
+		secretsSvc,
+		newUsageService(usage.NewPostgres(st), st),
+		compassv1connect.UnimplementedAgentRepositoryServiceHandler{},
+		nil,
+		st,
+		admin,
+		nil,
+		nil,
+		otelIC,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		gatewayServices{},
+	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
@@ -248,10 +268,30 @@ func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
-	srv, err := buildNetworkServer(ctx, ServeConfig{
-		StateDir:          t.TempDir(),
-		CORSAllowedOrigin: corsOriginForTest,
-	}, svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil, nil, gatewayServices{})
+	srv, err := buildNetworkServer(
+		ctx,
+		ServeConfig{
+			StateDir:          t.TempDir(),
+			CORSAllowedOrigin: corsOriginForTest,
+		},
+		svc,
+		commsSvc,
+		secretsSvc,
+		newUsageService(usage.NewPostgres(st), st),
+		compassv1connect.UnimplementedAgentRepositoryServiceHandler{},
+		nil,
+		st,
+		admin,
+		nil,
+		nil,
+		otelIC,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		gatewayServices{},
+	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
@@ -316,8 +356,27 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
-	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()},
-		svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil, nil, gatewayServices{})
+	srv, err := buildNetworkServer(
+		ctx,
+		ServeConfig{StateDir: t.TempDir()},
+		svc,
+		commsSvc,
+		secretsSvc,
+		newUsageService(usage.NewPostgres(st), st),
+		compassv1connect.UnimplementedAgentRepositoryServiceHandler{},
+		nil,
+		st,
+		admin,
+		nil,
+		nil,
+		otelIC,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		gatewayServices{},
+	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
