@@ -208,7 +208,7 @@ func TestAgentGatewayRejectsJSONContentTypes(t *testing.T) {
 // Non-frame unaries keep JSON: the in-guest microVM probe calls Comms as a JSON
 // POST. RED if the JSON override refuses every request type.
 func TestAgentGatewayKeepsJSONForNonFrameCalls(t *testing.T) {
-	// Unbound: Comms answers PermissionDenied after decoding, with no relay needed.
+	// Unbound: Comms answers FailedPrecondition after decoding, with no relay.
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: staticSessions{}})
 	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions()...)
 	mux := http.NewServeMux()
@@ -233,7 +233,7 @@ func TestAgentGatewayKeepsJSONForNonFrameCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	if !strings.Contains(string(body), "permission_denied") {
-		t.Fatalf("JSON Comms: status %d body %s, want the post-decode permission_denied", resp.StatusCode, body)
+	if !strings.Contains(string(body), "failed_precondition") {
+		t.Fatalf("JSON Comms: status %d body %s, want post-decode failed_precondition", resp.StatusCode, body)
 	}
 }

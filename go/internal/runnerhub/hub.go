@@ -216,8 +216,8 @@ type SessionBindingStore interface {
 	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced, version string, err error)
 	// ResolveSessionBinding resolves the agent account and owning Runner a live
 	// session speaks for — the cache-miss read behind accountForSession.
-	// store.ErrNotFound is the fail-closed miss (mapped to ok=false),
-	// byte-identical to today's CodeNotFound. version names the row read.
+	// store.ErrNotFound is the fail-closed miss. Relay callers map it to
+	// CodeFailedPrecondition; version names the row read.
 	ResolveSessionBinding(ctx context.Context, sessionID string) (account store.AccountID, runnerID, version string, err error)
 	// SessionForAccount resolves the live session bound to an account — the
 	// cache-miss read behind SessionForAccount (the reverse direction). Same
@@ -473,7 +473,7 @@ type Hub struct {
 	// sessionAccounts binds a live session_id to its agent account and owning
 	// Runner — the authoritative map RelayCommsCall resolves against. Start adds,
 	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
-	// (CodeNotFound) not inheriting a stale account (OQ-2).
+	// with FailedPrecondition instead of inheriting a stale account.
 	sessionAccounts map[string]sessionBinding
 	// lifecycleSeqs maps a session to the highest RunnerSeq of an accepted lifecycle
 	// frame. One lifetime's frames arrive in seq order, so a lower one is from a
@@ -1215,15 +1215,9 @@ type promotedPair struct {
 	sessionID string
 }
 
-// enroll registers (or re-attaches) a Runner under its authenticated subject, returning
-// whether it re-attached (OQ6, single-Runner MVP). It drops ALL agent-comms bindings
-// (OQ-2): a restarted Runner could re-mint a still-bound id, so clearing forces a
-// re-minted id to CodeNotFound until bound anew. RIG-3108: the maps are a read-through
-// cache over session_bindings whose rows survive process death. Every enroll reaps
-// this Runner's rows across tenants under the system role and drives OFFLINE + reap
-// edges from them: a Runner enrolls once per process and sweeps its stale containers,
-// so none of its pre-enroll sessions live. A failed durable reap still runs the
-// in-RAM fallback, then returns the error so the Runner retries enrollment.
+// enroll binds a Runner to its authenticated subject and clears its old
+// session mappings. A failed durable reap still clears the in-memory cache so
+// stale session IDs cannot be reused; enrollment returns the error for retry.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
 	// Held until the runner and router are replaced, so a stream that snapshots
 	// both under it sees one enrollment's pair.

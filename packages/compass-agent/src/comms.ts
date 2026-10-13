@@ -70,6 +70,7 @@ import {
 	SetAgentStatusRequestSchema,
 	UpdateChannelMembersRequestSchema,
 } from "./compassv1";
+import { relayCall } from "./relay-error";
 import { attr, flat } from "./render-guard";
 import type { TurnSequence } from "./turn-sequence";
 
@@ -131,7 +132,7 @@ export class CommsBroker {
 	}
 
 	call(req: CommsCallRequest): Promise<CommsCallResult> {
-		return this.#transport.comms(req);
+		return relayCall(() => this.#transport.comms(req));
 	}
 }
 

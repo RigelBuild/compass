@@ -25,6 +25,7 @@ import {
 	IssueState,
 	SetIssueStateRequestSchema,
 } from "./compassv1";
+import { relayCall } from "./relay-error";
 import { attr, flat } from "./render-guard";
 
 /**
@@ -50,7 +51,7 @@ export class BoardBroker {
 	}
 
 	call(req: BoardCallRequest): Promise<BoardCallResult> {
-		return this.#transport.board(req);
+		return relayCall(() => this.#transport.board(req));
 	}
 }
 

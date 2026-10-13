@@ -542,6 +542,35 @@ activity to the right agent; a lifecycle transition publishes as
 SHALL be logged and counted rather than silently discarded, so a new agent
 capability surfaces in diagnostics.
 
+### Requirement: Runner relays classify session binding failures consistently
+
+Every Runner-originated agent relay SHALL reject an unbound or foreign-Runner
+session with the same `FAILED_PRECONDITION` status and error message, so those
+sessions are indistinguishable. A binding that cannot be verified SHALL return
+`UNAVAILABLE` so the caller can retry. A missing relay target remains
+`NOT_FOUND`; invalid Runner credentials remain `UNAUTHENTICATED`.
+
+#### Scenario: Unknown and foreign sessions do not reveal liveness
+
+- **Given** an unknown session id and a live session owned by another Runner
+- **When** the Runner calls an agent relay with each id
+- **Then** both calls return byte-identical `FAILED_PRECONDITION` errors, and
+  neither call is delegated to an agent service.
+
+#### Scenario: A binding read fault can be retried
+
+- **Given** a Runner relay whose session binding cannot be verified
+- **When** the relay handles the call
+- **Then** it returns `UNAVAILABLE` and does not delegate the call.
+
+### Requirement: Session blob storage failures remain distinct from binding failures
+
+Missing blob object storage SHALL return `UNIMPLEMENTED` from blob upload and
+resume fetches. Binding `FAILED_PRECONDITION` does not confirm that a referenced
+blob is absent: resume handling SHALL preserve the original image reference.
+The agent uploader SHALL disable itself only after `UNIMPLEMENTED`; other
+upload errors remain retryable on a later transcript line.
+
 ### Requirement: A session's observation pane is an authorized live tail
 
 The server SHALL expose `SubscribeAgentSession` — a server-streaming RPC taking

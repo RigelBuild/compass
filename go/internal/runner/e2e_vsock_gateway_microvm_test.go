@@ -266,12 +266,8 @@ func TestVsockGateway_HostServesSuffixedSocket(t *testing.T) {
 }
 
 // TestVsockGateway_FailClosedBeforeStart is check (3), host side: the suffixed
-// socket is live from Provision (served after Launch, before Start binds a
-// session), so a Comms call in that window fails closed CodePermissionDenied and
-// never reaches the Server — the pre-Start posture proven over the real vsock
-// serve path, not a fake. Mutation that reddens it: dropping the no-session
-// fail-closed check so the call forwards with an empty session id (the client
-// would see a non-PermissionDenied outcome and the relay would be non-empty).
+// socket is live from Provision before Start binds a session. An early Comms
+// call fails with FailedPrecondition and never reaches the Server.
 func TestVsockGateway_FailClosedBeforeStart(t *testing.T) {
 	inertAgentCommand(t)
 	fake := newW3Relay()
@@ -289,10 +285,10 @@ func TestVsockGateway_FailClosedBeforeStart(t *testing.T) {
 	defer cancel()
 	_, err = client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "w3-early"}))
 	if err == nil {
-		t.Fatal("Comms before Start = nil, want CodePermissionDenied (no session bound over the vsock serve path)")
+		t.Fatal("Comms before Start = nil, want CodeFailedPrecondition")
 	}
-	if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
-		t.Fatalf("Comms-before-Start code = %v, want CodePermissionDenied", code)
+	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
+		t.Fatalf("Comms-before-Start code = %v, want CodeFailedPrecondition", code)
 	}
 	if got := fake.snapshot(); len(got) != 0 {
 		t.Fatalf("Server received %d relayed calls before Start, want 0 (never forward an empty session id)", len(got))

@@ -188,13 +188,8 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
 }
 
-// RelayCommsCall forwards one agent-initiated comms call into the hub, which
-// resolves the relayed session_id to its bound agent account and executes the
-// call under that account, fail-closed (relay_comms.go). The bearer interceptor
-// has already Kind-gated the caller to a SubjectRunner subject; a defense-in-
-// depth check rejects a context with none. The hub returns an unresolved session
-// as a Connect CodeNotFound (surfaced to the Runner) and a comms tool failure as
-// the in-band CommsCallError variant of the result (never a stream teardown).
+// RelayCommsCall forwards a comms call into the hub under the bound account.
+// Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
 func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest]) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
@@ -207,13 +202,8 @@ func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compa
 	return connect.NewResponse(resp), nil
 }
 
-// RelayLifecycleCall forwards one agent-initiated lifecycle call (spawn/despawn a
-// peer) into the hub, which resolves the relayed session_id to its bound agent
-// account (the caller) and delegates under that account, fail-closed
-// (relay_lifecycle.go). The bearer interceptor has already Kind-gated the caller
-// to a SubjectRunner subject; the defense-in-depth check rejects a context with
-// none. An unresolved session is a Connect CodeNotFound; a tool failure is the
-// in-band LifecycleCallError variant (never a stream teardown).
+// RelayLifecycleCall forwards a lifecycle call under the bound account.
+// Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
 func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
@@ -226,14 +216,8 @@ func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[c
 	return connect.NewResponse(resp), nil
 }
 
-// RelayBoardCall forwards one agent-initiated board call (write an issue's
-// canonical lifecycle state) into the hub, which resolves the relayed
-// session_id to its bound agent account (the caller) and delegates under that
-// account, fail-closed (relay_board.go). The bearer interceptor has already
-// Kind-gated the caller to a SubjectRunner subject; the defense-in-depth check
-// rejects a context with none. An unresolved session is a Connect CodeNotFound;
-// a tool failure is the in-band BoardCallError variant (never a stream
-// teardown).
+// RelayBoardCall forwards a board call under the bound account.
+// Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
 func (h *Handler) RelayBoardCall(ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest]) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
@@ -246,14 +230,8 @@ func (h *Handler) RelayBoardCall(ctx context.Context, req *connect.Request[compa
 	return connect.NewResponse(resp), nil
 }
 
-// RelayForgeCall forwards one agent-initiated forge call (create/comment/get/
-// list an issue or PR, submit a review) into the hub, which resolves the relayed
-// session_id to its bound agent account (the caller) and delegates under that
-// account, fail-closed (relay_forge.go). The bearer interceptor has already
-// Kind-gated the caller to a SubjectRunner subject; the defense-in-depth check
-// rejects a context with none. An unresolved session is a Connect CodeNotFound;
-// a tool failure is the in-band ForgeCallError variant (never a stream
-// teardown).
+// RelayForgeCall forwards a forge call under the bound account.
+// Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
 func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest]) (*connect.Response[compassv1internal.RelayForgeCallResponse], error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
@@ -266,13 +244,8 @@ func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compa
 	return connect.NewResponse(resp), nil
 }
 
-// CommitConversationFrame durably commits one agent-authored conversation frame
-// and returns the commit outcome — the DURABLE counterpart to PublishEvents. The
-// hub resolves the relayed session_id to its bound agent account and commits the
-// frame under that account, fail-closed (relay_comms.go): an unresolved session
-// is a Connect CodeNotFound and a Deliver-only hub with no comms wired is
-// CodeUnavailable. The bearer interceptor has already Kind-gated the caller to a
-// SubjectRunner subject; the defense-in-depth check rejects a context with none.
+// CommitConversationFrame commits an agent-authored frame for the bound session.
+// Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
 //
 // The commit is at-most-once keyed on the agent-minted idempotency_key: a fresh
 // commit AND an idempotent replay of an already-committed key both return

@@ -123,59 +123,26 @@ type RunnerServiceClient interface {
 	// RunnerHub.Deliver seam behind it is where a future brokered transport would
 	// substitute, nothing else (design.md:1347-1352).
 	PublishEvents(context.Context) *connect.ClientStreamForClient[v1.PublishEventsRequest, v1.PublishEventsResponse]
-	// RelayCommsCall (unary, Runner->Server): execute one agent-initiated comms
-	// call under the agent account the session resolves to. The Runner is a pure
-	// forwarder — it sends the session_id it structurally owns (which per-container
-	// socket the AgentGateway call arrived on, 1:1 with the session) and the
-	// CommsCallRequest, and asserts NO account. The SERVER resolves
-	// session_id -> agent account from its own Provision-originated hub binding and
-	// attributes the call in-process under comms.WithActor, fail-closed: an
-	// unknown/stopped session is CodeNotFound, never a stale account or the
-	// bootstrap-admin fallback (transport design Decision #3 / OQ-2, comms-tools
-	// design T2). A fourth RPC, additive to the dial-out shape (the Runner
-	// still initiates; the Server gains no inbound route): merging the comms-tools
-	// record ratifies it (comms-tools OQ-1). The request oneof (CommsCallRequest,
-	// agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
-	// constraint is structural, not a runtime check.
+	// RelayCommsCall forwards one agent-initiated comms call under the account
+	// resolved from the Server's session binding. Unknown and foreign-Runner
+	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
+	// The Runner sends the session_id it structurally owns and asserts no account.
+	// The request cannot express RespondToAsk, so agents cannot answer asks.
 	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
-	// RelayLifecycleCall (unary, Runner->Server): relay one agent-initiated
-	// lifecycle call (spawn/despawn a peer) under the agent account the session
-	// resolves to. Same pure-forwarder shape as RelayCommsCall: the Runner sends
-	// the session_id it structurally owns (the per-container AgentGateway socket
-	// the call arrived on, 1:1 with the session) and the LifecycleCallRequest, and
-	// asserts NO account. The Server resolves session_id -> agent account from its
-	// own Provision-originated hub binding, then resolves that agent's owner to
-	// scope spawn (owner-inherited) and despawn (same-owner) authority,
-	// fail-closed: an unknown/stopped session is CodeNotFound, never a stale
-	// account or the bootstrap admin. Additive to the dial-out shape (the
-	// Runner still initiates; the Server gains no inbound route); merging the
-	// spawn/despawn record ratifies it.
+	// RelayLifecycleCall forwards one agent-initiated lifecycle call under the
+	// account resolved from the Server's session binding. Unknown and foreign-
+	// Runner sessions share FailedPrecondition; unverifiable bindings return
+	// Unavailable. Spawn and despawn authority is resolved for that account.
 	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
-	// RelayForgeCall (unary, Runner->Server): relay one agent-initiated forge call
-	// (create/comment/read an issue or PR, subscribe/unsubscribe an artifact) under
-	// the agent account the session resolves to. Same pure-forwarder shape as
-	// RelayCommsCall: the Runner sends the session_id it structurally owns (the
-	// per-container AgentGateway socket the call arrived on, 1:1 with the session)
-	// and the ForgeCallRequest, and asserts NO account. The Server resolves
-	// session_id -> agent account from its own Provision-originated hub binding,
-	// stamps the owner header (DL-050) and makes the forge call with its own
-	// credential (DL-052), fail-closed: an unknown/stopped session is CodeNotFound,
-	// never a stale account or the bootstrap admin. Read ops are answered from the
-	// projection/store, not a live forge proxy (DL-069 amendment OQ-A). Additive to
-	// the dial-out shape (the Runner still initiates; the Server gains no
-	// inbound route); merging the ownership-layer record ratifies it.
+	// RelayForgeCall forwards one agent-initiated forge call under the account
+	// resolved from the Server's session binding and stamps its owner header.
+	// Unknown and foreign-Runner sessions share FailedPrecondition; unverifiable
+	// bindings return Unavailable. Reads use the projection/store, not a live
+	// forge proxy.
 	RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error)
-	// RelayBoardCall (unary, Runner->Server): relay one agent-initiated board call
-	// (write an issue's canonical lifecycle state) under the agent account the
-	// session resolves to. Same pure-forwarder shape as RelayCommsCall: the Runner
-	// sends the session_id it structurally owns (the per-container AgentGateway
-	// socket the call arrived on, 1:1 with the session) and the BoardCallRequest,
-	// and asserts NO account. The Server resolves session_id -> agent account from
-	// its own Provision-originated hub binding and runs the transition under that
-	// caller (single-trust-domain MVP, amendment §Resolved decisions 2),
-	// fail-closed: an unknown/stopped session is CodeNotFound, never a stale
-	// account or the bootstrap admin. Additive to the dial-out shape (the
-	// Runner still initiates; the Server gains no inbound route).
+	// RelayBoardCall forwards one agent-initiated board call under the account
+	// resolved from the Server's session binding. Unknown and foreign-Runner
+	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
 	RelayBoardCall(context.Context, *connect.Request[v1.RelayBoardCallRequest]) (*connect.Response[v1.RelayBoardCallResponse], error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
@@ -184,12 +151,10 @@ type RunnerServiceClient interface {
 	// and commit here, request/response, so the agent's PostConversationFrame is
 	// acked on a real store commit rather than a spine forward-accept (#24 OQ-3).
 	//
-	// The Runner is a pure forwarder, exactly as in RelayCommsCall: it sends the
-	// session_id it structurally owns (the per-container AgentGateway socket the
-	// frame arrived on, 1:1 with the session) and asserts NO account. The Server
-	// resolves session_id -> agent account from its own Provision-originated hub
-	// binding and commits under that actor, fail-closed — an unknown/stopped
-	// session is CodeNotFound, never a stale account or the bootstrap admin.
+	// The Runner forwards the session_id it structurally owns and asserts no
+	// account. The Server resolves the account from its binding. Unknown and
+	// foreign-Runner sessions share FailedPrecondition; unverifiable bindings
+	// return Unavailable.
 	//
 	// idempotency_key is the SAME agent-minted envelope key carried on
 	// AgentGateway.PostConversationFrame (agent_gateway.proto:113-119): the Server
@@ -231,13 +196,16 @@ type RunnerServiceClient interface {
 	// version and no chunks, never an error. Additive to the dial-out shape
 	// (the Runner still initiates; the Server gains no inbound route).
 	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest]) (*connect.ServerStreamForClient[v1.FetchAgentConfigResponse], error)
-	// RelaySessionBlob (unary, Runner->Server): forward an agent's PutSessionBlob
-	// for the session bound to its container. FailedPrecondition means the Server
-	// has no object store; the agent stops uploading.
+	// RelaySessionBlob forwards an agent's PutSessionBlob for the session bound
+	// to its container. Unknown and foreign-Runner sessions share
+	// FailedPrecondition; unverifiable bindings return Unavailable. Missing
+	// blob object storage returns Unimplemented.
 	RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error)
 	// FetchSessionBlobs (server-streaming, Runner->Server): on resume, fetch the
 	// blobs a resume body references. Each blob is a header frame then chunk
 	// frames; a header with absent set means the Server confirmed it is not stored.
+	// Missing blob object storage returns Unimplemented; binding failures do not
+	// confirm absence and must leave resume references unchanged.
 	FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest]) (*connect.ServerStreamForClient[v1.FetchSessionBlobsResponse], error)
 }
 
@@ -442,59 +410,26 @@ type RunnerServiceHandler interface {
 	// RunnerHub.Deliver seam behind it is where a future brokered transport would
 	// substitute, nothing else (design.md:1347-1352).
 	PublishEvents(context.Context, *connect.ClientStream[v1.PublishEventsRequest]) (*connect.Response[v1.PublishEventsResponse], error)
-	// RelayCommsCall (unary, Runner->Server): execute one agent-initiated comms
-	// call under the agent account the session resolves to. The Runner is a pure
-	// forwarder — it sends the session_id it structurally owns (which per-container
-	// socket the AgentGateway call arrived on, 1:1 with the session) and the
-	// CommsCallRequest, and asserts NO account. The SERVER resolves
-	// session_id -> agent account from its own Provision-originated hub binding and
-	// attributes the call in-process under comms.WithActor, fail-closed: an
-	// unknown/stopped session is CodeNotFound, never a stale account or the
-	// bootstrap-admin fallback (transport design Decision #3 / OQ-2, comms-tools
-	// design T2). A fourth RPC, additive to the dial-out shape (the Runner
-	// still initiates; the Server gains no inbound route): merging the comms-tools
-	// record ratifies it (comms-tools OQ-1). The request oneof (CommsCallRequest,
-	// agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
-	// constraint is structural, not a runtime check.
+	// RelayCommsCall forwards one agent-initiated comms call under the account
+	// resolved from the Server's session binding. Unknown and foreign-Runner
+	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
+	// The Runner sends the session_id it structurally owns and asserts no account.
+	// The request cannot express RespondToAsk, so agents cannot answer asks.
 	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
-	// RelayLifecycleCall (unary, Runner->Server): relay one agent-initiated
-	// lifecycle call (spawn/despawn a peer) under the agent account the session
-	// resolves to. Same pure-forwarder shape as RelayCommsCall: the Runner sends
-	// the session_id it structurally owns (the per-container AgentGateway socket
-	// the call arrived on, 1:1 with the session) and the LifecycleCallRequest, and
-	// asserts NO account. The Server resolves session_id -> agent account from its
-	// own Provision-originated hub binding, then resolves that agent's owner to
-	// scope spawn (owner-inherited) and despawn (same-owner) authority,
-	// fail-closed: an unknown/stopped session is CodeNotFound, never a stale
-	// account or the bootstrap admin. Additive to the dial-out shape (the
-	// Runner still initiates; the Server gains no inbound route); merging the
-	// spawn/despawn record ratifies it.
+	// RelayLifecycleCall forwards one agent-initiated lifecycle call under the
+	// account resolved from the Server's session binding. Unknown and foreign-
+	// Runner sessions share FailedPrecondition; unverifiable bindings return
+	// Unavailable. Spawn and despawn authority is resolved for that account.
 	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
-	// RelayForgeCall (unary, Runner->Server): relay one agent-initiated forge call
-	// (create/comment/read an issue or PR, subscribe/unsubscribe an artifact) under
-	// the agent account the session resolves to. Same pure-forwarder shape as
-	// RelayCommsCall: the Runner sends the session_id it structurally owns (the
-	// per-container AgentGateway socket the call arrived on, 1:1 with the session)
-	// and the ForgeCallRequest, and asserts NO account. The Server resolves
-	// session_id -> agent account from its own Provision-originated hub binding,
-	// stamps the owner header (DL-050) and makes the forge call with its own
-	// credential (DL-052), fail-closed: an unknown/stopped session is CodeNotFound,
-	// never a stale account or the bootstrap admin. Read ops are answered from the
-	// projection/store, not a live forge proxy (DL-069 amendment OQ-A). Additive to
-	// the dial-out shape (the Runner still initiates; the Server gains no
-	// inbound route); merging the ownership-layer record ratifies it.
+	// RelayForgeCall forwards one agent-initiated forge call under the account
+	// resolved from the Server's session binding and stamps its owner header.
+	// Unknown and foreign-Runner sessions share FailedPrecondition; unverifiable
+	// bindings return Unavailable. Reads use the projection/store, not a live
+	// forge proxy.
 	RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error)
-	// RelayBoardCall (unary, Runner->Server): relay one agent-initiated board call
-	// (write an issue's canonical lifecycle state) under the agent account the
-	// session resolves to. Same pure-forwarder shape as RelayCommsCall: the Runner
-	// sends the session_id it structurally owns (the per-container AgentGateway
-	// socket the call arrived on, 1:1 with the session) and the BoardCallRequest,
-	// and asserts NO account. The Server resolves session_id -> agent account from
-	// its own Provision-originated hub binding and runs the transition under that
-	// caller (single-trust-domain MVP, amendment §Resolved decisions 2),
-	// fail-closed: an unknown/stopped session is CodeNotFound, never a stale
-	// account or the bootstrap admin. Additive to the dial-out shape (the
-	// Runner still initiates; the Server gains no inbound route).
+	// RelayBoardCall forwards one agent-initiated board call under the account
+	// resolved from the Server's session binding. Unknown and foreign-Runner
+	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
 	RelayBoardCall(context.Context, *connect.Request[v1.RelayBoardCallRequest]) (*connect.Response[v1.RelayBoardCallResponse], error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
@@ -503,12 +438,10 @@ type RunnerServiceHandler interface {
 	// and commit here, request/response, so the agent's PostConversationFrame is
 	// acked on a real store commit rather than a spine forward-accept (#24 OQ-3).
 	//
-	// The Runner is a pure forwarder, exactly as in RelayCommsCall: it sends the
-	// session_id it structurally owns (the per-container AgentGateway socket the
-	// frame arrived on, 1:1 with the session) and asserts NO account. The Server
-	// resolves session_id -> agent account from its own Provision-originated hub
-	// binding and commits under that actor, fail-closed — an unknown/stopped
-	// session is CodeNotFound, never a stale account or the bootstrap admin.
+	// The Runner forwards the session_id it structurally owns and asserts no
+	// account. The Server resolves the account from its binding. Unknown and
+	// foreign-Runner sessions share FailedPrecondition; unverifiable bindings
+	// return Unavailable.
 	//
 	// idempotency_key is the SAME agent-minted envelope key carried on
 	// AgentGateway.PostConversationFrame (agent_gateway.proto:113-119): the Server
@@ -550,13 +483,16 @@ type RunnerServiceHandler interface {
 	// version and no chunks, never an error. Additive to the dial-out shape
 	// (the Runner still initiates; the Server gains no inbound route).
 	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error
-	// RelaySessionBlob (unary, Runner->Server): forward an agent's PutSessionBlob
-	// for the session bound to its container. FailedPrecondition means the Server
-	// has no object store; the agent stops uploading.
+	// RelaySessionBlob forwards an agent's PutSessionBlob for the session bound
+	// to its container. Unknown and foreign-Runner sessions share
+	// FailedPrecondition; unverifiable bindings return Unavailable. Missing
+	// blob object storage returns Unimplemented.
 	RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error)
 	// FetchSessionBlobs (server-streaming, Runner->Server): on resume, fetch the
 	// blobs a resume body references. Each blob is a header frame then chunk
 	// frames; a header with absent set means the Server confirmed it is not stored.
+	// Missing blob object storage returns Unimplemented; binding failures do not
+	// confirm absence and must leave resume references unchanged.
 	FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest], *connect.ServerStream[v1.FetchSessionBlobsResponse]) error
 }
 

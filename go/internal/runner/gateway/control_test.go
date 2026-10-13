@@ -1213,9 +1213,8 @@ func TestControlReplayCompleteSurvivesRetentionCap(t *testing.T) {
 // write to — a subscription that looks live and is silently dead — so the
 // handler refuses honestly: CodeUnimplemented, errNoControlLane.
 //
-// The session must be BOUND first. The session check runs before the lane check,
-// so an unbound container returns CodePermissionDenied and never reaches the
-// branch under test — a green here with no session bound would prove nothing.
+// The session must be bound first; an unbound container returns
+// CodeFailedPrecondition before the lane check.
 //
 // The sentinel is asserted alongside the code because the code alone is not
 // specific: the generated UnimplementedAgentGatewayHandler that Gateway embeds

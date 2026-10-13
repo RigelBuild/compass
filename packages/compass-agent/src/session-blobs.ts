@@ -89,7 +89,7 @@ export function createSessionBlobUploader(
 		} catch (err) {
 			if (isEnoent(err)) {
 				increment(sessionBlobsMissing);
-			} else if (ConnectError.from(err).code === Code.FailedPrecondition) {
+			} else if (ConnectError.from(err).code === Code.Unimplemented) {
 				done.add(sha256);
 				disabled = true;
 				queue.length = 0;

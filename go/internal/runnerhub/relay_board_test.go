@@ -39,23 +39,16 @@ func relaySetIssueState(sessionID, callID string, req *compassv1internal.SetIssu
 	}
 }
 
-// 1. An unbound session fails closed CodeNotFound and NEVER reaches the caller —
-// no delegation is attempted for a session the hub has no binding for. This is
-// the core fail-closed guard: a session_id on the wire selects an account, it
-// never carries one, so an id the hub never bound resolves to nothing.
-//
-// Mutation: hardcode accountForSession to return a fixed account (ok=true) and
-// this test fails twice over — the error becomes nil and the caller records a
-// call.
-func TestRelayBoardCallUnboundSessionFailsClosedNotFound(t *testing.T) {
+// An unbound session fails generically before the BoardCaller is reached.
+func TestRelayBoardCallUnboundSessionFailsClosed(t *testing.T) {
 	hub, fake := newHubWithBoard()
 
 	_, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("never-bound", "bc-1", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
 	if err == nil {
-		t.Fatal("RelayBoardCall for an unbound session = nil error, want CodeNotFound (fail closed)")
+		t.Fatal("RelayBoardCall for an unbound session = nil error, want FailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodeNotFound {
-		t.Fatalf("unbound-session error code = %v, want NotFound", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("unbound-session error code = %v, want FailedPrecondition", got)
 	}
 	if calls := fake.snapshot(); len(calls) != 0 {
 		t.Fatalf("caller was invoked %d times for an unbound session, want 0 (no delegation attempt)", len(calls))
@@ -67,9 +60,8 @@ func TestRelayBoardCallUnboundSessionFailsClosedNotFound(t *testing.T) {
 // This is checked BEFORE session resolution, so even a bound session gets
 // Unavailable on a caller-less hub.
 //
-// Mutation: reordering the checks so resolution runs first would change the code
-// to NotFound for an unbound+nil case — the second sub-assertion (unbound session
-// + nil caller still Unavailable) reddens that reorder.
+// Mutation: resolving before checking the caller would change an unbound
+// session's error from Unavailable to FailedPrecondition. This pins precedence.
 func TestRelayBoardCallNilCallerIsUnavailableBeforeResolution(t *testing.T) {
 	t.Run("bound session still Unavailable", func(t *testing.T) {
 		hub := newHubOnly()  // no BoardCaller wired
@@ -91,7 +83,7 @@ func TestRelayBoardCallNilCallerIsUnavailableBeforeResolution(t *testing.T) {
 			t.Fatal("RelayBoardCall on a caller-less hub (unbound) = nil error, want CodeUnavailable")
 		}
 		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
-			t.Fatalf("nil-caller (unbound session) error code = %v, want Unavailable, not NotFound (proves nil-check precedes resolution)", got)
+			t.Fatalf("nil-caller (unbound session) error code = %v, want Unavailable while caller is unwired", got)
 		}
 	})
 }

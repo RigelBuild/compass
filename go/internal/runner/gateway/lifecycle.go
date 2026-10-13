@@ -16,11 +16,8 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// errNoSessionForLifecycle is the fail-closed cause when a lifecycle call
-// arrives on a container's socket before Start has bound a session to it. It
-// maps to CodePermissionDenied — the call is refused, never forwarded with an
-// empty session id and never attributed to any account. The lifecycle twin of
-// errNoSessionForContainer.
+// errNoSessionForLifecycle marks a lifecycle call before Start binds a session.
+// The gateway returns FailedPrecondition without forwarding an empty session id.
 var errNoSessionForLifecycle = errors.New("gateway: no live session bound to container")
 
 // errNilLifecycleResult is the cause when the Server's RelayLifecycleCall
@@ -29,12 +26,10 @@ var errNoSessionForLifecycle = errors.New("gateway: no live session bound to con
 // lifecycle twin of errNilRelayResult.
 var errNilLifecycleResult = errors.New("gateway: relay returned no lifecycle result")
 
-// Lifecycle forwards one agent-initiated lifecycle call to the Server's
-// RelayLifecycleCall under the session bound to this container. It fails closed
-// (CodePermissionDenied) when no live session maps to the container — the socket
-// is live from Provision, before Start binds the session, so a call in that
-// window must never forward with an empty session id nor attribute to any
-// account. The inbound deadline rides ctx into the forward.
+// Lifecycle forwards one agent-initiated call to the Server under this
+// container's bound session. It fails closed with FailedPrecondition when no
+// live session maps to the container, without forwarding an empty session id.
+// The inbound deadline rides ctx into the forward.
 //
 // A Server-side in-band tool failure (unknown target, duplicate handle,
 // self-despawn) rides back as the LifecycleCallError variant of the result, NOT
@@ -49,7 +44,7 @@ func (g *Gateway) Lifecycle(
 	// live binding to the empty session, but treat "" as unbound rather than
 	// forward it — the handler promises never to relay an empty session id.
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForLifecycle)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForLifecycle)
 	}
 
 	resp, err := g.lifecycle.RelayLifecycleCall(ctx, connect.NewRequest(&compassv1internal.RelayLifecycleCallRequest{

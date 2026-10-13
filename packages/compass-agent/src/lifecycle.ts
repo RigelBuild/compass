@@ -24,6 +24,7 @@ import {
 	type LifecycleCallResult,
 	SpawnPeerRequestSchema,
 } from "./compassv1";
+import { relayCall } from "./relay-error";
 import { attr, flat } from "./render-guard";
 
 /**
@@ -58,7 +59,7 @@ export class LifecycleBroker {
 	}
 
 	call(req: LifecycleCallRequest): Promise<LifecycleCallResult> {
-		return this.#transport.lifecycle(req);
+		return relayCall(() => this.#transport.lifecycle(req));
 	}
 }
 

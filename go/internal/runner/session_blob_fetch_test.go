@@ -133,6 +133,68 @@ func TestFetchSessionBlobsPropagatesMidStreamError(t *testing.T) {
 	}
 }
 
+func TestResumeBlobsMarksOnlyAbsentReferencesFromSuccessfulFetch(t *testing.T) {
+	const absentHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	presentData := []byte("present image bytes")
+	presentDigest := sha256.Sum256(presentData)
+	presentHash := hex.EncodeToString(presentDigest[:])
+	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + absentHash + `"},{"type":"image","data":"blob:sha256:` + presentHash + `"}]}}` + "\n"
+	server := &fakeSessionBlobFetchServer{frames: []*compassv1internal.FetchSessionBlobsResponse{
+		blobHeaderFrame(absentHash, 0, true),
+		blobHeaderFrame(presentHash, uint64(len(presentData)), false),
+		blobChunkFrame(presentData),
+	}}
+	host := &agentHost{link: newLink(newRunnerServiceServer(t, server)), log: discardLoggerRunner()}
+
+	marked, files, err := host.resumeBlobs(t.Context(), "container-1", "session-1", body, false)
+	if err != nil {
+		t.Fatalf("resumeBlobs = %v, want success", err)
+	}
+	wantBody := `{"message":{"content":[{"text":"[image unavailable after resume]","type":"text"},{"data":"blob:sha256:` + presentHash + `","type":"image"}]},"type":"message"}` + "\n"
+	if marked != wantBody {
+		t.Fatalf("resumeBlobs body = %q, want only absent reference replaced: %q", marked, wantBody)
+	}
+	if strings.Contains(marked, "blob:sha256:"+absentHash) || !strings.Contains(marked, "blob:sha256:"+presentHash) {
+		t.Fatalf("resumeBlobs body = %q, want absent ref replaced and present ref preserved", marked)
+	}
+	if len(files) != 1 || files[0].Name != presentHash || string(files[0].Data) != string(presentData) {
+		t.Fatalf("resumeBlobs files = %+v, want present blob %s with exact bytes", files, presentHash)
+	}
+}
+
+func TestResumeBlobsTreatsOnlyUnimplementedAsAbsent(t *testing.T) {
+	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	body := `{"type":"message","message":{"content":[{"type":"image","data":"blob:sha256:` + hash + `"}]}}` + "\n"
+	tests := []struct {
+		name       string
+		code       connect.Code
+		wantMarked bool
+	}{
+		{name: "unsupported blob store marks images unavailable", code: connect.CodeUnimplemented, wantMarked: true},
+		{name: "unbound session preserves image references", code: connect.CodeFailedPrecondition},
+		{name: "unverifiable binding preserves image references", code: connect.CodeUnavailable},
+		{name: "container authorization miss preserves image references", code: connect.CodePermissionDenied},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := &fakeSessionBlobFetchServer{err: connect.NewError(tc.code, errors.New("blob fetch unavailable"))}
+			host := &agentHost{link: newLink(newRunnerServiceServer(t, server)), log: discardLoggerRunner()}
+
+			marked, files, err := host.resumeBlobs(t.Context(), "container-1", "session-1", body, false)
+			if err != nil {
+				t.Fatalf("resumeBlobs = %v, want graceful fallback", err)
+			}
+			gotMarked := strings.Contains(marked, imageUnavailableText)
+			if gotMarked != tc.wantMarked || len(files) != 0 {
+				t.Fatalf("resumeBlobs = (%q, %v), want marked=%t and no files", marked, files, tc.wantMarked)
+			}
+			if !tc.wantMarked && marked != body {
+				t.Fatalf("resumeBlobs body = %q, want original references %q", marked, body)
+			}
+		})
+	}
+}
+
 func TestFetchSessionBlobsHonorsContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()

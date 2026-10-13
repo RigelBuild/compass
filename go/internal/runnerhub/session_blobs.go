@@ -51,12 +51,9 @@ func (h *Hub) RelaySessionBlob(ctx context.Context, runnerID string, req *compas
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("runnerhub: session blob request is required"))
 	}
 	sessionID := req.GetSessionId()
-	tenantCtx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
-	if !scoped {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("runnerhub: no agent account bound to session"))
-	}
-	if _, ok := h.accountForRunnerSession(tenantCtx, runnerID, sessionID); !ok {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("runnerhub: no agent account bound to session"))
+	tenantCtx, _, err := h.runnerSessionAccountError(ctx, runnerID, sessionID)
+	if err != nil {
+		return nil, err
 	}
 	blob := req.GetBlob()
 	if blob == nil || !sessionBlobHashPattern.MatchString(blob.GetSha256()) || len(blob.GetData()) == 0 || len(blob.GetData()) > agentmsg.MaxSessionBlobBytes {
@@ -65,7 +62,7 @@ func (h *Hub) RelaySessionBlob(ctx context.Context, runnerID string, req *compas
 	if err := blobs.PutSessionBlob(tenantCtx, sessionID, blob.GetSha256(), blob.GetData()); err != nil {
 		switch {
 		case errors.Is(err, store.ErrFailedPrecondition):
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			return nil, connect.NewError(connect.CodeUnimplemented, err)
 		case errors.Is(err, store.ErrInvalidArgument):
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		default:
@@ -148,7 +145,7 @@ func (h *Hub) streamResumeSessionBlobs(ctx context.Context, blobs SessionBlobSto
 		data, err := blobs.ReadSessionBlob(tenantCtx, sessionID, hash)
 		if err != nil {
 			if errors.Is(err, store.ErrFailedPrecondition) {
-				return connect.NewError(connect.CodeFailedPrecondition, err)
+				return connect.NewError(connect.CodeUnimplemented, err)
 			}
 			h.log.WarnContext(ctx, "read session blob failed; skipping resume blob", "session_id", sessionID, "sha256", hash, "error", err)
 			continue

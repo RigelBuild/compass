@@ -339,11 +339,9 @@ func TestForgeStatusErrorFlatteningOverTheWire(t *testing.T) {
 	}
 }
 
-// TestForgeNoLiveSessionFailsClosedOverTheWire pins the fail-closed leg
-// (design.md:881): a Forge call on a container's socket with NO bound session is
-// a Connect CodePermissionDenied (the gateway's errNoSessionForForge) — the
-// socket is live from Provision, before Start binds a session, so a call in that
-// window must never forward with an empty session id nor attribute to any account.
+// TestForgeNoLiveSessionFailsClosedOverTheWire pins the fail-closed leg:
+// an unbound container's Forge call returns FailedPrecondition and never reaches
+// the Server relay.
 func TestForgeNoLiveSessionFailsClosedOverTheWire(t *testing.T) {
 	w := newForgeE2EWire(t)
 	ctx := w.ctx
@@ -378,15 +376,13 @@ func TestForgeNoLiveSessionFailsClosedOverTheWire(t *testing.T) {
 			Repo: forgeE2ERepo, Title: "should never reach the server", Body: "b",
 		}},
 	}))
-	// A Connect PermissionDenied, NOT an in-band ForgeCallError: the gateway
-	// refuses before forwarding (no session to attribute to). Mutation: forwarding
-	// with an empty session id (or defaulting to admin) would return a success/
-	// in-band result and redden here.
+	// The gateway refuses before forwarding because no session can be attributed.
+	// Its fail-closed response is FailedPrecondition, not an in-band tool error.
 	if err == nil {
-		t.Fatal("Forge on an unbound container SUCCEEDED, want a fail-closed CodePermissionDenied")
+		t.Fatal("Forge on an unbound container SUCCEEDED, want FailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Fatalf("unbound-container Forge code = %v, want PermissionDenied (gateway errNoSessionForForge)", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("unbound-container Forge code = %v, want FailedPrecondition", got)
 	}
 	// Nothing was attributed: the author fake never saw a call.
 	if len(w.author.Calls()) != 0 {

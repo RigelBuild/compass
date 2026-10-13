@@ -16,11 +16,8 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// errNoSessionForForge is the fail-closed cause when a forge call arrives on a
-// container's socket before Start has bound a session to it. It maps to
-// CodePermissionDenied — the call is refused, never forwarded with an empty
-// session id and never attributed to any account. The forge twin of
-// errNoSessionForLifecycle.
+// errNoSessionForForge marks a forge call before Start binds a session.
+// The gateway returns FailedPrecondition without forwarding an empty session id.
 var errNoSessionForForge = errors.New("gateway: no live session bound to container")
 
 // errNilForgeResult is the cause when the Server's RelayForgeCall returns a
@@ -30,11 +27,10 @@ var errNoSessionForForge = errors.New("gateway: no live session bound to contain
 var errNilForgeResult = errors.New("gateway: relay returned no forge result")
 
 // Forge forwards one agent-initiated forge call to the Server's RelayForgeCall
-// under the session bound to this container. It fails closed
-// (CodePermissionDenied) when no live session maps to the container — the socket
-// is live from Provision, before Start binds the session, so a call in that
-// window must never forward with an empty session id nor attribute to any
-// account. The inbound deadline rides ctx into the forward.
+// under the session bound to this container. It fails closed with
+// FailedPrecondition when no live session maps to the container, without
+// forwarding an empty session id or attributing the call to an account.
+// The inbound deadline rides ctx into the forward.
 //
 // A Server-side in-band tool failure (unknown coordinate, rate limit, bad input)
 // rides back as the ForgeCallError variant of the result, NOT a Connect error,
@@ -49,7 +45,7 @@ func (g *Gateway) Forge(
 	// live binding to the empty session, but treat "" as unbound rather than
 	// forward it — the handler promises never to relay an empty session id.
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForForge)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForForge)
 	}
 
 	resp, err := g.forge.RelayForgeCall(ctx, connect.NewRequest(&compassv1internal.RelayForgeCallRequest{

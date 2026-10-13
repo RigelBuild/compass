@@ -105,6 +105,7 @@ func TestRunnerRelayCallsRequireOwningRunner(t *testing.T) {
 			return err
 		}},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			hub, _ := newHubWithComms()
@@ -115,35 +116,123 @@ func TestRunnerRelayCallsRequireOwningRunner(t *testing.T) {
 			bindLiveSession(hub)
 			foreignErr := tc.call(hub, "runner-2")
 			ownerErr := tc.call(hub, testRunnerID)
-			if status := connect.NewError(connect.CodeNotFound, errors.New("runnerhub: no agent account bound to session")); connect.CodeOf(foreignErr) != connect.CodeNotFound || foreignErr.Error() != status.Error() {
-				t.Fatalf("foreign Runner error = %v, want same NotFound as unknown session %v", foreignErr, status)
+			if foreignErr == nil || connect.CodeOf(foreignErr) != connect.CodeFailedPrecondition {
+				t.Fatalf("foreign Runner error = %v, want FailedPrecondition", foreignErr)
 			}
-			if got := connect.CodeOf(ownerErr); got == connect.CodeNotFound {
-				t.Fatalf("owning Runner call returned NotFound: %v", ownerErr)
+			if got := connect.CodeOf(ownerErr); got == connect.CodeFailedPrecondition {
+				t.Fatalf("owning Runner call returned FailedPrecondition: %v", ownerErr)
 			}
 		})
 	}
 }
 
-// 1. An unknown session fails closed CodeNotFound and NEVER reaches the caller —
-// no attribution is attempted for a session the hub has no binding for. This is
-// the core fail-closed guard: a session_id on the wire selects an account, it
-// never carries one, so an id the hub never bound resolves to nothing.
-//
-// Mutation: hardcode accountForSession to return a fixed account (ok=true) and
-// this test fails twice over — the error becomes nil and the caller records a
-// call.
-func TestRelayCommsCallUnknownSessionFailsClosedNotFound(t *testing.T) {
+func TestRunnerRelayBindingErrorContractAcrossLegs(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(*Hub, string, string) error
+	}{
+		{"comms", func(h *Hub, runnerID, sessionID string) error {
+			_, err := h.RelayCommsCall(context.Background(), runnerID, relayPost(sessionID, "tc-bind", &compassv1.PostMessageRequest{}))
+			return err
+		}},
+		{"lifecycle", func(h *Hub, runnerID, sessionID string) error {
+			_, err := h.RelayLifecycleCall(context.Background(), runnerID, relaySpawn(sessionID, "lc-bind", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+			return err
+		}},
+		{"board", func(h *Hub, runnerID, sessionID string) error {
+			_, err := h.RelayBoardCall(context.Background(), runnerID, relaySetIssueState(sessionID, "bc-bind", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
+			return err
+		}},
+		{"forge", func(h *Hub, runnerID, sessionID string) error {
+			_, err := h.RelayForgeCall(context.Background(), runnerID, relayCreateIssue(sessionID, "fc-bind", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+			return err
+		}},
+		{"transcript", func(h *Hub, runnerID, sessionID string) error {
+			_, err := h.CommitConversationFrame(context.Background(), runnerID, transcriptReq(sessionID, "frame-bind", 1, false, `{"e":1}`))
+			return err
+		}},
+		{"session blob", func(h *Hub, runnerID, sessionID string) error {
+			blob := []byte("blob")
+			_, err := h.RelaySessionBlob(context.Background(), runnerID, &compassv1internal.RelaySessionBlobRequest{
+				SessionId: sessionID,
+				Blob:      &compassv1internal.PutSessionBlobRequest{Sha256: blobHash(blob), Data: blob},
+			})
+			return err
+		}},
+	}
+
+	newHub := func() (*Hub, func() int) {
+		comms := &fakeCommsCaller{}
+		lifecycle := &fakeLifecycleCaller{}
+		board := &fakeBoardCaller{}
+		forge := &fakeForgeCaller{}
+		transcripts := &fakeTranscriptStore{}
+		blobs := &fakeSessionBlobStore{}
+		hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, comms, discardLogger())
+		hub.SetLifecycleCaller(lifecycle)
+		hub.SetBoardCaller(board)
+		hub.SetForgeCaller(forge)
+		hub.SetTranscriptStore(transcripts)
+		hub.SetSessionBlobStore(blobs)
+		return hub, func() int {
+			return len(comms.snapshot()) + len(lifecycle.snapshot()) + len(board.snapshot()) +
+				len(forge.snapshot()) + len(transcripts.snapshot()) + blobs.putCalls
+		}
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(hub *Hub, calls func() int, runnerID, sessionID string, wantCode connect.Code) {
+				err := tc.call(hub, runnerID, sessionID)
+				if got := connect.CodeOf(err); got != wantCode {
+					t.Fatalf("binding error = %v, want %s", err, wantCode)
+				}
+				if wantCode == connect.CodeFailedPrecondition {
+					wantMessage := connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound).Error()
+					if got := err.Error(); got != wantMessage {
+						t.Fatalf("binding message = %q, want shared message %q", got, wantMessage)
+					}
+				}
+				if n := calls(); n != 0 {
+					t.Fatalf("binding delegated %d times, want 0", n)
+				}
+			}
+
+			hub, calls := newHub()
+			bindLiveSession(hub)
+			check(hub, calls, testRunnerID, "never-bound", connect.CodeFailedPrecondition)
+			check(hub, calls, "runner-2", "sess-1", connect.CodeFailedPrecondition)
+
+			hub, calls = newHub()
+			bindings := newFakeBindingStore()
+			bindings.tenantErr = store.ErrConflict
+			hub.SetSessionBindingStore(bindings)
+			bindLiveSession(hub)
+			check(hub, calls, testRunnerID, "sess-1", connect.CodeFailedPrecondition)
+
+			hub, calls = newHub()
+			bindings = newFakeBindingStore()
+			hub.SetSessionBindingStore(bindings)
+			hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+			bindings.seed("sess-1")
+			bindings.resolveErr = errors.New("durable binding read failed")
+			check(hub, calls, testRunnerID, "sess-1", connect.CodeUnavailable)
+		})
+	}
+}
+
+// An unknown session fails generically before the CommsCaller is reached.
+func TestRelayCommsCallUnknownSessionFailsClosed(t *testing.T) {
 	hub, comms := newHubWithComms()
 
 	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("never-bound", "tc-1", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}},
 	}))
 	if err == nil {
-		t.Fatal("RelayCommsCall for an unbound session = nil error, want CodeNotFound (fail closed)")
+		t.Fatal("RelayCommsCall for an unbound session = nil error, want CodeFailedPrecondition")
 	}
-	if got := connect.CodeOf(err); got != connect.CodeNotFound {
-		t.Fatalf("unbound-session error code = %v, want NotFound", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("unbound-session error code = %v, want FailedPrecondition", got)
 	}
 	if calls := comms.snapshot(); len(calls) != 0 {
 		t.Fatalf("caller was invoked %d times for an unbound session, want 0 (no attribution attempt)", len(calls))
@@ -360,11 +449,10 @@ func TestRelayCommsCallUnsetOneofIsInBandInvalidArgument(t *testing.T) {
 // call; then the Runner re-enrolls (reconnect). Because session_id /
 // container_name are Runner-minted, a restarted Runner could re-mint an id still
 // bound to the OLD account; enroll clears every binding so the re-minted id
-// resolves CodeNotFound until bound anew, never a stale account.
+// resolves to the generic FailedPrecondition until bound anew, never a stale account.
 //
 // Mutation: remove the two clear(...) lines in enroll and this test fails — the
-// post-reconnect call resolves the stale account and succeeds instead of
-// CodeNotFound.
+// post-reconnect call resolves the stale account and succeeds instead of failing closed.
 func TestRelayCommsCallDropsBindingOnRunnerReconnect(t *testing.T) {
 	hub, comms := newHubWithComms()
 	comms.postResp = &compassv1.PostMessageResponse{Message: &compassv1.Message{Id: "m-1"}}
@@ -386,10 +474,10 @@ func TestRelayCommsCallDropsBindingOnRunnerReconnect(t *testing.T) {
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "after"}}},
 	}))
 	if err == nil {
-		t.Fatal("post-reconnect RelayCommsCall = nil error, want CodeNotFound (binding must drop on reconnect)")
+		t.Fatal("post-reconnect RelayCommsCall = nil error, want CodeFailedPrecondition (binding must drop on reconnect)")
 	}
-	if got := connect.CodeOf(err); got != connect.CodeNotFound {
-		t.Fatalf("post-reconnect error code = %v, want NotFound (OQ-2 drop-on-reconnect)", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("post-reconnect error code = %v, want FailedPrecondition", got)
 	}
 	// Exactly one call ever reached the caller — the pre-reconnect one. The
 	// post-reconnect call never attributed to anyone.
@@ -399,35 +487,23 @@ func TestRelayCommsCallDropsBindingOnRunnerReconnect(t *testing.T) {
 }
 
 // 8. Stop unbinds: a session's account binding is dropped by unbindSession (the
-// Stop path), so a later RelayCommsCall for the stopped id fails closed
-// CodeNotFound — the same answer as a never-seen session, never a stale reuse.
+// Stop path), so a later RelayCommsCall for the stopped id fails closed with the
+// same generic FailedPrecondition as a never-seen session, never a stale reuse.
 // Driven explicitly through the stop path so it is distinct from case 1.
-func TestRelayCommsCallStoppedSessionFailsClosedNotFound(t *testing.T) {
+func TestRelayCommsCallStoppedSessionFailsClosed(t *testing.T) {
 	hub, comms := newHubWithComms()
 	comms.postResp = &compassv1.PostMessageResponse{Message: &compassv1.Message{Id: "m-1"}}
 	bindLiveSession(hub)
-
-	// The session is live and serves a call.
-	if _, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-8", &compassv1.PostMessageRequest{
-		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "live"}}},
-	})); err != nil {
+	if _, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-8", &compassv1.PostMessageRequest{})); err != nil {
 		t.Fatalf("pre-stop RelayCommsCall = %v, want success", err)
 	}
-
-	// Stop unbinds the session.
 	hub.unbindSession(context.Background(), "sess-1")
-
-	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-9", &compassv1.PostMessageRequest{
-		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "after stop"}}},
-	}))
-	if err == nil {
-		t.Fatal("RelayCommsCall for a stopped session = nil error, want CodeNotFound")
-	}
-	if got := connect.CodeOf(err); got != connect.CodeNotFound {
-		t.Fatalf("stopped-session error code = %v, want NotFound", got)
+	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-9", &compassv1.PostMessageRequest{}))
+	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("stopped-session error = %v, want FailedPrecondition", err)
 	}
 	if calls := comms.snapshot(); len(calls) != 1 {
-		t.Fatalf("caller invoked %d times total, want exactly 1 (only the pre-stop call)", len(calls))
+		t.Fatalf("caller invoked %d times total, want exactly 1", len(calls))
 	}
 }
 
@@ -480,9 +556,8 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	}
 }
 
-// 10. A Provision with an EMPTY account id leaves no binding (bindContainer
-// ignores an empty account), so after Start the session resolves to nothing and
-// RelayCommsCall fails closed CodeNotFound — never an empty-account attribution.
+// RelayCommsCall fails closed with FailedPrecondition, never an empty-account
+// attribution.
 func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	hub, comms := newHubWithComms()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
@@ -519,16 +594,12 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	if _, ok := hub.accountForSession(context.Background(), "sess-live"); ok {
 		t.Fatal("accountForSession(sess-live) resolved a binding, want none (empty account must not bind)")
 	}
-	// And the fail-closed consequence: RelayCommsCall for that session is
-	// CodeNotFound, never an empty-account attribution to the caller.
+	// An empty-account provision leaves this session unbound.
 	_, callErr := hub.RelayCommsCall(ctx, testRunnerID, relayPost("sess-live", "tc-10", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}},
 	}))
-	if callErr == nil {
-		t.Fatal("RelayCommsCall for an empty-account provision = nil error, want CodeNotFound")
-	}
-	if got := connect.CodeOf(callErr); got != connect.CodeNotFound {
-		t.Fatalf("empty-account session error code = %v, want NotFound", got)
+	if callErr == nil || connect.CodeOf(callErr) != connect.CodeFailedPrecondition {
+		t.Fatalf("empty-account session error = %v, want FailedPrecondition", callErr)
 	}
 	if calls := comms.snapshot(); len(calls) != 0 {
 		t.Fatalf("caller invoked %d times for an empty-account session, want 0", len(calls))

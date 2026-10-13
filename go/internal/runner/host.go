@@ -292,12 +292,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	return handle.Name(), nil
 }
 
-// Session resolves the one live session bound to a container (gateway's
-// SessionForContainer): the Gateway serving that container's socket forwards a
-// comms call under this session id. A container with no live session (socket
-// served at Provision, before Start binds one, or after Stop) returns ok=false,
-// which the Gateway turns into a fail-closed CodePermissionDenied — never a
-// forward with an empty session id.
+// Session resolves the one live session bound to a container. The Gateway
+// returns FailedPrecondition when the container has no session, without
+// forwarding an empty session id.
 func (h *agentHost) Session(containerName string) (string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

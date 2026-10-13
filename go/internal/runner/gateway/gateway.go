@@ -22,10 +22,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
-// errNoSessionForContainer is the fail-closed cause when a comms call arrives on
-// a container's socket before Start has bound a session to it. It maps to
-// CodePermissionDenied — the call is refused, never forwarded with an empty
-// session id and never attributed to any account.
+// errNoSessionForContainer is the fail-closed cause when a comms call arrives
+// before Start binds a session. It maps to CodeFailedPrecondition, matching the
+// Server's shared unbound-session relay status.
 var errNoSessionForContainer = errors.New("gateway: no live session bound to container")
 
 // errNilRelayResult is the cause when the Server's RelayCommsCall returns a
@@ -51,11 +50,8 @@ const maxAgentMessageBytes = agentmsg.MaxBytes
 // its own at-most-once boundary, never a correctness loss.
 const committedKeysMax = 16384
 
-// errNoSessionForPublish / errNoSessionForConversation are the fail-closed causes
-// when a telemetry frame arrives on a container's socket before Start binds a
-// session (the socket is live from Provision). Both map to CodePermissionDenied —
-// the frame is never forwarded under an empty session id, exactly as Comms fails
-// closed.
+// errNoSessionForPublish and errNoSessionForConversation mark frames received
+// before Start binds a session. They map to CodeFailedPrecondition, like relays.
 var (
 	errNoSessionForPublish      = errors.New("gateway: no live session bound to container for publish")
 	errSessionEnded             = errors.New("gateway: session ended; frame not forwarded")
@@ -122,8 +118,8 @@ type SessionBlobRelay interface {
 // the durable conversation path needs — just CommitConversationFrame. The real
 // client satisfies it; a test supplies a fake. Mirrors CommsRelay's narrowing of
 // RelayCommsCall. The Runner is a pure forwarder: it sends the session_id it
-// structurally owns and the agent's frame verbatim, and passes the Server's
-// retryability-split Connect status straight back — it resolves no account.
+// structurally owns and the agent's frame verbatim, preserving every status unchanged.
+// It resolves no account.
 type ConversationCommitter interface {
 	CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error)
 }
@@ -322,27 +318,21 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 	return l, nil
 }
 
-// Comms forwards one agent-initiated comms call to the Server's RelayCommsCall
-// under the session bound to this container. It fails closed
-// (CodePermissionDenied) when no live session maps to the container — the socket
-// is live from Provision, before Start binds the session, so a call in that
-// window must never forward with an empty session id nor attribute to any
-// account. The inbound deadline rides ctx into the forward.
+// Comms forwards one agent-initiated call to the Server under the session bound
+// to this container. A missing session returns FailedPrecondition without
+// forwarding an empty session id. Server-side tool errors remain in-band.
 //
 // A Server-side in-band tool failure (non-member channel, bad input) rides back
 // as the CommsCallError variant of the result, NOT a Connect error, so a single
 // failed call never tears the transport down. A genuine transport failure
 // (Server unreachable) surfaces as a Connect error, which the agent renders as
-// an in-band tool error too (it never tears the turn down, N/OQ-6).
+// an in-band tool error too.
 func (g *Gateway) Comms(
 	ctx context.Context, req *connect.Request[compassv1internal.CommsCallRequest],
 ) (*connect.Response[compassv1internal.CommsCallResult], error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
-	// An empty session id is unbound too: the resolver must never hand back a
-	// live binding to the empty session, but treat "" as unbound rather than
-	// forward it — the handler promises never to relay an empty session id.
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForContainer)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForContainer)
 	}
 
 	resp, err := g.relay.RelayCommsCall(ctx, connect.NewRequest(&compassv1internal.RelayCommsCallRequest{
@@ -350,13 +340,8 @@ func (g *Gateway) Comms(
 		Call:      req.Msg,
 	}))
 	if err != nil {
-		// A transport failure on the Runner->Server leg. Surfaced as a Connect
-		// error the agent renders in-band; the turn is not torn down.
 		return nil, err
 	}
-	// A well-formed RelayCommsCallResponse always carries a result; a nil result
-	// is a malformed Server response, surfaced as a Connect error (never a
-	// success wrapping a nil Msg the agent would deref).
 	result := resp.Msg.GetResult()
 	if result == nil {
 		return nil, connect.NewError(connect.CodeInternal, errNilRelayResult)
@@ -373,7 +358,7 @@ func (g *Gateway) PutSessionBlob(
 ) (*connect.Response[compassv1internal.PutSessionBlobResponse], error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForBoard)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForBoard)
 	}
 	if len(req.Msg.GetData()) > maxSessionBlobBytes {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("gateway: session blob exceeds %d bytes", maxSessionBlobBytes))

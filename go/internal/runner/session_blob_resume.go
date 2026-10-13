@@ -19,7 +19,7 @@ func (h *agentHost) resumeBlobs(ctx context.Context, containerName, sessionID, r
 	switch {
 	case err == nil:
 		absent = fetch.Absent
-	case connect.CodeOf(err) == connect.CodeFailedPrecondition:
+	case connect.CodeOf(err) == connect.CodeUnimplemented:
 		absent = make(map[string]struct{}, len(refs))
 		for _, ref := range refs {
 			absent[ref] = struct{}{}

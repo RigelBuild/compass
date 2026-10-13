@@ -150,8 +150,8 @@ func TestBoardUnboundSessionFailsClosedWithoutForwarding(t *testing.T) {
 			g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Board: relay})
 
 			resp, err := g.Board(context.Background(), connect.NewRequest(boardSetIssueStateCall()))
-			if got := connect.CodeOf(err); err == nil || got != connect.CodePermissionDenied {
-				t.Fatalf("unbound Board error = %v (code %v), want PermissionDenied", err, got)
+			if got := connect.CodeOf(err); err == nil || got != connect.CodeFailedPrecondition {
+				t.Fatalf("unbound Board error = %v (code %v), want FailedPrecondition", err, got)
 			}
 			if resp != nil {
 				t.Fatalf("unbound Board response = %+v, want nil", resp)

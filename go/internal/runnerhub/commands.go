@@ -104,9 +104,8 @@ func (h *Hub) Stop(ctx context.Context, requestID string, req *compassv1.StopAge
 	if err != nil {
 		return nil, err
 	}
-	// Drop the session's account binding: a RelayCommsCall for a stopped session
-	// fails closed CodeNotFound, the same answer as a never-seen session — never
-	// a stale reuse.
+	// Drop the session's account binding. A relay call for a stopped session
+	// fails with the same generic FailedPrecondition as a never-seen session.
 	h.unbindSession(ctx, req.GetSessionId())
 	return result.GetStop(), nil
 }
