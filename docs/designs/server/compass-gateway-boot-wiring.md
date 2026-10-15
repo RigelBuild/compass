@@ -84,11 +84,11 @@ to the store.
     There is no credential-poll timer.
 - **`routeScope`.** The door record's line, plus the lease:
   `(req, run) => { const t = presentedBearer(req); const leased = () => pool.withRequestLease(run); return t ? runWithAgentToken(t, leased) : leased(); }`.
-- **Catalog: bundled, `provider/id` keys only (OQ1).** The `ModelResolver`
-  type `(modelId) => Model<Api> | undefined` never sees the caller, and
-  `/v1/models` skips the pool. The boot indexes `getBundledModels()` for
-  every bundled provider, keeping `GATEWAY_MODEL_KINDS` only. OQ1 option B
-  would replace the resolver with a per-owner one.
+- **Catalog: per-owner stable-name resolver (OQ1-B1).** `resolveModel`
+  becomes `(modelId, identity) => Promise<Model<Api> | undefined>`, the seam
+  the stable-name record ratified, and the boot serves it from stable-name
+  P1's resolver over the owner's pool. `/v1/models` stays caller-independent.
+  F3 boots on the bundled catalog below; F4 swaps in the resolver.
   - **No bare ids.** `indexModelsByRequestId` would add a bare-id fallback:
     `if (!modelById.has(model.id)) modelById.set(model.id, model);`. Over all
     providers, that routes a shared bare id to whichever provider comes
@@ -192,12 +192,12 @@ to the store.
   - one export from `auth-gateway-cli.ts`;
   - option types and call sites in `dispatch.ts` and `server.ts`, for F2's
     `routeScope` narrowing;
-  - only if OQ1 picks B: the caller-aware `resolveModel` in `dispatch.ts`,
-    `server.ts` and the seven `routes/` handlers (embeddings, images,
-    rerank, speech, systemone, transcriptions, video). Each
-    `bootOpts.resolveModel(...)` call receives the admitted caller and awaits
-    the result. This is an injection-point change, not routing core. A
-    caller-aware `listModels` (B2) also needs a stable-name amendment first.
+  - the caller-aware `resolveModel` (OQ1-B1) in `dispatch.ts`, `server.ts`
+    and the seven `routes/` handlers (embeddings, images, rerank, speech,
+    systemone, transcriptions, video). Each `bootOpts.resolveModel(...)` call
+    receives the admitted caller and awaits the result. This is an
+    injection-point change, not routing core. `listModels` stays
+    caller-independent.
 
   No routing-core change, and no change to `auth-storage.ts` or
   `packages/ai/src/auth/`.
@@ -457,6 +457,8 @@ T5, so this test is not end-to-end proof.
 - [ ] F1 — compass-gateway: `wire.ts` transport, verifier, door probe (#150).
 - [ ] F2 — compass-gateway: owner pool and its required tests.
 - [ ] F3 — compass-gateway: compass `runGatewayBoot`, `readTokenFile`.
+- [ ] F4 — compass-gateway: boot `resolveModel` from the stable-name
+      resolver (OQ1-B1), after F3 and stable-name P1.
 - [ ] I1 — compass-gateway: pin bump, image env, broker-free smoke.
 - [ ] P1 — compass-server: pin `DefaultGatewayImage`.
 - [ ] Ledger: claim these with `bun tools/dl-claim` when this PR is ready;
@@ -468,9 +470,20 @@ T5, so this test is not end-to-end proof.
   - DL (server): the bundled gateway reaches the Server at
     `host.containers.internal` through `pasta:--map-host-loopback`, and the
     stack anchor carries that DNS SAN (OQ7).
-  - DL (server): the boot's catalog per the OQ1 ruling. Claim after OQ1.
+  - DL (server): the boot resolves models per owner through the stable-name
+    resolver; `/v1/models` stays caller-independent (OQ1-B1).
 
 ## Resolved decisions
+
+**OQ1: B1, a per-owner resolver with `/v1/models` unchanged (Matt,
+2026-10-15).** The boot resolves each request through stable-name P1's
+resolver over the owner's pool. When no candidate is usable, the resolver
+returns the first known one, so the owner gets the dispatch 401 rather than a
+404. No stable-name amendment. Rejected: A (bundled catalog only); B2
+(caller-aware listing, which amends the stable-name listing contract; a
+later follow-up if managed tenants need a per-user list); C (union of live
+pools: leaks between owners); D (day-1 set: against RD-6); E (a second
+registry reader that duplicates P1).
 
 **OQ2: drop the inbound shared bearer (Matt, 2026-10-12).** This reverses
 the T1 contract agreed in the RIG-2862 comment of 2026-09-29, under which
@@ -516,36 +529,6 @@ Host floor evidence. A holds, with a floor:
   the option.
 
 ## Open Questions
-
-**OQ1 (load-bearing): the catalog under per-owner pools.**
-
-- **A (recommended):** every bundled provider by `provider/id`, with a
-  dispatch 401 when a credential is missing.
-- **B:** a per-owner `ModelRegistry`, built in the owner pool, behind the
-  `resolveModel` widening that the stable-name record already ratified
-  (Global Constraints, "Fork changes are seam-shaped"):
-  `(modelId, identity) => Promise<Model<Api> | undefined>`. That record keeps
-  `listModels?: () => Iterable<Model<Api>>` caller-independent and lists the
-  stable-name vocabulary on it. Two variants:
-  - **B1 (recommended if B):** the resolver only, pulled forward from
-    stable-name P1, with the listing unchanged. No amendment is needed.
-    Cost: the seam change in `dispatch.ts`, `server.ts` and seven route
-    handlers (Global Constraints), plus one caller-specific non-chat route
-    test (embeddings). Dispatch is per owner, but `/v1/models` is not: a
-    listed model the owner holds no credential for gets a 404 from the
-    resolver.
-  - **B2:** B1 plus a caller-aware listing. This adds a second seam and
-    changes the `/v1/models` contract that stable-name discovery relies on,
-    so it needs a stable-name amendment.
-- **C:** a union of live pools. It leaks between owners and is
-  nondeterministic.
-- **D:** A, limited to the parent's day-1 set. This makes a new provider a
-  code change, against RD-6 ("Additional providers are configuration, not
-  code").
-- **E:** read `GetGatewayModelRegistry` now. This duplicates stable-name P1:
-  a sync resolver would need a boot fetch, a poll and a model mapping.
-
-Decision needed: B (Matt leaning) or A; if B, then B1 or B2.
 
 **OQ3 (deferred): verify cache.** Revisit after dev measures the load.
 
