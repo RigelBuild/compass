@@ -53,7 +53,7 @@ func buildAgentRepositoryDoors(t *testing.T) (context.Context, *serveDoors, stri
 	}
 	bus := events.NewBus[busPayload]()
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
-	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
+	commsSvc := comms.NewComms(t.Context(), st, commsBus, nil, admin.ID)
 	brd := board.NewProjection(bus)
 	issueBrd := board.NewIssueProjection(bus, st)
 	tail := newSessionTail()

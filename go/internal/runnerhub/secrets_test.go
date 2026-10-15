@@ -413,7 +413,7 @@ func TestSignalSecretsVersionForDurableBinding(t *testing.T) {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersionFor(t.Context(), "acct-durable"); err != nil {
@@ -441,7 +441,7 @@ func TestSignalSecretsVersionForRefusesSystemRoleReadThrough(t *testing.T) {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
 	rec := newRecordingSend()
-	router.attach(rec.send)
+	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersionFor(store.WithSystemRole(t.Context()), "acct-durable"); err != nil {
