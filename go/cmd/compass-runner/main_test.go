@@ -113,6 +113,8 @@ func TestParseMount(t *testing.T) {
 		{"bad mode", "host:container:rw"},
 		{"four fields", "host:container:ro:extra"},
 		{"comma in path", "/ho,st:/container"},
+		{"over /run", "/host:/run"},
+		{"over /run with trailing slash", "/host:/run/:ro"},
 	}
 	for _, tc := range errCases {
 		t.Run(tc.name, func(t *testing.T) {

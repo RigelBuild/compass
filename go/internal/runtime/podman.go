@@ -487,7 +487,7 @@ func (p *PodmanCLI) ListByOwner(ctx context.Context, prefix, runnerID string) ([
 // execStreamingArgs.
 func createArgs(spec WorkloadSpec) []string {
 	// Preallocate for fixed tokens plus every repeated key/value option.
-	args := make([]string, 0, 4+2*(len(spec.Labels)+len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env))+1+len(spec.Command))
+	args := make([]string, 0, 5+2*(len(spec.Labels)+len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env))+1+len(spec.Command))
 	args = append(args,
 		"create",
 		"--name", spec.Name,
@@ -496,6 +496,10 @@ func createArgs(spec WorkloadSpec) []string {
 		// on the host (compass-runner-arbitrary-uid design). gid collapses to
 		// uid: the image bakes gid==uid==1000.
 		fmt.Sprintf("--userns=keep-id:uid=%d,gid=%d", spec.UID, spec.UID),
+		// PID 1 is `sleep infinity`, which ignores SIGTERM, so every stop sat out
+		// the full grace before SIGKILL. An init forwards the signal and reaps
+		// orphans of exec'd agent work.
+		"--init",
 	)
 	for _, cap := range spec.CapAdd {
 		args = append(args, "--cap-add", cap)

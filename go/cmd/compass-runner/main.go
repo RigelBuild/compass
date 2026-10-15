@@ -664,6 +664,12 @@ func parseMount(s string) (runtime.Mount, error) {
 			"invalid --mount %q: ',' is not allowed in a path (podman reads it as a "+
 				"-v option separator), want host:container[:ro]", s)
 	}
+	// Agent containers run under podman --init, whose binary lives at
+	// /run/podman-init; a mount over /run hides it and the container cannot start.
+	if filepath.Clean(container) == "/run" {
+		return runtime.Mount{}, fmt.Errorf(
+			"invalid --mount %q: container path /run is reserved (it hides the container init), want host:container[:ro]", s)
+	}
 	readOnly := false
 	if len(fields) == 3 {
 		mode := strings.TrimSpace(fields[2])
