@@ -1,38 +1,5 @@
 {
   "nodes": {
-    "cachix": {
-      "inputs": {
-        "devenv": [
-          "devenv"
-        ],
-        "flake-compat": [
-          "devenv",
-          "flake-compat"
-        ],
-        "git-hooks": [
-          "devenv",
-          "git-hooks"
-        ],
-        "nixpkgs": [
-          "devenv",
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1788181969,
-        "narHash": "sha256-OUB6hPlFBB9FRdZgZXSye4lDOg+fbrqKe8ePv2IM7NY=",
-        "owner": "cachix",
-        "repo": "cachix",
-        "rev": "98093e8eea6c1635ef1337a576fa76f3e8bd4f39",
-        "type": "github"
-      },
-      "original": {
-        "owner": "cachix",
-        "ref": "latest",
-        "repo": "cachix",
-        "type": "github"
-      }
-    },
     "crate2nix": {
       "flake": false,
       "locked": {
@@ -52,7 +19,6 @@
     },
     "devenv": {
       "inputs": {
-        "cachix": "cachix",
         "crate2nix": "crate2nix",
         "flake-compat": "flake-compat",
         "flake-parts": "flake-parts",
@@ -66,18 +32,18 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1791752884,
-        "narHash": "sha256-bE93D6OGrcrQJsdTSdTunI0hEGVEWS4b8FJ+uUc+vwM=",
+        "lastModified": 1791831617,
+        "narHash": "sha256-2/W1Nwm5MQ4vvzef9Ecghqk7ETAh+okGQz4DRSPqJfg=",
         "owner": "RigelBuild",
         "repo": "devenv",
-        "rev": "cc3aaad845cf2d37631225e006ef8a8e2555ccd1",
+        "rev": "4b04197be2c313d724181460096cbb9cd27f5f3f",
         "type": "github"
       },
       "original": {
         "owner": "RigelBuild",
+        "ref": "rigel-release",
         "repo": "devenv",
-        "type": "github",
-        "ref": "rigel-release"
+        "type": "github"
       }
     },
     "flake-compat": {
