@@ -237,8 +237,10 @@ a state pulse.
 
 **Focus and keyboard.** The board is the main-view focus zone and a
 two-dimensional roving-tabindex grid: arrow keys move a card cursor across lanes
-and columns, `Enter` selects the card, `Shift+Enter` opens the assigned agent's
-workspace. `Ctrl+B` opens the Bridge view.
+and columns, `Enter` selects the card, and `Shift+Enter` opens the assigned
+agent's workspace. `Ctrl+B` opens the Bridge view. `R` / `Shift+R` focus the
+first / last linked title ref on the focused card; `Escape` returns to the
+card.
 
 **Empty states.** An empty lane (a Manager with no cards in a column) renders as
 an empty cell, not a placeholder card. A board with no issues at all renders a

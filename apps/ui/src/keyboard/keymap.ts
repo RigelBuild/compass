@@ -224,6 +224,8 @@ export const DEFAULT_KEYMAP: readonly KeymapEntry[] = [
 	// card's assigned agent. The board's `Space` cross-link rides the earlier Lists-block
 	// `Space` row (first group-relative match wins); `board.openCardCrossLink` needs no row.
 	{ chord: "Shift+Enter", commandId: cmd("board.openAssignedAgent") },
+	{ chord: "R", commandId: cmd("board.focusCardRef") },
+	{ chord: "Shift+R", commandId: cmd("board.focusCardRefPrev") },
 
 	// Workspace (D5:452-453): Ctrl+Alt+Arrow moves focus between the channel
 	// and trace panes.
