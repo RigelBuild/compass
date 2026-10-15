@@ -656,7 +656,8 @@ jobs:
       needs.setup.outputs.pgtest_affected == 'true')
     # Passing runs take 18-19.5m (the -race suite alone is ~17m); at 20, a run
     # whose packages had all passed was cancelled during the sqlc-vet bootstrap.
-    timeout-minutes: 30
+    # 40 leaves room for the 25m go test bound below plus the bootstrap.
+    timeout-minutes: 40
     env:
       # The Real-Postgres suites bind AF_UNIX sockets under t.TempDir(); the
       # runner's default TMPDIR overflows sun_path's 108-byte cap. Same reason as
@@ -804,9 +805,10 @@ jobs:
         # which would otherwise abort before the log is ever printed. The
         # explicit -timeout exceeds the job's slowest suite: on the default 10m a
         # wedged test panics mid-run and the panic, not the failure, is the story.
+        # internal/store alone runs 11-15m on shared runners, so 15m was too tight.
         run: |
           rc=0
-          go test -tags pgtest -race -v -timeout 15m ./... >/tmp/pgtest.log 2>&1 || rc=$?
+          go test -tags pgtest -race -v -timeout 25m ./... >/tmp/pgtest.log 2>&1 || rc=$?
           cat /tmp/pgtest.log
           exit "$rc"
 
