@@ -9,53 +9,37 @@
 > which left `e2e` ungated. `main` pushes and the nightly schedule still run
 > everything, on GitHub-hosted runners. Ledger-impact: none (CI mechanics).
 
+## Resolved decisions
+
+Matt ruled on 2026-10-15 (RIG-5369).
+
+1. **Go analysis battery on the bun and nix legs: (a) scope parity per leg.**
+   Those legs set `TOOLCHAIN_PARITY_SCOPE=core`, so `toolchain-parity:parity`
+   skips the `goAnalysis` half and prints it as out of scope. Unset (local, the
+   go leg), parity checks everything. This is the one named exception to
+   "unverifiable is a failure" in `parity.ts`. It saves about 130 s on two legs
+   that run on 59–60 of 60 PRs. A pushed nix cache comes later, on AKS, in its
+   own record. Rejected: a nix store in the Actions cache (the repo cache is
+   over its 10 GB limit), and leaving it.
+2. **Post-merge backstop: (a) route red full sweeps (T7), landed before T4.**
+   One job opens or updates a single `ci-backstop` issue naming the run and its
+   failed jobs; a green full sweep closes it. Only that job gets
+   `issues: write`. Rejected: running every main push to completion (about 118
+   runner-minutes each), a full sweep on queue runs (against RIG-5288's goal),
+   and accepting silent misses.
+
 ## Open Questions
 
-Round 1, all independent. Q1 and Q2 are load-bearing.
+All deferred and non-load-bearing; T1 data decides each.
 
-1. **How to stop building the Go analysis battery on legs that never run it
-   (load-bearing for T6).** `moon (bun)` and `moon (nix)` each spend
-   129–132 s in "Put the Go analysis battery on PATH" and run none of it.
-   Dropping the step fails the bun leg's `toolchain-parity:parity`, which
-   reports a missing tool as `unverifiable` (`verifyStorePath` in
-   `tools/toolchain/parity-core.ts`).
-   - (a) **Scope parity per leg.** A workflow-set
-     `TOOLCHAIN_PARITY_SCOPE=core` skips the `goAnalysis` half and prints it
-     as out of scope; unset (local, go leg), parity checks everything. Saves
-     about 130 s on two legs that run on 59–60 of 60 PRs. Cost: the
-     `parity.ts` rule "unverifiable is a failure, never a skip" gains one
-     named exception.
-   - (b) **A pushed nix binary cache** written by main pushes. Removes the
-     battery build and most of the 42–77 s `langs` build everywhere, parity
-     unchanged. Cost: a write credential, one more trusted key, a bucket or
-     paid Cachix org; its own infra record.
-   - (c) A nix store in the Actions cache needs only `GITHUB_TOKEN`, but
-     the repo's cache already holds 10.7 GB against its 10 GB limit.
-   - (d) Leave it.
-   - **Recommendation:** (a) now; (b) in its own record if T1 shows `langs`
-     still matters after T2–T5.
-2. **What catches a miss after merge (load-bearing for T4).** Gating `e2e`
-   puts the only full-stack tier on the post-merge backstop, and nothing
-   routes a backstop failure to anyone (§3).
-   - (a) **Route red full sweeps (T7).** One job opens or updates a single
-     `ci-backstop` issue naming the run and its failed jobs; a green full
-     sweep closes it. Cost: `issues: write` on that one job.
-   - (b) (a), plus `cancel-in-progress` only for `pull_request`, so each
-     main push finishes (GitHub keeps only the newest pending run). Cost: up
-     to one full sweep, about 118 runner-minutes, always running on `main`.
-   - (c) Full sweep on queue runs (`trunk-merge/**`): no miss merges, but
-     queue runs return to 1300–2000 s, against RIG-5288's goal.
-   - (d) Accept it: a miss shows only as one more red schedule run.
-   - **Recommendation:** (a), landed before T4. Add (b) if T1 shows misses
-     staying open over a day.
-3. **pgtest sharding (deferred).** After T3 and T5 pgtest is the long pole
+1. **pgtest sharding (deferred).** After T3 and T5 pgtest is the long pole
    on no PR class (§5). Shard (`internal/store`, `server`, the rest) only if
    T1 shows pgtest p50 above `e2e` p50 on Go PRs.
-4. **Splitting `e2e` by package (deferred).** `go/e2e` (771 s) and
+2. **Splitting `e2e` by package (deferred).** `go/e2e` (771 s) and
    `go/cmd/compass-stack` (138 s) run serially under `-p 1`. Two jobs save
    about 140 s per Go PR for one more privileged job (about 300 s of
    setup). Decide on T1 data after T4.
-5. **`flake-gate` on nearly every PR (deferred).** `flake-gate:ci` ran on
+3. **`flake-gate` on nearly every PR (deferred).** `flake-gate:ci` ran on
    58 of 60 PRs because it `dependsOn` `root`, holding `moon (nix)` at about
    565 s, the non-Go long pole after T4. Narrowing it changes what the flake
    gate guards: its own record.
@@ -176,7 +160,7 @@ with. A coverage test (T4) samples one file per owner-task input, so a new
 input cannot silently narrow a suite. Prompt and doc edits now widen pgtest
 too (0 of 60 sampled PRs touched `config/` or `docs/model-registry/`).
 
-**The backstop is weak (Q2).** Of 164 `push` runs in the last 1000, 148
+**The backstop is weak (decision 2).** Of 164 `push` runs in the last 1000, 148
 were cancelled by the next merge (`cancel-in-progress: true` on group
 `ci-${{ github.ref }}-${{ github.event_name }}`). The nightly `schedule`
 run, the one full sweep that finishes, was red on 5 of its last 15
@@ -464,9 +448,7 @@ Test cycle: the generator emits all 12 and 4 roots on push; in CI a
 `server`-only PR's pgtest log shows only `server`, and the assertion step
 reports 1 package.
 
-### T6 — Go analysis battery only where it runs (after Q1)
-
-Assumes Q1 = (a); otherwise a binary-cache record replaces it.
+### T6 — Go analysis battery only where it runs (decision 1)
 
 - **`ci.yml` job `moon`:** "Put the Go analysis battery on PATH" gains
   `matrix.group == 'go'`, and the job sets `TOOLCHAIN_PARITY_SCOPE: core`
@@ -482,7 +464,7 @@ Interfaces: env `TOOLCHAIN_PARITY_SCOPE` is unset or `core`;
 Test cycle: a `parity-core` test on the scope parse. In CI, `moon (bun)` and
 `moon (nix)` drop by about 130 s and the go leg is unchanged.
 
-### T7 — route a red full sweep to an issue (Q2 (a), before T4)
+### T7 — route a red full sweep to an issue (decision 2, before T4)
 
 - **`ci.yml`** adds job `backstop`: `needs: rollup`, `if: ${{ !cancelled()
   && contains(fromJSON('["push","schedule"]'), github.event_name) }}`, job
@@ -528,8 +510,8 @@ and `--dry-run` against the live repo prints the action.
 - [ ] T3 — pgtest: durability off on the service Postgres, asserted with
   `SHOW fsync`.
 - [ ] T7 — a red push or schedule sweep opens or updates the `ci-backstop`
-  issue; a green one closes it (Q2, before T4).
+  issue; a green one closes it (decision 2, before T4).
 - [ ] T4 — Go-graph selection, moon-derived widening, the `e2e` gate and
-  `require_gated e2e` (after Q2).
+  `require_gated e2e` (after T7).
 - [ ] T5 — pgtest and microvm run only the selected roots.
-- [ ] T6 — the Go analysis battery on the go leg only (blocked on Q1).
+- [ ] T6 — the Go analysis battery on the go leg only (decision 1).
