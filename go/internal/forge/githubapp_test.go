@@ -37,6 +37,9 @@ type mintServer struct {
 	hits         atomic.Int64
 	lastJWT      string
 	lastBody     []byte
+	lastMethod   string
+	lastPath     string
+	lastAuth     string
 	token        string
 	status       int
 	nowFn        func() time.Time
@@ -50,6 +53,9 @@ func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServ
 	m := &mintServer{token: token, status: http.StatusCreated, nowFn: nowFn, lifetime: time.Hour}
 	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.hits.Add(1)
+		m.lastMethod = r.Method
+		m.lastPath = r.URL.Path
+		m.lastAuth = r.Header.Get("Authorization")
 		m.lastJWT = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -278,6 +284,46 @@ func TestScopedAppMinterRateLimitError(t *testing.T) {
 			statusErr, ok := errors.AsType[*StatusError](err)
 			if !ok || statusErr.Status != tt.status {
 				t.Fatalf("Mint error = %v, want status error %d", err, tt.status)
+			}
+		})
+	}
+}
+
+func TestScopedAppMinterRevoke(t *testing.T) {
+	key := testAppKey(t)
+	for _, tt := range []struct {
+		name   string
+		status int
+		wantOK bool
+	}{
+		{name: "no content success", status: http.StatusNoContent, wantOK: true},
+		{name: "already revoked", status: http.StatusUnauthorized, wantOK: true},
+		{name: "other response fails", status: http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+			m := newMintServer(t, "unused", func() time.Time { return now })
+			m.status = tt.status
+			minter := newScopedAppMinter(t, m, GitHubAppConfig{
+				AppID: 1, InstallationID: 2,
+				PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+				Clock:      func() time.Time { return now },
+			})
+			err := minter.Revoke(context.Background(), "ghs_old")
+			if tt.wantOK && err != nil {
+				t.Fatalf("Revoke: %v, want success", err)
+			}
+			if !tt.wantOK {
+				statusErr, ok := errors.AsType[*StatusError](err)
+				if !ok || statusErr.Status != tt.status {
+					t.Fatalf("Revoke error = %v, want status error %d", err, tt.status)
+				}
+			}
+			if m.lastMethod != http.MethodDelete || m.lastPath != "/installation/token" {
+				t.Errorf("request = %s %s, want DELETE /installation/token", m.lastMethod, m.lastPath)
+			}
+			if m.lastAuth != "Bearer ghs_old" {
+				t.Errorf("authorization = %q, want old token bearer", m.lastAuth)
 			}
 		})
 	}

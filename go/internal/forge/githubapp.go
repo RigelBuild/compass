@@ -103,7 +103,7 @@ func newAppTokenSource(cfg GitHubAppConfig) (*appTokenSource, error) {
 	return s, nil
 }
 
-// ScopedAppMinter mints uncached installation tokens with caller-selected scope.
+// ScopedAppMinter mints and revokes uncached installation tokens.
 type ScopedAppMinter struct {
 	source *appTokenSource
 }
@@ -139,6 +139,26 @@ func (m *ScopedAppMinter) Mint(ctx context.Context, repos []string, perms map[st
 		Token: out.Token, ExpiresAt: effectiveTokenExpiry(out.ExpiresAt, m.source.clock()),
 		Repositories: repositories,
 	}, nil
+}
+
+// Revoke invalidates an installation token with the authenticated installation.
+func (m *ScopedAppMinter) Revoke(ctx context.Context, token string) error {
+	url := m.source.apiBase + "/installation/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("forge: build revoke request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := m.source.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("forge: revoke installation token: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }() // response body is not used; close after status inspection
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusUnauthorized {
+		return nil
+	}
+	return fmt.Errorf("forge: revoke installation token: %w", &StatusError{Status: resp.StatusCode})
 }
 
 // appAPIBase derives the REST API base URL from the configured host, mirroring

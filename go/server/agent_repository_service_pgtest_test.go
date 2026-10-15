@@ -46,6 +46,7 @@ type agentRepositoryFixture struct {
 	agentToken string
 	otherToken string
 	signaler   *recordingAgentRepoSignaler
+	broker     *gitCredentialBroker
 }
 
 func newAgentRepositoryFixture(t *testing.T) agentRepositoryFixture {
@@ -87,14 +88,18 @@ func newAgentRepositoryFixture(t *testing.T) agentRepositoryFixture {
 		return token
 	}
 	signaler := &recordingAgentRepoSignaler{}
-	svc := newAgentRepositoryService(st, &gitCredentialBroker{host: "github.com"}, signaler)
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_replacement"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(st, minter, &now, nil)
+	broker.host = "github.com"
+	svc := newAgentRepositoryService(st, broker, signaler)
 	url := newAgentRepositoryH2CServer(t, svc, st, admin.ID)
 	client := compassv1connect.NewAgentRepositoryServiceClient(newAgentRepositoryH2CClient(t), url)
 	return agentRepositoryFixture{
 		client: client, store: st, dsn: dsn, admin: admin.ID, owner: owner.ID,
 		outsider: outsider.ID, agent: agent.ID,
 		adminToken: issue(admin.ID), ownerToken: issue(owner.ID),
-		agentToken: issue(agent.ID), otherToken: issue(outsider.ID), signaler: signaler,
+		agentToken: issue(agent.ID), otherToken: issue(outsider.ID), signaler: signaler, broker: broker,
 	}
 }
 
@@ -409,6 +414,40 @@ func TestAgentRepositoryServiceRevokeSignalsOnlyOnChange(t *testing.T) {
 	}
 	if len(f.signaler.accounts) != before+1 {
 		t.Fatalf("repeat revoke emitted signal: %v", f.signaler.accounts)
+	}
+}
+
+func TestAgentRepositoryServiceRevokeTriggersCredentialBroker(t *testing.T) {
+	f := newAgentRepositoryFixture(t)
+	ctx := context.Background()
+	if _, err := f.store.GrantAgentForgeScope(ctx, store.ForgeScope{
+		AccountID: f.agent, Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/workstream",
+	}); err != nil {
+		t.Fatalf("GrantAgentForgeScope: %v", err)
+	}
+	if token, ok := f.broker.credential(ctx, f.agent); !ok || token != "ghs_old" {
+		t.Fatalf("initial broker credential = (%q, %v), want old token", token, ok)
+	}
+	if _, err := revokeAgentRepository(f.client, ctx, f.ownerToken, "worker", "owner/workstream"); err != nil {
+		t.Fatalf("RevokeAgentRepository: %v", err)
+	}
+	if got := f.broker.lastCredential(f.agent); got != "owner/base" {
+		t.Fatalf("broker last key = %q, want owner/base after revoke", got)
+	}
+	f.broker.mu.Lock()
+	minter := f.broker.minter.(*fakeGitCredentialMinter)
+	f.broker.mu.Unlock()
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	clock := f.broker.clock
+	f.broker.clock = func() time.Time { return clock().Add(gitCredentialRevokeGrace) }
+	f.broker.refreshDue(ctx)
+	minter.mu.Lock()
+	revoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if len(revoked) != 1 || revoked[0] != "ghs_old" {
+		t.Fatalf("revoked tokens = %v, want old token after delivery grace", revoked)
 	}
 }
 

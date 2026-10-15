@@ -25,11 +25,12 @@ type agentSecretsSignaler interface {
 type agentRepositoryService struct {
 	store  *store.Store
 	host   string
+	broker *gitCredentialBroker
 	signal agentSecretsSignaler
 }
 
 func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, signal agentSecretsSignaler) *agentRepositoryService {
-	svc := &agentRepositoryService{store: st, signal: signal}
+	svc := &agentRepositoryService{store: st, broker: broker, signal: signal}
 	if broker != nil {
 		svc.host = broker.host
 	}
@@ -132,6 +133,9 @@ func (s *agentRepositoryService) GrantAgentRepository(
 		return nil, s.mapStoreError("granting agent repository", err)
 	}
 	if added {
+		if s.broker != nil {
+			s.broker.grantsChanged(ctx, agent.ID)
+		}
 		s.signalSecretsVersion(ctx, agent.ID)
 	}
 	return connect.NewResponse(&compassv1.GrantAgentRepositoryResponse{Added: added}), nil
@@ -166,6 +170,9 @@ func (s *agentRepositoryService) RevokeAgentRepository(
 		return nil, s.mapStoreError("revoking agent repository", err)
 	}
 	if removed {
+		if s.broker != nil {
+			s.broker.grantsChanged(ctx, agent.ID)
+		}
 		s.signalSecretsVersion(ctx, agent.ID)
 	}
 	return connect.NewResponse(&compassv1.RevokeAgentRepositoryResponse{Removed: removed}), nil
