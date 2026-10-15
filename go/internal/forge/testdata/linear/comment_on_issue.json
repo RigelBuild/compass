@@ -31,7 +31,7 @@
 			},
 			{
 				"status": 200,
-				"body": { "data": { "viewer": { "app": true } } }
+				"body": { "data": { "viewer": { "id": "app-user-uuid", "app": true } } }
 			}
 		],
 		"status": 200,

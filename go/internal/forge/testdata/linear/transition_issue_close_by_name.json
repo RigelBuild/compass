@@ -15,7 +15,7 @@
 			"Accept": "application/json"
 		},
 		"body": {
-			"query": "mutation CompassIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {\n  issueUpdate(id: $id, input: $input) {\n    issue { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  id\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
+			"query": "mutation CompassIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {\n  issueUpdate(id: $id, input: $input) {\n    issue { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  id\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n  delegate { id displayName }\n  assignee { id displayName }\n}",
 			"variables": {
 				"id": "issue-uuid-1",
 				"input": { "stateId": "state-canceled" }
@@ -65,6 +65,8 @@
 						"state": { "name": "Canceled", "type": "canceled" },
 						"labels": { "nodes": [] },
 						"creator": null,
+						"delegate": null,
+						"assignee": null,
 						"updatedAt": "2026-08-01T12:33:00Z"
 					}
 				}

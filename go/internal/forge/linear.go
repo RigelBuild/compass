@@ -153,10 +153,11 @@ type Linear struct {
 	identityMu   sync.Mutex
 	appLogin     string
 	identityDone chan struct{}
-	// probeDone/actorCapable cache the one-time actor-capability probe (A4).
-	// Once probeDone, actorCapable governs whether writes set createAsUser.
+	// probeDone/actorCapable/appID cache the one-time actor probe result.
+	// appID is usable for delegation only when actorCapable is true.
 	probeDone    bool
 	actorCapable bool
+	appID        string
 
 	// now is the clock seam (defaults to time.Now); tests override it to drive
 	// the reset-time gate deterministically.
@@ -296,6 +297,15 @@ func (l *Linear) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 	}
 	input := map[string]any{"teamId": teamID, "title": in.Title, "description": in.Body}
 	l.applyAttribution(ctx, input)
+	if in.Assignee != "" {
+		input["assigneeId"] = in.Assignee
+	}
+	// appUserID fails on a probe error or a non-app actor; the create still runs without a delegate.
+	if in.DelegateSelf {
+		if appID, ok := l.appUserID(); ok {
+			input["delegateId"] = appID
+		}
+	}
 
 	const query = `mutation CompassIssueCreate($input: IssueCreateInput!) {
   issueCreate(input: $input) {
@@ -1109,8 +1119,9 @@ func (l *Linear) issueUpdateState(ctx context.Context, issueID, stateID string) 
 
 // actorAttribution reports whether writes may set createAsUser, running the
 // capability probe on first call and caching an AUTHORITATIVE result. The probe
-// queries `viewer { app }`: an actor=app OAuth token authenticates AS the app,
-// so viewer.app is true; a plain user/API-key token reports false. The probe is
+// queries `viewer { id app }`: an actor=app OAuth token authenticates AS the app,
+// so viewer.app is true and viewer.id is the app user that self-delegation needs;
+// a plain user/API-key token reports false. The probe is
 // meant to reflect the token's NATURE, not a transient runtime state — so a
 // probe that ERRORS (network blip, HTTP 5xx, or an already-armed rate gate)
 // degrades THIS write to stamp-only WITHOUT caching, letting a later write
@@ -1126,11 +1137,12 @@ func (l *Linear) actorAttribution(ctx context.Context) bool {
 	l.mu.Unlock()
 
 	const query = `query CompassActorProbe {
-  viewer { app }
+  viewer { id app }
 }`
 	var out struct {
 		Viewer struct {
-			App bool `json:"app"`
+			ID  string `json:"id"`
+			App bool   `json:"app"`
 		} `json:"viewer"`
 	}
 	probeErr := l.doGraphQL(ctx, query, nil, &out)
@@ -1150,10 +1162,19 @@ func (l *Linear) actorAttribution(ctx context.Context) bool {
 	// Authoritative answer: cache it. A definitive not-capable also degrades.
 	l.probeDone = true
 	l.actorCapable = out.Viewer.App
+	l.appID = out.Viewer.ID
 	if !l.actorCapable {
 		l.log.WarnContext(ctx, "linear: actor attribution unavailable; degrading to stamp-only")
 	}
 	return l.actorCapable
+}
+
+// appUserID returns the app-user id cached by a clean app-actor probe. It never
+// probes: CreateIssue's applyAttribution already ran this write's one probe.
+func (l *Linear) appUserID() (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.appID, l.probeDone && l.actorCapable && l.appID != ""
 }
 
 // applyAttribution sets createAsUser/displayIconUrl on a mutation input when the
@@ -1244,6 +1265,8 @@ fragment CompassIssueFields on Issue {
   labels { nodes { name } }
   creator { displayName }
   updatedAt
+  delegate { id displayName }
+  assignee { id displayName }
 }`
 
 // linearIssue is the wire shape of a Linear issue (only the forge.Issue fields

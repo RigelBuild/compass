@@ -64,9 +64,9 @@ func (h *capturingHandler) count(msg string) int {
 	return n
 }
 
-// probeResp is a scripted `viewer { app }` response with the given capability.
+// probeResp is a scripted viewer { id app } response with a fixed app user id.
 func probeResp(app bool) scriptedResponse {
-	return scriptedResponse{status: 200, body: `{"data":{"viewer":{"app":` + strconv.FormatBool(app) + `}}}`}
+	return scriptedResponse{status: 200, body: `{"data":{"viewer":{"id":"app-user-uuid","app":` + strconv.FormatBool(app) + `}}}`}
 }
 
 // teamResp is a scripted team-key->id lookup response (the id is fixed; tests
@@ -74,6 +74,124 @@ func probeResp(app bool) scriptedResponse {
 var teamResp = scriptedResponse{status: 200, body: `{"data":{"teams":{"nodes":[{"id":"team-uuid-1"}]}}}`}
 
 const degradeMsg = "linear: actor attribution unavailable; degrading to stamp-only"
+
+func TestLinearCreateIssueDelegateProbeDegrades(t *testing.T) {
+	log := &capturingHandler{}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		{status: 503, body: `{"errors":[{"message":"unavailable"}]}`},
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(log))
+	if _, err := l.CreateIssue(context.Background(), "TEAM", CreateIssue{Title: "x", DelegateSelf: true}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	probeQuery, _ := decodeGraphQLReq(t, readReqBody(t, rt.requests[1]))
+	if !strings.Contains(probeQuery, "viewer { id app }") {
+		t.Errorf("actor probe query = %q, want viewer id and app", probeQuery)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	input := vars["input"].(map[string]any)
+	if _, ok := input["delegateId"]; ok {
+		t.Errorf("delegateId set after failed probe: %#v", input["delegateId"])
+	}
+	if !log.has(degradeMsg) {
+		t.Errorf("missing probe-degrade warning %q", degradeMsg)
+	}
+}
+
+// One write sends one probe; after a transient probe error the next write re-probes and delegates.
+func TestLinearCreateIssueDelegateReprobesAfterTransientError(t *testing.T) {
+	created := scriptedResponse{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		{status: 503, body: `{"errors":[{"message":"unavailable"}]}`},
+		created,
+		probeResp(true),
+		created,
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	for range 2 {
+		if _, err := l.CreateIssue(context.Background(), "TEAM", CreateIssue{Title: "x", DelegateSelf: true}); err != nil {
+			t.Fatalf("CreateIssue: %v", err)
+		}
+	}
+	_, first := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	if d := first["input"].(map[string]any)["delegateId"]; d != nil {
+		t.Errorf("first create delegateId = %v, want unset after the probe error", d)
+	}
+	_, second := decodeGraphQLReq(t, readReqBody(t, rt.requests[4]))
+	if d := second["input"].(map[string]any)["delegateId"]; d != "app-user-uuid" {
+		t.Errorf("second create delegateId = %v, want app-user-uuid", d)
+	}
+}
+
+func TestLinearCreateIssueDelegateAndAssignee(t *testing.T) {
+	const appID = "app-user-uuid"
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		{status: 200, body: `{"data":{"viewer":{"id":"` + appID + `","app":true}}}`},
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	if _, err := l.CreateIssue(context.Background(), "TEAM", CreateIssue{
+		Title: "x", DelegateSelf: true, Assignee: "human-user-uuid",
+	}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	probeQuery, _ := decodeGraphQLReq(t, readReqBody(t, rt.requests[1]))
+	if !strings.Contains(probeQuery, "viewer { id app }") {
+		t.Errorf("actor probe query = %q, want viewer id and app", probeQuery)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	input := vars["input"].(map[string]any)
+	if input["delegateId"] != appID {
+		t.Errorf("delegateId = %v, want %q", input["delegateId"], appID)
+	}
+	if input["assigneeId"] != "human-user-uuid" {
+		t.Errorf("assigneeId = %v, want human-user-uuid", input["assigneeId"])
+	}
+}
+
+func TestLinearCreateIssueNonAppDoesNotDelegate(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		{status: 200, body: `{"data":{"viewer":{"id":"human-user-uuid","app":false}}}`},
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	if _, err := l.CreateIssue(context.Background(), "TEAM", CreateIssue{Title: "x", DelegateSelf: true}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	probeQuery, _ := decodeGraphQLReq(t, readReqBody(t, rt.requests[1]))
+	if !strings.Contains(probeQuery, "viewer { id app }") {
+		t.Errorf("actor probe query = %q, want viewer id and app", probeQuery)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	if input := vars["input"].(map[string]any); input["delegateId"] != nil {
+		t.Errorf("non-app actor set delegateId: %#v", input["delegateId"])
+	}
+}
+
+func TestLinearCreateIssueDelegateSelfDisabled(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		{status: 200, body: `{"data":{"viewer":{"id":"app-user-uuid","app":true}}}`},
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	if _, err := l.CreateIssue(context.Background(), "TEAM", CreateIssue{Title: "x"}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	probeQuery, _ := decodeGraphQLReq(t, readReqBody(t, rt.requests[1]))
+	if !strings.Contains(probeQuery, "viewer { id app }") {
+		t.Errorf("actor probe query = %q, want viewer id and app", probeQuery)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	if input := vars["input"].(map[string]any); input["delegateId"] != nil {
+		t.Errorf("DelegateSelf=false set delegateId: %#v", input["delegateId"])
+	}
+}
 
 // decodeGraphQLReq parses a recorded request body into its query + variables.
 func decodeGraphQLReq(t *testing.T, body string) (string, map[string]any) {
