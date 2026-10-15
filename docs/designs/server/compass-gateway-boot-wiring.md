@@ -253,9 +253,10 @@ to the store.
   names `--gateway-external`.
 - **Order.** Each line is linear:
   - compass: S0 → S1 → S2 → P1;
-  - fork: #146 → F1 → F2 → F3.
+  - fork: #146 → F1 → F2 → F3 → F4, where F4 also waits on stable-name P1.
 
-  I1 follows F3's merge to `rigel-release`. P1 also waits on I1 and RIG-5204.
+  I1 follows F4's merge to `rigel-release`, so the default image carries the
+  B1 resolver. P1 also waits on I1 and RIG-5204.
   No Pulumi state is involved.
 
 ## Plan
@@ -428,7 +429,7 @@ Tests:
 Lane: compass-gateway.
 
 - Bump `fork-pin.json` from `57f41121ff5e…` to the `rigel-release` commit
-  that holds F1–F3.
+  that holds F1–F4.
 - Drop the old `ENV` and its allowlist entry.
 - `smoke.ts` drops the broker. It runs a fake Server on the host's
   `127.0.0.1` over https, with a throwaway cert for `host.containers.internal`
