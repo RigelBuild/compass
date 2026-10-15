@@ -70,7 +70,7 @@ Repo facts and probes:
 8. **Publish treats the artifact as untrusted.** Before any write it checks:
    - `workflow_run.event` is `pull_request` and `workflow_run.pull_requests` names exactly one open PR from this repo whose head ref starts with `renovate/`;
    - the artifact's head SHA equals `workflow_run.head_sha` and the PR's current `head.sha`;
-   - the artifact is at most 1 MiB, every label is a known target label, every name and version matches `^[A-Za-z0-9._+-]{1,128}$`, and every error is a known code.
+   - the artifact is at most 1 MiB, every label is a known target label, every name and version matches `^[A-Za-z0-9._+?=-]{1,128}$` (the Nix store-name character set), and every error is a known code.
 
    It then renders the section with default-branch code, so the marker, heading and links are its own.
 9. **Body write.** The section starts with `<!-- Reviewable:start -->`, then `<!-- nix-package-diff head=<sha> -->`. Renovate's hash ignores everything after the marker, so Renovate never rewrites the section. When Renovate rewrites its own region, the tail is dropped and `edited` fires. Collect restores the data from cache.
