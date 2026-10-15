@@ -25,6 +25,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/RigelBuild/compass/go/internal/otel"
+	"github.com/RigelBuild/compass/go/internal/otel/otelsetup"
 	"github.com/RigelBuild/compass/go/internal/runner"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -429,16 +430,16 @@ func runMicroVMPreflight(ctx context.Context, pre microVMPreflighter, engine run
 // the global-provider install — the runner's outbound otelconnect interceptor is
 // mounted unconditionally and is inert against the no-op global.
 func setupOtel(ctx context.Context) (shutdown func(), err error) {
-	cfg := otel.Config{
+	cfg := otelsetup.Config{
 		ServiceName:    "compass-runner",
 		ServiceVersion: version,
 		Endpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	}
-	tracerShutdown, err := otel.SetupTracerProvider(ctx, cfg)
+	tracerShutdown, err := otelsetup.SetupTracerProvider(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("otel: tracer provider: %w", err)
 	}
-	meterShutdown, err := otel.SetupMeterProvider(ctx, cfg)
+	meterShutdown, err := otelsetup.SetupMeterProvider(ctx, cfg)
 	if err != nil {
 		_ = tracerShutdown(ctx) // roll back the tracer provider we just installed; nothing actionable on its error here
 		return nil, fmt.Errorf("otel: meter provider: %w", err)

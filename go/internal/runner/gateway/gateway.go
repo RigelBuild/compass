@@ -289,6 +289,11 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // container starts; the returned listener's Close tears the socket down at
 // container teardown.
 func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketListener, error) {
+	ic, err := newAgentGatewayInterceptor()
+	if err != nil {
+		return nil, fmt.Errorf("otel: connect interceptor: %w", err)
+	}
+
 	// The socket-lifetime context: it outlives any one agent request and is
 	// cancelled when the listener closes at container teardown. The shared upstream
 	// PublishEvents stream is opened against it, so a PostConversationFrame unary
@@ -304,7 +309,7 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 	g.SetControlRouter(control)
 	mux.Handle(compassv1internalconnect.NewAgentGatewayHandler(
 		g,
-		agentGatewayHandlerOptions()...,
+		agentGatewayHandlerOptions(ic)...,
 	))
 	l, err := listenAgentSocket(ctx, path, mux, socketCancel)
 	if err != nil {

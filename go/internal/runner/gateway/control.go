@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // Runner control producer. AgentGateway.Control is the Runner's one way to deliver
@@ -783,6 +784,7 @@ func (g *Gateway) Control(
 	_ *connect.Request[compassv1internal.ControlSubscribeRequest],
 	stream *connect.ServerStream[compassv1internal.AgentControl],
 ) error {
+	ctx = otelx.WithoutSpan(ctx)
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
 		return connect.NewError(connect.CodeFailedPrecondition, errNoSessionForContainer)

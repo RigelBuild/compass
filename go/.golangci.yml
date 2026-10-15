@@ -81,6 +81,16 @@ linters:
               desc: non-crypto RNG; use crypto/rand for security-sensitive randomness (test fixtures exempt below)
             - pkg: os/exec
               desc: direct subprocess exec must be a justified seam; annotate the site //nolint:depguard // <reason>
+        # The compass CLI links internal/otel; the SDK and exporters add ~8.5 MB to it.
+        otel-helpers:
+          files:
+            - '**/internal/otel/*.go'
+            - '!$test'
+          deny:
+            - pkg: go.opentelemetry.io/otel/sdk
+              desc: SDK setup lives in internal/otel/otelsetup so CLI-linked packages stay light
+            - pkg: go.opentelemetry.io/otel/exporters
+              desc: exporter setup lives in internal/otel/otelsetup so CLI-linked packages stay light
 
     # F1 module fence (RIG-3033): gomodguard v2 minimal block list — the value is
     # the ratchet, not breadth. github.com/pkg/errors is blocked: stdlib errors

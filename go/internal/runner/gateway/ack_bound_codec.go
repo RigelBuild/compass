@@ -5,11 +5,13 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // maxControlAckBytes bounds one frame's encoded ControlAck. Packed repeated uint64
@@ -136,9 +138,16 @@ func (frameJSONCodec) Unmarshal(data []byte, message any) error {
 	return nil
 }
 
-// agentGatewayHandlerOptions is the option set every AgentGateway mount uses.
-func agentGatewayHandlerOptions() []connect.HandlerOption {
+// newAgentGatewayInterceptor drops per-message trace events: a long Publish stream
+// would otherwise grow one span by an event per frame.
+func newAgentGatewayInterceptor() (*otelconnect.Interceptor, error) {
+	return otelconnect.NewInterceptor(otelconnect.WithoutTraceEvents())
+}
+
+// agentGatewayHandlerOptions registers tracing first so every AgentGateway call gets a server span.
+func agentGatewayHandlerOptions(ic *otelconnect.Interceptor) []connect.HandlerOption {
 	return []connect.HandlerOption{
+		otelx.HandlerInterceptors(ic),
 		connect.WithReadMaxBytes(maxAgentMessageBytes),
 		connect.WithCodec(ackBoundCodec{}),
 		connect.WithCodec(frameJSONCodec{name: "json"}),
