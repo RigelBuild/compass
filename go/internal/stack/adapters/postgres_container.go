@@ -292,9 +292,11 @@ func newPodmanExec() *podmanExec {
 	return &podmanExec{program: "podman", timeout: containerCommandTimeout}
 }
 
-// run runs `podman <args>` to completion, requiring a zero exit.
+// run runs `podman <args>` to completion, requiring a zero exit. Caller
+// cancellation is not delivered: a signal mid netns setup can leave pasta
+// running without resolv.conf, breaking every later podman run.
 func (e *podmanExec) run(ctx context.Context, args []string) error {
-	return e.fireAndCheck(ctx, args)
+	return e.fireAndCheckWithCancellation(ctx, args, true)
 }
 
 // wait blocks until the named container exits (`podman wait <name>`). A
@@ -387,18 +389,30 @@ func (e *podmanExec) exists(ctx context.Context, name string) (bool, error) {
 // fireAndCheck runs `podman <args>` under the command timeout, folding a
 // non-zero exit into an error carrying the captured stderr for diagnosis.
 func (e *podmanExec) fireAndCheck(ctx context.Context, args []string) error {
-	cctx, cancel := context.WithTimeout(ctx, e.timeout)
+	return e.fireAndCheckWithCancellation(ctx, args, false)
+}
+
+func (e *podmanExec) fireAndCheckWithCancellation(ctx context.Context, args []string, detached bool) error {
+	commandCtx := ctx
+	if detached {
+		commandCtx = context.WithoutCancel(ctx)
+	}
+	cctx, cancel := context.WithTimeout(commandCtx, e.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, e.program, args...) //nolint:gosec // G204: the container seam — program is the operator-set engine and args are Stack-built from a state-dir-derived spec, neither attacker-controlled
 	cmd.WaitDelay = podmanWaitDelay
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	if detached && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if runErr != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
-			return fmt.Errorf("podman %s: %w", args[0], err)
+			return fmt.Errorf("podman %s: %w", args[0], runErr)
 		}
-		return fmt.Errorf("podman %s: %w: %s", args[0], err, msg)
+		return fmt.Errorf("podman %s: %w: %s", args[0], runErr, msg)
 	}
 	return nil
 }

@@ -629,3 +629,90 @@ esac
 		})
 	}
 }
+
+func TestPodmanStartSurvivesCallerCancellation(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	proceed := filepath.Join(dir, "go")
+	doneMarker := filepath.Join(dir, "done")
+	prog := filepath.Join(dir, "podman-stub.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" != "start" ]; then exit 91; fi
+: > %q
+while [ ! -e %q ]; do :; done
+: > %q
+`, started, proceed, doneMarker)
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cli := NewPodmanCLI().WithProgram(prog)
+	result := make(chan error, 1)
+	go func() { result <- cli.Start(ctx, WorkloadID("container")) }()
+	waitForMarker(t, started)
+	cancel()
+	if err := os.WriteFile(proceed, nil, 0o600); err != nil {
+		t.Fatalf("creating go marker: %v", err)
+	}
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("podman start did not return after the stub was released")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Start error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(doneMarker); err != nil {
+		t.Errorf("stub did not finish after caller cancellation: %v", err)
+	}
+}
+
+func TestPodmanStartTimeoutKillsHungProcess(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
+	script := fmt.Sprintf("#!/bin/sh\necho $$ > %q\nexec sleep 30\n", pidFile)
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	t.Cleanup(func() { killRecordedPid(t, pidFile) })
+	cli := NewPodmanCLI().WithProgram(prog).WithTimeout(100 * time.Millisecond)
+	result := make(chan error, 1)
+	go func() { result <- cli.Start(t.Context(), WorkloadID("container")) }()
+	pid := waitForRecordedPid(t, pidFile)
+
+	select {
+	case err := <-result:
+		if _, ok := errors.AsType[*TimeoutError](err); !ok {
+			t.Fatalf("Start error = %v (%T), want *TimeoutError", err, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("podman start did not return after its command timeout")
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("after start timeout, kill(%d, 0) = %v, want ESRCH", pid, err)
+	}
+}
+
+func waitForMarker(t *testing.T, path string) {
+	t.Helper()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("checking marker %q: %v", path, err)
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("marker %q was not created before the deadline", path)
+		case <-ticker.C:
+		}
+	}
+}
