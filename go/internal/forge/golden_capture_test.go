@@ -18,6 +18,7 @@ package forge
 import (
 	"encoding/json"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -253,6 +254,10 @@ func canonicalizeCoordinates(req fixtureRequest) fixtureRequest {
 		}
 		if in.BaseRef != "" {
 			in.BaseRef = canonRef
+		}
+		// A live assignee is a real user id; keep it out of committed testdata.
+		if in.Assignee != "" {
+			in.Assignee = canonIDString
 		}
 		req.Input = &in
 	}
@@ -539,6 +544,72 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 	}
 	if user, ok := driftTree["user"].(map[string]any); !ok || user["login"] != canonAccount {
 		t.Errorf("nested volatile key not canonicalized: user = %v, want login octocat", driftTree["user"])
+	}
+}
+
+// A captured self-delegate create must commit neither the live assignee nor the
+// live app-user id, and must derive exactly the committed hermetic fixture.
+func TestUpdateCanonicalizeSelfDelegate(t *testing.T) {
+	const liveAssignee, liveApp = "live-human-uuid-abc", "live-app-uuid-abc"
+	coords := fixtureRequest{
+		Op:    "create_issue",
+		Repo:  "TEST",
+		Input: &fixtureInput{Title: "live compass-xyz", Body: "stamped body", DelegateSelf: true, Assignee: liveAssignee},
+	}
+	resp := []capturedResponse{
+		{status: 200, body: json.RawMessage(`{"data":{"teams":{"nodes":[{"id":"live-team-uuid-abc"}]}}}`)},
+		{status: 200, body: json.RawMessage(`{"data":{"viewer":{"id":"` + liveApp + `","app":true}}}`)},
+		{status: 200, body: json.RawMessage(`{"data":{"issueCreate":{"issue":{
+			"number": 555, "title": "live compass-xyz", "description": "stamped body",
+			"url": "https://linear.app/x/issue/TEST-555", "state": { "name": "Todo", "type": "unstarted" },
+			"labels": { "nodes": [] }, "creator": null,
+			"delegate": { "id": "` + liveApp + `", "displayName": "live-app" },
+			"assignee": { "id": "` + liveAssignee + `", "displayName": "live-human" },
+			"updatedAt": "2026-08-22T09:00:00Z"
+		}}}}`)},
+	}
+	f := assembleFixture(t, providerLinear, "create_issue_self_delegate_probe", 2, coords, resp)
+	replayFixture(t, providerLinear, f)
+
+	committed, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	for _, live := range []string{liveAssignee, liveApp, "live-app", "live-human"} {
+		if strings.Contains(string(committed), live) {
+			t.Errorf("live value %q leaked into the derived fixture", live)
+		}
+	}
+	var vars struct {
+		Variables struct {
+			Input map[string]any `json:"input"`
+		} `json:"variables"`
+	}
+	if err := json.Unmarshal(f.Request.Body, &vars); err != nil {
+		t.Fatalf("unmarshal derived request body: %v", err)
+	}
+	for _, key := range []string{"delegateId", "assigneeId"} {
+		if got := vars.Variables.Input[key]; got != canonIDString {
+			t.Errorf("%s = %v, want %q", key, got, canonIDString)
+		}
+	}
+
+	// The hand-authored fixture must be the capture's canonical output, so an
+	// -update run leaves it byte-stable apart from the title/body coordinates.
+	var want fixture
+	for _, w := range loadFixtures(t, filepath.Join("testdata", providerLinear)) {
+		if w.Name == "create_issue_self_delegate" {
+			want = w
+		}
+	}
+	if want.Name == "" {
+		t.Fatal("testdata/linear/create_issue_self_delegate.json not found")
+	}
+	assertJSONEqual(t, "response body", f.Response.Body, want.Response.Body)
+	assertJSONEqual(t, "want", f.Response.Want, want.Response.Want)
+	assertJSONEqual(t, "request body", f.Request.Body, want.Request.Body)
+	for i := range f.Response.Prelude {
+		assertJSONEqual(t, "prelude", f.Response.Prelude[i].Body, want.Response.Prelude[i].Body)
 	}
 }
 

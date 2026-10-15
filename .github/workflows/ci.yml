@@ -1393,6 +1393,7 @@ jobs:
           LIVEGITHUB_REVIEWER_APP_KEY: ${{ secrets.LIVEGITHUB_REVIEWER_APP_KEY }}
           LINEAR_FORGE: ${{ env.LINEAR_FORGE }}
           LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
+          LINEAR_FORGE_ASSIGNEE: ${{ secrets.LINEAR_FORGE_ASSIGNEE }}
           # -race needs cgo, matching go/moon.yml's race lane (§431-436). Without
           # it `go test -race` refuses to build.
           CGO_ENABLED: '1'
@@ -1445,8 +1446,9 @@ jobs:
           ghskip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' "$src")
           lnskip=$(sed -n 's/.*liveLinearSkipMessage = "\(.*\)"/\1/p' "$src")
           boardskip=$(sed -n 's/.*liveBoardStateSkipPrefix = "\(.*\)"/\1/p' "$src")
-          if [ -z "$ghskip" ] || [ -z "$lnskip" ] || [ -z "$boardskip" ]; then
-            echo "::error::could not read the skip messages out of $src (github='$ghskip' linear='$lnskip' board='$boardskip') — this guard has drifted from the harness and is no longer checking anything"
+          assigneeskip=$(sed -n 's/.*liveLinearAssigneeSkipMessage = "\(.*\)"/\1/p' "$src")
+          if [ -z "$ghskip" ] || [ -z "$lnskip" ] || [ -z "$boardskip" ] || [ -z "$assigneeskip" ]; then
+            echo "::error::could not read the skip messages out of $src (github='$ghskip' linear='$lnskip' board='$boardskip' assignee='$assigneeskip') — this guard has drifted from the harness and is no longer checking anything"
             exit 1
           fi
           if grep -qF "$ghskip" /tmp/forge-oracle.log; then
@@ -1457,6 +1459,11 @@ jobs:
           if grep -qF "$lnskip" /tmp/forge-oracle.log; then
             echo "::error::forge live-contract oracle skipped the Linear legs — the LINEAR_FORGE credential was not reached, so the co-equal Linear contract was not asserted"
             grep -nF "$lnskip" /tmp/forge-oracle.log | head
+            exit 1
+          fi
+          if grep -qF "$assigneeskip" /tmp/forge-oracle.log; then
+            echo "::error::forge live-contract oracle skipped the Linear self-delegate create leg — LINEAR_FORGE_ASSIGNEE was not set, so the always-assign shape was not asserted"
+            grep -nF "$assigneeskip" /tmp/forge-oracle.log | head
             exit 1
           fi
           # A board-state skip leaves the package reporting ok, so only an
@@ -3015,6 +3022,7 @@ jobs:
           LIVEGITHUB_REVIEWER_APP_KEY: ${{ secrets.LIVEGITHUB_REVIEWER_APP_KEY }}
           LINEAR_FORGE: ${{ env.LINEAR_FORGE }}
           LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
+          LINEAR_FORGE_ASSIGNEE: ${{ secrets.LINEAR_FORGE_ASSIGNEE }}
           CGO_ENABLED: '1'
         # TestLiveUpdateFixtures is the agreed cross-slice update test (added to
         # livegithub_test.go by leg 2); `-update` is its capture flag, rewriting
