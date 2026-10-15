@@ -10,6 +10,7 @@ import { useStore } from "../context";
 import type { Issue } from "../stub-data";
 import { isDemoId } from "../tour/demo";
 import { BadgeGlyph } from "./BadgeGlyph";
+import { RefText } from "./RefText";
 
 /** A single issue card — used in the Bridge swimlane cells. Single-click selects
  *  the issue (syncing the roster) without leaving the board; double-click jumps
@@ -113,7 +114,13 @@ export const IssueCard: Component<{
 			<Show when={isDemoId(props.issue.id)}>
 				<span class="cx-tour-demo-badge">Demo</span>
 			</Show>
-			<span class="card-title">{props.issue.title}</span>
+			<span class="card-title">
+				<RefText
+					text={props.issue.title}
+					inControl
+					inRovingGroup={props.inRovingGroup}
+				/>
+			</span>
 			<span class="card-foot">
 				<span class="card-author">
 					{assignee() ? `@${assignee()}` : "unassigned"}

@@ -27,6 +27,9 @@ service CompassService {
   // authenticatedOpen: any authenticated caller may learn its OWN identity
   // (not admin-gated). account_id is server-derived, never client-supplied.
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  // Link targets for issue and PR references in rendered text, built from the
+  // configured forges. authenticatedOpen: the rules hold no secrets.
+  rpc GetRefLinkRules(GetRefLinkRulesRequest) returns (GetRefLinkRulesResponse);
   // Per-account first-run progress. No account id is accepted; the server keys
   // each operation to the authenticated caller.
   rpc GetTourState(GetTourStateRequest) returns (GetTourStateResponse);
@@ -319,6 +322,20 @@ message ListServerSecretsResponse {
 message ServerSecretStatus {
   string name = 1;
   bool is_set = 2;
+}
+
+message GetRefLinkRulesRequest {}
+
+// kind is "github" or "linear"; prefix is the GitHub host or an enabled Linear
+// team key; url_template uses {owner}, {repo}, {key} and {number}.
+message RefLinkRule {
+  string kind = 1;
+  string prefix = 2;
+  string url_template = 3;
+}
+
+message GetRefLinkRulesResponse {
+  repeated RefLinkRule rules = 1;
 }
 
 message GetServerInfoRequest {}

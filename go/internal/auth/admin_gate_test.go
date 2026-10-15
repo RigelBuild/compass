@@ -137,6 +137,7 @@ func TestAdminGateAllowsAnyAccountOnOpenRPCs(t *testing.T) {
 		procedure string
 	}{
 		{"GetServerInfo", compassv1connect.CompassServiceGetServerInfoProcedure},
+		{"GetRefLinkRules", compassv1connect.CompassServiceGetRefLinkRulesProcedure},
 		{"SubscribeEvents", compassv1connect.CompassServiceSubscribeEventsProcedure},
 		{"ListBoardIssues", compassv1connect.CompassServiceListBoardIssuesProcedure},
 		{"SkipBatchWindow", compassv1connect.CompassServiceSkipBatchWindowProcedure},
@@ -185,6 +186,7 @@ func TestClassifyProcedureClassifiesKnownAndUnknownProcedures(t *testing.T) {
 		{"RemoveAgentWorkspace", compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure, true, true},
 		{"PutAgentConfig", compassv1connect.CompassServicePutAgentConfigProcedure, true, true},
 		{"DeleteAgentConfig", compassv1connect.CompassServiceDeleteAgentConfigProcedure, true, true},
+		{"GetRefLinkRules", compassv1connect.CompassServiceGetRefLinkRulesProcedure, false, true},
 		{"GetServerInfo", compassv1connect.CompassServiceGetServerInfoProcedure, false, true},
 		{"SubscribeEvents", compassv1connect.CompassServiceSubscribeEventsProcedure, false, true},
 		{"ListBoardIssues", compassv1connect.CompassServiceListBoardIssuesProcedure, false, true},

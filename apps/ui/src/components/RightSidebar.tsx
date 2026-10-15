@@ -29,6 +29,7 @@ import {
 } from "../stub-data";
 import { ChannelView } from "./ChannelView";
 import { Glyph, type GlyphName } from "./Glyph";
+import { RefText } from "./RefText";
 import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
@@ -261,7 +262,9 @@ const PrPane: Component<{ pr: PullRequest }> = (props) => {
 					{prBadge(props.pr)}
 				</span>
 			</div>
-			<div class="pr-title">{props.pr.title}</div>
+			<div class="pr-title">
+				<RefText text={props.pr.title} />
+			</div>
 			<Show when={props.pr.agent}>
 				{(agent) => <div class="pr-agent">{authorLabel(agent())}</div>}
 			</Show>
@@ -315,7 +318,7 @@ const IssueDetailHead: Component<{ issue: Issue }> = (props) => {
 					{issueKey(props.issue, isMultiForge(store.issues()))}
 				</span>
 				<span class="r-detail-title" title={props.issue.title}>
-					{props.issue.title}
+					<RefText text={props.issue.title} />
 				</span>
 			</div>
 			<Show when={props.issue.assignee}>

@@ -15,7 +15,7 @@ import { createRouter, hashHistory, type RouterHistory } from "@solidjs/router";
 import { render } from "@solidjs/web";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import App from "./App";
-import { StoreContext } from "./context";
+import { RefLinkRulesContext, StoreContext } from "./context";
 import type { LiveClients } from "./live/client";
 import { applyReduceMotion } from "./preferences";
 import { appRoutes } from "./routes";
@@ -80,9 +80,11 @@ export function mountShell(
 	return render(
 		() => (
 			<StoreContext value={store}>
-				<QueryClientProvider client={queryClient}>
-					<Router>{(props) => <App {...props} clients={clients} />}</Router>
-				</QueryClientProvider>
+				<RefLinkRulesContext value={store.refLinkRules}>
+					<QueryClientProvider client={queryClient}>
+						<Router>{(props) => <App {...props} clients={clients} />}</Router>
+					</QueryClientProvider>
+				</RefLinkRulesContext>
 			</StoreContext>
 		),
 		root,

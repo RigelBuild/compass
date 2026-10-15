@@ -1456,6 +1456,62 @@ describe("daemon banner (live GetServerInfo)", () => {
 	});
 });
 
+describe("store live reference rules", () => {
+	test("loads configured link rules from the Compass client", async () => {
+		const compass = createFakeCompass();
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				compass: compass.client,
+				queryClient: testQueryClient(),
+			});
+		});
+		try {
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(store.refLinkRules()).toEqual([
+				{
+					kind: "github",
+					prefix: "github.com",
+					urlTemplate: "https://github.com/{owner}/{repo}/issues/{number}",
+				},
+				{
+					kind: "linear",
+					prefix: "RIG",
+					urlTemplate: "https://linear.app/rigel/issue/{key}-{number}",
+				},
+			]);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("reports failed rule loading and leaves the accessor empty", async () => {
+		const compass = createFakeCompass();
+		const errors: unknown[] = [];
+		compass.failNextRefLinkRules(new Error("rules unavailable"));
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				compass: compass.client,
+				queryClient: testQueryClient(),
+				onCommsError: (error) => errors.push(error),
+			});
+		});
+		try {
+			for (let i = 0; i < 5; i++) await Promise.resolve();
+			expect(store.refLinkRules()).toEqual([]);
+			expect(errors).toHaveLength(1);
+			expect(String(errors[0])).toContain("rules unavailable");
+		} finally {
+			dispose();
+		}
+	});
+});
+
 // An agent account on the wire — the durable identity `joinAgents` filters to
 // and composes. Distinct from `wireAccount` (a user), because the join drops
 // non-agent kinds.

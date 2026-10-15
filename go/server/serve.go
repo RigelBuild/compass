@@ -1185,6 +1185,8 @@ func buildDoors(
 		uds:    udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
 		linearNotify: linear.notify, linearResponder: linear.responder,
 	}
+	// GitHub refs link wherever the App reads the forge, writes or not.
+	svc.refLinkRules = buildRefLinkRuleSource(cfg, cfg.Forge.boardIngestionEnabled(), st, linear.notify, slog.Default())
 	// Only when set: a nil pointer stored in the interface would not compare nil.
 	if runnerVerifier != nil {
 		doors.runnerVerifier = runnerVerifier

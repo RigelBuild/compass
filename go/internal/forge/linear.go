@@ -129,6 +129,9 @@ type Linear struct {
 	// now() -> the next call fails fast with ErrBudgetExhausted. Zero -> open.
 	resetAt time.Time
 
+	// organizationURLKey is cached only after a successful organization query.
+	organizationURLKey string
+
 	// teamIDs caches Linear team key -> team UUID; a key is resolved once via a
 	// teams query and reused for every subsequent CreateIssue.
 	teamIDs map[string]string
@@ -197,6 +200,39 @@ func (l *Linear) TokenSourceForTest() TokenSource { return l.token }
 
 // Name identifies this provider.
 func (l *Linear) Name() string { return "linear" }
+
+// OrganizationURLKey reads the Linear workspace key and caches successful results.
+func (l *Linear) OrganizationURLKey(ctx context.Context) (string, error) {
+	l.mu.Lock()
+	if l.organizationURLKey != "" {
+		key := l.organizationURLKey
+		l.mu.Unlock()
+		return key, nil
+	}
+	l.mu.Unlock()
+
+	var out struct {
+		Organization struct {
+			URLKey string `json:"urlKey"`
+		} `json:"organization"`
+	}
+	if err := l.doGraphQL(ctx, `query CompassOrganizationURLKey {
+  organization { urlKey }
+}`, nil, &out); err != nil {
+		return "", fmt.Errorf("linear organization URL key: %w", err)
+	}
+	if strings.TrimSpace(out.Organization.URLKey) == "" {
+		return "", errors.New("linear organization URL key is empty")
+	}
+
+	l.mu.Lock()
+	if l.organizationURLKey == "" {
+		l.organizationURLKey = out.Organization.URLKey
+	}
+	key := l.organizationURLKey
+	l.mu.Unlock()
+	return key, nil
+}
 
 // CreateIssue creates an issue on the team keyed by repo. in.Body is PRE-stamped
 // by the Service; it becomes the Linear description verbatim. createAsUser /

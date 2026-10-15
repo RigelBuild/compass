@@ -783,6 +783,15 @@
 	color: var(--cx-text);
 }
 
+.ref-link {
+	cursor: pointer;
+	text-decoration: underline dotted;
+	text-underline-offset: 2px;
+}
+.ref-link:hover {
+	color: var(--cx-text);
+}
+
 .add {
 	color: var(--cx-ok);
 }

@@ -70,7 +70,7 @@ func classifyProcedure(procedure string) (privilege, bool) {
 	// config info view: open to any authenticated account. SubscribeAgentSession
 	// carries its own per-account authorization, so the door admits non-admin members;
 	// GetAgentConfigInfo returns names only; WhoAmI reflects the caller's own identity;
-	// tour state is keyed to the caller's account.
+	// tour state is keyed to the caller's account; GetRefLinkRules holds no secrets.
 	case compassv1connect.CompassServiceGetServerInfoProcedure,
 		compassv1connect.CompassServiceWhoAmIProcedure,
 		compassv1connect.CompassServiceGetTourStateProcedure,
@@ -82,6 +82,7 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceSkipBatchWindowProcedure,
 		compassv1connect.CompassServiceGetAgentConfigInfoProcedure,
 		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
+		compassv1connect.CompassServiceGetRefLinkRulesProcedure,
 		compassv1connect.CompassServiceGetModelRegistryProcedure:
 		return authenticatedOpen{}, true
 

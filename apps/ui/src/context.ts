@@ -2,7 +2,8 @@
 // drilling. The root provides a single createAppStore() instance; every surface
 // reads it through useStore().
 
-import { createContext, useContext } from "solid-js";
+import { type Accessor, createContext, useContext } from "solid-js";
+import type { RefLinkRule } from "./refs/grammar";
 import type { AppStore } from "./store";
 
 const StoreContext = createContext<AppStore>();
@@ -16,4 +17,13 @@ export function useStore(): AppStore {
 		throw new Error("useStore must be used within a StoreContext provider");
 	}
 	return store;
+}
+
+const NO_RULES: Accessor<readonly RefLinkRule[]> = () => [];
+// Defaulted so MarkdownText still renders with no provider (bare component tests).
+export const RefLinkRulesContext =
+	createContext<Accessor<readonly RefLinkRule[]>>(NO_RULES);
+
+export function useRefLinkRules(): Accessor<readonly RefLinkRule[]> {
+	return useContext(RefLinkRulesContext);
 }

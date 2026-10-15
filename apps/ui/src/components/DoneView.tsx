@@ -10,6 +10,7 @@ import {
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
 import { BadgeGlyph } from "./BadgeGlyph";
+import { RefText } from "./RefText";
 
 /** A single Done/Archived row. Mirrors the IssueCard shape but laid out as a
  *  wide list row: issue id, title, priority accent, PR summary, and the
@@ -47,7 +48,9 @@ const DoneRow: Component<{ issue: Issue }> = (props) => {
 						)}
 					</Show>
 				</span>
-				<span class="done-row-title">{props.issue.title}</span>
+				<span class="done-row-title">
+					<RefText text={props.issue.title} inControl />
+				</span>
 				<span class="done-row-foot">
 					<span class="done-row-branch">{props.issue.branch}</span>
 					<Show

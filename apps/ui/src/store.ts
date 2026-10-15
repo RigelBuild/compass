@@ -1,3 +1,4 @@
+import type { RefLinkRule } from "./refs/grammar";
 // The Compass ADE UI's central state store: one store owns all cross-component
 // state (view, selection, open panes, sidebar collapse). Components read it via the
 // AppStore context and never hold copies, so selection stays coherent across shell.
@@ -53,7 +54,7 @@ import {
 import { createKeyboardSpine, type KeyboardSpine } from "./keyboard/spine";
 import type { FocusZone } from "./keyboard/zones";
 import { adaptMessage } from "./live/adapt";
-import { probeServer } from "./live/client";
+import { loadRefLinkRules, probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
 import { type AccountSession, runEventStream } from "./live/events";
 import { createConnectQuery } from "./live/query";
@@ -443,6 +444,8 @@ export interface AppStore {
 	 *  and flips this to the live info; an offline store keeps STUB_DAEMON
 	 *  (live:false). */
 	daemon: Accessor<DaemonInfo>;
+	/** Live link targets from GetRefLinkRules; empty offline or until loaded. */
+	refLinkRules: Accessor<readonly RefLinkRule[]>;
 	/** Base URL of the connection shown on General settings. */
 	serverUrl: () => string | undefined;
 
@@ -1427,6 +1430,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// STUB_DAEMON. api_version-mismatch is deliberately NOT handled (parked). One-shot
 	// async, so a `disposed` flag guards a late probe; a rejection routes through onCommsError.
 	const [daemon, setDaemon] = createSignal<DaemonInfo>(STUB_DAEMON);
+	const [refLinkRules, setRefLinkRules] = createSignal<readonly RefLinkRule[]>(
+		[],
+	);
 	if (options.compass) {
 		const client = options.compass;
 		let disposed = false;
@@ -1458,6 +1464,13 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 					});
 			})
 			.catch((error) => {
+				if (!disposed) options.onCommsError?.(error);
+			});
+		void loadRefLinkRules(client)
+			.then((rules) => {
+				if (!disposed) setRefLinkRules(rules);
+			})
+			.catch((error: unknown) => {
 				if (!disposed) options.onCommsError?.(error);
 			});
 	}
@@ -2544,6 +2557,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		layoutNotice,
 		dismissLayoutNotice,
 		holdLayoutNotice,
+		refLinkRules,
 		viewScopes: scopes,
 		joinChannel,
 		lastOpened,
