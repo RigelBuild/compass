@@ -491,8 +491,12 @@ type SessionsResponse struct {
 	// carries an id. Set only on a provision; the Runner rejects a provision
 	// without it. Tag 15: the next free tag after fresh_session_id = 14.
 	AgentAccountId string `protobuf:"bytes,15,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The W3C `traceparent` of the Server's active span when it built the command,
+	// so the Runner joins its span to the request trace. Empty when there is no
+	// active Server span.
+	Traceparent   string `protobuf:"bytes,16,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SessionsResponse) Reset() {
@@ -646,6 +650,13 @@ func (x *SessionsResponse) GetFreshSessionId() string {
 func (x *SessionsResponse) GetAgentAccountId() string {
 	if x != nil {
 		return x.AgentAccountId
+	}
+	return ""
+}
+
+func (x *SessionsResponse) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
 	}
 	return ""
 }
@@ -2473,7 +2484,7 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\tprovision\x18\x06 \x01(\v2+.compass.v1.ProvisionAgentWorkspaceResponseH\x00R\tprovision\x12/\n" +
 	"\x05error\x18\a \x01(\v2\x17.compass.v1.RunnerErrorH\x00R\x05error\x12B\n" +
 	"\x06remove\x18\b \x01(\v2(.compass.v1.RemoveAgentWorkspaceResponseH\x00R\x06removeB\b\n" +
-	"\x06result\"\xf2\x06\n" +
+	"\x06result\"\x94\a\n" +
 	"\x10SessionsResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12<\n" +
@@ -2491,7 +2502,8 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\vresume_body\x18\r \x01(\v2\x16.compass.v1.ResumeBodyR\n" +
 	"resumeBody\x12(\n" +
 	"\x10fresh_session_id\x18\x0e \x01(\tR\x0efreshSessionId\x12(\n" +
-	"\x10agent_account_id\x18\x0f \x01(\tR\x0eagentAccountIdB\t\n" +
+	"\x10agent_account_id\x18\x0f \x01(\tR\x0eagentAccountId\x12 \n" +
+	"\vtraceparent\x18\x10 \x01(\tR\vtraceparentB\t\n" +
 	"\acommand\"/\n" +
 	"\n" +
 	"ResumeBody\x12!\n" +

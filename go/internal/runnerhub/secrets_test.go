@@ -321,7 +321,7 @@ func TestSignalSecretsVersionPushesMonotonicToken(t *testing.T) {
 	router.attach(rec.send)
 	defer router.detach(errStreamClosed)
 
-	if err := hub.SignalSecretsVersion(); err != nil {
+	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
 		t.Fatalf("SignalSecretsVersion #1 = %v, want nil", err)
 	}
 	// Signals are queued-not-pushed; gate on the sender draining both to the wire.
@@ -344,7 +344,7 @@ func TestSignalSecretsVersionPushesMonotonicToken(t *testing.T) {
 		t.Fatalf("signalled sessions = %v, want both sess-a and sess-b", sessions)
 	}
 
-	if err := hub.SignalSecretsVersion(); err != nil {
+	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
 		t.Fatalf("SignalSecretsVersion #2 = %v, want nil", err)
 	}
 	waitRecorded(t, rec, 3)
@@ -502,7 +502,7 @@ func TestSignalSecretsVersionForMonotonic(t *testing.T) {
 	router.attach(rec.send)
 	defer router.detach(errStreamClosed)
 
-	if err := hub.SignalSecretsVersion(); err != nil {
+	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
 		t.Fatalf("SignalSecretsVersion = %v, want nil", err)
 	}
 	waitRecorded(t, rec, 1)
@@ -528,7 +528,7 @@ func TestSignalSecretsVersionNoLiveSessionsIsNoop(t *testing.T) {
 	router.attach(rec.send)
 	defer router.detach(errStreamClosed)
 
-	if err := hub.SignalSecretsVersion(); err != nil {
+	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
 		t.Fatalf("SignalSecretsVersion with no live sessions = %v, want nil", err)
 	}
 	if got := len(secretsVersionsPushed(t, rec)); got != 0 {
@@ -540,7 +540,7 @@ func TestSignalSecretsVersionNoLiveSessionsIsNoop(t *testing.T) {
 // is a clean no-op (best-effort — the Runner re-fetches on reconnect).
 func TestSignalSecretsVersionNoRunnerIsNoop(t *testing.T) {
 	hub := newHubOnly() // no enroll
-	if err := hub.SignalSecretsVersion(); err != nil {
+	if err := hub.SignalSecretsVersion(context.Background()); err != nil {
 		t.Fatalf("SignalSecretsVersion with no runner = %v, want nil", err)
 	}
 }

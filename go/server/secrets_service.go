@@ -39,7 +39,7 @@ import (
 type secretsSignaler interface {
 	// SignalSecretsVersion mints a fresh opaque monotonic set-change token and
 	// pushes a SecretsVersion signal to every live session (best-effort).
-	SignalSecretsVersion() error
+	SignalSecretsVersion(ctx context.Context) error
 }
 
 // secretsService implements compassv1connect.SecretsServiceHandler over the
@@ -325,7 +325,7 @@ func (s *secretsService) bumpSecretsVersion(ctx context.Context) {
 	if s.signaler == nil {
 		return
 	}
-	if err := s.signaler.SignalSecretsVersion(); err != nil {
+	if err := s.signaler.SignalSecretsVersion(ctx); err != nil {
 		slog.WarnContext(ctx, "emitting secrets version signal", "err", err)
 	}
 }

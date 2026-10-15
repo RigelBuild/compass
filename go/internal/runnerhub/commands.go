@@ -18,6 +18,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -212,6 +213,7 @@ func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1intern
 	if err := CheckClientRequestID(cmd.GetRequestId()); err != nil {
 		return nil, "", err
 	}
+	cmd.Traceparent = otelx.Traceparent(ctx)
 	router, runnerID, err := h.routerFor(sessionKey)
 	if err != nil {
 		return nil, "", connect.NewError(connect.CodeUnavailable, err)

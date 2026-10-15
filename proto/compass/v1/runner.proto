@@ -307,6 +307,10 @@ message SessionsResponse {
   // carries an id. Set only on a provision; the Runner rejects a provision
   // without it. Tag 15: the next free tag after fresh_session_id = 14.
   string agent_account_id = 15;
+  // The W3C `traceparent` of the Server's active span when it built the command,
+  // so the Runner joins its span to the request trace. Empty when there is no
+  // active Server span.
+  string traceparent = 16;
 }
 
 // ResumeBody — the INTERNAL resume-body carrier attached to SessionsResponse on

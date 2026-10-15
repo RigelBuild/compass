@@ -63,7 +63,7 @@ type recordingSignaler struct {
 	calls int
 }
 
-func (r *recordingSignaler) SignalSecretsVersion() error {
+func (r *recordingSignaler) SignalSecretsVersion(_ context.Context) error {
 	r.calls++
 	return nil
 }

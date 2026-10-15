@@ -10,6 +10,7 @@ import (
 	"context"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // DispatchControl relays a fully-formed control op (for RIG-1569, a message
@@ -31,13 +32,13 @@ import (
 // and passed so a future retention-aware or timeout-bounded push inherits the
 // caller's cancellation rather than re-rooting.
 func (h *Hub) DispatchControl(ctx context.Context, sessionID string, op *compassv1internal.AgentControl) error {
-	_ = ctx
 	router, _, err := h.routerFor(sessionID)
 	if err != nil {
 		return err
 	}
 	cmd := &compassv1internal.SessionsResponse{
-		RequestId: orNewRequestID(""),
+		Traceparent: otelx.Traceparent(ctx),
+		RequestId:   orNewRequestID(""),
 		Command: &compassv1internal.SessionsResponse_DeliverControl{
 			DeliverControl: &compassv1internal.DispatchControl{
 				SessionId: sessionID,
