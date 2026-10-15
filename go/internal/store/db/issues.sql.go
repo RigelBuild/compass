@@ -14,29 +14,30 @@ import (
 const getIssue = `-- name: GetIssue :one
 SELECT id, forge_provider, forge_host, repo, number,
        title, body, forge_state, url, forge_account, labels, agent_handle,
-       state, priority, assignee, summary, branch
+       forge_updated_at, state, priority, assignee, summary, branch
 FROM issues
 WHERE id = $1
 `
 
 type GetIssueRow struct {
-	ID            string
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Number        int64
-	Title         string
-	Body          string
-	ForgeState    string
-	Url           string
-	ForgeAccount  string
-	Labels        []string
-	AgentHandle   string
-	State         int16
-	Priority      string
-	Assignee      string
-	Summary       string
-	Branch        string
+	ID             string
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Number         int64
+	Title          string
+	Body           string
+	ForgeState     string
+	Url            string
+	ForgeAccount   string
+	Labels         []string
+	AgentHandle    string
+	ForgeUpdatedAt pgtype.Timestamptz
+	State          int16
+	Priority       string
+	Assignee       string
+	Summary        string
+	Branch         string
 }
 
 func (q *Queries) GetIssue(ctx context.Context, id string) (GetIssueRow, error) {
@@ -55,6 +56,7 @@ func (q *Queries) GetIssue(ctx context.Context, id string) (GetIssueRow, error) 
 		&i.ForgeAccount,
 		&i.Labels,
 		&i.AgentHandle,
+		&i.ForgeUpdatedAt,
 		&i.State,
 		&i.Priority,
 		&i.Assignee,
@@ -67,29 +69,30 @@ func (q *Queries) GetIssue(ctx context.Context, id string) (GetIssueRow, error) 
 const listIssues = `-- name: ListIssues :many
 SELECT id, forge_provider, forge_host, repo, number,
        title, body, forge_state, url, forge_account, labels, agent_handle,
-       state, priority, assignee, summary, branch
+       forge_updated_at, state, priority, assignee, summary, branch
 FROM issues
 ORDER BY id
 `
 
 type ListIssuesRow struct {
-	ID            string
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Number        int64
-	Title         string
-	Body          string
-	ForgeState    string
-	Url           string
-	ForgeAccount  string
-	Labels        []string
-	AgentHandle   string
-	State         int16
-	Priority      string
-	Assignee      string
-	Summary       string
-	Branch        string
+	ID             string
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Number         int64
+	Title          string
+	Body           string
+	ForgeState     string
+	Url            string
+	ForgeAccount   string
+	Labels         []string
+	AgentHandle    string
+	ForgeUpdatedAt pgtype.Timestamptz
+	State          int16
+	Priority       string
+	Assignee       string
+	Summary        string
+	Branch         string
 }
 
 func (q *Queries) ListIssues(ctx context.Context) ([]ListIssuesRow, error) {
@@ -114,6 +117,7 @@ func (q *Queries) ListIssues(ctx context.Context) ([]ListIssuesRow, error) {
 			&i.ForgeAccount,
 			&i.Labels,
 			&i.AgentHandle,
+			&i.ForgeUpdatedAt,
 			&i.State,
 			&i.Priority,
 			&i.Assignee,
@@ -133,7 +137,7 @@ func (q *Queries) ListIssues(ctx context.Context) ([]ListIssuesRow, error) {
 const searchIssues = `-- name: SearchIssues :many
 SELECT id, forge_provider, forge_host, repo, number,
        title, body, forge_state, url, forge_account, labels, agent_handle,
-       state, priority, assignee, summary, branch
+       forge_updated_at, state, priority, assignee, summary, branch
 FROM issues
 WHERE search_tsv @@ websearch_to_tsquery('english', $1)
 ORDER BY ts_rank('{0.1,0.2,0.4,1.0}'::real[], search_tsv, websearch_to_tsquery('english', $1)) DESC, number DESC
@@ -146,23 +150,24 @@ type SearchIssuesParams struct {
 }
 
 type SearchIssuesRow struct {
-	ID            string
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Number        int64
-	Title         string
-	Body          string
-	ForgeState    string
-	Url           string
-	ForgeAccount  string
-	Labels        []string
-	AgentHandle   string
-	State         int16
-	Priority      string
-	Assignee      string
-	Summary       string
-	Branch        string
+	ID             string
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Number         int64
+	Title          string
+	Body           string
+	ForgeState     string
+	Url            string
+	ForgeAccount   string
+	Labels         []string
+	AgentHandle    string
+	ForgeUpdatedAt pgtype.Timestamptz
+	State          int16
+	Priority       string
+	Assignee       string
+	Summary        string
+	Branch         string
 }
 
 func (q *Queries) SearchIssues(ctx context.Context, arg SearchIssuesParams) ([]SearchIssuesRow, error) {
@@ -187,6 +192,7 @@ func (q *Queries) SearchIssues(ctx context.Context, arg SearchIssuesParams) ([]S
 			&i.ForgeAccount,
 			&i.Labels,
 			&i.AgentHandle,
+			&i.ForgeUpdatedAt,
 			&i.State,
 			&i.Priority,
 			&i.Assignee,

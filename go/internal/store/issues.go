@@ -66,6 +66,8 @@ type Issue struct {
 	ForgeAccount string // the native forge login; always set
 	Labels       []string
 	AgentHandle  string // parsed Compass attribution; "" = non-Compass (human) author
+	// ForgeUpdatedAt is zero when the forge row has no update timestamp.
+	ForgeUpdatedAt time.Time
 
 	// Compass machinery (Compass-owned; not on the forge). State is set by the
 	// write path (part 5); the other four by their own producers (assignee =
@@ -244,7 +246,7 @@ func (s *Store) SearchIssues(ctx context.Context, query string, limit uint32) ([
 func issueFromGetRow(r db.GetIssueRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
-		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
 }
 
 // issueFromListRow maps a generated ListIssues row into a domain Issue (identical
@@ -252,14 +254,14 @@ func issueFromGetRow(r db.GetIssueRow) Issue {
 func issueFromListRow(r db.ListIssuesRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
-		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
 }
 
 // issueFromSearchRow maps a generated search result to the store issue model.
 func issueFromSearchRow(r db.SearchIssuesRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
-		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
 }
 
 // issueFromColumns builds an Issue from the shared issue projection both reads
@@ -268,26 +270,27 @@ func issueFromSearchRow(r db.SearchIssuesRow) Issue {
 func issueFromColumns(
 	id string, forgeProvider int16, forgeHost, repo string, number int64,
 	title, body, forgeState, url, forgeAccount string, labels []string, agentHandle string,
-	state int16, priority, assignee, summary, branch string,
+	forgeUpdatedAt pgtype.Timestamptz, state int16, priority, assignee, summary, branch string,
 ) Issue {
 	iss := Issue{
-		ID:            id,
-		ForgeProvider: ForgeProvider(forgeProvider),
-		ForgeHost:     forgeHost,
-		Repo:          repo,
-		Number:        uint32(number), //nolint:gosec // G115: number is a BIGINT written only from a canonical uint32 (UpsertIssueForgeFields narrows in.Number), so it is always within the uint32 domain
-		Title:         title,
-		Body:          body,
-		ForgeState:    forgeState,
-		URL:           url,
-		ForgeAccount:  forgeAccount,
-		Labels:        labels,
-		AgentHandle:   agentHandle,
-		State:         IssueState(state),
-		Priority:      priority,
-		Assignee:      assignee,
-		Summary:       summary,
-		Branch:        branch,
+		ID:             id,
+		ForgeProvider:  ForgeProvider(forgeProvider),
+		ForgeHost:      forgeHost,
+		Repo:           repo,
+		Number:         uint32(number), //nolint:gosec // G115: number is a BIGINT written only from a canonical uint32 (UpsertIssueForgeFields narrows in.Number), so it is always within the uint32 domain
+		Title:          title,
+		Body:           body,
+		ForgeState:     forgeState,
+		URL:            url,
+		ForgeAccount:   forgeAccount,
+		Labels:         labels,
+		AgentHandle:    agentHandle,
+		ForgeUpdatedAt: forgeUpdatedAt.Time,
+		State:          IssueState(state),
+		Priority:       priority,
+		Assignee:       assignee,
+		Summary:        summary,
+		Branch:         branch,
 	}
 	if len(iss.Labels) == 0 {
 		iss.Labels = nil

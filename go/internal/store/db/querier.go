@@ -73,6 +73,7 @@ type Querier interface {
 	AppendTokenUsageEvents(ctx context.Context, arg AppendTokenUsageEventsParams) error
 	AuthoredArtifactByCoordinate(ctx context.Context, arg AuthoredArtifactByCoordinateParams) (ForgeAuthoredArtifact, error)
 	AuthoredArtifactByRequestID(ctx context.Context, arg AuthoredArtifactByRequestIDParams) (ForgeAuthoredArtifact, error)
+	AuthoredCoordsForAgent(ctx context.Context, arg AuthoredCoordsForAgentParams) ([]AuthoredCoordsForAgentRow, error)
 	// Agent-transcript queries (sqlc adoption T5, RIG-3034). These replace the
 	// inline SQL literals in internal/store/agent_transcripts.go; the hand-written
 	// Store methods keep their exact signatures and own the two-tier flush

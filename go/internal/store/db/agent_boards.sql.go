@@ -11,6 +11,70 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const authoredCoordsForAgent = `-- name: AuthoredCoordsForAgent :many
+WITH want AS (
+    SELECT unnest($2::smallint[]) AS provider,
+           unnest($3::text[]) AS host,
+           unnest($4::text[]) AS repo,
+           unnest($5::bigint[]) AS number
+)
+SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+  FROM forge_authored_artifacts a
+  JOIN want w ON a.forge_provider = w.provider AND a.forge_host = w.host
+             AND (CASE WHEN a.forge_provider = 1 THEN lower(a.repo) ELSE a.repo END) = w.repo
+             AND a.number = w.number
+ WHERE a.agent_account_id = $1
+ ORDER BY a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+`
+
+type AuthoredCoordsForAgentParams struct {
+	AgentAccountID string
+	ForgeProviders []int16
+	ForgeHosts     []string
+	ForgeRepos     []string
+	ForgeNumbers   []int64
+}
+
+type AuthoredCoordsForAgentRow struct {
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+	Kind          int16
+	Number        int64
+}
+
+func (q *Queries) AuthoredCoordsForAgent(ctx context.Context, arg AuthoredCoordsForAgentParams) ([]AuthoredCoordsForAgentRow, error) {
+	rows, err := q.db.Query(ctx, authoredCoordsForAgent,
+		arg.AgentAccountID,
+		arg.ForgeProviders,
+		arg.ForgeHosts,
+		arg.ForgeRepos,
+		arg.ForgeNumbers,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuthoredCoordsForAgentRow
+	for rows.Next() {
+		var i AuthoredCoordsForAgentRow
+		if err := rows.Scan(
+			&i.ForgeProvider,
+			&i.ForgeHost,
+			&i.Repo,
+			&i.Kind,
+			&i.Number,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteAgentBoardTasks = `-- name: DeleteAgentBoardTasks :exec
 DELETE FROM agent_board_tasks
  WHERE agent_account_id = $1 AND task_key = ANY($2::text[])
@@ -134,7 +198,7 @@ WITH want AS (
 )
 SELECT i.id, i.forge_provider, i.forge_host, i.repo, i.number,
        i.title, i.body, i.forge_state, i.url, i.forge_account, i.labels, i.agent_handle,
-       i.state, i.priority, i.assignee, i.summary, i.branch
+       i.forge_updated_at, i.state, i.priority, i.assignee, i.summary, i.branch
   FROM issues i
   JOIN want w ON i.forge_provider = w.provider AND i.forge_host = w.host
              AND (CASE WHEN i.forge_provider = 1 THEN lower(i.repo) ELSE i.repo END) = w.repo
@@ -150,23 +214,24 @@ type IssuesByCoordsParams struct {
 }
 
 type IssuesByCoordsRow struct {
-	ID            string
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Number        int64
-	Title         string
-	Body          string
-	ForgeState    string
-	Url           string
-	ForgeAccount  string
-	Labels        []string
-	AgentHandle   string
-	State         int16
-	Priority      string
-	Assignee      string
-	Summary       string
-	Branch        string
+	ID             string
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Number         int64
+	Title          string
+	Body           string
+	ForgeState     string
+	Url            string
+	ForgeAccount   string
+	Labels         []string
+	AgentHandle    string
+	ForgeUpdatedAt pgtype.Timestamptz
+	State          int16
+	Priority       string
+	Assignee       string
+	Summary        string
+	Branch         string
 }
 
 func (q *Queries) IssuesByCoords(ctx context.Context, arg IssuesByCoordsParams) ([]IssuesByCoordsRow, error) {
@@ -196,6 +261,7 @@ func (q *Queries) IssuesByCoords(ctx context.Context, arg IssuesByCoordsParams) 
 			&i.ForgeAccount,
 			&i.Labels,
 			&i.AgentHandle,
+			&i.ForgeUpdatedAt,
 			&i.State,
 			&i.Priority,
 			&i.Assignee,
