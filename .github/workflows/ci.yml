@@ -2438,13 +2438,15 @@ jobs:
           # single-user install run as a normal user). Mirrors the moon job's
           # install-nix-action config exactly — the SAME two cache substituters +
           # trusted keys the nix builds use, never `accept-flake-config` (which
-          # would trust a PR-supplied substituter + key).
+          # would trust a PR-supplied substituter + key). `download-attempts` widens nix's
+          # backed-off retry of transient fetch errors (a github.com 504); it still fails at the cap.
           conf=$(mktemp)
           cat >"$conf" <<'NIXCONF'
           build-users-group =
           experimental-features = nix-command flakes
           extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
           extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+          download-attempts = 10
           NIXCONF
           # Pin the installer by content hash, not just version+TLS: the moon
           # job gets its nix from a SHA-pinned action, so this bare curl must not
