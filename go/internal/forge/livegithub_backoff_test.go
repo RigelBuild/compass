@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -14,15 +16,26 @@ import (
 
 // scriptedReads replays one canned result per call, for the read-after-write gates.
 type scriptedReads struct {
-	errs  []error
-	calls int
+	errs   []error
+	states []string
+	calls  int
+	cancel context.CancelFunc
 }
 
 func (s *scriptedReads) GetIssue(context.Context, string, uint64) (Issue, error) {
-	if err := s.next(); err != nil {
+	err := s.next()
+	if err != nil {
+		if s.cancel != nil {
+			s.cancel()
+		}
 		return Issue{}, err
 	}
-	return Issue{Number: 7}, nil
+
+	issue := Issue{Number: 7}
+	if s.calls <= len(s.states) {
+		issue.State = s.states[s.calls-1]
+	}
+	return issue, nil
 }
 
 // ListIssues returns the target only once the script is exhausted; a nil
@@ -30,6 +43,9 @@ func (s *scriptedReads) GetIssue(context.Context, string, uint64) (Issue, error)
 func (s *scriptedReads) ListIssues(context.Context, string, IssueFilter) ([]Issue, error) {
 	err := s.next()
 	if s.calls <= len(s.errs) {
+		if err != nil && s.cancel != nil {
+			s.cancel()
+		}
 		return []Issue{{Number: 1}}, err
 	}
 	return []Issue{{Number: 1}, {Number: 7}}, nil
@@ -46,10 +62,12 @@ func (s *scriptedReads) next() error {
 func zeroDelays(n int) []time.Duration { return make([]time.Duration, n) }
 
 var (
-	errNotFound  = &StatusError{Status: http.StatusNotFound, Message: "no issue RIG-7"}
-	errUpstream  = fmt.Errorf("forge: linear: %w", &StatusError{Status: http.StatusServiceUnavailable, Message: "upstream connect error"})
-	errConnReset = fmt.Errorf("do request: %w", syscall.ECONNRESET)
-	errForbidden = &StatusError{Status: http.StatusForbidden, Message: "forbidden"}
+	errNotFound      = &StatusError{Status: http.StatusNotFound, Message: "no issue RIG-7"}
+	errUpstream      = fmt.Errorf("forge: linear: %w", &StatusError{Status: http.StatusServiceUnavailable, Message: "upstream connect error"})
+	errConnReset     = fmt.Errorf("do request: %w", syscall.ECONNRESET)
+	errForbidden     = &StatusError{Status: http.StatusForbidden, Message: "forbidden"}
+	errClientTimeout = fmt.Errorf("do request: %w", &net.DNSError{IsTimeout: true, Err: "timeout"})
+	errDeadline      = fmt.Errorf("do request: %w", context.DeadlineExceeded)
 )
 
 func TestIsUpstreamTransient(t *testing.T) {
@@ -75,6 +93,29 @@ func TestIsUpstreamTransient(t *testing.T) {
 	}
 }
 
+func TestIsReadTransient(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"client timeout", errClientTimeout, true},
+		{"wrapped deadline", errDeadline, true},
+		{"503", errUpstream, true},
+		{"connection reset", errConnReset, true},
+		{"404", errNotFound, false},
+		{"403", errForbidden, false},
+		{"500", &StatusError{Status: http.StatusInternalServerError}, false},
+		{"nil", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isReadTransient(tc.err); got != tc.want {
+				t.Errorf("isReadTransient(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAwaitIssueVisible(t *testing.T) {
 	t.Run("lag then visible", func(t *testing.T) {
 		g := &scriptedReads{errs: []error{errNotFound, errUpstream, errNotFound}}
@@ -83,6 +124,12 @@ func TestAwaitIssueVisible(t *testing.T) {
 		}
 		if g.calls != 4 {
 			t.Errorf("calls = %d, want 4", g.calls)
+		}
+	})
+	t.Run("timeout then visible", func(t *testing.T) {
+		g := &scriptedReads{errs: []error{errClientTimeout}}
+		if err := awaitIssueVisible(context.Background(), g, "RIG", 7, zeroDelays(2)); err != nil {
+			t.Fatalf("awaitIssueVisible = %v, want nil", err)
 		}
 	})
 	t.Run("never visible fails loud", func(t *testing.T) {
@@ -107,12 +154,27 @@ func TestAwaitIssueVisible(t *testing.T) {
 			t.Fatalf("awaitIssueVisible = %v, want context.Canceled", err)
 		}
 	})
+	t.Run("transient error then canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		g := &scriptedReads{errs: []error{errClientTimeout}, cancel: cancel}
+		err := awaitIssueVisible(ctx, g, "RIG", 7, zeroDelays(3))
+		if !errors.Is(err, errClientTimeout) {
+			t.Fatalf("awaitIssueVisible = %v, want last read error", err)
+		}
+	})
 }
 
 func TestFindListedIssueWithBackoff(t *testing.T) {
 	t.Run("upstream blip and lag then found", func(t *testing.T) {
 		l := &scriptedReads{errs: []error{errUpstream, nil, errConnReset}}
 		row, _, err := findListedIssueWithBackoff(context.Background(), l, "RIG", IssueFilter{}, 7, zeroDelays(4))
+		if err != nil || row.Number != 7 {
+			t.Fatalf("found row %d err %v, want row 7 and nil", row.Number, err)
+		}
+	})
+	t.Run("timeout then found", func(t *testing.T) {
+		l := &scriptedReads{errs: []error{errClientTimeout}}
+		row, _, err := findListedIssueWithBackoff(context.Background(), l, "RIG", IssueFilter{}, 7, zeroDelays(2))
 		if err != nil || row.Number != 7 {
 			t.Fatalf("found row %d err %v, want row 7 and nil", row.Number, err)
 		}
@@ -136,6 +198,56 @@ func TestFindListedIssueWithBackoff(t *testing.T) {
 		_, _, err := findListedIssueWithBackoff(context.Background(), l, "RIG", IssueFilter{}, 7, zeroDelays(3))
 		if !errors.Is(err, errForbidden) || l.calls != 1 {
 			t.Fatalf("err = %v after %d calls, want the 403 after 1", err, l.calls)
+		}
+	})
+	t.Run("transient error then canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		l := &scriptedReads{errs: []error{errClientTimeout}, cancel: cancel}
+		_, _, err := findListedIssueWithBackoff(ctx, l, "RIG", IssueFilter{}, 7, zeroDelays(3))
+		if !errors.Is(err, errClientTimeout) {
+			t.Fatalf("findListedIssueWithBackoff = %v, want last read error", err)
+		}
+	})
+}
+
+func TestAwaitIssueState(t *testing.T) {
+	t.Run("stale state then wanted", func(t *testing.T) {
+		g := &scriptedReads{states: []string{stateClosed, stateOpen}}
+		got, err := awaitIssueState(context.Background(), g, "RIG", 7, stateOpen, zeroDelays(2))
+		if err != nil || got.State != stateOpen {
+			t.Fatalf("awaitIssueState = %+v, %v; want state %q", got, err, stateOpen)
+		}
+		if g.calls != 2 {
+			t.Errorf("calls = %d, want 2", g.calls)
+		}
+	})
+	t.Run("never reaches wanted state", func(t *testing.T) {
+		g := &scriptedReads{states: []string{stateClosed, stateClosed}}
+		_, err := awaitIssueState(context.Background(), g, "RIG", 7, stateOpen, zeroDelays(2))
+		if err == nil || !strings.Contains(err.Error(), "RIG-7") || !strings.Contains(err.Error(), stateClosed) || !strings.Contains(err.Error(), stateOpen) || !strings.Contains(err.Error(), "2 polls") {
+			t.Fatalf("awaitIssueState error = %v, want repo-number, last state, target, and poll count", err)
+		}
+	})
+	t.Run("forbidden stops after one call", func(t *testing.T) {
+		g := &scriptedReads{errs: []error{errForbidden}}
+		_, err := awaitIssueState(context.Background(), g, "RIG", 7, stateOpen, zeroDelays(3))
+		if !errors.Is(err, errForbidden) || g.calls != 1 {
+			t.Fatalf("awaitIssueState = %v after %d calls, want the 403 after 1", err, g.calls)
+		}
+	})
+	t.Run("not found and timeout tolerated", func(t *testing.T) {
+		g := &scriptedReads{errs: []error{errNotFound, errClientTimeout}, states: []string{"", "", stateOpen}}
+		got, err := awaitIssueState(context.Background(), g, "RIG", 7, stateOpen, zeroDelays(3))
+		if err != nil || got.State != stateOpen {
+			t.Fatalf("awaitIssueState = %+v, %v; want state %q", got, err, stateOpen)
+		}
+	})
+	t.Run("transient error then canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		g := &scriptedReads{errs: []error{errClientTimeout}, cancel: cancel}
+		_, err := awaitIssueState(ctx, g, "RIG", 7, stateOpen, zeroDelays(3))
+		if !errors.Is(err, errClientTimeout) {
+			t.Fatalf("awaitIssueState = %v, want last read error", err)
 		}
 	})
 }
