@@ -395,6 +395,7 @@ describe("applyEvent — board update", () => {
 				writtenAtUnixMs: 20,
 				stale: false,
 			},
+			boardEvents: 1,
 		});
 		expect(next.presence).not.toBe(seeded.presence);
 	});

@@ -631,6 +631,41 @@ describe("createStoreDestinationProviders", () => {
 			expect(store.selectedAgentId()).toBe("acc-compass-ui");
 		});
 	});
+	test("the tasks provider keeps server order across boards", async () => {
+		await withStoreAsync(async (store) => {
+			const boardOf = (agent: string, keys: string[]) =>
+				create(AgentBoardSchema, {
+					agentAccountId: agent,
+					handle: agent,
+					tasks: keys.map((key) =>
+						create(BoardTaskSchema, { key, title: key }),
+					),
+					matchedTaskKeys: keys,
+				});
+			const transport = createRouterTransport(({ service }) => {
+				service(CommsService, {
+					listAgentBoards: () => ({
+						boards: [boardOf("acc-a", ["a1", "a2"]), boardOf("acc-b", ["b1"])],
+					}),
+					searchMessages: () => ({ messages: [] }),
+				});
+				service(CompassService, { searchIssues: () => ({ issues: [] }) });
+			});
+			const clients = {
+				comms: createCommsClient(transport),
+				compass: createCompassClient(transport),
+			};
+			const providers = createStoreDestinationProviders(store, clients).filter(
+				(item) => item.id === "tasks",
+			);
+			const groups = await queryDestinations(providers, "ship", 1, () => 1);
+			expect(groups?.get("task")?.map((row) => row.title)).toEqual([
+				"a1",
+				"a2",
+				"b1",
+			]);
+		});
+	});
 });
 
 describe("queryDestinations", () => {

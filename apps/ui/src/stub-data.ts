@@ -472,6 +472,8 @@ export interface Agent {
 	/** UI-only. Optional for a live agent. */
 	cwd?: string;
 	board?: AgentBoardSummary;
+	/** Live-only: AgentBoardChanged events seen for this agent. */
+	boardEvents?: number;
 	/** Fixture-only. */
 	terminals: Terminal[];
 }

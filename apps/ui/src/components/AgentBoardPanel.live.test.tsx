@@ -128,6 +128,21 @@ describe("AgentBoardPanel", () => {
 		expect(reads()).toBe(2);
 	});
 
+	test("an automatic patch that keeps the write time still re-reads", async () => {
+		const { store, fake, reads } = await mountPanel();
+		for (const seq of [1n, 2n]) {
+			await fake.emit(
+				{
+					case: "agentBoardChanged",
+					value: { agentAccountId: AGENT, board: board(50n) },
+				},
+				seq,
+			);
+			await until(() => reads() === Number(seq) + 1);
+		}
+		expect(store.agentView(AGENT)?.board?.writtenAtUnixMs).toBe(50);
+	});
+
 	test("an ask whose message is not loaded opens its channel", async () => {
 		const { store, container } = await mountPanel();
 		container.querySelector<HTMLButtonElement>(".agent-board-ask")?.click();

@@ -96,7 +96,7 @@ export const AgentBoardView: Component<{
 											</a>
 										)}
 									</Show>
-									<Show when={task.primaryRef && !primaryHref()}>
+									<Show when={!primaryHref() && task.primaryRef}>
 										{(ref) => (
 											<span class="agent-board-ref-primary">{ref()}</span>
 										)}
@@ -256,13 +256,11 @@ export const AgentBoardPanel: Component<{ agentId: string }> = (props) => {
 		},
 		{ ...deps, refetchInterval: 60_000 },
 	);
-	// The mount read covers the current value; each later board write re-reads.
-	// A roster re-read can clear the summary, which is not a new write.
-	const writtenAt = () =>
-		store.agentView(props.agentId)?.board?.writtenAtUnixMs;
-	let seen = untrack(writtenAt);
-	createEffect(writtenAt, (next) => {
-		if (next === undefined || next === seen) return;
+	// The mount read covers the events so far; each later AgentBoardChanged re-reads.
+	const events = () => store.agentView(props.agentId)?.boardEvents ?? 0;
+	let seen = untrack(events);
+	createEffect(events, (next) => {
+		if (next === seen) return;
 		seen = next;
 		void query.refetch();
 	});

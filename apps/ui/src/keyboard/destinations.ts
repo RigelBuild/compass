@@ -161,7 +161,7 @@ export function createStoreDestinationProviders(
 			if (!response) continue;
 			for (const wireBoard of response.boards) {
 				const board = adaptAgentBoard(wireBoard);
-				for (const [rank, key] of wireBoard.matchedTaskKeys.entries()) {
+				for (const key of wireBoard.matchedTaskKeys) {
 					const task = board.tasks.find((candidate) => candidate.key === key);
 					if (!task) continue;
 					const id = `${board.agentId}:${key}`;
@@ -171,7 +171,8 @@ export function createStoreDestinationProviders(
 						id,
 						title: [task.primaryRef, task.title].filter(Boolean).join(" · "),
 						kind: "task",
-						score: -rank,
+						// Server order across boards; a task both reads return keeps its first place.
+						score: -destinations.length,
 						navigate: () => store.openAgent(board.agentId),
 					});
 				}

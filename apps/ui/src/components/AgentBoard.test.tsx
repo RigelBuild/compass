@@ -129,3 +129,43 @@ test("AgentBoardView renders board details and pending asks first", () => {
 		"Answered question",
 	]);
 });
+
+const withPrimaryUrl = (url: string): AgentBoard => ({
+	...BOARD,
+	refs: BOARD.refs.map((ref) =>
+		ref.ref === "RigelBuild/compass#12" ? { ...ref, url } : ref,
+	),
+});
+
+test("AgentBoardView opens a safe primary ref externally", () => {
+	const opened: string[] = [];
+	const open = window.open;
+	window.open = (url) => {
+		opened.push(String(url));
+		return null;
+	};
+	try {
+		const { container } = render(() => <AgentBoardView board={BOARD} />);
+		const link = container.querySelector<HTMLAnchorElement>(
+			"a.agent-board-ref-primary",
+		);
+		expect(link?.getAttribute("href")).toBe(
+			"https://github.com/RigelBuild/compass/pull/12",
+		);
+		expect(link?.getAttribute("rel")).toBe("noreferrer noopener");
+		link?.click();
+		expect(opened).toEqual(["https://github.com/RigelBuild/compass/pull/12"]);
+	} finally {
+		window.open = open;
+	}
+});
+
+test("AgentBoardView renders an unsafe primary ref as plain text", () => {
+	const { container } = render(() => (
+		<AgentBoardView board={withPrimaryUrl("javascript:alert(1)")} />
+	));
+	expect(container.querySelector("a.agent-board-ref-primary")).toBeNull();
+	expect(
+		container.querySelector("span.agent-board-ref-primary")?.textContent,
+	).toBe("RigelBuild/compass#12");
+});
