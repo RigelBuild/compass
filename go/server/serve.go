@@ -748,12 +748,12 @@ func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig
 	if err != nil {
 		return store.Account{}, store.Account{}, store.Account{}, fmt.Errorf("seeding system account: %w", err)
 	}
-	slog.Default().Info("system account seeded", "account_id", system.ID, "handle", system.Handle)
+	slog.Default().InfoContext(ctx, "system account seeded", "account_id", system.ID, "handle", system.Handle)
 	linearBridge, err = st.EnsureLinearBridgeAccount(ctx)
 	if err != nil {
 		return store.Account{}, store.Account{}, store.Account{}, fmt.Errorf("seeding linear bridge account: %w", err)
 	}
-	slog.Default().Info("linear bridge account seeded", "account_id", linearBridge.ID, "handle", linearBridge.Handle)
+	slog.Default().InfoContext(ctx, "linear bridge account seeded", "account_id", linearBridge.ID, "handle", linearBridge.Handle)
 	return admin, system, linearBridge, nil
 }
 
@@ -849,7 +849,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	defer st.Close()
 	// Deferred after st.Close, so it runs first: the drain finishes in-flight
 	// delivery callbacks, which read the store, while the store is still open.
-	defer closeFabric(fab)
+	defer closeFabric(ctx, fab)
 
 	// Seed the platform accounts before serving: bootstrap admin, reserved system
 	// sender @compass, reserved Linear bridge sender @linear. Created
@@ -863,7 +863,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Log the resolved public base URL: there is no default, so a deploy that
 	// forgets --public-url/$COMPASS_PUBLIC_URL logs an empty base (and the
 	// responder-assembly guard rejects it when Linear webhooks are enabled).
-	slog.Default().Info("public base URL resolved", "public_url", cfg.PublicURL)
+	slog.Default().InfoContext(ctx, "public base URL resolved", "public_url", cfg.PublicURL)
 
 	// The RunnerHub is the Server side of the Server<->Runner seam, routing
 	// container-lifecycle RPCs to the owning Runner. The Bridge board is its
@@ -2161,7 +2161,7 @@ func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store,
 		return nil, failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
 	}
 	if !cfg.Forge.forgeWritesEnabled(declaredSecrets) {
-		warnPartialForgeWriteSecrets(cfg.Forge, declaredSecrets, log)
+		warnPartialForgeWriteSecrets(ctx, cfg.Forge, declaredSecrets, log)
 		return nil, nil //nolint:nilnil // nil service is the explicit disabled state.
 	}
 	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, primaryClient, linearTokens, log)
@@ -2274,7 +2274,7 @@ func reconcileForgeScopeGrants(ctx context.Context, st forgeScopeGranter, fc For
 		}
 	}
 	if !fc.ScopeEnforcementDisabled && len(fc.ScopeGrants) == 0 {
-		log.Warn("forge scope enforcement is on with no grants declared at boot; agent forge writes need a matching store grant")
+		log.WarnContext(ctx, "forge scope enforcement is on with no grants declared at boot; agent forge writes need a matching store grant")
 	}
 	return nil
 }
@@ -2335,7 +2335,7 @@ func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secre
 		if haveSecret {
 			declaredName, missingName = fc.LinearClientSecretName, fc.LinearClientIDSecretName
 		}
-		log.Warn("forge Linear lanes disabled: only one of the two Linear client-credential secrets is declared; both are required",
+		log.WarnContext(ctx, "forge Linear lanes disabled: only one of the two Linear client-credential secrets is declared; both are required",
 			"declared", declaredName, "missing", missingName)
 		return nil, nil //nolint:nilnil // a partial Linear config is an operator typo, surfaced by the Warn; treated as off (a nil source), never a fatal.
 	}
@@ -2410,13 +2410,13 @@ func reconcileForgeSeed(ctx context.Context, st *store.Store, provider store.For
 func warnDisabledBoardIngestion(ctx context.Context, st *store.Store, provider store.ForgeProvider, host string, log *slog.Logger) {
 	enabled, err := st.ListEnabledForgeRepoSubscriptions(ctx, provider, host)
 	if err != nil {
-		log.Error("board ingestion: list enabled targets at boot", "err", err)
+		log.ErrorContext(ctx, "board ingestion: list enabled targets at boot", "err", err)
 		return
 	}
 	if len(enabled) == 0 {
 		return
 	}
-	log.Warn("board ingestion disabled (no GitHub App configured) but enabled targets exist; set --forge-app-id and the App secrets",
+	log.WarnContext(ctx, "board ingestion disabled (no GitHub App configured) but enabled targets exist; set --forge-app-id and the App secrets",
 		"targets", len(enabled), "forge_host", host)
 }
 
@@ -2442,7 +2442,7 @@ func (f *fanoutSink) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 // The intentional both-absent OFF state stays silent. Mirrors
 // warnDisabledBoardIngestion: diagnostic only, never fail-fast, and logs a role
 // name never a secret value.
-func warnPartialForgeWriteSecrets(fc ForgeConfig, declared []secrets.ResolvedSecret, log *slog.Logger) {
+func warnPartialForgeWriteSecrets(ctx context.Context, fc ForgeConfig, declared []secrets.ResolvedSecret, log *slog.Logger) {
 	havePrimary, haveReviewer := fc.forgeWriteAppsConfigured(declared)
 	if havePrimary == haveReviewer {
 		return // both configured (enabled path, not here) or both absent (intentional off)
@@ -2451,7 +2451,7 @@ func warnPartialForgeWriteSecrets(fc ForgeConfig, declared []secrets.ResolvedSec
 	if haveReviewer {
 		configured, missing = "reviewer App", "primary App"
 	}
-	log.Warn("forge write path disabled: only one of the two required GitHub Apps is configured; both are required",
+	log.WarnContext(ctx, "forge write path disabled: only one of the two required GitHub Apps is configured; both are required",
 		"configured", configured, "missing", missing)
 }
 
@@ -2487,7 +2487,7 @@ func openFabricAndStore(ctx context.Context, cfg ServeConfig) (*fabric.Fabric, *
 	}
 	st, err := openStore(ctx, cfg)
 	if err != nil {
-		closeFabric(fab)
+		closeFabric(ctx, fab)
 		return nil, nil, err
 	}
 	return fab, st, nil
@@ -2495,9 +2495,10 @@ func openFabricAndStore(ctx context.Context, cfg ServeConfig) (*fabric.Fabric, *
 
 // closeFabric drains the event fabric on shutdown. Serve has already chosen its
 // return value by then, so a failed drain is logged, not returned.
-func closeFabric(fab *fabric.Fabric) {
+func closeFabric(ctx context.Context, fab *fabric.Fabric) {
 	if err := fab.Close(); err != nil {
-		slog.Default().Warn("draining event fabric on shutdown", "error", err)
+		// Runs after shutdown cancels ctx; keep its values, drop the cancel.
+		slog.Default().WarnContext(context.WithoutCancel(ctx), "draining event fabric on shutdown", "error", err)
 	}
 }
 

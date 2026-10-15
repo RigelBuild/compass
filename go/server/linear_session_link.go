@@ -59,7 +59,7 @@ func (h *linearSessionLinkHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		if errors.Is(err, context.Canceled) {
 			return
 		}
-		h.log.Error("linear session link lookup failed", "error", err)
+		h.log.ErrorContext(r.Context(), "linear session link lookup failed", "error", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
@@ -83,7 +83,7 @@ func (h *linearSessionLinkHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		if status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "5")
 		}
-		h.log.Error("linear session link resolution failed", "error", err)
+		h.log.ErrorContext(r.Context(), "linear session link resolution failed", "error", err)
 		http.Error(w, http.StatusText(status), status)
 		return
 	}

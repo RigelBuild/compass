@@ -51,7 +51,8 @@ const apiVersion = "compass.v1"
 var errUsage = errors.New("cli usage error")
 
 func main() {
-	err := run()
+	ctx := context.Background()
+	err := run(ctx)
 	if err == nil {
 		return
 	}
@@ -60,11 +61,11 @@ func main() {
 		// the conventional usage code without re-reporting it as a server error.
 		os.Exit(2)
 	}
-	slog.Error("compass-server exited with an error", "error", err)
+	slog.ErrorContext(ctx, "compass-server exited with an error", "error", err)
 	os.Exit(1)
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	cfg, showVersion, err := buildServeConfig(os.Args[1:])
 	if errors.Is(err, flag.ErrHelp) {
 		// -h/--help: the FlagSet already printed usage; a clean exit, not an error.
@@ -86,7 +87,7 @@ func run() error {
 
 	slog.SetDefault(slog.New(otel.NewTraceHandler(slog.NewTextHandler(os.Stderr, nil))))
 
-	slog.Info("compass-server starting",
+	slog.InfoContext(ctx, "compass-server starting",
 		"version", version,
 		"rev", rev,
 		"api", apiVersion,
@@ -95,13 +96,13 @@ func run() error {
 
 	// SIGINT (Ctrl-C) or SIGTERM (service stop) cancels the context, which drains
 	// both servers gracefully. stop() restores default signal handling on return.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Log once when a termination signal actually arrives, so an operator watching
 	// stderr can tell a graceful drain from a hard death (a dedicated registration
 	// so it fires only on a real signal, not when Serve returns on its own).
-	stopDrainLog := logOnDrainSignal()
+	stopDrainLog := logOnDrainSignal(ctx)
 	defer stopDrainLog()
 
 	// OTel emission (T4b): endpoint-gated off the ENV-only knob. When
@@ -285,12 +286,13 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 // func the caller defers (unregisters the handler). A dedicated registration
 // rather than ctx.Done() so it fires only on a real signal — not when Serve
 // returns on its own and the caller's stop() then cancels ctx.
-func logOnDrainSignal() func() {
+func logOnDrainSignal(ctx context.Context) func() {
 	drainSig := make(chan os.Signal, 1)
 	signal.Notify(drainSig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		if _, ok := <-drainSig; ok {
-			slog.Info("shutdown signal received; draining")
+			// The signal also cancels ctx; log on its values without the cancel.
+			slog.InfoContext(context.WithoutCancel(ctx), "shutdown signal received; draining")
 		}
 	}()
 	return func() { signal.Stop(drainSig) }

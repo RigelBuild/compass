@@ -135,29 +135,29 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		// re-driving it — else a non-admin-owned agent holding the reserved handle
 		// would be auto-provisioned. Keeps the "adopts nothing it did not seed" contract.
 		if !isAdminRootSupervisor(supervisor, adminID) {
-			log.Error("root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
+			log.ErrorContext(ctx, "root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
 				"agent_account_id", supervisor.ID)
-			warnNoLinearRoutingTarget(log, linearBridgeID, "the supervisor handle is not the admin's root agent")
+			warnNoLinearRoutingTarget(ctx, log, linearBridgeID, "the supervisor handle is not the admin's root agent")
 			return
 		}
 	case errors.Is(err, store.ErrNotFound):
 		created, ok, cerr := createRootSupervisor(ctx, st, adminID, log)
 		if errors.Is(cerr, errTreeNotEmpty) {
-			warnNoLinearRoutingTarget(log, linearBridgeID, "the agent tree has an operator-built root")
+			warnNoLinearRoutingTarget(ctx, log, linearBridgeID, "the agent tree has an operator-built root")
 		}
 		if cerr != nil || !ok {
 			return // createRootSupervisor logged the reason (or the tree was non-empty).
 		}
 		supervisor = created
 	default:
-		log.Error("root-supervisor seed: looking up supervisor failed; skipping seed", "err", err)
+		log.ErrorContext(ctx, "root-supervisor seed: looking up supervisor failed; skipping seed", "err", err)
 		return
 	}
 
 	// Ensured before the spawn: routing needs only the rows, not a live session.
 	if linearBridgeID != "" {
 		if _, err := st.EnsureLinearRoutingChannel(ctx, adminID, supervisor.ID, linearBridgeID); err != nil {
-			log.Error("root-supervisor seed: ensuring the linear routing channel failed; will retry on next enroll",
+			log.ErrorContext(ctx, "root-supervisor seed: ensuring the linear routing channel failed; will retry on next enroll",
 				"agent_account_id", supervisor.ID, "err", err)
 		}
 	}
@@ -174,7 +174,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 			postSetupThread(ctx, cm, st, compassID, supervisor, log)
 			return
 		}
-		log.Error("root-supervisor seed: starting supervisor failed; will retry on next enroll",
+		log.ErrorContext(ctx, "root-supervisor seed: starting supervisor failed; will retry on next enroll",
 			"agent_account_id", supervisor.ID, "err", err)
 		return
 	}
@@ -183,7 +183,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	// joined this boot's completed seed spawn. It does NOT re-confirm liveness
 	// against the Runner on a memo join (see the memo caveat above), so this
 	// reports the seed drove to completion, not an independently verified session.
-	log.Info("root-supervisor seed: root supervisor seed completed", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
+	log.InfoContext(ctx, "root-supervisor seed: root supervisor seed completed", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
 
 	// Give the supervisor its first turn: post the Setup thread as @compass into its
 	// home channel. A post failure is logged, not fatal (matching the seed's own
@@ -199,11 +199,11 @@ func isAdminRootSupervisor(acct store.Account, adminID store.AccountID) bool {
 
 // warnNoLinearRoutingTarget flags a seed that returns before the routing channel exists:
 // with Linear on, cold delegations and bare @mentions then have no routing target.
-func warnNoLinearRoutingTarget(log *slog.Logger, linearBridgeID store.AccountID, reason string) {
+func warnNoLinearRoutingTarget(ctx context.Context, log *slog.Logger, linearBridgeID store.AccountID, reason string) {
 	if linearBridgeID == "" {
 		return
 	}
-	log.Warn("root-supervisor seed: cold Linear delegations have no routing target", "reason", reason)
+	log.WarnContext(ctx, "root-supervisor seed: cold Linear delegations have no routing target", "reason", reason)
 }
 
 // postSetupThread posts the platform's Setup thread as @compass into the
@@ -219,7 +219,7 @@ func warnNoLinearRoutingTarget(log *slog.Logger, linearBridgeID store.AccountID,
 func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, compassID store.AccountID, supervisor store.Account, log *slog.Logger) {
 	homeChannelID := supervisor.Agent.HomeChannelID
 	if err := st.EnsureChannelMember(ctx, homeChannelID, compassID); err != nil {
-		log.Error("root-supervisor seed: making @compass a member of the supervisor home channel failed; skipping Setup post",
+		log.ErrorContext(ctx, "root-supervisor seed: making @compass a member of the supervisor home channel failed; skipping Setup post",
 			"agent_account_id", supervisor.ID, "channel_id", homeChannelID, "err", err)
 		return
 	}
@@ -230,7 +230,7 @@ func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, comp
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: setupThreadBody}}},
 		ClientRequestId: setupThreadClientRequestIDPrefix + "-" + string(supervisor.ID),
 	}); err != nil {
-		log.Error("root-supervisor seed: posting the Setup thread failed; will retry on next enroll",
+		log.ErrorContext(ctx, "root-supervisor seed: posting the Setup thread failed; will retry on next enroll",
 			"agent_account_id", supervisor.ID, "channel_id", homeChannelID, "err", err)
 		return
 	}
@@ -245,7 +245,7 @@ func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, comp
 func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.AccountID, log *slog.Logger) (store.Account, bool, error) {
 	roots, err := st.CountRootAgents(ctx, adminID)
 	if err != nil {
-		log.Error("root-supervisor seed: counting root agents failed; skipping seed", "err", err)
+		log.ErrorContext(ctx, "root-supervisor seed: counting root agents failed; skipping seed", "err", err)
 		return store.Account{}, false, err
 	}
 	if roots > 0 {
@@ -263,7 +263,7 @@ func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.Ac
 			// start. Nothing to create.
 			return store.Account{}, false, nil
 		}
-		log.Error("root-supervisor seed: creating supervisor agent failed", "err", err)
+		log.ErrorContext(ctx, "root-supervisor seed: creating supervisor agent failed", "err", err)
 		return store.Account{}, false, err
 	}
 	return agent, true, nil

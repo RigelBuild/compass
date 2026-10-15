@@ -343,7 +343,7 @@ func TestWarnPartialForgeWriteSecrets(t *testing.T) {
 
 	t.Run("primary-App-only -> one Warn naming configured+missing", func(t *testing.T) {
 		h := &capWarnHandler{}
-		warnPartialForgeWriteSecrets(ForgeConfig{App: primary}, primaryDeclared, slog.New(h))
+		warnPartialForgeWriteSecrets(t.Context(), ForgeConfig{App: primary}, primaryDeclared, slog.New(h))
 		if h.warns != 1 {
 			t.Fatalf("Warn count = %d, want exactly 1 on a partial (primary-App-only) misconfig", h.warns)
 		}
@@ -356,7 +356,7 @@ func TestWarnPartialForgeWriteSecrets(t *testing.T) {
 	})
 	t.Run("reviewer-App-only -> one Warn naming configured+missing", func(t *testing.T) {
 		h := &capWarnHandler{}
-		warnPartialForgeWriteSecrets(ForgeConfig{ReviewerApp: reviewer}, reviewerDeclared, slog.New(h))
+		warnPartialForgeWriteSecrets(t.Context(), ForgeConfig{ReviewerApp: reviewer}, reviewerDeclared, slog.New(h))
 		if h.warns != 1 {
 			t.Fatalf("Warn count = %d, want exactly 1 on a partial (reviewer-App-only) misconfig", h.warns)
 		}
@@ -369,14 +369,14 @@ func TestWarnPartialForgeWriteSecrets(t *testing.T) {
 	})
 	t.Run("neither configured -> silent (intentional off)", func(t *testing.T) {
 		h := &capWarnHandler{}
-		warnPartialForgeWriteSecrets(ForgeConfig{}, nil, slog.New(h))
+		warnPartialForgeWriteSecrets(t.Context(), ForgeConfig{}, nil, slog.New(h))
 		if h.warns != 0 {
 			t.Fatalf("Warn count = %d, want 0 for the intentional both-absent off state", h.warns)
 		}
 	})
 	t.Run("both configured -> silent (enabled path warns nothing)", func(t *testing.T) {
 		h := &capWarnHandler{}
-		warnPartialForgeWriteSecrets(ForgeConfig{App: primary, ReviewerApp: reviewer}, bothDeclared, slog.New(h))
+		warnPartialForgeWriteSecrets(t.Context(), ForgeConfig{App: primary, ReviewerApp: reviewer}, bothDeclared, slog.New(h))
 		if h.warns != 0 {
 			t.Fatalf("Warn count = %d, want 0 when both Apps are configured", h.warns)
 		}
