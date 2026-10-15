@@ -239,7 +239,7 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 				return "", fmt.Errorf("provisioning %q: removing stale workload: %w", spec.Name, err)
 			}
 		}
-		h.retireContainer(spec.Name)
+		h.retireContainer(ctx, spec.Name)
 		h.closeSocket(ctx, spec.Name)
 		h.registry.Deregister(spec.Name)
 	}
@@ -352,7 +352,7 @@ func (h *agentHost) Close(ctx context.Context) {
 	for _, name := range names {
 		wg.Go(func() {
 			if err := h.Remove(ctx, name); err != nil {
-				h.log.Warn("tearing down agent container", slog.String("container", name), slog.Any("error", err))
+				h.log.WarnContext(ctx, "tearing down agent container", slog.String("container", name), slog.Any("error", err))
 			}
 		})
 	}
@@ -427,7 +427,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		// No secrets surface on this Server: nothing to materialize. Start the
 		// agent anyway. Logged at Warn so a secrets-less start is visible — it is
 		// a degraded posture even when intended.
-		h.log.Warn("no secrets surface; starting agent without materialized secrets", "container", name)
+		h.log.WarnContext(ctx, "no secrets surface; starting agent without materialized secrets", "container", name)
 	default:
 		return "", fmt.Errorf("fetching secrets before agent start for container %q: %w", name, err)
 	}
@@ -464,21 +464,21 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			// passed but reconstruction produced nothing); materialize the empty file
 			// per the id-is-the-discriminator contract, but surface the reconstruction
 			// bug here rather than only as an agent resuming from an empty transcript.
-			h.log.Warn("resume_session_id set with empty body; materializing empty resume file", "container", name, "resume_session_id", id)
+			h.log.WarnContext(ctx, "resume_session_id set with empty body; materializing empty resume file", "container", name, "resume_session_id", id)
 		}
-		h.log.Info("materializing resume session file", "container", name, "resume_session_id", id)
+		h.log.InfoContext(ctx, "materializing resume session file", "container", name, "resume_session_id", id)
 		if err := h.runtime.WriteAgentFile(ctx, handle.ID(), handle.WorkspaceUID(), handle.HomeDir(), relPath, resumeBody); err != nil {
 			return "", fmt.Errorf("materializing resume session file for container %q: %w", name, err)
 		}
 		if err := h.writeResumeBlobs(ctx, name, handle, resumeFiles); err != nil {
-			h.log.Warn("session blob materialization failed; starting with local references", "container", name, "session_id", id, "error", err)
+			h.log.WarnContext(ctx, "session blob materialization failed; starting with local references", "container", name, "session_id", id, "error", err)
 		}
 		env.ResumeSessionFile = filepath.Join(handle.HomeDir(), relPath)
 	} else if resumeBody != "" {
 		// The inverse skew: a body with no resume_session_id. The id is the sole
 		// discriminator, so this start is treated as fresh and the body dropped —
 		// surfaced symmetrically with the empty-body warning above.
-		h.log.Warn("resume body supplied without resume_session_id; dropping", "container", name)
+		h.log.WarnContext(ctx, "resume body supplied without resume_session_id; dropping", "container", name)
 	}
 
 	stream, err := h.bindAndStartAgent(ctx, req, sessionID, handle.ID(), env)
@@ -529,7 +529,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			// A served listener always has a wired producer (gateway.Serve), so this
 			// is an unreachable wiring fault in production, not a reason to fail an
 			// already-recorded Start. Log and continue.
-			h.log.Error("sending replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
+			h.log.ErrorContext(ctx, "sending replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
 		}
 	}
 	return sessionID, nil
@@ -574,12 +574,12 @@ func (h *agentHost) Stop(ctx context.Context, sessionID string) error {
 		return nil
 	}
 	if s.stream != nil {
-		if err := s.stream.Stop(); err != nil {
+		if err := s.stream.Stop(ctx); err != nil {
 			return err
 		}
 	}
 	if err := h.sweepExecSessions(ctx, s); err != nil {
-		h.log.Warn("sweeping detached agent exec sessions after stop",
+		h.log.WarnContext(ctx, "sweeping detached agent exec sessions after stop",
 			slog.String("container", s.containerName), slog.String("session_id", sessionID), slog.Any("error", err))
 	}
 	return nil
@@ -806,7 +806,7 @@ func (h *agentHost) removeLocked(ctx context.Context, containerName string) erro
 	// container teardown below fails. Deferred, so it still runs last (after the
 	// container is stopped and removed) on the success path.
 	defer h.closeSocket(ctx, containerName)
-	h.retireContainer(containerName)
+	h.retireContainer(ctx, containerName)
 
 	// Tear the container down through the AgentRuntime (stop + remove +
 	// deregister). A container the registry no longer resolves is already gone —
@@ -824,7 +824,7 @@ func (h *agentHost) removeLocked(ctx context.Context, containerName string) erro
 
 // retireContainer drops the session bound to containerName and its config
 // version, then stops that session's agent exec. The caller holds the container lock.
-func (h *agentHost) retireContainer(containerName string) {
+func (h *agentHost) retireContainer(ctx context.Context, containerName string) {
 	h.mu.Lock()
 	var retired *liveSession
 	for id, s := range h.sessions {
@@ -845,8 +845,8 @@ func (h *agentHost) retireContainer(containerName string) {
 	// Outside the lock: stopping terminates a child and joins its drains. Logged,
 	// never returned, so a failed exec-stop cannot block the teardown.
 	if retired != nil && retired.stream != nil {
-		if err := retired.stream.Stop(); err != nil {
-			h.log.Warn("stopping agent exec during container retire",
+		if err := retired.stream.Stop(ctx); err != nil {
+			h.log.WarnContext(ctx, "stopping agent exec during container retire",
 				slog.String("container", containerName), slog.String("session_id", retired.sessionID), slog.Any("error", err))
 		}
 	}
@@ -966,7 +966,7 @@ func (h *agentHost) teardownContainer(ctx context.Context, containerName string)
 		return
 	}
 	if err := h.runtime.Teardown(ctx, handle); err != nil {
-		h.log.Warn("tearing down container after failed vsock gateway provision",
+		h.log.WarnContext(ctx, "tearing down container after failed vsock gateway provision",
 			slog.String("container", containerName), slog.Any("error", err))
 	}
 }
@@ -1100,7 +1100,7 @@ func (h *agentHost) markErrored(ctx context.Context, sessionID, containerName st
 	publishCtx, cancel := context.WithTimeout(ctx, publishGrace)
 	defer cancel()
 	if err := listener.PublishSessionState(publishCtx, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
-		h.log.Error("reporting agent exit to server", slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
+		h.log.ErrorContext(ctx, "reporting agent exit to server", slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
 	}
 }
 
@@ -1129,7 +1129,7 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	}
 	stream := s.stream
 	if stream != nil {
-		if err := stream.Stop(); err != nil {
+		if err := stream.Stop(ctx); err != nil {
 			return err
 		}
 	}
@@ -1200,7 +1200,7 @@ func (h *agentHost) bindAndStartAgent(ctx context.Context, req *compassv1.StartA
 func (h *agentHost) bindReload(ctx context.Context, containerName, sessionID string) error {
 	err := h.link.BindLifetime(ctx, containerName, sessionID)
 	if connect.CodeOf(err) == connect.CodePermissionDenied {
-		h.log.Warn("no session row yet; relaunching without a bind",
+		h.log.WarnContext(ctx, "no session row yet; relaunching without a bind",
 			slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
 		return nil
 	}
@@ -1304,7 +1304,7 @@ func (h *agentHost) closeSocket(ctx context.Context, containerName string) {
 		return
 	}
 	if err := listener.Close(ctx); err != nil {
-		h.log.Warn("closing agent socket", slog.String("container", containerName), slog.Any("error", err))
+		h.log.WarnContext(ctx, "closing agent socket", slog.String("container", containerName), slog.Any("error", err))
 	}
 }
 

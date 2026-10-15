@@ -153,7 +153,7 @@ func run() error {
 		return err
 	}
 
-	slog.Info("compass-runner starting",
+	slog.InfoContext(ctx, "compass-runner starting",
 		"version", version, "runner_id", id, "server", addr)
 
 	// OTel emission (env-only, bounded flush on drain); see setupOtel.
@@ -417,7 +417,7 @@ func runMicroVMPreflight(ctx context.Context, pre microVMPreflighter, engine run
 	if err != nil {
 		return err
 	}
-	slog.Info("microvm boot canary passed",
+	slog.InfoContext(ctx, "microvm boot canary passed",
 		"boot_latency", report.BootLatency,
 		"guest_rss_bytes", report.GuestRSSBytes)
 	return nil

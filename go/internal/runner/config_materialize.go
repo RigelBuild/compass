@@ -179,7 +179,7 @@ func (m *ConfigMaterializer) Materialize(ctx context.Context, mcsLabel string) (
 		if !errors.Is(statErr, os.ErrNotExist) {
 			return ConfigMount{}, fmt.Errorf("stat version dir %q: %w", versionDir, statErr)
 		}
-		if err := m.unpackVersion(bundle, versionDir); err != nil {
+		if err := m.unpackVersion(ctx, bundle, versionDir); err != nil {
 			return ConfigMount{}, err
 		}
 	}
@@ -190,11 +190,11 @@ func (m *ConfigMaterializer) Materialize(ctx context.Context, mcsLabel string) (
 		}
 	}
 
-	if err := m.flipCurrent(bundle.Version); err != nil {
+	if err := m.flipCurrent(ctx, bundle.Version); err != nil {
 		return ConfigMount{}, err
 	}
 
-	m.prune(bundle.Version)
+	m.prune(ctx, bundle.Version)
 
 	return ConfigMount{HostPath: m.root, Version: bundle.Version}, nil
 }
@@ -218,7 +218,7 @@ func (m *ConfigMaterializer) ensureRoot() error {
 // unpackVersion validates + unpacks the bundle into a staging dir then atomically
 // renames it into versionDir, and writes the observability version file. Staging
 // is removed on any error so a crashed unpack leaves no half-written version dir.
-func (m *ConfigMaterializer) unpackVersion(bundle AgentConfigBundle, versionDir string) error {
+func (m *ConfigMaterializer) unpackVersion(ctx context.Context, bundle AgentConfigBundle, versionDir string) error {
 	if err := m.ensureRoot(); err != nil {
 		return err
 	}
@@ -233,7 +233,7 @@ func (m *ConfigMaterializer) unpackVersion(bundle AgentConfigBundle, versionDir 
 	defer func() {
 		if cleanup {
 			if rmErr := os.RemoveAll(staging); rmErr != nil {
-				m.log.Warn("removing config staging dir", "staging_dir", staging, "error", rmErr)
+				m.log.WarnContext(ctx, "removing config staging dir", "staging_dir", staging, "error", rmErr)
 			}
 		}
 	}()
@@ -285,14 +285,14 @@ func pinConfigModes(dir string) error {
 // flipCurrent atomically points <root>/current at version (a relative sibling
 // target). A temp symlink is written then renamed over current, since a plain
 // os.Symlink fails if current exists and rename is atomic on one fs.
-func (m *ConfigMaterializer) flipCurrent(version string) error {
+func (m *ConfigMaterializer) flipCurrent(ctx context.Context, version string) error {
 	tmp, err := os.MkdirTemp(m.root, ".curlink-")
 	if err != nil {
 		return fmt.Errorf("creating symlink temp dir: %w", err)
 	}
 	defer func() {
 		if rmErr := os.RemoveAll(tmp); rmErr != nil {
-			m.log.Warn("removing symlink temp dir", "temp_dir", tmp, "error", rmErr)
+			m.log.WarnContext(ctx, "removing symlink temp dir", "temp_dir", tmp, "error", rmErr)
 		}
 	}()
 
@@ -317,10 +317,10 @@ func (m *ConfigMaterializer) flipCurrent(version string) error {
 // orphaned by a crash between MkdirTemp and its deferred RemoveAll is never
 // reclaimed here — a small, bounded leak (one aborted bundle each) accepted in
 // favor of never racing a concurrent writer.
-func (m *ConfigMaterializer) prune(keep string) {
+func (m *ConfigMaterializer) prune(ctx context.Context, keep string) {
 	entries, err := os.ReadDir(m.root)
 	if err != nil {
-		m.log.Warn("reading config root for prune", "root", m.root, "error", err)
+		m.log.WarnContext(ctx, "reading config root for prune", "root", m.root, "error", err)
 		return
 	}
 	for _, e := range entries {
@@ -330,7 +330,7 @@ func (m *ConfigMaterializer) prune(keep string) {
 		}
 		p := filepath.Join(m.root, name)
 		if err := os.RemoveAll(p); err != nil {
-			m.log.Warn("pruning superseded config version dir", "version_dir", p, "error", err)
+			m.log.WarnContext(ctx, "pruning superseded config version dir", "version_dir", p, "error", err)
 		}
 	}
 }

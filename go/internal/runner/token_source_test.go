@@ -22,7 +22,7 @@ func TestFileTokenReReadsFileEveryCall(t *testing.T) {
 	writeToken("first")
 	source := NewFileToken(path, discardLoggerRunner(), time.Now)
 
-	first, err := source.Token()
+	first, err := source.Token(t.Context())
 	if err != nil {
 		t.Fatalf("first Token = %v, want nil", err)
 	}
@@ -31,7 +31,7 @@ func TestFileTokenReReadsFileEveryCall(t *testing.T) {
 	}
 
 	writeToken("second")
-	second, err := source.Token()
+	second, err := source.Token(t.Context())
 	if err != nil {
 		t.Fatalf("second Token = %v, want nil", err)
 	}
@@ -48,20 +48,20 @@ func TestFileTokenReadErrorUsesCachedTokenUntilExpiry(t *testing.T) {
 		t.Fatalf("write token file: %v", err)
 	}
 	source := NewFileToken(path, discardLoggerRunner(), func() time.Time { return now })
-	if got, err := source.Token(); err != nil || got != cached {
+	if got, err := source.Token(t.Context()); err != nil || got != cached {
 		t.Fatalf("initial Token = (%q, %v), want cached token and nil", got, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove token file: %v", err)
 	}
 
-	got, err := source.Token()
+	got, err := source.Token(t.Context())
 	if err != nil || got != cached {
 		t.Fatalf("Token after read error = (%q, %v), want cached token and nil", got, err)
 	}
 
 	now = now.Add(time.Minute)
-	got, err = source.Token()
+	got, err = source.Token(t.Context())
 	if err == nil || got != "" {
 		t.Fatalf("Token after cached expiry = (%q, %v), want an error", got, err)
 	}
@@ -75,14 +75,14 @@ func TestFileTokenEmptyFileUsesCachedToken(t *testing.T) {
 		t.Fatalf("write token file: %v", err)
 	}
 	source := NewFileToken(path, discardLoggerRunner(), func() time.Time { return now })
-	if _, err := source.Token(); err != nil {
+	if _, err := source.Token(t.Context()); err != nil {
 		t.Fatalf("initial Token = %v, want nil", err)
 	}
 	if err := os.WriteFile(path, []byte(" \n\t"), 0o600); err != nil {
 		t.Fatalf("empty token file: %v", err)
 	}
 
-	got, err := source.Token()
+	got, err := source.Token(t.Context())
 	if err != nil || got != cached {
 		t.Fatalf("Token after empty file = (%q, %v), want cached token and nil", got, err)
 	}
@@ -95,7 +95,7 @@ func TestFileTokenRejectsExpiredTokenInFile(t *testing.T) {
 		t.Fatalf("write expired token: %v", err)
 	}
 	source := NewFileToken(path, discardLoggerRunner(), func() time.Time { return now })
-	got, err := source.Token()
+	got, err := source.Token(t.Context())
 	if err == nil || got != "" {
 		t.Fatalf("Token with expired file value = (%q, %v), want an error", got, err)
 	}
