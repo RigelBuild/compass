@@ -16,6 +16,7 @@ import {
 	type NameVersion,
 	type PackageChange,
 	parseArtifact,
+	parseDevenvBuild,
 	parseDevenvEval,
 	parsePathInfoVersions,
 	renderSection,
@@ -223,6 +224,8 @@ function collectTarget(
 		return { label: target.label, error: code };
 	}
 	try {
+		// devenv roots container builds under .devenv/gc; drop them so the delete can free the closure.
+		rmSync(join(headDir, ".devenv/gc"), { recursive: true, force: true });
 		command("nix", ["store", "delete", headClosure], repoRoot);
 		command("nix", ["store", "gc"], repoRoot);
 		const baseClosure = evaluateClosure(baseCli, target, baseDir, "base");
@@ -287,20 +290,19 @@ function evaluateClosure(
 	directory: string,
 	side: string,
 ): string {
-	let output: string;
 	if (target.closure.kind === "build") {
-		output = command(
+		const output = command(
 			join(cli, "bin/devenv"),
 			["build", target.closure.attr],
 			directory,
 		);
-	} else {
-		output = command(
-			join(cli, "bin/devenv"),
-			["container", "build", target.closure.name],
-			directory,
-		);
+		return parseDevenvBuild(output, target.closure.attr);
 	}
+	const output = command(
+		join(cli, "bin/devenv"),
+		["container", "build", target.closure.name],
+		directory,
+	);
 	return buildOutPath(output, `${target.label} ${side} closure build`);
 }
 

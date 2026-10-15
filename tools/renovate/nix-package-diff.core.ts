@@ -94,6 +94,22 @@ export function parseDevenvEval(json: string, attr: string): string[] {
 	throw new Error(`devenv eval output must contain a string array at ${attr}.`);
 }
 
+export function parseDevenvBuild(json: string, attr: string): string {
+	let value: unknown;
+	try {
+		value = JSON.parse(json);
+	} catch (error) {
+		throw new Error(`devenv build output is not valid JSON: ${String(error)}`);
+	}
+	const path = isRecord(value) ? value[attr] : undefined;
+	if (typeof path !== "string" || !path.startsWith("/nix/store/")) {
+		throw new Error(
+			`devenv build output must map ${attr} to a Nix store path.`,
+		);
+	}
+	return path;
+}
+
 function isErrorCode(value: string): value is (typeof ERROR_CODES)[number] {
 	return ERROR_CODES.some((code) => code === value);
 }
