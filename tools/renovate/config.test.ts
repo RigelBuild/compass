@@ -74,6 +74,7 @@ type RenovateConfig = {
 	enabledManagers?: string[];
 	customManagers?: CustomManager[];
 	postUpgradeTasks?: PostUpgradeTasks;
+	postUpdateOptions?: string[];
 };
 
 const cfg = config as RenovateConfig;
@@ -411,6 +412,13 @@ describe("tools/renovate OSV vuln source honors the disable rules", () => {
 	test("does NOT set vulnerabilityAlerts.enabled (would re-open disabled bumps)", () => {
 		expect(cfg.vulnerabilityAlerts?.enabled).toBeUndefined();
 		expect(cfg.vulnerabilityAlerts?.enabled).not.toBe(true);
+	});
+});
+
+describe("tools/renovate gomod bumps pass the go.sum tidy gate", () => {
+	test("gomodTidy runs after patch and minor gomod updates", () => {
+		expect(cfg.enabledManagers).toContain("gomod");
+		expect(cfg.postUpdateOptions).toContain("gomodTidy");
 	});
 });
 
