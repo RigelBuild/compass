@@ -226,6 +226,7 @@ export const DEFAULT_KEYMAP: readonly KeymapEntry[] = [
 	{ chord: "Shift+Enter", commandId: cmd("board.openAssignedAgent") },
 	{ chord: "R", commandId: cmd("board.focusCardRef") },
 	{ chord: "Shift+R", commandId: cmd("board.focusCardRefPrev") },
+	{ chord: "Escape", commandId: cmd("board.exitCardRef") },
 
 	// Workspace (D5:452-453): Ctrl+Alt+Arrow moves focus between the channel
 	// and trace panes.

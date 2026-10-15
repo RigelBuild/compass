@@ -39,7 +39,11 @@ import { useRefLinkRules, useStore } from "../context";
 import type { Command, CommandId } from "../keyboard/commands";
 import { detectPlatform } from "../keyboard/dispatch";
 import { shortcutForAria } from "../keyboard/keymap";
-import { createRovingGroup, type Stop } from "../keyboard/roving";
+import {
+	createRovingGroup,
+	type RovingGroupHandle,
+	type Stop,
+} from "../keyboard/roving";
 import { openLink } from "../open-link";
 import type { RefLinkRule } from "../refs/grammar";
 import type { IssueState } from "../stub-data";
@@ -569,6 +573,61 @@ export const Bridge: Component = () => {
 		setCursor: setCursorId,
 		onCommand,
 	});
+	const focusedRef = (): { ref: HTMLElement; owner: Stop } | undefined => {
+		const active = document.activeElement;
+		if (
+			!(active instanceof HTMLElement) ||
+			!active.matches(CARD_REF_SELECTOR)
+		) {
+			return undefined;
+		}
+		const owner = rovingStops().find((stop) => stop.el.contains(active));
+		return owner ? { ref: active, owner } : undefined;
+	};
+	const stepRef = (
+		at: { ref: HTMLElement; owner: Stop },
+		delta: 1 | -1,
+	): void => {
+		const refs = cardRefs(at.owner.el);
+		const index = refs.indexOf(at.ref);
+		refs[(index + delta + refs.length) % refs.length]?.focus();
+	};
+	const exitRef = (owner: Stop, dir?: BoardDirection): void => {
+		const target = dir
+			? (moveCursor(stops(), owner.id, dir) ?? owner.id)
+			: owner.id;
+		setCursorId(target);
+		(els.get(target) ?? owner.el).focus();
+	};
+	const onRefCommand = (id: CommandId): boolean => {
+		const active = focusedRef();
+		if (!active) return false;
+		if (id === "board.focusCardRef") {
+			stepRef(active, 1);
+			return true;
+		}
+		if (id === "board.focusCardRefPrev") {
+			stepRef(active, -1);
+			return true;
+		}
+		if (id === "board.exitCardRef") {
+			exitRef(active.owner);
+			return true;
+		}
+		const dir = DIRECTIONS[id];
+		if (dir) {
+			exitRef(active.owner, dir);
+			return true;
+		}
+		return false;
+	};
+	// A ref is not a stop, so this peer handle claims keys only while a title ref has focus.
+	const refGroup: RovingGroupHandle = {
+		group: { zone: "main", id: "bridge-card-refs" },
+		isFocused: () => focusedRef() !== undefined,
+		handleCommand: onRefCommand,
+		focus: () => rovingGroup.focus(),
+	};
 	// Several tabs can mount a Bridge, so only the focused view's Bridge holds the
 	// shared board/list command ids; a cleanup removes only the entry it added.
 	const commands: Command[] = [
@@ -591,14 +650,27 @@ export const Bridge: Component = () => {
 			title: "Focus next link in card title",
 			keywords: ["ref", "link", "title", "issue", "pr"],
 			scope: "main",
-			run: () => onCommand("board.focusCardRef" as CommandId),
+			run: () =>
+				onRefCommand("board.focusCardRef" as CommandId) ||
+				onCommand("board.focusCardRef" as CommandId),
 		},
 		{
 			id: "board.focusCardRefPrev" as CommandId,
 			title: "Focus previous link in card title",
 			keywords: ["ref", "link", "title", "issue", "pr"],
 			scope: "main",
-			run: () => onCommand("board.focusCardRefPrev" as CommandId),
+			run: () =>
+				onRefCommand("board.focusCardRefPrev" as CommandId) ||
+				onCommand("board.focusCardRefPrev" as CommandId),
+		},
+		{
+			id: "board.exitCardRef" as CommandId,
+			title: "Return to card",
+			keywords: ["escape", "card", "return", "link"],
+			scope: "main",
+			run: () =>
+				onRefCommand("board.exitCardRef" as CommandId) ||
+				onCommand("board.exitCardRef" as CommandId),
 		},
 		...LIST_COMMANDS.map((spec) => ({
 			id: spec.id as CommandId,
@@ -629,7 +701,11 @@ export const Bridge: Component = () => {
 	createEffect(onGrid, (on) => {
 		if (!on) return;
 		store.keyboard.registerGroup(rovingGroup);
-		return () => store.keyboard.unregisterGroup(rovingGroup);
+		store.keyboard.registerGroup(refGroup);
+		return () => {
+			store.keyboard.unregisterGroup(refGroup);
+			store.keyboard.unregisterGroup(rovingGroup);
+		};
 	});
 
 	// Apply positional labels and announce only shortcuts with a target here.

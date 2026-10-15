@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createRouter, memoryHistory } from "@solidjs/router";
-import { fireEvent, render } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { createRoot, flush as flushSync } from "solid-js";
 import App from "../App";
 import { backlogIssues, prBoardRows, prCount } from "../board";
@@ -403,6 +403,13 @@ const cursorLabel = (container: HTMLElement): string | null =>
 	container
 		.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')
 		?.getAttribute("aria-label") ?? null;
+const cardByLabel = (
+	container: HTMLElement,
+	label: string,
+): HTMLElement | null =>
+	[...container.querySelectorAll<HTMLElement>(".bridge-grid .cx-card")].find(
+		(card) => card.getAttribute("aria-label") === label,
+	) ?? null;
 // Dispatch on the focused target so bubbling and editable guards match browser input.
 const press = (init: KeyboardEventInit): KeyboardEvent => {
 	const event = new KeyboardEvent("keydown", {
@@ -690,6 +697,257 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(document.activeElement?.textContent).toBe("rigelbuild/compass#3");
 	});
 
+	describe("Bridge title ref focus (T3)", () => {
+		test("Escape on a focused ref returns to the owning card", () => {
+			const { container } = mountApp("/", {
+				initialIssues: issuesWithTitleRefs(),
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			enterBoard(container);
+			press({ key: "ArrowLeft" });
+			press({ key: "r" });
+			const event = press({ key: "Escape" });
+			expect(event.defaultPrevented).toBe(true);
+			expect(document.activeElement).toBe(
+				cardByLabel(container, "Issue RIG-965"),
+			);
+		});
+		test("Escape on a focused card is claimed without moving it", () => {
+			const { container } = mountApp("/");
+			enterBoard(container);
+			const card = container.querySelector<HTMLElement>(
+				'.bridge-grid [tabindex="0"]',
+			);
+			if (!card) throw new Error("board has no cursor card");
+			const event = press({ key: "Escape" });
+			expect(event.defaultPrevented).toBe(true);
+			expect(document.activeElement).toBe(card);
+		});
+		test("cycles linked refs, opens them, and Escape returns to the owner", () => {
+			const opener = spyOn(window, "open").mockImplementation(() => null);
+			try {
+				const { store, container } = mountApp("/", {
+					initialIssues: issuesWithTitleRefs(),
+					initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+				});
+				enterBoard(container);
+				press({ key: "ArrowLeft" });
+				expect(cursorLabel(container)).toBe("Issue RIG-965");
+				const owner = cardByLabel(container, "Issue RIG-965");
+				if (!owner) throw new Error("RIG-965 card was not rendered");
+				const refs = [
+					...owner.querySelectorAll<HTMLElement>(".card-title .ref-link"),
+				];
+				expect(refs.map((ref) => ref.textContent)).toEqual([
+					"RIG-12",
+					"rigelbuild/compass#3",
+				]);
+				expect(refs.every((ref) => ref.tabIndex === -1)).toBe(true);
+				press({ key: "r" });
+				expect(document.activeElement).toBe(refs[0]);
+				press({ key: "r" });
+				expect(document.activeElement).toBe(refs[1]);
+				expect(document.activeElement?.textContent).not.toBe("OPS-4");
+				press({ key: "r" });
+				expect(document.activeElement).toBe(refs[0]);
+				press({ key: "R", shiftKey: true });
+				expect(document.activeElement).toBe(refs[1]);
+
+				press({ key: "Enter" });
+				expect(opener).toHaveBeenCalledTimes(1);
+				expect(opener).toHaveBeenCalledWith(
+					"https://github.com/rigelbuild/compass/issues/3",
+					"_blank",
+					"noreferrer,noopener",
+				);
+				expect(store.selectedIssueId()).toBe("ws-1022");
+				expect(store.view()).toBe("bridge");
+				press({ key: "Escape" });
+				expect(document.activeElement).toBe(owner);
+				expect(cursorLabel(container)).toBe("Issue RIG-965");
+				expect(
+					container.querySelectorAll('.bridge-grid [tabindex="0"]'),
+				).toHaveLength(1);
+				expect(
+					[
+						...container.querySelectorAll<HTMLElement>(
+							".bridge-grid .ref-link",
+						),
+					].every((ref) => ref.tabIndex === -1),
+				).toBe(true);
+			} finally {
+				opener.mockRestore();
+			}
+		});
+
+		test("Space opens a title ref without changing the Issues tab", () => {
+			const opener = spyOn(window, "open").mockImplementation(() => null);
+			try {
+				const { store, container } = mountApp("/", {
+					initialIssues: issuesWithTitleRefs(true),
+					initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+				});
+				enterBoard(container);
+				press({ key: "r" });
+				const event = press({ key: " " });
+				expect(event.defaultPrevented).toBe(true);
+				expect(opener).toHaveBeenCalledTimes(1);
+				expect(opener).toHaveBeenCalledWith(
+					"https://linear.app/rigel/issue/RIG-12",
+					"_blank",
+					"noreferrer,noopener",
+				);
+				expect(store.selectedIssueId()).toBe("ws-1022");
+				expect(store.view()).toBe("bridge");
+				expect(activeTab(container)?.startsWith("Issues")).toBe(true);
+			} finally {
+				opener.mockRestore();
+			}
+		});
+
+		test("ArrowRight exits the ref and moves from its owner", () => {
+			const { container } = mountApp("/", {
+				initialIssues: issuesWithTitleRefs(),
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			enterBoard(container);
+			press({ key: "ArrowLeft" });
+			press({ key: "r" });
+			press({ key: "ArrowRight" });
+			const next = cardByLabel(container, "Issue RIG-1022");
+			expect(cursorLabel(container)).toBe("Issue RIG-1022");
+			expect(document.activeElement).toBe(next);
+		});
+
+		test("unmatched Shift+ArrowLeft and Alt+ArrowLeft leave the ref alone", () => {
+			const { container } = mountApp("/", {
+				initialIssues: issuesWithTitleRefs(),
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			enterBoard(container);
+			press({ key: "ArrowLeft" });
+			press({ key: "r" });
+			const ref = document.activeElement;
+			const shifted = press({ key: "ArrowLeft", shiftKey: true });
+			const alted = press({ key: "ArrowLeft", altKey: true });
+			expect(shifted.defaultPrevented).toBe(false);
+			expect(alted.defaultPrevented).toBe(false);
+			expect(document.activeElement).toBe(ref);
+		});
+
+		test("PR title refs return to the card's composite stop", () => {
+			const { container } = mountApp("/", {
+				initialIssues: STUB_ISSUES.map((issue) =>
+					issue.id === "ws-1022"
+						? {
+								...issue,
+								prs: issue.prs.map((pr) => ({
+									...pr,
+									title: `Fix RIG-12: ${pr.title}`,
+								})),
+							}
+						: issue,
+				),
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			clickTab(container, "PRs");
+			const card = [
+				...container.querySelectorAll<HTMLElement>(".bridge-grid .cx-card"),
+			].find(
+				(candidate) =>
+					candidate.querySelector(".card-title .ref-link") !== null,
+			);
+			if (!card) throw new Error("PR #453 title ref card was not rendered");
+			card.focus();
+			press({ key: "r" });
+			expect(document.activeElement?.textContent).toBe("RIG-12");
+			press({ key: "Escape" });
+			expect(document.activeElement).toBe(card);
+			expect(cursorLabel(container)).toBe("PR RigelBuild/compass#453");
+		});
+
+		test("pointer-entered refs make their owner the cursor for later arrows", () => {
+			const { container } = mountApp("/", {
+				initialIssues: issuesWithTitleRefs(),
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			const ref = cardByLabel(
+				container,
+				"Issue RIG-965",
+			)?.querySelector<HTMLElement>(".card-title .ref-link");
+			if (!ref) throw new Error("RIG-965 title ref was not rendered");
+			const cursor = cardByLabel(container, "Issue RIG-1022");
+			if (!cursor) throw new Error("RIG-1022 cursor card was not rendered");
+			cursor.focus();
+			ref.focus();
+			press({ key: "Escape" });
+			expect(cursorLabel(container)).toBe("Issue RIG-965");
+			expect(document.activeElement).toBe(
+				cardByLabel(container, "Issue RIG-965"),
+			);
+			press({ key: "ArrowLeft" });
+			expect(cursorLabel(container)).toBe("compass-ui lane");
+
+			cleanup();
+			const initialIssues = issuesWithTitleRefs();
+			const refOwner = initialIssues.find((issue) => issue.id === "ws-965");
+			if (!refOwner) throw new Error("RIG-965 issue fixture is missing");
+			const fresh = mountApp("/", {
+				initialIssues: [
+					refOwner,
+					...initialIssues.filter((issue) => issue.id !== "ws-965"),
+				],
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			enterBoard(fresh.container);
+			press({ key: "ArrowLeft" });
+			expect(cursorLabel(fresh.container)).toBe("compass-ui lane");
+		});
+
+		test("Escape on a ref leaves the tour callout open", async () => {
+			const { store, container } = mountApp("/", {
+				initialIssues: issuesWithTitleRefs(),
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			store.tour.start("replay");
+			await flush();
+			store.tour.next();
+			await flush();
+			const ref = cardByLabel(
+				container,
+				"Issue RIG-965",
+			)?.querySelector<HTMLElement>(".card-title .ref-link");
+			if (!ref) throw new Error("RIG-965 title ref was not rendered");
+			ref.focus();
+			press({ key: "Escape" });
+			expect(document.activeElement).toBe(
+				cardByLabel(container, "Issue RIG-965"),
+			);
+			expect(store.tour.open()).toBe(true);
+			expect(document.querySelector(".cx-tour-callout")).not.toBeNull();
+		});
+
+		test("Escape cancels a pending leader without exiting the ref", () => {
+			const { store, container } = mountApp("/", {
+				initialIssues: issuesWithTitleRefs(),
+				initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			});
+			enterBoard(container);
+			press({ key: "ArrowLeft" });
+			press({ key: "r" });
+			const ref = document.activeElement;
+			press({ key: "g" });
+			press({ key: "Escape" });
+			expect(document.activeElement).toBe(ref);
+			press({ key: "s" });
+			expect(store.view()).toBe("bridge");
+			expect(document.activeElement).toBe(ref);
+			press({ key: "Escape" });
+			expect(document.activeElement).toBe(
+				cardByLabel(container, "Issue RIG-965"),
+			);
+		});
+	});
 	test("the cursor stop carries a positional aria-label and names its Space shortcut", () => {
 		const { container } = mountBridge();
 		const cursor = container.querySelector<HTMLElement>('[tabindex="0"]');
@@ -804,14 +1062,15 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 			disposeStore = d;
 			return createAppStore({ queryClient: testQueryClient() });
 		});
-		// Twelve `scope:'main'` board commands stay registered only while the
-		// Bridge is mounted: four `board.*` ids and eight `list.*` ids.
+		// Thirteen `scope:'main'` board commands stay registered only while the
+		// Bridge is mounted: five `board.*` ids and eight `list.*` ids.
 		const boardCommandIds = (): string[] =>
 			store.keyboard.registry
 				.all()
 				.map((c) => c.id as string)
 				.filter((id) => id.startsWith("board.") || id.startsWith("list."));
-		const ALL_TWELVE = [
+		const ALL_THIRTEEN = [
+			"board.exitCardRef",
 			"board.focusCardRef",
 			"board.focusCardRefPrev",
 			"board.openAssignedAgent",
@@ -825,14 +1084,13 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 			"list.moveRight",
 			"list.openOrSelect",
 		];
-
 		const first = mountShell(store, "/");
-		expect(boardCommandIds().sort()).toEqual(ALL_TWELVE);
+		expect(boardCommandIds().sort()).toEqual(ALL_THIRTEEN);
 		first.unmount();
 		expect(boardCommandIds()).toEqual([]); // retracted on cleanup
 
 		const second = mountShell(store, "/");
-		expect(boardCommandIds().sort()).toEqual(ALL_TWELVE);
+		expect(boardCommandIds().sort()).toEqual(ALL_THIRTEEN);
 
 		// Exactly one listener: spy the shared `view.bridge` command and fire one
 		// Ctrl+B. Two stacked App listeners over the one registry would run it twice.
