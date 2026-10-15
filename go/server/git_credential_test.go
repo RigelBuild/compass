@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +66,30 @@ func (g *fakeGitCredentialGrants) setRepos(account store.AccountID, repos []stri
 	}
 	g.reposByAccount[account] = append([]string(nil), repos...)
 }
+func (g *fakeGitCredentialGrants) setSharedRepos(repos []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.repos = append([]string(nil), repos...)
+}
+
+type grantChangeOnListStore struct {
+	*fakeGitCredentialGrants
+	mu        sync.Mutex
+	changed   bool
+	afterList func()
+}
+
+func (s *grantChangeOnListStore) ListForgeScopeRepos(ctx context.Context, agent store.AccountID, provider store.ForgeProvider, host string) ([]string, error) {
+	repos, err := s.fakeGitCredentialGrants.ListForgeScopeRepos(ctx, agent, provider, host)
+	s.mu.Lock()
+	change := !s.changed
+	s.changed = true
+	s.mu.Unlock()
+	if change && s.afterList != nil {
+		s.afterList()
+	}
+	return repos, err
+}
 
 func (g *fakeGitCredentialGrants) ownerCallCount() int {
 	g.mu.Lock()
@@ -73,17 +98,21 @@ func (g *fakeGitCredentialGrants) ownerCallCount() int {
 }
 
 type fakeGitCredentialMinter struct {
-	tokens       []string
-	expiresAt    time.Time
-	err          error
-	calls        int
-	repos        [][]string
-	grantedRepos []string
-	perms        []map[string]string
-	mu           sync.Mutex
-	started      chan struct{}
-	release      chan struct{}
-	errByCall    []error
+	tokens          []string
+	expiresAt       time.Time
+	err             error
+	calls           int
+	repos           [][]string
+	grantedRepos    []string
+	perms           []map[string]string
+	revoked         []string
+	revokeErr       error
+	revokeErrByCall []error
+	mu              sync.Mutex
+	started         chan struct{}
+	release         chan struct{}
+	releaseByCall   []chan struct{}
+	errByCall       []error
 }
 
 func (m *fakeGitCredentialMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (forge.ScopedToken, error) {
@@ -94,9 +123,18 @@ func (m *fakeGitCredentialMinter) Mint(ctx context.Context, repos []string, perm
 	maps.Copy(copyPerms, perms)
 	callIndex := m.calls - 1
 	m.perms = append(m.perms, copyPerms)
-	index := min(callIndex, len(m.tokens)-1)
-	token := m.tokens[index]
+	var token string
+	if len(m.tokens) > 0 {
+		index := min(callIndex, len(m.tokens)-1)
+		token = m.tokens[index]
+	}
 	expiresAt, granted, err, started, release := m.expiresAt, m.grantedRepos, m.err, m.started, m.release
+	var releaseForCall <-chan struct{}
+	if callIndex < len(m.releaseByCall) && m.releaseByCall[callIndex] != nil {
+		releaseForCall = m.releaseByCall[callIndex]
+	} else {
+		releaseForCall = release
+	}
 	if callIndex < len(m.errByCall) && m.errByCall[callIndex] != nil {
 		err = m.errByCall[callIndex]
 	}
@@ -107,11 +145,11 @@ func (m *fakeGitCredentialMinter) Mint(ctx context.Context, repos []string, perm
 		default:
 		}
 	}
-	if release != nil {
+	if releaseForCall != nil {
 		select {
 		case <-ctx.Done():
 			return forge.ScopedToken{}, ctx.Err()
-		case <-release:
+		case <-releaseForCall:
 		}
 	}
 	if err != nil {
@@ -126,10 +164,31 @@ func (m *fakeGitCredentialMinter) Mint(ctx context.Context, repos []string, perm
 	return forge.ScopedToken{Token: token, ExpiresAt: expiresAt, Repositories: granted}, nil
 }
 
+func (m *fakeGitCredentialMinter) Revoke(_ context.Context, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	callIndex := len(m.revoked)
+	m.revoked = append(m.revoked, token)
+	if callIndex < len(m.revokeErrByCall) {
+		return m.revokeErrByCall[callIndex]
+	}
+	return m.revokeErr
+}
+
+func (*blockingGitCredentialMinter) Revoke(context.Context, string) error {
+	return nil
+}
+
 func (m *fakeGitCredentialMinter) callCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.calls
+}
+
+func (m *fakeGitCredentialMinter) revokeCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.revoked)
 }
 
 func (m *fakeGitCredentialMinter) mintRepos() [][]string {
@@ -165,6 +224,7 @@ func newGitCredentialTestBroker(credentialStore gitCredentialStore, minter gitCr
 		entries:  make(map[string]gitCredentialEntry),
 		negative: make(map[string]gitCredentialNegativeEntry),
 		last:     make(map[store.AccountID]string),
+		served:   make(map[store.AccountID]map[string]struct{}),
 	}
 }
 
@@ -361,6 +421,241 @@ func TestGitCredentialBrokerTransientWidenedMintServesLastOwnerToken(t *testing.
 	}
 	if minter.callCount() != 3 {
 		t.Fatalf("mint calls = %d, want initial mint and two widened-set attempts", minter.callCount())
+	}
+}
+
+func TestGitCredentialBrokerGrantsChangedRevokesRemovedScope(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner/base", "owner/removed"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_narrow"}, expiresAt: now.Add(time.Hour)}
+	signals := 0
+	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
+		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
+	}
+	grants.setRepos("agent-id", []string{"owner/base"})
+	oldKey := "owner/base,owner/removed"
+	old := broker.entries[oldKey]
+	broker.grantsChanged(context.Background(), "agent-id")
+	if got := broker.entries["owner/base"].token; got != "ghs_narrow" {
+		t.Fatalf("new entry token = %q, want narrow token", got)
+	}
+	if _, exists := broker.entries[oldKey]; exists {
+		t.Fatal("old over-granting entry remains")
+	}
+	if got := broker.lastCredential("agent-id"); got != "owner/base" {
+		t.Fatalf("last key = %q, want narrowed key", got)
+	}
+	if !old.expiresAt.After(now) {
+		t.Fatal("test precondition: old token is not live")
+	}
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	if signals != 1 {
+		t.Fatalf("signals = %d, want one after replacement", signals)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(context.Background())
+	minter.mu.Lock()
+	gotRevoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if !reflect.DeepEqual(gotRevoked, []string{"ghs_old"}) {
+		t.Fatalf("revoked tokens = %v, want old token after delivery grace", gotRevoked)
+	}
+}
+
+func TestGitCredentialBrokerGrantsChangedRetrySignalsAfterLimiterRefill(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner/base", "owner/removed"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_new"}, expiresAt: now.Add(time.Hour)}
+	signals := 0
+	broker := newGitCredentialTestBroker(grants, minter, &now, func() error {
+		signals++
+		return nil
+	})
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
+		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
+	}
+	for broker.limiter.AllowN(now, 1) {
+	}
+	grants.setRepos("agent-id", []string{"owner/base"})
+	broker.grantsChanged(context.Background(), "agent-id")
+	if minter.callCount() != 1 {
+		t.Fatalf("mint calls after budget-denied grant change = %d, want one", minter.callCount())
+	}
+	if signals != 1 {
+		t.Fatalf("grant-change signal calls = %d, want one", signals)
+	}
+	broker.refreshDue(context.Background())
+	if signals != 1 {
+		t.Fatalf("signal calls before limiter refill = %d, want one", signals)
+	}
+	now = now.Add(time.Second)
+	broker.refreshDue(context.Background())
+	if signals != 2 {
+		t.Fatalf("signal calls after limiter refill = %d, want two including grant-change signal", signals)
+	}
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_new" {
+		t.Fatalf("credential after retry signal = (%q, %v), want new token", token, ok)
+	}
+}
+
+func TestGitCredentialBrokerGrantsChangedWideningKeepsToken(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/base"}}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_wide"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
+		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
+	}
+	grants.repos = []string{"owner/base", "owner/added"}
+	broker.grantsChanged(context.Background(), "agent-id")
+	if len(minter.revoked) != 0 {
+		t.Fatalf("revoked tokens = %v, want none for widening", minter.revoked)
+	}
+	if token, ok := broker.cachedCredential("owner/added,owner/base"); !ok || token != "ghs_wide" {
+		t.Fatalf("widened credential = (%q, %v), want new token", token, ok)
+	}
+}
+
+func TestGitCredentialBrokerGrantsChangedWidenThenNarrowRevokesHistoricalTokens(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/a"}}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_a", "ghs_a_b", "ghs_b"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	ctx := context.Background()
+	if token, ok := broker.credential(ctx, "agent-id"); !ok || token != "ghs_a" {
+		t.Fatalf("initial credential = (%q, %v), want A token", token, ok)
+	}
+	grants.setSharedRepos([]string{"owner/a", "owner/b"})
+	broker.grantsChanged(ctx, "agent-id")
+	grants.setSharedRepos([]string{"owner/b"})
+	broker.grantsChanged(ctx, "agent-id")
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(ctx)
+	minter.mu.Lock()
+	revoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if len(revoked) != 2 || !slices.Contains(revoked, "ghs_a") || !slices.Contains(revoked, "ghs_a_b") {
+		t.Fatalf("revoked tokens = %v, want both historical over-granting tokens", revoked)
+	}
+}
+
+func TestGitCredentialBrokerGrantsChangedDiscardsInFlightOldMint(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/a", "owner/b"}}
+	release := make(chan struct{})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_late"}, expiresAt: now.Add(time.Hour),
+		started: make(chan struct{}, 1), releaseByCall: []chan struct{}{release},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	type result struct {
+		token string
+		ok    bool
+	}
+	finished := make(chan result, 1)
+	go func() {
+		token, ok := broker.credential(context.Background(), "agent-id")
+		finished <- result{token: token, ok: ok}
+	}()
+	<-minter.started
+	grants.setSharedRepos([]string{"owner/b"})
+	broker.grantsChanged(context.Background(), "agent-id")
+	close(release)
+	got := <-finished
+	if got.ok || got.token != "" {
+		t.Fatalf("in-flight credential = (%q, %v), want no token", got.token, got.ok)
+	}
+	if _, exists := broker.entries["owner/a,owner/b"]; exists {
+		t.Fatal("late old-scope token was cached")
+	}
+	minter.mu.Lock()
+	revoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if !reflect.DeepEqual(revoked, []string{"ghs_late"}) {
+		t.Fatalf("revoked tokens = %v, want late token", revoked)
+	}
+}
+
+func TestGitCredentialBrokerGrantsChangedFailedNarrowMintRevokesAndFailsClosed(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/base", "owner/removed"}}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_old"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, errors.New("mint unavailable"), errors.New("mint unavailable")},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
+		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
+	}
+	grants.repos = []string{"owner/base"}
+	broker.grantsChanged(context.Background(), "agent-id")
+	if _, exists := broker.entries["owner/base,owner/removed"]; exists {
+		t.Fatal("old over-granting entry remains after failed mint")
+	}
+	if got := broker.lastCredential("agent-id"); got != "" {
+		t.Fatalf("last key after failed mint = %q, want none", got)
+	}
+	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+		t.Fatalf("credential after failed scope change = (%q, %v), want fail closed", token, ok)
+	}
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(context.Background())
+	minter.mu.Lock()
+	gotRevoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if !reflect.DeepEqual(gotRevoked, []string{"ghs_old"}) {
+		t.Fatalf("revoked tokens = %v, want old token after delivery grace", gotRevoked)
+	}
+}
+
+func TestGitCredentialBrokerGrantsChangedInvalidatesSharedOldScope(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-a", []string{"owner/base", "owner/removed"})
+	grants.setRepos("agent-b", []string{"owner/base", "owner/removed"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_shared", "ghs_a_narrow", "ghs_b_narrow"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	for _, agent := range []store.AccountID{"agent-a", "agent-b"} {
+		if token, ok := broker.credential(context.Background(), agent); !ok || token != "ghs_shared" {
+			t.Fatalf("%s initial credential = (%q, %v), want shared token", agent, token, ok)
+		}
+	}
+	grants.setRepos("agent-a", []string{"owner/base"})
+	broker.grantsChanged(context.Background(), "agent-a")
+	if got := broker.lastCredential("agent-b"); got != "" {
+		t.Fatalf("agent B last key = %q, want removed", got)
+	}
+	if token, ok := broker.credential(context.Background(), "agent-b"); !ok || token != "ghs_b_narrow" {
+		t.Fatalf("agent B credential after invalidation = (%q, %v), want re-mint", token, ok)
+	}
+	if got := minter.callCount(); got != 3 {
+		t.Fatalf("mint calls = %d, want shared token and two replacements", got)
+	}
+}
+
+func TestGitCredentialBrokerRefreshDropsOrphanedEntry(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	minter := &fakeGitCredentialMinter{tokens: []string{"unused"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(nil, minter, &now, nil)
+	broker.entries["owner/orphan"] = gitCredentialEntry{token: "orphan", expiresAt: now.Add(time.Hour), refreshAt: now}
+	broker.served["agent-orphan"] = map[string]struct{}{"owner/orphan": {}}
+	broker.refreshDue(context.Background())
+	if _, exists := broker.entries["owner/orphan"]; exists {
+		t.Fatal("orphaned entry remains after refresh")
+	}
+	if got := minter.callCount(); got != 0 {
+		t.Fatalf("mint calls for orphaned entry = %d, want none", got)
 	}
 }
 
@@ -982,6 +1277,22 @@ func TestGitCredentialBrokerRefreshHonoursMismatchCache(t *testing.T) {
 	}
 }
 
+func TestGitCredentialBrokerCancelledRefreshSkipsPendingRevokes(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	minter := &fakeGitCredentialMinter{tokens: []string{"unused"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(&fakeGitCredentialGrants{}, minter, &now, nil)
+	broker.pendingRevokes = []supersededToken{{token: "ghs_old", expiresAt: now.Add(time.Hour)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	broker.refreshDue(ctx)
+	minter.mu.Lock()
+	revoked := len(minter.revoked)
+	minter.mu.Unlock()
+	if revoked != 0 {
+		t.Fatalf("revoke calls after shutdown = %d, want none", revoked)
+	}
+}
+
 func TestGitCredentialBrokerRefreshStopsWhenContextCancelled(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/alpha"}}
@@ -996,6 +1307,10 @@ func TestGitCredentialBrokerRefreshStopsWhenContextCancelled(t *testing.T) {
 	broker.entries["owner/beta"] = gitCredentialEntry{
 		token: "ghs_beta_old", expiresAt: now.Add(time.Hour), refreshAt: now, lastUsed: now,
 	}
+	broker.last["agent-alpha"] = "owner/alpha"
+	broker.last["agent-beta"] = "owner/beta"
+	broker.served["agent-alpha"] = map[string]struct{}{"owner/alpha": {}}
+	broker.served["agent-beta"] = map[string]struct{}{"owner/beta": {}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	finished := make(chan struct{})
@@ -1190,7 +1505,8 @@ func TestGitCredentialBrokerShorterRateLimitHintKeepsLongerBackoff(t *testing.T)
 	done := make(chan struct{}, 2)
 	for _, key := range []string{"owner/a", "owner/b"} {
 		go func() {
-			_, _, _ = broker.mint(context.Background(), key, []string{key[len("owner/"):]})
+			generation := broker.currentGeneration()
+			_, _, _ = broker.mint(context.Background(), key, []string{key[len("owner/"):]}, generation)
 			done <- struct{}{}
 		}()
 		<-minter.started
@@ -1199,8 +1515,7 @@ func TestGitCredentialBrokerShorterRateLimitHintKeepsLongerBackoff(t *testing.T)
 	<-done
 	minter.release <- struct{}{} // then the no-hint (1-minute floor) response
 	<-done
-	now = now.Add(2 * time.Minute)
-	if _, _, err := broker.mint(context.Background(), "owner/c", []string{"c"}); !errors.Is(err, forge.ErrBudgetExhausted) {
+	if _, _, err := broker.mint(context.Background(), "owner/c", []string{"c"}, broker.currentGeneration()); !errors.Is(err, forge.ErrBudgetExhausted) {
 		t.Fatalf("mint inside the longer backoff = %v, want budget exhausted", err)
 	}
 	if got := minter.callCount(); got != 2 {
@@ -1232,6 +1547,10 @@ func (m *hintedRateLimitMinter) Mint(context.Context, []string, map[string]strin
 	m.hints = m.hints[1:]
 	m.mu.Unlock()
 	return forge.ScopedToken{}, &forge.RateLimitError{RetryAfter: hint}
+}
+
+func (*hintedRateLimitMinter) Revoke(context.Context, string) error {
+	return nil
 }
 
 func (m *hintedRateLimitMinter) callCount() int {
@@ -1404,5 +1723,180 @@ func TestGitCredentialBrokerSignalsPendingRetryWhenBudgetReturns(t *testing.T) {
 	broker.refreshDue(context.Background())
 	if signals != 1 {
 		t.Fatalf("signal calls after pending retry cleared = %d, want one", signals)
+	}
+}
+func TestGitCredentialBrokerGrantSnapshotChangedBeforeMint(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/old"}}
+	var broker *gitCredentialBroker
+	store := &grantChangeOnListStore{
+		fakeGitCredentialGrants: grants,
+		afterList: func() {
+			grants.setSharedRepos([]string{"owner/new"})
+			broker.grantsChanged(context.Background(), "agent-id")
+		},
+	}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_new", "ghs_old"}, expiresAt: now.Add(time.Hour)}
+	broker = newGitCredentialTestBroker(store, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+		t.Fatalf("credential from stale grant snapshot = (%q, %v), want none", token, ok)
+	}
+	if _, exists := broker.entries["owner/old"]; exists {
+		t.Fatal("old-scope token was cached")
+	}
+	if got := minter.callCount(); got != 1 {
+		t.Fatalf("mint calls = %d, want only fresh-scope mint", got)
+	}
+}
+func TestGitCredentialBrokerGrantsChangedAfterEmptyFetchRevokesLastToken(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/last"}}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_last"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_last" {
+		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
+	}
+	grants.setSharedRepos(nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+		t.Fatalf("credential after removing final grant = (%q, %v), want none", token, ok)
+	}
+	broker.grantsChanged(context.Background(), "agent-id")
+	if _, exists := broker.entries["owner/last"]; exists {
+		t.Fatal("entry for removed final grant remains")
+	}
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(context.Background())
+	minter.mu.Lock()
+	revoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if !reflect.DeepEqual(revoked, []string{"ghs_last"}) {
+		t.Fatalf("revoked tokens = %v, want old token after delivery grace", revoked)
+	}
+}
+func TestGitCredentialBrokerGrantsChangedRevokesRefreshedAndSupersededTokens(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/base", "owner/removed"}}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_original", "ghs_refreshed", "ghs_narrow"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_original" {
+		t.Fatalf("initial credential = (%q, %v), want original token", token, ok)
+	}
+	oldEntry := broker.entries["owner/base,owner/removed"]
+	minter.mu.Lock()
+	minter.expiresAt = now.Add(time.Hour)
+	minter.mu.Unlock()
+	broker.entries["owner/base,owner/removed"] = gitCredentialEntry{
+		token: oldEntry.token, expiresAt: oldEntry.expiresAt,
+		refreshAt: now, lastUsed: oldEntry.lastUsed,
+	}
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_refreshed" {
+		t.Fatalf("replacement credential = (%q, %v), want refreshed token", token, ok)
+	}
+	grants.setSharedRepos([]string{"owner/base"})
+	broker.grantsChanged(context.Background(), "agent-id")
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(context.Background())
+	minter.mu.Lock()
+	revoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if len(revoked) != 2 || !slices.Contains(revoked, "ghs_original") || !slices.Contains(revoked, "ghs_refreshed") {
+		t.Fatalf("revoked tokens = %v, want original and refreshed tokens after grace", revoked)
+	}
+}
+
+func TestGitCredentialBrokerRetriesPendingRevokes(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/base", "owner/removed"}}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_old", "ghs_new"}, expiresAt: now.Add(time.Hour),
+		errByCall:       []error{nil, errors.New("narrow mint unavailable")},
+		revokeErrByCall: []error{errors.New("revoke unavailable"), nil},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
+		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
+	}
+	grants.setSharedRepos([]string{"owner/base"})
+	broker.grantsChanged(context.Background(), "agent-id")
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(context.Background())
+	if len(broker.pendingRevokes) != 1 {
+		t.Fatalf("pending revokes after failed retry = %+v, want old token", broker.pendingRevokes)
+	}
+	broker.refreshDue(context.Background())
+	if len(broker.pendingRevokes) != 0 {
+		t.Fatalf("pending revokes after successful retry = %+v, want empty", broker.pendingRevokes)
+	}
+	minter.mu.Lock()
+	if got := len(minter.revoked); got != 2 || minter.revoked[0] != "ghs_old" || minter.revoked[1] != "ghs_old" {
+		minter.mu.Unlock()
+		t.Fatalf("revoke attempts after retry = %v, want old token twice", minter.revoked)
+	}
+	minter.mu.Unlock()
+
+	expiring := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_expiring", "ghs_next"}, expiresAt: now.Add(time.Minute),
+		revokeErr: errors.New("revoke unavailable"),
+	}
+	expiringBroker := newGitCredentialTestBroker(grants, expiring, &now, nil)
+	grants.setSharedRepos([]string{"owner/base", "owner/removed"})
+	if token, ok := expiringBroker.credential(context.Background(), "agent-id"); !ok || token != "ghs_expiring" {
+		t.Fatalf("expiring credential = (%q, %v), want expiring token", token, ok)
+	}
+	grants.setSharedRepos([]string{"owner/base"})
+	expiring.mu.Lock()
+	expiring.expiresAt = now.Add(time.Hour)
+	expiring.mu.Unlock()
+	expiringBroker.grantsChanged(context.Background(), "agent-id")
+	expiring.mu.Lock()
+	attemptsBeforeExpiry := len(expiring.revoked)
+	expiring.revokeErr = nil
+	expiring.mu.Unlock()
+	if len(expiringBroker.pendingRevokes) != 1 {
+		t.Fatalf("pending revoke count = %d, revoked = %v, last = %q, served = %+v, entries = %+v", len(expiringBroker.pendingRevokes), expiring.revoked, expiringBroker.lastCredential("agent-id"), expiringBroker.served, expiringBroker.entries)
+	}
+	now = now.Add(gitCredentialRevokeGrace + time.Minute)
+	expiringBroker.refreshDue(context.Background())
+	expiring.mu.Lock()
+	defer expiring.mu.Unlock()
+	if len(expiring.revoked) != attemptsBeforeExpiry {
+		t.Fatalf("revoke attempts after expiry = %v, want no retry", expiring.revoked)
+	}
+	if len(expiringBroker.pendingRevokes) != 0 {
+		t.Fatalf("pending revokes after expiry = %+v, want empty", expiringBroker.pendingRevokes)
+	}
+}
+
+func TestGitCredentialBrokerDefersGrantRevocationForDeliveryGrace(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/base", "owner/removed"}}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_old", "ghs_narrow"}, expiresAt: now.Add(time.Hour),
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
+		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
+	}
+	grants.setSharedRepos([]string{"owner/base"})
+	broker.grantsChanged(context.Background(), "agent-id")
+	if got := minter.revokeCount(); got != 0 {
+		t.Fatalf("revoke calls before grace = %d, want none", got)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(context.Background())
+	minter.mu.Lock()
+	revoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if !reflect.DeepEqual(revoked, []string{"ghs_old"}) {
+		t.Fatalf("revoked tokens after grace = %v, want old token exactly once", revoked)
 	}
 }
