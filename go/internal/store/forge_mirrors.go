@@ -175,6 +175,14 @@ func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (Fo
 			return reserved, false, nil
 		}
 	}
+	return s.claimConflict(ctx, mirror)
+}
+
+// claimConflict resolves a claim that inserted nothing to the row at its
+// conflicting key, re-mirroring a same-source agent row. The key can be
+// reserved between the caller's lookup and here; the re-mirror then returns
+// the reserving row and leaves this one unbumped.
+func (s *Store) claimConflict(ctx context.Context, mirror ForgeMirrorRow) (ForgeMirrorRow, bool, error) {
 	conflict, err := s.forgeMirrorByConflictKeys(ctx, mirror)
 	if err != nil {
 		return ForgeMirrorRow{}, false, fmt.Errorf("store: find claimed forge mirror: %w", err)

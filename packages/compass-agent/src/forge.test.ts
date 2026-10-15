@@ -1250,13 +1250,14 @@ describe("forge parameter schemas", () => {
 			false,
 		);
 		// Each schema with otherwise-valid params: only the whitespace repo fails.
-		for (const [schema, valid] of [
+		const cases: ReadonlyArray<readonly [Type<object>, object]> = [
 			[getIssueParameters, { issue_number: 1 }],
 			[getPullRequestParameters, { pr_number: 1 }],
 			[listIssuesParameters, {}],
 			[commentOnIssueParameters, { issue_number: 1, body: "b" }],
 			[commentOnPullRequestParameters, { pr_number: 1, body: "b" }],
-		] as [Type<object>, object][]) {
+		];
+		for (const [schema, valid] of cases) {
 			expect(rejects(schema, { ...valid, repo: "o/r" })).toBe(false);
 			expect(rejects(schema, { ...valid, repo: " \t " })).toBe(true);
 		}

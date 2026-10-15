@@ -88,15 +88,30 @@ func (s *forgeService) mirrorMessages(ctx context.Context, caller store.AccountI
 	if err != nil {
 		return forgeErrorResult(storeForgeError(err))
 	}
+	return s.claimedMirrorResult(ctx, caller, key, ref, resolved.sourceKey, row, created)
+}
+
+// claimedMirrorResult drives or reports the row ClaimForgeMirror returned. A
+// row that is not new may be the one a racing call reserved this key for; the
+// key's reservation, not the row's own key, decides that it is a retry.
+func (s *forgeService) claimedMirrorResult(ctx context.Context, caller store.AccountID, key string, ref refs.Ref, sourceKey string, row store.ForgeMirrorRow, created bool) *compassv1internal.ForgeCallResult {
 	if !created {
 		if row.Source != 2 || row.Actor != caller || row.Agent != caller {
 			return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another actor"))
 		}
-		// A concurrent call claimed this key between the lookup and the claim.
-		if key != "" && row.ClientRequestID == key {
-			return s.mirrorRetryResult(ctx, row, ref)
+		if key != "" {
+			reserved, found, err := s.mirrorStoreDB.ForgeMirrorByRequest(ctx, caller, key)
+			if err != nil {
+				return forgeErrorResult(storeForgeError(err))
+			}
+			// This call's own re-mirror reserved the key on this same source
+			// row and is driven below; any other reserved row is a retry.
+			ownRemirror := reserved.ID == row.ID && row.SourceKey == sourceKey && row.TargetRef == ref.String()
+			if found && !ownRemirror {
+				return s.mirrorRetryResult(ctx, reserved, ref)
+			}
 		}
-		if row.SourceKey != resolved.sourceKey || row.TargetRef != ref.String() {
+		if row.SourceKey != sourceKey || row.TargetRef != ref.String() {
 			return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another mirror"))
 		}
 	}

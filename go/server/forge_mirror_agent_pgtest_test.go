@@ -14,6 +14,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/refs"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -492,5 +493,47 @@ func TestMirrorMessagesPendingRetryIsUnavailable(t *testing.T) {
 	}
 	if calls := f.author.Calls(); len(calls) != 0 {
 		t.Fatalf("provider calls = %+v, want none while pending", calls)
+	}
+}
+
+// A claim that loses its key to a racing re-mirror gets back the re-mirrored
+// row, whose own client_request_id is the first call's. The key reservation
+// marks it a retry, so the caller gets the stored result, not a conflict.
+func TestMirrorMessagesClaimResolvedByReservationIsARetry(t *testing.T) {
+	f := newAgentMirrorFixture(t)
+	req := &compassv1internal.MirrorMessagesRequest{Ref: "owner/auto#12", TopicId: f.topicID}
+	first := f.mirror(t, f.svc, "call-first", req)
+	if first.GetIssueComment() == nil {
+		t.Fatalf("first result = %v, want a comment", first)
+	}
+	stored, found, err := f.st.ForgeMirrorByRequest(f.ctx, f.agent.ID, "call-first")
+	if err != nil || !found {
+		t.Fatalf("ForgeMirrorByRequest(call-first) = (found=%v, err=%v)", found, err)
+	}
+	// The racing re-mirror reserves call-shared on the existing row.
+	remirrored, created, err := f.st.ClaimForgeMirror(f.ctx, store.ForgeMirrorRow{
+		Source: 2, SourceKey: stored.SourceKey, Actor: f.agent.ID, Agent: f.agent.ID, ClientRequestID: "call-shared",
+		TargetRef: stored.TargetRef, BodyRev: 1, State: 1, SessionID: agentMirrorSession, SourcePayload: stored.SourcePayload,
+	})
+	if err != nil || created || remirrored.ID != stored.ID || remirrored.ClientRequestID != "call-first" {
+		t.Fatalf("re-mirror = (%+v, created=%v, err=%v), want the first row under its own key", remirrored, created, err)
+	}
+	f.svc.DriveAgent(f.ctx, f.agent.ID)
+	done, err := f.st.ForgeMirrorByID(f.ctx, stored.ID)
+	if err != nil || done.State != 2 {
+		t.Fatalf("row after drive = (%+v, %v), want done", done, err)
+	}
+	calls := len(f.author.Calls())
+	// The losing claim was for another source with the same key.
+	ref, err := refs.Parse("owner/auto#12")
+	if err != nil {
+		t.Fatalf("refs.Parse: %v", err)
+	}
+	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, "call-shared", ref, "another-source", done, false)
+	if result.GetIssueComment().GetCommentId() != first.GetIssueComment().GetCommentId() {
+		t.Fatalf("reserved-key claim result = %v, want the stored comment %v", result, first)
+	}
+	if got := len(f.author.Calls()); got != calls {
+		t.Fatalf("provider calls = %d after the reserved-key claim, want %d", got, calls)
 	}
 }

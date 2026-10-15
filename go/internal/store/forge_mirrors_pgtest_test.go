@@ -705,6 +705,48 @@ func TestRequestKeyReservedByRemirrorBlocksLaterClaim(t *testing.T) {
 	}
 }
 
+// The window ClaimForgeMirror's early lookup cannot close: a racing claim
+// reserves the key after this call's lookup missed. Calling claimConflict
+// directly with the reservation already present drives the re-mirror's
+// recorded == 0 path and the reservedID != conflict.ID return.
+func TestClaimConflictResolvesToRowReservedAfterLookup(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-key-window")
+	row := func(source, key string) ForgeMirrorRow {
+		return ForgeMirrorRow{
+			Source: 2, SourceKey: source, Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#8", BodyRev: 1, State: 1, SessionID: "sess-w", SourcePayload: []byte(`{}`),
+		}
+	}
+	loser, created, err := s.ClaimForgeMirror(ctx, row("topic-loser", "call-loser"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(loser) = (created=%v, err=%v)", created, err)
+	}
+	winner, created, err := s.ClaimForgeMirror(ctx, row("topic-winner", "call-winner"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(winner) = (created=%v, err=%v)", created, err)
+	}
+	// The racing call's reservation lands after this call's lookup missed. The
+	// raw handle has no tenant GUC, so the row's tenant is copied explicitly.
+	if _, err := s.pool.Exec(ctx, `INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id, tenant_id)
+		SELECT $1, $2, id, tenant_id FROM forge_mirrors WHERE id = $3`,
+		string(agent), "call-raced", winner.ID); err != nil {
+		t.Fatalf("reserve call-raced: %v", err)
+	}
+	got, created, err := s.claimConflict(ctx, row("topic-loser", "call-raced"))
+	if err != nil || created || got.ID != winner.ID {
+		t.Fatalf("claimConflict = (%s, created=%v, err=%v), want the reserving row %s", got.ID, created, err, winner.ID)
+	}
+	after, err := s.ForgeMirrorByID(ctx, loser.ID)
+	if err != nil || after.BodyRev != 1 {
+		t.Fatalf("losing source row body_rev = %d (err %v), want unbumped 1", after.BodyRev, err)
+	}
+	if reserved, found, err := s.ForgeMirrorByRequest(ctx, agent, "call-raced"); err != nil || !found || reserved.ID != winner.ID {
+		t.Fatalf("ForgeMirrorByRequest(call-raced) = (%s, found=%v, err=%v), want %s", reserved.ID, found, err, winner.ID)
+	}
+}
+
 // An auto ask row takes its session from the posting ctx; a post with no
 // session on ctx stores an empty one for the poster to refuse.
 func TestAskMirrorRowTakesSessionFromContext(t *testing.T) {
