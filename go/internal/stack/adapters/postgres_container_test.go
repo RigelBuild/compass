@@ -5,10 +5,13 @@ package adapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -347,6 +350,132 @@ func TestStopSecondsRounding(t *testing.T) {
 	for _, c := range cases {
 		if got := stopSeconds(c.in); got != c.want {
 			t.Errorf("stopSeconds(%v) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// A cancelled caller must not kill podman run: a signal mid netns setup leaves
+// pasta running without resolv.conf. The real outcome is returned, so a
+// container that did start is still recorded for teardown.
+func TestPodmanRunSurvivesCallerCancellation(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	proceed := filepath.Join(dir, "go")
+	doneMarker := filepath.Join(dir, "done")
+	prog := filepath.Join(dir, "podman-stub.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" != "run" ]; then exit 91; fi
+echo $$ > %q.tmp && mv %q.tmp %q
+while [ ! -e %q ]; do :; done
+: > %q
+`, started, started, started, proceed, doneMarker)
+	if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cli := &podmanExec{program: prog, timeout: 10 * time.Second}
+	result := make(chan error, 1)
+	go func() { result <- cli.run(ctx, []string{"run", "--detach", "image"}) }()
+	waitForPodmanMarker(t, started)
+	pid := readPid(t, started)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	cancel()
+	// A cancelled exec.CommandContext kills at once; the stub stays gated, so
+	// any return here is the kill. The bound can only miss a regression.
+	select {
+	case err := <-result:
+		t.Fatalf("run returned %v while the stub was still gated: cancellation killed podman", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("stub pid %d after cancellation: kill(0) = %v, want alive", pid, err)
+	}
+	if err := os.WriteFile(proceed, nil, 0o600); err != nil {
+		t.Fatalf("creating go marker: %v", err)
+	}
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Errorf("run error = %v, want nil (the stub exited 0)", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("podman run did not return after the stub was released")
+	}
+	if _, err := os.Stat(doneMarker); err != nil {
+		t.Errorf("stub did not finish after caller cancellation: %v", err)
+	}
+}
+
+func readPid(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading pid file: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parsing pid %q: %v", data, err)
+	}
+	return pid
+}
+
+func TestPodmanRunTimeoutKillsHungProcess(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
+	script := fmt.Sprintf("#!/bin/sh\necho $$ > %q\nexec sleep 30\n", pidFile)
+	if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	cli := &podmanExec{program: prog, timeout: 100 * time.Millisecond}
+	result := make(chan error, 1)
+	go func() { result <- cli.run(t.Context(), []string{"run", "--detach", "image"}) }()
+	waitForPodmanMarker(t, pidFile)
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("reading child pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parsing child pid %q: %v", data, err)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("killing recorded podman process %d: %v", pid, err)
+		}
+	})
+
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("run returned nil after the command timeout")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("podman run did not return after its command timeout")
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("after run timeout, kill(%d, 0) = %v, want ESRCH", pid, err)
+	}
+}
+
+func waitForPodmanMarker(t *testing.T, path string) {
+	t.Helper()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("checking marker %q: %v", path, err)
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("marker %q was not created before the deadline", path)
+		case <-ticker.C:
 		}
 	}
 }

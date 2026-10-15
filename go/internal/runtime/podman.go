@@ -573,7 +573,7 @@ func (p *PodmanCLI) VerifyNoPastaForwards(ctx context.Context, image string) err
 	if mode != "pasta" && !strings.HasPrefix(mode, "pasta:") {
 		return nil
 	}
-	_, err = p.run(ctx, "podman run (pasta canary)", []string{
+	_, err = p.runDetached(ctx, "podman run (pasta canary)", []string{
 		"run", "--rm", "--network", pastaCanaryNetwork, probeEntrypoint, image,
 	})
 	if cmdErr, ok := errors.AsType[*CommandError](err); ok && strings.Contains(cmdErr.Stderr, "conflicts with previous options") {
@@ -609,7 +609,7 @@ func parsePodmanVersion(s string) (major, minor int, err error) {
 
 // Start starts a created container.
 func (p *PodmanCLI) Start(ctx context.Context, id WorkloadID) error {
-	_, err := p.run(ctx, "podman start", []string{"start", id.String()})
+	_, err := p.runDetached(ctx, "podman start", []string{"start", id.String()})
 	return err
 }
 

@@ -33,7 +33,15 @@ type cliEngine struct {
 // Only a spawn failure, this call's own timeout, or parent-context cancellation
 // is a non-nil error.
 func (e cliEngine) spawnCapture(ctx context.Context, summary string, args []string, stdin *string) (stdout, stderr []byte, exitCode int, err error) {
-	cctx, cancel := context.WithTimeout(ctx, e.timeout)
+	return e.spawnCaptureWithCancellation(ctx, summary, args, stdin, false)
+}
+
+func (e cliEngine) spawnCaptureWithCancellation(ctx context.Context, summary string, args []string, stdin *string, detached bool) (stdout, stderr []byte, exitCode int, err error) {
+	commandCtx := ctx
+	if detached {
+		commandCtx = context.WithoutCancel(ctx)
+	}
+	cctx, cancel := context.WithTimeout(commandCtx, e.timeout)
 	defer cancel()
 
 	//nolint:gosec // G204: this is the container-engine seam — spawning the
@@ -55,7 +63,8 @@ func (e cliEngine) spawnCapture(ctx context.Context, summary string, args []stri
 		cmd.Stdin = strings.NewReader(*stdin)
 	}
 
-	if runErr := cmd.Run(); runErr != nil {
+	runErr := cmd.Run()
+	if runErr != nil {
 		switch {
 		case cctx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
 			// This call's own timeout fired (not the parent): the process was
@@ -75,10 +84,14 @@ func (e cliEngine) spawnCapture(ctx context.Context, summary string, args []stri
 	return out.Bytes(), errBuf.Bytes(), 0, nil
 }
 
-// run runs `<program> <args>`, requiring a zero exit (a non-zero becomes a
-// CommandError). For fire-and-check operations like create/start/stop/remove.
-func (e cliEngine) run(ctx context.Context, summary string, args []string) ([]byte, error) {
-	stdout, stderr, exitCode, err := e.spawnCapture(ctx, summary, args, nil)
+// runDetached is run without caller cancellation, bounded only by the timeout:
+// a signal mid netns setup can leave pasta running without resolv.conf.
+func (e cliEngine) runDetached(ctx context.Context, summary string, args []string) ([]byte, error) {
+	return e.runWithCancellation(ctx, summary, args, true)
+}
+
+func (e cliEngine) runWithCancellation(ctx context.Context, summary string, args []string, detached bool) ([]byte, error) {
+	stdout, stderr, exitCode, err := e.spawnCaptureWithCancellation(ctx, summary, args, nil, detached)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +103,12 @@ func (e cliEngine) run(ctx context.Context, summary string, args []string) ([]by
 		}
 	}
 	return stdout, nil
+}
+
+// run runs `<program> <args>`, requiring a zero exit (a non-zero becomes a
+// CommandError). For fire-and-check operations like create/start/stop/remove.
+func (e cliEngine) run(ctx context.Context, summary string, args []string) ([]byte, error) {
+	return e.runWithCancellation(ctx, summary, args, false)
 }
 
 // stopWithClientScript runs "$@" with stdin relayed by a watcher in the same
