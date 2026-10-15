@@ -581,6 +581,54 @@ func TestClaimForgeMirrorSourceTwoRequiresSourceKey(t *testing.T) {
 	}
 }
 
+// A claim stores the session and payload; a re-mirror of the same source
+// replaces the payload and session and bumps the revision as an edit does.
+func TestClaimForgeMirrorStoresSessionAndPayloadAndRemirrorUpdatesThem(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-payload")
+	first, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-1", Actor: agent, Agent: agent, ClientRequestID: "call-1",
+		TargetRef: "owner/repo#3", BodyRev: 1, State: 1, SessionID: "sess-a", SourcePayload: []byte(`{"note":"one"}`),
+	})
+	if err != nil || !created || first.SessionID != "sess-a" || string(first.SourcePayload) != `{"note": "one"}` {
+		t.Fatalf("ClaimForgeMirror(first) = (%+v, created=%v, err=%v), want stored session and payload", first, created, err)
+	}
+	second, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-1", Actor: agent, Agent: agent, ClientRequestID: "call-2",
+		TargetRef: "owner/repo#3", BodyRev: 1, State: 1, SessionID: "sess-b", SourcePayload: []byte(`{"note":"two"}`),
+	})
+	if err != nil || created || second.ID != first.ID || second.BodyRev != 2 || second.SessionID != "sess-b" || string(second.SourcePayload) != `{"note": "two"}` {
+		t.Fatalf("ClaimForgeMirror(re-mirror) = (%+v, created=%v, err=%v), want bumped row with the new session and payload", second, created, err)
+	}
+}
+
+// An auto ask row takes its session from the posting ctx; a post with no
+// session on ctx stores an empty one for the poster to refuse.
+func TestAskMirrorRowTakesSessionFromContext(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "mirror-session-owner")
+	agent := mustAgent(t, s, owner.ID, "mirror-session-agent")
+	coord := ForgeCoord{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "owner/session", Number: 4}
+	if err := s.SetForgeMirrorSetting(ctx, owner.ID, ForgeMirrorSetting{Provider: coord.Provider, Host: coord.Host, Repo: coord.Repo, Mode: ForgeMirrorAuto}); err != nil {
+		t.Fatalf("SetForgeMirrorSetting: %v", err)
+	}
+	for _, tc := range []struct{ name, session string }{{"relayed", "sess-relay"}, {"no session", ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			postCtx := ctx
+			if tc.session != "" {
+				postCtx = WithAgentSession(ctx, tc.session)
+			}
+			msg, _ := appendAskForMirrorTest(t, postCtx, s, agent.ID, mirrorTestAsk("owner/session#4", &coord), "")
+			rows, err := s.AskForgeMirrors(ctx, []string{msg.Blocks[0].Ask.AskID})
+			if err != nil || len(rows) != 1 || rows[0].SessionID != tc.session {
+				t.Fatalf("AskForgeMirrors = (%+v, %v), want one row with session %q", rows, err, tc.session)
+			}
+		})
+	}
+}
+
 func TestForgeMirrorExpiredLeaseFencesAttemptsAndMarks(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

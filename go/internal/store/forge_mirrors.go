@@ -54,6 +54,11 @@ type ForgeMirrorRow struct {
 	LeaseUntil      *time.Time
 	LeaseToken      string
 	UpdatedAt       time.Time
+	// SessionID is the agent session the owner header names; empty on user rows.
+	SessionID string
+	// SourcePayload holds an agent message mirror's render inputs, so a redrive
+	// after restart can rebuild the body; nil on ask and user rows.
+	SourcePayload []byte
 }
 
 // ForgeMirrorMark is the result of one mirror delivery or reconciliation pass.
@@ -157,6 +162,8 @@ func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (Fo
 		TargetRef:       mirror.TargetRef,
 		BodyRev:         mirror.BodyRev,
 		State:           mirror.State,
+		SessionID:       mirror.SessionID,
+		SourcePayload:   mirror.SourcePayload,
 	})
 	if err == nil {
 		return forgeMirrorFromDB(row), true, nil
@@ -169,7 +176,10 @@ func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (Fo
 		return ForgeMirrorRow{}, false, fmt.Errorf("store: find claimed forge mirror: %w", err)
 	}
 	if conflict.ConflictKind == 3 && mirror.Source == 2 && conflict.ActorAccountID == string(mirror.Actor) && conflict.AgentAccountID == string(mirror.Agent) {
-		if _, err := s.q.BumpForgeMirrorSourceRevision(ctx, conflict.ID); err != nil {
+		// A re-mirror of the same source carries its new render inputs and session.
+		if _, err := s.q.BumpForgeMirrorSourceRevision(ctx, db.BumpForgeMirrorSourceRevisionParams{
+			SourcePayload: mirror.SourcePayload, SessionID: mirror.SessionID, ID: conflict.ID,
+		}); err != nil {
 			return ForgeMirrorRow{}, false, fmt.Errorf("store: bump forge mirror revision: %w", err)
 		}
 		conflict, err = s.forgeMirrorByConflictKeys(ctx, mirror)
@@ -186,6 +196,7 @@ func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (Fo
 		FirstAttemptAt: conflict.FirstAttemptAt, LastAttemptAt: conflict.LastAttemptAt,
 		ClientCommentID: conflict.ClientCommentID, RecheckAt: conflict.RecheckAt, LeaseUntil: conflict.LeaseUntil,
 		LeaseToken: conflict.LeaseToken, UpdatedAt: conflict.UpdatedAt,
+		SessionID: conflict.SessionID, SourcePayload: conflict.SourcePayload,
 	}), false, nil
 }
 
@@ -345,8 +356,11 @@ func insertAskMirrors(ctx context.Context, q *db.Queries, msg Message, author Ac
 		if ForgeMirrorMode(mode) != ForgeMirrorAuto {
 			continue
 		}
+		// The relay puts the posting session on ctx; a post with none stores an
+		// empty session, which the poster refuses rather than misattributes.
 		if err := q.InsertAskForgeMirror(ctx, db.InsertAskForgeMirrorParams{
 			ID: newID(), AskID: block.Ask.AskID, ActorAccountID: string(author), TargetRef: block.Ask.Ref,
+			SessionID: AgentSessionFromContext(ctx),
 		}); err != nil {
 			return fmt.Errorf("store: insert ask forge mirror: %w", err)
 		}
@@ -386,5 +400,6 @@ func forgeMirrorFromDB(row db.ClaimForgeMirrorRow) ForgeMirrorRow {
 		FirstAttemptAt: optionalTime(row.FirstAttemptAt), LastAttemptAt: optionalTime(row.LastAttemptAt),
 		ClientCommentID: row.ClientCommentID, RecheckAt: optionalTime(row.RecheckAt), LeaseUntil: optionalTime(row.LeaseUntil),
 		LeaseToken: row.LeaseToken, UpdatedAt: row.UpdatedAt.Time,
+		SessionID: row.SessionID, SourcePayload: row.SourcePayload,
 	}
 }

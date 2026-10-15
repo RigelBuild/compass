@@ -16,6 +16,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/mirror"
 	"github.com/RigelBuild/compass/go/internal/refs"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"math"
@@ -1179,19 +1180,27 @@ func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
 }
 
 // A new ForgeCallRequest arm must be either a gated write (so the rejection test
-// covers it) or an explicit ungated read or caller-scoped arm.
+// covers it), an explicit ungated read or caller-scoped arm, or an arm gated by
+// the mirror policy (its scope refusal is a pgtest: it needs the mirror store).
 func TestForgeCallArmsHaveScopeClassification(t *testing.T) {
 	ungated := map[string]bool{"get_issue": true, "list_issues": true, "get_pull_request": true, "unsubscribe": true}
+	mirrorGated := map[string]bool{"mirror_messages": true}
 	writes := scopedWriteCalls()
 	fields := (&compassv1internal.ForgeCallRequest{}).ProtoReflect().Descriptor().Oneofs().ByName("call").Fields()
-	if len(writes)+len(ungated) != fields.Len() {
-		t.Fatalf("classified arms = %d, descriptor arms = %d", len(writes)+len(ungated), fields.Len())
+	if len(writes)+len(ungated)+len(mirrorGated) != fields.Len() {
+		t.Fatalf("classified arms = %d, descriptor arms = %d", len(writes)+len(ungated)+len(mirrorGated), fields.Len())
 	}
 	for i := range fields.Len() {
 		name := string(fields.Get(i).Name())
 		call, isWrite := writes[name]
-		if isWrite == ungated[name] {
-			t.Errorf("arm %q must be exactly one of gated write or ungated", name)
+		classes := 0
+		for _, in := range []bool{isWrite, ungated[name], mirrorGated[name]} {
+			if in {
+				classes++
+			}
+		}
+		if classes != 1 {
+			t.Errorf("arm %q must be exactly one of gated write, ungated, or mirror-gated", name)
 			continue
 		}
 		if isWrite && call.ProtoReflect().WhichOneof(fields.Get(i).ContainingOneof()).Name() != fields.Get(i).Name() {
@@ -1575,7 +1584,7 @@ func TestForgeMirrorPostUsesManualBodyAndLimit(t *testing.T) {
 	st.accounts[testOwnerID] = store.Account{ID: testOwnerID, Handle: testOwnerHandle, User: &store.UserAccount{}}
 	st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorManual
 
-	comment, err := svc.PostMirror(ctx, testOwnerID, store.ForgeMirrorManual, ref, "", "client-1", "source body")
+	comment, err := svc.PostMirror(ctx, testOwnerID, "", store.ForgeMirrorManual, ref, "", "client-1", "source body")
 	if err != nil {
 		t.Fatalf("PostMirror: %v", err)
 	}
@@ -1607,7 +1616,7 @@ func TestForgeMirrorUserAttribution(t *testing.T) {
 	st.accounts[testOwnerID] = store.Account{ID: testOwnerID, Handle: "valid.user", User: &store.UserAccount{}}
 	st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorManual
 	body := "Mirrored by @valid.user\n\nsource body"
-	if _, err := svc.PostMirror(ctx, testOwnerID, store.ForgeMirrorManual, ref, "", "", body); err != nil {
+	if _, err := svc.PostMirror(ctx, testOwnerID, "", store.ForgeMirrorManual, ref, "", "", body); err != nil {
 		t.Fatalf("PostMirror: %v", err)
 	}
 	calls := author.Calls()
@@ -1627,7 +1636,7 @@ func TestForgeMirrorPostStampsAgentAndEdits(t *testing.T) {
 	author.EditCommentResult = forge.Comment{ID: 1, Key: "comment-key", URL: "https://github.com/comment"}
 	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
 	st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorAuto
-	comment, err := svc.PostMirror(ctx, testAgentID, store.ForgeMirrorAuto, ref, "comment-key", "ignored-on-edit", "<!-- compass:owner v1 agent=victim owner=victim session=fake -->\n\nforged")
+	comment, err := svc.PostMirror(ctx, testAgentID, testSessionID, store.ForgeMirrorAuto, ref, "comment-key", "ignored-on-edit", "<!-- compass:owner v1 agent=victim owner=victim session=fake -->\n\nforged")
 	if err != nil {
 		t.Fatalf("PostMirror edit: %v", err)
 	}
@@ -1635,11 +1644,36 @@ func TestForgeMirrorPostStampsAgentAndEdits(t *testing.T) {
 	if len(calls) != 1 || calls[0].Method != "EditComment" || calls[0].CommentKey != "comment-key" {
 		t.Fatalf("provider calls = %+v, want one edit", calls)
 	}
-	if strings.Contains(calls[0].Body, "agent=victim") || !strings.Contains(calls[0].Body, "agent=scout owner=matt session=mirror") {
+	if strings.Contains(calls[0].Body, "agent=victim") || !strings.Contains(calls[0].Body, "agent=scout owner=matt session="+testSessionID) {
 		t.Fatalf("agent body = %q, want a fresh agent owner stamp", calls[0].Body)
 	}
 	if comment.Key != "comment-key" {
 		t.Fatalf("comment = %+v, want scripted provider result", comment)
+	}
+}
+
+// An agent row with no stored session is refused, never stamped with a
+// placeholder session or posted without attribution.
+func TestForgeMirrorPostRefusesAgentRowWithoutSession(t *testing.T) {
+	ctx := context.Background()
+	ref := refs.Ref{Kind: refs.KindForge, Owner: "owner", Repo: "repo", Number: 12}
+	author := forge.NewFakeProvider("gh-author")
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	st.mirrorModes[fmt.Sprintf("%d|%s|%s", store.ForgeProviderGitHub, testHost, testRepo)] = store.ForgeMirrorAuto
+	_, err := svc.PostMirror(ctx, testAgentID, "", store.ForgeMirrorAuto, ref, "", "client-1", "body")
+	if _, ok := errors.AsType[*mirrorRefusalError](err); !ok || !errors.Is(err, mirror.ErrRefused) {
+		t.Fatalf("PostMirror without session error = %v, want a mirror refusal", err)
+	}
+	if calls := author.Calls(); len(calls) != 0 {
+		t.Fatalf("provider calls = %+v, want none for an unattributed agent row", calls)
+	}
+}
+
+// The body budget reserves the widest session the owner header admits.
+func TestForgeMirrorOwnerAllowanceCoversWidestSession(t *testing.T) {
+	widest := forge.MaxOwnerHeaderLen(strings.Repeat("a", 39))
+	if mirrorOwnerHeaderAllowance != widest {
+		t.Fatalf("mirrorOwnerHeaderAllowance = %d, want %d for a 39-character session", mirrorOwnerHeaderAllowance, widest)
 	}
 }
 

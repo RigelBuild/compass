@@ -92,7 +92,7 @@ type Querier interface {
 	// WithTx), so one generated query backs both call sites.
 	BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error)
 	BumpAskForgeMirror(ctx context.Context, askID string) error
-	BumpForgeMirrorSourceRevision(ctx context.Context, id string) (int64, error)
+	BumpForgeMirrorSourceRevision(ctx context.Context, arg BumpForgeMirrorSourceRevisionParams) (int64, error)
 	// Keep handle joins optional so missing handle rows do not hide @everyone members.
 	// reach: the author may reach agent aa
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]ChannelAgentMembersRow, error)

@@ -31,16 +31,17 @@ ON CONFLICT (tenant_id, forge_provider, forge_host, repo) DO UPDATE
 -- name: ClaimForgeMirror :one
 INSERT INTO forge_mirrors
     (id, source, ask_id, source_key, actor_account_id, agent_account_id,
-     client_request_id, target_ref, body_rev, state)
+     client_request_id, target_ref, body_rev, state, session_id, source_payload)
 VALUES (sqlc.arg(id), sqlc.arg(source), sqlc.arg(ask_id), sqlc.arg(source_key), sqlc.arg(actor_account_id),
-        sqlc.narg(agent_account_id), sqlc.narg(client_request_id), sqlc.arg(target_ref), sqlc.arg(body_rev), sqlc.arg(state))
+        sqlc.narg(agent_account_id), sqlc.narg(client_request_id), sqlc.arg(target_ref), sqlc.arg(body_rev), sqlc.arg(state),
+        sqlc.arg(session_id), sqlc.narg(source_payload)::jsonb)
 ON CONFLICT DO NOTHING
 RETURNING id, source, ask_id, source_key, actor_account_id,
           COALESCE(agent_account_id, '')::text AS agent_account_id,
           client_request_id, target_ref, body_rev, posted_rev, state, attempts,
           comment_id, comment_key, comment_url, last_error, first_attempt_at,
           last_attempt_at, client_comment_id::text AS client_comment_id,
-          recheck_at, lease_until, lease_token, updated_at;
+          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload;
 
 -- name: ForgeMirrorByConflictKeys :one
 SELECT id, source, ask_id, source_key, actor_account_id,
@@ -48,7 +49,7 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at,
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload,
        CASE WHEN agent_account_id = NULLIF(sqlc.arg(agent_account_id)::text, '') AND client_request_id = sqlc.narg(client_request_id)::text
             THEN 2::smallint
             WHEN ask_id = NULLIF(sqlc.arg(ask_id)::text, '') THEN 1::smallint
@@ -64,7 +65,9 @@ SELECT id, source, ask_id, source_key, actor_account_id,
 
 -- name: BumpForgeMirrorSourceRevision :execrows
 UPDATE forge_mirrors
-   SET body_rev = LEAST(body_rev::integer + 1, 32767)::smallint, state = 1
+   SET body_rev = LEAST(body_rev::integer + 1, 32767)::smallint, state = 1,
+       source_payload = COALESCE(sqlc.narg(source_payload)::jsonb, source_payload),
+       session_id = CASE WHEN sqlc.arg(session_id)::text = '' THEN session_id ELSE sqlc.arg(session_id)::text END
  WHERE id = sqlc.arg(id);
 
 -- name: OpenForgeMirrors :many
@@ -73,7 +76,7 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
   FROM forge_mirrors
  WHERE agent_account_id = sqlc.arg(agent_account_id)::text AND (state <> 2 OR recheck_at <= now())
  ORDER BY created_at, id;
@@ -84,7 +87,7 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
   FROM forge_mirrors WHERE ask_id = ANY(sqlc.arg(ask_ids)::text[]) ORDER BY created_at, id;
 
 -- name: LeaseForgeMirror :one
@@ -97,7 +100,7 @@ RETURNING id, source, ask_id, source_key, actor_account_id,
           client_request_id, target_ref, body_rev, posted_rev, state, attempts,
           comment_id, comment_key, comment_url, last_error, first_attempt_at,
           last_attempt_at, client_comment_id::text AS client_comment_id,
-          recheck_at, lease_until, lease_token, updated_at;
+          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload;
 
 -- name: RenewForgeMirror :execrows
 UPDATE forge_mirrors SET lease_until = now() + sqlc.arg(ttl)::interval
@@ -113,7 +116,7 @@ RETURNING id, source, ask_id, source_key, actor_account_id,
           client_request_id, target_ref, body_rev, posted_rev, state, attempts,
           comment_id, comment_key, comment_url, last_error, first_attempt_at,
           last_attempt_at, client_comment_id::text AS client_comment_id,
-          recheck_at, lease_until, lease_token, updated_at;
+          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload;
 
 -- name: MarkForgeMirror :execrows
 UPDATE forge_mirrors
@@ -135,13 +138,13 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
   FROM forge_mirrors WHERE id = sqlc.arg(id);
 
 -- name: InsertAskForgeMirror :exec
 INSERT INTO forge_mirrors
-    (id, source, ask_id, actor_account_id, agent_account_id, target_ref, body_rev, state)
-VALUES (sqlc.arg(id), 1, sqlc.arg(ask_id), sqlc.arg(actor_account_id), sqlc.arg(actor_account_id), sqlc.arg(target_ref), 1, 1);
+    (id, source, ask_id, actor_account_id, agent_account_id, target_ref, body_rev, state, session_id)
+VALUES (sqlc.arg(id), 1, sqlc.arg(ask_id), sqlc.arg(actor_account_id), sqlc.arg(actor_account_id), sqlc.arg(target_ref), 1, 1, sqlc.arg(session_id));
 
 -- name: BumpAskForgeMirror :exec
 UPDATE forge_mirrors SET body_rev = 2, state = 1 WHERE ask_id = sqlc.arg(ask_id);

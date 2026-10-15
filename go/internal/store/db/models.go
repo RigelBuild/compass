@@ -296,8 +296,10 @@ type ForgeMirror struct {
 	SourceKey       string
 	ActorAccountID  string
 	AgentAccountID  pgtype.Text
+	SessionID       string
 	ClientRequestID pgtype.Text
 	TargetRef       string
+	SourcePayload   []byte
 	BodyRev         int16
 	PostedRev       int16
 	State           int16

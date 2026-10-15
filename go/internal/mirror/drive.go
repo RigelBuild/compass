@@ -36,8 +36,10 @@ var (
 // ListMirrorComments returns only comments by the configured Compass App login;
 // implementations fail closed when they cannot resolve that account.
 // BodyLimit excludes the owner header; Drive reserves the row marker itself.
+// session is the row's stored agent session, which an agent post's owner
+// header names; it is empty on user rows.
 type Poster interface {
-	PostMirror(ctx context.Context, actor store.AccountID, need store.ForgeMirrorMode, ref refs.Ref, commentKey, clientID, body string) (forge.Comment, error)
+	PostMirror(ctx context.Context, actor store.AccountID, session string, need store.ForgeMirrorMode, ref refs.Ref, commentKey, clientID, body string) (forge.Comment, error)
 	ListMirrorComments(ctx context.Context, actor store.AccountID, ref refs.Ref, since time.Time) ([]forge.Comment, error)
 	DeleteMirrorComment(ctx context.Context, actor store.AccountID, ref refs.Ref, commentKey string) error
 	BodyLimit(ref refs.Ref) int
@@ -202,7 +204,7 @@ func deliverAttempt(ctx context.Context, st *store.Store, p Poster, token string
 	if lostOrCanceled(ctx, leaseLost) {
 		return false, nil
 	}
-	comment, err = p.PostMirror(ctx, state.row.Actor, need, ref, commentKey, state.row.ClientCommentID, body)
+	comment, err = p.PostMirror(ctx, state.row.Actor, state.row.SessionID, need, ref, commentKey, state.row.ClientCommentID, body)
 	if err == nil {
 		return false, markDelivered(ctx, st, state.row, token, comment.ID, comment.Key, comment.URL, state.uncertain, renderedRev)
 	}
