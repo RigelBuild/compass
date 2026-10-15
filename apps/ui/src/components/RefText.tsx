@@ -1,7 +1,12 @@
 import { type Component, For, Show } from "solid-js";
 import { useRefLinkRules } from "../context";
 import { openExternal } from "../open-external";
-import { type RefToken, refUrl, tokenizeRefs } from "../refs/grammar";
+import {
+	type RefLinkRule,
+	type RefToken,
+	refUrl,
+	tokenizeRefs,
+} from "../refs/grammar";
 import { safeHref } from "../safe-url";
 
 type RefTextProps = {
@@ -12,11 +17,27 @@ type RefTextProps = {
 	inRovingGroup?: boolean;
 };
 
+export function refHref(
+	token: RefToken,
+	rules: readonly RefLinkRule[],
+): string | null {
+	return safeHref(refUrl(token, rules));
+}
+
+export function hasLinkedRef(
+	text: string,
+	rules: readonly RefLinkRule[],
+): boolean {
+	return tokenizeRefs(text).some(
+		(token) => typeof token !== "string" && refHref(token, rules) !== null,
+	);
+}
+
 const RefLink: Component<{ token: RefToken } & Omit<RefTextProps, "text">> = (
 	props,
 ) => {
 	const refLinkRules = useRefLinkRules();
-	const href = () => safeHref(refUrl(props.token, refLinkRules()));
+	const href = () => refHref(props.token, refLinkRules());
 	// The ref acts alone: the enclosing card must not also select or open.
 	const open = (event: MouseEvent, safe: string) => {
 		event.preventDefault();

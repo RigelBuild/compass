@@ -2,11 +2,16 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
 import { type Accessor, flush } from "solid-js";
 import { RefLinkRulesContext } from "../context";
-import { createFakeCompass } from "../live/compass-fake";
+import {
+	createFakeCompass,
+	FIXTURE_REF_LINK_RULES,
+} from "../live/compass-fake";
 import type { RefLinkRule } from "../refs/grammar";
 import { createAppStore } from "../store";
+import { STUB_ISSUES } from "../stub-data";
+import { flush as flushApp, mountApp } from "../test-router";
 import { testQueryClient } from "../test-support";
-import { RefText } from "./RefText";
+import { hasLinkedRef, RefText } from "./RefText";
 
 const LINEAR_RIG: Accessor<readonly RefLinkRule[]> = () => [
 	{
@@ -35,6 +40,50 @@ async function mount(text: string): Promise<HTMLElement> {
 	}
 	return container;
 }
+
+describe("hasLinkedRef", () => {
+	test("returns true when configured rules link a ref", () => {
+		expect(hasLinkedRef("Fix RIG-12", FIXTURE_REF_LINK_RULES)).toBe(true);
+	});
+
+	test("returns false when no rule matches the ref", () => {
+		expect(hasLinkedRef("Fix OPS-4", FIXTURE_REF_LINK_RULES)).toBe(false);
+	});
+
+	test("does not count refs inside a URL token", () => {
+		expect(
+			hasLinkedRef("see https://example.com/RIG-12", FIXTURE_REF_LINK_RULES),
+		).toBe(false);
+	});
+
+	test("does not count a ref whose rule produces an unsafe URL", () => {
+		const unsafeRules: readonly RefLinkRule[] = [
+			{
+				kind: "linear",
+				prefix: "RIG",
+				urlTemplate: "javascript:alert({number})",
+			},
+		];
+		expect(hasLinkedRef("Fix RIG-12", unsafeRules)).toBe(false);
+	});
+});
+
+describe("mountApp ref-link rules", () => {
+	test("seeds context rules and renders configured refs as links", async () => {
+		const issue = STUB_ISSUES.find((candidate) => candidate.id === "ws-1022");
+		if (!issue) throw new Error("missing fixture issue ws-1022");
+		const { container } = mountApp("/", {
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+			initialIssues: [{ ...issue, title: "Fix RIG-12" }],
+		});
+		await flushApp();
+		const link = container.querySelector<HTMLElement>(".card-title .ref-link");
+		expect(link?.textContent).toBe("RIG-12");
+		expect(link?.getAttribute("title")).toBe(
+			"https://linear.app/rigel/issue/RIG-12",
+		);
+	});
+});
 
 describe("RefText", () => {
 	test("links configured refs and leaves unmatched refs and bare numbers plain", async () => {
