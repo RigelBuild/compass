@@ -497,7 +497,7 @@ appended):
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-098 | An unresolvable pinned agent does not vanish: the pin keeps its activity-bar item, its pane renders an "agent unreachable" state, and removal is a manual unpin only — a visibility fluctuation to unresolvable never auto-switches the active tab to `status` (the unpin-active→status fallback is retained, and the pane arm closes the Switch's no-default-arm gap) — amending DL-096's unresolvable-pin handling (the frozen record's §T2 filter and §T3 fluctuation-coercion clauses are superseded; DL-096's pinning-layer core stands) | Active (Matt, 2026-08-02) | [unreachable-pin amendment §Approach](compass-sidebar-pins-unreachable-amendment/design.md#approach) |
+| DL-098 | An unresolvable pinned agent does not vanish: the pin keeps its activity-bar item, its pane renders an "agent unreachable" state, and removal is a manual unpin only — a visibility fluctuation to unresolvable never auto-switches the active tab to `status` (the unpin-active→status fallback is retained, and the pane arm closes the Switch's no-default-arm gap) — amending DL-096's unresolvable-pin handling (the frozen record's §T2 filter and §T3 fluctuation-coercion clauses are superseded; DL-096's pinning-layer core stands) | Active (Matt, 2026-08-02) | [unreachable-pin amendment §Approach](#approach) |
 
 ### DL-096 — stays Active
 
