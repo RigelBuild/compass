@@ -280,7 +280,7 @@ func (s *Stack) RestartRunner(ctx context.Context) error {
 	s.runner = nil
 	s.runnerWait = nil
 	s.pgids = s.pgids[:len(s.pgids)-1]
-	if err := writePgidFile(s.cfg.StateDir, pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}); err != nil {
+	if err := writePgidFile(ctx, s.cfg.StateDir, pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}); err != nil {
 		if stopErr != nil {
 			return errors.Join(fmt.Errorf("stop runner: %w", stopErr), fmt.Errorf("persist runner stop: %w", err))
 		}
@@ -332,7 +332,7 @@ func (s *Stack) startRunner(ctx context.Context) error {
 		return fmt.Errorf("start compass-runner: %w", err)
 	}
 	s.runner = runner
-	return s.recordChild(ComponentRunner, runner)
+	return s.recordChild(ctx, ComponentRunner, runner)
 }
 
 // spawnChain runs the cold-start sequence in order. Each spawned child is
@@ -419,7 +419,7 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return fmt.Errorf("start compass-server: %w", errors.Join(err, closeErr))
 	}
 	s.server = server
-	if err := s.recordChild(ComponentServer, server); err != nil {
+	if err := s.recordChild(ctx, ComponentServer, server); err != nil {
 		return err
 	}
 	if closeErr != nil {
@@ -490,7 +490,7 @@ func (s *Stack) startPostgres(ctx context.Context) error {
 		return fmt.Errorf("start postgres: %w", err)
 	}
 	s.pg = pg
-	return s.recordChild(ComponentPostgres, pg)
+	return s.recordChild(ctx, ComponentPostgres, pg)
 }
 
 // startPostgresContainer runs the S4 container-backed postgres and records it as
@@ -509,7 +509,7 @@ func (s *Stack) startPostgresContainer(ctx context.Context) error {
 	}
 	s.pg = pg
 	s.pgContainerName = spec.Name
-	return s.appendEntry(ComponentPostgres, pgidEntry{Kind: entryContainer, Component: ComponentPostgres, ContainerName: spec.Name})
+	return s.appendEntry(ctx, ComponentPostgres, pgidEntry{Kind: entryContainer, Component: ComponentPostgres, ContainerName: spec.Name})
 }
 
 // startCollector brings up the bundled Plane-B fan-in OTel Collector (T4 / D3)
@@ -540,7 +540,7 @@ func (s *Stack) startCollector(ctx context.Context) error {
 	s.collector = col
 	s.collectorContainerName = spec.Name
 	s.collectorHealthEndpoint = spec.HealthEndpoint
-	return s.appendEntry(ComponentCollector, pgidEntry{Kind: entryContainer, Component: ComponentCollector, ContainerName: spec.Name})
+	return s.appendEntry(ctx, ComponentCollector, pgidEntry{Kind: entryContainer, Component: ComponentCollector, ContainerName: spec.Name})
 }
 
 // startNats brings up the bundled NATS container and records it as a v2
@@ -570,7 +570,7 @@ func (s *Stack) startNats(ctx context.Context) error {
 	s.nats = n
 	s.natsContainerName = spec.Name
 	s.natsMonitorEndpoint = spec.MonitorEndpoint
-	return s.appendEntry(ComponentNats, pgidEntry{Kind: entryContainer, Component: ComponentNats, ContainerName: spec.Name})
+	return s.appendEntry(ctx, ComponentNats, pgidEntry{Kind: entryContainer, Component: ComponentNats, ContainerName: spec.Name})
 }
 
 // startGateway runs the gateway container and records its v2 container entry.
@@ -591,7 +591,7 @@ func (s *Stack) startGateway(ctx context.Context) error {
 		return fmt.Errorf("start gateway container: %w", err)
 	}
 	s.gateway, s.gatewayContainerName, s.gatewayHealthEndpoint = p, spec.Name, spec.HealthEndpoint
-	return s.appendEntry(ComponentGateway, pgidEntry{Kind: entryContainer, Component: ComponentGateway, ContainerName: spec.Name})
+	return s.appendEntry(ctx, ComponentGateway, pgidEntry{Kind: entryContainer, Component: ComponentGateway, ContainerName: spec.Name})
 }
 
 // waitGateway polls /healthz until the gateway answers or the budget elapses.
@@ -626,21 +626,21 @@ func (s *Stack) waitGateway(ctx context.Context) error {
 // spawn keeps the crash window one child wide: the atomically-renamed file on
 // disk is always a complete earlier prefix of the start sequence, so a fresh
 // down never reads a torn record and drains exactly the prefix that was started.
-func (s *Stack) recordChild(c Component, p Process) error {
+func (s *Stack) recordChild(ctx context.Context, c Component, p Process) error {
 	startTime, err := readStartTime(p.Pid())
 	if err != nil {
 		return fmt.Errorf("read start time for %s (pid %d): %w", c, p.Pid(), err)
 	}
-	return s.appendEntry(c, pgidEntry{Kind: entryProc, Component: c, Pgid: p.Pid(), StartTime: startTime})
+	return s.appendEntry(ctx, c, pgidEntry{Kind: entryProc, Component: c, Pgid: p.Pid(), StartTime: startTime})
 }
 
 // appendEntry appends one teardown entry and republishes the record, preserving
 // the rewrite-after-each-spawn / one-child-wide-crash-window discipline both
 // record paths share.
-func (s *Stack) appendEntry(c Component, e pgidEntry) error {
+func (s *Stack) appendEntry(ctx context.Context, c Component, e pgidEntry) error {
 	s.pgids = append(s.pgids, e)
 	rec := pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}
-	if err := writePgidFile(s.cfg.StateDir, rec); err != nil {
+	if err := writePgidFile(ctx, s.cfg.StateDir, rec); err != nil {
 		return fmt.Errorf("persist pgid record after starting %s: %w", c, err)
 	}
 	return nil

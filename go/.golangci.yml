@@ -140,6 +140,7 @@ linters:
     # F-slog: enforce consistent slog usage — key-value pairs must be complete
     # and keys snake_case. Live across the module's slog call sites.
     sloglint:
+      context: all
       no-mixed-args: true
       kv-only: false
       key-naming-case: snake
@@ -217,7 +218,7 @@ linters:
           - predeclared # a test-local may shadow a builtin (e.g. a var named recover)
           - depguard # tests freely use fenced imports (math/rand fixtures, os/exec harnesses for podman/microVM); the import fence is a production concern
       # Test roots and the top of a main may mint the root context.
-      - path: '(_test\.go|cmd/[^/]+/main\.go)$'
+      - path: '(_test\.go|cmd/[^/]+/main(_nogtk4)?\.go)$'
         linters: [forbidigo]
         text: 'go-thread-context'
       # staticcheck's SA-class real-bug checks stay ON for tests (a broken test is

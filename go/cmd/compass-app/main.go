@@ -40,8 +40,9 @@ import (
 )
 
 func main() {
-	if err := run(context.Background()); err != nil {
-		slog.Error("compass-app exited with an error", "error", err)
+	ctx := context.Background()
+	if err := run(ctx); err != nil {
+		slog.ErrorContext(ctx, "compass-app exited with an error", "error", err)
 		os.Exit(1)
 	}
 }
@@ -133,7 +134,7 @@ func run(ctx context.Context) error {
 			names = append(names, w.Name())
 		}
 		if err := saveWindowSet(stateDir, names); err != nil {
-			slog.Error("compass-app persisting window set", "error", err)
+			slog.ErrorContext(ctx, "compass-app persisting window set", "error", err)
 		}
 	})
 
@@ -151,7 +152,7 @@ func run(ctx context.Context) error {
 	windowMenu := menu.AddSubmenu("Window")
 	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
 		name := nextWindowName(app)
-		newAppWindow(app, svc, name, "Compass")
+		newAppWindow(ctx, app, svc, name, "Compass")
 	})
 	app.Menu.Set(menu)
 
@@ -160,11 +161,11 @@ func run(ctx context.Context) error {
 	// reads the current shell mode when creating its startup script.
 	names := windowNamesOrDefault(loadWindowSet(stateDir))
 	for _, name := range names {
-		newAppWindow(app, svc, name, "Compass")
+		newAppWindow(ctx, app, svc, name, "Compass")
 	}
 
 	mode, _ := svc.shellState()
-	slog.Info("compass-app starting", "mode", mode, "socket", socket, "assets", assetsDir, "version", version)
+	slog.InfoContext(ctx, "compass-app starting", "mode", mode, "socket", socket, "assets", assetsDir, "version", version)
 	return app.Run()
 }
 
@@ -191,10 +192,10 @@ func windowOptions(svc *bridgeService, name, title string) (application.WebviewW
 
 // newAppWindow creates a Bridge window and attaches its close-time cancellation
 // handler so every window tears down its own in-flight bridge calls.
-func newAppWindow(app *application.App, svc *bridgeService, name, title string) {
+func newAppWindow(ctx context.Context, app *application.App, svc *bridgeService, name, title string) {
 	opts, err := windowOptions(svc, name, title)
 	if err != nil {
-		slog.Error("compass-app building window startup script", "error", err)
+		slog.ErrorContext(ctx, "compass-app building window startup script", "error", err)
 		return
 	}
 	win := app.Window.NewWithOptions(opts)
@@ -248,7 +249,7 @@ func newSetupServices(stateDir, image string) (*bridgeService, *setupService, *d
 			defer cancel()
 			return preflight(ctx)
 		},
-		save: func() error { return appconfig.SaveEmbedded(configPath) },
+		save: func(ctx context.Context) error { return appconfig.SaveEmbedded(ctx, configPath) },
 	}
 	return svc, setup, &dialogService{picks: picks}, nil
 }

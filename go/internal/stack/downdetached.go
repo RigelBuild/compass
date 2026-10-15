@@ -124,7 +124,7 @@ func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 	// Partial: re-publish the surviving set so a retried down (or a human) can
 	// finish. Removing the record would orphan the survivors with nothing to
 	// retry against.
-	if werr := writePgidFile(cfg.StateDir, survivorRecord(rec, survivors)); werr != nil {
+	if werr := writePgidFile(ctx, cfg.StateDir, survivorRecord(rec, survivors)); werr != nil {
 		return errors.Join(survivorError(survivors), fmt.Errorf("rewrite pgid record to survivors: %w", werr))
 	}
 	return survivorError(survivors)
@@ -178,7 +178,7 @@ func dropPriorBootGroups(ctx context.Context, cfg Config, deps Deps, rec pgidRec
 	current, err := readBootID()
 	if err != nil {
 		// An unreadable current boot is unknown; per-entry identity checks still guard.
-		slog.Warn("cannot read the current boot id; keeping per-entry identity checks", "err", err)
+		slog.WarnContext(ctx, "cannot read the current boot id; keeping per-entry identity checks", "err", err)
 		return rec, nil
 	}
 	if current == "" || current == rec.BootID {
@@ -187,7 +187,7 @@ func dropPriorBootGroups(ctx context.Context, cfg Config, deps Deps, rec pgidRec
 	if _, perr := deps.Prober.Probe(ctx, cfg.SocketPath); perr == nil {
 		return pgidRecord{}, fmt.Errorf("pgid record claims boot %s but this is boot %s and the stack socket still answers; refusing to tear down", rec.BootID, current)
 	}
-	slog.Info("pgid record is from an earlier boot; its process groups are gone", "record_boot", rec.BootID, "current_boot", current)
+	slog.InfoContext(ctx, "pgid record is from an earlier boot; its process groups are gone", "record_boot", rec.BootID, "current_boot", current)
 	out := pgidRecord{WriterPid: rec.WriterPid, Version: rec.Version, BootID: rec.BootID}
 	for _, e := range rec.Entries {
 		if e.Kind == entryContainer {
@@ -251,7 +251,7 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 			// It runs without --rm, so an exited gateway lingers; remove it once exited.
 			return func() bool {
 				if err := deps.Containers.RemoveExited(ctx, e.ContainerName); err != nil {
-					logContainerSignalMiss("rm", e, err)
+					logContainerSignalMiss(ctx, "rm", e, err)
 				}
 				return !deps.Containers.Exists(ctx, e.ContainerName)
 			}
@@ -439,8 +439,8 @@ func clearLockFile(stateDir string) error {
 // verify→signal gap) is an expected, benign event, logged at debug for a
 // deep-dive trace rather than surfaced to the operator or returned. Kept as one
 // helper so both the SIGTERM and SIGKILL sites read identically.
-func logSignalMiss(sig string, e pgidEntry, err error) {
-	slog.Debug("group signal not delivered (group likely already gone)",
+func logSignalMiss(ctx context.Context, sig string, e pgidEntry, err error) {
+	slog.DebugContext(ctx, "group signal not delivered (group likely already gone)",
 		"signal", sig, "component", e.Component.String(), "pgid", e.Pgid, "error", err)
 }
 
@@ -480,7 +480,7 @@ func signalTerm(ctx context.Context, deps Deps, e pgidEntry) {
 	switch e.Kind {
 	case entryContainer:
 		if err := deps.Containers.Stop(ctx, e.ContainerName); err != nil {
-			logContainerSignalMiss("stop", e, err)
+			logContainerSignalMiss(ctx, "stop", e, err)
 		}
 	default:
 		// Re-check identity: the pgid may have been recycled since selection.
@@ -488,7 +488,7 @@ func signalTerm(ctx context.Context, deps Deps, e pgidEntry) {
 			return
 		}
 		if err := deps.GroupSignaller.Signal(e.Pgid, SignalTerm); err != nil {
-			logSignalMiss("SIGTERM", e, err)
+			logSignalMiss(ctx, "SIGTERM", e, err)
 		}
 	}
 }
@@ -500,7 +500,7 @@ func signalKill(ctx context.Context, deps Deps, e pgidEntry) bool {
 	switch e.Kind {
 	case entryContainer:
 		if err := deps.Containers.Remove(ctx, e.ContainerName); err != nil {
-			logContainerSignalMiss("rm -f", e, err)
+			logContainerSignalMiss(ctx, "rm -f", e, err)
 		}
 		return false
 	default:
@@ -509,7 +509,7 @@ func signalKill(ctx context.Context, deps Deps, e pgidEntry) bool {
 			return false
 		}
 		if err := deps.GroupSignaller.Signal(e.Pgid, SignalKill); err != nil {
-			logSignalMiss("SIGKILL", e, err)
+			logSignalMiss(ctx, "SIGKILL", e, err)
 			return false
 		}
 		return true
@@ -520,7 +520,7 @@ func signalKill(ctx context.Context, deps Deps, e pgidEntry) bool {
 // teardown-delivery error (most often "no such container": it went away in the
 // verify→signal gap) is an expected, benign event, logged at debug rather than
 // surfaced, since the socket-quiescence confirm is the verdict.
-func logContainerSignalMiss(op string, e pgidEntry, err error) {
-	slog.Debug("container teardown not delivered (container likely already gone)",
+func logContainerSignalMiss(ctx context.Context, op string, e pgidEntry, err error) {
+	slog.DebugContext(ctx, "container teardown not delivered (container likely already gone)",
 		"op", op, "component", e.Component.String(), "container", e.ContainerName, "error", err)
 }

@@ -50,8 +50,9 @@ var errStackVersionMismatch = errors.New("the live stack was built by a differen
 	"stop it and run `compass-stack down` (or restart the stack) before bringing up this build")
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		slog.Error("compass-stack exited with an error", "error", err)
+	ctx := context.Background()
+	if err := run(ctx, os.Args[1:]); err != nil {
+		slog.ErrorContext(ctx, "compass-stack exited with an error", "error", err)
 		os.Exit(exitCode(err))
 	}
 }
@@ -65,7 +66,7 @@ func exitCode(err error) int {
 
 // run dispatches the subcommand in args[0] to up/down/status/preflight. An
 // unknown or empty subcommand is a usage error naming the four. Logs go to stderr.
-func run(args []string) error {
+func run(ctx context.Context, args []string) error {
 	// Version is the command's own output, so it goes to stdout. Handle it
 	// before subcommand dispatch so `compass-stack --version` works without a
 	// subcommand.
@@ -85,7 +86,7 @@ func run(args []string) error {
 	// The process root context, cancelled on SIGINT/SIGTERM so a Ctrl-C during
 	// up cancels the bring-up cleanly. This is the top-of-main root context;
 	// every downstream call threads it.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	switch sub {

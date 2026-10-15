@@ -515,7 +515,7 @@ func TestResolveConfigGuestFlags(t *testing.T) { //nolint:funlen,gocognit // thi
 
 func TestRunDispatch(t *testing.T) {
 	t.Run("unknown subcommand names the three", func(t *testing.T) {
-		err := run([]string{"bogus"})
+		err := run(t.Context(), []string{"bogus"})
 		if err == nil {
 			t.Fatal("expected error for unknown subcommand, got nil")
 		}
@@ -527,13 +527,13 @@ func TestRunDispatch(t *testing.T) {
 	})
 
 	t.Run("empty args is a usage error", func(t *testing.T) {
-		if err := run(nil); err == nil {
+		if err := run(t.Context(), nil); err == nil {
 			t.Fatal("expected a usage error for no subcommand, got nil")
 		}
 	})
 
 	t.Run("--version prints version", func(t *testing.T) {
-		if err := run([]string{"--version"}); err != nil {
+		if err := run(t.Context(), []string{"--version"}); err != nil {
 			t.Fatalf("run --version: %v", err)
 		}
 	})

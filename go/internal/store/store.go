@@ -147,7 +147,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		metric.WithDescription("Count of background transcript flush passes that failed."),
 	)
 	if err != nil {
-		slog.Warn("store: failed to create transcript flush failure counter; metric disabled", "err", err)
+		slog.WarnContext(ctx, "store: failed to create transcript flush failure counter; metric disabled", "err", err)
 		failures = nil
 	}
 	s.flushes = newTranscriptFlusher(failures)

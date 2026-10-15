@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
@@ -110,5 +111,5 @@ type setupWiring struct {
 	gate       *firstRunGate
 	picks      *caPicks
 	newTarget  func(serverURL string, caPEM []byte) (*bridge.Target, error)
-	saveClient func(path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error)
+	saveClient func(ctx context.Context, path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error)
 }

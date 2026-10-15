@@ -113,7 +113,7 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 
 	// 3. Guest images: each configured, present, readable, and hash-verified
 	// against the manifest when one is supplied (record §(d)).
-	if err := m.verifyImages(probes); err != nil {
+	if err := m.verifyImages(ctx, probes); err != nil {
 		return err
 	}
 
@@ -135,7 +135,7 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 	// operator-provisioned project quota MUST be active on the session-volume
 	// filesystem, or startup fails naming the fix. Otherwise the observed
 	// utilization is logged and nothing gates.
-	return m.verifyQuota(probes)
+	return m.verifyQuota(ctx, probes)
 }
 
 // verifyQuota runs the D7 volume-quota check against the SESSION-VOLUME
@@ -153,7 +153,7 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 // logged and startup proceeds — an absent quota is the documented posture there.
 //
 // No meter is registered here; the coherent metric set is V7's.
-func (m *MicroVMRuntime) verifyQuota(probes preflightProbes) error {
+func (m *MicroVMRuntime) verifyQuota(ctx context.Context, probes preflightProbes) error {
 	if m.config.VolumeRoot == "" {
 		if m.config.QuotaRequired {
 			return errors.New(
@@ -162,7 +162,7 @@ func (m *MicroVMRuntime) verifyQuota(probes preflightProbes) error {
 					"to the parent dir session volumes are minted under (the run-root is the socket dir and is " +
 					"routinely a different filesystem, so it is not a valid proxy)")
 		}
-		slog.Warn("microvm preflight: session-volume quota is not verified; no volume root is configured",
+		slog.WarnContext(ctx, "microvm preflight: session-volume quota is not verified; no volume root is configured",
 			"fix", "set --microvm-volume-root or $COMPASS_MICROVM_VOLUME_ROOT")
 		return nil
 	}
@@ -171,7 +171,7 @@ func (m *MicroVMRuntime) verifyQuota(probes preflightProbes) error {
 		if m.config.QuotaRequired {
 			return err
 		}
-		slog.Warn("microvm preflight: session-volume quota is not verified; the single-tenant profile ships no host-enforced quota",
+		slog.WarnContext(ctx, "microvm preflight: session-volume quota is not verified; the single-tenant profile ships no host-enforced quota",
 			"volume_root", m.config.VolumeRoot, "reason", err)
 		return nil
 	}
@@ -179,7 +179,7 @@ func (m *MicroVMRuntime) verifyQuota(probes preflightProbes) error {
 	// are the project's own usage/limit. With no quota projected, statfs reports
 	// the whole filesystem, so the same key would silently mean "host disk fill".
 	// The raw pair is logged instead, so V7 inherits a single-meaning ratio.
-	slog.Info("microvm preflight: session-volume project quota is active",
+	slog.InfoContext(ctx, "microvm preflight: session-volume project quota is active",
 		"volume_root", m.config.VolumeRoot,
 		"limit_bytes", reading.LimitBytes,
 		"used_bytes", reading.UsedBytes,
@@ -201,7 +201,7 @@ type imageKnob struct {
 // then — when a manifest is supplied — hash-verifies it against the manifest
 // entry keyed by basename. An unset manifest logs one warning naming the
 // un-verified state (record §(d)).
-func (m *MicroVMRuntime) verifyImages(probes preflightProbes) error {
+func (m *MicroVMRuntime) verifyImages(ctx context.Context, probes preflightProbes) error {
 	images := []imageKnob{
 		{name: "kernel", path: m.config.KernelImage, flag: "--microvm-kernel", env: "COMPASS_MICROVM_KERNEL"},
 		{name: "rootfs", path: m.config.RootfsImage, flag: "--microvm-rootfs", env: "COMPASS_MICROVM_ROOTFS"},
@@ -217,7 +217,7 @@ func (m *MicroVMRuntime) verifyImages(probes preflightProbes) error {
 	}
 
 	if m.config.ImageManifest == "" {
-		slog.Warn("microvm preflight: guest images are not hash-verified; set --microvm-image-manifest ($COMPASS_MICROVM_IMAGE_MANIFEST) to enable content verification")
+		slog.WarnContext(ctx, "microvm preflight: guest images are not hash-verified; set --microvm-image-manifest ($COMPASS_MICROVM_IMAGE_MANIFEST) to enable content verification")
 		return nil
 	}
 
@@ -455,7 +455,7 @@ func (m *MicroVMRuntime) BootCanary(ctx context.Context) (report CanaryReport, e
 	if vm != nil {
 		pss, pssErr := vm.PSS()
 		if pssErr != nil {
-			slog.Warn("microvm: canary: reading guest PSS (best-effort)", "error", pssErr)
+			slog.WarnContext(ctx, "microvm: canary: reading guest PSS (best-effort)", "error", pssErr)
 		}
 		for _, kb := range pss {
 			report.GuestRSSBytes += kb * 1024

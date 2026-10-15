@@ -59,7 +59,7 @@ func (p *linuxNetProvisioner) Provision(ctx context.Context) error {
 		return err
 	}
 	if p.log != nil {
-		p.log.Info("network provisioned",
+		p.log.InfoContext(ctx, "network provisioned",
 			slog.String("iface", p.iface),
 			slog.String("addr", cfg.addr.String()),
 			slog.Any("gateway", cfg.gateway),

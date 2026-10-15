@@ -180,7 +180,7 @@ func TestClientModeHeadlessChain(t *testing.T) {
 func assertClientAppToml(t *testing.T, serverURL, token string, caPEM []byte) {
 	t.Helper()
 	appTomlPath := filepath.Join(t.TempDir(), "app.toml")
-	if _, err := appconfig.SaveClient(appTomlPath, appconfig.Config{
+	if _, err := appconfig.SaveClient(t.Context(), appTomlPath, appconfig.Config{
 		Mode:      appconfig.ModeClient,
 		ServerURL: serverURL,
 	}, caPEM); err != nil {

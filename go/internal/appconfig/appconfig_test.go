@@ -384,7 +384,7 @@ func TestLoadDanglingConfigSymlinkIsNotNoConfig(t *testing.T) {
 	if _, err := Load(dir, "", ""); err == nil || errors.Is(err, ErrNoConfig) {
 		t.Fatalf("Load with a dangling app.toml symlink = %v, want a read error that is not ErrNoConfig", err)
 	}
-	if err := SaveEmbedded(path); !errors.Is(err, ErrConfigExists) {
+	if err := SaveEmbedded(t.Context(), path); !errors.Is(err, ErrConfigExists) {
 		t.Fatalf("SaveEmbedded over a dangling symlink = %v, want ErrConfigExists", err)
 	}
 	// An explicit override still resolves, as with any unreadable-as-absent file.
@@ -466,7 +466,7 @@ func assertSavedClient(t *testing.T, caPEM []byte) {
 	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "compass", "app.toml")
-	cfg, err := SaveClient(path, Config{
+	cfg, err := SaveClient(t.Context(), path, Config{
 		Mode:      ModeClient,
 		ServerURL: " https://h:8443/ ",
 		CACert:    "input path is not persisted",
@@ -526,7 +526,7 @@ func assertSavedCACert(t *testing.T, path string, cfg, loaded Config, caPEM []by
 func TestSaveEmbedded(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "compass", "app.toml")
-	if err := SaveEmbedded(path); err != nil {
+	if err := SaveEmbedded(t.Context(), path); err != nil {
 		t.Fatalf("SaveEmbedded: %v", err)
 	}
 	got, err := Load(root, "", "")
@@ -555,7 +555,7 @@ func TestSaveFailuresLeaveNoArtifacts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "compass", "app.toml")
-			if _, err := SaveClient(path, tt.cfg, []byte("new CA")); err == nil {
+			if _, err := SaveClient(t.Context(), path, tt.cfg, []byte("new CA")); err == nil {
 				t.Fatal("SaveClient: want error, got nil")
 			}
 			assertNoSaveArtifacts(t, path)
@@ -584,10 +584,10 @@ func TestSaveExistingConfigDoesNotReplaceFiles(t *testing.T) {
 		run  func() error
 	}{
 		{name: "client", run: func() error {
-			_, err := SaveClient(path, Config{Mode: ModeClient, ServerURL: "https://h"}, []byte("new CA"))
+			_, err := SaveClient(t.Context(), path, Config{Mode: ModeClient, ServerURL: "https://h"}, []byte("new CA"))
 			return err
 		}},
-		{name: "embedded", run: func() error { return SaveEmbedded(path) }},
+		{name: "embedded", run: func() error { return SaveEmbedded(t.Context(), path) }},
 	} {
 		t.Run(save.name, func(t *testing.T) {
 			if err := save.run(); !errors.Is(err, ErrConfigExists) {
@@ -628,7 +628,7 @@ func TestSaveDirectorySyncFailureAfterLinkSucceeds(t *testing.T) {
 
 	root := t.TempDir()
 	path := filepath.Join(root, "compass", "app.toml")
-	if err := SaveEmbedded(path); err != nil {
+	if err := SaveEmbedded(t.Context(), path); err != nil {
 		t.Fatalf("SaveEmbedded after directory sync failure: %v", err)
 	}
 	if !strings.Contains(logOutput.String(), "appconfig: syncing config directory after save") {

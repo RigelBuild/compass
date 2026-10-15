@@ -184,8 +184,8 @@ func TestKeyDoesNotLeakBytes(t *testing.T) {
 
 	// slog is the vector the type must close: both handlers, key as an attr value.
 	var textBuf, jsonBuf bytes.Buffer
-	slog.New(slog.NewTextHandler(&textBuf, nil)).Info("m", "master_key", k)
-	slog.New(slog.NewJSONHandler(&jsonBuf, nil)).Info("m", "master_key", k)
+	slog.New(slog.NewTextHandler(&textBuf, nil)).InfoContext(t.Context(), "m", "master_key", k)
+	slog.New(slog.NewJSONHandler(&jsonBuf, nil)).InfoContext(t.Context(), "m", "master_key", k)
 	assertClean("slog TextHandler", textBuf.String())
 	assertClean("slog JSONHandler", jsonBuf.String())
 }

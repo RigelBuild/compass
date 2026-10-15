@@ -322,7 +322,7 @@ var classifyParams = preflight.Params{
 // RealPreflight uses.
 func classify(t *testing.T, deps preflight.Deps) error {
 	t.Helper()
-	return classifyPreflight(deps.Run(context.Background(), classifyParams))
+	return classifyPreflight(t.Context(), deps.Run(t.Context(), classifyParams))
 }
 
 // TestClassifyPreflightAllPass: no failing check → nil.

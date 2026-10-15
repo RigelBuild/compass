@@ -3,6 +3,7 @@
 package stack
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -123,12 +124,12 @@ type pgidRecord struct {
 // (untagged 3-field proc lines) is read-only back-compat — this build never
 // writes it. <bootid> is always the writer's current boot (rec.BootID is
 // ignored), and is omitted when unreadable, which a reader takes as unknown.
-func writePgidFile(stateDir string, rec pgidRecord) error {
+func writePgidFile(ctx context.Context, stateDir string, rec pgidRecord) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %d", pgidFileVersion, rec.WriterPid)
 	if boot, err := readBootID(); err != nil || !isBootUUID(boot) {
 		// An unknown boot only forgoes the reboot shortcut; identity checks still guard every signal.
-		slog.Warn("pgid record written without a boot id", "boot_id", boot, "err", err)
+		slog.WarnContext(ctx, "pgid record written without a boot id", "boot_id", boot, "err", err)
 	} else {
 		fmt.Fprintf(&b, " %s", boot)
 	}

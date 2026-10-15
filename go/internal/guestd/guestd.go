@@ -178,7 +178,7 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 	svc.mu.Unlock()
 	if rpcStop {
 		if serveErr != nil {
-			log.Error("guest serve drain returned an error on RPC stop; powering off anyway", "error", serveErr)
+			log.ErrorContext(ctx, "guest serve drain returned an error on RPC stop; powering off anyway", "error", serveErr)
 		}
 		return steps.powerOff()
 	}

@@ -53,7 +53,7 @@ type setupService struct {
 	gate      *firstRunGate
 	svc       *bridgeService
 	preflight func(context.Context) error
-	save      func() error
+	save      func(context.Context) error
 }
 
 func (s *setupService) ChooseEmbedded(ctx context.Context) setupResult {
@@ -71,7 +71,7 @@ func (s *setupService) ChooseEmbedded(ctx context.Context) setupResult {
 	if err := s.preflight(ctx); err != nil {
 		return setupResult{Message: err.Error()}
 	}
-	if err := s.save(); err != nil {
+	if err := s.save(ctx); err != nil {
 		if errors.Is(err, appconfig.ErrConfigExists) {
 			decide(s.gate, s.svc, false)
 			finished = true

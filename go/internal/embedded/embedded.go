@@ -99,13 +99,13 @@ func (p Pipeline) Run(ctx context.Context, params Params) (string, error) {
 	if err := p.StackUp(ctx, args); err != nil {
 		return "", err
 	}
-	slog.Info("stack ready", "socket", params.Socket)
+	slog.InfoContext(ctx, "stack ready", "socket", params.Socket)
 
 	accountID, err := p.WhoAmI(ctx, params.Socket)
 	if err != nil {
 		return "", fmt.Errorf("resolving caller identity over %s: %w", params.Socket, err)
 	}
-	slog.Info("caller identity resolved", "account", accountID)
+	slog.InfoContext(ctx, "caller identity resolved", "account", accountID)
 	return accountID, nil
 }
 
@@ -371,7 +371,7 @@ func RealPreflight(image string) func(ctx context.Context) error {
 	deps := realPreflightDeps(runtime.GOOS)
 	params := preflight.Params{AgentImage: image}
 	return func(ctx context.Context) error {
-		return classifyPreflight(deps.Run(ctx, params))
+		return classifyPreflight(ctx, deps.Run(ctx, params))
 	}
 }
 
@@ -409,7 +409,7 @@ func realPreflightDeps(goos string) preflight.Deps {
 //     podman version floor (delta 4), and — on darwin — the podman machine.
 //   - ADVISORY (`up` ensures it, `up`-Ready verifies it): image — logged at
 //     Warn, never fatal.
-func classifyPreflight(results preflight.Results) error {
+func classifyPreflight(ctx context.Context, results preflight.Results) error {
 	var fatal preflight.Results
 	for _, r := range results {
 		if r.OK {
@@ -417,7 +417,7 @@ func classifyPreflight(results preflight.Results) error {
 		}
 		switch r.Name {
 		case preflight.CheckImage:
-			slog.Warn("preflight: precondition unmet; compass-stack up will ensure it",
+			slog.WarnContext(ctx, "preflight: precondition unmet; compass-stack up will ensure it",
 				"check", r.Name, "detail", r.Detail)
 		default:
 			fatal = append(fatal, r)

@@ -49,7 +49,7 @@ func TestDecidePodman(t *testing.T) {
 // unknown subcommand error names it, so an operator who typos it is told the
 // valid set.
 func TestPreflightDispatch(t *testing.T) {
-	err := run([]string{"bogus"})
+	err := run(t.Context(), []string{"bogus"})
 	if err == nil {
 		t.Fatal("expected error for unknown subcommand, got nil")
 	}

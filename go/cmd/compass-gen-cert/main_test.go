@@ -183,7 +183,7 @@ func TestSkipExistingWarnsOnLooseKey(t *testing.T) {
 				t.Fatal(err)
 			}
 			logs := captureLog(t)
-			if !skipExisting(cert, key, false) {
+			if !skipExisting(t.Context(), cert, key, false) {
 				t.Fatal("skipExisting = false, want a skip with both files present")
 			}
 			if got := strings.Contains(logs.String(), "level=WARN"); got != tc.wantWarn {
