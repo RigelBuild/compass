@@ -143,19 +143,16 @@ SELECT id, source, ask_id, source_key, actor_account_id,
   FROM forge_mirrors WHERE id = sqlc.arg(id);
 
 -- name: ForgeMirrorByRequest :one
-SELECT id, source, ask_id, source_key, actor_account_id,
-       COALESCE(agent_account_id, '')::text AS agent_account_id,
-       client_request_id, target_ref, body_rev, posted_rev, state, attempts,
-       comment_id, comment_key, comment_url, last_error, first_attempt_at,
-       last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
-  FROM forge_mirrors
- WHERE agent_account_id = sqlc.arg(agent_account_id)::text
-   AND (client_request_id = sqlc.arg(client_request_id)::text
-        OR id = (SELECT mirror_id FROM forge_mirror_requests r
-                  WHERE r.agent_account_id = sqlc.arg(agent_account_id)::text
-                    AND r.client_request_id = sqlc.arg(client_request_id)::text))
- LIMIT 1;
+SELECT m.id, m.source, m.ask_id, m.source_key, m.actor_account_id,
+       COALESCE(m.agent_account_id, '')::text AS agent_account_id,
+       m.client_request_id, m.target_ref, m.body_rev, m.posted_rev, m.state, m.attempts,
+       m.comment_id, m.comment_key, m.comment_url, m.last_error, m.first_attempt_at,
+       m.last_attempt_at, m.client_comment_id::text AS client_comment_id,
+       m.recheck_at, m.lease_until, m.lease_token, m.updated_at, m.session_id, m.source_payload, m.last_error_code
+  FROM forge_mirror_requests r
+  JOIN forge_mirrors m ON m.id = r.mirror_id
+ WHERE r.agent_account_id = sqlc.arg(agent_account_id)::text
+   AND r.client_request_id = sqlc.arg(client_request_id)::text;
 
 -- name: RecordForgeMirrorRequest :execrows
 INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id)

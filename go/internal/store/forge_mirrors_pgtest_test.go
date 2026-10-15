@@ -659,6 +659,52 @@ func TestMarkForgeMirrorStoresFailureCode(t *testing.T) {
 	}
 }
 
+// The old cross-table race, driven in order: a re-mirror reserves a key for
+// source A, then a new claim on source B arrives with the same key. The claim
+// must resolve to A instead of inserting a second row for the key.
+func TestRequestKeyReservedByRemirrorBlocksLaterClaim(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-key-race")
+	claim := func(source, key string) (ForgeMirrorRow, bool) {
+		t.Helper()
+		row, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+			Source: 2, SourceKey: source, Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#7", BodyRev: 1, State: 1, SessionID: "sess-r", SourcePayload: []byte(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("ClaimForgeMirror(%s, %s): %v", source, key, err)
+		}
+		return row, created
+	}
+	a, _ := claim("topic-a", "call-a")
+	if remirrored, created := claim("topic-a", "call-shared"); created || remirrored.ID != a.ID {
+		t.Fatalf("re-mirror = (%s, created=%v), want row %s", remirrored.ID, created, a.ID)
+	}
+	late, created := claim("topic-b", "call-shared")
+	if created || late.ID != a.ID {
+		t.Fatalf("late claim = (%s, created=%v), want the reserved row %s", late.ID, created, a.ID)
+	}
+	if n := mirrorRowCount(t, s, ctx, agent); n != 1 {
+		t.Fatalf("mirror row count = %d, want 1", n)
+	}
+	for range 3 {
+		got, found, err := s.ForgeMirrorByRequest(ctx, agent, "call-shared")
+		if err != nil || !found || got.ID != a.ID {
+			t.Fatalf("ForgeMirrorByRequest(call-shared) = (%s, found=%v, err=%v), want %s", got.ID, found, err, a.ID)
+		}
+	}
+	// The reverse order: a claim reserves the key, then a re-mirror of another
+	// source with that key resolves to the claim's row without bumping it.
+	b, _ := claim("topic-c", "call-c")
+	if again, created := claim("topic-a", "call-c"); created || again.ID != b.ID {
+		t.Fatalf("re-mirror with a claimed key = (%s, created=%v), want %s", again.ID, created, b.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, a.ID); err != nil || after.BodyRev != 2 {
+		t.Fatalf("row A body_rev = %d (err %v), want 2 (one re-mirror only)", after.BodyRev, err)
+	}
+}
+
 // An auto ask row takes its session from the posting ctx; a post with no
 // session on ctx stores an empty one for the poster to refuse.
 func TestAskMirrorRowTakesSessionFromContext(t *testing.T) {

@@ -164,19 +164,29 @@ export const listIssuesParameters = type({
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const mirrorMessagesParameters = type({
 	...forgeSelector,
-	ref: nonBlank("Forge issue or pull request reference, such as RIG-12 or owner/repo#12"),
+	ref: nonBlank(
+		"Forge issue or pull request reference, such as RIG-12 or owner/repo#12",
+	),
 	"message_ids?": type("string[]")
-		.narrow((ids, ctx) =>
-			(ids.length >= 1 && ids.length <= 50) ||
-			ctx.mustBe("between 1 and 50 message ids"),
+		.narrow(
+			(ids, ctx) =>
+				(ids.length >= 1 && ids.length <= 50) ||
+				ctx.mustBe("between 1 and 50 message ids"),
 		)
-		.describe("One to fifty messages from one channel; mutually exclusive with topic_id"),
+		.describe(
+			"One to fifty messages from one channel; mutually exclusive with topic_id",
+		),
 	"topic_id?": nonBlank("Topic id; mutually exclusive with message_ids"),
-	"channel?": nonBlank("Visible source channel name; use the channel name, not its id"),
-	"note?": type("string").describe("Optional note shown above the mirrored messages"),
-}).narrow((v, ctx) =>
-	(v.topic_id !== undefined) !== (v.message_ids !== undefined) ||
-	ctx.mustBe("provide exactly one of topic_id or message_ids"),
+	"channel?": nonBlank(
+		"Visible source channel name; use the channel name, not its id",
+	),
+	"note?": type("string").describe(
+		"Optional note shown above the mirrored messages",
+	),
+}).narrow(
+	(v, ctx) =>
+		(v.topic_id !== undefined) !== (v.message_ids !== undefined) ||
+		ctx.mustBe("provide exactly one of topic_id or message_ids"),
 );
 export const commentOnIssueParameters = type({
 	...forgeSelector,
@@ -875,13 +885,17 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 					clientRequestId: broker.idempotencyKey(toolCallId),
 				}),
 			);
-			if (result.result.case !== "issueComment" && result.result.case !== "prComment")
+			if (
+				result.result.case !== "issueComment" &&
+				result.result.case !== "prComment"
+			)
 				throw forgeFailure(
 					result,
 					"forge_mirror_messages",
 					"issueComment or prComment",
 				);
-			const target = result.result.case === "prComment" ? "pull request" : "issue";
+			const target =
+				result.result.case === "prComment" ? "pull request" : "issue";
 			return {
 				content: [
 					{

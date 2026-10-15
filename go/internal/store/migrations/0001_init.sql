@@ -1137,8 +1137,9 @@ CREATE UNIQUE INDEX forge_mirrors_request_key ON forge_mirrors (tenant_id, agent
 CREATE UNIQUE INDEX forge_mirrors_source_key ON forge_mirrors (tenant_id, source_key, target_ref) WHERE source_key <> '';
 CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE state <> 2 OR recheck_at IS NOT NULL;
 
--- forge_mirror_requests records each later agent request key that re-mirrored
--- an existing row, so a retry of that key finds the row instead of bumping it.
+-- forge_mirror_requests is the one reservation of each agent request key: the
+-- claim that created a row and every later re-mirror write it in their own
+-- transaction, so one key resolves to exactly one row.
 CREATE TABLE forge_mirror_requests (
     agent_account_id  TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
     client_request_id TEXT NOT NULL CHECK (client_request_id <> ''),
