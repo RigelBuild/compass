@@ -56,6 +56,10 @@
   minimumReleaseAge: "5 days",
   internalChecksFilter: "strict",
 
+  // go/moon.yml's `tidy` gate fails on any stale go.sum line; a plain gomod
+  // bump leaves the old version's hashes behind.
+  postUpdateOptions: ["gomodTidy"],
+
   labels: ["dependencies"],
 
   // Explicit allowlist for the current stack. `github-actions` is present here
