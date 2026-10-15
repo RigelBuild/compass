@@ -914,6 +914,7 @@ jobs:
       # default TMPDIR overflows sun_path's 108-byte cap. Same reason as the moon
       # gate and the pgtest job.
       TMPDIR: /tmp
+      GOMODCACHE: /home/runner/go/pkg/mod
     steps:
       # microVM runs no git-diff, so a default shallow checkout suffices.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1014,6 +1015,31 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+
+      - name: Restore the Go module cache
+        # Keyed on go/go.sum so the test step rarely reaches proxy.golang.org.
+        # Restore-only here; the gated save at the end of the job never runs on a dispatch.
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.GOMODCACHE }}
+          key: microvm-gomod-${{ runner.os }}-go1.26.0-${{ hashFiles('go/go.sum') }}
+          restore-keys: |
+            microvm-gomod-${{ runner.os }}-go1.26.0-
+
+      - name: Download Go modules
+        working-directory: go
+        # Fetch before `go test`, so a proxy drop fails here, not as a package
+        # `[setup failed]`. The cause is upstream, so allow a bounded, backed-off retry.
+        run: |
+          for attempt in 1 2 3; do
+            go mod download >/tmp/gomod.log 2>&1 && exit 0
+            echo "::warning::go mod download attempt $attempt failed"
+            tail -n 20 /tmp/gomod.log
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 15))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: microVM suites
         working-directory: go
@@ -1134,6 +1160,18 @@ jobs:
           done
           echo "microvm: checked $(printf '%s\n' "$pkgs" | wc -l) KVM-backed packages"
           exit "$rc"
+
+      - name: Save the Go module cache
+        # Never on workflow_dispatch: a `pr` dispatch runs PR code under main's cache scope.
+        if: >-
+          (((github.event_name == 'push' || github.event_name == 'schedule')
+            && github.ref == 'refs/heads/main')
+           || github.event_name == 'pull_request')
+          && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.GOMODCACHE }}
+          key: ${{ steps.go-mod-cache.outputs.cache-primary-key }}
 
   forge-oracle:
     name: forge
