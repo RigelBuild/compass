@@ -1107,27 +1107,22 @@ func buildDoors(
 	}
 	agentRepositorySvc := newAgentRepositoryService(st, gitCredentials, repoSignal)
 
-	// CommsService rides the socket + dev doors and the network shared chain; it
-	// mounts the same otelconnect + trace-response pair as CompassService.
+	// CommsService rides the socket + dev doors and the network shared chain with
+	// no auth pair of its own here: comms attributes every RPC to the bootstrap admin.
 	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc,
-		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor()))
+		otel.HandlerInterceptors(otelIC))
 	// Shipped door: the Unix socket serves native gRPC, gRPC-Web, and Connect off
-	// the one connect-go handler. No CORS — the socket is same-origin. The 0600
-	// socket is the credential: CompassService mounts the ambient-identity pair,
-	// and comms attributes every RPC to the bootstrap admin. Drains on shutdown.
+	// one connect-go handler. No CORS: same-origin. The 0600 socket is the credential,
+	// so each service mounts the ambient-identity pair (the bootstrap admin, a user).
+	ambient := []connect.Interceptor{auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)}
 	socketPath, socketHandler := compassv1connect.NewCompassServiceHandler(svc,
-		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
-			auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
-	// SecretsService rides the same ambient-identity pair so its handler reads a
-	// caller via CallerFrom (the bootstrap admin, a user): the socket's 0600 mode
-	// is the credential, and admin being a user satisfies the user-only writes.
+		otel.HandlerInterceptors(otelIC, ambient...))
 	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		otel.HandlerInterceptors(otelIC, ambient...))
 	agentRepositoryPath, agentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
-		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		otel.HandlerInterceptors(otelIC, ambient...))
 	usageSocketPath, usageSocketHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
-			auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		otel.HandlerInterceptors(otelIC, ambient...))
 	udsMux := http.NewServeMux()
 	udsMux.Handle(socketPath, socketHandler)
 	udsMux.Handle(commsPath, commsHandler)
@@ -1143,20 +1138,17 @@ func buildDoors(
 	// (IssueToken) fail-close; reversing it would ADMIT IssueToken on this door.
 	var devServer *http.Server
 	if devListener != nil {
+		// The gate classifies SecretsService's procedures authenticatedOpen, so it passes
+		// them; the ambient pair then attaches the admin for the user-only write authz.
+		devAmbient := []connect.Interceptor{auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)}
 		devPath, devHandler := compassv1connect.NewCompassServiceHandler(svc,
-			connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
-				auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
-		// SecretsService on the dev door: same admin-gate + ambient chain as
-		// CompassService. The gate classifies its 3 procedures authenticatedOpen,
-		// so it passes them, then the ambient pair attaches the bootstrap admin
-		// (a user) the handler reads for the user-only write authz.
+			otel.HandlerInterceptors(otelIC, devAmbient...))
 		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+			otel.HandlerInterceptors(otelIC, devAmbient...))
 		devAgentRepositoryPath, devAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
-			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+			otel.HandlerInterceptors(otelIC, devAmbient...))
 		devUsagePath, devUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-			connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
-				auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+			otel.HandlerInterceptors(otelIC, devAmbient...))
 		devMux := http.NewServeMux()
 		devMux.Handle(devPath, devHandler)
 		devMux.Handle(commsPath, commsHandler)

@@ -92,7 +92,7 @@ func run() error {
 		return err
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(otel.NewTraceHandler(slog.NewTextHandler(os.Stderr, nil))))
 	log := slog.Default()
 
 	// The SELECTED engine's host-capability preflight (static check + boot canary)

@@ -14,6 +14,10 @@ import (
 	"testing"
 
 	"connectrpc.com/otelconnect"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -180,6 +184,14 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
+	previousProvider := otel.GetTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		_ = provider.Shutdown(context.WithoutCancel(t.Context()))
+	})
 	linkHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/l/session/session-123" {
 			t.Errorf("request path = %q, want /l/session/session-123", r.URL.Path)
@@ -187,6 +199,8 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 		w.Header().Set("Location", "https://compass.example.com/#/channel/home")
 		w.WriteHeader(http.StatusFound)
 	})
+	hookSecret := func(context.Context) ([]byte, error) { return []byte("door-test"), nil }
+	linearHook := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
 	srv, err := buildNetworkServer(
 		ctx,
 		ServeConfig{StateDir: t.TempDir()},
@@ -201,9 +215,9 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 		nil,
 		nil,
 		otelIC,
-		nil,
-		nil,
-		nil,
+		&recordingSink{},
+		hookSecret,
+		linearHook,
 		linkHandler,
 		nil,
 		gatewayServices{},
@@ -220,5 +234,17 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 	}
 	if got, want := rec.Header().Get("Location"), "https://compass.example.com/#/channel/home"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
+	}
+	if spans := recorder.Ended(); len(spans) != 1 || spans[0].SpanKind() != trace.SpanKindServer || spans[0].Name() != "linear-session-link" {
+		t.Fatalf("session-link ingress spans = %+v, want one linear-session-link server span", spans)
+	}
+	// An unsigned delivery is rejected inside the handler; the span wraps it either way.
+	for path, name := range map[string]string{githubWebhookPath: "github-webhook", linearWebhookPath: "linear-webhook"} {
+		recorder.Reset()
+		hook := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://compass.example.com"+path, nil)
+		srv.Handler.ServeHTTP(httptest.NewRecorder(), hook)
+		if spans := recorder.Ended(); len(spans) != 1 || spans[0].Name() != name {
+			t.Errorf("%s ingress spans = %+v, want one %s span", path, spans, name)
+		}
 	}
 }

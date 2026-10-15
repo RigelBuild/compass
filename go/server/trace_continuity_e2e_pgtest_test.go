@@ -63,7 +63,7 @@ func serveTracedCommsDoor(t *testing.T, commsSvc *comms.Comms, actor store.Accou
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
 	path, handler := compassv1connect.NewCommsServiceHandler(commsSvc,
-		connect.WithInterceptors(otelIC, otelx.NewTraceResponseInterceptor(),
+		otelx.HandlerInterceptors(otelIC,
 			auth.AmbientIdentity(actor), auth.AmbientStreamInterceptor(actor)))
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)

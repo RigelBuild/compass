@@ -24,6 +24,7 @@ import (
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
@@ -34,6 +35,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+// tracedIngress creates a server span named operation, linked to, never parented
+// by, any inbound traceparent: these endpoints face the internet.
+func tracedIngress(h http.Handler, operation string) http.Handler {
+	return otelhttp.NewHandler(h, operation,
+		otelhttp.WithPublicEndpointFn(func(*http.Request) bool { return true }),
+		otelhttp.WithSpanNameFormatter(func(op string, _ *http.Request) string { return op }))
+}
 
 // adminTokenFile is the basename of the 0600 file the bootstrap-admin token is
 // kept under the state dir. The operator reads the bearer token from here; it
@@ -315,9 +324,7 @@ func buildNetworkServer(
 	// prepended to the shared bearer + admin-gate chain (inert when no provider).
 	// NewSessionIDInterceptor reads the UI's X-POSTHOG-SESSION-ID and stamps
 	// session.id; it sits after otelIC (which creates the span) and before auth.
-	interceptors := connect.WithInterceptors(
-		otelIC,
-		otel.NewTraceResponseInterceptor(),
+	interceptors := otel.HandlerInterceptors(otelIC,
 		otel.NewSessionIDInterceptor(),
 		auth.BearerInterceptor(st),
 		auth.BearerStreamInterceptor(st),
@@ -370,7 +377,7 @@ func buildNetworkServer(
 	// handler's own VerifyGitHubSignature is its whole authentication.
 	if webhookSink != nil {
 		webhookPath, webhookHandler := NewGitHubWebhookHandler(webhookSecret, webhookSink, slog.Default())
-		netMux.Handle(webhookPath, webhookHandler)
+		netMux.Handle(webhookPath, tracedIngress(webhookHandler, "github-webhook"))
 	}
 
 	// The internet-facing Linear webhook ingress (RIG-2732 T7d), mounted only when
@@ -378,12 +385,12 @@ func buildNetworkServer(
 	// ingress it sits OUTSIDE the bearer + admin-gate: Linear signs each delivery
 	// with the webhook secret, so VerifySignature is its whole authentication.
 	if linearWebhookHandler != nil {
-		netMux.Handle(linearWebhookPath, linearWebhookHandler)
+		netMux.Handle(linearWebhookPath, tracedIngress(linearWebhookHandler, "linear-webhook"))
 	}
 	// Unauthenticated by design: it mutates nothing, and the redirect target is
 	// itself an auth-gated Compass surface.
 	if linearSessionLinkHandler != nil {
-		netMux.Handle(linearSessionLinkPattern, linearSessionLinkHandler)
+		netMux.Handle(linearSessionLinkPattern, tracedIngress(linearSessionLinkHandler, "linear-session-link"))
 	}
 	var netRoot http.Handler = netMux
 	if cfg.CORSAllowedOrigin != "" {
@@ -434,7 +441,7 @@ func mountGatewayServices(
 	if services.credentials == nil && services.registry == nil && services.auth == nil {
 		return
 	}
-	interceptors := connect.WithInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID))
+	interceptors := otel.HandlerInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID))
 	options := []connect.HandlerOption{interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes)}
 	if services.credentials != nil {
 		path, handler := compassv1internalconnect.NewGatewayCredentialsHandler(services.credentials, options...)

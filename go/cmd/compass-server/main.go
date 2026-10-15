@@ -83,7 +83,7 @@ func run() error {
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(otel.NewTraceHandler(slog.NewTextHandler(os.Stderr, nil))))
 
 	slog.Info("compass-server starting",
 		"version", version,
