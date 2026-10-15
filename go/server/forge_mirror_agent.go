@@ -81,39 +81,32 @@ func (s *forgeService) mirrorMessages(ctx context.Context, caller store.AccountI
 	if err != nil {
 		return forgeErrorResult(forgeErr(connect.CodeInternal, "forge mirror: encode source payload: "+err.Error()))
 	}
-	row, created, err := s.mirrorStoreDB.ClaimForgeMirror(ctx, store.ForgeMirrorRow{
+	row, resolution, err := s.mirrorStoreDB.ClaimForgeMirrorResolved(ctx, store.ForgeMirrorRow{
 		Source: 2, SourceKey: resolved.sourceKey, Actor: caller, Agent: caller, ClientRequestID: key,
 		TargetRef: ref.String(), BodyRev: 1, State: 1, SessionID: sessionID, SourcePayload: raw,
 	})
 	if err != nil {
 		return forgeErrorResult(storeForgeError(err))
 	}
-	return s.claimedMirrorResult(ctx, caller, key, ref, resolved.sourceKey, row, created)
+	return s.claimedMirrorResult(ctx, caller, ref, row, resolution)
 }
 
-// claimedMirrorResult drives or reports the row ClaimForgeMirror returned. A
-// row that is not new may be the one a racing call reserved this key for; the
-// key's reservation, not the row's own key, decides that it is a retry.
-func (s *forgeService) claimedMirrorResult(ctx context.Context, caller store.AccountID, key string, ref refs.Ref, sourceKey string, row store.ForgeMirrorRow, created bool) *compassv1internal.ForgeCallResult {
-	if !created {
+// claimedMirrorResult drives a row this call inserted or re-mirrored, and
+// reports any other row as it stands. A row whose key was already reserved,
+// by a racing duplicate or an earlier attempt, is a retry and is never driven.
+func (s *forgeService) claimedMirrorResult(ctx context.Context, caller store.AccountID, ref refs.Ref, row store.ForgeMirrorRow, resolution store.ClaimResolution) *compassv1internal.ForgeCallResult {
+	switch resolution {
+	case store.ClaimInserted, store.ClaimRemirrored:
+	case store.ClaimReserved:
 		if row.Source != 2 || row.Actor != caller || row.Agent != caller {
 			return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another actor"))
 		}
-		if key != "" {
-			reserved, found, err := s.mirrorStoreDB.ForgeMirrorByRequest(ctx, caller, key)
-			if err != nil {
-				return forgeErrorResult(storeForgeError(err))
-			}
-			// This call's own re-mirror reserved the key on this same source
-			// row and is driven below; any other reserved row is a retry.
-			ownRemirror := reserved.ID == row.ID && row.SourceKey == sourceKey && row.TargetRef == ref.String()
-			if found && !ownRemirror {
-				return s.mirrorRetryResult(ctx, reserved, ref)
-			}
+		return s.mirrorRetryResult(ctx, row, ref)
+	default:
+		if row.Source != 2 || row.Actor != caller || row.Agent != caller {
+			return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another actor"))
 		}
-		if row.SourceKey != sourceKey || row.TargetRef != ref.String() {
-			return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another mirror"))
-		}
+		return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another mirror"))
 	}
 	result, ok := s.awaitMirrorDrive(ctx, row, s.agentMessagesBodyForRow())
 	if !ok {

@@ -497,8 +497,8 @@ func TestMirrorMessagesPendingRetryIsUnavailable(t *testing.T) {
 }
 
 // A claim that loses its key to a racing re-mirror gets back the re-mirrored
-// row, whose own client_request_id is the first call's. The key reservation
-// marks it a retry, so the caller gets the stored result, not a conflict.
+// row, whose own client_request_id is the first call's. The claim reports it
+// Reserved, so the caller gets the stored result, not a conflict.
 func TestMirrorMessagesClaimResolvedByReservationIsARetry(t *testing.T) {
 	f := newAgentMirrorFixture(t)
 	req := &compassv1internal.MirrorMessagesRequest{Ref: "owner/auto#12", TopicId: f.topicID}
@@ -510,30 +510,87 @@ func TestMirrorMessagesClaimResolvedByReservationIsARetry(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("ForgeMirrorByRequest(call-first) = (found=%v, err=%v)", found, err)
 	}
+	claim := func(source string) store.ForgeMirrorRow {
+		return store.ForgeMirrorRow{
+			Source: 2, SourceKey: source, Actor: f.agent.ID, Agent: f.agent.ID, ClientRequestID: "call-shared",
+			TargetRef: stored.TargetRef, BodyRev: 1, State: 1, SessionID: agentMirrorSession, SourcePayload: stored.SourcePayload,
+		}
+	}
 	// The racing re-mirror reserves call-shared on the existing row.
-	remirrored, created, err := f.st.ClaimForgeMirror(f.ctx, store.ForgeMirrorRow{
-		Source: 2, SourceKey: stored.SourceKey, Actor: f.agent.ID, Agent: f.agent.ID, ClientRequestID: "call-shared",
-		TargetRef: stored.TargetRef, BodyRev: 1, State: 1, SessionID: agentMirrorSession, SourcePayload: stored.SourcePayload,
-	})
-	if err != nil || created || remirrored.ID != stored.ID || remirrored.ClientRequestID != "call-first" {
-		t.Fatalf("re-mirror = (%+v, created=%v, err=%v), want the first row under its own key", remirrored, created, err)
+	remirrored, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, claim(stored.SourceKey))
+	if err != nil || resolution != store.ClaimRemirrored || remirrored.ID != stored.ID || remirrored.ClientRequestID != "call-first" {
+		t.Fatalf("re-mirror = (%+v, %v, err=%v), want the first row re-mirrored under its own key", remirrored, resolution, err)
 	}
 	f.svc.DriveAgent(f.ctx, f.agent.ID)
-	done, err := f.st.ForgeMirrorByID(f.ctx, stored.ID)
-	if err != nil || done.State != 2 {
-		t.Fatalf("row after drive = (%+v, %v), want done", done, err)
-	}
 	calls := len(f.author.Calls())
 	// The losing claim was for another source with the same key.
+	lost, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, claim("another-source"))
+	if err != nil || resolution != store.ClaimReserved || lost.ID != stored.ID {
+		t.Fatalf("losing claim = (%s, %v, err=%v), want %s reserved", lost.ID, resolution, err, stored.ID)
+	}
 	ref, err := refs.Parse("owner/auto#12")
 	if err != nil {
 		t.Fatalf("refs.Parse: %v", err)
 	}
-	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, "call-shared", ref, "another-source", done, false)
+	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, ref, lost, resolution)
 	if result.GetIssueComment().GetCommentId() != first.GetIssueComment().GetCommentId() {
 		t.Fatalf("reserved-key claim result = %v, want the stored comment %v", result, first)
 	}
 	if got := len(f.author.Calls()); got != calls {
 		t.Fatalf("provider calls = %d after the reserved-key claim, want %d", got, calls)
+	}
+}
+
+// Two same-key re-mirrors of one source race: the winner reserves the key,
+// bumps the row, and its drive fails. The loser's claim is Reserved on that
+// same row and must report the stored failure, never lease or post again.
+func TestMirrorMessagesRacingRemirrorLoserReturnsStoredFailure(t *testing.T) {
+	f := newAgentMirrorFixture(t)
+	req := &compassv1internal.MirrorMessagesRequest{Ref: "owner/auto#12", TopicId: f.topicID}
+	if first := f.mirror(t, f.svc, "call-first", req); first.GetIssueComment() == nil {
+		t.Fatalf("first result = %v, want a comment", first)
+	}
+	stored, found, err := f.st.ForgeMirrorByRequest(f.ctx, f.agent.ID, "call-first")
+	if err != nil || !found {
+		t.Fatalf("ForgeMirrorByRequest(call-first) = (found=%v, err=%v)", found, err)
+	}
+	again := store.ForgeMirrorRow{
+		Source: 2, SourceKey: stored.SourceKey, Actor: f.agent.ID, Agent: f.agent.ID, ClientRequestID: "call-again",
+		TargetRef: stored.TargetRef, BodyRev: 1, State: 1, SessionID: agentMirrorSession, SourcePayload: stored.SourcePayload,
+	}
+	won, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, again)
+	if err != nil || resolution != store.ClaimRemirrored || won.ID != stored.ID {
+		t.Fatalf("winning re-mirror = (%s, %v, err=%v), want %s re-mirrored", won.ID, resolution, err, stored.ID)
+	}
+	// The winner's drive fails with a coded error.
+	if _, ok, err := f.st.LeaseForgeMirror(f.ctx, won.ID, "winner-token", time.Minute); err != nil || !ok {
+		t.Fatalf("LeaseForgeMirror = (ok=%v, err=%v)", ok, err)
+	}
+	if err := f.st.MarkForgeMirror(f.ctx, won.ID, "winner-token", store.ForgeMirrorMark{State: 3, Err: "forge mirror: source not found", ErrCode: "not_found"}); err != nil {
+		t.Fatalf("MarkForgeMirror: %v", err)
+	}
+	failed, err := f.st.ForgeMirrorByID(f.ctx, won.ID)
+	if err != nil || failed.State != 3 {
+		t.Fatalf("row after failed drive = (%+v, %v), want failed", failed, err)
+	}
+	calls := len(f.author.Calls())
+	lost, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, again)
+	if err != nil || resolution != store.ClaimReserved || lost.ID != won.ID {
+		t.Fatalf("losing re-mirror = (%s, %v, err=%v), want %s reserved", lost.ID, resolution, err, won.ID)
+	}
+	ref, err := refs.Parse("owner/auto#12")
+	if err != nil {
+		t.Fatalf("refs.Parse: %v", err)
+	}
+	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, ref, lost, resolution)
+	if fe := result.GetError(); fe.GetCode() != connect.CodeNotFound.String() || fe.GetMessage() != failed.LastError {
+		t.Fatalf("losing re-mirror result = %v, want not_found %q", result, failed.LastError)
+	}
+	after, err := f.st.ForgeMirrorByID(f.ctx, won.ID)
+	if err != nil || after.State != 3 || after.Attempts != failed.Attempts || after.BodyRev != failed.BodyRev {
+		t.Fatalf("row after losing re-mirror = (%+v, %v), want untouched %+v", after, err, failed)
+	}
+	if got := len(f.author.Calls()); got != calls {
+		t.Fatalf("provider calls = %d after the losing re-mirror, want %d", got, calls)
 	}
 }

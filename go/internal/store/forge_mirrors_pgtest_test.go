@@ -708,7 +708,7 @@ func TestRequestKeyReservedByRemirrorBlocksLaterClaim(t *testing.T) {
 // The window ClaimForgeMirror's early lookup cannot close: a racing claim
 // reserves the key after this call's lookup missed. Calling claimConflict
 // directly with the reservation already present drives the re-mirror's
-// recorded == 0 path and the reservedID != conflict.ID return.
+// recorded == 0 path, which returns the reserved row as ClaimReserved.
 func TestClaimConflictResolvesToRowReservedAfterLookup(t *testing.T) {
 	ctx := context.Background() // test root context
 	s := newTestStore(t)
@@ -729,14 +729,15 @@ func TestClaimConflictResolvesToRowReservedAfterLookup(t *testing.T) {
 	}
 	// The racing call's reservation lands after this call's lookup missed. The
 	// raw handle has no tenant GUC, so the row's tenant is copied explicitly.
-	if _, err := s.pool.Exec(ctx, `INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id, tenant_id)
+	tag, err := s.pool.Exec(ctx, `INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id, tenant_id)
 		SELECT $1, $2, id, tenant_id FROM forge_mirrors WHERE id = $3`,
-		string(agent), "call-raced", winner.ID); err != nil {
-		t.Fatalf("reserve call-raced: %v", err)
+		string(agent), "call-raced", winner.ID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("reserve call-raced = (%d rows, err %v), want 1 row", tag.RowsAffected(), err)
 	}
-	got, created, err := s.claimConflict(ctx, row("topic-loser", "call-raced"))
-	if err != nil || created || got.ID != winner.ID {
-		t.Fatalf("claimConflict = (%s, created=%v, err=%v), want the reserving row %s", got.ID, created, err, winner.ID)
+	got, resolution, err := s.claimConflict(ctx, row("topic-loser", "call-raced"))
+	if err != nil || resolution != ClaimReserved || got.ID != winner.ID {
+		t.Fatalf("claimConflict = (%s, %v, err=%v), want the reserving row %s reserved", got.ID, resolution, err, winner.ID)
 	}
 	after, err := s.ForgeMirrorByID(ctx, loser.ID)
 	if err != nil || after.BodyRev != 1 {
