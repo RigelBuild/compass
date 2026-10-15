@@ -1088,6 +1088,51 @@ CREATE TABLE forge_repo_subscriptions (
     tenant_id      TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (tenant_id, forge_provider, forge_host, repo)
 );
+-- User-controlled mirroring mode per tenant and forge coordinate; no row means off.
+CREATE TABLE forge_mirror_settings (
+    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
+    forge_host     TEXT     NOT NULL,
+    repo           TEXT     NOT NULL CHECK (repo <> ''),
+    mode           SMALLINT NOT NULL CHECK (mode IN (1, 2)),
+    updated_by     TEXT     NOT NULL REFERENCES user_accounts (account_id) ON DELETE RESTRICT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id      TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (tenant_id, forge_provider, forge_host, repo)
+);
+
+CREATE TABLE forge_mirrors (
+    id                TEXT     PRIMARY KEY,
+    source            SMALLINT NOT NULL CHECK (source IN (1, 2)),
+    ask_id            TEXT     NOT NULL DEFAULT '',
+    source_key        TEXT     NOT NULL DEFAULT '',
+    actor_account_id  TEXT     NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+    agent_account_id  TEXT     REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    client_request_id TEXT,
+    target_ref        TEXT     NOT NULL CHECK (target_ref <> ''),
+    body_rev          SMALLINT NOT NULL DEFAULT 1,
+    posted_rev        SMALLINT NOT NULL DEFAULT 0,
+    state             SMALLINT NOT NULL DEFAULT 1 CHECK (state IN (1, 2, 3)),
+    attempts          INT      NOT NULL DEFAULT 0,
+    comment_id        BIGINT   NOT NULL DEFAULT 0,
+    comment_key       TEXT     NOT NULL DEFAULT '',
+    comment_url       TEXT     NOT NULL DEFAULT '',
+    last_error        TEXT     NOT NULL DEFAULT '',
+    first_attempt_at  TIMESTAMPTZ,
+    last_attempt_at   TIMESTAMPTZ,
+    client_comment_id UUID     NOT NULL DEFAULT gen_random_uuid(),
+    recheck_at        TIMESTAMPTZ,
+    lease_until       TIMESTAMPTZ,
+    lease_token       TEXT     NOT NULL DEFAULT '',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id         TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+);
+CREATE UNIQUE INDEX forge_mirrors_ask_key ON forge_mirrors (tenant_id, ask_id) WHERE ask_id <> '';
+CREATE UNIQUE INDEX forge_mirrors_request_key ON forge_mirrors (tenant_id, agent_account_id, client_request_id)
+    WHERE client_request_id IS NOT NULL;
+CREATE UNIQUE INDEX forge_mirrors_source_key ON forge_mirrors (tenant_id, source_key, target_ref) WHERE source_key <> '';
+CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE state <> 2 OR recheck_at IS NOT NULL;
 
 -- pull_requests holds each ingested PR whole; pull_request_issue_links maps PRs
 -- to the issues they work on (source 1 explicit, 2 closing reference).
@@ -1674,6 +1719,7 @@ DECLARE
         'agent_boards', 'agent_board_tasks',
         'linear_agent_sessions',
         'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
+        'forge_mirror_settings', 'forge_mirrors',
         'forge_state_transitions', 'account_forge_scopes',
         'pull_requests', 'pull_request_issue_links',
         'token_usage_events', 'token_usage_rollups_hourly', 'token_usage_rollups_daily',
@@ -1759,6 +1805,7 @@ DECLARE
         'agent_config_bundle',
         'model_registry',
         'forge_repo_subscriptions',
+        'forge_mirror_settings', 'forge_mirrors',
         'forge_state_transitions',
         'agent_boards', 'agent_board_tasks',
         'pull_requests',

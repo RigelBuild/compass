@@ -98,7 +98,7 @@ func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBloc
 			if body == nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
 			}
-			ask, err := askFromWire(body.Ask)
+			ask, err := askFromWire(body.Ask, "")
 			if err != nil {
 				return nil, err
 			}

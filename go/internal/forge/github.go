@@ -34,6 +34,11 @@ type TokenSource interface {
 	Invalidate()
 }
 
+// AppIdentitySource resolves the login a GitHub App authors comments as.
+type AppIdentitySource interface {
+	AppLogin(ctx context.Context) (string, error)
+}
+
 // GitHubConfig configures a GitHub read client.
 type GitHubConfig struct {
 	Host   string       // "github.com" or a GHES host; API base derives from it
@@ -94,6 +99,9 @@ type GitHub struct {
 	// now is the clock seam (defaults to time.Now in NewGitHub); tests override
 	// it to drive the reset-time gate deterministically without real sleeps.
 	now func() time.Time
+
+	// identity resolves the App's comment login; nil when the token is not an App.
+	identity AppIdentitySource
 }
 
 // rateResource is a GitHub rate-limit bucket, named by the x-ratelimit-resource
@@ -140,7 +148,20 @@ func NewGitHub(cfg GitHubConfig) *GitHub {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &GitHub{host: cfg.Host, token: cfg.Token, client: client, now: time.Now}
+	return &GitHub{host: cfg.Host, token: cfg.Token, client: client, now: time.Now, identity: identitySource(cfg.Token)}
+}
+
+func identitySource(token TokenSource) AppIdentitySource {
+	identity, _ := token.(AppIdentitySource)
+	return identity
+}
+
+// AppLogin returns the GitHub App login that authors marker comments.
+func (g *GitHub) AppLogin(ctx context.Context) (string, error) {
+	if g.identity == nil {
+		return "", errors.New("forge: GitHub App identity is unavailable")
+	}
+	return g.identity.AppLogin(ctx)
 }
 
 // Compile-time proof that GitHub satisfies the Provider interface (the read

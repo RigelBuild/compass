@@ -52,6 +52,27 @@ func TestDeepLinkFor(t *testing.T) {
 	}
 }
 
+func TestTopicLinkFor(t *testing.T) {
+	tests := []struct {
+		name      string
+		base      string
+		channelID string
+		topicID   string
+		want      string
+	}{
+		{name: "missing public base", channelID: "channel", topicID: "topic", want: ""},
+		{name: "topic route", base: "https://compass.example.com/", channelID: "ch-home", topicID: "topic-1", want: "https://compass.example.com/#/channel/ch-home/topic/topic-1"},
+		{name: "escaped ids", base: "https://compass.example.com", channelID: "ch a/b", topicID: "topic?x", want: "https://compass.example.com/#/channel/ch%20a%2Fb/topic/topic%3Fx"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := topicLinkFor(tc.base, tc.channelID, tc.topicID); got != tc.want {
+				t.Errorf("topicLinkFor(%q, %q, %q) = %q, want %q", tc.base, tc.channelID, tc.topicID, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSessionLinkFor(t *testing.T) {
 	tests := []struct {
 		name            string

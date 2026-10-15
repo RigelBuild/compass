@@ -328,6 +328,24 @@ func TestLinearDeleteCommentUnsupported(t *testing.T) {
 		t.Fatalf("DeleteComment issued %d requests, want zero", rt.calls)
 	}
 }
+func TestLinearAppLoginUsesDisplayName(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{
+		status: http.StatusOK,
+		body:   `{"data":{"viewer":{"id":"viewer-id","name":"API name","displayName":"Compass App"}}}`,
+	}}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	login, err := l.AppLogin(context.Background())
+	if err != nil {
+		t.Fatalf("AppLogin: %v", err)
+	}
+	if login != "Compass App" {
+		t.Fatalf("AppLogin = %q, want comment display name", login)
+	}
+	query, _ := decodeGraphQLReq(t, readReqBody(t, rt.requests[0]))
+	if !strings.Contains(query, "viewer { id displayName }") {
+		t.Fatalf("identity query = %q, want displayName", query)
+	}
+}
 
 func TestLinearListCommentsSinceWalksPages(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{

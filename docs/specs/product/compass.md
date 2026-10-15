@@ -974,6 +974,54 @@ on the answer's ask snapshot. The server SHALL NOT fill a default `ref`.
 - **Then** the server returns invalid-argument and the channel has no new
   message.
 
+### Requirement: Users control ask mirroring to forge coordinates
+
+`ListForgeMirrorSettings` SHALL list every enabled forge repository and its
+current mode. Any authenticated account may list settings. The response SHALL
+set `can_edit` only for a tenant admin. `SetForgeMirrorSetting` SHALL require a
+user with the tenant admin role; other callers receive permission-denied.
+An UNSPECIFIED mode SHALL be rejected with invalid-argument. Setting OFF SHALL
+remove the stored setting, and an absent setting SHALL behave as OFF.
+
+#### Scenario: An admin configures automatic ask mirroring
+
+- **Given** an enabled forge repository and a tenant admin
+- **When** the admin sets its mode to AUTO
+- **Then** the setting is returned by the list RPC with `can_edit` true
+
+#### Scenario: A queued ask is refused after the mode is turned off
+
+- **Given** an ask for an AUTO coordinate waiting for delivery
+- **When** an admin turns the coordinate OFF before the post
+- **Then** the mirror is marked failed and no forge comment is created
+
+#### Scenario: An answer edits the existing mirrored ask
+
+- **Given** an ask with a delivered forge mirror
+- **When** a user answers the ask
+- **Then** the same forge comment is edited to include the answer and answerer
+
+`MirrorToForge` SHALL accept exactly one ask, topic, or one-to-fifty-message
+source. The caller SHALL be a user who can see the source channel. The destination
+mode SHALL be MANUAL or AUTO. The agent scope check applies only to agent posts.
+An invisible channel SHALL return not-found. An agent caller SHALL receive
+permission-denied. Invalid source combinations SHALL receive invalid-argument.
+The user header SHALL name the clicking user and source text SHALL not be
+allowed to forge an owner header. A second user mirroring the same source to the
+same ref SHALL be refused while the first user's mirror exists.
+
+Topic mirrors SHALL carry at most the newest 50 messages. If a topic has more
+than 50, the mirror SHALL state, "Showing the newest 50 messages."
+
+### Requirement: Automatic mirroring follows the ask's explicit ref
+
+An ask with an explicit ref to an enabled AUTO coordinate SHALL be mirrored
+after its message commits. An ask with no ref, or whose coordinate is OFF or
+MANUAL, SHALL NOT be automatically posted. The server SHALL check mode again
+immediately before every post; a coordinate turned OFF while queued SHALL not
+be posted. Answering an ask SHALL update the same forge comment with its answer
+and answerer rather than create a second comment.
+
 ### Requirement: Channel membership carries a separate subscribe opt-in
 
 `UpdateChannelMembers` SHALL manage both the channel's member set and each

@@ -125,6 +125,12 @@ const (
 	// CompassServiceDeleteModelRegistryProcedure is the fully-qualified name of the CompassService's
 	// DeleteModelRegistry RPC.
 	CompassServiceDeleteModelRegistryProcedure = "/compass.v1.CompassService/DeleteModelRegistry"
+	// CompassServiceListForgeMirrorSettingsProcedure is the fully-qualified name of the
+	// CompassService's ListForgeMirrorSettings RPC.
+	CompassServiceListForgeMirrorSettingsProcedure = "/compass.v1.CompassService/ListForgeMirrorSettings"
+	// CompassServiceSetForgeMirrorSettingProcedure is the fully-qualified name of the CompassService's
+	// SetForgeMirrorSetting RPC.
+	CompassServiceSetForgeMirrorSettingProcedure = "/compass.v1.CompassService/SetForgeMirrorSetting"
 	// SecretsServiceSetSecretProcedure is the fully-qualified name of the SecretsService's SetSecret
 	// RPC.
 	SecretsServiceSetSecretProcedure = "/compass.v1.SecretsService/SetSecret"
@@ -311,6 +317,12 @@ type CompassServiceClient interface {
 	// like PutModelRegistry. Fails closed if the registry being cleared holds any
 	// stable name still referenced by a published profile's models.* map.
 	DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error)
+	// List the tenant's enabled forge-repository mirror settings. Any authenticated
+	// account may read them; can_edit reports whether the caller may change them.
+	ListForgeMirrorSettings(context.Context, *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error)
+	// Set one tenant's mirror mode for an enabled forge repository. Requires a
+	// tenant admin; OFF removes the setting row.
+	SetForgeMirrorSetting(context.Context, *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error)
 }
 
 // NewCompassServiceClient constructs a client for the compass.v1.CompassService service. By
@@ -486,6 +498,18 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("DeleteModelRegistry")),
 			connect.WithClientOptions(opts...),
 		),
+		listForgeMirrorSettings: connect.NewClient[v1.ListForgeMirrorSettingsRequest, v1.ListForgeMirrorSettingsResponse](
+			httpClient,
+			baseURL+CompassServiceListForgeMirrorSettingsProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("ListForgeMirrorSettings")),
+			connect.WithClientOptions(opts...),
+		),
+		setForgeMirrorSetting: connect.NewClient[v1.SetForgeMirrorSettingRequest, v1.SetForgeMirrorSettingResponse](
+			httpClient,
+			baseURL+CompassServiceSetForgeMirrorSettingProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("SetForgeMirrorSetting")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -518,6 +542,8 @@ type compassServiceClient struct {
 	putModelRegistry        *connect.Client[v1.PutModelRegistryRequest, v1.PutModelRegistryResponse]
 	getModelRegistry        *connect.Client[v1.GetModelRegistryRequest, v1.GetModelRegistryResponse]
 	deleteModelRegistry     *connect.Client[v1.DeleteModelRegistryRequest, v1.DeleteModelRegistryResponse]
+	listForgeMirrorSettings *connect.Client[v1.ListForgeMirrorSettingsRequest, v1.ListForgeMirrorSettingsResponse]
+	setForgeMirrorSetting   *connect.Client[v1.SetForgeMirrorSettingRequest, v1.SetForgeMirrorSettingResponse]
 }
 
 // GetServerInfo calls compass.v1.CompassService.GetServerInfo.
@@ -653,6 +679,16 @@ func (c *compassServiceClient) GetModelRegistry(ctx context.Context, req *connec
 // DeleteModelRegistry calls compass.v1.CompassService.DeleteModelRegistry.
 func (c *compassServiceClient) DeleteModelRegistry(ctx context.Context, req *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error) {
 	return c.deleteModelRegistry.CallUnary(ctx, req)
+}
+
+// ListForgeMirrorSettings calls compass.v1.CompassService.ListForgeMirrorSettings.
+func (c *compassServiceClient) ListForgeMirrorSettings(ctx context.Context, req *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error) {
+	return c.listForgeMirrorSettings.CallUnary(ctx, req)
+}
+
+// SetForgeMirrorSetting calls compass.v1.CompassService.SetForgeMirrorSetting.
+func (c *compassServiceClient) SetForgeMirrorSetting(ctx context.Context, req *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error) {
+	return c.setForgeMirrorSetting.CallUnary(ctx, req)
 }
 
 // CompassServiceHandler is an implementation of the compass.v1.CompassService service.
@@ -818,6 +854,12 @@ type CompassServiceHandler interface {
 	// like PutModelRegistry. Fails closed if the registry being cleared holds any
 	// stable name still referenced by a published profile's models.* map.
 	DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error)
+	// List the tenant's enabled forge-repository mirror settings. Any authenticated
+	// account may read them; can_edit reports whether the caller may change them.
+	ListForgeMirrorSettings(context.Context, *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error)
+	// Set one tenant's mirror mode for an enabled forge repository. Requires a
+	// tenant admin; OFF removes the setting row.
+	SetForgeMirrorSetting(context.Context, *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error)
 }
 
 // NewCompassServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -989,6 +1031,18 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("DeleteModelRegistry")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceListForgeMirrorSettingsHandler := connect.NewUnaryHandler(
+		CompassServiceListForgeMirrorSettingsProcedure,
+		svc.ListForgeMirrorSettings,
+		connect.WithSchema(compassServiceMethods.ByName("ListForgeMirrorSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
+	compassServiceSetForgeMirrorSettingHandler := connect.NewUnaryHandler(
+		CompassServiceSetForgeMirrorSettingProcedure,
+		svc.SetForgeMirrorSetting,
+		connect.WithSchema(compassServiceMethods.ByName("SetForgeMirrorSetting")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.CompassService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case CompassServiceGetServerInfoProcedure:
@@ -1045,6 +1099,10 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceGetModelRegistryHandler.ServeHTTP(w, r)
 		case CompassServiceDeleteModelRegistryProcedure:
 			compassServiceDeleteModelRegistryHandler.ServeHTTP(w, r)
+		case CompassServiceListForgeMirrorSettingsProcedure:
+			compassServiceListForgeMirrorSettingsHandler.ServeHTTP(w, r)
+		case CompassServiceSetForgeMirrorSettingProcedure:
+			compassServiceSetForgeMirrorSettingHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1160,6 +1218,14 @@ func (UnimplementedCompassServiceHandler) GetModelRegistry(context.Context, *con
 
 func (UnimplementedCompassServiceHandler) DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.DeleteModelRegistry is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) ListForgeMirrorSettings(context.Context, *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ListForgeMirrorSettings is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) SetForgeMirrorSetting(context.Context, *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SetForgeMirrorSetting is not implemented"))
 }
 
 // SecretsServiceClient is a client for the compass.v1.SecretsService service.

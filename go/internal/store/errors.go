@@ -19,6 +19,8 @@ const (
 // error vars are idiomatic (gochecknoglobals disabled by design, .golangci.yml).
 
 var (
+	// ErrLeaseLost reports a lease-fenced write made after the lease expired or changed.
+	ErrLeaseLost = errors.New("store: lease lost")
 	// ErrNotFound is returned when a row addressed by id does not exist, or
 	// exists but the actor may not see it — the two are deliberately
 	// indistinguishable to the caller so a probe cannot enumerate ids it lacks

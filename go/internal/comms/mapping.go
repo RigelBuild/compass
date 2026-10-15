@@ -10,6 +10,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
+	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/refs"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -405,7 +406,7 @@ func (c *Comms) memberUpdatesFromWire(ctx context.Context, caller store.AccountI
 // blocksFromWire maps wire message blocks onto store blocks, rejecting an empty
 // or unset block oneof as an invalid argument (the store also rejects a
 // malformed oneof, but catching it at the edge gives a precise connect error).
-func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, error) {
+func blocksFromWire(blocks []*compassv1.MessageBlock, githubHost string) ([]store.MessageBlock, error) {
 	out := make([]store.MessageBlock, 0, len(blocks))
 	for _, b := range blocks {
 		switch body := b.GetBlock().(type) {
@@ -419,7 +420,7 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 			if body == nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
 			}
-			ask, err := askFromWire(body.Ask)
+			ask, err := askFromWire(body.Ask, githubHost)
 			if err != nil {
 				return nil, err
 			}
@@ -437,7 +438,7 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 	return out, nil
 }
 
-func askFromWire(a *compassv1.Ask) (*store.Ask, error) {
+func askFromWire(a *compassv1.Ask, githubHost string) (*store.Ask, error) {
 	ref, err := askRefFromWire(a.GetRef())
 	if err != nil {
 		return nil, err
@@ -446,7 +447,22 @@ func askFromWire(a *compassv1.Ask) (*store.Ask, error) {
 	// the store's mintAskIDs assigns a fresh, globally-unique id on append. Honoring
 	// a wire value would let two posts share an ask_id, making RespondToAsk's
 	// containment SELECT match multiple rows and answer a nondeterministic one.
-	return &store.Ask{AskID: "", Ref: ref, Questions: askQuestionsFromWire(a)}, nil
+	var coord *store.ForgeCoord
+	if ref != "" {
+		r, parseErr := refs.Parse(ref)
+		if parseErr != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("comms: parse canonical ask ref: %w", parseErr))
+		}
+		if r.Kind == refs.KindForge {
+			if githubHost == "" {
+				githubHost = "github.com"
+			}
+			coord = &store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: githubHost, Repo: r.Owner + "/" + r.Repo, Number: r.Number}
+		} else {
+			coord = &store.ForgeCoord{Provider: store.ForgeProviderLinear, Host: forge.LinearHost, Repo: r.Key, Number: r.Number}
+		}
+	}
+	return &store.Ask{AskID: "", Ref: ref, RefCoord: coord, Questions: askQuestionsFromWire(a)}, nil
 }
 
 // askRefFromWire canonicalizes an ask's optional ref; "" means no ref.

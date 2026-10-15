@@ -64,7 +64,19 @@ type Comms struct {
 	// exactly like hub.SetSettleSink). Set once at server assembly BEFORE any RPC
 	// is served, so it needs no lock. Nil-safe: a Comms with no presence source
 	// (a unit test, or an un-wired path) reports every agent OFFLINE.
-	presence PresenceSource
+	presence   PresenceSource
+	mirrorer   Mirrorer
+	driver     MirrorDriver
+	githubHost string
+}
+
+type Mirrorer interface {
+	MirrorAsUser(ctx context.Context, user store.Account, req *compassv1.MirrorToForgeRequest) (string, error)
+}
+
+// MirrorDriver delivers ask rows after their source messages commit.
+type MirrorDriver interface {
+	DriveAsks(ctx context.Context, askIDs []string)
 }
 
 // NewComms constructs the CommsService handler over store and bus. adminID is the
@@ -109,6 +121,17 @@ func (c *Comms) PublishAccountRename(ctx context.Context, account store.Account,
 // reports every agent OFFLINE — today's behavior).
 func (c *Comms) SetPresenceSource(src PresenceSource) {
 	c.presence = src
+}
+
+// SetMirrorer wires the user-click forge path and post-commit ask driver before serving.
+func (c *Comms) SetMirrorer(m Mirrorer, d MirrorDriver) {
+	c.mirrorer = m
+	c.driver = d
+}
+
+// SetForgeHost configures the GitHub host used to derive ask coordinates.
+func (c *Comms) SetForgeHost(host string) {
+	c.githubHost = host
 }
 
 // Ensure Comms satisfies the generated handler interface at compile time.
@@ -451,7 +474,7 @@ func (c *Comms) PostMessage(
 	if req.Msg.GetTurnSequence() > math.MaxInt64 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("turn_sequence %d exceeds signed BIGINT range", req.Msg.GetTurnSequence()))
 	}
-	blocks, err := blocksFromWire(req.Msg.GetBlocks())
+	blocks, err := blocksFromWire(req.Msg.GetBlocks(), c.githubHost)
 	if err != nil {
 		return nil, err
 	}
@@ -476,6 +499,7 @@ func (c *Comms) PostMessage(
 	// spurious live state-change for a row that did not change.
 	if inserted {
 		c.publishMessagePosted(ctx, msg)
+		c.driveCommittedAsks(ctx, msg)
 	}
 	return connect.NewResponse(&compassv1.PostMessageResponse{Message: MessageToWire(msg)}), nil
 }
@@ -518,7 +542,31 @@ func (c *Comms) RespondToAsk(
 	// the ack-gated cursor + resweep (RIG-2257: no bespoke ask wake).
 	c.publishMessageUpdated(askMsg)
 	c.publishMessagePosted(ctx, answerMsg)
+	c.driveCommittedAsks(ctx, askMsg)
 	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
+}
+
+// MirrorToForge accepts a user click after confirming that the caller is a user.
+func (c *Comms) MirrorToForge(
+	ctx context.Context,
+	req *connect.Request[compassv1.MirrorToForgeRequest],
+) (*connect.Response[compassv1.MirrorToForgeResponse], error) {
+	user := c.actorFromContext(ctx)
+	account, err := c.store.GetAccount(ctx, user)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	if account.User == nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("comms: forge mirroring is user-only"))
+	}
+	if c.mirrorer == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("comms: forge mirroring is not configured"))
+	}
+	url, err := c.mirrorer.MirrorAsUser(ctx, account, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&compassv1.MirrorToForgeResponse{CommentUrl: url}), nil
 }
 
 // SearchMessages runs a visibility-scoped full-text search; the store scopes
@@ -767,6 +815,23 @@ func (c *Comms) applyBoardOp(
 		return entries, nil
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: UpdatePinnedBoard request has no pin/unpin op set"))
+	}
+}
+func (c *Comms) driveCommittedAsks(ctx context.Context, msg store.Message) {
+	if c.driver == nil {
+		return
+	}
+	ids := make([]string, 0)
+	for _, block := range msg.Blocks {
+		if block.Ask != nil {
+			ids = append(ids, block.Ask.AskID)
+		}
+		if block.AskAnswer != nil {
+			ids = append(ids, block.AskAnswer.Ask.AskID)
+		}
+	}
+	if len(ids) != 0 {
+		go c.driver.DriveAsks(context.WithoutCancel(ctx), ids)
 	}
 }
 

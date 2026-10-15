@@ -36,6 +36,14 @@ func deepLinkFor(base, channelID string) string {
 	return strings.TrimRight(base, "/") + "/#/channel/" + url.PathEscape(channelID)
 }
 
+// topicLinkFor builds the UI's HashRouter link to one topic in a channel.
+func topicLinkFor(base, channelID, topicID string) string {
+	if base == "" {
+		return ""
+	}
+	return strings.TrimRight(base, "/") + "/#/channel/" + url.PathEscape(channelID) + "/topic/" + url.PathEscape(topicID)
+}
+
 // sessionLinkFor builds the stable click-time redirect URL from the Linear
 // session ID; trimming and escaping match deepLinkFor's base and path handling.
 func sessionLinkFor(base, linearSessionID string) string {

@@ -101,6 +101,10 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 		return Message{}, false, err
 	}
 
+	if err := insertAskMirrors(ctx, db.New(tx), inserted, m.AuthorAccountID); err != nil {
+		return Message{}, false, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Message{}, false, fmt.Errorf("store: commit append message: %w", err)
 	}
@@ -596,6 +600,9 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	inserted, err := insertMessageTx(ctx, tx, answer, msg.TopicID, "")
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: insert answer message: %w", err)
+	}
+	if err := bumpAskMirror(ctx, db.New(tx), askID); err != nil {
+		return Message{}, Message{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: commit answer ask: %w", err)

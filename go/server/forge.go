@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -21,6 +22,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/mirror"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -134,20 +136,40 @@ type forgeStore interface {
 	DeleteAgentForgeSubscription(ctx context.Context, agent store.AccountID, subscriptionID string) error
 	RecordStateTransition(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64, state string, agent store.AccountID, at time.Time) error
 	HasForgeScope(ctx context.Context, account store.AccountID, provider store.ForgeProvider, host, repo string) (bool, error)
+	ForgeMirrorMode(ctx context.Context, provider store.ForgeProvider, host, repo string) (store.ForgeMirrorMode, error)
+	PullRequestsByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error)
 }
 
 // forgeService is the ForgeCaller implementation and the DL-050 write
 // chokepoint. It holds the narrow store (attribution + ownership index), the
 // issue projection (the OQ-A tracked-read source), the provider registry
 // (author/reviewer clients per coordinate), and an injectable clock (the DL-055
-// row's created_at).
+// row's created_at). The mirror fields bound detached mirror drives and recheck
+// timers to the server's lifetime.
 type forgeService struct {
-	store     forgeStore
-	issueBrd  *board.IssueProjection
-	providers *forgeProviderRegistry
-	now       func() time.Time
+	store         forgeStore
+	issueBrd      *board.IssueProjection
+	providers     *forgeProviderRegistry
+	now           func() time.Time
+	mirrorStoreDB *store.Store
+	publicURL     string
 	// enforceScopes gates every coordinate write on an account_forge_scopes grant.
-	enforceScopes bool
+	enforceScopes       bool
+	mirrorMu            sync.Mutex
+	mirrorDone          <-chan struct{}
+	mirrorCancel        context.CancelFunc
+	mirrorClosing       bool
+	mirrorWG            sync.WaitGroup
+	mirrorTimers        map[string]*mirrorTimer
+	scheduleMirrorAfter func(time.Duration, func()) func() bool
+	mirrorPoster        mirror.Poster
+	mirrorRecheckRetry  map[string]int
+}
+
+type mirrorTimer struct {
+	stop func() bool
+	due  time.Time
+	once sync.Once
 }
 
 // newForgeService constructs the forge caller over the store, the issue
@@ -156,7 +178,7 @@ type forgeService struct {
 // hub<->forgeService construction cycle exactly as newBoardService does
 // (sinks.go).
 func newForgeService(st *store.Store, issueBrd *board.IssueProjection, providers *forgeProviderRegistry) *forgeService {
-	return &forgeService{store: st, issueBrd: issueBrd, providers: providers, now: time.Now}
+	return &forgeService{store: st, issueBrd: issueBrd, providers: providers, now: time.Now, mirrorStoreDB: st}
 }
 
 // ExecuteForgeCallAsAccount is the ForgeCaller entry point and the per-arm

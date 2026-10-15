@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // Author is the attribution a stamped body carries: the Compass agent handle,
@@ -69,6 +70,13 @@ func header(author Author) string {
 		" session=" + author.SessionID + " -->\n" +
 		"🧭 Written by **@" + author.AgentHandle +
 		"** (Compass agent, owned by **@" + author.OwnerHandle + "**)\n\n---\n\n"
+}
+
+// MaxOwnerHeaderLen is the longest header StampOwner can prepend for session, so a
+// caller can budget body bytes before stamping with handles it has not resolved yet.
+func MaxOwnerHeaderLen(session string) int {
+	longest := strings.Repeat("a", 39)
+	return len(header(Author{AgentHandle: longest, OwnerHandle: longest, SessionID: session}))
 }
 
 // validateField reports whether a header field is legal, naming the field in the

@@ -880,6 +880,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	defer commsBus.Close()
 	commsSvc := comms.NewComms(st, commsBus, fab, admin.ID)
+	commsSvc.SetForgeHost(cfg.Forge.resolved().Host)
 	// Register the coordination-channel reconcile as the store's in-tx hook, so
 	// the two parent-edge writers auto-provision/reconcile a manager's
 	// coordination channel atomically with the tree edge (RIG-1722 T5). Wired here
@@ -947,15 +948,19 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// configured (the 2-App cutover). The author leg REUSES the shared primary App
 	// client so it rides the one budget gate; the reviewer leg gets its own; the
 	// Linear coordinate rides the shared forgeWiring.linearTokens instance.
-	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners); err != nil {
+	forgeMirrorService, err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, commsSvc, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners)
+	if err != nil {
 		return err
 	}
-
 	// Run every door under one scoped group: scoped lifecycle, first-error-wins,
 	// and sibling cancellation. gctx cancels on parent shutdown or a door's own
 	// error and always ends by Wait, so the verifier's key refresh never outlives
 	// Serve. The UDS door is primary; its error wins over the drain result below.
 	g, gctx := newServeGroup(ctx, doors.runnerVerifier)
+	if forgeMirrorService != nil {
+		forgeMirrorService.SetMirrorLifetime(gctx)
+		defer forgeMirrorService.StopMirrorLifetime()
+	}
 	startServeDoors(g, gctx, doors, udsListener, devListener, netListener, mergeQueueRunner)
 	// The forge webhook-ingestion lanes (RIG-2883 board + RIG-2732 T7 notify):
 	// each lane joins the SAME scoped group so it inherits the doors' lifecycle.
@@ -970,23 +975,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	startCommsConsumers(gctx, g, commsBus, fab, st, hub, hubLog)
 	// Background usage upkeep: the daily raw-log prune and the hourly orphan-interval close.
 	startUsageSweepers(gctx, g, st, cfg.UsageEventRetention, hubLog)
-	// Drain member of the same group: wake on gctx cancellation, then hand off to
-	// drainDoors. A drain that overruns (a handler still wedged mid-replay)
-	// surfaces as the error rather than a false clean shutdown; a real serve
-	// error still wins because the group keeps the first error.
-	g.Go(func() error {
-		<-gctx.Done()
-		return drainDoors(gctx, drainSet{
-			bus:         bus,
-			commsBus:    commsBus,
-			uds:         doors.uds,
-			dev:         doors.dev,
-			net:         doors.net,
-			hub:         hub,
-			log:         hubLog,
-			cancelHooks: cancelSeed,
-			health:      doors.health,
-		})
+	startServeDrain(g, gctx, drainSet{
+		bus:         bus,
+		commsBus:    commsBus,
+		uds:         doors.uds,
+		dev:         doors.dev,
+		net:         doors.net,
+		hub:         hub,
+		log:         hubLog,
+		cancelHooks: cancelSeed,
+		health:      doors.health,
 	})
 
 	return g.Wait()
@@ -1003,6 +1001,17 @@ func startServeDoors(g *errgroup.Group, ctx context.Context, doors serveDoors, u
 		})
 	}
 	mergeQueue.start(g, ctx)
+}
+
+// startServeDrain adds the drain member of the same group: wake on gctx cancellation, then hand off to
+// drainDoors. A drain that overruns (a handler still wedged mid-replay)
+// surfaces as the error rather than a false clean shutdown; a real serve
+// error still wins because the group keeps the first error.
+func startServeDrain(g *errgroup.Group, ctx context.Context, d drainSet) {
+	g.Go(func() error {
+		<-ctx.Done()
+		return drainDoors(ctx, d)
+	})
 }
 
 // serveDoors holds the three compass.v1 doors Serve drives: the shipped Unix
@@ -2146,34 +2155,25 @@ func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason,
 // shared Linear token source the Linear coordinate rides (nil when Linear is not
 // configured). On any startup fault it unwinds the caller-bound listeners
 // (udsListener + listeners) before returning, the same teardown path the poll
-// driver and Rehydrate faults use.
-func wireForgeWriteCaller(
-	ctx context.Context,
-	cfg ServeConfig,
-	st *store.Store,
-	issueBrd *board.IssueProjection,
-	resolver secrets.Resolver,
-	hub *runnerhub.Hub,
-	log *slog.Logger,
-	primaryClient *forge.GitHub,
-	linearTokens *linearagent.TokenSource,
-	udsListener net.Listener,
-	listeners boundListeners,
-) error {
+// driver and Rehydrate faults use. It returns the wired service so Serve can
+// bound mirror drives to its lifetime; nil means writes are off.
+func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store, issueBrd *board.IssueProjection, resolver secrets.Resolver, hub *runnerhub.Hub, commsSvc *comms.Comms, log *slog.Logger, primaryClient *forge.GitHub, linearTokens *linearagent.TokenSource, udsListener net.Listener, listeners boundListeners) (*forgeService, error) {
 	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
-		return failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
+		return nil, failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
 	}
 	if !cfg.Forge.forgeWritesEnabled(declaredSecrets) {
 		warnPartialForgeWriteSecrets(cfg.Forge, declaredSecrets, log)
-		return nil
+		return nil, nil //nolint:nilnil // nil service is the explicit disabled state.
 	}
 	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, primaryClient, linearTokens, log)
 	if err != nil {
-		return failStartup(udsListener, listeners, err)
+		return nil, failStartup(udsListener, listeners, err)
 	}
+	forgeSvc.publicURL = cfg.PublicURL
 	hub.SetForgeCaller(forgeSvc)
-	return nil
+	commsSvc.SetMirrorer(forgeSvc, forgeSvc)
+	return forgeSvc, nil
 }
 
 // buildForgeWriteService assembles the agent forge-WRITE chokepoint (the

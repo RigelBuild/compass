@@ -83,7 +83,11 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceGetAgentConfigInfoProcedure,
 		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
 		compassv1connect.CompassServiceGetRefLinkRulesProcedure,
-		compassv1connect.CompassServiceGetModelRegistryProcedure:
+		compassv1connect.CompassServiceGetModelRegistryProcedure,
+		// Forge mirror settings: Set checks the tenant's UserRoleAdmin in the
+		// handler, which differs from this gate's single bootstrap admin.
+		compassv1connect.CompassServiceListForgeMirrorSettingsProcedure,
+		compassv1connect.CompassServiceSetForgeMirrorSettingProcedure:
 		return authenticatedOpen{}, true
 
 	// Every CommsService method: open to any authenticated account (the service
@@ -102,6 +106,7 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CommsServiceListMessagesProcedure,
 		compassv1connect.CommsServicePostMessageProcedure,
 		compassv1connect.CommsServiceRespondToAskProcedure,
+		compassv1connect.CommsServiceMirrorToForgeProcedure,
 		compassv1connect.CommsServiceSearchMessagesProcedure,
 		compassv1connect.CommsServiceListTopicsProcedure,
 		compassv1connect.CommsServiceUpdateTopicProcedure,

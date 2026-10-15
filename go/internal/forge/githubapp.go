@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,6 +64,9 @@ type appTokenSource struct {
 	token    string
 	refresh  time.Time // when we proactively re-mint (token expiry - tokenRefreshLead)
 	hasToken bool
+
+	identityMu sync.Mutex
+	appLogin   string
 }
 
 // NewAppTokenSource returns a TokenSource minting installation access tokens:
@@ -169,6 +173,62 @@ func appAPIBase(host string) string {
 		return "https://api.github.com"
 	}
 	return "https://" + host + "/api/v3"
+}
+
+// AppLogin resolves the installation owner's native comment login once.
+func (s *appTokenSource) AppLogin(ctx context.Context) (string, error) {
+	s.identityMu.Lock()
+	if s.appLogin != "" {
+		login := s.appLogin
+		s.identityMu.Unlock()
+		return login, nil
+	}
+	s.identityMu.Unlock()
+
+	pemBytes, err := s.cfg.PrivateKey(ctx)
+	if err != nil {
+		return "", fmt.Errorf("forge: resolve app private key for identity: %w", err)
+	}
+	key, err := parseRSAPrivateKey(pemBytes)
+	if err != nil {
+		return "", fmt.Errorf("forge: parse app private key for identity: %w", err)
+	}
+	jwt, err := s.buildAppJWT(key)
+	if err != nil {
+		return "", fmt.Errorf("forge: build app identity jwt: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiBase+"/app", nil)
+	if err != nil {
+		return "", fmt.Errorf("forge: build app identity request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("forge: resolve app login: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("forge: app identity returned status %d", resp.StatusCode)
+	}
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&out); err != nil {
+		return "", fmt.Errorf("forge: decode app identity: %w", err)
+	}
+	if strings.TrimSpace(out.Slug) == "" {
+		return "", errors.New("forge: app identity returned no slug")
+	}
+	login := out.Slug + "[bot]"
+	s.identityMu.Lock()
+	if s.appLogin == "" {
+		s.appLogin = login
+	}
+	login = s.appLogin
+	s.identityMu.Unlock()
+	return login, nil
 }
 
 // Token returns the cached installation token when it is still comfortably

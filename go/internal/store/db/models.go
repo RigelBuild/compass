@@ -289,6 +289,45 @@ type ForgeAuthoredArtifact struct {
 	TenantID        string
 }
 
+type ForgeMirror struct {
+	ID              string
+	Source          int16
+	AskID           string
+	SourceKey       string
+	ActorAccountID  string
+	AgentAccountID  pgtype.Text
+	ClientRequestID pgtype.Text
+	TargetRef       string
+	BodyRev         int16
+	PostedRev       int16
+	State           int16
+	Attempts        int32
+	CommentID       int64
+	CommentKey      string
+	CommentUrl      string
+	LastError       string
+	FirstAttemptAt  pgtype.Timestamptz
+	LastAttemptAt   pgtype.Timestamptz
+	ClientCommentID pgtype.UUID
+	RecheckAt       pgtype.Timestamptz
+	LeaseUntil      pgtype.Timestamptz
+	LeaseToken      string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	TenantID        string
+}
+
+type ForgeMirrorSetting struct {
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+	Mode          int16
+	UpdatedBy     string
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	TenantID      string
+}
+
 type ForgeRepoSubscription struct {
 	ForgeProvider    int16
 	ForgeHost        string

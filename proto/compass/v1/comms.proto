@@ -111,6 +111,9 @@ service CommsService {
   // Answer a pending structured ask (D5). Authorized: the caller must be a
   // member of the channel the ask belongs to.
   rpc RespondToAsk(RespondToAskRequest) returns (RespondToAskResponse);
+  // Mirror a visible ask, topic, or message set to an allowed forge ref on the
+  // calling user's behalf.
+  rpc MirrorToForge(MirrorToForgeRequest) returns (MirrorToForgeResponse);
 
   // Full-text search across the messages the caller may see — the audit/search
   // property served from the store of record (D1, D12). Results are scoped to
@@ -860,6 +863,42 @@ message BoardAsk {
   bool answered = 6;
   // When the ask was posted, in Unix milliseconds.
   int64 posted_at_unix_ms = 7;
+  // Set by the board read to report this ask's current forge delivery state.
+  BoardMirrorState mirror_state = 8;
+  // Set by the board read when the forge comment was delivered.
+  string mirror_url = 9;
+}
+
+// Delivery state of an ask mirror outbox row.
+enum BoardMirrorState {
+  // No known mirror state was supplied.
+  BOARD_MIRROR_STATE_UNSPECIFIED = 0;
+  // The comment is waiting for delivery or retry.
+  BOARD_MIRROR_STATE_PENDING = 1;
+  // The forge comment was delivered.
+  BOARD_MIRROR_STATE_DONE = 2;
+  // Delivery was refused or exhausted.
+  BOARD_MIRROR_STATE_FAILED = 3;
+}
+
+// Request to mirror a visible ask, topic, or message set to an allowed forge ref on the calling user's behalf.
+message MirrorToForgeRequest {
+  // The issue or pull request destination.
+  string ref = 1;
+  // The ask to mirror; mutually exclusive with the other source fields.
+  string ask_id = 2;
+  // The topic to mirror; mutually exclusive with the other source fields.
+  string topic_id = 3;
+  // One to fifty message IDs from channel_id, mutually exclusive with other sources.
+  repeated string message_ids = 4;
+  // The visible channel containing the chosen source.
+  string channel_id = 5;
+}
+
+// The forge comment created or updated for the requested source.
+message MirrorToForgeResponse {
+  // The URL of the resulting forge comment.
+  string comment_url = 1;
 }
 
 // The current board state for one agent.
