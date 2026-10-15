@@ -195,7 +195,7 @@ export interface DiffArtifact {
 }
 
 export const MAX_ARTIFACT_BYTES = 1_048_576;
-// Nix store-name characters; none of them is Markdown or HTML syntax.
+// Nix store-name characters; as list-item text they cannot form HTML, links or headings.
 const SAFE_ARTIFACT_TEXT = /^[A-Za-z0-9._+?=-]{1,128}$/;
 const TARGET_LABELS: Readonly<Record<string, true>> = {
 	"dev shell": true,
