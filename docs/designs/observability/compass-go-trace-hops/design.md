@@ -655,9 +655,15 @@ Owner: compass-ux.
 
 - `PublishEventsRequest` (`proto/compass/v1/runner.proto`) gains
   `string traceparent = 5`. It is internal, so buf-breaking stays clean.
-- The runner side: `SocketListener.PublishSessionState` and the event
-  publisher stamp `otelx.Traceparent(ctx)`. It is empty when no command span
-  is active, so an agent exit sends none.
+- The runner side stamps the request per frame, because the shared
+  publisher's ctx is the socket-lifetime `g.baseCtx` and holds no command
+  trace. `sendLocked` takes the traceparent and sets it on the request.
+  - Shared stream: `sendSharedState` reads `otelx.Traceparent(ctx)` from the
+    Reload ctx and passes it to `forwardState`.
+  - One-shot stream: its ctx comes from the caller's ctx through
+    `context.WithoutCancel`, so `forward` stamps `otelx.Traceparent(p.ctx)`.
+  - Agent telemetry on the shared stream stamps `otelx.Traceparent(p.ctx)`,
+    which is empty, so an agent exit sends none.
 - `RunnerEvent` gains `Traceparent string`. `Handler.PublishEvents` copies
   it from the request.
 - `Hub.Deliver` restores it on the stripped work ctx with
@@ -669,6 +675,11 @@ Interfaces:
 
 - Changes (proto, internal): `PublishEventsRequest.traceparent = 5`.
 - Changes (package `runnerhub`): `RunnerEvent` gains `Traceparent string`.
+- Changes (package `gateway`, `go/internal/runner/gateway`):
+  `sessionPublisher.sendLocked(seq uint64, frame *AgentFrame,
+  traceparent string)` and `forwardState(frame *AgentFrame,
+  traceparent string)`. `PublishSessionState` and `sendSharedState` keep
+  their signatures.
 
 Test cycle:
 
@@ -676,7 +687,9 @@ Test cycle:
   with a traceparent gives a presence edge with that trace id; a frame
   without one gives an empty traceparent. Before: the field does not exist.
 - `runner`: a failed Reload under a known command span publishes an
-  `ERRORED` frame whose traceparent has that trace id.
+  `ERRORED` frame whose traceparent has that trace id. Run it twice: with an
+  open shared publisher, and with none (the one-shot stream). An agent
+  telemetry frame on the same shared stream carries no traceparent.
 
 Acceptance: a presence edge caused by a traced runner command joins that
 command's trace. Frames with no command behind them stay untraced.
