@@ -229,9 +229,9 @@ that still runs.
 | image-affected (17 %) | ≈ 2040 s | ≈ 1940 s | `e2e` seed (678–762 s image build) |
 
 pgtest on a `server`-only PR falls to about 350 s, and on a store PR to about
-600 s, both under `e2e`, so sharding is deferred (Q3). The `devenv.lock` PRs
-(3 of 60) newly widen pgtest, under the same `e2e` long pole. The remaining
-Go-PR lever is the `e2e` test step itself (Q4).
+600 s, both under `e2e`, so sharding is deferred (Open Questions: pgtest sharding). The
+`devenv.lock` PRs (3 of 60) newly widen pgtest, under the same `e2e` long pole. The remaining
+Go-PR lever is the `e2e` test step itself (Open Questions: splitting `e2e`).
 
 ### 6. Measurement (T1)
 
