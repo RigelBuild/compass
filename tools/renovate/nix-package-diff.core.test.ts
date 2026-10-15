@@ -143,6 +143,16 @@ describe("untrusted package diff artifacts", () => {
 		expect(parseArtifact(artifactJson()).headSha).toBe(HEAD_SHA);
 	});
 
+	test("accepts every Nix store-name character in a version", () => {
+		const changes = [
+			{ name: "webkitgtk", from: ["2.52.6+abi=6.0"], to: ["2.54.1+abi=6.0"] },
+			{ name: "query_pkg", from: ["1.0?x"], to: ["1.1?x"] },
+		];
+		expect(parseArtifact(artifactJson(changes)).results[0]).toMatchObject({
+			transitive: changes,
+		});
+	});
+
 	test.each([
 		["oversize", () => " ".repeat(MAX_ARTIFACT_BYTES + 1)],
 		["wrong SHA length", () => artifactJson().replace(HEAD_SHA, "abc")],
