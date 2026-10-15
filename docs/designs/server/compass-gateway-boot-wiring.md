@@ -461,17 +461,9 @@ T5, so this test is not end-to-end proof.
       resolver (OQ1-B1), after F3 and stable-name P1.
 - [ ] I1 — compass-gateway: pin bump, image env, broker-free smoke.
 - [ ] P1 — compass-server: pin `DefaultGatewayImage`.
-- [ ] Ledger: claim these with `bun tools/dl-claim` when this PR is ready;
-      the design pass does not claim them.
-  - DL (server): the `llm-gateway` service bearer is
-    `<state>/gateway/service.token`. Agents are admitted only through
-    `VerifyAgentToken`; the optional enroll token admits only the enroll
-    caller, on `/internal/enroll/*`.
-  - DL (server): the bundled gateway reaches the Server at
-    `host.containers.internal` through `pasta:--map-host-loopback`, and the
-    stack anchor carries that DNS SAN (OQ7).
-  - DL (server): the boot resolves models per owner through the stable-name
-    resolver; `/v1/models` stays caller-independent (OQ1-B1).
+- [x] Ledger: DL-516 (service bearer, agent-token-only admission), DL-517
+      (`host.containers.internal` via `map-host-loopback`), DL-518 (per-owner
+      stable-name resolution, caller-independent `/v1/models`).
 
 ## Resolved decisions
 
