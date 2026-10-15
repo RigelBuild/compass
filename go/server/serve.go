@@ -1060,7 +1060,7 @@ func buildDoors(
 	masterKey envelope.Key,
 	keyVersion int16,
 ) (serveDoors, error) {
-	health := newServerHealth()
+	health := newServerHealth(hub)
 	// Built even without a network door, so a bad cluster file or a reserved-ID
 	// clash refuses start the same way on every topology.
 	runnerVerifier, err := buildRunnerVerifier(ctx, cfg, st)

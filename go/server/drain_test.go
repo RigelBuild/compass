@@ -49,7 +49,7 @@ func (l *healthRecordingListener) Close() error {
 }
 
 func TestDrainDoorsMarksNotServingBeforeShutdown(t *testing.T) {
-	health := newServerHealth()
+	health := newServerHealth(nil)
 	mux := http.NewServeMux()
 	health.mount(mux)
 	server := &http.Server{Handler: mux}
@@ -182,7 +182,7 @@ func TestDrainDoorsOverrunCancelsWedgedHandlers(t *testing.T) {
 				bus:      events.NewBus[busPayload](),
 				commsBus: events.NewBus[*compassv1.SubscribeCommsResponse](),
 				uds:      srv,
-				health:   newServerHealth(),
+				health:   newServerHealth(nil),
 				hub:      runnerhub.NewHub(nil, nil, nil, slog.Default()),
 				log:      slog.Default(),
 			})

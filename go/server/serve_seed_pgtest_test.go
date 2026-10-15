@@ -145,7 +145,7 @@ func TestDrainDoorsCancelsAndJoinsInFlightSeed(t *testing.T) {
 		bus:         events.NewBus[busPayload](),
 		commsBus:    events.NewBus[*compassv1.SubscribeCommsResponse](),
 		uds:         &http.Server{ReadHeaderTimeout: time.Second},
-		health:      newServerHealth(),
+		health:      newServerHealth(nil),
 		hub:         h.hub,
 		log:         slog.New(slog.DiscardHandler),
 		cancelHooks: h.cancelSeed,
