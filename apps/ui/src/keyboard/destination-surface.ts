@@ -11,25 +11,27 @@ export function setSearchDebounceMsForTest(ms: number): void {
 export function resetSearchDebounceForTest(): void {
 	SEARCH_DEBOUNCE_MS = DEFAULT_SEARCH_DEBOUNCE_MS;
 }
-export const KIND_LABELS: Record<DestinationKind, string> = {
+export const KIND_LABELS = {
 	view: "Views",
 	agent: "Agents",
 	channel: "Channels",
 	topic: "Topics",
 	issue: "Issues",
 	message: "Messages",
+	task: "Tasks",
 	pr: "Pull requests",
-};
+} satisfies Record<DestinationKind, string>;
 
-export const KIND_ORDER: readonly DestinationKind[] = [
+export const KIND_ORDER = [
 	"view",
 	"agent",
 	"channel",
 	"topic",
+	"task",
 	"issue",
 	"pr",
 	"message",
-];
+] satisfies readonly DestinationKind[];
 
 export interface DestinationSurfaceRow {
 	readonly key: string;

@@ -9,6 +9,7 @@ import {
 import { useStore } from "../context";
 import type { Agent, Terminal } from "../stub-data";
 import { useView } from "../view-scope";
+import { AgentBoardPanel } from "./AgentBoard";
 import { ChannelView } from "./ChannelView";
 import { Glyph } from "./Glyph";
 import { LogPanel } from "./LogPanel";
@@ -237,6 +238,7 @@ export const AgentView: Component = () => {
 							Share
 						</button>
 					</div>
+					<AgentBoardPanel agentId={agent().account.id} />
 					<div class="av-body">
 						<div class="av-tabs" role="tablist" aria-label="Agent tabs">
 							<For each={view.agentTabs()}>
