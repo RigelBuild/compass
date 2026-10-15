@@ -12,7 +12,7 @@
   # single source of the concrete rev). flake.lock records the same rev; the
   # parity gate asserts they match, and refresh-devenv-nixpkgs.ts keeps this URL
   # + flake.lock in lockstep on a channel bump.
-  inputs.nixpkgs.url = "github:cachix/devenv-nixpkgs/c2f38fe7f9e04d9aadd354d380f2bd40531d9737";
+  inputs.nixpkgs.url = "github:cachix/devenv-nixpkgs/760b85220489f69855e6df78a6d1dad5873f8bf6";
 
   outputs =
     { self, nixpkgs }:
