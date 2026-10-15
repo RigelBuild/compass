@@ -630,6 +630,8 @@ esac
 	}
 }
 
+// A cancelled caller must not kill podman start: a signal mid netns setup
+// leaves pasta running without resolv.conf. The real outcome is returned.
 func TestPodmanStartSurvivesCallerCancellation(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
@@ -638,33 +640,43 @@ func TestPodmanStartSurvivesCallerCancellation(t *testing.T) {
 	prog := filepath.Join(dir, "podman-stub.sh")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" != "start" ]; then exit 91; fi
-: > %q
+echo $$ > %q
 while [ ! -e %q ]; do :; done
 : > %q
 `, started, proceed, doneMarker)
 	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing stub: %v", err)
 	}
+	t.Cleanup(func() { killRecordedPid(t, started) })
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	cli := NewPodmanCLI().WithProgram(prog)
 	result := make(chan error, 1)
 	go func() { result <- cli.Start(ctx, WorkloadID("container")) }()
-	waitForMarker(t, started)
+	pid := waitForRecordedPid(t, started)
 	cancel()
+	// A cancelled exec.CommandContext kills at once; the stub stays gated, so
+	// any return here is the kill. The bound can only miss a regression.
+	select {
+	case err := <-result:
+		t.Fatalf("Start returned %v while the stub was still gated: cancellation killed podman", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("stub pid %d after cancellation: kill(0) = %v, want alive", pid, err)
+	}
 	if err := os.WriteFile(proceed, nil, 0o600); err != nil {
 		t.Fatalf("creating go marker: %v", err)
 	}
 
-	var err error
 	select {
-	case err = <-result:
+	case err := <-result:
+		if err != nil {
+			t.Errorf("Start error = %v, want nil (the stub exited 0)", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("podman start did not return after the stub was released")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Start error = %v, want context.Canceled", err)
 	}
 	if _, err := os.Stat(doneMarker); err != nil {
 		t.Errorf("stub did not finish after caller cancellation: %v", err)
@@ -694,25 +706,5 @@ func TestPodmanStartTimeoutKillsHungProcess(t *testing.T) {
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("after start timeout, kill(%d, 0) = %v, want ESRCH", pid, err)
-	}
-}
-
-func waitForMarker(t *testing.T, path string) {
-	t.Helper()
-	timer := time.NewTimer(10 * time.Second)
-	defer timer.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("checking marker %q: %v", path, err)
-		}
-		select {
-		case <-timer.C:
-			t.Fatalf("marker %q was not created before the deadline", path)
-		case <-ticker.C:
-		}
 	}
 }

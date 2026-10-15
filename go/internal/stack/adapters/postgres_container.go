@@ -404,9 +404,6 @@ func (e *podmanExec) fireAndCheckWithCancellation(ctx context.Context, args []st
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
-	if detached && ctx.Err() != nil {
-		return ctx.Err()
-	}
 	if runErr != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {

@@ -354,8 +354,9 @@ func TestStopSecondsRounding(t *testing.T) {
 	}
 }
 
-// fireAndCheck previously surfaced a killed-process error; detached run returns
-// the caller's context error after the command exits.
+// A cancelled caller must not kill podman run: a signal mid netns setup leaves
+// pasta running without resolv.conf. The real outcome is returned, so a
+// container that did start is still recorded for teardown.
 func TestPodmanRunSurvivesCallerCancellation(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
@@ -364,10 +365,10 @@ func TestPodmanRunSurvivesCallerCancellation(t *testing.T) {
 	prog := filepath.Join(dir, "podman-stub.sh")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" != "run" ]; then exit 91; fi
-: > %q
+echo $$ > %q.tmp && mv %q.tmp %q
 while [ ! -e %q ]; do :; done
 : > %q
-`, started, proceed, doneMarker)
+`, started, started, started, proceed, doneMarker)
 	if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
 		t.Fatalf("writing stub: %v", err)
 	}
@@ -378,23 +379,47 @@ while [ ! -e %q ]; do :; done
 	result := make(chan error, 1)
 	go func() { result <- cli.run(ctx, []string{"run", "--detach", "image"}) }()
 	waitForPodmanMarker(t, started)
+	pid := readPid(t, started)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	cancel()
+	// A cancelled exec.CommandContext kills at once; the stub stays gated, so
+	// any return here is the kill. The bound can only miss a regression.
+	select {
+	case err := <-result:
+		t.Fatalf("run returned %v while the stub was still gated: cancellation killed podman", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("stub pid %d after cancellation: kill(0) = %v, want alive", pid, err)
+	}
 	if err := os.WriteFile(proceed, nil, 0o600); err != nil {
 		t.Fatalf("creating go marker: %v", err)
 	}
 
-	var err error
 	select {
-	case err = <-result:
+	case err := <-result:
+		if err != nil {
+			t.Errorf("run error = %v, want nil (the stub exited 0)", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("podman run did not return after the stub was released")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("run error = %v, want context.Canceled", err)
 	}
 	if _, err := os.Stat(doneMarker); err != nil {
 		t.Errorf("stub did not finish after caller cancellation: %v", err)
 	}
+}
+
+func readPid(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading pid file: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parsing pid %q: %v", data, err)
+	}
+	return pid
 }
 
 func TestPodmanRunTimeoutKillsHungProcess(t *testing.T) {

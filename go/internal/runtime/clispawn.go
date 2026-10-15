@@ -64,9 +64,6 @@ func (e cliEngine) spawnCaptureWithCancellation(ctx context.Context, summary str
 	}
 
 	runErr := cmd.Run()
-	if detached && ctx.Err() != nil {
-		return nil, nil, 0, ctx.Err()
-	}
 	if runErr != nil {
 		switch {
 		case cctx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
