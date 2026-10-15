@@ -559,31 +559,32 @@ const searchAgentBoardTasks = `-- name: SearchAgentBoardTasks :many
 WITH filtered_tasks AS (
     SELECT t.agent_account_id, t.task_key, t.position
       FROM agent_board_tasks t
-      JOIN agent_boards b ON b.agent_account_id = t.agent_account_id
      WHERE (cardinality($1::text[]) = 0 OR t.agent_account_id = ANY($1::text[]))
        AND ($2::text = '' OR to_tsvector('english', t.title || ' ' || t.note)
             @@ websearch_to_tsquery('english', $2::text))
        AND ($3::text = '' OR $3::text = ANY(t.refs) OR t.primary_ref = $3::text)
        AND ($4::smallint = 0 OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(t.waiting) AS w(value)
+            SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.waiting) = 'array' THEN t.waiting ELSE '[]'::jsonb END) AS w(value)
              WHERE w.value->>'on' = CASE $4::smallint
                     WHEN 1 THEN 'BOARD_WAITING_ON_OPERATOR'
                     WHEN 2 THEN 'BOARD_WAITING_ON_AGENT'
                     WHEN 3 THEN 'BOARD_WAITING_ON_EXTERNAL'
                     ELSE '' END))
        AND ($5::smallint = 0 OR t.state = $5::smallint)
+), matching_agents AS (
+    SELECT b.agent_account_id
+      FROM agent_boards b
+     WHERE (cardinality($1::text[]) = 0 OR b.agent_account_id = ANY($1::text[]))
        AND ($6::smallint = 0 OR b.halt_kind = $6::smallint)
-),
-matching_agents AS (
-    SELECT DISTINCT agent_account_id
-      FROM filtered_tasks
-     ORDER BY agent_account_id
+       AND ($2::text = '' AND $3::text = '' AND $4::smallint = 0 AND $5::smallint = 0
+            OR EXISTS (SELECT 1 FROM filtered_tasks f WHERE f.agent_account_id = b.agent_account_id))
+     ORDER BY b.agent_account_id
      LIMIT $7
 )
-SELECT f.agent_account_id, f.task_key
-  FROM filtered_tasks f
-  JOIN matching_agents a USING (agent_account_id)
- ORDER BY f.agent_account_id, f.position, f.task_key
+SELECT a.agent_account_id, COALESCE(f.task_key, '')::text AS task_key
+  FROM matching_agents a
+  LEFT JOIN filtered_tasks f USING (agent_account_id)
+ ORDER BY a.agent_account_id, f.position, f.task_key
 `
 
 type SearchAgentBoardTasksParams struct {

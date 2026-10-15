@@ -757,6 +757,12 @@ func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig
 	return admin, system, linearBridge, nil
 }
 
+// setCommsForges gives comms the forge coordinates for ask refs and board reads.
+func setCommsForges(c *comms.Comms, cfg ForgeConfig) {
+	c.SetForgeHost(cfg.resolved().Host)
+	c.SetBoardForges(board.Forges{GitHubHost: cfg.resolved().Host, LinearHost: forge.LinearHost})
+}
+
 // Serve binds the compass.v1 service to cfg.SocketPath and drives it until ctx
 // is cancelled.
 //
@@ -880,7 +886,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	defer commsBus.Close()
 	commsSvc := comms.NewComms(st, commsBus, fab, admin.ID)
-	commsSvc.SetForgeHost(cfg.Forge.resolved().Host)
+	setCommsForges(commsSvc, cfg.Forge)
 	// Register the coordination-channel reconcile as the store's in-tx hook, so
 	// the two parent-edge writers auto-provision/reconcile a manager's
 	// coordination channel atomically with the tree edge (RIG-1722 T5). Wired here

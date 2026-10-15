@@ -25,6 +25,25 @@ func relayPin(sessionID, callID string, req *compassv1.UpdatePinnedBoardRequest)
 		},
 	}
 }
+func relayUpdateBoard(sessionID, callID string, req *compassv1.UpdateAgentBoardRequest) *compassv1internal.RelayCommsCallRequest {
+	return &compassv1internal.RelayCommsCallRequest{
+		SessionId: sessionID,
+		Call: &compassv1internal.CommsCallRequest{
+			CallId: callID,
+			Call:   &compassv1internal.CommsCallRequest_UpdateBoard{UpdateBoard: req},
+		},
+	}
+}
+
+func relayBoards(sessionID, callID string, req *compassv1.ListAgentBoardsRequest) *compassv1internal.RelayCommsCallRequest {
+	return &compassv1internal.RelayCommsCallRequest{
+		SessionId: sessionID,
+		Call: &compassv1internal.CommsCallRequest{
+			CallId: callID,
+			Call:   &compassv1internal.CommsCallRequest_Boards{Boards: req},
+		},
+	}
+}
 
 // TestRelayCommsPinDispatchesAsBoundAccount: a pin call forwards the exact
 // request under the bound account and wraps the pin result with call_id intact.
@@ -111,26 +130,20 @@ type armCase struct {
 // than inside it so the table reads as data and the assertions read as logic;
 // commsCallOneofArms gates it against the oneof so a new arm cannot be missed.
 func commsArmCases() []armCase {
+	return append(commsArmCasesCore(), commsArmCasesBoardAndChannels()...)
+}
+
+func commsArmCasesCore() []armCase {
 	post := &compassv1.PostMessageRequest{}
 	list := &compassv1.ListMessagesRequest{}
 	listTopics := &compassv1.ListTopicsRequest{}
 	roster := &compassv1.GetRosterRequest{}
 	pin := &compassv1.UpdatePinnedBoardRequest{}
-	createChannel := &compassv1.CreateChannelRequest{}
-	updateMembers := &compassv1.UpdateChannelMembersRequest{}
-	createChannelGroup := &compassv1.CreateChannelGroupRequest{}
-	openDM := &compassv1.OpenDMRequest{}
-
 	postResp := &compassv1.PostMessageResponse{}
 	listResp := &compassv1.ListMessagesResponse{}
 	listTopicsResp := &compassv1.ListTopicsResponse{}
 	rosterResp := &compassv1.GetRosterResponse{}
 	pinResp := &compassv1.UpdatePinnedBoardResponse{}
-	createChannelResp := &compassv1.CreateChannelResponse{}
-	updateMembersResp := &compassv1.UpdateChannelMembersResponse{}
-	createChannelGroupResp := &compassv1.CreateChannelGroupResponse{}
-	openDMResp := &compassv1.OpenDMResponse{}
-
 	return []armCase{
 		{
 			name:     "post",
@@ -190,6 +203,23 @@ func commsArmCases() []armCase {
 			gotResp:  func(r *compassv1internal.CommsCallResult) any { return r.GetPin() },
 			wantResp: pinResp,
 		},
+	}
+}
+
+func commsArmCasesBoardAndChannels() []armCase {
+	createChannel := &compassv1.CreateChannelRequest{}
+	updateMembers := &compassv1.UpdateChannelMembersRequest{}
+	updateBoard := &compassv1.UpdateAgentBoardRequest{}
+	boards := &compassv1.ListAgentBoardsRequest{}
+	createChannelGroup := &compassv1.CreateChannelGroupRequest{}
+	openDM := &compassv1.OpenDMRequest{}
+	createChannelResp := &compassv1.CreateChannelResponse{}
+	updateMembersResp := &compassv1.UpdateChannelMembersResponse{}
+	updateBoardResp := &compassv1.UpdateAgentBoardResponse{}
+	boardsResp := &compassv1.ListAgentBoardsResponse{}
+	createChannelGroupResp := &compassv1.CreateChannelGroupResponse{}
+	openDMResp := &compassv1.OpenDMResponse{}
+	return []armCase{
 		{
 			name:     "create_channel",
 			request:  relayCreateChannel("sess-1", "tc-channel", createChannel),
@@ -207,6 +237,24 @@ func commsArmCases() []armCase {
 			want:     updateMembers,
 			gotResp:  func(r *compassv1internal.CommsCallResult) any { return r.GetUpdateMembers() },
 			wantResp: updateMembersResp,
+		},
+		{
+			name:     "update_board",
+			request:  relayUpdateBoard("sess-1", "tc-board", updateBoard),
+			seed:     func(c *fakeCommsCaller) { c.updateBoardResp = updateBoardResp },
+			field:    func(c commsCall) any { return c.updateBoard },
+			want:     updateBoard,
+			gotResp:  func(r *compassv1internal.CommsCallResult) any { return r.GetUpdateBoard() },
+			wantResp: updateBoardResp,
+		},
+		{
+			name:     "boards",
+			request:  relayBoards("sess-1", "tc-boards", boards),
+			seed:     func(c *fakeCommsCaller) { c.boardsResp = boardsResp },
+			field:    func(c commsCall) any { return c.boards },
+			want:     boards,
+			gotResp:  func(r *compassv1internal.CommsCallResult) any { return r.GetBoards() },
+			wantResp: boardsResp,
 		},
 		{
 			name:     "create_channel_group",

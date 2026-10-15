@@ -112,6 +112,9 @@ const (
 	// CommsServiceUpdatePinnedBoardProcedure is the fully-qualified name of the CommsService's
 	// UpdatePinnedBoard RPC.
 	CommsServiceUpdatePinnedBoardProcedure = "/compass.v1.CommsService/UpdatePinnedBoard"
+	// CommsServiceListAgentBoardsProcedure is the fully-qualified name of the CommsService's
+	// ListAgentBoards RPC.
+	CommsServiceListAgentBoardsProcedure = "/compass.v1.CommsService/ListAgentBoards"
 	// CommsServiceApprovePeerProcedure is the fully-qualified name of the CommsService's ApprovePeer
 	// RPC.
 	CommsServiceApprovePeerProcedure = "/compass.v1.CommsService/ApprovePeer"
@@ -207,6 +210,8 @@ type CommsServiceClient interface {
 	// minting; the message must already live in a topic of the channel). A pin
 	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
 	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
+	// List whole boards for agents the caller can see, optionally filtered.
+	ListAgentBoards(context.Context, *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error)
 	// Approve a user as a peer of the caller (a user account). A peering is
 	// live only when both users have approved each other; until then this is
 	// a pending request. Idempotent. peer_handle is a bare user handle;
@@ -218,10 +223,9 @@ type CommsServiceClient interface {
 	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 	// List the caller's peerings: every user with an approval in either direction.
 	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
-	// The event stream: message, channel, group, account, and workspace updates,
-	// scoped to the caller's visible set, with gap-free replay-on-join. The sole
-	// push path for the comms surface, mirroring CompassService.SubscribeEvents'
-	// seq/epoch replay contract (D1).
+	// The comms event stream, scoped to the caller's visible set, with gap-free
+	// replay-on-join. The sole push path for the comms surface, mirroring
+	// CompassService.SubscribeEvents' seq/epoch replay contract (D1).
 	SubscribeComms(context.Context, *connect.Request[v1.SubscribeCommsRequest]) (*connect.ServerStreamForClient[v1.SubscribeCommsResponse], error)
 }
 
@@ -368,6 +372,12 @@ func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
 			connect.WithClientOptions(opts...),
 		),
+		listAgentBoards: connect.NewClient[v1.ListAgentBoardsRequest, v1.ListAgentBoardsResponse](
+			httpClient,
+			baseURL+CommsServiceListAgentBoardsProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("ListAgentBoards")),
+			connect.WithClientOptions(opts...),
+		),
 		approvePeer: connect.NewClient[v1.ApprovePeerRequest, v1.ApprovePeerResponse](
 			httpClient,
 			baseURL+CommsServiceApprovePeerProcedure,
@@ -419,6 +429,7 @@ type commsServiceClient struct {
 	setChannelPolicy     *connect.Client[v1.SetChannelPolicyRequest, v1.SetChannelPolicyResponse]
 	getRoster            *connect.Client[v1.GetRosterRequest, v1.GetRosterResponse]
 	updatePinnedBoard    *connect.Client[v1.UpdatePinnedBoardRequest, v1.UpdatePinnedBoardResponse]
+	listAgentBoards      *connect.Client[v1.ListAgentBoardsRequest, v1.ListAgentBoardsResponse]
 	approvePeer          *connect.Client[v1.ApprovePeerRequest, v1.ApprovePeerResponse]
 	revokePeer           *connect.Client[v1.RevokePeerRequest, v1.RevokePeerResponse]
 	listPeers            *connect.Client[v1.ListPeersRequest, v1.ListPeersResponse]
@@ -535,6 +546,11 @@ func (c *commsServiceClient) UpdatePinnedBoard(ctx context.Context, req *connect
 	return c.updatePinnedBoard.CallUnary(ctx, req)
 }
 
+// ListAgentBoards calls compass.v1.CommsService.ListAgentBoards.
+func (c *commsServiceClient) ListAgentBoards(ctx context.Context, req *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error) {
+	return c.listAgentBoards.CallUnary(ctx, req)
+}
+
 // ApprovePeer calls compass.v1.CommsService.ApprovePeer.
 func (c *commsServiceClient) ApprovePeer(ctx context.Context, req *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error) {
 	return c.approvePeer.CallUnary(ctx, req)
@@ -638,6 +654,8 @@ type CommsServiceHandler interface {
 	// minting; the message must already live in a topic of the channel). A pin
 	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
 	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
+	// List whole boards for agents the caller can see, optionally filtered.
+	ListAgentBoards(context.Context, *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error)
 	// Approve a user as a peer of the caller (a user account). A peering is
 	// live only when both users have approved each other; until then this is
 	// a pending request. Idempotent. peer_handle is a bare user handle;
@@ -649,10 +667,9 @@ type CommsServiceHandler interface {
 	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 	// List the caller's peerings: every user with an approval in either direction.
 	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
-	// The event stream: message, channel, group, account, and workspace updates,
-	// scoped to the caller's visible set, with gap-free replay-on-join. The sole
-	// push path for the comms surface, mirroring CompassService.SubscribeEvents'
-	// seq/epoch replay contract (D1).
+	// The comms event stream, scoped to the caller's visible set, with gap-free
+	// replay-on-join. The sole push path for the comms surface, mirroring
+	// CompassService.SubscribeEvents' seq/epoch replay contract (D1).
 	SubscribeComms(context.Context, *connect.Request[v1.SubscribeCommsRequest], *connect.ServerStream[v1.SubscribeCommsResponse]) error
 }
 
@@ -795,6 +812,12 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
 		connect.WithHandlerOptions(opts...),
 	)
+	commsServiceListAgentBoardsHandler := connect.NewUnaryHandler(
+		CommsServiceListAgentBoardsProcedure,
+		svc.ListAgentBoards,
+		connect.WithSchema(commsServiceMethods.ByName("ListAgentBoards")),
+		connect.WithHandlerOptions(opts...),
+	)
 	commsServiceApprovePeerHandler := connect.NewUnaryHandler(
 		CommsServiceApprovePeerProcedure,
 		svc.ApprovePeer,
@@ -865,6 +888,8 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 			commsServiceGetRosterHandler.ServeHTTP(w, r)
 		case CommsServiceUpdatePinnedBoardProcedure:
 			commsServiceUpdatePinnedBoardHandler.ServeHTTP(w, r)
+		case CommsServiceListAgentBoardsProcedure:
+			commsServiceListAgentBoardsHandler.ServeHTTP(w, r)
 		case CommsServiceApprovePeerProcedure:
 			commsServiceApprovePeerHandler.ServeHTTP(w, r)
 		case CommsServiceRevokePeerProcedure:
@@ -968,6 +993,10 @@ func (UnimplementedCommsServiceHandler) GetRoster(context.Context, *connect.Requ
 
 func (UnimplementedCommsServiceHandler) UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdatePinnedBoard is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) ListAgentBoards(context.Context, *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListAgentBoards is not implemented"))
 }
 
 func (UnimplementedCommsServiceHandler) ApprovePeer(context.Context, *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error) {

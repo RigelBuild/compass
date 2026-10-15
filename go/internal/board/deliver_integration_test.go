@@ -1,6 +1,6 @@
 //go:build unix
 
-package board
+package board_test
 
 // Integration seam between the RunnerHub and the real Bridge board: a session
 // lifecycle frame through the REAL hub is both recorded into the board and
@@ -17,6 +17,7 @@ import (
 	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/board"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -77,7 +78,7 @@ func stateFrame(state compassv1.AgentSessionState) *compassv1internal.AgentFrame
 // stopped fanning would starve the bus subscription. Each half reddens
 // independently.
 func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
-	brd, bus := newBoard(t)
+	brd, bus := board.NewBoardForTest(t)
 	hub := runnerhub.NewHub(brd, noopTailSink{}, nil, nil)
 	enrollHub(t, hub)
 
@@ -91,20 +92,20 @@ func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
 		RunnerID:  testRunnerID,
 		RunnerSeq: 1,
 		SessionID: "s1",
-		Frame:     stateFrame(working),
+		Frame:     stateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
 	}); err != nil {
 		t.Fatalf("Deliver = %v, want nil", err)
 	}
 
 	// Fan-out surface: the bus subscriber saw s1/WORKING.
-	got := recvStatus(t, sub.Live)
-	if got.GetSessionId() != "s1" || got.GetState() != working {
+	got := board.RecvStatusForTest(t, sub.Live)
+	if got.GetSessionId() != "s1" || got.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
 		t.Errorf("bus event = %s/%v, want s1/WORKING (hub must fan onto SubscribeEvents)", got.GetSessionId(), got.GetState())
 	}
 
 	// Record surface: the board holds s1/WORKING, queryable by id.
 	snap := brd.Snapshot("s1")
-	if len(snap) != 1 || snap[0].GetState() != working {
+	if len(snap) != 1 || snap[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
 		t.Errorf("Snapshot(s1) = %v, want single s1/WORKING (hub must record into the board)", snap)
 	}
 }
@@ -117,7 +118,7 @@ func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
 // would surface as a wrong first event, not a race. A regression that synthesized
 // an AgentSessionStatus for an UNSPECIFIED frame reddens both halves.
 func TestDeliverUnspecifiedFrameNeitherRecordsNorFans(t *testing.T) {
-	brd, bus := newBoard(t)
+	brd, bus := board.NewBoardForTest(t)
 	hub := runnerhub.NewHub(brd, noopTailSink{}, nil, nil)
 	enrollHub(t, hub)
 
@@ -137,7 +138,7 @@ func TestDeliverUnspecifiedFrameNeitherRecordsNorFans(t *testing.T) {
 	}
 
 	if snap := brd.Snapshot("s1"); len(snap) != 0 {
-		t.Errorf("Snapshot(s1) = %v after UNSPECIFIED frame, want empty (nothing recorded)", idsOf(snap))
+		t.Errorf("Snapshot(s1) = %v after UNSPECIFIED frame, want empty (nothing recorded)", snap)
 	}
 
 	// Sentinel: a real WORKING frame must be the first bus event.
@@ -145,11 +146,11 @@ func TestDeliverUnspecifiedFrameNeitherRecordsNorFans(t *testing.T) {
 		RunnerID:  testRunnerID,
 		RunnerSeq: 2,
 		SessionID: "sentinel",
-		Frame:     stateFrame(working),
+		Frame:     stateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
 	}); err != nil {
 		t.Fatalf("Deliver(sentinel) = %v, want nil", err)
 	}
-	if got := recvStatus(t, sub.Live); got.GetSessionId() != "sentinel" {
+	if got := board.RecvStatusForTest(t, sub.Live); got.GetSessionId() != "sentinel" {
 		t.Errorf("first bus event = %s, want sentinel (UNSPECIFIED frame must not fan)", got.GetSessionId())
 	}
 }

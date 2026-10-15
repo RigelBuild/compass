@@ -3,11 +3,13 @@ package comms
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -81,7 +83,14 @@ func (c *Comms) roster(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-
+	boards, err := c.store.AgentBoards(ctx, ids)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	summaries := make(map[store.AccountID]*compassv1.AgentBoardSummary, len(boards))
+	for id, row := range boards {
+		summaries[id] = c.boardSummary(ctx, row, presence)
+	}
 	entries := make([]*compassv1.RosterEntry, 0, len(clipped))
 	for _, acc := range clipped {
 		pres := compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE
@@ -101,9 +110,68 @@ func (c *Comms) roster(
 			Presence:         pres,
 			Activity:         act.Activity,
 			ActivityAtUnixMs: act.ActivityAtUnixMs,
+			Board:            summaries[acc.ID],
 		})
 	}
 	return entries, nil
+}
+
+func (c *Comms) boardSummary(ctx context.Context, row store.BoardRow, presence map[store.AccountID]compassv1.AgentPresence) *compassv1.AgentBoardSummary {
+	summary := &compassv1.AgentBoardSummary{
+		TaskCount: uint32(min(len(row.Tasks), store.MaxBoardTasks)), Halt: haltToWire(row.Halt), WrittenAtUnixMs: row.WrittenAtUnixMs,
+	}
+	allRefs := make([]string, 0, len(row.Tasks)*2)
+	taskRefRanges := make([][2]int, len(row.Tasks))
+	waitingOnOperator := make([]bool, len(row.Tasks))
+	for i, task := range row.Tasks {
+		if task.Key == row.Focus {
+			summary.Focus = task.PrimaryRef
+			if summary.GetFocus() != "" {
+				summary.Focus += " "
+			}
+			summary.Focus += task.Title
+		}
+		start := len(allRefs)
+		allRefs = append(allRefs, task.Refs...)
+		if task.PrimaryRef != "" {
+			allRefs = append(allRefs, task.PrimaryRef)
+		}
+		taskRefRanges[i] = [2]int{start, len(allRefs)}
+		waiting, err := unmarshalBoardWaiting(task.Waiting)
+		if err != nil {
+			slog.WarnContext(ctx, "comms: board summary decode failed", "agent_account_id", string(row.Agent), "task_key", task.Key, "error", err)
+			continue
+		}
+		for _, entry := range waiting {
+			if entry.GetOn() == compassv1.BoardWaitingOn_BOARD_WAITING_ON_OPERATOR {
+				waitingOnOperator[i] = true
+				break
+			}
+		}
+	}
+	presenceValue := presence[row.Agent]
+	summary.Stale = presenceValue == compassv1.AgentPresence_AGENT_PRESENCE_WORKING && row.WrittenAtUnixMs < time.Now().Add(-boardStaleAfter).UnixMilli()
+	if len(allRefs) != 0 {
+		derived, _, err := board.DeriveRefs(ctx, c.store, c.boardForges, row.Agent, allRefs)
+		if err != nil {
+			slog.WarnContext(ctx, "comms: board summary PR gates unavailable", "agent_account_id", string(row.Agent), "error", err)
+		} else {
+			for i := range row.Tasks {
+				for _, ref := range derived[taskRefRanges[i][0]:taskRefRanges[i][1]] {
+					if ref.GetGate() == compassv1.BoardPrGate_BOARD_PR_GATE_AWAITING_REVIEW || ref.GetGate() == compassv1.BoardPrGate_BOARD_PR_GATE_AWAITING_ENQUEUE {
+						waitingOnOperator[i] = true
+						break
+					}
+				}
+			}
+		}
+	}
+	for _, waiting := range waitingOnOperator {
+		if waiting {
+			summary.WaitingOnOperator++
+		}
+	}
+	return summary
 }
 
 // treeForScope selects the tree read for scope, relative to the vantage agent
