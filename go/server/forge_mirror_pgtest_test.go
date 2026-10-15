@@ -480,7 +480,7 @@ func TestCommittedAskMirrorsAndAnswerEditsOneComment(t *testing.T) {
 	author.EditCommentResult = forge.Comment{ID: 15, Key: "auto-comment", URL: author.CommentResult.URL}
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	cm := comms.NewComms(st, commsBus, nil, owner.ID)
+	cm := comms.NewComms(t.Context(), st, commsBus, nil, owner.ID)
 	forgeSvc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
 	forgeSvc.store = st
 	forgeSvc.mirrorStoreDB = st
