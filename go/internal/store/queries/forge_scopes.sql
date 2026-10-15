@@ -25,7 +25,7 @@ WHERE account_id IN (SELECT a.account_id FROM agent_accounts AS a WHERE a.accoun
 -- An account's own rows only; the owner's grants are not included.
 SELECT scope.repo
 FROM account_forge_scopes AS scope
-WHERE scope.account_id = $1
+WHERE scope.account_id IN (SELECT a.account_id FROM agent_accounts AS a WHERE a.account_id = $1)
   AND scope.forge_provider = $2
   AND scope.forge_host = $3
 ORDER BY scope.repo;

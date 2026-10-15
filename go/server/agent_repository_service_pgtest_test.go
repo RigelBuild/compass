@@ -152,6 +152,50 @@ func listAgentRepositories(client compassv1connect.AgentRepositoryServiceClient,
 		connect.NewRequest(&compassv1.ListAgentRepositoriesRequest{AgentHandle: handle})))
 }
 
+func TestBuildDoorsMountsAgentRepositoryServiceWithDoorIdentity(t *testing.T) {
+	ctx, doors, adminToken, ownerToken := buildAgentRepositoryDoors(t)
+	assertSocketDoorIdentity(t, ctx, doors)
+	assertDevDoorIdentity(t, ctx, doors)
+	assertNetworkDoorIdentity(t, ctx, doors, adminToken, ownerToken)
+}
+
+func assertSocketDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoors) {
+	t.Helper()
+	client := newHandlerAgentRepositoryClient(t, doors.uds.Handler)
+	_, err := client.GrantAgentRepository(ctx, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/socket"}))
+	if err != nil {
+		t.Fatalf("socket ambient grant: %v", err)
+	}
+}
+
+func assertDevDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoors) {
+	t.Helper()
+	client := newHandlerAgentRepositoryClient(t, doors.dev.Handler)
+	_, err := client.GrantAgentRepository(ctx, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/dev"}))
+	if err != nil {
+		t.Fatalf("dev ambient grant: %v", err)
+	}
+}
+
+func assertNetworkDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoors, adminToken, ownerToken string) {
+	t.Helper()
+	client := newHandlerAgentRepositoryClient(t, doors.net.Handler)
+	grant := withAgentRepositoryToken(adminToken, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/network"}))
+	if _, err := client.GrantAgentRepository(ctx, grant); err != nil {
+		t.Fatalf("network bearer owner grant: %v", err)
+	}
+	foreign := withAgentRepositoryToken(ownerToken, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/foreign"}))
+	if _, err := client.GrantAgentRepository(ctx, foreign); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("network non-owner grant code = %v (%v), want NotFound", connect.CodeOf(err), err)
+	}
+}
+
+func newHandlerAgentRepositoryClient(t *testing.T, handler http.Handler) compassv1connect.AgentRepositoryServiceClient {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return compassv1connect.NewAgentRepositoryServiceClient(server.Client(), server.URL)
+}
 func TestAgentRepositoryServiceOwnerResolvesAndNormalizes(t *testing.T) {
 	f := newAgentRepositoryFixture(t)
 	ctx := context.Background()
@@ -186,6 +230,10 @@ func TestAgentRepositoryServiceRejectsInvalidRepositories(t *testing.T) {
 		{name: "empty repository", repository: "org/"},
 		{name: "nested path", repository: "a/b/c"},
 		{name: "empty", repository: ""},
+		{name: "leading whitespace", repository: " owner/repo"},
+		{name: "embedded whitespace", repository: "owner/re po"},
+		{name: "trailing whitespace", repository: "owner/repo "},
+		{name: "invalid punctuation", repository: "owner/repo?query"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := grantAgentRepository(f.client, context.Background(), f.ownerToken, "worker", tc.repository)
@@ -281,8 +329,19 @@ func TestAgentRepositoryServiceOrgCheck(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GrantForgeScope(owner wildcard): %v", err)
 	}
+	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "owner/another"); err != nil || !added.Msg.GetAdded() {
+		t.Fatalf("grant within exact org under owner wildcard = (%v, %v), want added", added, err)
+	}
 	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "another/repository"); err != nil || !added.Msg.GetAdded() {
-		t.Fatalf("grant under owner wildcard = (%v, %v), want added", added, err)
+		t.Fatalf("grant across org under owner wildcard = (%v, %v), want added", added, err)
+	}
+	if _, err := f.store.GrantAgentForgeScope(ctx, store.ForgeScope{
+		AccountID: f.agent, Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "third/repository",
+	}); err != nil {
+		t.Fatalf("GrantAgentForgeScope(mixed org): %v", err)
+	}
+	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "fourth/repository"); err != nil || !added.Msg.GetAdded() {
+		t.Fatalf("grant across existing exact orgs under owner wildcard = (%v, %v), want added", added, err)
 	}
 
 	emptyOwner, err := f.store.CreateUser(ctx, store.NewUser{Handle: "repo-empty-owner", DisplayName: "Empty owner"})

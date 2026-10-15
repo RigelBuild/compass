@@ -429,6 +429,26 @@ func TestGitCredentialBrokerTransientNarrowedMintDoesNotServeWildcardToken(t *te
 	}
 }
 
+func TestGitCredentialBrokerTransientWidenedWildcardServesFiniteLastKey(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/base"}}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_finite"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, &forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"}},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_finite" {
+		t.Fatalf("initial finite credential = (%q, %v), want finite token", token, ok)
+	}
+	grants.repos = []string{"*"}
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_finite" {
+		t.Fatalf("credential after wildcard grant and 429 = (%q, %v), want finite last token", token, ok)
+	}
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls = %d, want initial finite mint and failed wildcard mint", minter.callCount())
+	}
+}
+
 func TestGitCredentialBrokerScopeRejectedWidenedMintUsesOwnerFallback(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
@@ -496,31 +516,78 @@ func TestGitCredentialBrokerMintsNarrowedGrant(t *testing.T) {
 	}
 }
 
-// The negative entry lands between the pre-flight check and the flight, as when
-// a concurrent caller's flight rejects the same set.
 func TestGitCredentialBrokerNegativeCachedInFlightFallsBackToOwnerGrants(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
-	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}, listed: make(chan struct{}, 2)}
 	grants.setRepos("owner-id", []string{"owner/base"})
 	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
-	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour)}
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"unused", "ghs_owner"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{&forge.StatusError{Status: http.StatusUnprocessableEntity, Message: "scope rejected"}},
+		started:   started, release: release,
+	}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
-	clockCalls := 0
-	broker.clock = func() time.Time {
-		clockCalls++
-		if clockCalls == 2 {
-			broker.mu.Lock()
-			broker.negative["owner/base,owner/workstream"] = gitCredentialNegativeEntry{expiresAt: now.Add(gitCredentialMismatchCache)}
-			broker.mu.Unlock()
+	type result struct {
+		token string
+		ok    bool
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			token, ok := broker.credential(context.Background(), "agent-id")
+			results <- result{token: token, ok: ok}
+		}()
+	}
+	<-started
+	<-grants.listed
+	<-grants.listed
+	close(release)
+	for range 2 {
+		got := <-results
+		if !got.ok || got.token != "ghs_owner" {
+			t.Fatalf("credential = (%q, %v), want owner-grants token", got.token, got.ok)
 		}
-		return now
 	}
+	if got, want := minter.mintRepos(), [][]string{{"base", "workstream"}, {"base"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mint repository sets = %v, want one rejected full set and one owner set", got)
+	}
+}
 
-	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_owner" {
-		t.Fatalf("credential = (%q, %v), want owner-grants token", tok, ok)
+func TestGitCredentialScopeWithin(t *testing.T) {
+	tests := []struct {
+		name  string
+		inner string
+		outer string
+		want  bool
+	}{
+		{name: "same scope", inner: "owner/a,owner/b", outer: "owner/a,owner/b", want: true},
+		{name: "finite inner contained by wildcard", inner: "owner/a,owner/b", outer: "*", want: true},
+		{name: "inner wildcard is not finite", inner: "*", outer: "owner/a,owner/b", want: false},
+		{name: "missing repository", inner: "owner/a,owner/c", outer: "owner/a,owner/b", want: false},
+		{name: "ordered merge skips earlier outer repository", inner: "owner/b", outer: "owner/a,owner/b,owner/c", want: true},
+		{name: "inner repository absent between outer entries", inner: "owner/b", outer: "owner/a,owner/c", want: false},
 	}
-	if got, want := minter.mintRepos(), [][]string{{"base"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("mint repository sets = %v, want only the owner set", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gitCredentialScopeWithin(tc.inner, tc.outer); got != tc.want {
+				t.Errorf("gitCredentialScopeWithin(%q, %q) = %t, want %t", tc.inner, tc.outer, got, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		inner string
+		outer string
+	}{
+		{name: "trailing comma", inner: "owner/a,", outer: "owner/a"},
+		{name: "repeated comma", inner: "owner/a,,owner/b", outer: "owner/a,owner/b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if gitCredentialScopeWithin(tc.inner, tc.outer) {
+				t.Errorf("gitCredentialScopeWithin(%q, %q) = true, want false", tc.inner, tc.outer)
+			}
+		})
 	}
 }
 
@@ -771,6 +838,33 @@ func TestBrokeredSecretResolverCachesCredential(t *testing.T) {
 	}
 	if minter.callCount() != 1 {
 		t.Fatalf("mint calls = %d, want one cached mint", minter.callCount())
+	}
+}
+
+func TestGitCredentialBrokerScopeRejectedRefreshSignals(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"owner/base"})
+	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_old", "unused", "ghs_owner"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, &forge.StatusError{Status: http.StatusUnprocessableEntity, Message: "scope rejected"}},
+	}
+	signals := 0
+	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+	resolveBrokeredSecret(t, resolver)
+
+	now = now.Add(time.Hour - gitCredentialRefreshLead)
+	broker.refreshDue(context.Background())
+	if signals != 1 {
+		t.Fatalf("signal calls after scope-rejected refresh = %d, want one", signals)
+	}
+	if len(broker.last) != 0 {
+		t.Fatalf("last credential references after rejected refresh = %v, want none", broker.last)
+	}
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_owner" {
+		t.Fatalf("credential after rejected refresh = (%q, %v), want owner-grants token", token, ok)
 	}
 }
 

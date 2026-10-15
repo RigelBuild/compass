@@ -38,14 +38,44 @@ func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, sig
 
 var _ compassv1connect.AgentRepositoryServiceHandler = (*agentRepositoryService)(nil)
 
-// agentRepository accepts one exact org/name and stores it in lowercase.
+// agentRepository accepts one exact GitHub org/name and stores it in lowercase.
 func agentRepository(raw string) (string, error) {
 	repo := strings.ToLower(raw)
 	org, name, ok := strings.Cut(repo, "/")
-	if !ok || org == "" || name == "" || strings.Contains(org, "*") || strings.Contains(name, "*") || strings.Contains(name, "/") || repo == "*" {
-		return "", fmt.Errorf("%w: repository must be an exact org/name", store.ErrInvalidArgument)
+	if !ok || org == "" || name == "" || strings.Contains(name, "/") || !githubOwnerPart(org) || !githubRepositoryPart(name) {
+		return "", fmt.Errorf("%w: repository must be an exact GitHub org/name", store.ErrInvalidArgument)
 	}
 	return repo, nil
+}
+
+// githubOwnerPart follows GitHub's login rule: 1-39 alphanumerics or hyphens,
+// not starting with a hyphen.
+func githubOwnerPart(part string) bool {
+	if len(part) > 39 || part[0] == '-' {
+		return false
+	}
+	for _, c := range part {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// githubRepositoryPart follows GitHub's repository rule: up to 100 of
+// [a-z0-9._-], never "." or "..".
+func githubRepositoryPart(part string) bool {
+	if len(part) > 100 || part == "." || part == ".." {
+		return false
+	}
+	for _, c := range part {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // resolveOwnedAgent resolves a caller-owned agent and conceals every miss.
@@ -224,17 +254,19 @@ func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.Accou
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("checking agent credential org: %w", err))
 	}
 	org, _, _ := strings.Cut(repo, "/")
+	wildcard := false
 	mismatch := false
 	for _, grant := range grants {
 		if grant == "*" {
-			return nil
+			wildcard = true
+			continue
 		}
 		grantOrg, _, ok := strings.Cut(strings.ToLower(grant), "/")
 		if ok && grantOrg != org {
 			mismatch = true
 		}
 	}
-	if mismatch {
+	if mismatch && !wildcard {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("repository org differs from the agent's credential org"))
 	}
 	return nil

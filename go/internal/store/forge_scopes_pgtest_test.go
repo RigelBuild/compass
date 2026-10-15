@@ -274,64 +274,61 @@ func TestGrantAgentForgeScope(t *testing.T) {
 func TestAgentForgeScopeRevokeAndList(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	owner, err := s.CreateUser(ctx, NewUser{Handle: "revoke-agent-scope-owner", DisplayName: "Owner"})
-	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "revoke-agent-scope-agent", DisplayName: "Agent"})
-	if err != nil {
-		t.Fatalf("CreateAgent: %v", err)
-	}
+	owner := mustUser(t, s, "revoke-agent-scope-owner")
+	agent := mustAgent(t, s, owner.ID, "revoke-agent-scope-agent")
+	tenantB := seedTenant(t, s, "revoke-agent-scope-tenant-b")
+	ctxB := WithTenant(ctx, tenantB)
 	ownerScope := ForgeScope{AccountID: owner.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "owner/grant"}
+	agentScope := ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "agent/repo"}
 	if err := s.GrantForgeScope(ctx, ownerScope); err != nil {
 		t.Fatalf("GrantForgeScope: %v", err)
 	}
-	agentScope := ForgeScope{AccountID: agent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "agent/repo"}
-	added, err := s.GrantAgentForgeScope(ctx, agentScope)
-	if err != nil || !added {
+	if added, err := s.GrantAgentForgeScope(ctx, agentScope); err != nil || !added {
 		t.Fatalf("GrantAgentForgeScope = (%t, %v), want (true, nil)", added, err)
 	}
 
-	ownRepos, err := s.ListAgentForgeScopeRepos(ctx, agent.ID, ForgeProviderGitHub, "github.com")
-	if err != nil || len(ownRepos) != 1 || ownRepos[0] != "agent/repo" {
-		t.Fatalf("ListAgentForgeScopeRepos = (%v, %v), want ([agent/repo], nil)", ownRepos, err)
-	}
-	allRepos, err := s.ListForgeScopeRepos(ctx, agent.ID, ForgeProviderGitHub, "github.com")
-	if err != nil || len(allRepos) != 2 || allRepos[0] != "agent/repo" || allRepos[1] != "owner/grant" {
-		t.Fatalf("ListForgeScopeRepos = (%v, %v), want ([agent/repo owner/grant], nil)", allRepos, err)
-	}
-
-	removed, err := s.RevokeAgentForgeScope(ctx, agentScope)
-	if err != nil || !removed {
-		t.Fatalf("RevokeAgentForgeScope first = (%t, %v), want (true, nil)", removed, err)
-	}
-	removed, err = s.RevokeAgentForgeScope(ctx, agentScope)
-	if err != nil || removed {
-		t.Fatalf("RevokeAgentForgeScope duplicate = (%t, %v), want (false, nil)", removed, err)
-	}
-	removed, err = s.RevokeAgentForgeScope(ctx, ownerScope)
-	if err != nil || removed {
-		t.Fatalf("RevokeAgentForgeScope user = (%t, %v), want (false, nil)", removed, err)
-	}
-	if got, err := s.HasForgeScope(ctx, agent.ID, ForgeProviderGitHub, "github.com", "owner/grant"); err != nil || !got {
-		t.Fatalf("owner grant after agent revoke = (%t, %v), want (true, nil)", got, err)
-	}
-
-	if _, err := s.GrantAgentForgeScope(ctx, agentScope); err != nil {
-		t.Fatalf("GrantAgentForgeScope before tenant check: %v", err)
-	}
-	tenantB := seedTenant(t, s, "revoke-agent-scope-tenant-b")
-	ctxB := WithTenant(ctx, tenantB)
-	removed, err = s.RevokeAgentForgeScope(ctxB, agentScope)
-	if err != nil || removed {
-		t.Fatalf("RevokeAgentForgeScope tenant B = (%t, %v), want (false, nil)", removed, err)
-	}
-	if repos, err := s.ListAgentForgeScopeRepos(ctx, agent.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 1 || repos[0] != "agent/repo" {
-		t.Fatalf("ListAgentForgeScopeRepos tenant A after tenant B revoke = (%v, %v), want ([agent/repo], nil)", repos, err)
-	}
-	if repos, err := s.ListAgentForgeScopeRepos(ctxB, agent.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 0 {
-		t.Fatalf("ListAgentForgeScopeRepos tenant B = (%v, %v), want ([], nil)", repos, err)
-	}
+	t.Run("agent-only list", func(t *testing.T) {
+		ownRepos, err := s.ListAgentForgeScopeRepos(ctx, agent.ID, ForgeProviderGitHub, "github.com")
+		if err != nil || len(ownRepos) != 1 || ownRepos[0] != "agent/repo" {
+			t.Fatalf("ListAgentForgeScopeRepos = (%v, %v), want ([agent/repo], nil)", ownRepos, err)
+		}
+		userRepos, err := s.ListAgentForgeScopeRepos(ctx, owner.ID, ForgeProviderGitHub, "github.com")
+		if err != nil || len(userRepos) != 0 {
+			t.Fatalf("ListAgentForgeScopeRepos(user) = (%v, %v), want ([], nil)", userRepos, err)
+		}
+		allRepos, err := s.ListForgeScopeRepos(ctx, agent.ID, ForgeProviderGitHub, "github.com")
+		if err != nil || len(allRepos) != 2 || allRepos[0] != "agent/repo" || allRepos[1] != "owner/grant" {
+			t.Fatalf("ListForgeScopeRepos = (%v, %v), want ([agent/repo owner/grant], nil)", allRepos, err)
+		}
+	})
+	t.Run("revoke preserves owner grant", func(t *testing.T) {
+		if removed, err := s.RevokeAgentForgeScope(ctx, agentScope); err != nil || !removed {
+			t.Fatalf("RevokeAgentForgeScope first = (%t, %v), want (true, nil)", removed, err)
+		}
+		if removed, err := s.RevokeAgentForgeScope(ctx, agentScope); err != nil || removed {
+			t.Fatalf("RevokeAgentForgeScope duplicate = (%t, %v), want (false, nil)", removed, err)
+		}
+		if removed, err := s.RevokeAgentForgeScope(ctx, ownerScope); err != nil || removed {
+			t.Fatalf("RevokeAgentForgeScope user = (%t, %v), want (false, nil)", removed, err)
+		}
+		if got, err := s.HasForgeScope(ctx, agent.ID, ForgeProviderGitHub, "github.com", "owner/grant"); err != nil || !got {
+			t.Fatalf("owner grant after agent revoke = (%t, %v), want (true, nil)", got, err)
+		}
+	})
+	t.Run("tenant isolation", func(t *testing.T) {
+		if _, err := s.GrantAgentForgeScope(ctx, agentScope); err != nil {
+			t.Fatalf("GrantAgentForgeScope before tenant check: %v", err)
+		}
+		if removed, err := s.RevokeAgentForgeScope(ctxB, agentScope); err != nil || removed {
+			t.Fatalf("RevokeAgentForgeScope tenant B = (%t, %v), want (false, nil)", removed, err)
+		}
+		if repos, err := s.ListAgentForgeScopeRepos(ctx, agent.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 1 || repos[0] != "agent/repo" {
+			t.Fatalf("ListAgentForgeScopeRepos tenant A after tenant B revoke = (%v, %v), want ([agent/repo], nil)", repos, err)
+		}
+		if repos, err := s.ListAgentForgeScopeRepos(ctxB, agent.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 0 {
+			t.Fatalf("ListAgentForgeScopeRepos tenant B = (%v, %v), want ([], nil)", repos, err)
+		}
+	})
 }
 
 func TestCreateAgentCopiesForgeScopesFromParent(t *testing.T) {
@@ -366,6 +363,24 @@ func TestCreateAgentCopiesForgeScopesFromParent(t *testing.T) {
 	}
 	if got, err := s.HasForgeScope(ctx, child.ID, ForgeProviderGitHub, "github.com", "owner/not-copied"); err != nil || !got {
 		t.Fatalf("child inherits owner grant = (%t, %v), want (true, nil)", got, err)
+	}
+	if _, err := s.GrantAgentForgeScope(ctx, ForgeScope{AccountID: parent.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "parent/added-later"}); err != nil {
+		t.Fatalf("GrantAgentForgeScope parent after child creation: %v", err)
+	}
+	if repos, err := s.ListAgentForgeScopeRepos(ctx, child.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 1 || repos[0] != "parent/copied" {
+		t.Fatalf("child snapshot after parent grant = (%v, %v), want [parent/copied]", repos, err)
+	}
+	if _, err := s.RevokeAgentForgeScope(ctx, parentScope); err != nil {
+		t.Fatalf("RevokeAgentForgeScope parent after child creation: %v", err)
+	}
+	if repos, err := s.ListAgentForgeScopeRepos(ctx, child.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 1 || repos[0] != "parent/copied" {
+		t.Fatalf("child snapshot after parent revoke = (%v, %v), want [parent/copied]", repos, err)
+	}
+	if _, err := s.RevokeAgentForgeScope(ctx, ForgeScope{AccountID: child.ID, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "parent/copied"}); err != nil {
+		t.Fatalf("RevokeAgentForgeScope child copy: %v", err)
+	}
+	if repos, err := s.ListAgentForgeScopeRepos(ctx, parent.ID, ForgeProviderGitHub, "github.com"); err != nil || len(repos) != 1 || repos[0] != "parent/added-later" {
+		t.Fatalf("parent after child copy revoke = (%v, %v), want [parent/added-later]", repos, err)
 	}
 	root, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "copy-agent-scope-root", DisplayName: "Root"})
 	if err != nil {
