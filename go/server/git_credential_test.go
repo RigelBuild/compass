@@ -430,14 +430,21 @@ func TestGitCredentialBrokerGrantsChangedRevokesRemovedScope(t *testing.T) {
 	grants.setRepos("agent-id", []string{"owner/base", "owner/removed"})
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_narrow"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error { signals++; return nil })
+	ctx := context.WithValue(t.Context(), signalCtxKey{}, "grant-change")
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(got context.Context) error {
+		signals++
+		if got.Value(signalCtxKey{}) != "grant-change" {
+			t.Error("grant-change signal lost the caller ctx")
+		}
+		return nil
+	})
 	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_old" {
 		t.Fatalf("initial credential = (%q, %v), want old token", token, ok)
 	}
 	grants.setRepos("agent-id", []string{"owner/base"})
 	oldKey := "owner/base,owner/removed"
 	old := broker.entries[oldKey]
-	broker.grantsChanged(context.Background(), "agent-id")
+	broker.grantsChanged(ctx, "agent-id")
 	if got := broker.entries["owner/base"].token; got != "ghs_narrow" {
 		t.Fatalf("new entry token = %q, want narrow token", got)
 	}
@@ -1696,8 +1703,12 @@ func TestGitCredentialBrokerSignalsPendingRetryWhenBudgetReturns(t *testing.T) {
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/retry"}}
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_retried"}, expiresAt: now.Add(time.Hour)}
 	signals := 0
-	broker := newGitCredentialTestBroker(grants, minter, &now, func(context.Context) error {
+	ctx := context.WithValue(t.Context(), signalCtxKey{}, "retry")
+	broker := newGitCredentialTestBroker(grants, minter, &now, func(got context.Context) error {
 		signals++
+		if got.Value(signalCtxKey{}) != "retry" {
+			t.Error("pending-retry signal lost the refresh ctx")
+		}
 		return nil
 	})
 	for range gitCredentialMintBurst {
@@ -1716,7 +1727,7 @@ func TestGitCredentialBrokerSignalsPendingRetryWhenBudgetReturns(t *testing.T) {
 		t.Fatalf("signal calls during backoff = %d, want none", signals)
 	}
 	now = now.Add(time.Minute)
-	broker.refreshDue(context.Background())
+	broker.refreshDue(ctx)
 	if signals != 1 {
 		t.Fatalf("signal calls after refill = %d, want one", signals)
 	}
@@ -1725,6 +1736,10 @@ func TestGitCredentialBrokerSignalsPendingRetryWhenBudgetReturns(t *testing.T) {
 		t.Fatalf("signal calls after pending retry cleared = %d, want one", signals)
 	}
 }
+
+// signalCtxKey tags the ctx a test hands the broker, to check signal receives it.
+type signalCtxKey struct{}
+
 func TestGitCredentialBrokerGrantSnapshotChangedBeforeMint(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/old"}}
