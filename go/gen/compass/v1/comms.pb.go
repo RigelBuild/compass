@@ -1871,7 +1871,12 @@ type Ask struct {
 	// Server-owned: set only by the server, on RespondToAsk. A value supplied on
 	// an inbound Ask (via PostMessage) is IGNORED — an ask being posted has by
 	// definition not been answered.
-	Answered      bool `protobuf:"varint,3,opt,name=answered,proto3" json:"answered,omitempty"`
+	Answered bool `protobuf:"varint,3,opt,name=answered,proto3" json:"answered,omitempty"`
+	// The issue or pull request this ask concerns, as one ref (RIG-12 or
+	// owner/repo#12). Optional. The server stores it in canonical form and
+	// rejects a value that is not exactly one ref with invalid_argument. Set only
+	// by the asker; the server never fills a default.
+	Ref           string `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1925,6 +1930,13 @@ func (x *Ask) GetAnswered() bool {
 		return x.Answered
 	}
 	return false
+}
+
+func (x *Ask) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
 }
 
 // One question within an Ask, carrying its own options and answer state.
@@ -7405,11 +7417,12 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x05block\"]\n" +
 	"\x0eAskAnswerBlock\x12!\n" +
 	"\x03ask\x18\x01 \x01(\v2\x0f.compass.v1.AskR\x03ask\x12(\n" +
-	"\x10asker_account_id\x18\x02 \x01(\tR\x0easkerAccountId\"o\n" +
+	"\x10asker_account_id\x18\x02 \x01(\tR\x0easkerAccountId\"\x81\x01\n" +
 	"\x03Ask\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x125\n" +
 	"\tquestions\x18\x02 \x03(\v2\x17.compass.v1.AskQuestionR\tquestions\x12\x1a\n" +
-	"\banswered\x18\x03 \x01(\bR\banswered\"\xdb\x02\n" +
+	"\banswered\x18\x03 \x01(\bR\banswered\x12\x10\n" +
+	"\x03ref\x18\x04 \x01(\tR\x03ref\"\xdb\x02\n" +
 	"\vAskQuestion\x12\x1f\n" +
 	"\vquestion_id\x18\x01 \x01(\tR\n" +
 	"questionId\x12\x1a\n" +

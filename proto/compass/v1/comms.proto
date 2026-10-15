@@ -451,6 +451,11 @@ message Ask {
   // an inbound Ask (via PostMessage) is IGNORED — an ask being posted has by
   // definition not been answered.
   bool answered = 3;
+  // The issue or pull request this ask concerns, as one ref (RIG-12 or
+  // owner/repo#12). Optional. The server stores it in canonical form and
+  // rejects a value that is not exactly one ref with invalid_argument. Set only
+  // by the asker; the server never fills a default.
+  string ref = 4;
 }
 
 // One question within an Ask, carrying its own options and answer state.

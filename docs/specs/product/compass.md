@@ -926,6 +926,29 @@ read-modify-write on the message row.
 - **Then** the server returns not-found — the same result as a nonexistent ask,
   never a distinct not-authorized error.
 
+### Requirement: An ask may name the issue or pull request it concerns
+
+An `Ask` MAY carry `ref`, one issue or pull request reference (`RIG-12` or
+`owner/repo#12`). The server SHALL store it in canonical form (a forge ref
+lowercased) and SHALL reject a `ref` that is not exactly one reference with
+invalid-argument, storing nothing. The server SHALL return the stored `ref` on
+every read of the ask, and `RespondToAsk` SHALL keep it on the answered ask and
+on the answer's ask snapshot. The server SHALL NOT fill a default `ref`.
+
+#### Scenario: An ask ref survives the answer
+
+- **Given** an ask posted with `ref` `RigelBuild/Compass#12`
+- **When** a member answers it with `RespondToAsk`
+- **Then** `ListMessages` returns the ask and the answer snapshot, each with
+  `ref` `rigelbuild/compass#12`.
+
+#### Scenario: A malformed ask ref is refused
+
+- **Given** an ask whose `ref` is `see RIG-12`
+- **When** the caller posts it with `PostMessage`
+- **Then** the server returns invalid-argument and the channel has no new
+  message.
+
 ### Requirement: Channel membership carries a separate subscribe opt-in
 
 `UpdateChannelMembers` SHALL manage both the channel's member set and each
