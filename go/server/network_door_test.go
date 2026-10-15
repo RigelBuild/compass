@@ -863,7 +863,7 @@ func TestRenameAccountPublishesAccountAndDMChanges(t *testing.T) {
 	t.Cleanup(bus.Close)
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, nil, adminID)
+	commsSvc := comms.NewComms(ctx, st, commsBus, nil, adminID)
 	commsSvc.RegisterCoordinationHook(st)
 	if _, err := st.CreateAgent(ctx, member, store.NewAgent{
 		Handle: "rename-report", DisplayName: "Rename Report", ParentAgentID: agent.ID,

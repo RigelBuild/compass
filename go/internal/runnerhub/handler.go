@@ -133,14 +133,14 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	router.setSessionUnknown(func(sessionID string) {
 		h.hub.dropLostSessionDetached(ctx, enrollGen, subj.ID, sessionID, nil, false)
 	})
-	router.attach(stream.Send)
+	router.attach(ctx, stream.Send)
 	defer router.detach(errStreamClosed)
 
 	// The command stream is now live. Fire the runner-ready hook here, not on
 	// enroll: the send stream attaches only now, so a hook fired on enroll would
 	// race this attach and fail its first command CodeUnavailable. Runs on its own
 	// goroutine, since the seed drives commands back down this very stream.
-	h.hub.fireRunnerReady()
+	h.hub.fireRunnerReady(ctx)
 
 	for {
 		result, err := stream.Receive()
@@ -150,7 +150,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 			}
 			return err
 		}
-		router.complete(result)
+		router.complete(ctx, result)
 	}
 }
 

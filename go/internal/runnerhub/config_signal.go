@@ -55,5 +55,5 @@ func (h *Hub) SignalConfigVersion(ctx context.Context, version string) error {
 			},
 		},
 	}
-	return router.router.push(cmd)
+	return router.router.push(ctx, cmd)
 }

@@ -59,7 +59,7 @@ func TestStartScanCompletesBeforeSubscribe(t *testing.T) {
 // Run error: the serve group would otherwise report a failed shutdown.
 func TestRunReturnsNilWhenCancelledWhileSubscribing(t *testing.T) {
 	fab := newFakeFabric()
-	c := NewConsumer(newFakeReads(), newFakeDispatcher(), newFakeResolver(), fab, discardLogger())
+	c := NewConsumer(t.Context(), newFakeReads(), newFakeDispatcher(), newFakeResolver(), fab, discardLogger())
 	ctx, cancel := context.WithCancel(t.Context())
 	fab.beforeSubscribe = cancel
 

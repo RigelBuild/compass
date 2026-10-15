@@ -40,7 +40,7 @@ func TestServerDoorsEmitSpanForEveryServiceMount(t *testing.T) {
 	brd := board.NewProjection(bus)
 	issueBrd := board.NewIssueProjection(bus, st)
 	tail := newSessionTail()
-	commsSvc := comms.NewComms(st, commsBus, nil, adminID)
+	commsSvc := comms.NewComms(t.Context(), st, commsBus, nil, adminID)
 	hub := newRunnerHub(st, brd, tail, commsSvc, nil)
 	svc := newService("trace-door-test", bus, st, hub, brd, issueBrd, tail)
 	resolver := secrets.NewStoreResolver(st, key, 1)

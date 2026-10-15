@@ -78,14 +78,14 @@ func newDME2EWire(t *testing.T) *dmE2EWire {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	fab := newTestFabric(t)
-	commsSvc := comms.NewComms(st, commsBus, fab, admin.ID)
+	commsSvc := comms.NewComms(ctx, st, commsBus, fab, admin.ID)
 
 	// The production delivery wire (sinks.go:142-155), assembled inline with the
 	// REAL resume-based waker whose dm opener is the comms service — so the spawn
 	// auto-open (T3 R8) runs the real OpenDMAsAccount path, and the delivery sweep
 	// runs the real waker.
 	lc := newLifecycleService(st, hub, commsSvc)
-	c := delivery.NewConsumer(st, hub, hub, fab, slog.New(slog.DiscardHandler))
+	c := delivery.NewConsumer(ctx, st, hub, hub, fab, slog.New(slog.DiscardHandler))
 	c.SetAgentWaker(lc)
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)

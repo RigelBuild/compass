@@ -90,7 +90,7 @@ func TestReconcileReadsRenamedManagerHandleAfterCoordinationLock(t *testing.T) {
 	if _, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "report", DisplayName: "Report", ParentAgentID: manager.ID}); err != nil {
 		t.Fatalf("create manager report: %v", err)
 	}
-	svc := NewComms(st, newBus(t), nil, owner.ID)
+	svc := NewComms(ctx, st, newBus(t), nil, owner.ID)
 	originalChannelID, err := svc.EnsureCoordinationChannel(ctx, manager.ID)
 	if err != nil {
 		t.Fatalf("EnsureCoordinationChannel: %v", err)

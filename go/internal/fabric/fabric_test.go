@@ -74,12 +74,12 @@ func newFabric(t *testing.T, cfg Config) *Fabric {
 	if cfg.URL == "" {
 		cfg.URL = testServer(t)
 	}
-	f, err := New(cfg)
+	f, err := New(t.Context(), cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := f.Close(); err != nil {
+		if err := f.Close(context.WithoutCancel(t.Context())); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	})
@@ -147,7 +147,7 @@ func pollUntil(t *testing.T, what string, cond func() bool) {
 func TestCloseWaitsForDrain(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
-	f, err := New(Config{URL: testServer(t)})
+	f, err := New(t.Context(), Config{URL: testServer(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestCloseWaitsForDrain(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	// Immediately, with no intervening wait: if Close returned mid-drain the
@@ -181,7 +181,7 @@ func TestCloseWaitsForDrain(t *testing.T) {
 func TestCloseIsPromptWithCallerClosedHandler(t *testing.T) {
 	t.Parallel()
 	var callerRan atomic.Bool
-	f, err := New(Config{
+	f, err := New(t.Context(), Config{
 		URL: testServer(t),
 		Options: []nats.Option{
 			nats.ClosedHandler(func(_ *nats.Conn) { callerRan.Store(true) }),
@@ -191,7 +191,7 @@ func TestCloseIsPromptWithCallerClosedHandler(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	start := time.Now()
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	// Close must return well under closeTimeout (10s): if it depended on the
@@ -212,7 +212,7 @@ func TestCloseIsPromptWithCallerClosedHandler(t *testing.T) {
 // an arbitrary Publish.
 func TestNewRequiresURL(t *testing.T) {
 	t.Parallel()
-	if _, err := New(Config{}); err == nil {
+	if _, err := New(t.Context(), Config{}); err == nil {
 		t.Fatal("New with no URL: want an error, got nil")
 	}
 }
@@ -223,7 +223,7 @@ func TestNewRequiresURL(t *testing.T) {
 func TestNewUnreachableURL(t *testing.T) {
 	t.Parallel()
 	// Port 1 on the loopback with no listener: connection refused, fast.
-	if _, err := New(Config{URL: "nats://127.0.0.1:1", Options: []nats.Option{nats.Timeout(2 * time.Second)}}); err == nil {
+	if _, err := New(t.Context(), Config{URL: "nats://127.0.0.1:1", Options: []nats.Option{nats.Timeout(2 * time.Second)}}); err == nil {
 		t.Fatal("New against an unreachable server: want an error, got nil")
 	}
 }
@@ -262,7 +262,7 @@ func assertNoSecret(t *testing.T, raw, got string) {
 func TestNewConnectErrorRedactsCredentials(t *testing.T) {
 	t.Parallel()
 	for _, raw := range credentialURLs {
-		_, err := New(Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second)}})
+		_, err := New(t.Context(), Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second)}})
 		if err == nil {
 			t.Fatalf("New(%q) against an unreachable server: want an error, got nil", raw)
 		}
@@ -274,7 +274,7 @@ func TestNewConnectErrorRedactsCredentials(t *testing.T) {
 // acts on: nothing reachable, and a rejected password.
 func TestNewCredentialedURLKeepsActionableCause(t *testing.T) {
 	t.Parallel()
-	_, err := New(Config{URL: "nats://u:pw1@127.0.0.1:1", Options: []nats.Option{nats.Timeout(2 * time.Second)}})
+	_, err := New(t.Context(), Config{URL: "nats://u:pw1@127.0.0.1:1", Options: []nats.Option{nats.Timeout(2 * time.Second)}})
 	if !errors.Is(err, nats.ErrNoServers) {
 		t.Errorf("unreachable credentialed URL: err = %v, want nats.ErrNoServers", err)
 	}
@@ -284,7 +284,7 @@ func TestNewCredentialedURLKeepsActionableCause(t *testing.T) {
 	})
 	t.Cleanup(srv.Shutdown)
 	raw := fmt.Sprintf("nats://u:pw2@127.0.0.1:%d", srv.Addr().(*net.TCPAddr).Port)
-	_, err = New(Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second), nats.NoReconnect()}})
+	_, err = New(t.Context(), Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second), nats.NoReconnect()}})
 	if !errors.Is(err, nats.ErrAuthorization) {
 		t.Errorf("wrong password: err = %v, want nats.ErrAuthorization", err)
 	}
@@ -394,7 +394,7 @@ func TestOnReconnectAfterServerRestart(t *testing.T) {
 	if out := logs.String(); !strings.Contains(out, "fabric: nats reconnected") {
 		t.Fatalf("reconnect log missing: %q", out)
 	}
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close after reconnect: %v", err)
 	}
 }
@@ -414,7 +414,7 @@ func TestOnReconnectUnsubscribe(t *testing.T) {
 	defer unsubKept()
 	unsub()
 	unsub() // Idempotent: a second call must not remove anyone else's hook.
-	f.runReconnectHooks()
+	f.runReconnectHooks(t.Context())
 	if got := dropped.Load(); got != 0 {
 		t.Fatalf("unsubscribed callback ran %d times, want 0", got)
 	}
@@ -494,7 +494,7 @@ func TestOnReconnectRejectsNilAndClosedFabric(t *testing.T) {
 	if _, err := f.OnReconnect(nil); err == nil {
 		t.Fatal("OnReconnect(nil): want error")
 	}
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if _, err := f.OnReconnect(func() {}); !errors.Is(err, errClosed) {
@@ -508,14 +508,14 @@ func TestOnReconnectRejectsNilAndClosedFabric(t *testing.T) {
 // quietly succeeded after shutdown would look like a delivered event.
 func TestCloseIsIdempotentAndFailsClosed(t *testing.T) {
 	t.Parallel()
-	f, err := New(Config{URL: testServer(t)})
+	f, err := New(t.Context(), Config{URL: testServer(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := f.Close(t.Context()); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
 

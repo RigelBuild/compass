@@ -57,7 +57,7 @@ func enrollAttached(t *testing.T, hub *Hub, send *recordingSend) *commandRouter 
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want the live router", err)
 	}
-	router.attach(send.send)
+	router.attach(t.Context(), send.send)
 	return router
 }
 
@@ -104,7 +104,7 @@ func TestProvisionSameClientRequestIdDedups(t *testing.T) {
 		// Answer the one in-flight command by its DERIVED dedup id (the scoped id
 		// the hub actually sent, not the raw client_request_id); both callers
 		// unblock with it.
-		router.complete(&compassv1internal.SessionsRequest{
+		router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmds[0].GetRequestId(),
 			Result: &compassv1internal.SessionsRequest_Provision{
 				Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: "container-42"},
@@ -160,7 +160,7 @@ func TestProvisionEmptyClientRequestIdDoesNotDedup(t *testing.T) {
 
 		// Complete each by its own minted id so both callers unblock.
 		for id := range ids {
-			router.complete(&compassv1internal.SessionsRequest{
+			router.complete(t.Context(), &compassv1internal.SessionsRequest{
 				RequestId: id,
 				Result: &compassv1internal.SessionsRequest_Provision{
 					Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: "container-" + id},
@@ -228,7 +228,7 @@ func TestProvisionSameIdDifferentAccountDoesNotDedup(t *testing.T) {
 			rid := c.GetRequestId()
 			container := "container-for-" + c.GetAgentAccountId()
 			containers[rid] = container
-			router.complete(&compassv1internal.SessionsRequest{
+			router.complete(t.Context(), &compassv1internal.SessionsRequest{
 				RequestId: rid,
 				Result: &compassv1internal.SessionsRequest_Provision{
 					Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: container},

@@ -106,9 +106,9 @@ func TestStartRelaySurfacesAlreadyRunningAsAlreadyExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		// Answer asynchronously the way the real Sessions loop does.
-		go router.complete(&compassv1internal.SessionsRequest{
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 				Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING,
@@ -134,8 +134,8 @@ func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
-		go router.complete(&compassv1internal.SessionsRequest{
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-ok"}},
 		})
@@ -162,11 +162,11 @@ func TestReloadFiresSessionStartSink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("routerFor = %v", err)
 	}
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		if cmd.GetReload() == nil {
 			return nil
 		}
-		go router.complete(&compassv1internal.SessionsRequest{
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result:    &compassv1internal.SessionsRequest_Reload{Reload: &compassv1.ReloadAgentSessionResponse{}},
 		})
@@ -192,10 +192,10 @@ func TestSessionsCommandsCarryCallerTraceparent(t *testing.T) {
 		t.Fatalf("routerFor = %v", err)
 	}
 	sent := make(chan *compassv1internal.SessionsResponse, 4)
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		sent <- cmd
 		if cmd.GetRequestId() != "" {
-			go router.complete(&compassv1internal.SessionsRequest{
+			go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 				RequestId: cmd.GetRequestId(),
 				Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{}},
 			})
@@ -238,9 +238,9 @@ func TestStartRelayCarriesFreshIDOnlyForFreshStart(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
 	var gotFresh string
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		gotFresh = cmd.GetFreshSessionId()
-		go router.complete(&compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId(), Result: &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-ok"}}})
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId(), Result: &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-ok"}}})
 		return nil
 	})
 	if _, err := hub.Start(context.Background(), "fresh", &compassv1.StartAgentSessionRequest{ContainerName: "c1"}); err != nil {
@@ -268,10 +268,10 @@ func TestStartEmitsNoInitialSignal(t *testing.T) {
 	hub.bindContainer("c1", testAgentAccount, "runner-1")
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		_ = rec.send(cmd)
 		if cmd.GetStart() != nil {
-			go router.complete(&compassv1internal.SessionsRequest{
+			go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 				RequestId: cmd.GetRequestId(),
 				Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-ok"}},
 			})
@@ -298,11 +298,11 @@ func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
 	var sawRemove bool
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		if cmd.GetRemove() != nil {
 			sawRemove = true
 		}
-		go router.complete(&compassv1internal.SessionsRequest{
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result:    &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}},
 		})
@@ -336,8 +336,8 @@ func TestRemoveClearsContainerBinding(t *testing.T) {
 		t.Fatal("precondition: container c1 should be bound after bindContainer")
 	}
 	router, _, _ := hub.routerFor("any")
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
-		go router.complete(&compassv1internal.SessionsRequest{
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result:    &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}},
 		})
@@ -359,8 +359,8 @@ func TestFailedRemoveStillClearsContainerBinding(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("c1", testAgentAccount, "runner-1")
 	router, _, _ := hub.routerFor("any")
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
-		go router.complete(&compassv1internal.SessionsRequest{
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 				Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL, Message: "reply lost",
@@ -385,14 +385,14 @@ func TestContainerBindingSurvivesStartForResume(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("c1", testAgentAccount, "runner-1")
 	router, _, _ := hub.routerFor("any")
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		result := &compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId()}
 		if cmd.GetStop() != nil {
 			result.Result = &compassv1internal.SessionsRequest_Stop{Stop: &compassv1.StopAgentSessionResponse{}}
 		} else {
 			result.Result = &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-1"}}
 		}
-		go router.complete(result)
+		go router.complete(t.Context(), result)
 		return nil
 	})
 
@@ -420,8 +420,8 @@ func attachStatusResponder(t *testing.T, hub *Hub, statuses []*compassv1.AgentSe
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
-		go router.complete(&compassv1internal.SessionsRequest{
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result: &compassv1internal.SessionsRequest_Status{
 				Status: &compassv1.GetAgentStatusResponse{Statuses: statuses},
@@ -491,9 +491,9 @@ func TestRemoveRejectsOversizedClientRequestID(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
 	pushed := 0
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		pushed++
-		go router.complete(&compassv1internal.SessionsRequest{
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result:    &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}},
 		})
@@ -518,9 +518,9 @@ func TestProvisionRejectsOversizedClientRequestID(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
 	pushed := 0
-	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+	router.attach(t.Context(), func(cmd *compassv1internal.SessionsResponse) error {
 		pushed++
-		go router.complete(&compassv1internal.SessionsRequest{
+		go router.complete(t.Context(), &compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),
 			Result:    &compassv1internal.SessionsRequest_Provision{Provision: &compassv1.ProvisionAgentWorkspaceResponse{}},
 		})

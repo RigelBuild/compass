@@ -27,7 +27,7 @@ type liveConsumer struct {
 
 // Every instance on a shared durable reports the same value, so aggregate with
 // max, not sum. The attribute is the hashed durable name, never a tenant id.
-func (f *Fabric) registerBacklogMetric() {
+func (f *Fabric) registerBacklogMetric(ctx context.Context) {
 	meter := otel.Meter(instrumentationScope)
 	gauge, err := meter.Int64ObservableGauge(
 		backlogMetricName,
@@ -35,7 +35,7 @@ func (f *Fabric) registerBacklogMetric() {
 		metric.WithDescription("Messages waiting on or held by a durable comms consumer."),
 	)
 	if err != nil {
-		f.log.Warn("fabric: failed to create consumer backlog gauge", "error", err)
+		f.log.WarnContext(ctx, "fabric: failed to create consumer backlog gauge", "error", err)
 		return
 	}
 	registration, err := meter.RegisterCallback(func(ctx context.Context, observer metric.Observer) error {
@@ -59,7 +59,7 @@ func (f *Fabric) registerBacklogMetric() {
 		return nil
 	}, gauge)
 	if err != nil {
-		f.log.Warn("fabric: failed to register consumer backlog callback", "error", err)
+		f.log.WarnContext(ctx, "fabric: failed to register consumer backlog callback", "error", err)
 		return
 	}
 	f.backlogRegistration = registration

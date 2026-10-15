@@ -540,7 +540,7 @@ func TestUpdateBoardMalformedStoredSubagentsPreservesLaterTasks(t *testing.T) {
 	owner := mustUser(t, st, "board-malformed-owner")
 	agent := mustAgent(t, st, owner.ID, "board-malformed-agent")
 	bus := newBus(t)
-	svc := NewComms(st, bus, nil, owner.ID)
+	svc := NewComms(t.Context(), st, bus, nil, owner.ID)
 	if _, err := svc.UpdateBoardAsAccount(ctx, agent.ID, &compassv1.UpdateAgentBoardRequest{
 		UpsertTasks: []*compassv1.BoardTaskPatch{
 			{Key: "first", Title: new("First task")},
@@ -587,7 +587,7 @@ func testMalformedStoredWaiting(t *testing.T, shape string) {
 	st, dsn := newTestStoreDSN(t)
 	owner := mustUser(t, st, "board-malformed-waiting-owner")
 	agent := mustAgent(t, st, owner.ID, "board-malformed-waiting-agent")
-	svc := NewComms(st, newBus(t), nil, owner.ID)
+	svc := NewComms(t.Context(), st, newBus(t), nil, owner.ID)
 	if _, err := svc.UpdateBoardAsAccount(ctx, agent.ID, &compassv1.UpdateAgentBoardRequest{
 		UpsertTasks: []*compassv1.BoardTaskPatch{
 			{Key: "first", Title: new("First task")},

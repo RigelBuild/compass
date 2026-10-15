@@ -87,7 +87,7 @@ func newMentionE2EWireNoRunner(t *testing.T) *mentionE2EWire {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	fab := newTestFabric(t)
-	commsSvc := comms.NewComms(st, commsBus, fab, admin.ID)
+	commsSvc := comms.NewComms(ctx, st, commsBus, fab, admin.ID)
 
 	// The hub over a discard board + tail — otherwise the same shape
 	// newPlacementFixtureWith builds.
@@ -99,7 +99,7 @@ func newMentionE2EWireNoRunner(t *testing.T) *mentionE2EWire {
 
 	// The production delivery wire (sinks.go:142-155), assembled inline with the
 	// REAL resume-based waker (newLifecycleService), not a fake.
-	c := delivery.NewConsumer(st, hub, hub, fab, slog.New(slog.DiscardHandler))
+	c := delivery.NewConsumer(ctx, st, hub, hub, fab, slog.New(slog.DiscardHandler))
 	c.SetAgentWaker(newLifecycleService(st, hub, nil))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)

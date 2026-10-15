@@ -94,7 +94,7 @@ func newFabricHandlerDSN(t *testing.T, fabErr error) (*Comms, *store.Store, *fak
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
 	fab := &fakeEventFabric{st: st, err: fabErr}
-	return NewComms(st, newBus(t), fab, admin.ID), st, fab, dsn
+	return NewComms(t.Context(), st, newBus(t), fab, admin.ID), st, fab, dsn
 }
 
 // seedTenant inserts a non-bootstrap tenant row. The store exposes no tenant

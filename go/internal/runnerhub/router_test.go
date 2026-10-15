@@ -89,7 +89,7 @@ func TestDispatchSameRequestIdSendsOnceBothGetResult(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
-		r.attach(send.send)
+		r.attach(t.Context(), send.send)
 		defer r.detach(errStreamClosed)
 
 		const id = "req-dup"
@@ -116,7 +116,7 @@ func TestDispatchSameRequestIdSendsOnceBothGetResult(t *testing.T) {
 		}
 
 		// Complete the one in-flight call; both callers unblock with it.
-		r.complete(startResult(id, "sess-42"))
+		r.complete(t.Context(), startResult(id, "sess-42"))
 		synctest.Wait()
 
 		for i := range 2 {
@@ -138,7 +138,7 @@ func TestDispatchDistinctRequestIdsSendTwice(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
-		r.attach(send.send)
+		r.attach(t.Context(), send.send)
 		defer r.detach(errStreamClosed)
 
 		outcomes := make(chan dispatchOutcome, 2)
@@ -160,8 +160,8 @@ func TestDispatchDistinctRequestIdsSendTwice(t *testing.T) {
 			t.Fatalf("router pushed %d commands for two distinct ids, want 2", n)
 		}
 
-		r.complete(startResult("req-a", "sess-a"))
-		r.complete(startResult("req-b", "sess-b"))
+		r.complete(t.Context(), startResult("req-a", "sess-a"))
+		r.complete(t.Context(), startResult("req-b", "sess-b"))
 		synctest.Wait()
 
 		got := map[string]string{}
@@ -185,7 +185,7 @@ func TestCompleteCorrelatesByRequestId(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
-		r.attach(send.send)
+		r.attach(t.Context(), send.send)
 		defer r.detach(errStreamClosed)
 
 		outX := make(chan dispatchOutcome, 1)
@@ -206,7 +206,7 @@ func TestCompleteCorrelatesByRequestId(t *testing.T) {
 		}
 
 		// Complete only X.
-		r.complete(startResult("X", "sess-x"))
+		r.complete(t.Context(), startResult("X", "sess-x"))
 		synctest.Wait()
 		ox := <-outX
 		if ox.err != nil || ox.result.GetStart().GetSessionId() != "sess-x" {
@@ -237,11 +237,11 @@ func TestCompleteUnknownIdIsIgnored(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
-		r.attach(send.send)
+		r.attach(t.Context(), send.send)
 		defer r.detach(errStreamClosed)
 
 		// No in-flight call; completing an unknown id must not panic.
-		r.complete(startResult("ghost", "sess-ghost"))
+		r.complete(t.Context(), startResult("ghost", "sess-ghost"))
 
 		out := make(chan dispatchOutcome, 1)
 		go func() {
@@ -249,7 +249,7 @@ func TestCompleteUnknownIdIsIgnored(t *testing.T) {
 			out <- dispatchOutcome{res, err}
 		}()
 		synctest.Wait()
-		r.complete(startResult("real", "sess-real"))
+		r.complete(t.Context(), startResult("real", "sess-real"))
 		synctest.Wait()
 		o := <-out
 		if o.err != nil || o.result.GetStart().GetSessionId() != "sess-real" {
@@ -266,7 +266,7 @@ func TestDetachFailsAllInFlight(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
-		r.attach(send.send)
+		r.attach(t.Context(), send.send)
 		defer r.detach(errStreamClosed)
 
 		outcomes := make(chan dispatchOutcome, 3)
@@ -309,7 +309,7 @@ func TestDetachFailsAllInFlight(t *testing.T) {
 func TestDispatchRequiresRequestId(t *testing.T) {
 	r := newCommandRouter()
 	send := newRecordingSend()
-	r.attach(send.send)
+	r.attach(t.Context(), send.send)
 	defer r.detach(errStreamClosed)
 	_, err := r.dispatch(context.Background(), startCmd(""))
 	if err == nil {
@@ -334,7 +334,7 @@ func TestDispatchRequiresRequestId(t *testing.T) {
 func TestSend1DeliverRefusalsBounded(t *testing.T) {
 	r := newCommandRouter()
 	rec := newRecordingSend()
-	r.attach(rec.send)
+	r.attach(t.Context(), rec.send)
 	defer r.detach(errStreamClosed)
 
 	const overflow = 100
@@ -377,7 +377,7 @@ func TestSend1DeliverRefusalsBounded(t *testing.T) {
 	if got := r.RefusedDelivers(); got != 0 {
 		t.Fatalf("RefusedDelivers before any refusal = %d, want 0", got)
 	}
-	r.complete(&compassv1internal.SessionsRequest{
+	r.complete(t.Context(), &compassv1internal.SessionsRequest{
 		RequestId: resident,
 		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 			Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED,

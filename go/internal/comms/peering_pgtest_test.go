@@ -134,7 +134,7 @@ func TestRevokePeerHandlerReclaimedHandleDoesNotRevokeOldAccount(t *testing.T) {
 		t.Fatalf("reclaim peer handle: %v", err)
 	}
 
-	svc := NewComms(s, newBus(t), nil, a.ID)
+	svc := NewComms(ctx, s, newBus(t), nil, a.ID)
 	resp, err := svc.RevokePeer(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.RevokePeerRequest{PeerHandle: "peering-reclaim-b"}))
 	if err != nil {
 		t.Fatalf("RevokePeer(reclaimed handle): %v", err)

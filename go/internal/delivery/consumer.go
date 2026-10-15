@@ -292,7 +292,7 @@ type Consumer struct {
 // post-construction setter that breaks the construction cycle (§2). fab is the
 // event fabric Run consumes; assembly fails closed before it could be nil. A nil
 // log falls back to slog.Default.
-func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionResolver, fab fabric.EventFabric, log *slog.Logger) *Consumer {
+func NewConsumer(ctx context.Context, st DeliveryReads, dispatch ControlDispatcher, resolver SessionResolver, fab fabric.EventFabric, log *slog.Logger) *Consumer {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -304,7 +304,7 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 		metric.WithDescription("Count of live fan-out control dispatch attempts (deliver + steer), by op kind."),
 	)
 	if err != nil {
-		log.Warn("delivery: failed to create dispatch counter; delivery metrics disabled", "err", err)
+		log.WarnContext(ctx, "delivery: failed to create dispatch counter; delivery metrics disabled", "err", err)
 		dispatched = nil
 	}
 	return &Consumer{

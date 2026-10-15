@@ -96,7 +96,7 @@ type RoutingFabric interface {
 
 // Config configures a Fabric. Only URL is required; every other field has a
 // documented default from stream.go, so the common case is
-// fabric.New(fabric.Config{URL: natsURL}).
+// fabric.New(ctx, fabric.Config{URL: natsURL}).
 type Config struct {
 	// URL is the NATS connection string. A single node and a cluster differ
 	// only here (§Q3: scaling NATS is never an application mode) — a
@@ -306,10 +306,9 @@ var (
 )
 
 // New connects to NATS and returns the fabric. It does not create the JetStream
-// stream — that happens lazily on the first Publish/Subscribe, because New
-// takes no context and rooting a fresh one here would sever the caller's
-// cancellation chain.
-func New(cfg Config) (*Fabric, error) {
+// stream; that happens lazily on the first Publish/Subscribe. ctx only feeds the
+// logs of the fabric's callbacks and goroutines, so it must carry no request span.
+func New(ctx context.Context, cfg Config) (*Fabric, error) {
 	if cfg.URL == "" {
 		return nil, errors.New("fabric: Config.URL is required (the NATS connection string)")
 	}
@@ -356,7 +355,7 @@ func New(cfg Config) (*Fabric, error) {
 			if f.checkOpen() != nil {
 				return // Close's own drain.
 			}
-			log.Warn("fabric: nats disconnected; delivery degrades to the cursor sweep until reconnect", "error", err)
+			log.WarnContext(ctx, "fabric: nats disconnected; delivery degrades to the cursor sweep until reconnect", "error", err)
 		}),
 		// The Runner plane's safety argument: a stalled receiver is dropped AND
 		// reported, with the cursor sweep recovering what was dropped. The default
@@ -364,10 +363,10 @@ func New(cfg Config) (*Fabric, error) {
 		// drops events with no log, no metric, no error.
 		nats.ErrorHandler(func(_ *nats.Conn, sub *nats.Subscription, err error) {
 			if sub == nil {
-				log.Warn("fabric: nats async error", "error", err)
+				log.WarnContext(ctx, "fabric: nats async error", "error", err)
 				return
 			}
-			log.Warn("fabric: nats async error; a slow consumer drops events until it keeps up",
+			log.WarnContext(ctx, "fabric: nats async error; a slow consumer drops events until it keeps up",
 				"subject", sub.Subject, "dropped", subDropped(sub), "error", err)
 		}),
 	}, cfg.Options...)
@@ -376,7 +375,7 @@ func New(cfg Config) (*Fabric, error) {
 			return // Close's own drain; no sweep is wanted.
 		}
 		// Redacted: the NATS URL can carry credentials or a token as userinfo.
-		log.Info("fabric: nats reconnected", "url", redactURL(nc.ConnectedUrl()))
+		log.InfoContext(ctx, "fabric: nats reconnected", "url", redactURL(nc.ConnectedUrl()))
 		f.signalReconnect()
 		if callerReconnected != nil {
 			callerReconnected(nc)
@@ -404,8 +403,8 @@ func New(cfg Config) (*Fabric, error) {
 		return nil, fmt.Errorf("fabric: creating jetstream context: %w", err)
 	}
 	f.nc, f.js = nc, js
-	f.registerBacklogMetric()
-	go f.runReconnectLoop()
+	f.registerBacklogMetric(ctx)
+	go f.runReconnectLoop(ctx)
 	return f, nil
 }
 
@@ -448,7 +447,7 @@ func subDropped(sub *nats.Subscription) int {
 // Close returns only once the drain has completed (bounded by closeTimeout), so
 // a caller that returns from Close can rely on the flush having happened.
 // Idempotent — the first call's result is returned to every caller.
-func (f *Fabric) Close() error {
+func (f *Fabric) Close(ctx context.Context) error {
 	f.closeOnce.Do(func() {
 		f.closedMu.Lock()
 		f.closed = true
@@ -459,7 +458,7 @@ func (f *Fabric) Close() error {
 		close(f.teardown)
 		if f.backlogRegistration != nil {
 			if err := f.backlogRegistration.Unregister(); err != nil {
-				f.log.Warn("fabric: unregistering consumer backlog callback failed", "error", err)
+				f.log.WarnContext(ctx, "fabric: unregistering consumer backlog callback failed", "error", err)
 			}
 		}
 
@@ -493,7 +492,7 @@ func (f *Fabric) Close() error {
 			// bound only exists so a wedged server cannot hang shutdown
 			// forever, which would be a worse failure than an unconfirmed
 			// flush.
-			f.log.Warn("fabric: nats drain did not complete within the close timeout; shutting down anyway",
+			f.log.WarnContext(ctx, "fabric: nats drain did not complete within the close timeout; shutting down anyway",
 				"timeout", closeTimeout)
 		}
 	})
@@ -543,7 +542,7 @@ func (f *Fabric) signalReconnect() {
 
 // runReconnectLoop is the hook goroutine New starts. It keeps hooks off the
 // NATS callback goroutine and exits with the fabric.
-func (f *Fabric) runReconnectLoop() {
+func (f *Fabric) runReconnectLoop(ctx context.Context) {
 	for {
 		select {
 		case <-f.teardown:
@@ -553,14 +552,14 @@ func (f *Fabric) runReconnectLoop() {
 			if f.checkOpen() != nil {
 				return
 			}
-			f.runReconnectHooks()
+			f.runReconnectHooks(ctx)
 		}
 	}
 }
 
 // runReconnectHooks runs every hook in registration order, each under its own
 // panic guard so one bad hook neither kills the process nor skips the rest.
-func (f *Fabric) runReconnectHooks() {
+func (f *Fabric) runReconnectHooks(ctx context.Context) {
 	f.reconnectMu.Lock()
 	ids := slices.Sorted(maps.Keys(f.reconnectHooks))
 	hooks := make([]func(), 0, len(ids))
@@ -569,14 +568,14 @@ func (f *Fabric) runReconnectHooks() {
 	}
 	f.reconnectMu.Unlock()
 	for _, fn := range hooks {
-		f.runReconnectHook(fn)
+		f.runReconnectHook(ctx, fn)
 	}
 }
 
-func (f *Fabric) runReconnectHook(fn func()) {
+func (f *Fabric) runReconnectHook(ctx context.Context, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			f.log.Error("fabric: reconnect hook panicked", "panic", r)
+			f.log.ErrorContext(ctx, "fabric: reconnect hook panicked", "panic", r)
 		}
 	}()
 	fn()

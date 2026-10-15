@@ -1172,7 +1172,7 @@ func TestSessionForAccountRejectsForeignRunnerBinding(t *testing.T) {
 			t.Fatal(err)
 		}
 		recorded := newRecordingSend()
-		router.attach(recorded.send)
+		router.attach(t.Context(), recorded.send)
 		t.Cleanup(func() { router.detach(errStreamClosed) })
 		hub.mu.Lock()
 		hub.sessionAccounts["sess-foreign"] = sessionBinding{account: testAgentAccount, runnerID: "runner-foreign"}

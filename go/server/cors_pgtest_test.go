@@ -52,7 +52,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, nil, admin)
+	commsSvc := comms.NewComms(ctx, st, commsBus, nil, admin)
 
 	cfg := ServeConfig{
 		StateDir:          t.TempDir(), // bootstrap-admin token file lands here (0600)
@@ -178,7 +178,7 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	svc := newService("linear-link-test", bus, st, nil, nil, nil, nil)
-	commsSvc := comms.NewComms(st, commsBus, nil, admin)
+	commsSvc := comms.NewComms(ctx, st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {

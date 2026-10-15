@@ -143,7 +143,7 @@ func TestErroredWakeDelaySchedule(t *testing.T) {
 	for range 8 {
 		want = append(want, erroredWakeMaxDelay)
 	}
-	c := NewConsumer(newFakeReads(), newFakeDispatcher(), newFakeResolver(), newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), newFakeReads(), newFakeDispatcher(), newFakeResolver(), newFakeFabric(), discardLogger())
 	now := time.Unix(1_000_000, 0)
 	c.now = func() time.Time { return now }
 	const agent store.AccountID = "agent-a"
@@ -169,7 +169,7 @@ func TestErroredWakeDelayHoldsCapAtLargeStrikes(t *testing.T) {
 // The recovery pass drops backoff state past its reset window but keeps an
 // account with a pending deferred wake.
 func TestRecoveryPrunesStaleErroredBackoff(t *testing.T) {
-	c := NewConsumer(newFakeReads(), newFakeDispatcher(), newFakeResolver(), newFakeFabric(), discardLogger())
+	c := NewConsumer(t.Context(), newFakeReads(), newFakeDispatcher(), newFakeResolver(), newFakeFabric(), discardLogger())
 	now := time.Unix(1_000_000, 0)
 	c.now = func() time.Time { return now }
 	for range 2 {

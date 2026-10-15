@@ -76,7 +76,7 @@ func (h *Hub) SignalSecretsVersion(ctx context.Context) error {
 				},
 			},
 		}
-		if err := router.router.push(cmd); err != nil {
+		if err := router.router.push(ctx, cmd); err != nil {
 			return err
 		}
 	}
@@ -108,5 +108,5 @@ func (h *Hub) SignalSecretsVersionFor(ctx context.Context, account store.Account
 			},
 		},
 	}
-	return router.router.push(cmd)
+	return router.router.push(ctx, cmd)
 }

@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	natsd "github.com/nats-io/nats-server/v2/server"
@@ -40,12 +41,12 @@ func provisionNats(t *testing.T, cfg *ServeConfig) {
 // threads into comms and delivery. Its cleanup runs before the server stops.
 func newTestFabric(t *testing.T) *fabric.Fabric {
 	t.Helper()
-	fab, err := fabric.New(fabric.Config{URL: startTestNats(t)})
+	fab, err := fabric.New(t.Context(), fabric.Config{URL: startTestNats(t)})
 	if err != nil {
 		t.Fatalf("fabric.New: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := fab.Close(); err != nil {
+		if err := fab.Close(context.WithoutCancel(t.Context())); err != nil {
 			t.Errorf("fabric Close: %v", err)
 		}
 	})
