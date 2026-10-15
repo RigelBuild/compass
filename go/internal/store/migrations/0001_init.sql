@@ -411,6 +411,10 @@ CREATE INDEX messages_mentions_unrouted_idx ON messages (seq) WHERE mentions_rou
 -- filters channel_id, keying on the same table-monotonic seq.
 CREATE INDEX messages_topic_seq_idx ON messages (topic_id, seq DESC);
 
+-- Answer-window reads constrain one topic and timestamp lower bound before
+-- expanding answer blocks.
+CREATE INDEX messages_topic_at_idx ON messages (tenant_id, topic_id, at_unix_ms);
+
 -- Full-text search index (design.md:1137-1139): GIN over the generated tsvector.
 CREATE INDEX messages_search_idx ON messages USING gin (search_tsv);
 
@@ -892,6 +896,38 @@ CREATE TABLE agent_activity (
     activity            TEXT NOT NULL,
     activity_at_unix_ms BIGINT NOT NULL,
     tenant_id           TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+);
+-- The agent's durable status board is split into one metadata row and ordered
+-- task rows so updates can merge individual tasks without replacing the board.
+CREATE TABLE agent_boards (
+    agent_account_id   TEXT PRIMARY KEY REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    focus_task_key     TEXT     NOT NULL DEFAULT '',
+    halt_kind          SMALLINT NOT NULL DEFAULT 0 CHECK (halt_kind BETWEEN 0 AND 3),
+    halt_ref           TEXT     NOT NULL DEFAULT '',
+    halt_reason        TEXT     NOT NULL DEFAULT '',
+    written_turn       BIGINT   NOT NULL DEFAULT 0,
+    written_at_unix_ms BIGINT   NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id          TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+);
+
+CREATE TABLE agent_board_tasks (
+    agent_account_id   TEXT     NOT NULL REFERENCES agent_boards (agent_account_id) ON DELETE CASCADE,
+    task_key           TEXT     NOT NULL CHECK (task_key <> ''),
+    title              TEXT     NOT NULL,
+    primary_ref        TEXT     NOT NULL DEFAULT '',
+    refs               TEXT[]   NOT NULL DEFAULT '{}',
+    state              SMALLINT NOT NULL DEFAULT 1 CHECK (state BETWEEN 1 AND 5),
+    note               TEXT     NOT NULL DEFAULT '',
+    waiting            JSONB    NOT NULL DEFAULT '[]',
+    subagents          JSONB    NOT NULL DEFAULT '[]',
+    position           INT      NOT NULL,
+    written_at_unix_ms BIGINT   NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id          TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (agent_account_id, task_key)
 );
 
 -- ── Agent config bundle (fleet singleton) ─────────────────────────────────────
@@ -1635,6 +1671,7 @@ DECLARE
         'agent_session_blobs',
         'agent_delivery_cursors', 'owed_mentions', 'agent_activity',
         'agent_forge_subscriptions', 'forge_authored_artifacts',
+        'agent_boards', 'agent_board_tasks',
         'linear_agent_sessions',
         'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
         'forge_state_transitions', 'account_forge_scopes',
@@ -1723,6 +1760,7 @@ DECLARE
         'model_registry',
         'forge_repo_subscriptions',
         'forge_state_transitions',
+        'agent_boards', 'agent_board_tasks',
         'pull_requests',
         'server_secrets',
         'server_key_state',

@@ -136,6 +136,7 @@ type Querier interface {
 	// interface still consumes (value-free, all scopes).
 	DeclaredSecrets(ctx context.Context) ([]DeclaredSecretsRow, error)
 	DeclaredServerSecrets(ctx context.Context) ([]ServerSecret, error)
+	DeleteAgentBoardTasks(ctx context.Context, arg DeleteAgentBoardTasksParams) error
 	DeleteAgentConfig(ctx context.Context) error
 	// Scoped to the calling agent (id AND agent). RETURNING the coordinate drives the
 	// one-tx GC of the artifact cursor when this was the last subscription.
@@ -211,6 +212,8 @@ type Querier interface {
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
 	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
 	GetAccountHandle(ctx context.Context, accountID string) (string, error)
+	GetAgentBoardTasks(ctx context.Context, dollar_1 []string) ([]GetAgentBoardTasksRow, error)
+	GetAgentBoards(ctx context.Context, dollar_1 []string) ([]GetAgentBoardsRow, error)
 	GetAgentOwner(ctx context.Context, accountID string) (string, error)
 	GetAgentParent(ctx context.Context, accountID string) (pgtype.Text, error)
 	GetAgentWorkspaceID(ctx context.Context, agentAccountID string) (string, error)
@@ -397,12 +400,17 @@ type Querier interface {
 	// (scope_kind 1) referential check the UpsertSecret door runs in lieu of an FK
 	// (A9). The agent-scope check reuses IsAgentAccount.
 	IsUserAccount(ctx context.Context, accountID string) (bool, error)
+	IssuesByCoords(ctx context.Context, arg IssuesByCoordsParams) ([]IssuesByCoordsRow, error)
 	LatestCheckpointSeq(ctx context.Context, sessionID string) (int64, error)
 	LatestSessionForAccount(ctx context.Context, agentAccountID string) (string, error)
 	LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSessionRow, error)
 	// An account's own rows only; the owner's grants are not included.
 	ListAgentForgeScopeRepos(ctx context.Context, arg ListAgentForgeScopeReposParams) ([]string, error)
 	ListAgentPlacementsForRunner(ctx context.Context, runnerID string) ([]ListAgentPlacementsForRunnerRow, error)
+	// The EXISTS body is ChannelVisibleTo's predicate with the channel spelled
+	// t.channel_id, so it is diffable against the other copies.
+	// AnswerAsk posts the answer in the ask's topic, after the ask.
+	ListAsksByAuthor(ctx context.Context, arg ListAsksByAuthorParams) ([]ListAsksByAuthorRow, error)
 	ListAuthoredArtifactsByAgent(ctx context.Context, agentAccountID string) ([]ForgeAuthoredArtifact, error)
 	ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error)
 	ListChannels(ctx context.Context, accountID string) ([]ListChannelsRow, error)
@@ -418,6 +426,7 @@ type Querier interface {
 	ListGatewayCredentials(ctx context.Context, arg ListGatewayCredentialsParams) ([]ListGatewayCredentialsRow, error)
 	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
+	ListOpenAuthoredRefs(ctx context.Context, agentAccountID string) ([]ListOpenAuthoredRefsRow, error)
 	ListOpenPullRequests(ctx context.Context, arg ListOpenPullRequestsParams) ([]int64, error)
 	ListPullRequestLinks(ctx context.Context, arg ListPullRequestLinksParams) ([]ListPullRequestLinksRow, error)
 	// ListTenantIDs lists every tenant. tenants has no row-level security, so the
@@ -448,6 +457,9 @@ type Querier interface {
 	// back to the domain time.Time / ForgeRepoSubscription.
 	LoadForgeRepoWatermark(ctx context.Context, arg LoadForgeRepoWatermarkParams) (LoadForgeRepoWatermarkRow, error)
 	LoadPRsBackfilledAt(ctx context.Context, arg LoadPRsBackfilledAtParams) (pgtype.Timestamptz, error)
+	// Agent status board reads and writes.
+	// NO KEY UPDATE serializes board writers without blocking FK inserts on the agent.
+	LockBoardAgent(ctx context.Context, accountID string) (string, error)
 	// Channel-pins (pinned board) queries (sqlc adoption T3, RIG-3034). These
 	// replace the inline SQL literals in internal/store/channel_pins.go; the
 	// hand-written Store methods and the in-tx FOR UPDATE lock / cap-check control
@@ -549,6 +561,7 @@ type Querier interface {
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) (int64, error)
 	PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error)
 	PullRequestLinks(ctx context.Context, arg PullRequestLinksParams) ([]PullRequestLinksRow, error)
+	PullRequestsByCoords(ctx context.Context, arg PullRequestsByCoordsParams) ([]PullRequestsByCoordsRow, error)
 	// Explicit links attach directly; a closing reference attaches only when none
 	// of the PR's explicit targets is an issue on the board.
 	PullRequestsForIssues(ctx context.Context, arg PullRequestsForIssuesParams) ([]PullRequestsForIssuesRow, error)
@@ -641,6 +654,7 @@ type Querier interface {
 	// selects a genuinely existing column from a genuinely existing table
 	// (tenants, 0001_init.sql), so sqlc compiles it against the real schema.
 	ScaffoldGetTenant(ctx context.Context, id string) (Tenant, error)
+	SearchAgentBoardTasks(ctx context.Context, arg SearchAgentBoardTasksParams) ([]SearchAgentBoardTasksRow, error)
 	SearchIssues(ctx context.Context, arg SearchIssuesParams) ([]SearchIssuesRow, error)
 	SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error)
 	// SecretRecordsForAgent collapses the A9 precedence in SQL: DISTINCT ON keeps the
@@ -749,6 +763,8 @@ type Querier interface {
 	// UpdateModelRegistry applies a compare-and-set only to a live row.
 	UpdateModelRegistry(ctx context.Context, arg UpdateModelRegistryParams) (int64, error)
 	UpdateTopicLastSeq(ctx context.Context, arg UpdateTopicLastSeqParams) error
+	UpsertAgentBoard(ctx context.Context, arg UpsertAgentBoardParams) error
+	UpsertAgentBoardTask(ctx context.Context, arg UpsertAgentBoardTaskParams) error
 	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error
 	// A TREE channel's per-account subscribe override; it has no member rows.
 	UpsertChannelSubscription(ctx context.Context, arg UpsertChannelSubscriptionParams) error

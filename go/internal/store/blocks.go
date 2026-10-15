@@ -41,6 +41,7 @@ type storedAskAnswer struct {
 // storedAsk is the JSONB shape of an Ask block.
 type storedAsk struct {
 	AskID     string              `json:"ask_id"`
+	Ref       string              `json:"ref,omitempty"`
 	Questions []storedAskQuestion `json:"questions,omitempty"`
 	// Answered mirrors Ask.Answered: true once answered, so the pending/answered
 	// distinction survives the JSONB round-trip even for a fully-skipped ask.
@@ -317,7 +318,7 @@ func toStoredAsk(a *Ask) *storedAsk {
 			TimedOut:        q.TimedOut,
 		})
 	}
-	return &storedAsk{AskID: a.AskID, Questions: qs, Answered: a.Answered}
+	return &storedAsk{AskID: a.AskID, Ref: a.Ref, Questions: qs, Answered: a.Answered}
 }
 
 // fromStoredAsk maps a stored Ask back to the domain type.
@@ -340,7 +341,7 @@ func fromStoredAsk(s *storedAsk) *Ask {
 			TimedOut:        q.TimedOut,
 		})
 	}
-	return &Ask{AskID: s.AskID, Questions: qs, Answered: s.Answered}
+	return &Ask{AskID: s.AskID, Ref: s.Ref, Questions: qs, Answered: s.Answered}
 }
 
 // toStoredAskAnswer maps the domain AskAnswerBlock onto its JSONB shape,
