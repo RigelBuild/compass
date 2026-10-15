@@ -46,6 +46,7 @@ import {
 	GetPullRequestRequestSchema,
 	type Issue,
 	ListIssuesRequestSchema,
+	MirrorMessagesRequestSchema,
 	type PullRequest,
 	PullRequestIssueLinkSchema,
 	ReviewCommentInputSchema,
@@ -55,7 +56,6 @@ import {
 	TransitionIssueStateRequestSchema,
 	TransitionPullRequestStateRequestSchema,
 	UnsubscribeForgeRequestSchema,
-	MirrorMessagesRequestSchema,
 } from "./compassv1";
 import { relayCall } from "./relay-error";
 import { attr, flat, login, ref } from "./render-guard";

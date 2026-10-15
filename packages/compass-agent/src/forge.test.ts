@@ -1,4 +1,4 @@
-// ForgeBroker + the thirteen native forge tools (design:
+// ForgeBroker + the twelve native forge tools (design:
 // docs/designs/agent/compass-agent-forge-tools/design.md, T1 + T2).
 // Each test defends an observable contract of the agent->Runner forge call: the
 // exact `ForgeCallRequest` a tool `execute` puts on the wire (arm case, arm
@@ -1231,6 +1231,24 @@ describe("forge parameter schemas", () => {
 				state: "Done",
 			}),
 		).toBe(true);
+	});
+
+	test("every tool rejects a blank or whitespace-only repo", () => {
+		for (const schema of [
+			getIssueParameters,
+			getPullRequestParameters,
+			listIssuesParameters,
+			commentOnIssueParameters,
+			commentOnPullRequestParameters,
+		] as Type<object>[]) {
+			expect(rejects(schema, {})).toBe(true);
+		}
+		expect(rejects(getIssueParameters, { repo: "  ", issue_number: 1 })).toBe(
+			true,
+		);
+		expect(rejects(getIssueParameters, { repo: "o/r", issue_number: 1 })).toBe(
+			false,
+		);
 	});
 
 	test("mirror parameters reject empty, oversized, or mixed sources", () => {

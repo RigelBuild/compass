@@ -1671,9 +1671,11 @@ func TestForgeMirrorPostRefusesAgentRowWithoutSession(t *testing.T) {
 
 // The body budget reserves the widest session the owner header admits.
 func TestForgeMirrorOwnerAllowanceCoversWidestSession(t *testing.T) {
-	widest := forge.MaxOwnerHeaderLen(strings.Repeat("a", 39))
-	if mirrorOwnerHeaderAllowance != widest {
-		t.Fatalf("mirrorOwnerHeaderAllowance = %d, want %d for a 39-character session", mirrorOwnerHeaderAllowance, widest)
+	// Two 39-character handles, a 39-character session, and the fixed header
+	// text; pinned so a change to either the grammar or the header is noticed.
+	const want = 304
+	if mirrorOwnerHeaderAllowance != want {
+		t.Fatalf("mirrorOwnerHeaderAllowance = %d, want %d for a 39-character session", mirrorOwnerHeaderAllowance, want)
 	}
 }
 

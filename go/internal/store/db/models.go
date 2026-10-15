@@ -308,6 +308,7 @@ type ForgeMirror struct {
 	CommentKey      string
 	CommentUrl      string
 	LastError       string
+	LastErrorCode   string
 	FirstAttemptAt  pgtype.Timestamptz
 	LastAttemptAt   pgtype.Timestamptz
 	ClientCommentID pgtype.UUID
@@ -316,6 +317,14 @@ type ForgeMirror struct {
 	LeaseToken      string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+	TenantID        string
+}
+
+type ForgeMirrorRequest struct {
+	AgentAccountID  string
+	ClientRequestID string
+	MirrorID        string
+	CreatedAt       pgtype.Timestamptz
 	TenantID        string
 }
 

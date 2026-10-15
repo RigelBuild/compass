@@ -47,6 +47,9 @@ type ForgeMirrorRow struct {
 	CommentKey      string
 	CommentURL      string
 	LastError       string
+	// LastErrorCode is the Connect code of a failed row's error, so a retry
+	// reports the same status the failing drive did.
+	LastErrorCode   string
 	FirstAttemptAt  *time.Time
 	LastAttemptAt   *time.Time
 	ClientCommentID string
@@ -69,6 +72,7 @@ type ForgeMirrorMark struct {
 	CommentKey   string
 	URL          string
 	Err          string
+	ErrCode      string
 	Recheck      bool
 	ClearRecheck bool
 }
@@ -176,11 +180,8 @@ func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (Fo
 		return ForgeMirrorRow{}, false, fmt.Errorf("store: find claimed forge mirror: %w", err)
 	}
 	if conflict.ConflictKind == 3 && mirror.Source == 2 && conflict.ActorAccountID == string(mirror.Actor) && conflict.AgentAccountID == string(mirror.Agent) {
-		// A re-mirror of the same source carries its new render inputs and session.
-		if _, err := s.q.BumpForgeMirrorSourceRevision(ctx, db.BumpForgeMirrorSourceRevisionParams{
-			SourcePayload: mirror.SourcePayload, SessionID: mirror.SessionID, ID: conflict.ID,
-		}); err != nil {
-			return ForgeMirrorRow{}, false, fmt.Errorf("store: bump forge mirror revision: %w", err)
+		if err := s.remirrorSource(ctx, conflict.ID, mirror); err != nil {
+			return ForgeMirrorRow{}, false, err
 		}
 		conflict, err = s.forgeMirrorByConflictKeys(ctx, mirror)
 		if err != nil {
@@ -196,8 +197,58 @@ func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (Fo
 		FirstAttemptAt: conflict.FirstAttemptAt, LastAttemptAt: conflict.LastAttemptAt,
 		ClientCommentID: conflict.ClientCommentID, RecheckAt: conflict.RecheckAt, LeaseUntil: conflict.LeaseUntil,
 		LeaseToken: conflict.LeaseToken, UpdatedAt: conflict.UpdatedAt,
-		SessionID: conflict.SessionID, SourcePayload: conflict.SourcePayload,
+		SessionID: conflict.SessionID, SourcePayload: conflict.SourcePayload, LastErrorCode: conflict.LastErrorCode,
 	}), false, nil
+}
+
+// remirrorSource bumps a source row for a later agent request. The request key
+// is recorded in the same transaction and only a first-seen key bumps, so a
+// retry of the re-mirror call never renders or edits again.
+func (s *Store) remirrorSource(ctx context.Context, id string, mirror ForgeMirrorRow) error {
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin re-mirror: %w", err)
+	}
+	// After Commit this rollback is a no-op; a failure before Commit is returned below.
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+	if mirror.Agent != "" && mirror.ClientRequestID != "" {
+		recorded, err := qtx.RecordForgeMirrorRequest(ctx, db.RecordForgeMirrorRequestParams{
+			AgentAccountID: string(mirror.Agent), ClientRequestID: mirror.ClientRequestID, MirrorID: id,
+		})
+		if err != nil {
+			return fmt.Errorf("store: record forge mirror request: %w", err)
+		}
+		if recorded == 0 {
+			return nil
+		}
+	}
+	// A re-mirror of the same source carries its new render inputs and session.
+	if _, err := qtx.BumpForgeMirrorSourceRevision(ctx, db.BumpForgeMirrorSourceRevisionParams{
+		SourcePayload: mirror.SourcePayload, SessionID: mirror.SessionID, ID: id,
+	}); err != nil {
+		return fmt.Errorf("store: bump forge mirror revision: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit re-mirror: %w", err)
+	}
+	return nil
+}
+
+// ForgeMirrorByRequest finds the row an agent request key claimed or
+// re-mirrored; ok is false when the key is unused.
+func (s *Store) ForgeMirrorByRequest(ctx context.Context, agent AccountID, clientRequestID string) (ForgeMirrorRow, bool, error) {
+	if agent == "" || clientRequestID == "" {
+		return ForgeMirrorRow{}, false, fmt.Errorf("%w: forge mirror agent and request key are required", ErrInvalidArgument)
+	}
+	row, err := s.q.ForgeMirrorByRequest(ctx, db.ForgeMirrorByRequestParams{AgentAccountID: string(agent), ClientRequestID: clientRequestID})
+	if noRows(err) {
+		return ForgeMirrorRow{}, false, nil
+	}
+	if err != nil {
+		return ForgeMirrorRow{}, false, fmt.Errorf("store: read forge mirror by request: %w", err)
+	}
+	return forgeMirrorFromDB(db.ClaimForgeMirrorRow(row)), true, nil
 }
 
 func (s *Store) forgeMirrorByConflictKeys(ctx context.Context, mirror ForgeMirrorRow) (db.ForgeMirrorByConflictKeysRow, error) {
@@ -307,7 +358,7 @@ func (s *Store) MarkForgeMirror(ctx context.Context, id, token string, mark Forg
 	n, err := s.q.MarkForgeMirror(ctx, db.MarkForgeMirrorParams{
 		ID: id, LeaseToken: token, PostedRev: mark.PostedRev, State: mark.State,
 		CommentID: int64(mark.CommentID), CommentKey: mark.CommentKey, CommentUrl: mark.URL,
-		LastError: mark.Err, Recheck: mark.Recheck, ClearRecheck: mark.ClearRecheck,
+		LastError: mark.Err, LastErrorCode: mark.ErrCode, Recheck: mark.Recheck, ClearRecheck: mark.ClearRecheck,
 	})
 	if err != nil {
 		return fmt.Errorf("store: mark forge mirror: %w", err)
@@ -400,6 +451,6 @@ func forgeMirrorFromDB(row db.ClaimForgeMirrorRow) ForgeMirrorRow {
 		FirstAttemptAt: optionalTime(row.FirstAttemptAt), LastAttemptAt: optionalTime(row.LastAttemptAt),
 		ClientCommentID: row.ClientCommentID, RecheckAt: optionalTime(row.RecheckAt), LeaseUntil: optionalTime(row.LeaseUntil),
 		LeaseToken: row.LeaseToken, UpdatedAt: row.UpdatedAt.Time,
-		SessionID: row.SessionID, SourcePayload: row.SourcePayload,
+		SessionID: row.SessionID, SourcePayload: row.SourcePayload, LastErrorCode: row.LastErrorCode,
 	}
 }

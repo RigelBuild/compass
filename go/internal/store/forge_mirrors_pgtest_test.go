@@ -603,6 +603,62 @@ func TestClaimForgeMirrorStoresSessionAndPayloadAndRemirrorUpdatesThem(t *testin
 	}
 }
 
+// A retry of the re-mirror key finds the row and does not bump it again.
+func TestRemirrorRequestKeyIsRecordedOnce(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-request-key")
+	claim := func(key string) ForgeMirrorRow {
+		t.Helper()
+		row, _, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+			Source: 2, SourceKey: "topic-k", Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#5", BodyRev: 1, State: 1, SessionID: "sess-k", SourcePayload: []byte(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("ClaimForgeMirror(%s): %v", key, err)
+		}
+		return row
+	}
+	first := claim("call-1")
+	if bumped := claim("call-2"); bumped.BodyRev != 2 {
+		t.Fatalf("re-mirror body_rev = %d, want 2", bumped.BodyRev)
+	}
+	if again := claim("call-2"); again.BodyRev != 2 {
+		t.Fatalf("re-mirror retry body_rev = %d, want unchanged 2", again.BodyRev)
+	}
+	for _, key := range []string{"call-1", "call-2"} {
+		row, found, err := s.ForgeMirrorByRequest(ctx, agent, key)
+		if err != nil || !found || row.ID != first.ID {
+			t.Fatalf("ForgeMirrorByRequest(%s) = (%+v, found=%v, err=%v), want row %s", key, row, found, err, first.ID)
+		}
+	}
+	if _, found, err := s.ForgeMirrorByRequest(ctx, agent, "call-unused"); err != nil || found {
+		t.Fatalf("ForgeMirrorByRequest(unused) = (found=%v, err=%v), want not found", found, err)
+	}
+}
+
+func TestMarkForgeMirrorStoresFailureCode(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-error-code")
+	row, _, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-e", Actor: agent, Agent: agent, TargetRef: "owner/repo#6", BodyRev: 1, State: 1,
+	})
+	if err != nil {
+		t.Fatalf("ClaimForgeMirror: %v", err)
+	}
+	if _, ok, err := s.LeaseForgeMirror(ctx, row.ID, "code-token", time.Minute); err != nil || !ok {
+		t.Fatalf("LeaseForgeMirror = (ok=%v, err=%v)", ok, err)
+	}
+	if err := s.MarkForgeMirror(ctx, row.ID, "code-token", ForgeMirrorMark{State: 3, Err: "gone", ErrCode: "not_found"}); err != nil {
+		t.Fatalf("MarkForgeMirror: %v", err)
+	}
+	got, err := s.ForgeMirrorByID(ctx, row.ID)
+	if err != nil || got.LastError != "gone" || got.LastErrorCode != "not_found" {
+		t.Fatalf("ForgeMirrorByID = (%+v, %v), want the stored error and code", got, err)
+	}
+}
+
 // An auto ask row takes its session from the posting ctx; a post with no
 // session on ctx stores an empty one for the poster to refuse.
 func TestAskMirrorRowTakesSessionFromContext(t *testing.T) {

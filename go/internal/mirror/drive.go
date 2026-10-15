@@ -383,11 +383,29 @@ func markDelivered(ctx context.Context, st *store.Store, row store.ForgeMirrorRo
 
 func markFailed(ctx context.Context, st *store.Store, row store.ForgeMirrorRow, token string, cause error) error {
 	if err := st.MarkForgeMirror(ctx, row.ID, token, store.ForgeMirrorMark{
-		PostedRev: row.PostedRev, State: failedState, Err: cause.Error(),
+		PostedRev: row.PostedRev, State: failedState, Err: cause.Error(), ErrCode: FailureCode(cause),
 	}); err != nil {
 		return fmt.Errorf("mirror: mark failed: %w", err)
 	}
 	return nil
+}
+
+// CodedError is a failure that names its Connect status code string, such as
+// a poster refusal, so a failed row reports the same status on every retry.
+type CodedError interface {
+	error
+	FailureCode() string
+}
+
+// FailureCode is the Connect code string stored with a failed row's error.
+func FailureCode(err error) string {
+	if coded, ok := errors.AsType[CodedError](err); ok {
+		return coded.FailureCode()
+	}
+	if errors.Is(err, forge.ErrBodyTooLarge) {
+		return "invalid_argument"
+	}
+	return "internal"
 }
 
 func renewLease(ctx context.Context, st *store.Store, id, token string, log *slog.Logger) (chan struct{}, *atomic.Bool, chan struct{}) {

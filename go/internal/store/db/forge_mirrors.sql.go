@@ -17,7 +17,7 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
   FROM forge_mirrors WHERE ask_id = ANY($1::text[]) ORDER BY created_at, id
 `
 
@@ -47,6 +47,7 @@ type AskForgeMirrorsRow struct {
 	UpdatedAt       pgtype.Timestamptz
 	SessionID       string
 	SourcePayload   []byte
+	LastErrorCode   string
 }
 
 func (q *Queries) AskForgeMirrors(ctx context.Context, askIds []string) ([]AskForgeMirrorsRow, error) {
@@ -84,6 +85,7 @@ func (q *Queries) AskForgeMirrors(ctx context.Context, askIds []string) ([]AskFo
 			&i.UpdatedAt,
 			&i.SessionID,
 			&i.SourcePayload,
+			&i.LastErrorCode,
 		); err != nil {
 			return nil, err
 		}
@@ -105,7 +107,7 @@ RETURNING id, source, ask_id, source_key, actor_account_id,
           client_request_id, target_ref, body_rev, posted_rev, state, attempts,
           comment_id, comment_key, comment_url, last_error, first_attempt_at,
           last_attempt_at, client_comment_id::text AS client_comment_id,
-          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
+          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
 `
 
 type BeginForgeMirrorAttemptParams struct {
@@ -139,6 +141,7 @@ type BeginForgeMirrorAttemptRow struct {
 	UpdatedAt       pgtype.Timestamptz
 	SessionID       string
 	SourcePayload   []byte
+	LastErrorCode   string
 }
 
 func (q *Queries) BeginForgeMirrorAttempt(ctx context.Context, arg BeginForgeMirrorAttemptParams) (BeginForgeMirrorAttemptRow, error) {
@@ -170,6 +173,7 @@ func (q *Queries) BeginForgeMirrorAttempt(ctx context.Context, arg BeginForgeMir
 		&i.UpdatedAt,
 		&i.SessionID,
 		&i.SourcePayload,
+		&i.LastErrorCode,
 	)
 	return i, err
 }
@@ -218,7 +222,7 @@ RETURNING id, source, ask_id, source_key, actor_account_id,
           client_request_id, target_ref, body_rev, posted_rev, state, attempts,
           comment_id, comment_key, comment_url, last_error, first_attempt_at,
           last_attempt_at, client_comment_id::text AS client_comment_id,
-          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
+          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
 `
 
 type ClaimForgeMirrorParams struct {
@@ -262,6 +266,7 @@ type ClaimForgeMirrorRow struct {
 	UpdatedAt       pgtype.Timestamptz
 	SessionID       string
 	SourcePayload   []byte
+	LastErrorCode   string
 }
 
 func (q *Queries) ClaimForgeMirror(ctx context.Context, arg ClaimForgeMirrorParams) (ClaimForgeMirrorRow, error) {
@@ -306,6 +311,7 @@ func (q *Queries) ClaimForgeMirror(ctx context.Context, arg ClaimForgeMirrorPara
 		&i.UpdatedAt,
 		&i.SessionID,
 		&i.SourcePayload,
+		&i.LastErrorCode,
 	)
 	return i, err
 }
@@ -332,7 +338,7 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload,
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code,
        CASE WHEN agent_account_id = NULLIF($1::text, '') AND client_request_id = $2::text
             THEN 2::smallint
             WHEN ask_id = NULLIF($3::text, '') THEN 1::smallint
@@ -381,6 +387,7 @@ type ForgeMirrorByConflictKeysRow struct {
 	UpdatedAt       pgtype.Timestamptz
 	SessionID       string
 	SourcePayload   []byte
+	LastErrorCode   string
 	ConflictKind    int16
 }
 
@@ -419,6 +426,7 @@ func (q *Queries) ForgeMirrorByConflictKeys(ctx context.Context, arg ForgeMirror
 		&i.UpdatedAt,
 		&i.SessionID,
 		&i.SourcePayload,
+		&i.LastErrorCode,
 		&i.ConflictKind,
 	)
 	return i, err
@@ -430,7 +438,7 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
   FROM forge_mirrors WHERE id = $1
 `
 
@@ -460,6 +468,7 @@ type ForgeMirrorByIDRow struct {
 	UpdatedAt       pgtype.Timestamptz
 	SessionID       string
 	SourcePayload   []byte
+	LastErrorCode   string
 }
 
 func (q *Queries) ForgeMirrorByID(ctx context.Context, id string) (ForgeMirrorByIDRow, error) {
@@ -491,6 +500,91 @@ func (q *Queries) ForgeMirrorByID(ctx context.Context, id string) (ForgeMirrorBy
 		&i.UpdatedAt,
 		&i.SessionID,
 		&i.SourcePayload,
+		&i.LastErrorCode,
+	)
+	return i, err
+}
+
+const forgeMirrorByRequest = `-- name: ForgeMirrorByRequest :one
+SELECT id, source, ask_id, source_key, actor_account_id,
+       COALESCE(agent_account_id, '')::text AS agent_account_id,
+       client_request_id, target_ref, body_rev, posted_rev, state, attempts,
+       comment_id, comment_key, comment_url, last_error, first_attempt_at,
+       last_attempt_at, client_comment_id::text AS client_comment_id,
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
+  FROM forge_mirrors
+ WHERE agent_account_id = $1::text
+   AND (client_request_id = $2::text
+        OR id = (SELECT mirror_id FROM forge_mirror_requests r
+                  WHERE r.agent_account_id = $1::text
+                    AND r.client_request_id = $2::text))
+ LIMIT 1
+`
+
+type ForgeMirrorByRequestParams struct {
+	AgentAccountID  string
+	ClientRequestID string
+}
+
+type ForgeMirrorByRequestRow struct {
+	ID              string
+	Source          int16
+	AskID           string
+	SourceKey       string
+	ActorAccountID  string
+	AgentAccountID  string
+	ClientRequestID pgtype.Text
+	TargetRef       string
+	BodyRev         int16
+	PostedRev       int16
+	State           int16
+	Attempts        int32
+	CommentID       int64
+	CommentKey      string
+	CommentUrl      string
+	LastError       string
+	FirstAttemptAt  pgtype.Timestamptz
+	LastAttemptAt   pgtype.Timestamptz
+	ClientCommentID string
+	RecheckAt       pgtype.Timestamptz
+	LeaseUntil      pgtype.Timestamptz
+	LeaseToken      string
+	UpdatedAt       pgtype.Timestamptz
+	SessionID       string
+	SourcePayload   []byte
+	LastErrorCode   string
+}
+
+func (q *Queries) ForgeMirrorByRequest(ctx context.Context, arg ForgeMirrorByRequestParams) (ForgeMirrorByRequestRow, error) {
+	row := q.db.QueryRow(ctx, forgeMirrorByRequest, arg.AgentAccountID, arg.ClientRequestID)
+	var i ForgeMirrorByRequestRow
+	err := row.Scan(
+		&i.ID,
+		&i.Source,
+		&i.AskID,
+		&i.SourceKey,
+		&i.ActorAccountID,
+		&i.AgentAccountID,
+		&i.ClientRequestID,
+		&i.TargetRef,
+		&i.BodyRev,
+		&i.PostedRev,
+		&i.State,
+		&i.Attempts,
+		&i.CommentID,
+		&i.CommentKey,
+		&i.CommentUrl,
+		&i.LastError,
+		&i.FirstAttemptAt,
+		&i.LastAttemptAt,
+		&i.ClientCommentID,
+		&i.RecheckAt,
+		&i.LeaseUntil,
+		&i.LeaseToken,
+		&i.UpdatedAt,
+		&i.SessionID,
+		&i.SourcePayload,
+		&i.LastErrorCode,
 	)
 	return i, err
 }
@@ -552,7 +646,7 @@ RETURNING id, source, ask_id, source_key, actor_account_id,
           client_request_id, target_ref, body_rev, posted_rev, state, attempts,
           comment_id, comment_key, comment_url, last_error, first_attempt_at,
           last_attempt_at, client_comment_id::text AS client_comment_id,
-          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
+          recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
 `
 
 type LeaseForgeMirrorParams struct {
@@ -587,6 +681,7 @@ type LeaseForgeMirrorRow struct {
 	UpdatedAt       pgtype.Timestamptz
 	SessionID       string
 	SourcePayload   []byte
+	LastErrorCode   string
 }
 
 func (q *Queries) LeaseForgeMirror(ctx context.Context, arg LeaseForgeMirrorParams) (LeaseForgeMirrorRow, error) {
@@ -618,6 +713,7 @@ func (q *Queries) LeaseForgeMirror(ctx context.Context, arg LeaseForgeMirrorPara
 		&i.UpdatedAt,
 		&i.SessionID,
 		&i.SourcePayload,
+		&i.LastErrorCode,
 	)
 	return i, err
 }
@@ -675,24 +771,26 @@ UPDATE forge_mirrors
        comment_key = CASE WHEN $4::text = '' THEN comment_key ELSE $4 END,
        comment_url = CASE WHEN $5::text = '' THEN comment_url ELSE $5 END,
        last_error = $6,
-       recheck_at = CASE WHEN $7::boolean THEN now() + interval '10 minutes'
-                         WHEN $8::boolean THEN NULL
+       last_error_code = $7,
+       recheck_at = CASE WHEN $8::boolean THEN now() + interval '10 minutes'
+                         WHEN $9::boolean THEN NULL
                          ELSE recheck_at END,
        lease_until = NULL, lease_token = ''
- WHERE id = $9 AND lease_token = $10 AND lease_until > now()
+ WHERE id = $10 AND lease_token = $11 AND lease_until > now()
 `
 
 type MarkForgeMirrorParams struct {
-	PostedRev    int16
-	State        int16
-	CommentID    int64
-	CommentKey   string
-	CommentUrl   string
-	LastError    string
-	Recheck      bool
-	ClearRecheck bool
-	ID           string
-	LeaseToken   string
+	PostedRev     int16
+	State         int16
+	CommentID     int64
+	CommentKey    string
+	CommentUrl    string
+	LastError     string
+	LastErrorCode string
+	Recheck       bool
+	ClearRecheck  bool
+	ID            string
+	LeaseToken    string
 }
 
 func (q *Queries) MarkForgeMirror(ctx context.Context, arg MarkForgeMirrorParams) (int64, error) {
@@ -703,6 +801,7 @@ func (q *Queries) MarkForgeMirror(ctx context.Context, arg MarkForgeMirrorParams
 		arg.CommentKey,
 		arg.CommentUrl,
 		arg.LastError,
+		arg.LastErrorCode,
 		arg.Recheck,
 		arg.ClearRecheck,
 		arg.ID,
@@ -720,7 +819,7 @@ SELECT id, source, ask_id, source_key, actor_account_id,
        client_request_id, target_ref, body_rev, posted_rev, state, attempts,
        comment_id, comment_key, comment_url, last_error, first_attempt_at,
        last_attempt_at, client_comment_id::text AS client_comment_id,
-       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload
+       recheck_at, lease_until, lease_token, updated_at, session_id, source_payload, last_error_code
   FROM forge_mirrors
  WHERE agent_account_id = $1::text AND (state <> 2 OR recheck_at <= now())
  ORDER BY created_at, id
@@ -752,6 +851,7 @@ type OpenForgeMirrorsRow struct {
 	UpdatedAt       pgtype.Timestamptz
 	SessionID       string
 	SourcePayload   []byte
+	LastErrorCode   string
 }
 
 func (q *Queries) OpenForgeMirrors(ctx context.Context, agentAccountID string) ([]OpenForgeMirrorsRow, error) {
@@ -789,6 +889,7 @@ func (q *Queries) OpenForgeMirrors(ctx context.Context, agentAccountID string) (
 			&i.UpdatedAt,
 			&i.SessionID,
 			&i.SourcePayload,
+			&i.LastErrorCode,
 		); err != nil {
 			return nil, err
 		}
@@ -798,6 +899,26 @@ func (q *Queries) OpenForgeMirrors(ctx context.Context, agentAccountID string) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordForgeMirrorRequest = `-- name: RecordForgeMirrorRequest :execrows
+INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id)
+VALUES ($1, $2, $3)
+ON CONFLICT DO NOTHING
+`
+
+type RecordForgeMirrorRequestParams struct {
+	AgentAccountID  string
+	ClientRequestID string
+	MirrorID        string
+}
+
+func (q *Queries) RecordForgeMirrorRequest(ctx context.Context, arg RecordForgeMirrorRequestParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordForgeMirrorRequest, arg.AgentAccountID, arg.ClientRequestID, arg.MirrorID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const renewForgeMirror = `-- name: RenewForgeMirror :execrows

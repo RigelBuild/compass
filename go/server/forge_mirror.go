@@ -60,6 +60,9 @@ func (e *mirrorRefusalError) Error() string { return e.message }
 
 func (e *mirrorRefusalError) Unwrap() error { return mirror.ErrRefused }
 
+// FailureCode lets the drive store the refusal's code with the failed row.
+func (e *mirrorRefusalError) FailureCode() string { return e.code.String() }
+
 func (s *forgeService) mirrorAllowed(ctx context.Context, account store.Account, need store.ForgeMirrorMode, ref refs.Ref) (resolvedForge, string, uint64, *compassv1internal.ForgeCallError) {
 	if account.ID == "" {
 		return resolvedForge{}, "", 0, forgeErr(connect.CodeUnauthenticated, "forge mirror: caller is required")
