@@ -4,6 +4,7 @@ import {
 	diffVersions,
 	MAX_ARTIFACT_BYTES,
 	parseArtifact,
+	parseDevenvBuild,
 	parseDevenvEval,
 	parsePathInfo,
 	parsePathInfoVersions,
@@ -85,6 +86,22 @@ describe("nix package name parsing", () => {
 			mkPath("hello-2.12.3"),
 			mkPath("jq-1.8.2"),
 		]);
+	});
+	test("reads the store path for an attribute from devenv build JSON", () => {
+		const output = JSON.stringify(
+			{ "packageDiff.closure": mkPath("nix-package-diff.json") },
+			null,
+			2,
+		);
+		expect(parseDevenvBuild(output, "packageDiff.closure")).toBe(
+			mkPath("nix-package-diff.json"),
+		);
+		expect(() =>
+			parseDevenvBuild(mkPath("nix-package-diff.json"), "packageDiff.closure"),
+		).toThrow("not valid JSON");
+		expect(() =>
+			parseDevenvBuild('{"other": "/nix/store/x"}', "packageDiff.closure"),
+		).toThrow("must map packageDiff.closure");
 	});
 	test("diffs path-info store keys with hash prefixes as package versions", () => {
 		const base = parsePathInfoVersions(
