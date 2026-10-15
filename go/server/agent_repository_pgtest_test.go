@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -44,7 +46,8 @@ func newAgentRepositoryLifecycleTest(t *testing.T) *agentRepositoryLifecycleTest
 	}
 	broker := &gitCredentialBroker{
 		host: "github.com", store: f.store, minter: minter, log: discardLogE2E(),
-		clock: func() time.Time { return clock }, entries: make(map[string]gitCredentialEntry),
+		clock: func() time.Time { return clock }, limiter: rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
+		entries:  make(map[string]gitCredentialEntry),
 		negative: make(map[string]gitCredentialNegativeEntry), last: make(map[store.AccountID]string),
 	}
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}

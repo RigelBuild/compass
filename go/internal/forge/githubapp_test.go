@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,7 @@ type mintServer struct {
 	nowFn        func() time.Time
 	lifetime     time.Duration
 	repositories []installationRepository
+	headers      http.Header
 }
 
 func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServer {
@@ -56,6 +58,11 @@ func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServ
 		}
 		m.lastBody = body
 		if m.status != http.StatusCreated {
+			for name, values := range m.headers {
+				for _, value := range values {
+					w.Header().Add(name, value)
+				}
+			}
 			w.WriteHeader(m.status)
 			if _, err := w.Write([]byte(`{"message":"scripted failure"}`)); err != nil {
 				return
@@ -200,6 +207,79 @@ func TestScopedAppMinterSurfacesGitHubError(t *testing.T) {
 	statusErr, ok := errors.AsType[*StatusError](err)
 	if !ok || statusErr.Status != http.StatusForbidden || statusErr.Message != "scripted failure" {
 		t.Fatalf("Mint error = %v, want typed GitHub 403 message", err)
+	}
+}
+
+func TestScopedAppMinterRateLimitError(t *testing.T) {
+	key := testAppKey(t)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		status  int
+		headers http.Header
+		want    time.Duration
+		rate    bool
+	}{
+		{
+			name:    "403 retry-after seconds",
+			status:  http.StatusForbidden,
+			headers: http.Header{"Retry-After": []string{"12"}},
+			want:    12 * time.Second,
+			rate:    true,
+		},
+		{
+			name:    "429 retry-after date",
+			status:  http.StatusTooManyRequests,
+			headers: http.Header{"Retry-After": []string{now.Add(20 * time.Second).Format(http.TimeFormat)}},
+			want:    20 * time.Second,
+			rate:    true,
+		},
+		{
+			name:   "remaining zero uses reset",
+			status: http.StatusForbidden,
+			headers: http.Header{
+				"X-Ratelimit-Remaining": []string{"0"},
+				"X-Ratelimit-Reset":     []string{strconv.FormatInt(now.Add(35*time.Second).Unix(), 10)},
+			},
+			want: 35 * time.Second,
+			rate: true,
+		},
+		{
+			name:    "rate signal without hint",
+			status:  http.StatusTooManyRequests,
+			headers: http.Header{"X-Ratelimit-Remaining": []string{"0"}},
+			rate:    true,
+		},
+		{
+			name:   "429 without rate-limit headers",
+			status: http.StatusTooManyRequests,
+			rate:   true,
+		},
+		{name: "403 without signal", status: http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newMintServer(t, "unused", func() time.Time { return now })
+			m.status = tt.status
+			m.headers = tt.headers
+			minter := newScopedAppMinter(t, m, GitHubAppConfig{
+				AppID: 1, InstallationID: 2,
+				PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+				Clock:      func() time.Time { return now },
+			})
+			_, err := minter.Mint(context.Background(), []string{"repo"}, map[string]string{"contents": "write"})
+			if tt.rate {
+				rateErr, ok := errors.AsType[*RateLimitError](err)
+				if !ok || rateErr.RetryAfter != tt.want {
+					t.Fatalf("Mint error = %v, want rate-limit error with hint %s", err, tt.want)
+				}
+				return
+			}
+			statusErr, ok := errors.AsType[*StatusError](err)
+			if !ok || statusErr.Status != tt.status {
+				t.Fatalf("Mint error = %v, want status error %d", err, tt.status)
+			}
+		})
 	}
 }
 
