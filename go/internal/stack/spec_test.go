@@ -145,7 +145,7 @@ func TestServerSpecPassesInheritedListener(t *testing.T) {
 		t.Fatalf("listener File: %v", err)
 	}
 	defer file.Close()
-	spec := serverSpec(Config{SocketPath: "/state/sock", DatabaseDSN: "postgres:///compass"}, CertResult{CertPath: "/cert", KeyPath: "/key"}, file)
+	spec := serverSpec(Config{SocketPath: "/state/sock", DatabaseDSN: "postgres:///compass"}, CertResult{CertPath: "/cert", KeyPath: "/key"}, file, "")
 	if !slices.Contains(spec.Args, "--listen-fd") || slices.Contains(spec.Args, "--listen") {
 		t.Fatalf("server args = %q, want --listen-fd 3 and no --listen", spec.Args)
 	}
@@ -299,12 +299,41 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := base
 			cfg.SecretProvider = tt.secretProvider
-			spec := serverSpec(cfg, cert, listenerFile)
+			spec := serverSpec(cfg, cert, listenerFile, "")
 			if !slices.Equal(spec.Args, tt.want) {
 				t.Fatalf("serverSpec Args = %q, want %q", spec.Args, tt.want)
 			}
 			if len(spec.ExtraFiles) != 1 || spec.ExtraFiles[0] != listenerFile {
 				t.Fatalf("serverSpec ExtraFiles = %v, want listener file", spec.ExtraFiles)
+			}
+		})
+	}
+}
+
+func TestServerSpecDefaultsHostTierToKeyring(t *testing.T) {
+	cert := CertResult{CertPath: "/state/tls.crt", KeyPath: "/state/tls.key"}
+	tests := []struct {
+		name, backend, cfgProvider, envProvider, want string
+	}{
+		{name: "host with nothing set gets the keyring", backend: "host", want: "keyring://"},
+		{name: "host keeps an explicit config provider", backend: "host", cfgProvider: "dotenv:///s.env", want: "dotenv:///s.env"},
+		{name: "host leaves an inherited env provider to the server", backend: "host", envProvider: "dotenv:///s.env"},
+		{name: "host config provider beats an inherited env one", backend: "host", cfgProvider: "dotenv:///s.env", envProvider: "dotenv:///other.env", want: "dotenv:///s.env"},
+		{name: "unset backend stays empty", backend: ""},
+		{name: "podman stays empty", backend: "podman"},
+		{name: "microvm stays empty", backend: "microvm"},
+		{name: "apple-container stays empty", backend: "apple-container"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{SocketPath: "/state/compass.sock", RuntimeBackend: tt.backend, SecretProvider: tt.cfgProvider}
+			args := serverSpec(cfg, cert, nil, tt.envProvider).Args
+			got := ""
+			if i := slices.Index(args, "--secret-provider"); i >= 0 && i+1 < len(args) {
+				got = args[i+1]
+			}
+			if got != tt.want {
+				t.Fatalf("--secret-provider = %q, want %q (args %q)", got, tt.want, args)
 			}
 		})
 	}
@@ -335,7 +364,7 @@ func TestServerSpecAlwaysForwardsNatsURL(t *testing.T) {
 				ExternalNatsURL: tt.external,
 				NatsClientPort:  14222,
 			}
-			args := serverSpec(cfg, cert, listenerFile).Args
+			args := serverSpec(cfg, cert, listenerFile, "").Args
 			i := slices.Index(args, "--nats-url")
 			if i < 0 || i+1 == len(args) {
 				t.Fatalf("serverSpec Args = %q, want --nats-url with a value", args)

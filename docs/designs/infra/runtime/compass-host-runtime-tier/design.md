@@ -718,23 +718,23 @@ probe leg is necessary but not sufficient, and the record takes both.
 
 ## Tasks
 
-- [ ] T1 — `HostRuntime` backend implementing `WorkloadRuntime`,
+- [x] T1 — `HostRuntime` backend implementing `WorkloadRuntime`,
       registered in `SelectBackend` as `host`
-- [ ] T1a — host-tier uid derivation: `Workspace.UID` from `os.Geteuid()`, not
+- [x] T1a — host-tier uid derivation: `Workspace.UID` from `os.Geteuid()`, not
       `agentuid.AgentUID`; `AsUser` rejects any other uid; launch proven on a
       non-1000 euid
-- [ ] T1b — host `Provision` leg: per-agent socket + config path in the handle's
+- [x] T1b — host `Provision` leg: per-agent socket + config path in the handle's
       state dir, threaded as env vars; `AGENT_SOCKET_PATH` /
       `AGENT_CONFIG_MOUNT_PATH` env-overridable (touches the two pinned
       `compass-agent` contract tests)
-- [ ] T2 — unenforced-egress posture: new marker (not `inGuestEgressArmer`),
+- [x] T2 — unenforced-egress posture: new marker (not `inGuestEgressArmer`),
       fail-loud on ANY `EgressPolicy` reaching provision (presence, not
       non-emptiness) via a new `Configured()` distinction, posture visible in
       session state/UI
-- [ ] T3 — SecretSpec provider knob; host-tier profile pins `keyring://`
-- [ ] T4 — per-agent `$HOME` overlay for `.compass/{env,secrets}`
-- [ ] T5 — agent-driven config-import review (first-run onboarding flow)
-- [ ] T6 — tier docs: absent protections, graduation guidance, review
+- [x] T3 — SecretSpec provider knob; host-tier profile pins `keyring://`
+- [x] T4 — per-agent `$HOME` overlay for `.compass/{env,secrets}`
+- [x] T5 — agent-driven config-import review (first-run onboarding flow)
+- [x] T6 — tier docs: absent protections, graduation guidance, review
       walkthrough
 
 ## Open Questions
