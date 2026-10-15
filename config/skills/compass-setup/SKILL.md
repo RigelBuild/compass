@@ -53,7 +53,9 @@ Pull what the operator already uses into the Compass workspace so their agents
 start with the conventions and capability they expect.
 
 - Import their existing **skills** and **rules** — the procedures and always-on
-  constraints they have built up.
+  constraints they have built up. Run the `config-import-review` skill first:
+  it reports which of them the built-ins already cover or contradict, and
+  pushes only what the operator approves.
 - Import their **MCP servers** — the tool surfaces their agents call.
 - Import their **CLI tools** — the binaries their workflows depend on.
 
