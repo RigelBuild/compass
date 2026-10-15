@@ -110,6 +110,8 @@ type ServeConfig struct {
 	// non-admin account fails startup rather than elevating it. When the network
 	// door is enabled, this account's token is written 0600 under the state dir.
 	AdminHandle string
+	// AdminTokenFile names a private file containing the supplied bootstrap-admin token.
+	AdminTokenFile string
 	// StateDir is the directory the bootstrap-admin token file is written under
 	// (0600). Defaults to the socket's parent directory when empty.
 	StateDir string

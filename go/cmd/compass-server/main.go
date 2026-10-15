@@ -263,6 +263,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		S3:                s3Config,
 		Forge:             forgeConfig,
 		StateDir:          *f.stateDir,
+		AdminTokenFile:    firstNonEmpty(*f.adminTokenFile, os.Getenv("COMPASS_ADMIN_TOKEN_FILE")),
 		AdminHandle:       *f.adminHandle,
 		CORSAllowedOrigin: *f.corsAllowedOrigin,
 		SecretProvider:    firstNonEmpty(*f.secretProvider, os.Getenv("COMPASS_SECRET_PROVIDER")),
@@ -314,6 +315,7 @@ type serveFlags struct {
 	s3UseTLS                      *bool
 	transcriptSafetyValveCapBytes *int
 	stateDir                      *string
+	adminTokenFile                *string
 	secretProvider                *string
 	adminHandle                   *string
 	corsAllowedOrigin             *string
@@ -369,6 +371,8 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 		s3UseTLS: fs.Bool("s3-use-tls", false,
 			"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
 				"(\"1\"/\"true\"/\"yes\"/\"on\" = on)."),
+		adminTokenFile: fs.String("admin-token-file", "",
+			"Private file containing the supplied bootstrap-admin token. Defaults to $COMPASS_ADMIN_TOKEN_FILE."),
 		stateDir: fs.String("state-dir", "",
 			"Directory the bootstrap-admin token file is written under (0600). "+
 				"Defaults to the socket's parent directory."),

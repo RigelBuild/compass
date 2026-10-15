@@ -1212,7 +1212,11 @@ symlink, or readable by others) it SHALL mint a new one. A newly minted token
 file SHALL be written atomically (a temp file `0600`, synced, then renamed into
 place; the temp file removed on any error), and the token itself SHALL NOT be
 logged — only its path. A socket-only start (no `--listen`) SHALL write no
-token file.
+token file. When `--admin-token-file` or `COMPASS_ADMIN_TOKEN_FILE` is set, it
+SHALL name a private regular file containing a whitespace-trimmed base64url
+encoding of exactly 32 bytes. The server SHALL register the supplied token for
+the bootstrap admin and persist it under the state directory; a revoked token or
+one registered to another subject SHALL fail startup.
 
 #### Scenario: Opening the network door writes the admin token 0600
 
@@ -1228,6 +1232,13 @@ token file.
 - **When** the server restarts with `--listen`
 - **Then** the file and its token are unchanged and no new token is minted;
   after the token is revoked, the next start mints and writes a new one.
+
+#### Scenario: A supplied admin token survives a database recreate
+
+- **Given** an operator-supplied admin-token file
+- **When** the server starts with a recreated database and the same file
+- **Then** the token authenticates as the new bootstrap admin and is persisted
+  under the state directory.
 
 ### Requirement: The network door defaults closed to browser origins
 

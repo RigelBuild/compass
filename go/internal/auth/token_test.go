@@ -117,8 +117,33 @@ func TestRevokedTokenResolvesToRevoked(t *testing.T) {
 	}
 }
 
-// distinct_issues_produce_distinct_tokens_and_identities: two accounts, two
-// issues → distinct random token strings, each resolving to its own account.
+func TestRegisterAccountTokenIsIdempotentAndRejectsInvalidBindings(t *testing.T) {
+	ctx := context.Background()
+	st, admin, member := openTestStore(t)
+	token, err := IssueAccountToken(ctx, st, admin)
+	if err != nil {
+		t.Fatalf("IssueAccountToken: %v", err)
+	}
+	if err := RegisterAccountToken(ctx, st, admin, token); err != nil {
+		t.Fatalf("register existing account token: %v", err)
+	}
+	if err := RegisterAccountToken(ctx, st, member, token); err == nil {
+		t.Fatal("register token for another account succeeded")
+	}
+
+	revoked, err := IssueAccountToken(ctx, st, admin)
+	if err != nil {
+		t.Fatalf("IssueAccountToken for revoke: %v", err)
+	}
+	if err := RevokeToken(ctx, st, revoked); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+	if err := RegisterAccountToken(ctx, st, admin, revoked); !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("register revoked token = %v, want ErrTokenRevoked", err)
+	}
+}
+
+// distinct_issues_produce_distinct_tokens_and_identities: two accounts, two issues → distinct random token strings, each resolving to its own account.
 func TestDistinctIssuesProduceDistinctTokensAndIdentities(t *testing.T) {
 	ctx := context.Background()
 	st, a, b := openTestStore(t)

@@ -9,6 +9,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -299,7 +300,7 @@ func buildNetworkServer(
 			stateDir = "."
 		}
 	}
-	tokenPath, minted, err := issueAndWriteAdminToken(ctx, st, adminID, stateDir)
+	tokenPath, minted, err := issueAndWriteAdminToken(ctx, st, adminID, stateDir, cfg.AdminTokenFile)
 	if err != nil {
 		return nil, err
 	}
@@ -472,15 +473,22 @@ func newRunnerResolve(lookup runnerhub.TokenResolver, verifier runnerTokenVerifi
 	}
 }
 
-// issueAndWriteAdminToken ensures stateDir holds a 0600 bearer token for the
-// bootstrap admin and reports whether it minted one. A private regular file
-// whose token still resolves to adminID is reused, so restarts neither pile up
-// live tokens nor break clients; anything else (missing, revoked, unknown,
-// another subject, a symlink, group/other-readable) is replaced atomically. A
-// store error during the check reads as not-found and also re-mints. It runs
-// only with --listen or ListenListener; socket-only startup mints none. The token is never logged.
-func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store.AccountID, stateDir string) (string, bool, error) {
+// issueAndWriteAdminToken keeps a 0600 admin token under stateDir; a supplied token file stays stable across DB recreates.
+func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store.AccountID, stateDir, suppliedTokenFile string) (string, bool, error) {
 	final := filepath.Join(stateDir, adminTokenFile)
+	if suppliedTokenFile != "" {
+		token, err := readSuppliedAdminToken(suppliedTokenFile)
+		if err != nil {
+			return "", false, err
+		}
+		if err := auth.RegisterAccountToken(ctx, st, adminID, token); err != nil {
+			return "", false, fmt.Errorf("registering supplied admin token from %q: %w", suppliedTokenFile, err)
+		}
+		if err := writeSuppliedAdminTokenFile(stateDir, token); err != nil {
+			return "", false, err
+		}
+		return final, false, nil
+	}
 	reuse, err := reusableAdminToken(ctx, st, adminID, final)
 	if err != nil {
 		return "", false, err
@@ -494,6 +502,46 @@ func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store
 	}
 	path, err := writeTokenFile(stateDir, token)
 	return path, err == nil, err
+}
+
+func readSuppliedAdminToken(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("checking supplied admin token file %q: %w", path, err)
+	}
+	if info.Mode()&(os.ModeType|0o077) != 0 {
+		return "", fmt.Errorf("supplied admin token file %q must be a private regular file", path)
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the operator-configured path was Lstat'd above
+	if err != nil {
+		return "", fmt.Errorf("reading supplied admin token file %q: %w", path, err)
+	}
+	token := strings.TrimSpace(string(raw))
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(decoded) != 32 || token != base64.RawURLEncoding.EncodeToString(decoded) {
+		return "", fmt.Errorf("supplied admin token file %q must contain a base64url token encoding exactly 32 bytes", path)
+	}
+	return token, nil
+}
+
+func writeSuppliedAdminTokenFile(dir, token string) error {
+	final := filepath.Join(dir, adminTokenFile)
+	info, err := os.Lstat(final)
+	if err == nil && info.Mode()&(os.ModeType|0o077) == 0 {
+		raw, err := os.ReadFile(final) //nolint:gosec // G304: the fixed path was Lstat'd above
+		if err != nil {
+			return fmt.Errorf("reading admin token file %q: %w", final, err)
+		}
+		if string(raw) == token {
+			return nil
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking admin token file %q: %w", final, err)
+	}
+	if _, err := writeTokenFile(dir, token); err != nil {
+		return err
+	}
+	return nil
 }
 
 // reusableAdminToken reports whether path is a private regular file holding a
