@@ -983,6 +983,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			hub:         hub,
 			log:         hubLog,
 			cancelHooks: cancelSeed,
+			health:      doors.health,
 		})
 	})
 
@@ -1007,9 +1008,10 @@ func startServeDoors(g *errgroup.Group, ctx context.Context, doors serveDoors, u
 // optional authenticated network door. dev and net are nil when their listener
 // is off (dev unless --dev-http, network unless --listen or cfg.ListenListener).
 type serveDoors struct {
-	uds *http.Server
-	dev *http.Server
-	net *http.Server
+	uds    *http.Server
+	dev    *http.Server
+	net    *http.Server
+	health *serverHealth
 	// The net door must use the container StoreResolver or deployment secrets reach agents.
 	netResolver *brokeredSecretResolver
 	// gitCredentials refreshes the brokered App tokens; nil without a GitHub App.
@@ -1058,6 +1060,7 @@ func buildDoors(
 	masterKey envelope.Key,
 	keyVersion int16,
 ) (serveDoors, error) {
+	health := newServerHealth()
 	// Built even without a network door, so a bad cluster file or a reserved-ID
 	// clash refuses start the same way on every topology.
 	runnerVerifier, err := buildRunnerVerifier(ctx, cfg, st)
@@ -1114,6 +1117,7 @@ func buildDoors(
 	udsMux.Handle(secretsSocketPath, secretsSocketHandler)
 	udsMux.Handle(usageSocketPath, usageSocketHandler)
 	udsMux.Handle(agentRepositoryPath, agentRepositoryHandler)
+	health.mount(udsMux)
 	udsServer := &http.Server{Handler: udsMux, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply; the network door below sets it
 
 	// Dev-only browser door: the same services with permissive CORS on the
@@ -1142,6 +1146,7 @@ func buildDoors(
 		devMux.Handle(devSecretsPath, devSecretsHandler)
 		devMux.Handle(devUsagePath, devUsageHandler)
 		devMux.Handle(devAgentRepositoryPath, devAgentRepositoryHandler)
+		health.mount(devMux)
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
@@ -1163,7 +1168,7 @@ func buildDoors(
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
 		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, agentRepositorySvc, hub, st, adminID,
-			netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gateway)
+			netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gateway, health)
 		if err != nil {
 			return serveDoors{}, err
 		}
@@ -1174,7 +1179,8 @@ func buildDoors(
 	// swap here is silent and severe: runnerhub's FetchSecrets would serve
 	// `server_secrets`, handing every deployment secret to every agent container.
 	doors := serveDoors{
-		uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
+		health: health,
+		uds:    udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
 		linearNotify: linear.notify, linearResponder: linear.responder,
 	}
 	// Only when set: a nil pointer stored in the interface would not compare nil.
@@ -1209,6 +1215,7 @@ type drainSet struct {
 	uds      *http.Server
 	dev      *http.Server
 	net      *http.Server
+	health   *serverHealth
 	hub      *runnerhub.Hub
 	log      *slog.Logger
 	// cancelHooks cancels the runner-ready seed's ctx; nil when none was derived.
@@ -1222,6 +1229,7 @@ var drainTimeout = 5 * time.Second
 // drainDoors ends live streams, drains every configured door under one bounded
 // deadline, and reports the hub's final frame accounting.
 func drainDoors(ctx context.Context, d drainSet) error {
+	d.health.markDraining()
 	// Close both buses so held-open streams end and release their handlers:
 	// SubscribeEvents rides bus, SubscribeComms rides commsBus. Closing only bus would
 	// wedge a SubscribeComms subscriber (Shutdown does not cancel its ctx). Both closes idempotent.

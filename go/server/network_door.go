@@ -288,6 +288,7 @@ func buildNetworkServer(
 	linearSessionLinkHandler http.Handler,
 	runnerVerifier *auth.RunnerVerifier,
 	gateway gatewayServices,
+	health *serverHealth,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -340,6 +341,7 @@ func buildNetworkServer(
 	netMux.Handle(netUsagePath, netUsageHandler)
 	netAgentRepositoryPath, netAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netAgentRepositoryPath, netAgentRepositoryHandler)
+	health.mount(netMux)
 
 	// The internal RunnerService door: the surface a Runner dials out to, mounted
 	// only here on the authenticated network door (a Runner is remote, over TLS).

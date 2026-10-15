@@ -5,17 +5,122 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"connectrpc.com/grpchealth"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 )
+
+type healthCloseResult struct {
+	status grpchealth.Status
+	err    error
+}
+
+type healthRecordingListener struct {
+	net.Listener
+	health *serverHealth
+	ctx    context.Context
+	once   sync.Once
+	result chan healthCloseResult
+	err    error
+}
+
+func (l *healthRecordingListener) Close() error {
+	l.once.Do(func() {
+		l.err = l.Listener.Close()
+		response, err := l.health.Check(l.ctx, &grpchealth.CheckRequest{})
+		if err != nil {
+			l.result <- healthCloseResult{err: err}
+			return
+		}
+		l.result <- healthCloseResult{status: response.Status}
+	})
+	return l.err
+}
+
+func TestDrainDoorsMarksNotServingBeforeShutdown(t *testing.T) {
+	health := newServerHealth()
+	mux := http.NewServeMux()
+	health.mount(mux)
+	server := &http.Server{Handler: mux}
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	recordingListener := &healthRecordingListener{
+		Listener: listener,
+		health:   health,
+		ctx:      t.Context(),
+		result:   make(chan healthCloseResult, 1),
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(recordingListener) }()
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("close health server: %v", err)
+		}
+	})
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+listener.Addr().String()+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("healthz request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("GET /healthz before drain: %v", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read healthz response: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close healthz response body: %v", closeErr)
+	}
+	if response.StatusCode != http.StatusOK || string(body) != "serving" {
+		t.Fatalf("GET /healthz before drain = %d %q, want 200 serving", response.StatusCode, body)
+	}
+
+	if err := drainDoors(t.Context(), drainSet{
+		bus:      events.NewBus[busPayload](),
+		commsBus: events.NewBus[*compassv1.SubscribeCommsResponse](),
+		uds:      server,
+		health:   health,
+		hub:      runnerhub.NewHub(nil, nil, nil, slog.Default()),
+		log:      slog.Default(),
+	}); err != nil {
+		t.Fatalf("drainDoors: %v", err)
+	}
+	select {
+	case result := <-recordingListener.result:
+		if result.err != nil {
+			t.Fatalf("Health Check during listener close: %v", result.err)
+		}
+		if result.status != grpchealth.StatusNotServing {
+			t.Fatalf("Health Check during listener close = %s, want not_serving", result.status)
+		}
+	case <-timeAfter():
+		t.Fatal("Shutdown did not close the listener")
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("Serve after drain: %v", err)
+		}
+	case <-timeAfter():
+		t.Fatal("HTTP server did not stop after drain")
+	}
+}
 
 // TestDrainDoorsOverrunCancelsWedgedHandlers: a handler that outlives the drain
 // deadline must have its request context cancelled, so it releases whatever it
@@ -77,6 +182,7 @@ func TestDrainDoorsOverrunCancelsWedgedHandlers(t *testing.T) {
 				bus:      events.NewBus[busPayload](),
 				commsBus: events.NewBus[*compassv1.SubscribeCommsResponse](),
 				uds:      srv,
+				health:   newServerHealth(),
 				hub:      runnerhub.NewHub(nil, nil, nil, slog.Default()),
 				log:      slog.Default(),
 			})

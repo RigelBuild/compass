@@ -17,6 +17,7 @@ go 1.26.0
 require (
 	connectrpc.com/connect v1.20.0
 	connectrpc.com/cors v0.1.0
+	connectrpc.com/grpchealth v1.5.0
 	connectrpc.com/otelconnect v0.9.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/go-jose/go-jose/v4 v4.1.5
