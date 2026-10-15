@@ -19,8 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // boardWebhookDrops is the exported queue-full/drop metric (design.md:288-292):
@@ -35,6 +39,10 @@ var boardWebhookDrops = expvar.NewInt("compass_board_webhook_drops")
 // The sweep heals a dropped issue; a dropped CI-only PR change waits for the PR's
 // next event.
 const defaultBoardQueueSize = 1024
+
+// maxHeldTraceparents caps the traces a held PR key collects, so a busy PR
+// held through a long budget pause cannot grow its slice without bound.
+const maxHeldTraceparents = 32
 
 // defaultBoardRetryWait re-drains held PR keys when the budget error gave no
 // reset hint.
@@ -80,7 +88,7 @@ type boardCoord struct {
 // BoardWebhookArm consumes board-relevant forge events from the webhook ingress
 // and sinks hydrated issues through the shared Ingester pipeline.
 type BoardWebhookArm struct {
-	queue    chan forge.ForgeEvent
+	queue    chan queuedEvent
 	hydrator issueHydrator
 	ing      *Ingester
 	pulls    *PullRequestHydrator
@@ -89,9 +97,10 @@ type BoardWebhookArm struct {
 	log      *slog.Logger
 	dropped  atomic.Int64
 
-	// pending holds PR keys a budget pause left un-hydrated. The sweep cannot
-	// heal a CI-only change, so the drain retries them. Drain goroutine only.
-	pending    map[boardCoord]struct{}
+	// pending holds PR keys a budget pause left un-hydrated, each with the
+	// traceparents its events carried. The sweep cannot heal a CI-only change,
+	// so the drain retries them. Drain goroutine only.
+	pending    map[boardCoord][]string
 	maxPending int
 	after      func(time.Duration) <-chan time.Time
 }
@@ -108,7 +117,7 @@ func NewBoardWebhookArm(h issueHydrator, ing *Ingester, targets TargetChecker, c
 		size = defaultBoardQueueSize
 	}
 	return &BoardWebhookArm{
-		queue:    make(chan forge.ForgeEvent, size),
+		queue:    make(chan queuedEvent, size),
 		hydrator: h,
 		ing:      ing,
 		pulls:    cfg.Pulls,
@@ -116,7 +125,7 @@ func NewBoardWebhookArm(h issueHydrator, ing *Ingester, targets TargetChecker, c
 		targets:  targets,
 		log:      log,
 
-		pending:    map[boardCoord]struct{}{},
+		pending:    map[boardCoord][]string{},
 		maxPending: size,
 		after:      time.After,
 	}
@@ -130,12 +139,12 @@ func (a *BoardWebhookArm) Dropped() int64 { return a.dropped.Load() }
 // it MUST NOT block. It filters to board-relevant events, then channel
 // try-sends; a full queue DROPS the event with the drop metric + a Warn (the
 // reconciler heals it).
-func (a *BoardWebhookArm) Enqueue(_ context.Context, ev forge.ForgeEvent) {
+func (a *BoardWebhookArm) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 	if !a.boardRelevant(ev) {
 		return
 	}
 	select {
-	case a.queue <- ev:
+	case a.queue <- queuedEvent{ev: ev, traceparent: otelx.Traceparent(ctx)}:
 	default:
 		a.dropped.Add(1)
 		boardWebhookDrops.Add(1)
@@ -154,8 +163,8 @@ func (a *BoardWebhookArm) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case ev := <-a.queue:
-			if wait, paused := a.drainBatch(ctx, ev); paused && retry == nil {
+		case q := <-a.queue:
+			if wait, paused := a.drainBatch(ctx, q); paused && retry == nil {
 				retry = a.retryTimer(wait)
 			}
 		case <-retry:
@@ -212,56 +221,65 @@ func (a *BoardWebhookArm) boardRelevant(ev forge.ForgeEvent) bool {
 // collapse to one key. A key already held for retry is left to the timer, so a
 // held PR whose budget is still out never pauses a fresh batch. It then hydrates
 // + sinks each key once, in arrival order, and reports a pause.
-func (a *BoardWebhookArm) drainBatch(ctx context.Context, first forge.ForgeEvent) (time.Duration, bool) {
+func (a *BoardWebhookArm) drainBatch(ctx context.Context, first queuedEvent) (time.Duration, bool) {
 	seen := map[boardCoord]struct{}{}
+	carried := map[boardCoord][]string{}
 	var order []boardCoord
-	add := func(ev forge.ForgeEvent) {
+	add := func(q queuedEvent) {
+		ev := q.ev
 		c := boardCoord{repo: normalizeBoardRepo(ev.Repo), kind: ev.Kind, number: ev.Number}
 		if ev.Number == 0 {
 			c.headSHA = ev.HeadSHA
 		}
-		if _, ok := seen[c]; ok {
-			return
-		}
 		if _, held := a.pending[c]; held {
+			if q.traceparent != "" && len(a.pending[c]) < maxHeldTraceparents {
+				a.pending[c] = append(a.pending[c], q.traceparent)
+			}
 			return
 		}
-		seen[c] = struct{}{}
-		order = append(order, c)
+		if _, ok := seen[c]; !ok {
+			seen[c] = struct{}{}
+			order = append(order, c)
+		}
+		if q.traceparent != "" {
+			carried[c] = append(carried[c], q.traceparent)
+		}
 	}
 
 	add(first)
 	for {
 		select {
-		case ev := <-a.queue:
-			add(ev)
+		case q := <-a.queue:
+			add(q)
 		default:
-			return a.process(ctx, order, seen)
+			return a.process(ctx, order, seen, carried)
 		}
 	}
 }
 
 // retryPending re-drains the PR keys held by an earlier budget pause.
 func (a *BoardWebhookArm) retryPending(ctx context.Context) (time.Duration, bool) {
-	order, seen := a.takePending()
-	return a.process(ctx, order, seen)
+	order, seen, carried := a.takePending()
+	return a.process(ctx, order, seen, carried)
 }
 
 // takePending empties the held PR keys into a fresh batch.
-func (a *BoardWebhookArm) takePending() ([]boardCoord, map[boardCoord]struct{}) {
+func (a *BoardWebhookArm) takePending() ([]boardCoord, map[boardCoord]struct{}, map[boardCoord][]string) {
 	seen := make(map[boardCoord]struct{}, len(a.pending))
 	order := make([]boardCoord, 0, len(a.pending))
-	for c := range a.pending {
+	carried := make(map[boardCoord][]string, len(a.pending))
+	for c, tps := range a.pending {
 		seen[c] = struct{}{}
 		order = append(order, c)
+		carried[c] = tps
 	}
 	clear(a.pending)
-	return order, seen
+	return order, seen, carried
 }
 
 // hold keeps the batch's un-hydrated PR keys for a retry; issue keys are left to
 // the sweep, which sees their updated_at move. Past maxPending a key is dropped.
-func (a *BoardWebhookArm) hold(rest []boardCoord) {
+func (a *BoardWebhookArm) hold(rest []boardCoord, carried map[boardCoord][]string) {
 	for _, c := range rest {
 		if c.kind != compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST {
 			continue
@@ -271,17 +289,23 @@ func (a *BoardWebhookArm) hold(rest []boardCoord) {
 			boardWebhookDrops.Add(1)
 			continue
 		}
-		a.pending[c] = struct{}{}
+		tps := carried[c]
+		a.pending[c] = tps[:min(len(tps), maxHeldTraceparents)]
 	}
 }
 
 // process hydrates each key once. A budget error holds the remaining PR keys
 // and returns the gate's reset hint.
-func (a *BoardWebhookArm) process(ctx context.Context, order []boardCoord, seen map[boardCoord]struct{}) (time.Duration, bool) {
+func (a *BoardWebhookArm) process(ctx context.Context, order []boardCoord, seen map[boardCoord]struct{}, carried map[boardCoord][]string) (time.Duration, bool) {
+	// The pass is a root on the loop ctx; it merges many deliveries, so it links
+	// to each carried trace instead of picking one parent.
+	ctx, span := otel.Tracer(instrumentationScope).Start(otelx.WithoutSpan(ctx), "ingest.board.drain",
+		trace.WithLinks(carriedLinks(ctx, order, carried)...))
+	defer span.End()
 	for i, c := range order {
 		if err := a.resolveAndSink(ctx, c, seen); err != nil {
 			if errors.Is(err, forge.ErrBudgetExhausted) {
-				a.hold(order[i:])
+				a.hold(order[i:], carried)
 				var wait time.Duration
 				if rle, ok := errors.AsType[*forge.RateLimitError](err); ok {
 					wait = rle.RetryAfter
@@ -299,6 +323,19 @@ func (a *BoardWebhookArm) process(ctx context.Context, order []boardCoord, seen 
 		}
 	}
 	return 0, false
+}
+
+// carriedLinks turns the traceparents carried by the pass's keys into links.
+func carriedLinks(ctx context.Context, order []boardCoord, carried map[boardCoord][]string) []trace.Link {
+	var links []trace.Link
+	for _, c := range order {
+		for _, tp := range carried[c] {
+			if sc := trace.SpanContextFromContext(otelx.ContextWithTraceparent(ctx, tp)); sc.IsValid() {
+				links = append(links, trace.Link{SpanContext: sc})
+			}
+		}
+	}
+	return links
 }
 
 // resolveAndSink maps a head-SHA CHECKS key to its PR number, then hydrates.

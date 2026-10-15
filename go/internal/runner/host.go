@@ -21,6 +21,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runner/gateway"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -515,9 +516,10 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	}
 	h.retireWG.Add(1)
 	h.mu.Unlock()
+	// The watcher outlives the Start command, so it drops the command's span.
 	go func() {
 		defer h.retireWG.Done()
-		h.retireOnExit(ctx, sessionID, name, stream)
+		h.retireOnExit(otelx.WithoutSpan(ctx), sessionID, name, stream)
 	}()
 
 	// Lift the agent's replay barrier so the first idle-deliver is dispatched rather
@@ -1168,7 +1170,7 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	h.mu.Unlock()
 	go func() {
 		defer h.retireWG.Done()
-		h.retireOnExit(ctx, sessionID, s.containerName, stream)
+		h.retireOnExit(otelx.WithoutSpan(ctx), sessionID, s.containerName, stream)
 	}()
 	return nil
 }

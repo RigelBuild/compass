@@ -10,6 +10,7 @@ import (
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -587,7 +588,14 @@ func (c *Consumer) drainOwedRewake(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			c.wake(ctx, account)
+			c.rewake(ctx, account)
 		}
 	}()
+}
+
+// rewake roots one owed-mention wake: a Runner coming ready carries no trace.
+func (c *Consumer) rewake(ctx context.Context, account store.AccountID) {
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.rewake", trace.WithNewRoot())
+	defer span.End()
+	c.wake(ctx, account)
 }

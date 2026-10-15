@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/comms"
@@ -117,6 +119,8 @@ func rootSupervisorSeed(ctx context.Context, d seedDeps) (hook func(), cancel co
 // reconnect re-fires the seed. A non-empty linearBridgeID also ensures the Linear
 // routing channel once the supervisor exists; empty means Linear is off.
 func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *comms.Comms, adminID, compassID, linearBridgeID store.AccountID, log *slog.Logger) {
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "server.seed.rootSupervisor", trace.WithNewRoot())
+	defer span.End()
 	ctx, cancel := context.WithTimeout(ctx, seedTimeout)
 	defer cancel()
 

@@ -17,6 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
@@ -455,5 +459,38 @@ func assertNoMoreMessagePosted(t *testing.T, live <-chan events.Stamped[*compass
 		case <-time.After(500 * time.Millisecond):
 			return
 		}
+	}
+}
+
+// TestSeedRootSupervisorStartsOneRootSpan keeps the seed on its no-create path while checking its span boundary.
+func TestSeedRootSupervisorStartsOneRootSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		if err := tp.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+
+	h := newSeedHarness(t)
+	mustRootAgent(t, h.store, h.adminID, "operator-root")
+	ctx, stray := tp.Tracer("test").Start(t.Context(), "stray")
+	seedRootSupervisor(ctx, h.store, h.svc, h.commsSvc, h.adminID, h.compassID, "", slog.New(slog.DiscardHandler))
+	stray.End()
+
+	var got []sdktrace.ReadOnlySpan
+	for _, span := range rec.Ended() {
+		if span.Name() == "server.seed.rootSupervisor" {
+			got = append(got, span)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("seed spans = %d, want 1", len(got))
+	}
+	if got[0].Parent().IsValid() {
+		t.Fatalf("seed parent = %s, want a root", got[0].Parent().SpanID())
 	}
 }

@@ -23,6 +23,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // sigKill is the signal reported for a deliberate teardown (a ctx-cancelled
@@ -222,7 +223,7 @@ func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestSt
 	stderrR, stderrW := io.Pipe()
 
 	gs := &GuestStream{
-		ctx:     ctx,
+		ctx:     otelx.WithoutSpan(ctx), // stream-lifetime: the caller's span ends at Start
 		client:  g.client,
 		stream:  stream,
 		execID:  started.GetExecId(),

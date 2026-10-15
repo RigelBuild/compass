@@ -20,6 +20,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // errNoSessionForContainer is the fail-closed cause when a comms call arrives
@@ -297,8 +298,9 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 	// The socket-lifetime context: it outlives any one agent request and is
 	// cancelled when the listener closes at container teardown. The shared upstream
 	// PublishEvents stream is opened against it, so a PostConversationFrame unary
-	// that opens the stream does not tie the stream's life to its own request.
-	socketCtx, socketCancel := context.WithCancel(ctx)
+	// that opens the stream does not tie the stream's life to its own request. It
+	// also drops the Provision command's span, which ends long before the socket.
+	socketCtx, socketCancel := context.WithCancel(otelx.WithoutSpan(ctx))
 	mux := http.NewServeMux()
 	g := NewGateway(socketCtx, containerName, deps)
 	// The real producer in production: without this the Gateway would serve
