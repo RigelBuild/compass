@@ -282,11 +282,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1791851779,
-        "narHash": "sha256-Ly01EGvC/yb8cAajr9rq45agh5cUDp+MNLwltESH9Y0=",
+        "lastModified": 1792031961,
+        "narHash": "sha256-yurF55YCbATWYMRJ10W9KK/KnJ7xQ9Tzg7jxWiFp1+U=",
         "owner": "RigelBuild",
         "repo": "meissa",
-        "rev": "5178e2d45ee524ccf555e404896238b91198a555",
+        "rev": "0670baff0afdac6133ba28d5f56bbd7fa642dcd5",
         "type": "github"
       },
       "original": {
