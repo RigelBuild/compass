@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
+	"golang.org/x/time/rate"
 
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -29,6 +30,9 @@ const (
 	gitCredentialRefreshLead   = 15 * time.Minute
 	gitCredentialMintTimeout   = 30 * time.Second
 	gitCredentialMismatchCache = 5 * time.Minute
+	gitCredentialMintRate      = rate.Limit(1)
+	gitCredentialMintBurst     = 30
+	gitCredentialRateBackoff   = time.Minute
 )
 
 var (
@@ -83,18 +87,21 @@ type gitCredentialFlightResult struct {
 }
 
 type gitCredentialBroker struct {
-	host   string
-	store  gitCredentialStore
-	minter gitCredentialMinter
-	log    *slog.Logger
-	signal func() error
-	clock  func() time.Time
+	host    string
+	store   gitCredentialStore
+	minter  gitCredentialMinter
+	log     *slog.Logger
+	signal  func() error
+	clock   func() time.Time
+	limiter *rate.Limiter
 
-	mu       sync.Mutex
-	entries  map[string]gitCredentialEntry
-	negative map[string]gitCredentialNegativeEntry
-	last     map[store.AccountID]string
-	group    singleflight.Group
+	mu           sync.Mutex
+	entries      map[string]gitCredentialEntry
+	negative     map[string]gitCredentialNegativeEntry
+	last         map[store.AccountID]string
+	backoffUntil time.Time
+	retryPending bool
+	group        singleflight.Group
 }
 
 type brokeredSecretResolver struct {
@@ -384,8 +391,32 @@ func gitCredentialScopeWithin(inner, outer string) bool {
 }
 
 func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []string) (string, bool, error) {
+	now := b.clock()
+	b.mu.Lock()
+	backedOff := now.Before(b.backoffUntil)
+	b.mu.Unlock()
+	if backedOff {
+		b.mu.Lock()
+		b.retryPending = true
+		b.mu.Unlock()
+		return "", false, fmt.Errorf("GitHub credential mint backoff: %w", forge.ErrBudgetExhausted)
+	}
+	if b.limiter == nil || !b.limiter.AllowN(now, 1) {
+		b.mu.Lock()
+		b.retryPending = true
+		b.mu.Unlock()
+		return "", false, fmt.Errorf("GitHub credential mint budget: %w", forge.ErrBudgetExhausted)
+	}
 	token, err := b.minter.Mint(ctx, repos, gitCredentialPermissions)
 	if err != nil {
+		if rateErr, ok := errors.AsType[*forge.RateLimitError](err); ok {
+			backoff := max(rateErr.RetryAfter, gitCredentialRateBackoff)
+			b.mu.Lock()
+			if until := b.clock().Add(backoff); until.After(b.backoffUntil) {
+				b.backoffUntil = until
+			}
+			b.mu.Unlock()
+		}
 		if gitCredentialScopeRejected(err) {
 			b.mu.Lock()
 			b.negative[key] = gitCredentialNegativeEntry{expiresAt: b.clock().Add(gitCredentialMismatchCache)}
@@ -402,7 +433,7 @@ func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []stri
 		b.mu.Unlock()
 		return "", false, errGitCredentialScopeMismatch
 	}
-	now := b.clock()
+	now = b.clock()
 	expiresAt := token.ExpiresAt
 	if expiresAt.IsZero() || !expiresAt.After(now) {
 		expiresAt = now.Add(time.Hour)
@@ -435,6 +466,9 @@ func sameRepositorySet(want, got []string) bool {
 }
 
 func (b *gitCredentialBroker) refreshDue(ctx context.Context) {
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	now := b.clock()
 	b.mu.Lock()
 	keys := make([]string, 0, len(b.entries))
@@ -455,9 +489,21 @@ func (b *gitCredentialBroker) refreshDue(ctx context.Context) {
 			previousTokens[key] = entry.token
 		}
 	}
+	retryPending := b.retryPending && !now.Before(b.backoffUntil) && b.limiter != nil && b.limiter.TokensAt(now) >= 1
+	if retryPending {
+		b.retryPending = false
+	}
 	b.mu.Unlock()
 	sort.Strings(keys)
 	b.refreshSnapshot(ctx, keys, previousTokens)
+	if retryPending && b.signal != nil {
+		if err := b.signal(); err != nil {
+			b.log.ErrorContext(ctx, "signal GitHub credential retry", "error", err)
+			b.mu.Lock()
+			b.retryPending = true
+			b.mu.Unlock()
+		}
+	}
 }
 
 func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string, previousTokens map[string]string) {
@@ -572,6 +618,7 @@ func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets
 	return &gitCredentialBroker{
 		host: rc.Host, store: st, minter: minter, log: log,
 		signal: hub.SignalSecretsVersion, clock: time.Now,
+		limiter: rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
 		entries: make(map[string]gitCredentialEntry), negative: make(map[string]gitCredentialNegativeEntry),
 		last: make(map[store.AccountID]string),
 	}, nil

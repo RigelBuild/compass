@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -159,6 +161,7 @@ func newGitCredentialTestBroker(credentialStore gitCredentialStore, minter gitCr
 		log:      slog.New(slog.DiscardHandler),
 		signal:   signal,
 		clock:    func() time.Time { return *now },
+		limiter:  rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
 		entries:  make(map[string]gitCredentialEntry),
 		negative: make(map[string]gitCredentialNegativeEntry),
 		last:     make(map[store.AccountID]string),
@@ -1180,6 +1183,63 @@ func TestGitCredentialBrokerCancelledFirstCallerDoesNotCancelSharedMint(t *testi
 	}
 }
 
+func TestGitCredentialBrokerShorterRateLimitHintKeepsLongerBackoff(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	minter := &hintedRateLimitMinter{hints: []time.Duration{5 * time.Minute, 0}, started: make(chan struct{}, 2), release: make(chan struct{})}
+	broker := newGitCredentialTestBroker(&fakeGitCredentialGrants{}, minter, &now, nil)
+	done := make(chan struct{}, 2)
+	for _, key := range []string{"owner/a", "owner/b"} {
+		go func() {
+			_, _, _ = broker.mint(context.Background(), key, []string{key[len("owner/"):]})
+			done <- struct{}{}
+		}()
+		<-minter.started
+	}
+	minter.release <- struct{}{} // the 5-minute hint lands first
+	<-done
+	minter.release <- struct{}{} // then the no-hint (1-minute floor) response
+	<-done
+	now = now.Add(2 * time.Minute)
+	if _, _, err := broker.mint(context.Background(), "owner/c", []string{"c"}); !errors.Is(err, forge.ErrBudgetExhausted) {
+		t.Fatalf("mint inside the longer backoff = %v, want budget exhausted", err)
+	}
+	if got := minter.callCount(); got != 2 {
+		t.Fatalf("mint calls = %d, want two (none during backoff)", got)
+	}
+}
+
+// hintedRateLimitMinter answers each blocked mint with the next rate-limit hint, in release order.
+type hintedRateLimitMinter struct {
+	mu      sync.Mutex
+	hints   []time.Duration
+	calls   int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (m *hintedRateLimitMinter) Mint(context.Context, []string, map[string]string) (forge.ScopedToken, error) {
+	m.mu.Lock()
+	m.calls++
+	blocked := m.calls <= 2
+	m.mu.Unlock()
+	if !blocked {
+		return forge.ScopedToken{Token: "ghs_unexpected"}, nil
+	}
+	m.started <- struct{}{}
+	<-m.release
+	m.mu.Lock()
+	hint := m.hints[0]
+	m.hints = m.hints[1:]
+	m.mu.Unlock()
+	return forge.ScopedToken{}, &forge.RateLimitError{RetryAfter: hint}
+}
+
+func (m *hintedRateLimitMinter) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
 type blockingGitCredentialMinter struct {
 	started   chan struct{}
 	release   chan struct{}
@@ -1209,4 +1269,140 @@ func (m *blockingGitCredentialMinter) callCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.calls
+}
+
+func TestGitCredentialBrokerMintBurstLimitServesStaleToken(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_cached"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	for i := range 30 {
+		grants.repos = []string{fmt.Sprintf("owner/repo-%d", i)}
+		if _, ok := broker.credential(context.Background(), "agent-id"); !ok {
+			t.Fatalf("initial credential %d unavailable", i)
+		}
+	}
+	grants.repos = []string{"owner/repo-0"}
+	broker.mu.Lock()
+	entry := broker.entries["owner/repo-0"]
+	entry.refreshAt = now
+	broker.entries["owner/repo-0"] = entry
+	broker.mu.Unlock()
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_cached" {
+		t.Fatalf("credential after burst exhaustion = (%q, %v), want stale token", token, ok)
+	}
+	if got := minter.callCount(); got != 30 {
+		t.Fatalf("mint calls after burst exhaustion = %d, want 30", got)
+	}
+}
+
+func TestGitCredentialBrokerMintLimiterRefillsWithFakeClock(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_refilled"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	for i := range 30 {
+		grants.repos = []string{fmt.Sprintf("owner/repo-%d", i)}
+		if _, ok := broker.credential(context.Background(), "agent-id"); !ok {
+			t.Fatalf("initial credential %d unavailable", i)
+		}
+	}
+	grants.repos = []string{"owner/refill"}
+	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+		t.Fatalf("credential at exhausted burst = (%q, %v), want none", token, ok)
+	}
+	if got := minter.callCount(); got != 30 {
+		t.Fatalf("mint calls at exhausted burst = %d, want 30", got)
+	}
+	now = now.Add(time.Second)
+	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_refilled" {
+		t.Fatalf("credential after refill = (%q, %v), want minted token", token, ok)
+	}
+	if got := minter.callCount(); got != 31 {
+		t.Fatalf("mint calls after refill = %d, want 31", got)
+	}
+}
+
+func TestGitCredentialBrokerRateLimitBackoff(t *testing.T) {
+	tests := []struct {
+		name string
+		hint time.Duration
+		wait time.Duration
+	}{
+		{name: "hint", hint: 2 * time.Minute, wait: 2 * time.Minute},
+		{name: "minimum without hint", wait: time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+			grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}}
+			minter := &fakeGitCredentialMinter{
+				tokens: []string{"ghs_after_backoff"}, expiresAt: now.Add(time.Hour),
+				errByCall: []error{&forge.RateLimitError{RetryAfter: tt.hint}},
+			}
+			broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+			if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+				t.Fatalf("credential after rate-limit error = (%q, %v), want none", token, ok)
+			}
+			if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+				t.Fatalf("credential during backoff = (%q, %v), want none", token, ok)
+			}
+			if got := minter.callCount(); got != 1 {
+				t.Fatalf("mint calls during backoff = %d, want one", got)
+			}
+			now = now.Add(tt.wait - time.Second)
+			if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+				t.Fatalf("credential before backoff expiry = (%q, %v), want none", token, ok)
+			}
+			if got := minter.callCount(); got != 1 {
+				t.Fatalf("mint calls before backoff expiry = %d, want one", got)
+			}
+			now = now.Add(time.Second - time.Nanosecond)
+			if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+				t.Fatalf("credential one nanosecond before backoff expiry = (%q, %v), want none", token, ok)
+			}
+			now = now.Add(time.Nanosecond)
+			if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_after_backoff" {
+				t.Fatalf("credential after backoff = (%q, %v), want minted token", token, ok)
+			}
+			if got := minter.callCount(); got != 2 {
+				t.Fatalf("mint calls after backoff = %d, want two", got)
+			}
+		})
+	}
+}
+
+func TestGitCredentialBrokerSignalsPendingRetryWhenBudgetReturns(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/retry"}}
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_retried"}, expiresAt: now.Add(time.Hour)}
+	signals := 0
+	broker := newGitCredentialTestBroker(grants, minter, &now, func() error {
+		signals++
+		return nil
+	})
+	for range gitCredentialMintBurst {
+		if !broker.limiter.AllowN(now, 1) {
+			t.Fatal("failed to exhaust mint burst")
+		}
+	}
+	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+		t.Fatalf("credential at exhausted burst = (%q, %v), want none", token, ok)
+	}
+	broker.mu.Lock()
+	broker.backoffUntil = now.Add(time.Minute)
+	broker.mu.Unlock()
+	broker.refreshDue(context.Background())
+	if signals != 0 {
+		t.Fatalf("signal calls during backoff = %d, want none", signals)
+	}
+	now = now.Add(time.Minute)
+	broker.refreshDue(context.Background())
+	if signals != 1 {
+		t.Fatalf("signal calls after refill = %d, want one", signals)
+	}
+	broker.refreshDue(context.Background())
+	if signals != 1 {
+		t.Fatalf("signal calls after pending retry cleared = %d, want one", signals)
+	}
 }

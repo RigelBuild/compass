@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -266,6 +267,14 @@ func (s *appTokenSource) postInstallationToken(ctx context.Context, requestBody 
 		return installationToken{}, fmt.Errorf("forge: read mint response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden && isRateLimited(resp) {
+			now := s.clock()
+			var retryAfter time.Duration
+			if reset := rateLimitResetAt(resp, now); !reset.IsZero() {
+				retryAfter = max(reset.Sub(now), 0)
+			}
+			return installationToken{}, fmt.Errorf("forge: mint installation token: %w", &RateLimitError{RetryAfter: retryAfter})
+		}
 		var ghErr ghError
 		if jsonErr := json.Unmarshal(body, &ghErr); jsonErr == nil && ghErr.Message != "" {
 			return installationToken{}, fmt.Errorf("forge: mint installation token: %w", &StatusError{Status: resp.StatusCode, Message: ghErr.Message})
@@ -280,6 +289,18 @@ func (s *appTokenSource) postInstallationToken(ctx context.Context, requestBody 
 		return installationToken{}, errors.New("forge: mint response carried no token")
 	}
 	return out, nil
+}
+
+func rateLimitResetAt(resp *http.Response, now time.Time) time.Time {
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil {
+			return now.Add(time.Duration(secs) * time.Second)
+		}
+		if at, err := http.ParseTime(ra); err == nil {
+			return at
+		}
+	}
+	return resetFromHeader(resp.Header.Get("X-Ratelimit-Reset"))
 }
 
 func effectiveTokenExpiry(expiry, now time.Time) time.Time {
