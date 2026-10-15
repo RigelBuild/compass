@@ -7,9 +7,9 @@ runner request, carries the traceparent on runner commands, classifies every
 goroutine site, and puts ctx on every log line. This record does not edit it.
 It adds the outbound hops the parent leaves out.
 
-Ledger-impact: none — internal Go wiring, two internal config fields, and lint
-config. No proto change in H1–H7 (Open Question 10 would add one internal
-field), no public wire, and no decision-ledger row changes.
+Ledger-impact: none — internal Go wiring, two internal config fields, lint
+config, and one internal proto field (H8). No public wire, and no
+decision-ledger row changes.
 
 ## Problem / Intent
 
@@ -47,7 +47,7 @@ What does not change:
   is still passed on every hop, so the link is there.
 - No proto field in H1–H7. A Connect hop uses the header. The one gap a
   header cannot close, runner frames on the long-lived `PublishEvents`
-  stream, is Open Question 10.
+  stream, gets an internal per-frame field in H8.
 
 ### Hop census
 
@@ -198,13 +198,14 @@ and a release in the last year.
 
 ## Plan
 
-Stack order: H1, H2, H3, H4, H5, H6, H7, in one linear line on top of the
+Stack order: H1, H2, H3, H4, H5, H6, H7, H8, in one linear line on top of the
 parent's T9. The parent's T2–T9 are open as
 PRs #2255, #2259, #2262, #2265, #2267, #2268, and #2269.
 
 - H1–H4 are independent of each other.
 - H5 lands before H6. H6 restores the traceparents that H5 makes non-empty.
-- H7 lands last. Its census table names the final sites.
+- H7 lands after H6. Its census table names the final egress sites.
+- H8 lands last. It extends H6's edge restore to runner frames.
 
 ### H1 — Guest control client spans (runner → guestd)
 
@@ -558,9 +559,9 @@ Owner: compass-ux.
     parent T2 strips, and `PublishEventsRequest` and `SessionFrame` carry no
     traceparent. Some of these frames are caused by a traced command: a
     failed Reload reaches `agentHost.markErrored` and `PublishSessionState`
-    on the Reload command's ctx (`go/internal/runner/host.go`). Open
-    Question 10 adds a per-frame carrier for them. Frames with no command
-    behind them, such as an agent exit, stay untraced.
+    on the Reload command's ctx (`go/internal/runner/host.go`). H8 adds a
+    per-frame carrier for them. Frames with no command behind them, such
+    as an agent exit, stay untraced.
 
 Interfaces:
 
@@ -648,9 +649,41 @@ one fewer, each fail.
 Acceptance: a new `http.DefaultClient`, Connect client, `http.Client`
 literal, or pool constructor fails CI until it is classified.
 
+### H8 — Per-frame traceparent on `PublishEvents`
+
+Owner: compass-ux.
+
+- `PublishEventsRequest` (`proto/compass/v1/runner.proto`) gains
+  `string traceparent = 5`. It is internal, so buf-breaking stays clean.
+- The runner side: `SocketListener.PublishSessionState` and the event
+  publisher stamp `otelx.Traceparent(ctx)`. It is empty when no command span
+  is active, so an agent exit sends none.
+- `RunnerEvent` gains `Traceparent string`. `Handler.PublishEvents` copies
+  it from the request.
+- `Hub.Deliver` restores it on the stripped work ctx with
+  `otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), ev.Traceparent)`
+  before `deliverSession`. The H6 edges from `deliverSession` and its
+  `dropLostSession` call then carry the command's trace.
+
+Interfaces:
+
+- Changes (proto, internal): `PublishEventsRequest.traceparent = 5`.
+- Changes (package `runnerhub`): `RunnerEvent` gains `Traceparent string`.
+
+Test cycle:
+
+- `runnerhub`, through the real path: a `PublishEvents` lifecycle frame
+  with a traceparent gives a presence edge with that trace id; a frame
+  without one gives an empty traceparent. Before: the field does not exist.
+- `runner`: a failed Reload under a known command span publishes an
+  `ERRORED` frame whose traceparent has that trace id.
+
+Acceptance: a presence edge caused by a traced runner command joins that
+command's trace. Frames with no command behind them stay untraced.
+
 ## Tasks
 
-Stack order: H1, H2, H3, H4, H5, H6, H7, on the parent's T9.
+Stack order: H1, H2, H3, H4, H5, H6, H7, H8, on the parent's T9.
 
 - [ ] H1 — guest control client options from compass-runner wiring; Health
   stays bare; GuestStream strip pin (Owner: compass-ux)
@@ -666,21 +699,18 @@ Stack order: H1, H2, H3, H4, H5, H6, H7, on the parent's T9.
   (Owner: compass-ux)
 - [ ] H7 — forbidigo `http.DefaultClient` and `TestEgressCensus`
   (Owner: compass-ux)
+- [ ] H8 — `PublishEventsRequest.traceparent`, stamped by the runner and
+  restored before `deliverSession` (Owner: compass-ux)
 
 ## Open Questions
 
 1. **Third-party egress: inject the header, record a span only, or skip?**
-   Load-bearing: yes. It sets H2's propagator. Targets: GitHub, Linear,
-   Trunk, the runner cluster OIDC issuers, and the object store.
-   - (a) Inject `traceparent`. A vendor that reads it could join our trace.
-     Cost: our trace ids leave the process, and no target is known to read
-     them.
-   - (b) Client span only. Our trace shows each call, its time, and its
-     status. No header leaves the process.
-   - (c) Skip. The trace has a hole at every external call.
-   - **Recommendation: (b).** The span is what joins the call to our trace.
-     The design assumes (b). (a) is a one-line change: drop the empty
-     propagator in `HTTPTransport`.
+   Resolved: **(b), client span only** (Matt, 2026-10-15). H2's
+   `HTTPTransport` records a client span and uses an empty propagator, so no
+   `traceparent` leaves the process. Targets: GitHub, Linear, Trunk, the
+   runner cluster OIDC issuers, and the object store. Rejected: (a) inject
+   the header, because our trace ids would leave the process and no target
+   reads them; (c) skip, which leaves a hole at every external call.
 2. **Bus API: one `Publish(ctx, …)`, or keep `Publish` and `PublishCtx`?**
    Load-bearing: no. Both need the same caller changes.
    - (a) One method. The compiler rejects a ctx-less publish. Cost: about 75
@@ -732,16 +762,7 @@ Stack order: H1, H2, H3, H4, H5, H6, H7, on the parent's T9.
    passes the interceptor or transport (review checks it), and egress inside
    a third-party SDK the census does not name. **Recommendation:** accept
    these gates.
-10. **A per-frame traceparent on `PublishEvents`?** Load-bearing: no. Runner
-    frames carry no trace, so presence edges from `deliverSession` and
-    `dropLostSession` have none (H6), even when a traced command caused the
-    frame, such as a failed Reload.
-    - (a) Leave them untraced. The Reload failure edge drops the trace.
-    - (b) Add `traceparent` to `PublishEventsRequest`, as parent T4 did for
-      `SessionsResponse`. `PublishSessionState` and the event publisher
-      stamp `otelx.Traceparent(ctx)`; it is empty when no command span is
-      active. `Hub.Deliver` restores it on the stripped work ctx before
-      `deliverSession`. Internal proto, buf-breaking clean.
-    - **Recommendation: (b)**, as its own task after H6, because Matt asked
-      for traceparents on every hop. Until it is ruled, H6 promises traces
-      only for the edges it lists as traced.
+10. **A per-frame traceparent on `PublishEvents`?** Resolved: **(b)** (Matt,
+    2026-10-15). H8 adds `traceparent` to `PublishEventsRequest`, so a
+    presence edge caused by a traced command, such as a failed Reload, keeps
+    that trace. Rejected: (a) leave runner frames untraced.
