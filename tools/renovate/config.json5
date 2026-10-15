@@ -57,7 +57,8 @@
   internalChecksFilter: "strict",
 
   // go/moon.yml's `tidy` gate fails on any stale go.sum line; a plain gomod
-  // bump leaves the old version's hashes behind.
+  // bump leaves the old version's hashes behind. Renovate skips this on major
+  // updates, which need hand-edited /vN imports anyway.
   postUpdateOptions: ["gomodTidy"],
 
   labels: ["dependencies"],

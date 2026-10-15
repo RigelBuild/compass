@@ -416,7 +416,7 @@ describe("tools/renovate OSV vuln source honors the disable rules", () => {
 });
 
 describe("tools/renovate gomod bumps pass the go.sum tidy gate", () => {
-	test("gomodTidy runs after every gomod update", () => {
+	test("gomodTidy runs after patch and minor gomod updates", () => {
 		expect(cfg.enabledManagers).toContain("gomod");
 		expect(cfg.postUpdateOptions).toContain("gomodTidy");
 	});
