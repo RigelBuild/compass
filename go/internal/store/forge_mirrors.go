@@ -154,14 +154,14 @@ type ClaimResolution int
 const (
 	// ClaimInserted: this call inserted the row.
 	ClaimInserted ClaimResolution = iota + 1
-	// ClaimRemirrored: this call bumped an existing same-source row of the
-	// same actor and agent.
+	// ClaimRemirrored: an agent claim (Source 2) bumped the row holding its
+	// source key and target for the same actor and agent.
 	ClaimRemirrored
 	// ClaimReserved: a keyed claim whose request key already names a row,
 	// returned untouched.
 	ClaimReserved
-	// ClaimConflict: a row holding the claim's ask ID, or its source key under
-	// another actor or agent, returned untouched.
+	// ClaimConflict: a row holding the claim's ask ID or source key that this
+	// claim may not re-mirror, returned untouched.
 	ClaimConflict
 )
 
@@ -234,7 +234,8 @@ func (s *Store) claimConflict(ctx context.Context, mirror ForgeMirrorRow) (Forge
 			return ForgeMirrorRow{}, 0, fmt.Errorf("store: reload claimed forge mirror: %w", err)
 		}
 	}
-	if resolution == ClaimConflict && mirror.Agent != "" && mirror.ClientRequestID != "" {
+	keyed := mirror.Agent != "" && mirror.ClientRequestID != ""
+	if resolution == ClaimConflict && keyed {
 		// A racing re-mirror may have reserved the key on a row whose own key differs.
 		reserved, found, err := s.ForgeMirrorByRequest(ctx, mirror.Agent, mirror.ClientRequestID)
 		if err != nil {
