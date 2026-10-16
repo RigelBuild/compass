@@ -29,7 +29,7 @@ type forgeMirrorLeaseLossPoster struct {
 	deleteRow bool
 }
 
-func (*forgeMirrorLeaseLossPoster) PostMirror(context.Context, store.AccountID, store.ForgeMirrorMode, refs.Ref, string, string, string) (forge.Comment, error) {
+func (*forgeMirrorLeaseLossPoster) PostMirror(context.Context, store.AccountID, string, store.ForgeMirrorMode, refs.Ref, string, string, string) (forge.Comment, error) {
 	return forge.Comment{}, errors.New("unexpected post during recheck")
 }
 
@@ -492,7 +492,8 @@ func TestCommittedAskMirrorsAndAnswerEditsOneComment(t *testing.T) {
 	forgeSvc.enforceScopes = true
 	done := make(chan struct{}, 2)
 	cm.SetMirrorer(forgeSvc, forgeMirrorSignalDriver{inner: forgeSvc, done: done})
-	posted, err := cm.PostMessage(comms.WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	// The relay puts the verified posting session on ctx; the ask row keeps it.
+	posted, err := cm.PostMessage(comms.WithActor(store.WithAgentSession(ctx, "sess-ask"), agent.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(channel.ID)},
 		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "ask-thread"}, CreateTopic: true,
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
@@ -514,7 +515,7 @@ func TestCommittedAskMirrorsAndAnswerEditsOneComment(t *testing.T) {
 		t.Fatalf("MirrorAsUser(auto ask) = (%q, %v), want existing comment URL", clickURL, err)
 	}
 	calls := author.Calls()
-	if len(calls) != 1 || calls[0].Method != "CommentOnIssue" || !strings.Contains(calls[0].Body, "agent=mirror-ask-agent owner=mirror-ask-owner") || !strings.Contains(calls[0].Body, "compass-mirror:") {
+	if len(calls) != 1 || calls[0].Method != "CommentOnIssue" || !strings.Contains(calls[0].Body, "agent=mirror-ask-agent owner=mirror-ask-owner session=sess-ask") || !strings.Contains(calls[0].Body, "compass-mirror:") {
 		t.Fatalf("automatic ask post calls = %+v, want one stamped comment with a marker", calls)
 	}
 	if !strings.Contains(calls[0].Body, "#mirror-auto-asks › ask-thread") || strings.Contains(calls[0].Body, string(channel.ID)) || strings.Contains(calls[0].Body, askID) {
@@ -642,7 +643,7 @@ type blockingMirrorPoster struct {
 	release chan struct{}
 }
 
-func (p *blockingMirrorPoster) PostMirror(ctx context.Context, _ store.AccountID, _ store.ForgeMirrorMode, _ refs.Ref, _ string, _ string, _ string) (forge.Comment, error) {
+func (p *blockingMirrorPoster) PostMirror(ctx context.Context, _ store.AccountID, _ string, _ store.ForgeMirrorMode, _ refs.Ref, _ string, _ string, _ string) (forge.Comment, error) {
 	select {
 	case p.entered <- struct{}{}:
 	default:
@@ -781,7 +782,7 @@ type driveAgentMirrorPoster struct {
 	bodies []string
 }
 
-func (p *driveAgentMirrorPoster) PostMirror(_ context.Context, _ store.AccountID, _ store.ForgeMirrorMode, _ refs.Ref, _ string, _ string, body string) (forge.Comment, error) {
+func (p *driveAgentMirrorPoster) PostMirror(_ context.Context, _ store.AccountID, _ string, _ store.ForgeMirrorMode, _ refs.Ref, _ string, _ string, body string) (forge.Comment, error) {
 	p.bodies = append(p.bodies, body)
 	return forge.Comment{ID: 17, Key: "agent-comment", URL: "https://github.com/owner/auto/issues/12#issuecomment-17"}, nil
 }

@@ -1057,6 +1057,62 @@ same ref SHALL be refused while the first user's mirror exists.
 Topic mirrors SHALL carry at most the newest 50 messages. If a topic has more
 than 50, the mirror SHALL state, "Showing the newest 50 messages."
 
+### Requirement: Agent mirror tools may mirror visible messages to AUTO forge targets
+
+The agent `forge_mirror_messages` tool SHALL accept exactly one source: a topic
+or one to fifty message IDs from one channel. The caller SHALL be able to see
+the source channel. The tool SHALL check the target with the agent mirror policy
+and SHALL post only when the target is in AUTO mode; MANUAL and OFF SHALL be
+refused. The server SHALL render a topic's newest 50 messages, include the
+optional note, drop whole oldest messages when the forge body limit requires it,
+and state how many were dropped. Re-mirroring the same source to the same target
+SHALL edit the existing comment. A completed retry with the same
+`client_request_id` SHALL return the stored comment reference without posting
+again; a pending retry SHALL return unavailable, and a failed retry SHALL
+return its stored error. A target that is a tracked pull request SHALL return a
+PR-comment result; another target SHALL return an issue-comment result.
+
+The optional `channel` selector SHALL be a channel name, never a channel ID.
+When it is omitted, the server SHALL take the channel from the topic or the
+messages. When it names a channel that does not hold the source, or one the
+agent cannot see, the server SHALL return not-found. Every agent mirror post
+SHALL name the agent's real posting session in its owner header; a row with no
+session SHALL fail without posting. The server SHALL store the source on the
+row, so a mirror still pending at a restart is redriven with the same body.
+A redrive SHALL check visibility again, and SHALL fail the row without posting
+when the agent can no longer see the source.
+
+#### Scenario: A retry returns the first mirror result
+
+- **Given** an agent mirror request that has already delivered a comment
+- **When** the agent retries it with the same `client_request_id`
+- **Then** the server returns the stored comment reference and the forge sees
+  only one post
+
+#### Scenario: A topic is mirrored again to the same target
+
+- **Given** a topic already mirrored to a forge target
+- **When** the agent mirrors that topic to the same target again
+- **Then** the server edits the existing comment instead of creating another
+
+#### Scenario: An agent cannot mirror to a MANUAL or OFF target
+
+- **Given** a forge target configured as MANUAL or OFF
+- **When** an agent calls `forge_mirror_messages` for that target
+- **Then** the server refuses the call without posting a comment
+
+#### Scenario: An agent cannot mirror messages from a channel it cannot see
+
+- **Given** a source topic or message set in a channel the agent cannot see
+- **When** the agent calls `forge_mirror_messages`
+- **Then** the server returns not-found without revealing the channel or messages
+
+#### Scenario: A pending mirror is redriven after a restart
+
+- **Given** an agent mirror row that was claimed but not posted before a restart
+- **When** the restarted server drives the agent's open rows
+- **Then** it posts the same body, stamped with the session that made the call
+
 ### Requirement: Automatic mirroring follows the ask's explicit ref
 
 An ask with an explicit ref to an enabled AUTO coordinate SHALL be mirrored

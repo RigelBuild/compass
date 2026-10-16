@@ -36,8 +36,10 @@ var (
 // ListMirrorComments returns only comments by the configured Compass App login;
 // implementations fail closed when they cannot resolve that account.
 // BodyLimit excludes the owner header; Drive reserves the row marker itself.
+// session is the row's stored agent session, which an agent post's owner
+// header names; it is empty on user rows.
 type Poster interface {
-	PostMirror(ctx context.Context, actor store.AccountID, need store.ForgeMirrorMode, ref refs.Ref, commentKey, clientID, body string) (forge.Comment, error)
+	PostMirror(ctx context.Context, actor store.AccountID, session string, need store.ForgeMirrorMode, ref refs.Ref, commentKey, clientID, body string) (forge.Comment, error)
 	ListMirrorComments(ctx context.Context, actor store.AccountID, ref refs.Ref, since time.Time) ([]forge.Comment, error)
 	DeleteMirrorComment(ctx context.Context, actor store.AccountID, ref refs.Ref, commentKey string) error
 	BodyLimit(ref refs.Ref) int
@@ -202,7 +204,7 @@ func deliverAttempt(ctx context.Context, st *store.Store, p Poster, token string
 	if lostOrCanceled(ctx, leaseLost) {
 		return false, nil
 	}
-	comment, err = p.PostMirror(ctx, state.row.Actor, need, ref, commentKey, state.row.ClientCommentID, body)
+	comment, err = p.PostMirror(ctx, state.row.Actor, state.row.SessionID, need, ref, commentKey, state.row.ClientCommentID, body)
 	if err == nil {
 		return false, markDelivered(ctx, st, state.row, token, comment.ID, comment.Key, comment.URL, state.uncertain, renderedRev)
 	}
@@ -381,11 +383,29 @@ func markDelivered(ctx context.Context, st *store.Store, row store.ForgeMirrorRo
 
 func markFailed(ctx context.Context, st *store.Store, row store.ForgeMirrorRow, token string, cause error) error {
 	if err := st.MarkForgeMirror(ctx, row.ID, token, store.ForgeMirrorMark{
-		PostedRev: row.PostedRev, State: failedState, Err: cause.Error(),
+		PostedRev: row.PostedRev, State: failedState, Err: cause.Error(), ErrCode: FailureCode(cause),
 	}); err != nil {
 		return fmt.Errorf("mirror: mark failed: %w", err)
 	}
 	return nil
+}
+
+// CodedError is a failure that names its Connect status code string, such as
+// a poster refusal, so a failed row reports the same status on every retry.
+type CodedError interface {
+	error
+	FailureCode() string
+}
+
+// FailureCode is the Connect code string stored with a failed row's error.
+func FailureCode(err error) string {
+	if coded, ok := errors.AsType[CodedError](err); ok {
+		return coded.FailureCode()
+	}
+	if errors.Is(err, forge.ErrBodyTooLarge) {
+		return "invalid_argument"
+	}
+	return "internal"
 }
 
 func renewLease(ctx context.Context, st *store.Store, id, token string, log *slog.Logger) (chan struct{}, *atomic.Bool, chan struct{}) {

@@ -24,3 +24,18 @@ func TenantFromContext(ctx context.Context) (TenantID, bool) {
 	t, ok := ctx.Value(tenantContextKey{}).(TenantID)
 	return t, ok
 }
+
+// agentSessionContextKey carries the posting agent session into store writes
+// that take no session parameter, such as the ask mirrors AppendMessage queues.
+type agentSessionContextKey struct{}
+
+// WithAgentSession returns a context carrying the verified posting session id.
+func WithAgentSession(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, agentSessionContextKey{}, sessionID)
+}
+
+// AgentSessionFromContext reports the posting session set on ctx, or "".
+func AgentSessionFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(agentSessionContextKey{}).(string)
+	return id
+}

@@ -92,7 +92,7 @@ type Querier interface {
 	// WithTx), so one generated query backs both call sites.
 	BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error)
 	BumpAskForgeMirror(ctx context.Context, askID string) error
-	BumpForgeMirrorSourceRevision(ctx context.Context, id string) (int64, error)
+	BumpForgeMirrorSourceRevision(ctx context.Context, arg BumpForgeMirrorSourceRevisionParams) (int64, error)
 	// Keep handle joins optional so missing handle rows do not hide @everyone members.
 	// reach: the author may reach agent aa
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]ChannelAgentMembersRow, error)
@@ -213,6 +213,7 @@ type Querier interface {
 	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
 	ForgeMirrorByConflictKeys(ctx context.Context, arg ForgeMirrorByConflictKeysParams) (ForgeMirrorByConflictKeysRow, error)
 	ForgeMirrorByID(ctx context.Context, id string) (ForgeMirrorByIDRow, error)
+	ForgeMirrorByRequest(ctx context.Context, arg ForgeMirrorByRequestParams) (ForgeMirrorByRequestRow, error)
 	// Ask mirroring settings and outbox persistence.
 	ForgeMirrorMode(ctx context.Context, arg ForgeMirrorModeParams) (int16, error)
 	ForgeScopeUserExists(ctx context.Context, accountID string) (bool, error)
@@ -606,6 +607,7 @@ type Querier interface {
 	// WRITE-ONCE authorship: the DO UPDATE deliberately omits agent_account_id and
 	// owner_user_id, so a re-land never rewrites who authored the artifact.
 	RecordAuthoredArtifact(ctx context.Context, arg RecordAuthoredArtifactParams) error
+	RecordForgeMirrorRequest(ctx context.Context, arg RecordForgeMirrorRequestParams) (int64, error)
 	// Runs under the BYPASSRLS system role (delivery consumer, no tenant GUC), so
 	// tenant_id is stamped explicitly from the owning account's FK rather than the
 	// column DEFAULT (which would NULL-violate with no GUC). The INSERT..SELECT

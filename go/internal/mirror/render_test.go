@@ -55,7 +55,7 @@ func TestRenderBodyReservesMarkerFromProviderLimit(t *testing.T) {
 
 type bodyLimitPoster int
 
-func (p bodyLimitPoster) PostMirror(context.Context, store.AccountID, store.ForgeMirrorMode, refs.Ref, string, string, string) (forge.Comment, error) {
+func (p bodyLimitPoster) PostMirror(context.Context, store.AccountID, string, store.ForgeMirrorMode, refs.Ref, string, string, string) (forge.Comment, error) {
 	return forge.Comment{}, nil
 }
 

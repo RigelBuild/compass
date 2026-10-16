@@ -88,3 +88,66 @@ func TestRunnerRelaysRunUnderTheSessionTenant(t *testing.T) {
 		t.Fatalf("CommitConversationFrame: %v", err)
 	}
 }
+
+// askAppendingComms appends a real ask through the store on the ctx the relay
+// hands its comms caller, so the queued mirror row reads that ctx's session.
+type askAppendingComms struct {
+	*fakeCommsCaller
+	st      *store.Store
+	channel store.ChannelID
+	coord   store.ForgeCoord
+	askID   string
+}
+
+func (c *askAppendingComms) PostAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
+	coord := c.coord
+	msg, _, err := c.st.AppendMessage(ctx, store.Message{AuthorAccountID: account, Blocks: []store.MessageBlock{{Ask: &store.Ask{
+		Ref: "owner/relay#7", RefCoord: &coord,
+		Questions: []store.AskQuestion{{QuestionID: "q1", Question: "Relay this?", Options: []store.AskOption{{ID: "yes", Label: "Yes"}}}},
+	}}}}, string(c.channel), store.TopicRef{Name: "relay-asks", Create: true}, "")
+	if err != nil {
+		return nil, err
+	}
+	c.askID = msg.Blocks[0].Ask.AskID
+	return c.fakeCommsCaller.PostAsAccountByName(ctx, account, req)
+}
+
+// An auto ask posted through the relay records the relaying session on its
+// mirror row, so the later post names that session.
+func TestRelayCommsCallStampsAskMirrorWithRelaySession(t *testing.T) {
+	ctx := context.Background()
+	st, agent, ctxB := openTenantBSession(t, ctx)
+	const sessionID = "sess-b"
+	if err := st.RecordAgentSession(ctxB, sessionID, agent.ID); err != nil {
+		t.Fatalf("RecordAgentSession: %v", err)
+	}
+	channel, err := st.CreateChannel(ctxB, agent.Agent.OwnerUserID, store.NewChannel{
+		Kind: store.ChannelKindChannel, Name: "relay-mirror", MemberAccountIDs: []store.AccountID{agent.Agent.OwnerUserID, agent.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	coord := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/relay", Number: 7}
+	if err := st.SetForgeMirrorSetting(ctxB, agent.Agent.OwnerUserID, store.ForgeMirrorSetting{Provider: coord.Provider, Host: coord.Host, Repo: coord.Repo, Mode: store.ForgeMirrorAuto}); err != nil {
+		t.Fatalf("SetForgeMirrorSetting: %v", err)
+	}
+	comms := &askAppendingComms{fakeCommsCaller: &fakeCommsCaller{postResp: &compassv1.PostMessageResponse{}}, st: st, channel: channel.ID, coord: coord}
+	hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, comms, discardLogger())
+	hub.SetSessionBindingStore(st)
+	if _, err := hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+		t.Fatalf("enroll Runner: %v", err)
+	}
+	if _, _, err := st.RecordSessionBinding(ctxB, sessionID, agent.ID, "runner-1"); err != nil {
+		t.Fatalf("RecordSessionBinding after enroll: %v", err)
+	}
+	if _, err := hub.RelayCommsCall(ctx, "runner-1", relayPost(sessionID, "c-ask", &compassv1.PostMessageRequest{})); err != nil {
+		t.Fatalf("RelayCommsCall: %v", err)
+	}
+	rows, err := st.AskForgeMirrors(ctxB, []string{comms.askID})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("AskForgeMirrors = (%+v, %v), want one row", rows, err)
+	}
+	if rows[0].SessionID != sessionID {
+		t.Fatalf("ask mirror session = %q, want the relay session %q", rows[0].SessionID, sessionID)
+	}
+}

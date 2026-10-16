@@ -26,11 +26,12 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// Owner-header session id for agent mirror comments; user mirrors use the
-// render attribution and do not carry an owner header.
-const mirrorAgentSession = "mirror"
+// maxOwnerSessionLen is the owner-header field grammar's longest value. Agent
+// mirror rows stamp their stored session, so the body budget reserves the
+// widest session the header can carry.
+const maxOwnerSessionLen = 39
 
-var mirrorOwnerHeaderAllowance = forge.MaxOwnerHeaderLen(mirrorAgentSession)
+var mirrorOwnerHeaderAllowance = forge.MaxOwnerHeaderLen(strings.Repeat("a", maxOwnerSessionLen))
 
 var _ mirror.Poster = (*forgeService)(nil)
 
@@ -58,6 +59,9 @@ type mirrorRefusalError struct {
 func (e *mirrorRefusalError) Error() string { return e.message }
 
 func (e *mirrorRefusalError) Unwrap() error { return mirror.ErrRefused }
+
+// FailureCode lets the drive store the refusal's code with the failed row.
+func (e *mirrorRefusalError) FailureCode() string { return e.code.String() }
 
 func (s *forgeService) mirrorAllowed(ctx context.Context, account store.Account, need store.ForgeMirrorMode, ref refs.Ref) (resolvedForge, string, uint64, *compassv1internal.ForgeCallError) {
 	if account.ID == "" {
@@ -127,7 +131,8 @@ func (s *forgeService) resolveMirrorCoordinate(ref refs.Ref) (resolvedForge, str
 	}
 	return rf, repo, ref.Number, nil
 }
-func (s *forgeService) PostMirror(ctx context.Context, actor store.AccountID, need store.ForgeMirrorMode, ref refs.Ref, commentKey, clientID, body string) (forge.Comment, error) {
+
+func (s *forgeService) PostMirror(ctx context.Context, actor store.AccountID, session string, need store.ForgeMirrorMode, ref refs.Ref, commentKey, clientID, body string) (forge.Comment, error) {
 	account, err := s.store.GetAccount(ctx, actor)
 	if err != nil {
 		return forge.Comment{}, fmt.Errorf("mirror: read caller: %w", err)
@@ -138,7 +143,12 @@ func (s *forgeService) PostMirror(ctx context.Context, actor store.AccountID, ne
 	}
 	switch {
 	case account.IsAgent():
-		identity, identityErr := s.resolveIdentity(ctx, actor, mirrorAgentSession)
+		// An agent post names the session that asked for it; with none recorded
+		// there is nothing true to stamp, so the row fails rather than posts.
+		if session == "" {
+			return forge.Comment{}, &mirrorRefusalError{code: connect.CodeFailedPrecondition, message: "mirror: agent row has no posting session"}
+		}
+		identity, identityErr := s.resolveIdentity(ctx, actor, session)
 		if identityErr != nil {
 			return forge.Comment{}, fmt.Errorf("mirror: resolve agent attribution: %s", identityErr.GetMessage())
 		}
@@ -154,18 +164,32 @@ func (s *forgeService) PostMirror(ctx context.Context, actor store.AccountID, ne
 	if commentKey != "" {
 		return rf.author.EditComment(ctx, repo, commentKey, body)
 	}
-	if ref.Kind == refs.KindForge {
-		rows, err := s.store.PullRequestsByCoords(ctx, []store.ForgeCoord{{Provider: store.ForgeProvider(rf.provider), Host: rf.host, Repo: repo, Number: number}})
-		if err != nil {
-			return forge.Comment{}, fmt.Errorf("mirror: look up pull request: %w", err)
-		}
-		for _, row := range rows {
-			if row.Coord.Number == number {
-				return rf.author.CommentOnPullRequest(ctx, repo, number, body, clientID)
-			}
-		}
+	isPR, err := s.mirrorTargetIsPullRequest(ctx, rf, repo, ref)
+	if err != nil {
+		return forge.Comment{}, err
+	}
+	if isPR {
+		return rf.author.CommentOnPullRequest(ctx, repo, number, body, clientID)
 	}
 	return rf.author.CommentOnIssue(ctx, repo, number, body, clientID)
+}
+
+// mirrorTargetIsPullRequest reports whether a GitHub target has an ingested
+// pull_requests row, which routes the post and the tool's result arm.
+func (s *forgeService) mirrorTargetIsPullRequest(ctx context.Context, rf resolvedForge, repo string, ref refs.Ref) (bool, error) {
+	if ref.Kind != refs.KindForge {
+		return false, nil
+	}
+	rows, err := s.store.PullRequestsByCoords(ctx, []store.ForgeCoord{{Provider: store.ForgeProvider(rf.provider), Host: rf.host, Repo: repo, Number: ref.Number}})
+	if err != nil {
+		return false, fmt.Errorf("mirror: look up pull request: %w", err)
+	}
+	for _, row := range rows {
+		if row.Coord.Number == ref.Number {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *forgeService) ListMirrorComments(ctx context.Context, actor store.AccountID, ref refs.Ref, since time.Time) ([]forge.Comment, error) {
@@ -407,6 +431,9 @@ func (s *forgeService) driveMirrorRow(ctx context.Context, rowID string, bodyFn 
 	if row.Source == 2 && bodyFn == nil && row.AskID != "" {
 		bodyFn = s.userAskBodyForRow()
 	}
+	if row.Source == 2 && bodyFn == nil && row.Agent != "" && row.SourcePayload != nil {
+		bodyFn = s.agentMessagesBodyForRow()
+	}
 	poster := mirror.Poster(userMirrorPoster{s})
 	if row.Agent != "" {
 		poster = agentMirrorPoster{s}
@@ -533,39 +560,76 @@ func (s *forgeService) MirrorAsUser(ctx context.Context, account store.Account, 
 	return s.claimAndDriveUserMirror(ctx, account, ref, sourceKey, renderBody, fail)
 }
 
-func (s *forgeService) resolveUserMirrorSource(ctx context.Context, account store.Account, req *compassv1.MirrorToForgeRequest, channel string) (string, mirror.BodyFunc, error) {
-	if req.GetTopicId() != "" {
-		return s.resolveUserTopicSource(ctx, account, req, channel)
+type resolvedMirrorMessages struct {
+	sourceKey string
+	messages  []store.Message
+	link      mirror.Link
+	note      string
+}
+
+func (s *forgeService) resolveMirrorMessages(ctx context.Context, actor store.AccountID, channelID, channelName, topicID string, messageIDs []string) (resolvedMirrorMessages, error) {
+	if (topicID == "") == (len(messageIDs) == 0) || len(messageIDs) > 50 {
+		return resolvedMirrorMessages{}, connect.NewError(connect.CodeInvalidArgument, errors.New("exactly one topic_id or 1 to 50 message ids are required"))
 	}
-	ids := append([]string(nil), req.GetMessageIds()...)
+	if topicID != "" {
+		topics, err := s.mirrorStoreDB.ListTopics(ctx, string(actor), channelID, true)
+		if err != nil {
+			return resolvedMirrorMessages{}, mirrorStoreError(err)
+		}
+		for _, topic := range topics {
+			if topic.ID != topicID {
+				continue
+			}
+			messages, err := s.mirrorStoreDB.ListMessages(ctx, store.ListMessagesQuery{Actor: actor, ChannelID: store.ChannelID(channelID), TopicID: topic.ID, Page: store.Page{Limit: 51}})
+			if err != nil {
+				return resolvedMirrorMessages{}, mirrorStoreError(err)
+			}
+			if messages == nil {
+				messages = []store.Message{}
+			}
+			showLimitNote := len(messages) > 50
+			if showLimitNote {
+				messages = append([]store.Message(nil), messages[:50]...)
+			}
+			slices.Reverse(messages)
+			note := ""
+			if showLimitNote {
+				note = "Showing the newest 50 messages."
+			}
+			link := mirror.Link{Channel: channelName, Topic: topic.Name, URL: topicLinkFor(s.publicURL, channelID, topic.ID)}
+			return resolvedMirrorMessages{sourceKey: topic.ID, messages: messages, link: link, note: note}, nil
+		}
+		return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
+	}
+	ids := append([]string(nil), messageIDs...)
 	slices.Sort(ids)
 	for i, id := range ids {
 		if id == "" || i > 0 && id == ids[i-1] {
-			return "", nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message ids must be non-empty and unique"))
+			return resolvedMirrorMessages{}, connect.NewError(connect.CodeInvalidArgument, errors.New("message ids must be non-empty and unique"))
 		}
 	}
 	hash := sha256.Sum256([]byte(strings.Join(ids, "\n")))
 	messages := make([]store.Message, 0, len(ids))
 	for _, id := range ids {
 		messageChannel, err := s.mirrorStoreDB.MessageChannel(ctx, id)
-		if errors.Is(err, store.ErrNotFound) || err == nil && messageChannel != store.ChannelID(req.GetChannelId()) {
-			return "", nil, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
+		if errors.Is(err, store.ErrNotFound) || err == nil && messageChannel != store.ChannelID(channelID) {
+			return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
 		}
 		if err != nil {
-			return "", nil, mirrorStoreError(err)
+			return resolvedMirrorMessages{}, mirrorStoreError(err)
 		}
 		message, err := s.mirrorStoreDB.MessageByID(ctx, id)
 		if err != nil {
-			return "", nil, mirrorStoreError(err)
+			return resolvedMirrorMessages{}, mirrorStoreError(err)
 		}
 		messages = append(messages, message)
 	}
-	member, err := s.mirrorStoreDB.IsChannelMember(ctx, account.ID, store.ChannelID(req.GetChannelId()))
+	member, err := s.mirrorStoreDB.IsChannelMember(ctx, actor, store.ChannelID(channelID))
 	if err != nil {
-		return "", nil, mirrorStoreError(err)
+		return resolvedMirrorMessages{}, mirrorStoreError(err)
 	}
 	if !member {
-		return "", nil, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
+		return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
 	}
 	sort.Slice(messages, func(i, j int) bool {
 		if messages[i].At.Equal(messages[j].At) {
@@ -573,41 +637,16 @@ func (s *forgeService) resolveUserMirrorSource(ctx context.Context, account stor
 		}
 		return messages[i].At.Before(messages[j].At)
 	})
-	key := hex.EncodeToString(hash[:])
-	link := mirror.Link{Channel: channel, Topic: "selected messages", URL: deepLinkFor(s.publicURL, req.GetChannelId())}
-	return key, userMessageBody(messages, messageAuthors(messages), link, account.Handle, ""), nil
-
+	link := mirror.Link{Channel: channelName, Topic: "selected messages", URL: deepLinkFor(s.publicURL, channelID)}
+	return resolvedMirrorMessages{sourceKey: hex.EncodeToString(hash[:]), messages: messages, link: link}, nil
 }
 
-func (s *forgeService) resolveUserTopicSource(ctx context.Context, account store.Account, req *compassv1.MirrorToForgeRequest, channel string) (string, mirror.BodyFunc, error) {
-	topics, err := s.mirrorStoreDB.ListTopics(ctx, string(account.ID), req.GetChannelId(), true)
+func (s *forgeService) resolveUserMirrorSource(ctx context.Context, account store.Account, req *compassv1.MirrorToForgeRequest, channel string) (string, mirror.BodyFunc, error) {
+	resolved, err := s.resolveMirrorMessages(ctx, account.ID, req.GetChannelId(), channel, req.GetTopicId(), req.GetMessageIds())
 	if err != nil {
-		return "", nil, mirrorStoreError(err)
+		return "", nil, err
 	}
-	for _, topic := range topics {
-		if topic.ID != req.GetTopicId() {
-			continue
-		}
-		messages, err := s.mirrorStoreDB.ListMessages(ctx, store.ListMessagesQuery{Actor: account.ID, ChannelID: store.ChannelID(req.GetChannelId()), TopicID: topic.ID, Page: store.Page{Limit: 51}})
-		if err != nil {
-			return "", nil, mirrorStoreError(err)
-		}
-		if messages == nil {
-			messages = []store.Message{}
-		}
-		showLimitNote := len(messages) > 50
-		if showLimitNote {
-			messages = append([]store.Message(nil), messages[:50]...)
-		}
-		slices.Reverse(messages)
-		note := ""
-		if showLimitNote {
-			note = "Showing the newest 50 messages."
-		}
-		link := mirror.Link{Channel: channel, Topic: topic.Name, URL: topicLinkFor(s.publicURL, req.GetChannelId(), topic.ID)}
-		return topic.ID, userMessageBody(messages, messageAuthors(messages), link, account.Handle, note), nil
-	}
-	return "", nil, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
+	return resolved.sourceKey, userMessageBody(resolved.messages, messageAuthors(resolved.messages), resolved.link, account.Handle, resolved.note), nil
 }
 
 func userMessageBody(messages []store.Message, authors map[store.AccountID]string, link mirror.Link, handle, note string) mirror.BodyFunc {
@@ -690,11 +729,37 @@ func (s *forgeService) claimAndDriveUserMirror(ctx context.Context, account stor
 	}
 	return s.clickDrive(ctx, row, bodyFn, fail)
 }
+
 func (s *forgeService) clickDrive(ctx context.Context, row store.ForgeMirrorRow, bodyFn mirror.BodyFunc, fail func(connect.Code, error) (string, error)) (string, error) {
+	result, ok := s.awaitMirrorDrive(ctx, row, bodyFn)
+	if !ok {
+		return fail(connect.CodeUnavailable, errors.New("mirror still delivering"))
+	}
+	if result.row.State == 3 {
+		return fail(mirrorFailureCode(result.err), result.err)
+	}
+	if result.err != nil {
+		return "", connect.NewError(connect.CodeInternal, result.err)
+	}
+	if result.row.State != 2 {
+		return fail(connect.CodeUnavailable, errors.New("mirror row was not delivered"))
+	}
+	return result.row.CommentURL, nil
+}
+
+type mirrorDriveResult struct {
+	row store.ForgeMirrorRow
+	err error
+}
+
+// awaitMirrorDrive drives row under the mirror lifetime, detached from ctx so a
+// caller that stops waiting never strands a POST. ok is false when the server
+// is closing or ctx ends first; delivery then continues in the background.
+func (s *forgeService) awaitMirrorDrive(ctx context.Context, row store.ForgeMirrorRow, bodyFn mirror.BodyFunc) (mirrorDriveResult, bool) {
 	s.mirrorMu.Lock()
 	if s.mirrorClosing {
 		s.mirrorMu.Unlock()
-		return fail(connect.CodeUnavailable, errors.New("mirror still delivering"))
+		return mirrorDriveResult{}, false
 	}
 	done := s.mirrorDone
 	if done == nil {
@@ -708,11 +773,7 @@ func (s *forgeService) clickDrive(ctx context.Context, row store.ForgeMirrorRow,
 	workCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopLife := cancelOnDone(done, cancel)
 
-	type driveResult struct {
-		row store.ForgeMirrorRow
-		err error
-	}
-	resultCh := make(chan driveResult, 1)
+	resultCh := make(chan mirrorDriveResult, 1)
 	go func() {
 		defer s.mirrorWG.Done()
 		defer cancel()
@@ -733,34 +794,31 @@ func (s *forgeService) clickDrive(ctx context.Context, row store.ForgeMirrorRow,
 			slog.Default().ErrorContext(workCtx, "drive user forge mirror", "mirror_id", row.ID, "error", err)
 		}
 		s.scheduleMirrorRecheck(workCtx, result, bodyFn, err != nil)
-		resultCh <- driveResult{row: result, err: err}
+		resultCh <- mirrorDriveResult{row: result, err: err}
 	}()
 	select {
 	case <-ctx.Done():
-		return fail(connect.CodeUnavailable, errors.New("mirror still delivering"))
+		return mirrorDriveResult{}, false
 	case result := <-resultCh:
 		if ctx.Err() != nil {
-			return fail(connect.CodeUnavailable, errors.New("mirror still delivering"))
+			return mirrorDriveResult{}, false
 		}
-		if result.row.State == 3 {
-			if refusal, ok := errors.AsType[*mirrorRefusalError](result.err); ok {
-				return fail(refusal.code, result.err)
-			}
-			if errors.Is(result.err, forge.ErrBodyTooLarge) {
-				return fail(connect.CodeInvalidArgument, result.err)
-			}
-			if errors.Is(result.err, store.ErrLeaseLost) {
-				return fail(connect.CodeUnavailable, result.err)
-			}
-			return fail(connect.CodeInternal, result.err)
-		}
-		if result.err != nil {
-			return "", connect.NewError(connect.CodeInternal, result.err)
-		}
-		if result.row.State != 2 {
-			return fail(connect.CodeUnavailable, errors.New("mirror row was not delivered"))
-		}
-		return result.row.CommentURL, nil
+		return result, true
+	}
+}
+
+// mirrorFailureCode maps a failed row's drive error to the caller's status.
+func mirrorFailureCode(err error) connect.Code {
+	if refusal, ok := errors.AsType[*mirrorRefusalError](err); ok {
+		return refusal.code
+	}
+	switch {
+	case errors.Is(err, forge.ErrBodyTooLarge):
+		return connect.CodeInvalidArgument
+	case errors.Is(err, store.ErrLeaseLost):
+		return connect.CodeUnavailable
+	default:
+		return connect.CodeInternal
 	}
 }
 

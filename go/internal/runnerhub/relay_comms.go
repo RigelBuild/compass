@@ -635,6 +635,8 @@ func (h *Hub) RelayCommsCall(
 	if err != nil {
 		return nil, err
 	}
+	// Ask mirrors queued by this post attribute to the verified posting session.
+	ctx = store.WithAgentSession(ctx, req.GetSessionId())
 
 	call := req.GetCall()
 	callID := call.GetCallId()

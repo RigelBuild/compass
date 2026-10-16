@@ -5,11 +5,9 @@ harness resolves against the server, distinct from any MCP tools a task might
 also carry. Each tool carries its own description at the call site; this doc is
 the higher-level map: what the set covers and the general flow of using it.
 
-> **Keep this current as tools land.** The comms and lifecycle tools below have
-> shipped and are documented here. The forge tools and the subscription tools
-> are landing; as each lands,
-> add it to the right group below and note its flow. A tool that has shipped but
-> is not listed here is a documentation gap to close.
+> **Keep this current as tools land.** The comms, lifecycle, and forge tools
+> below have shipped and are documented here. A tool that has shipped but is
+> not listed here is a documentation gap to close.
 
 ## Comms — how agents talk
 
@@ -61,6 +59,15 @@ a subagent spawn.
 - **`agents_spawn_peer`** — stand up a standing peer/child agent (account +
   container + session). Spawning a child Manager needs operator approval first.
 - **`agents_despawn_peer`** — tear a standing agent down when its lane closes.
+
+## Forge — working with issues and pull requests
+
+- **`forge_get_issue`, `forge_get_pull_request`, `forge_list_issues`** — read forge state.
+- **`forge_comment_on_issue`, `forge_comment_on_pull_request`, `forge_submit_review`** — write comments and reviews under server-stamped agent attribution.
+- **`forge_create_issue`, `forge_create_pull_request`** — create forge artifacts with idempotent retries.
+- **`forge_transition_issue_state`, `forge_transition_pull_request_state`** — change artifact state.
+- **`forge_subscribe`, `forge_unsubscribe`** — manage notifications for forge artifacts.
+- **`forge_mirror_messages`** — mirror one visible topic or selected messages to an AUTO-enabled issue or pull request. Choose exactly one source. A topic mirrors its newest 50 messages; selected messages must come from one channel. An optional channel is a visible channel name, and an optional note appears above the messages. The Server checks source visibility, AUTO mode, repository scope, and idempotent delivery before posting.
 
 ## The general flow
 

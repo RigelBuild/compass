@@ -231,6 +231,8 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 		return s.subscribeForge(ctx, caller, call, c.Subscribe), nil
 	case *compassv1internal.ForgeCallRequest_Unsubscribe:
 		return s.unsubscribeForge(ctx, caller, c.Unsubscribe), nil
+	case *compassv1internal.ForgeCallRequest_MirrorMessages:
+		return s.mirrorMessages(ctx, caller, sessionID, call, c.MirrorMessages), nil
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: call has no operation variant set"))
 	}

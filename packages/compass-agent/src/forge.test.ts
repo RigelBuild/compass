@@ -1,4 +1,4 @@
-// ForgeBroker + the twelve native forge tools (design:
+// ForgeBroker + the thirteen native forge tools (design:
 // docs/designs/agent/compass-agent-forge-tools/design.md, T1 + T2).
 // Each test defends an observable contract of the agent->Runner forge call: the
 // exact `ForgeCallRequest` a tool `execute` puts on the wire (arm case, arm
@@ -29,6 +29,7 @@ import {
 	IssueSchema,
 	ListIssuesResponseSchema,
 	type MessageInitShape,
+	MirrorMessagesRequestSchema,
 	PullRequestSchema,
 	ReviewRefSchema,
 	SubscribeForgeResponseSchema,
@@ -45,6 +46,7 @@ import {
 	getIssueParameters,
 	getPullRequestParameters,
 	listIssuesParameters,
+	mirrorMessagesParameters,
 	submitReviewParameters,
 	subscribeParameters,
 	transitionIssueStateParameters,
@@ -201,7 +203,7 @@ describe("ForgeBroker", () => {
 	});
 });
 describe("createForgeTools", () => {
-	test("exposes all twelve forge tools and registers transitions as writes", () => {
+	test("exposes all thirteen forge tools and registers transitions as writes", () => {
 		const tools = createForgeTools(
 			new ForgeBroker(new FakeTransport(issueResult())),
 		);
@@ -218,7 +220,11 @@ describe("createForgeTools", () => {
 			"forge_transition_pull_request_state",
 			"forge_subscribe",
 			"forge_unsubscribe",
+			"forge_mirror_messages",
 		]);
+		expect(
+			tools.filter((t) => t.name === "forge_mirror_messages"),
+		).toHaveLength(1);
 		expect(
 			tools.every((t) => t.label.length > 0 && t.description.length > 0),
 		).toBe(true);
@@ -244,6 +250,7 @@ describe("createForgeTools", () => {
 			"forge_transition_issue_state",
 			"forge_transition_pull_request_state",
 			"forge_subscribe",
+			"forge_mirror_messages",
 			"forge_unsubscribe",
 		])
 			expect(approvalOf(w)).toBe("write");
@@ -806,6 +813,79 @@ describe("forge_submit_review", () => {
 	});
 });
 
+describe("forge_mirror_messages", () => {
+	test("sends the selected source, note, and broker idempotency key", async () => {
+		const transport = new FakeTransport(
+			commentResult("issueComment", {
+				url: "https://github.com/o/r/issues/12#c1",
+			}),
+		);
+		const broker = new ForgeBroker(transport);
+		const result = await exec(
+			tool(broker, "forge_mirror_messages"),
+			"mirror-call",
+			{
+				ref: "o/r#12",
+				message_ids: ["m1", "m2"],
+				channel: "support",
+				note: "Please review",
+			},
+		);
+		const req = transport.requests[0];
+		expect(req.call.case).toBe("mirrorMessages");
+		if (req.call.case !== "mirrorMessages") throw new Error("expected arm");
+		expect(req.call.value.ref).toBe("o/r#12");
+		expect(req.call.value.messageIds).toEqual(["m1", "m2"]);
+		expect(req.call.value.topicId).toBe("");
+		expect(req.call.value.channel).toBe("support");
+		expect(req.call.value.note).toBe("Please review");
+		expect(req.clientRequestId).toBe(broker.idempotencyKey("mirror-call"));
+		expect(textOf(result)).toBe(
+			"Mirrored messages to issue o/r#12: https://github.com/o/r/issues/12#c1",
+		);
+	});
+
+	test("renders the PR result variant", async () => {
+		const transport = new FakeTransport(
+			commentResult("prComment", {
+				url: "https://github.com/o/r/pull/12#c1",
+			}),
+		);
+		const result = await exec(
+			tool(new ForgeBroker(transport), "forge_mirror_messages"),
+			"mirror-pr-call",
+			{ ref: "o/r#12", topic_id: "topic-1" },
+		);
+		const req = transport.requests[0];
+		if (req.call.case !== "mirrorMessages") throw new Error("expected arm");
+		expect(req.call.value.topicId).toBe("topic-1");
+		expect(req.call.value.messageIds).toEqual([]);
+		expect(req.call.value.channel).toBe("");
+		expect(textOf(result)).toBe(
+			"Mirrored messages to pull request o/r#12: https://github.com/o/r/pull/12#c1",
+		);
+	});
+
+	test.each([
+		{ name: "neither source", params: { ref: "o/r#12" } },
+		{
+			name: "both sources",
+			params: { ref: "o/r#12", topic_id: "topic-1", message_ids: ["m1"] },
+		},
+	])("rejects $name before calling the server", async ({ params }) => {
+		const transport = new FakeTransport(errorResult("internal", "unused"));
+		await expect(
+			exec(
+				tool(new ForgeBroker(transport), "forge_mirror_messages"),
+				"invalid-source",
+				params,
+			),
+		).rejects.toThrow(
+			"forge_mirror_messages: provide exactly one of topic_id or message_ids",
+		);
+		expect(transport.requests).toHaveLength(0);
+	});
+});
 describe("forge transition tools", () => {
 	test("transitions an issue and returns the updated artifact", async () => {
 		const transport = new FakeTransport(
@@ -1169,6 +1249,64 @@ describe("forge parameter schemas", () => {
 		expect(rejects(getIssueParameters, { repo: "o/r", issue_number: 1 })).toBe(
 			false,
 		);
+		// Each schema with otherwise-valid params: only the whitespace repo fails.
+		const cases: ReadonlyArray<readonly [Type<object>, object]> = [
+			[getIssueParameters, { issue_number: 1 }],
+			[getPullRequestParameters, { pr_number: 1 }],
+			[listIssuesParameters, {}],
+			[commentOnIssueParameters, { issue_number: 1, body: "b" }],
+			[commentOnPullRequestParameters, { pr_number: 1, body: "b" }],
+		];
+		for (const [schema, valid] of cases) {
+			expect(rejects(schema, { ...valid, repo: "o/r" })).toBe(false);
+			expect(rejects(schema, { ...valid, repo: " \t " })).toBe(true);
+		}
+	});
+
+	test("mirror parameters reject empty, oversized, or mixed sources", () => {
+		expect(rejects(mirrorMessagesParameters, { ref: "o/r#12" })).toBe(true);
+		expect(
+			rejects(mirrorMessagesParameters, {
+				ref: "o/r#12",
+				message_ids: [],
+			}),
+		).toBe(true);
+		expect(
+			rejects(mirrorMessagesParameters, {
+				ref: "o/r#12",
+				topic_id: "topic-1",
+				message_ids: ["m1"],
+			}),
+		).toBe(true);
+		expect(
+			rejects(mirrorMessagesParameters, {
+				ref: "o/r#12",
+				message_ids: Array.from({ length: 51 }, (_, i) => `m${i}`),
+			}),
+		).toBe(true);
+		expect(
+			rejects(mirrorMessagesParameters, {
+				ref: "o/r#12",
+				message_ids: ["m1"],
+			}),
+		).toBe(false);
+	});
+
+	test("mirror wire schema exposes the request arm", () => {
+		expect(
+			create(MirrorMessagesRequestSchema, {
+				ref: "o/r#12",
+				messageIds: ["m1"],
+				topicId: "",
+				channel: "support",
+				note: "Review",
+			}),
+		).toMatchObject({
+			ref: "o/r#12",
+			messageIds: ["m1"],
+			channel: "support",
+			note: "Review",
+		});
 	});
 
 	// Message-level coverage for the SHARED `nonBlank` helper path. The

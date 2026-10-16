@@ -581,6 +581,298 @@ func TestClaimForgeMirrorSourceTwoRequiresSourceKey(t *testing.T) {
 	}
 }
 
+// A claim stores the session and payload; a re-mirror of the same source
+// replaces the payload and session and bumps the revision as an edit does.
+func TestClaimForgeMirrorStoresSessionAndPayloadAndRemirrorUpdatesThem(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-payload")
+	first, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-1", Actor: agent, Agent: agent, ClientRequestID: "call-1",
+		TargetRef: "owner/repo#3", BodyRev: 1, State: 1, SessionID: "sess-a", SourcePayload: []byte(`{"note":"one"}`),
+	})
+	if err != nil || !created || first.SessionID != "sess-a" || string(first.SourcePayload) != `{"note": "one"}` {
+		t.Fatalf("ClaimForgeMirror(first) = (%+v, created=%v, err=%v), want stored session and payload", first, created, err)
+	}
+	second, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-1", Actor: agent, Agent: agent, ClientRequestID: "call-2",
+		TargetRef: "owner/repo#3", BodyRev: 1, State: 1, SessionID: "sess-b", SourcePayload: []byte(`{"note":"two"}`),
+	})
+	if err != nil || created || second.ID != first.ID || second.BodyRev != 2 || second.SessionID != "sess-b" || string(second.SourcePayload) != `{"note": "two"}` {
+		t.Fatalf("ClaimForgeMirror(re-mirror) = (%+v, created=%v, err=%v), want bumped row with the new session and payload", second, created, err)
+	}
+}
+
+// A retry of the re-mirror key finds the row and does not bump it again.
+func TestRemirrorRequestKeyIsRecordedOnce(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-request-key")
+	claim := func(key string) ForgeMirrorRow {
+		t.Helper()
+		row, _, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+			Source: 2, SourceKey: "topic-k", Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#5", BodyRev: 1, State: 1, SessionID: "sess-k", SourcePayload: []byte(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("ClaimForgeMirror(%s): %v", key, err)
+		}
+		return row
+	}
+	first := claim("call-1")
+	if bumped := claim("call-2"); bumped.BodyRev != 2 {
+		t.Fatalf("re-mirror body_rev = %d, want 2", bumped.BodyRev)
+	}
+	if again := claim("call-2"); again.BodyRev != 2 {
+		t.Fatalf("re-mirror retry body_rev = %d, want unchanged 2", again.BodyRev)
+	}
+	for _, key := range []string{"call-1", "call-2"} {
+		row, found, err := s.ForgeMirrorByRequest(ctx, agent, key)
+		if err != nil || !found || row.ID != first.ID {
+			t.Fatalf("ForgeMirrorByRequest(%s) = (%+v, found=%v, err=%v), want row %s", key, row, found, err, first.ID)
+		}
+	}
+	if _, found, err := s.ForgeMirrorByRequest(ctx, agent, "call-unused"); err != nil || found {
+		t.Fatalf("ForgeMirrorByRequest(unused) = (found=%v, err=%v), want not found", found, err)
+	}
+}
+
+func TestMarkForgeMirrorStoresFailureCode(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-error-code")
+	row, _, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-e", Actor: agent, Agent: agent, TargetRef: "owner/repo#6", BodyRev: 1, State: 1,
+	})
+	if err != nil {
+		t.Fatalf("ClaimForgeMirror: %v", err)
+	}
+	if _, ok, err := s.LeaseForgeMirror(ctx, row.ID, "code-token", time.Minute); err != nil || !ok {
+		t.Fatalf("LeaseForgeMirror = (ok=%v, err=%v)", ok, err)
+	}
+	if err := s.MarkForgeMirror(ctx, row.ID, "code-token", ForgeMirrorMark{State: 3, Err: "gone", ErrCode: "not_found"}); err != nil {
+		t.Fatalf("MarkForgeMirror: %v", err)
+	}
+	got, err := s.ForgeMirrorByID(ctx, row.ID)
+	if err != nil || got.LastError != "gone" || got.LastErrorCode != "not_found" {
+		t.Fatalf("ForgeMirrorByID = (%+v, %v), want the stored error and code", got, err)
+	}
+}
+
+// The old cross-table race, driven in order: a re-mirror reserves a key for
+// source A, then a new claim on source B arrives with the same key. The claim
+// must resolve to A instead of inserting a second row for the key.
+func TestRequestKeyReservedByRemirrorBlocksLaterClaim(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-key-race")
+	claim := func(source, key string) (ForgeMirrorRow, bool) {
+		t.Helper()
+		row, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+			Source: 2, SourceKey: source, Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#7", BodyRev: 1, State: 1, SessionID: "sess-r", SourcePayload: []byte(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("ClaimForgeMirror(%s, %s): %v", source, key, err)
+		}
+		return row, created
+	}
+	a, _ := claim("topic-a", "call-a")
+	if remirrored, created := claim("topic-a", "call-shared"); created || remirrored.ID != a.ID {
+		t.Fatalf("re-mirror = (%s, created=%v), want row %s", remirrored.ID, created, a.ID)
+	}
+	late, created := claim("topic-b", "call-shared")
+	if created || late.ID != a.ID {
+		t.Fatalf("late claim = (%s, created=%v), want the reserved row %s", late.ID, created, a.ID)
+	}
+	if n := mirrorRowCount(t, s, ctx, agent); n != 1 {
+		t.Fatalf("mirror row count = %d, want 1", n)
+	}
+	for range 3 {
+		got, found, err := s.ForgeMirrorByRequest(ctx, agent, "call-shared")
+		if err != nil || !found || got.ID != a.ID {
+			t.Fatalf("ForgeMirrorByRequest(call-shared) = (%s, found=%v, err=%v), want %s", got.ID, found, err, a.ID)
+		}
+	}
+	// The reverse order: a claim reserves the key, then a re-mirror of another
+	// source with that key resolves to the claim's row without bumping it.
+	b, _ := claim("topic-c", "call-c")
+	if again, created := claim("topic-a", "call-c"); created || again.ID != b.ID {
+		t.Fatalf("re-mirror with a claimed key = (%s, created=%v), want %s", again.ID, created, b.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, a.ID); err != nil || after.BodyRev != 2 {
+		t.Fatalf("row A body_rev = %d (err %v), want 2 (one re-mirror only)", after.BodyRev, err)
+	}
+}
+
+// The window ClaimForgeMirror's early lookup cannot close: a racing claim
+// reserves the key after this call's lookup missed. Calling claimConflict
+// directly with the reservation already present drives the re-mirror's
+// recorded == 0 path, which returns the reserved row as ClaimReserved.
+func TestClaimConflictResolvesToRowReservedAfterLookup(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-key-window")
+	row := func(source, key string) ForgeMirrorRow {
+		return ForgeMirrorRow{
+			Source: 2, SourceKey: source, Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#8", BodyRev: 1, State: 1, SessionID: "sess-w", SourcePayload: []byte(`{}`),
+		}
+	}
+	loser, created, err := s.ClaimForgeMirror(ctx, row("topic-loser", "call-loser"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(loser) = (created=%v, err=%v)", created, err)
+	}
+	winner, created, err := s.ClaimForgeMirror(ctx, row("topic-winner", "call-winner"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(winner) = (created=%v, err=%v)", created, err)
+	}
+	// The racing call's reservation lands after this call's lookup missed. The
+	// raw handle has no tenant GUC, so the row's tenant is copied explicitly.
+	tag, err := s.pool.Exec(ctx, `INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id, tenant_id)
+		SELECT $1, $2, id, tenant_id FROM forge_mirrors WHERE id = $3`,
+		string(agent), "call-raced", winner.ID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("reserve call-raced = (%d rows, err %v), want 1 row", tag.RowsAffected(), err)
+	}
+	got, resolution, err := s.claimConflict(ctx, row("topic-loser", "call-raced"))
+	if err != nil || resolution != ClaimReserved || got.ID != winner.ID {
+		t.Fatalf("claimConflict = (%s, %v, err=%v), want the reserving row %s reserved", got.ID, resolution, err, winner.ID)
+	}
+	after, err := s.ForgeMirrorByID(ctx, loser.ID)
+	if err != nil || after.BodyRev != 1 {
+		t.Fatalf("losing source row body_rev = %d (err %v), want unbumped 1", after.BodyRev, err)
+	}
+	if reserved, found, err := s.ForgeMirrorByRequest(ctx, agent, "call-raced"); err != nil || !found || reserved.ID != winner.ID {
+		t.Fatalf("ForgeMirrorByRequest(call-raced) = (%s, found=%v, err=%v), want %s", reserved.ID, found, err, winner.ID)
+	}
+}
+
+// A keyed claim's lookup misses, then a racing call inserts its own row under
+// the same key. claimConflict, called directly after that insert, must find
+// the racer's row by its request key and report it Reserved, not a conflict.
+func TestClaimConflictResolvesRacingKeyedInsertAsReserved(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-key-insert")
+	row := func(source, key string) ForgeMirrorRow {
+		return ForgeMirrorRow{
+			Source: 2, SourceKey: source, Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#9", BodyRev: 1, State: 1, SessionID: "sess-i", SourcePayload: []byte(`{}`),
+		}
+	}
+	loser, created, err := s.ClaimForgeMirror(ctx, row("topic-loser", "call-loser"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(loser) = (created=%v, err=%v)", created, err)
+	}
+	racer, created, err := s.ClaimForgeMirror(ctx, row("topic-racer", "call-shared"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(racer) = (created=%v, err=%v)", created, err)
+	}
+	got, resolution, err := s.claimConflict(ctx, row("topic-loser", "call-shared"))
+	if err != nil || resolution != ClaimReserved || got.ID != racer.ID {
+		t.Fatalf("claimConflict = (%s, %v, err=%v), want the racer's row %s reserved", got.ID, resolution, err, racer.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, loser.ID); err != nil || after.BodyRev != 1 {
+		t.Fatalf("losing source row body_rev = %d (err %v), want unbumped 1", after.BodyRev, err)
+	}
+}
+
+// A keyed agent claim's source is held by another actor's row (a plain
+// conflict), while a racing re-mirror has reserved the claim's key on a row
+// whose own key differs. claimConflict must report that row Reserved.
+func TestClaimConflictPrefersKeyReservedOnAnotherRow(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, owner := seedAgent(t, s, "mirror-key-remirror")
+	held, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-held", Actor: owner, TargetRef: "owner/repo#11", BodyRev: 1, State: 1,
+	})
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(held) = (created=%v, err=%v)", created, err)
+	}
+	remirrored, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-remirrored", Actor: agent, Agent: agent, ClientRequestID: "call-first",
+		TargetRef: "owner/repo#11", BodyRev: 1, State: 1, SessionID: "sess-h", SourcePayload: []byte(`{}`),
+	})
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(remirrored) = (created=%v, err=%v)", created, err)
+	}
+	// The racing re-mirror's reservation; the raw handle needs the row's tenant.
+	tag, err := s.pool.Exec(ctx, `INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id, tenant_id)
+		SELECT $1, $2, id, tenant_id FROM forge_mirrors WHERE id = $3`,
+		string(agent), "call-raced", remirrored.ID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("reserve call-raced = (%d rows, err %v), want 1 row", tag.RowsAffected(), err)
+	}
+	got, resolution, err := s.claimConflict(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-held", Actor: agent, Agent: agent, ClientRequestID: "call-raced",
+		TargetRef: "owner/repo#11", BodyRev: 1, State: 1, SessionID: "sess-h", SourcePayload: []byte(`{}`),
+	})
+	if err != nil || resolution != ClaimReserved || got.ID != remirrored.ID {
+		t.Fatalf("claimConflict = (%s, %v, err=%v), want the reserved row %s", got.ID, resolution, err, remirrored.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, held.ID); err != nil || after.BodyRev != 1 {
+		t.Fatalf("held row body_rev = %d (err %v), want untouched 1", after.BodyRev, err)
+	}
+}
+
+// Two same-key re-mirrors of one source interleave: both missed the key
+// lookup, and the winner reserved the key and bumped the row. The loser, via
+// claimConflict, reaches remirrorSource with bumped=false and must not bump.
+func TestClaimConflictSameSourceRemirrorLoserIsReserved(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-remirror-race")
+	row := func(key string) ForgeMirrorRow {
+		return ForgeMirrorRow{
+			Source: 2, SourceKey: "topic-r", Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#10", BodyRev: 1, State: 1, SessionID: "sess-r", SourcePayload: []byte(`{}`),
+		}
+	}
+	first, created, err := s.ClaimForgeMirror(ctx, row("call-first"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(first) = (created=%v, err=%v)", created, err)
+	}
+	won, resolution, err := s.ClaimForgeMirrorResolved(ctx, row("call-again"))
+	if err != nil || resolution != ClaimRemirrored || won.ID != first.ID || won.BodyRev != 2 {
+		t.Fatalf("winning re-mirror = (%+v, %v, err=%v), want %s re-mirrored at body_rev 2", won, resolution, err, first.ID)
+	}
+	lost, resolution, err := s.claimConflict(ctx, row("call-again"))
+	if err != nil || resolution != ClaimReserved || lost.ID != first.ID || lost.BodyRev != 2 {
+		t.Fatalf("losing re-mirror = (%+v, %v, err=%v), want %s reserved at body_rev 2", lost, resolution, err, first.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, first.ID); err != nil || after.BodyRev != 2 {
+		t.Fatalf("row body_rev = %d (err %v) after the losing re-mirror, want 2", after.BodyRev, err)
+	}
+}
+
+// An auto ask row takes its session from the posting ctx; a post with no
+// session on ctx stores an empty one for the poster to refuse.
+func TestAskMirrorRowTakesSessionFromContext(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "mirror-session-owner")
+	agent := mustAgent(t, s, owner.ID, "mirror-session-agent")
+	coord := ForgeCoord{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "owner/session", Number: 4}
+	if err := s.SetForgeMirrorSetting(ctx, owner.ID, ForgeMirrorSetting{Provider: coord.Provider, Host: coord.Host, Repo: coord.Repo, Mode: ForgeMirrorAuto}); err != nil {
+		t.Fatalf("SetForgeMirrorSetting: %v", err)
+	}
+	for _, tc := range []struct{ name, session string }{{"relayed", "sess-relay"}, {"no session", ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			postCtx := ctx
+			if tc.session != "" {
+				postCtx = WithAgentSession(ctx, tc.session)
+			}
+			msg, _ := appendAskForMirrorTest(t, postCtx, s, agent.ID, mirrorTestAsk("owner/session#4", &coord), "")
+			rows, err := s.AskForgeMirrors(ctx, []string{msg.Blocks[0].Ask.AskID})
+			if err != nil || len(rows) != 1 || rows[0].SessionID != tc.session {
+				t.Fatalf("AskForgeMirrors = (%+v, %v), want one row with session %q", rows, err, tc.session)
+			}
+		})
+	}
+}
+
 func TestForgeMirrorExpiredLeaseFencesAttemptsAndMarks(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

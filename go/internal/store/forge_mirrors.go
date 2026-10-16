@@ -47,6 +47,9 @@ type ForgeMirrorRow struct {
 	CommentKey      string
 	CommentURL      string
 	LastError       string
+	// LastErrorCode is the Connect code of a failed row's error, so a retry
+	// reports the same status the failing drive did.
+	LastErrorCode   string
 	FirstAttemptAt  *time.Time
 	LastAttemptAt   *time.Time
 	ClientCommentID string
@@ -54,6 +57,11 @@ type ForgeMirrorRow struct {
 	LeaseUntil      *time.Time
 	LeaseToken      string
 	UpdatedAt       time.Time
+	// SessionID is the agent session the owner header names; empty on user rows.
+	SessionID string
+	// SourcePayload holds an agent message mirror's render inputs, so a redrive
+	// after restart can rebuild the body; nil on ask and user rows.
+	SourcePayload []byte
 }
 
 // ForgeMirrorMark is the result of one mirror delivery or reconciliation pass.
@@ -64,6 +72,7 @@ type ForgeMirrorMark struct {
 	CommentKey   string
 	URL          string
 	Err          string
+	ErrCode      string
 	Recheck      bool
 	ClearRecheck bool
 }
@@ -138,43 +147,102 @@ func (s *Store) SetForgeMirrorSetting(ctx context.Context, actor AccountID, set 
 	return nil
 }
 
-// ClaimForgeMirror inserts a row or returns the row at its conflicting key.
+// ClaimResolution says how a claim resolved: the caller drives only a row it
+// inserted or re-mirrored, and reports any other row as it stands.
+type ClaimResolution int
+
+const (
+	// ClaimInserted: this call inserted the row.
+	ClaimInserted ClaimResolution = iota + 1
+	// ClaimRemirrored: an agent claim (Source 2) bumped the row holding its
+	// source key and target for the same actor and agent.
+	ClaimRemirrored
+	// ClaimReserved: a keyed claim whose request key already names a row,
+	// returned untouched.
+	ClaimReserved
+	// ClaimConflict: a row holding the claim's ask ID or source key that this
+	// claim may not re-mirror, returned untouched.
+	ClaimConflict
+)
+
+// ClaimForgeMirror inserts a row or returns the row at its conflicting key;
+// created is true only for ClaimInserted.
 func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (ForgeMirrorRow, bool, error) {
+	row, resolution, err := s.ClaimForgeMirrorResolved(ctx, mirror)
+	return row, resolution == ClaimInserted, err
+}
+
+// ClaimForgeMirrorResolved claims a row and reports how. For a keyed agent
+// claim the request key is reserved in the insert or re-mirror transaction, so
+// of calls racing on one key only the reserving call is Inserted or Remirrored.
+func (s *Store) ClaimForgeMirrorResolved(ctx context.Context, mirror ForgeMirrorRow) (ForgeMirrorRow, ClaimResolution, error) {
 	if (mirror.Source != 1 && mirror.Source != 2) || mirror.Actor == "" || mirror.TargetRef == "" || mirror.BodyRev < 1 || mirror.State < 1 || mirror.State > 3 {
-		return ForgeMirrorRow{}, false, fmt.Errorf("%w: invalid forge mirror row", ErrInvalidArgument)
+		return ForgeMirrorRow{}, 0, fmt.Errorf("%w: invalid forge mirror row", ErrInvalidArgument)
 	}
 	if (mirror.Source == 1 && (mirror.AskID == "" || mirror.Agent == "")) || (mirror.Source == 2 && mirror.SourceKey == "") {
-		return ForgeMirrorRow{}, false, fmt.Errorf("%w: forge mirror idempotency key is required", ErrInvalidArgument)
+		return ForgeMirrorRow{}, 0, fmt.Errorf("%w: forge mirror idempotency key is required", ErrInvalidArgument)
 	}
-	row, err := s.q.ClaimForgeMirror(ctx, db.ClaimForgeMirrorParams{
-		ID:              newID(),
-		Source:          mirror.Source,
-		AskID:           mirror.AskID,
-		SourceKey:       mirror.SourceKey,
-		ActorAccountID:  string(mirror.Actor),
-		AgentAccountID:  nullableString(string(mirror.Agent)),
-		ClientRequestID: nullableString(mirror.ClientRequestID),
-		TargetRef:       mirror.TargetRef,
-		BodyRev:         mirror.BodyRev,
-		State:           mirror.State,
-	})
-	if err == nil {
-		return forgeMirrorFromDB(row), true, nil
+	keyed := mirror.Agent != "" && mirror.ClientRequestID != ""
+	row, inserted, err := s.insertForgeMirror(ctx, mirror, keyed)
+	if err != nil {
+		return ForgeMirrorRow{}, 0, err
 	}
-	if !noRows(err) {
-		return ForgeMirrorRow{}, false, fmt.Errorf("store: claim forge mirror: %w", err)
+	if inserted {
+		return row, ClaimInserted, nil
 	}
+	if keyed {
+		reserved, found, err := s.ForgeMirrorByRequest(ctx, mirror.Agent, mirror.ClientRequestID)
+		if err != nil {
+			return ForgeMirrorRow{}, 0, err
+		}
+		if found {
+			return reserved, ClaimReserved, nil
+		}
+	}
+	return s.claimConflict(ctx, mirror)
+}
+
+// claimConflict resolves a claim that inserted nothing to the row at its
+// conflicting key, re-mirroring a same-source agent row. A keyed claim whose
+// key came to name a row after the caller's lookup missed, by insert or by
+// re-mirror, resolves to that row as Reserved rather than a conflict.
+func (s *Store) claimConflict(ctx context.Context, mirror ForgeMirrorRow) (ForgeMirrorRow, ClaimResolution, error) {
 	conflict, err := s.forgeMirrorByConflictKeys(ctx, mirror)
 	if err != nil {
-		return ForgeMirrorRow{}, false, fmt.Errorf("store: find claimed forge mirror: %w", err)
+		return ForgeMirrorRow{}, 0, fmt.Errorf("store: find claimed forge mirror: %w", err)
+	}
+	resolution := ClaimConflict
+	if conflict.ConflictKind == 2 {
+		// The row's own request key is this claim's: a racing call inserted it.
+		resolution = ClaimReserved
 	}
 	if conflict.ConflictKind == 3 && mirror.Source == 2 && conflict.ActorAccountID == string(mirror.Actor) && conflict.AgentAccountID == string(mirror.Agent) {
-		if _, err := s.q.BumpForgeMirrorSourceRevision(ctx, conflict.ID); err != nil {
-			return ForgeMirrorRow{}, false, fmt.Errorf("store: bump forge mirror revision: %w", err)
+		reservedID, bumped, err := s.remirrorSource(ctx, conflict.ID, mirror)
+		if err != nil {
+			return ForgeMirrorRow{}, 0, err
 		}
+		if !bumped {
+			reserved, err := s.ForgeMirrorByID(ctx, reservedID)
+			if err != nil {
+				return ForgeMirrorRow{}, 0, err
+			}
+			return reserved, ClaimReserved, nil
+		}
+		resolution = ClaimRemirrored
 		conflict, err = s.forgeMirrorByConflictKeys(ctx, mirror)
 		if err != nil {
-			return ForgeMirrorRow{}, false, fmt.Errorf("store: reload claimed forge mirror: %w", err)
+			return ForgeMirrorRow{}, 0, fmt.Errorf("store: reload claimed forge mirror: %w", err)
+		}
+	}
+	keyed := mirror.Agent != "" && mirror.ClientRequestID != ""
+	if resolution == ClaimConflict && keyed {
+		// A racing re-mirror may have reserved the key on a row whose own key differs.
+		reserved, found, err := s.ForgeMirrorByRequest(ctx, mirror.Agent, mirror.ClientRequestID)
+		if err != nil {
+			return ForgeMirrorRow{}, 0, err
+		}
+		if found {
+			return reserved, ClaimReserved, nil
 		}
 	}
 	return forgeMirrorFromDB(db.ClaimForgeMirrorRow{
@@ -186,7 +254,111 @@ func (s *Store) ClaimForgeMirror(ctx context.Context, mirror ForgeMirrorRow) (Fo
 		FirstAttemptAt: conflict.FirstAttemptAt, LastAttemptAt: conflict.LastAttemptAt,
 		ClientCommentID: conflict.ClientCommentID, RecheckAt: conflict.RecheckAt, LeaseUntil: conflict.LeaseUntil,
 		LeaseToken: conflict.LeaseToken, UpdatedAt: conflict.UpdatedAt,
-	}), false, nil
+		SessionID: conflict.SessionID, SourcePayload: conflict.SourcePayload, LastErrorCode: conflict.LastErrorCode,
+	}), resolution, nil
+}
+
+// insertForgeMirror inserts a new row. A keyed agent row also reserves its
+// request key in the same transaction; when the key is already reserved the
+// row is rolled back and inserted is false.
+func (s *Store) insertForgeMirror(ctx context.Context, mirror ForgeMirrorRow, keyed bool) (ForgeMirrorRow, bool, error) {
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return ForgeMirrorRow{}, false, fmt.Errorf("store: begin claim forge mirror: %w", err)
+	}
+	// After Commit this rollback is a no-op; a failure before Commit is returned below.
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+	row, err := qtx.ClaimForgeMirror(ctx, db.ClaimForgeMirrorParams{
+		ID:              newID(),
+		Source:          mirror.Source,
+		AskID:           mirror.AskID,
+		SourceKey:       mirror.SourceKey,
+		ActorAccountID:  string(mirror.Actor),
+		AgentAccountID:  nullableString(string(mirror.Agent)),
+		ClientRequestID: nullableString(mirror.ClientRequestID),
+		TargetRef:       mirror.TargetRef,
+		BodyRev:         mirror.BodyRev,
+		State:           mirror.State,
+		SessionID:       mirror.SessionID,
+		SourcePayload:   mirror.SourcePayload,
+	})
+	if noRows(err) {
+		return ForgeMirrorRow{}, false, nil
+	}
+	if err != nil {
+		return ForgeMirrorRow{}, false, fmt.Errorf("store: claim forge mirror: %w", err)
+	}
+	if keyed {
+		recorded, err := qtx.RecordForgeMirrorRequest(ctx, db.RecordForgeMirrorRequestParams{
+			AgentAccountID: string(mirror.Agent), ClientRequestID: mirror.ClientRequestID, MirrorID: row.ID,
+		})
+		if err != nil {
+			return ForgeMirrorRow{}, false, fmt.Errorf("store: reserve forge mirror request: %w", err)
+		}
+		if recorded == 0 {
+			return ForgeMirrorRow{}, false, nil
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ForgeMirrorRow{}, false, fmt.Errorf("store: commit claim forge mirror: %w", err)
+	}
+	return forgeMirrorFromDB(row), true, nil
+}
+
+// remirrorSource bumps a source row for a later agent request. It returns the
+// row id the request key resolves to, and bumped=true only when this call
+// newly reserved the key (or had none) and bumped the row. A key already
+// reserved resolves to its row unbumped, so a retry never edits again.
+func (s *Store) remirrorSource(ctx context.Context, id string, mirror ForgeMirrorRow) (string, bool, error) {
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("store: begin re-mirror: %w", err)
+	}
+	// After Commit this rollback is a no-op; a failure before Commit is returned below.
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+	if mirror.Agent != "" && mirror.ClientRequestID != "" {
+		recorded, err := qtx.RecordForgeMirrorRequest(ctx, db.RecordForgeMirrorRequestParams{
+			AgentAccountID: string(mirror.Agent), ClientRequestID: mirror.ClientRequestID, MirrorID: id,
+		})
+		if err != nil {
+			return "", false, fmt.Errorf("store: record forge mirror request: %w", err)
+		}
+		if recorded == 0 {
+			reserved, err := qtx.ForgeMirrorByRequest(ctx, db.ForgeMirrorByRequestParams{AgentAccountID: string(mirror.Agent), ClientRequestID: mirror.ClientRequestID})
+			if err != nil {
+				return "", false, fmt.Errorf("store: read reserved forge mirror request: %w", err)
+			}
+			return reserved.ID, false, nil
+		}
+	}
+	// A re-mirror of the same source carries its new render inputs and session.
+	if _, err := qtx.BumpForgeMirrorSourceRevision(ctx, db.BumpForgeMirrorSourceRevisionParams{
+		SourcePayload: mirror.SourcePayload, SessionID: mirror.SessionID, ID: id,
+	}); err != nil {
+		return "", false, fmt.Errorf("store: bump forge mirror revision: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", false, fmt.Errorf("store: commit re-mirror: %w", err)
+	}
+	return id, true, nil
+}
+
+// ForgeMirrorByRequest finds the row an agent request key reserved, by claim
+// or by re-mirror; ok is false when the key is unused.
+func (s *Store) ForgeMirrorByRequest(ctx context.Context, agent AccountID, clientRequestID string) (ForgeMirrorRow, bool, error) {
+	if agent == "" || clientRequestID == "" {
+		return ForgeMirrorRow{}, false, fmt.Errorf("%w: forge mirror agent and request key are required", ErrInvalidArgument)
+	}
+	row, err := s.q.ForgeMirrorByRequest(ctx, db.ForgeMirrorByRequestParams{AgentAccountID: string(agent), ClientRequestID: clientRequestID})
+	if noRows(err) {
+		return ForgeMirrorRow{}, false, nil
+	}
+	if err != nil {
+		return ForgeMirrorRow{}, false, fmt.Errorf("store: read forge mirror by request: %w", err)
+	}
+	return forgeMirrorFromDB(db.ClaimForgeMirrorRow(row)), true, nil
 }
 
 func (s *Store) forgeMirrorByConflictKeys(ctx context.Context, mirror ForgeMirrorRow) (db.ForgeMirrorByConflictKeysRow, error) {
@@ -296,7 +468,7 @@ func (s *Store) MarkForgeMirror(ctx context.Context, id, token string, mark Forg
 	n, err := s.q.MarkForgeMirror(ctx, db.MarkForgeMirrorParams{
 		ID: id, LeaseToken: token, PostedRev: mark.PostedRev, State: mark.State,
 		CommentID: int64(mark.CommentID), CommentKey: mark.CommentKey, CommentUrl: mark.URL,
-		LastError: mark.Err, Recheck: mark.Recheck, ClearRecheck: mark.ClearRecheck,
+		LastError: mark.Err, LastErrorCode: mark.ErrCode, Recheck: mark.Recheck, ClearRecheck: mark.ClearRecheck,
 	})
 	if err != nil {
 		return fmt.Errorf("store: mark forge mirror: %w", err)
@@ -345,8 +517,11 @@ func insertAskMirrors(ctx context.Context, q *db.Queries, msg Message, author Ac
 		if ForgeMirrorMode(mode) != ForgeMirrorAuto {
 			continue
 		}
+		// The relay puts the posting session on ctx; a post with none stores an
+		// empty session, which the poster refuses rather than misattributes.
 		if err := q.InsertAskForgeMirror(ctx, db.InsertAskForgeMirrorParams{
 			ID: newID(), AskID: block.Ask.AskID, ActorAccountID: string(author), TargetRef: block.Ask.Ref,
+			SessionID: AgentSessionFromContext(ctx),
 		}); err != nil {
 			return fmt.Errorf("store: insert ask forge mirror: %w", err)
 		}
@@ -386,5 +561,6 @@ func forgeMirrorFromDB(row db.ClaimForgeMirrorRow) ForgeMirrorRow {
 		FirstAttemptAt: optionalTime(row.FirstAttemptAt), LastAttemptAt: optionalTime(row.LastAttemptAt),
 		ClientCommentID: row.ClientCommentID, RecheckAt: optionalTime(row.RecheckAt), LeaseUntil: optionalTime(row.LeaseUntil),
 		LeaseToken: row.LeaseToken, UpdatedAt: row.UpdatedAt.Time,
+		SessionID: row.SessionID, SourcePayload: row.SourcePayload, LastErrorCode: row.LastErrorCode,
 	}
 }

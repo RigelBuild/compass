@@ -30,6 +30,7 @@ type postResult struct {
 }
 
 type recordedPost struct {
+	session  string
 	need     store.ForgeMirrorMode
 	key      string
 	clientID string
@@ -58,9 +59,9 @@ func (p *fakePoster) BodyLimit(refs.Ref) int {
 	return 4096
 }
 
-func (p *fakePoster) PostMirror(_ context.Context, _ store.AccountID, need store.ForgeMirrorMode, ref refs.Ref, key, clientID, body string) (forge.Comment, error) {
+func (p *fakePoster) PostMirror(_ context.Context, _ store.AccountID, session string, need store.ForgeMirrorMode, ref refs.Ref, key, clientID, body string) (forge.Comment, error) {
 	p.mu.Lock()
-	p.posts = append(p.posts, recordedPost{need: need, key: key, clientID: clientID, body: body})
+	p.posts = append(p.posts, recordedPost{session: session, need: need, key: key, clientID: clientID, body: body})
 	if p.entered != nil {
 		select {
 		case p.entered <- struct{}{}:
@@ -273,6 +274,29 @@ func TestDriveSourceTwoPostsManualAndStoresResult(t *testing.T) {
 	stored := assertMirrorState(t, ctx, pool, row.ID, 2)
 	if stored.CommentKey != row.ClientCommentID || stored.CommentURL != "https://linear.app/comment/7" || stored.RecheckAt != nil {
 		t.Fatalf("stored row = %+v, want client comment ID, URL, and no recheck", stored)
+	}
+}
+
+// The driver hands the poster the row's stored session, which the agent owner
+// header names.
+func TestDrivePassesRowSessionToPoster(t *testing.T) {
+	st, ctx, _ := openMirrorStore(t)
+	owner := mirrorOwner(t, ctx, st)
+	agent, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "mirror-session-agent", DisplayName: "Mirror Session Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	row, created, err := st.ClaimForgeMirror(ctx, store.ForgeMirrorRow{
+		Source: 2, SourceKey: "session-topic", Actor: agent.ID, Agent: agent.ID, TargetRef: "RIG-14", BodyRev: 1, State: 1, SessionID: "sess-drive",
+	})
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror: created=%v err=%v", created, err)
+	}
+	poster := &fakePoster{}
+	Drive(ctx, st, poster, []store.ForgeMirrorRow{row}, nil, clickBody)
+	posts, _, _ := poster.snapshot()
+	if len(posts) != 1 || posts[0].session != "sess-drive" || posts[0].need != store.ForgeMirrorAuto {
+		t.Fatalf("posts = %+v, want one auto post carrying the row session", posts)
 	}
 }
 

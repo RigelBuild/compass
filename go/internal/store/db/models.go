@@ -296,8 +296,10 @@ type ForgeMirror struct {
 	SourceKey       string
 	ActorAccountID  string
 	AgentAccountID  pgtype.Text
+	SessionID       string
 	ClientRequestID pgtype.Text
 	TargetRef       string
+	SourcePayload   []byte
 	BodyRev         int16
 	PostedRev       int16
 	State           int16
@@ -306,6 +308,7 @@ type ForgeMirror struct {
 	CommentKey      string
 	CommentUrl      string
 	LastError       string
+	LastErrorCode   string
 	FirstAttemptAt  pgtype.Timestamptz
 	LastAttemptAt   pgtype.Timestamptz
 	ClientCommentID pgtype.UUID
@@ -314,6 +317,14 @@ type ForgeMirror struct {
 	LeaseToken      string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+	TenantID        string
+}
+
+type ForgeMirrorRequest struct {
+	AgentAccountID  string
+	ClientRequestID string
+	MirrorID        string
+	CreatedAt       pgtype.Timestamptz
 	TenantID        string
 }
 

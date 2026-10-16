@@ -279,6 +279,7 @@ message ForgeCallRequest {
     SubscribeForgeRequest subscribe = 9;      // DL-053
     UnsubscribeForgeRequest unsubscribe = 10; // DL-053
     SubmitReviewRequest submit_review = 11;
+    MirrorMessagesRequest mirror_messages = 16;
     TransitionIssueStateRequest transition_issue_state = 14;
     TransitionPullRequestStateRequest transition_pull_request_state = 15;
   }
@@ -288,14 +289,20 @@ message ForgeCallRequest {
   // selected provider's default host (A3) — never a panic, never a silent
   // provider fall-through.
   compass.v1.ForgeRef forge = 12;
-  // Whole-chain idempotency key for the CREATE arms (create_issue /
-  // create_pull_request) — the SpawnPeerRequest.client_request_id precedent
-  // (agent_gateway.proto:172 "whole-chain idempotency key (handler-level
-  // join + Provision dedup)"). A retried create with the same key returns the
-  // ORIGINAL artifact, never a duplicate. Distinct from call_id, which is
-  // correlation-only. Ignored on non-create arms. Field 13 is collision-free:
-  // call_id=1, oneof arms 2-11 and 14-15, forge=12.
+  // Whole-chain idempotency key for create and mirror_messages calls. A retry
+  // with the same key returns the original result without posting again.
+  // Distinct from call_id, which is correlation-only. Field 13 is collision-free:
+  // call_id=1, oneof arms 2-11, 14-16, forge=12.
   string client_request_id = 13;
+}
+
+message MirrorMessagesRequest {
+  string ref = 1;
+  repeated string message_ids = 2;
+  string topic_id = 3;
+  // A channel name, resolved for the calling agent; never a channel ID.
+  string channel = 4;
+  string note = 5;
 }
 
 // The result of one forge call, correlated by `call_id`. Per DL-069 no raw forge
@@ -308,14 +315,14 @@ message ForgeCallResult {
   string call_id = 1;
   oneof result {
     compass.v1.Issue issue = 2;             // create_issue / get_issue / transition_issue_state
-    CommentRef issue_comment = 3;           // comment_on_issue (write ack: url + comment_id)
+    CommentRef issue_comment = 3;           // comment_on_issue / mirror_messages on an issue
     ListIssuesResponse issues = 4;          // list_issues
     compass.v1.PullRequest pull_request = 5; // create_pull_request / get_pull_request / transition_pull_request_state
-    CommentRef pr_comment = 6;              // comment_on_pull_request (write ack)
+    CommentRef pr_comment = 6;              // comment_on_pull_request / mirror_messages on a PR
     SubscribeForgeResponse subscribed = 7;
     UnsubscribeForgeResponse unsubscribed = 8;
     ForgeCallError error = 9;
-    ReviewRef review = 10;         // submit_review (write ack: url + review_id)
+    ReviewRef review = 10;                  // submit_review (write ack: url + review_id)
   }
 }
 

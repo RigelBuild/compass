@@ -1,6 +1,6 @@
-// The agent's forge surface: a thin broker over the Runner transport, plus the twelve native
+// The agent's forge surface: a thin broker over the Runner transport, plus the thirteen native
 // tools to read and write forge artifacts — issues, PRs, comments, reviews, state
-// transitions, and change-notification subscriptions (design compass-agent-forge-tools T1 + T2).
+// transitions, subscriptions, and message mirroring (design compass-agent-forge-tools T1 + T2).
 
 // Mirrors comms.ts / lifecycle.ts: `AgentGateway.Forge` is a Connect unary over the
 // per-container Unix socket, so a result is the awaited return value — no pending map, no
@@ -46,6 +46,7 @@ import {
 	GetPullRequestRequestSchema,
 	type Issue,
 	ListIssuesRequestSchema,
+	MirrorMessagesRequestSchema,
 	type PullRequest,
 	PullRequestIssueLinkSchema,
 	ReviewCommentInputSchema,
@@ -161,6 +162,32 @@ export const listIssuesParameters = type({
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
+export const mirrorMessagesParameters = type({
+	...forgeSelector,
+	ref: nonBlank(
+		"Forge issue or pull request reference, such as RIG-12 or owner/repo#12",
+	),
+	"message_ids?": type("string[]")
+		.narrow(
+			(ids, ctx) =>
+				(ids.length >= 1 && ids.length <= 50) ||
+				ctx.mustBe("between 1 and 50 message ids"),
+		)
+		.describe(
+			"One to fifty messages from one channel; mutually exclusive with topic_id",
+		),
+	"topic_id?": nonBlank("Topic id; mutually exclusive with message_ids"),
+	"channel?": nonBlank(
+		"Visible source channel name; use the channel name, not its id",
+	),
+	"note?": type("string").describe(
+		"Optional note shown above the mirrored messages",
+	),
+}).narrow(
+	(v, ctx) =>
+		(v.topic_id !== undefined) !== (v.message_ids !== undefined) ||
+		ctx.mustBe("provide exactly one of topic_id or message_ids"),
+);
 export const commentOnIssueParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
@@ -587,7 +614,7 @@ function renderSubscribed(
 }
 
 /**
- * The native forge tool set. Twelve tools, one per `ForgeCallRequest` arm.
+ * The native forge tool set. Thirteen tools, including the mirror arm.
  *
  * Wired into the container entrypoint by `cli.ts main()`: merged into the
  * session's `customTools` and registered as `#withNatives` natives. This
@@ -823,6 +850,57 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 							result.result.value,
 							params.verdict,
 						),
+					},
+				],
+			};
+		},
+	};
+	const mirrorMessages: AgentTool<typeof mirrorMessagesParameters> = {
+		name: "forge_mirror_messages",
+		label: "Mirror messages to forge",
+		approval: "write",
+		description: `Mirror one visible topic or a selected message set to an AUTO-enabled forge issue or pull request. ${SELECTOR_RULE} The source channel must be visible to you; a supplied channel is its visible channel name. The server stamps your owner attribution. ${SCOPE_DISCIPLINE}`,
+		parameters: mirrorMessagesParameters,
+		execute: async (toolCallId, params) => {
+			const hasTopic = params.topic_id !== undefined;
+			const hasMessages = params.message_ids !== undefined;
+			if (hasTopic === hasMessages)
+				throw new Error(
+					"forge_mirror_messages: provide exactly one of topic_id or message_ids",
+				);
+			const result = await broker.call(
+				create(ForgeCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "mirrorMessages",
+						value: create(MirrorMessagesRequestSchema, {
+							ref: params.ref,
+							messageIds: params.message_ids ?? [],
+							topicId: params.topic_id ?? "",
+							channel: params.channel ?? "",
+							note: params.note ?? "",
+						}),
+					},
+					forge: forgeRef(params),
+					clientRequestId: broker.idempotencyKey(toolCallId),
+				}),
+			);
+			if (
+				result.result.case !== "issueComment" &&
+				result.result.case !== "prComment"
+			)
+				throw forgeFailure(
+					result,
+					"forge_mirror_messages",
+					"issueComment or prComment",
+				);
+			const target =
+				result.result.case === "prComment" ? "pull request" : "issue";
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Mirrored messages to ${target} ${ref(params.ref)}: ${ref(result.result.value.url)}`,
 					},
 				],
 			};
@@ -1082,5 +1160,6 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 		transitionPullRequestState,
 		subscribe,
 		unsubscribe,
+		mirrorMessages,
 	];
 }

@@ -1108,8 +1108,10 @@ CREATE TABLE forge_mirrors (
     source_key        TEXT     NOT NULL DEFAULT '',
     actor_account_id  TEXT     NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     agent_account_id  TEXT     REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    session_id        TEXT     NOT NULL DEFAULT '',
     client_request_id TEXT,
     target_ref        TEXT     NOT NULL CHECK (target_ref <> ''),
+    source_payload    JSONB,
     body_rev          SMALLINT NOT NULL DEFAULT 1,
     posted_rev        SMALLINT NOT NULL DEFAULT 0,
     state             SMALLINT NOT NULL DEFAULT 1 CHECK (state IN (1, 2, 3)),
@@ -1118,6 +1120,7 @@ CREATE TABLE forge_mirrors (
     comment_key       TEXT     NOT NULL DEFAULT '',
     comment_url       TEXT     NOT NULL DEFAULT '',
     last_error        TEXT     NOT NULL DEFAULT '',
+    last_error_code   TEXT     NOT NULL DEFAULT '',
     first_attempt_at  TIMESTAMPTZ,
     last_attempt_at   TIMESTAMPTZ,
     client_comment_id UUID     NOT NULL DEFAULT gen_random_uuid(),
@@ -1133,6 +1136,18 @@ CREATE UNIQUE INDEX forge_mirrors_request_key ON forge_mirrors (tenant_id, agent
     WHERE client_request_id IS NOT NULL;
 CREATE UNIQUE INDEX forge_mirrors_source_key ON forge_mirrors (tenant_id, source_key, target_ref) WHERE source_key <> '';
 CREATE INDEX forge_mirrors_open_idx ON forge_mirrors (agent_account_id) WHERE state <> 2 OR recheck_at IS NOT NULL;
+
+-- forge_mirror_requests is the one reservation of each agent request key: the
+-- claim that created a row and every later re-mirror write it in their own
+-- transaction, so one key resolves to exactly one row.
+CREATE TABLE forge_mirror_requests (
+    agent_account_id  TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    client_request_id TEXT NOT NULL CHECK (client_request_id <> ''),
+    mirror_id         TEXT NOT NULL REFERENCES forge_mirrors (id) ON DELETE CASCADE,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id         TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (tenant_id, agent_account_id, client_request_id)
+);
 
 -- pull_requests holds each ingested PR whole; pull_request_issue_links maps PRs
 -- to the issues they work on (source 1 explicit, 2 closing reference).
@@ -1719,7 +1734,7 @@ DECLARE
         'agent_boards', 'agent_board_tasks',
         'linear_agent_sessions',
         'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
-        'forge_mirror_settings', 'forge_mirrors',
+        'forge_mirror_settings', 'forge_mirrors', 'forge_mirror_requests',
         'forge_state_transitions', 'account_forge_scopes',
         'pull_requests', 'pull_request_issue_links',
         'token_usage_events', 'token_usage_rollups_hourly', 'token_usage_rollups_daily',

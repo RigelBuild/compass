@@ -100,6 +100,19 @@ func (s *Store) MessageChannel(ctx context.Context, messageID string) (ChannelID
 	return ChannelID(channel), nil
 }
 
+// TopicChannel resolves a topic id to its channel. It checks no visibility: a
+// caller pairs it with a membership check. An unknown id is ErrNotFound.
+func (s *Store) TopicChannel(ctx context.Context, topicID string) (ChannelID, error) {
+	channel, err := s.q.GetTopicChannel(ctx, topicID)
+	if err != nil {
+		if noRows(err) {
+			return "", fmt.Errorf("%w: topic %q", ErrNotFound, topicID)
+		}
+		return "", fmt.Errorf("store: resolve topic channel: %w", err)
+	}
+	return ChannelID(channel), nil
+}
+
 // TopicChannelNames resolves a topic id to its topic name and the name of the
 // channel it lives in (topics.channel_id -> channels.name), the source-name
 // denormalization the delivery consumer stamps onto a deliver/steer control so
