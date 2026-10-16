@@ -329,7 +329,8 @@ func (s *supervisor) Exec(
 				Stderr: []byte(stderr), ExitCode: int32(code), //nolint:gosec // G115: code is the bounded 126/127 exec-start status
 			}), nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("spawning exec: %w", err))
+		wrappedErr := fmt.Errorf("spawning exec: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 
 	waitErr := make(chan error, 1)
@@ -345,7 +346,8 @@ func (s *supervisor) Exec(
 		if !ok {
 			// A non-ExitError wait failure is a spawn/IO fault, not a command
 			// that ran and failed — surface it as a handler error.
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("waiting for exec: %w", werr))
+			wrappedErr := fmt.Errorf("waiting for exec: %w", werr)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 		}
 		return connect.NewResponse(&compassv1internal.ExecResponse{
 			Stdout:   stdout.Bytes(),
@@ -377,7 +379,8 @@ func (s *supervisor) ExecStream(
 
 	first, err := stream.Receive()
 	if err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("reading start frame: %w", err))
+		wrappedErr := fmt.Errorf("reading start frame: %w", err)
+		return connect.NewError(connect.CodeInvalidArgument, wrappedErr)
 	}
 	start := first.GetStart()
 	if start == nil {
@@ -405,7 +408,8 @@ func (s *supervisor) ExecStream(
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("opening stdin pipe: %w", err))
+		wrappedErr := fmt.Errorf("opening stdin pipe: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	cmd.Stdout = &streamWriter{stream: stream, mu: sendMu, stdout: true}
 	cmd.Stderr = &streamWriter{stream: stream, mu: sendMu, stdout: false}
@@ -417,7 +421,8 @@ func (s *supervisor) ExecStream(
 		if code, stderr, ok := guestExecStartFailure(command[0], start.Workdir, cmd.Path, err); ok {
 			return s.sendStartFailure(stream, sendMu, cmd, code, stderr)
 		}
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("spawning exec: %w", err))
+		wrappedErr := fmt.Errorf("spawning exec: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 
 	id := s.register(cmd)
@@ -432,7 +437,8 @@ func (s *supervisor) ExecStream(
 	if startErr != nil {
 		signalGroupKill(cmd)
 		_ = cmd.Wait() // reap the child we could not report; the stream is already broken
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending started frame: %w", startErr))
+		wrappedErr := fmt.Errorf("sending started frame: %w", startErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 
 	// Receive loop: stdin frames feed the child's stdin, StdinClose half-closes it.
@@ -766,17 +772,20 @@ func (s *supervisor) sendStartFailure(
 	if err := stream.Send(&compassv1internal.ExecStreamResponse{
 		Frame: &compassv1internal.ExecStreamResponse_Started{Started: &compassv1internal.ExecStarted{ExecId: id}},
 	}); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending started frame: %w", err))
+		wrappedErr := fmt.Errorf("sending started frame: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	if err := stream.Send(&compassv1internal.ExecStreamResponse{
 		Frame: &compassv1internal.ExecStreamResponse_Stderr{Stderr: []byte(stderr)},
 	}); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending start failure stderr: %w", err))
+		wrappedErr := fmt.Errorf("sending start failure stderr: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	if err := stream.Send(&compassv1internal.ExecStreamResponse{
 		Frame: &compassv1internal.ExecStreamResponse_Exit{Exit: &compassv1internal.ExecExit{ExitCode: int32(code)}}, //nolint:gosec // G115: code is the bounded 126/127 exec-start status
 	}); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending start failure exit: %w", err))
+		wrappedErr := fmt.Errorf("sending start failure exit: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return nil
 }

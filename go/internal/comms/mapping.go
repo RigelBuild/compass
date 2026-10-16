@@ -451,7 +451,8 @@ func askFromWire(a *compassv1.Ask, githubHost string) (*store.Ask, error) {
 	if ref != "" {
 		r, parseErr := refs.Parse(ref)
 		if parseErr != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("comms: parse canonical ask ref: %w", parseErr))
+			wrappedErr := fmt.Errorf("comms: parse canonical ask ref: %w", parseErr)
+			return nil, connect.NewError(connect.CodeInvalidArgument, wrappedErr)
 		}
 		if r.Kind == refs.KindForge {
 			if githubHost == "" {
@@ -472,7 +473,8 @@ func askRefFromWire(raw string) (string, error) {
 	}
 	r, err := refs.Parse(raw)
 	if err != nil {
-		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("ask ref: %w", err))
+		wrappedErr := fmt.Errorf("ask ref: %w", err)
+		return "", connect.NewError(connect.CodeInvalidArgument, wrappedErr)
 	}
 	return r.String(), nil
 }

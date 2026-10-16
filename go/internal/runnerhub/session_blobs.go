@@ -66,7 +66,8 @@ func (h *Hub) RelaySessionBlob(ctx context.Context, runnerID string, req *compas
 		case errors.Is(err, store.ErrInvalidArgument):
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		default:
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("storing session blob: %w", err))
+			wrappedErr := fmt.Errorf("storing session blob: %w", err)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 		}
 	}
 	return &compassv1internal.RelaySessionBlobResponse{}, nil
@@ -101,12 +102,14 @@ func (h *Hub) FetchSessionBlobs(ctx context.Context, runnerID string, req *compa
 	}
 	tenant, err := blobs.AccountTenant(store.WithSystemRole(ctx), account)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("resolving session blob tenant: %w", err))
+		wrappedErr := fmt.Errorf("resolving session blob tenant: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	tenantCtx := store.WithTenant(store.WithoutSystemRole(ctx), tenant)
 	rows, err := blobs.ResumeSessionBlobs(tenantCtx, req.GetSessionId(), account, hashes)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("listing session blobs: %w", err))
+		wrappedErr := fmt.Errorf("listing session blobs: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return h.streamResumeSessionBlobs(ctx, blobs, tenantCtx, req.GetSessionId(), hashes, rows, send)
 }

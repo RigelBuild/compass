@@ -160,7 +160,8 @@ func (s *secretsService) ListSecrets(
 	}
 	decls, err := s.store.DeclaredSecrets(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing declared secrets: %w", err))
+		wrappedErr := fmt.Errorf("listing declared secrets: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	out := make([]*compassv1.SecretStatus, 0, len(decls))
 	for _, d := range decls {
@@ -211,7 +212,8 @@ func (s *secretsService) DeleteSecret(
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("secret %q", name))
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("deleting secret: %w", err))
+		wrappedErr := fmt.Errorf("deleting secret: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	s.bumpSecretsVersion(ctx)
 	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
@@ -247,7 +249,8 @@ func (s *secretsService) ListServerSecrets(
 	}
 	decls, err := s.store.DeclaredServerSecrets(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing declared server secrets: %w", err))
+		wrappedErr := fmt.Errorf("listing declared server secrets: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	if len(decls) == 0 {
 		return connect.NewResponse(&compassv1.ListServerSecretsResponse{}), nil
@@ -255,7 +258,8 @@ func (s *secretsService) ListServerSecrets(
 	// The audit reason names this RPC so the provider log identifies the probe.
 	statuses, err := s.serverResolver.Statuses(ctx, "compass: server secret status probe via ListServerSecrets RPC")
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("probing server secret values: %w", err))
+		wrappedErr := fmt.Errorf("probing server secret values: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	isSet := make(map[string]bool, len(statuses))
 	for _, st := range statuses {
@@ -304,7 +308,8 @@ func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, stor
 			// fail closed rather than admit a write under an unresolvable identity.
 			return "", 0, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("caller account %q not found", callerID))
 		}
-		return "", 0, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller account: %w", err))
+		wrappedErr := fmt.Errorf("resolving caller account: %w", err)
+		return "", 0, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	if acct.IsAgent() {
 		return "", 0, connect.NewError(connect.CodePermissionDenied, errors.New("secret writes are user-only"))

@@ -156,7 +156,8 @@ func boardTaskPatchFromWire(task *compassv1.BoardTaskPatch) (store.BoardTaskPatc
 			if _, ok := errors.AsType[*connect.Error](err); ok {
 				return store.BoardTaskPatch{}, err
 			}
-			return store.BoardTaskPatch{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("encode board waiting entries: %w", err))
+			wrappedErr := fmt.Errorf("encode board waiting entries: %w", err)
+			return store.BoardTaskPatch{}, connect.NewError(connect.CodeInvalidArgument, wrappedErr)
 		}
 		row.Waiting = &encoded
 	}
@@ -218,7 +219,8 @@ func boardSubagentsFromWire(subagents []*compassv1.BoardSubagent) ([]byte, error
 	}
 	encoded, err := json.Marshal(subagents)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("encode board subagents: %w", err))
+		wrappedErr := fmt.Errorf("encode board subagents: %w", err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, wrappedErr)
 	}
 	return encoded, nil
 }
@@ -320,7 +322,8 @@ func canonicalOptionalRef(value string) (string, error) {
 func canonicalRef(value string) (string, error) {
 	ref, err := refs.Parse(value)
 	if err != nil {
-		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid board ref %q: %w", value, err))
+		wrappedErr := fmt.Errorf("invalid board ref %q: %w", value, err)
+		return "", connect.NewError(connect.CodeInvalidArgument, wrappedErr)
 	}
 	return ref.String(), nil
 }
