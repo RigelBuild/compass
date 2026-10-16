@@ -44,8 +44,8 @@ async function writeSet(output: string, set: Record<string, Identity>) {
 	await Bun.write(join(repo, "json", `${output}.json`), JSON.stringify(set));
 }
 
-async function runParity(pathDirs: readonly string[]) {
-	const proc = Bun.spawn([process.execPath, SCRIPT_REL], {
+async function runParity(pathDirs: readonly string[], args: string[] = []) {
+	const proc = Bun.spawn([process.execPath, SCRIPT_REL, ...args], {
 		cwd: repo,
 		env: {
 			PATH: [join(repo, "stubbin"), ...pathDirs].join(":"),
@@ -166,5 +166,24 @@ describe("parity.ts Go analysis battery", () => {
 		const res = await runParity(goodPath);
 		expect(res.exitCode).toBe(1);
 		expect(res.output).toContain("0 Go analysis tools");
+	});
+});
+
+describe("parity.ts --print-nix-attrs", () => {
+	// CI calls this before the closed sets are built, so it must not evaluate them.
+	test("prints the devenv attrs without evaluating any closed set", async () => {
+		for (const set of ["langs", "goAnalysis", "meissa"]) {
+			await rm(join(repo, "json", `${set}.json`));
+		}
+		const res = await runParity(goodPath, ["--print-nix-attrs"]);
+		expect(res.exitCode).toBe(0);
+		expect(res.output.trim()).toBe('["buf"]');
+	});
+
+	test("refuses an empty devenv parse", async () => {
+		await Bun.write(join(repo, "devenv.nix"), "{ }\n");
+		const res = await runParity(goodPath, ["--print-nix-attrs"]);
+		expect(res.exitCode).toBe(1);
+		expect(res.output).toContain("0 devenv.nix packages");
 	});
 });

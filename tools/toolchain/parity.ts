@@ -111,36 +111,40 @@ const devenvAttrs = parseDevenvPackages(
 	readFileSync(join(repoRoot, "devenv.nix"), "utf8"),
 );
 
-// Resolve the closed sets up front so the refusal below can guard on them too:
-// an empty `langs`, `goAnalysis` or `meissa` identity set means gate-tools.nix's shape moved
-// out from under the gate, the same false-green risk as an empty devenv parse.
-const langs = nixClosedSet("langs");
-const goAnalysis = nixClosedSet("goAnalysis");
-const meissa = nixClosedSet("meissa");
-
-if (
-	devenvAttrs.length === 0 ||
-	Object.keys(langs).length === 0 ||
-	Object.keys(goAnalysis).length === 0 ||
-	Object.keys(meissa).length === 0
-) {
-	// Any coming back empty means a source the gate parses moved out from
-	// under it. Silently checking nothing is the exact false green this exists to
-	// stop, so refuse rather than report a vacuous pass.
+// An empty devenv.nix parse means its shape moved out from under the gate;
+// refuse rather than print or check nothing.
+if (devenvAttrs.length === 0) {
 	console.error(
-		`toolchain parity: parsed ${devenvAttrs.length} devenv.nix packages, ${Object.keys(langs).length} language toolchains, ${Object.keys(goAnalysis).length} Go analysis tools and ${Object.keys(meissa).length} Meissa tools — ` +
-			"one of those sources no longer has the shape the gate parses. Refusing to report a pass over nothing.",
+		"toolchain parity: parsed 0 devenv.nix packages — devenv.nix no longer has the shape the gate parses. Refusing to report a pass over nothing.",
 	);
 	process.exit(1);
 }
 
 // --print-nix-attrs: emit the dev shell's nixpkgs attribute list as a nix list
 // literal and stop. The workflow feeds it to gate-tools.nix, so what CI installs
-// and what the gate expects both derive from one parse of devenv.nix. The
-// empty-source refusal above runs first, keeping this a fail-fast path.
+// and what the gate expects both derive from one parse of devenv.nix. It exits
+// before the closed sets below, so printing never builds the Go battery.
 if (process.argv.includes("--print-nix-attrs")) {
 	console.log(`[${devenvAttrs.map((a) => `"${a}"`).join(" ")}]`);
 	process.exit(0);
+}
+
+// An empty `langs`, `goAnalysis` or `meissa` identity set means gate-tools.nix's
+// shape moved out from under the gate, the same false-green risk as above.
+const langs = nixClosedSet("langs");
+const goAnalysis = nixClosedSet("goAnalysis");
+const meissa = nixClosedSet("meissa");
+
+if (
+	Object.keys(langs).length === 0 ||
+	Object.keys(goAnalysis).length === 0 ||
+	Object.keys(meissa).length === 0
+) {
+	console.error(
+		`toolchain parity: parsed ${devenvAttrs.length} devenv.nix packages, ${Object.keys(langs).length} language toolchains, ${Object.keys(goAnalysis).length} Go analysis tools and ${Object.keys(meissa).length} Meissa tools — ` +
+			"one of those sources no longer has the shape the gate parses. Refusing to report a pass over nothing.",
+	);
+	process.exit(1);
 }
 
 /**
