@@ -748,6 +748,66 @@ func TestClaimConflictResolvesToRowReservedAfterLookup(t *testing.T) {
 	}
 }
 
+// A keyed claim's lookup misses, then a racing call inserts its own row under
+// the same key. claimConflict, called directly after that insert, must find
+// the racer's row by its request key and report it Reserved, not a conflict.
+func TestClaimConflictResolvesRacingKeyedInsertAsReserved(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-key-insert")
+	row := func(source, key string) ForgeMirrorRow {
+		return ForgeMirrorRow{
+			Source: 2, SourceKey: source, Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#9", BodyRev: 1, State: 1, SessionID: "sess-i", SourcePayload: []byte(`{}`),
+		}
+	}
+	loser, created, err := s.ClaimForgeMirror(ctx, row("topic-loser", "call-loser"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(loser) = (created=%v, err=%v)", created, err)
+	}
+	racer, created, err := s.ClaimForgeMirror(ctx, row("topic-racer", "call-shared"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(racer) = (created=%v, err=%v)", created, err)
+	}
+	got, resolution, err := s.claimConflict(ctx, row("topic-loser", "call-shared"))
+	if err != nil || resolution != ClaimReserved || got.ID != racer.ID {
+		t.Fatalf("claimConflict = (%s, %v, err=%v), want the racer's row %s reserved", got.ID, resolution, err, racer.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, loser.ID); err != nil || after.BodyRev != 1 {
+		t.Fatalf("losing source row body_rev = %d (err %v), want unbumped 1", after.BodyRev, err)
+	}
+}
+
+// Two same-key re-mirrors of one source interleave: both missed the key
+// lookup, and the winner reserved the key and bumped the row. The loser, via
+// claimConflict, reaches remirrorSource with bumped=false and must not bump.
+func TestClaimConflictSameSourceRemirrorLoserIsReserved(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "mirror-remirror-race")
+	row := func(key string) ForgeMirrorRow {
+		return ForgeMirrorRow{
+			Source: 2, SourceKey: "topic-r", Actor: agent, Agent: agent, ClientRequestID: key,
+			TargetRef: "owner/repo#10", BodyRev: 1, State: 1, SessionID: "sess-r", SourcePayload: []byte(`{}`),
+		}
+	}
+	first, created, err := s.ClaimForgeMirror(ctx, row("call-first"))
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(first) = (created=%v, err=%v)", created, err)
+	}
+	won, resolution, err := s.ClaimForgeMirrorResolved(ctx, row("call-again"))
+	if err != nil || resolution != ClaimRemirrored || won.ID != first.ID || won.BodyRev != 2 {
+		t.Fatalf("winning re-mirror = (%+v, %v, err=%v), want %s re-mirrored at body_rev 2", won, resolution, err, first.ID)
+	}
+	lost, resolution, err := s.claimConflict(ctx, row("call-again"))
+	if err != nil || resolution != ClaimReserved || lost.ID != first.ID || lost.BodyRev != 2 {
+		t.Fatalf("losing re-mirror = (%+v, %v, err=%v), want %s reserved at body_rev 2", lost, resolution, err, first.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, first.ID); err != nil || after.BodyRev != 2 {
+		t.Fatalf("row body_rev = %d (err %v) after the losing re-mirror, want 2", after.BodyRev, err)
+	}
+}
+
 // An auto ask row takes its session from the posting ctx; a post with no
 // session on ctx stores an empty one for the poster to refuse.
 func TestAskMirrorRowTakesSessionFromContext(t *testing.T) {

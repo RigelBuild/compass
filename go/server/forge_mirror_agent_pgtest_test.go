@@ -541,10 +541,10 @@ func TestMirrorMessagesClaimResolvedByReservationIsARetry(t *testing.T) {
 	}
 }
 
-// Two same-key re-mirrors of one source race: the winner reserves the key,
-// bumps the row, and its drive fails. The loser's claim is Reserved on that
-// same row and must report the stored failure, never lease or post again.
-func TestMirrorMessagesRacingRemirrorLoserReturnsStoredFailure(t *testing.T) {
+// A same-key re-mirror is retried after its drive failed: the retry's claim
+// hits the key in the early lookup, is Reserved on that row, and must report
+// the stored failure, never lease or post again.
+func TestMirrorMessagesSequentialRemirrorRetryReturnsStoredFailure(t *testing.T) {
 	f := newAgentMirrorFixture(t)
 	req := &compassv1internal.MirrorMessagesRequest{Ref: "owner/auto#12", TopicId: f.topicID}
 	if first := f.mirror(t, f.svc, "call-first", req); first.GetIssueComment() == nil {
@@ -592,5 +592,55 @@ func TestMirrorMessagesRacingRemirrorLoserReturnsStoredFailure(t *testing.T) {
 	}
 	if got := len(f.author.Calls()); got != calls {
 		t.Fatalf("provider calls = %d after the losing re-mirror, want %d", got, calls)
+	}
+}
+
+// A user's mirror of the same topic to the same ref holds the source key, so
+// the agent's claim is a ClaimConflict on another actor's row: refused with
+// failed_precondition, and nothing is posted.
+func TestMirrorMessagesSourceHeldByAnotherActorIsRefused(t *testing.T) {
+	f := newAgentMirrorFixture(t)
+	held, created, err := f.st.ClaimForgeMirror(f.ctx, store.ForgeMirrorRow{
+		Source: 2, SourceKey: f.topicID, Actor: f.owner.ID, TargetRef: "owner/auto#12", BodyRev: 1, State: 1,
+	})
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(user) = (created=%v, err=%v)", created, err)
+	}
+	result := f.mirror(t, f.svc, "call-held", &compassv1internal.MirrorMessagesRequest{Ref: "owner/auto#12", TopicId: f.topicID})
+	if fe := result.GetError(); fe.GetCode() != connect.CodeFailedPrecondition.String() || fe.GetMessage() != "forge mirror: source conflicts with another actor" {
+		t.Fatalf("result = %v, want failed_precondition source conflicts with another actor", result)
+	}
+	if calls := f.author.Calls(); len(calls) != 0 {
+		t.Fatalf("provider calls = %+v, want none", calls)
+	}
+	if after, err := f.st.ForgeMirrorByID(f.ctx, held.ID); err != nil || after.BodyRev != 1 || after.State != 1 {
+		t.Fatalf("user row = (%+v, %v), want untouched", after, err)
+	}
+}
+
+// A ClaimConflict on the caller's own agent row, held under another key, is
+// refused as a source conflict and never driven.
+func TestMirrorMessagesConflictOnOwnRowIsRefused(t *testing.T) {
+	f := newAgentMirrorFixture(t)
+	own, created, err := f.st.ClaimForgeMirror(f.ctx, store.ForgeMirrorRow{
+		Source: 2, SourceKey: "other-source", Actor: f.agent.ID, Agent: f.agent.ID, ClientRequestID: "call-own",
+		TargetRef: "owner/auto#12", BodyRev: 1, State: 1, SessionID: agentMirrorSession, SourcePayload: []byte(`{}`),
+	})
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(own) = (created=%v, err=%v)", created, err)
+	}
+	ref, err := refs.Parse("owner/auto#12")
+	if err != nil {
+		t.Fatalf("refs.Parse: %v", err)
+	}
+	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, ref, own, store.ClaimConflict)
+	if fe := result.GetError(); fe.GetCode() != connect.CodeFailedPrecondition.String() || fe.GetMessage() != "forge mirror: source conflicts with another mirror" {
+		t.Fatalf("result = %v, want failed_precondition source conflicts with another mirror", result)
+	}
+	if calls := f.author.Calls(); len(calls) != 0 {
+		t.Fatalf("provider calls = %+v, want none", calls)
+	}
+	if after, err := f.st.ForgeMirrorByID(f.ctx, own.ID); err != nil || after.State != 1 || after.Attempts != 0 {
+		t.Fatalf("own row = (%+v, %v), want undriven", after, err)
 	}
 }
