@@ -70,6 +70,29 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 						<Glyph name="role" />
 					</span>
 				</Show>
+				<Show when={a().board?.halt}>
+					{(halt) => (
+						<span
+							class="agent-halt-dot"
+							data-halt={halt().kind}
+							role="img"
+							title={`Halted: ${halt().kind}${halt().ref ? ` ${halt().ref}` : ""}${halt().reason ? ` — ${halt().reason}` : ""}`}
+							aria-label={`Halted: ${halt().kind}`}
+						/>
+					)}
+				</Show>
+				<Show when={a().board?.waitingOnOperator}>
+					{(count) => (
+						<span
+							class="agent-waiting-count"
+							role="img"
+							title={`${count()} waiting on you`}
+							aria-label={`${count()} waiting on you`}
+						>
+							{count()}
+						</span>
+					)}
+				</Show>
 				<Show when={props.badge !== undefined}>
 					<span class="tree-badge">{props.badge}</span>
 				</Show>

@@ -17,6 +17,7 @@ import type {
 	Message,
 	Topic,
 } from "../comms-stub";
+import type { AgentBoard, AgentBoardSummary } from "../stub-data";
 import {
 	type AgentPresenceInfo,
 	adaptAccount,
@@ -25,6 +26,7 @@ import {
 	adaptRosterEntry,
 	adaptTopic,
 	agentHomeChannelIds,
+	applyBoardEvent,
 } from "./adapt";
 
 /** Maps a wire Message to the domain Message. Injected so this engine stays
@@ -190,6 +192,16 @@ export type CommsEvent =
 			readonly kind: "presenceChanged";
 			readonly accountId: string;
 			readonly info: AgentPresenceInfo;
+	  }
+	| {
+			readonly kind: "boardChanged";
+			readonly accountId: string;
+			readonly board: AgentBoard;
+	  }
+	| {
+			readonly kind: "boardSummary";
+			readonly accountId: string;
+			readonly board: AgentBoardSummary | undefined;
 	  };
 
 /** Apply one decoded event to the state, returning the next state. Pure: upserts
@@ -235,7 +247,27 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 		// collections keeping identity (structural sharing).
 		case "presenceChanged": {
 			const presence = new Map(state.presence);
-			presence.set(event.accountId, event.info);
+			presence.set(event.accountId, {
+				...presence.get(event.accountId),
+				...event.info,
+			});
+			return { ...state, presence };
+		}
+		case "boardChanged": {
+			const presence = new Map(state.presence);
+			const prev = presence.get(event.accountId);
+			presence.set(event.accountId, {
+				...prev,
+				board: applyBoardEvent(prev?.board, event.board),
+			});
+			return { ...state, presence };
+		}
+		case "boardSummary": {
+			const presence = new Map(state.presence);
+			presence.set(event.accountId, {
+				...presence.get(event.accountId),
+				board: event.board,
+			});
 			return { ...state, presence };
 		}
 	}

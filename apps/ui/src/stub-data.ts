@@ -344,6 +344,102 @@ export interface Account {
 	parentAgentId?: string;
 }
 
+export interface BoardHalt {
+	kind: "done" | "blocked" | "awaiting_user";
+	ref?: string;
+	reason?: string;
+}
+
+export interface AgentBoardSummary {
+	focus?: string;
+	taskCount: number;
+	waitingOnOperator: number;
+	halt?: BoardHalt;
+	writtenAtUnixMs: number;
+	stale: boolean;
+}
+
+export interface BoardWaiting {
+	on?: "operator" | "agent" | "external";
+	agentHandle?: string;
+	what?: string;
+	ref?: string;
+	blocks: string[];
+}
+
+export interface BoardSubagent {
+	id: string;
+	agent: string;
+	description: string;
+	status: string;
+	startedAtUnixMs: number;
+	endedAtUnixMs?: number;
+}
+
+export type BoardPrGate =
+	| "draft"
+	| "checks_pending"
+	| "checks_failed"
+	| "changes_requested"
+	| "awaiting_review"
+	| "awaiting_enqueue"
+	| "merged"
+	| "closed"
+	| "queued"
+	| "queue_failed"
+	| "queue_removed"
+	| "conflicts";
+
+export interface BoardRef {
+	ref: string;
+	kind: "issue" | "pr" | "unknown";
+	title?: string;
+	url?: string;
+	gate?: BoardPrGate;
+	draft: boolean;
+	checksState?: string;
+	stackTipRef?: string;
+	stackPosition?: number;
+	owned: boolean;
+	staleApproval: boolean;
+	mergeQueueState?: string;
+	trackerStatus?: string;
+}
+
+export interface BoardTask {
+	key: string;
+	title: string;
+	primaryRef?: string;
+	refs: string[];
+	state?: "active" | "blocked" | "waiting" | "parked" | "done";
+	note?: string;
+	waiting: BoardWaiting[];
+	subagents: BoardSubagent[];
+}
+
+export interface BoardAsk {
+	askId: string;
+	messageId: string;
+	channelId: string;
+	ref?: string;
+	header: string;
+	answered: boolean;
+	postedAtUnixMs: number;
+}
+
+export interface AgentBoard {
+	agentId: string;
+	handle: string;
+	focusTaskKey?: string;
+	halt?: BoardHalt;
+	tasks: BoardTask[];
+	refs: BoardRef[];
+	untrackedRefs: string[];
+	asks: BoardAsk[];
+	writtenAtUnixMs: number;
+	stale: boolean;
+}
+
 /** The agent's ephemeral lifecycle — SubscribeEvents.AgentSessionStatus.state
  *  (`compass.proto:126-129`), keyed by account id. Absent = created but no
  *  session has run. This is the ONLY agent-object field SubscribeEvents feeds. */
@@ -375,6 +471,7 @@ export interface Agent {
 	model?: string;
 	/** UI-only. Optional for a live agent. */
 	cwd?: string;
+	board?: AgentBoardSummary;
 	/** Fixture-only. */
 	terminals: Terminal[];
 }

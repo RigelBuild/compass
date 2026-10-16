@@ -61,6 +61,8 @@ export interface FakeComms {
 	emit: (payload: unknown, seq: bigint) => Promise<void>;
 	/** Close the scripted stream so `runCommsStream` stops tailing it. */
 	close: () => void;
+	/** Replace what later GetRoster calls serve, as a server write would. */
+	setRoster: (entries: readonly unknown[]) => void;
 	/** Reject the next PostMessage with `error` (one-shot) — the composer's
 	 *  keep-the-user's-text path. */
 	failNextPost: (error: Error) => void;
@@ -116,6 +118,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 	const askResponses: RecordedAskResponse[] = [];
 	let postFailure: Error | undefined;
 	let askFailure: Error | undefined;
+	let roster = snapshot.roster ?? [];
 	// A held-in-flight RespondToAsk: the promise the RPC parks on until the
 	// test's gate settles it. One at a time — the store issues at most one
 	// respond per ask, and a test gates exactly the one it is interleaving on.
@@ -175,7 +178,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		listAccounts: async () => ({ accounts: snapshot.accounts ?? [] }),
 		listChannelGroups: async () => ({ groups: snapshot.channelGroups ?? [] }),
 		listChannels: async () => ({ channels: snapshot.channels ?? [] }),
-		getRoster: async () => ({ entries: snapshot.roster ?? [] }),
+		getRoster: async () => ({ entries: roster }),
 		listTopics: async (req: {
 			channelId: string;
 			includeArchived: boolean;
@@ -328,6 +331,9 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 			closed = true;
 			wake?.();
 			wake = undefined;
+		},
+		setRoster: (entries) => {
+			roster = entries;
 		},
 		failNextPost: (error) => {
 			postFailure = error;

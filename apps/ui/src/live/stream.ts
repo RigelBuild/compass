@@ -5,11 +5,14 @@
 
 import type { CommsClient, SubscribeCommsResponse } from "@compass/client";
 import { RosterScope } from "@compass/client";
+import type { AgentBoardSummary } from "../stub-data";
 import {
 	type AgentPresenceInfo,
 	adaptAccount,
+	adaptAgentBoard,
 	adaptChannel,
 	adaptChannelGroup,
+	adaptRosterEntry,
 	adaptTopic,
 	agentHomeChannelIds,
 	presenceLifecycle,
@@ -32,8 +35,8 @@ const SNAPSHOT_MESSAGE_PAGE = 200;
 /** What the driver needs to run: the comms client, who the caller is (scopes
  *  membership derivation), the injected message mapper, and the sink for each
  *  new reduced state. `signal` cancels the whole run (component unmount / app
- *  teardown); `onError` observes a non-fatal stream error before the driver
- *  reconnects (fatal = aborted). */
+ *  teardown); `onError` observes a non-fatal error: a stream error before the
+ *  driver reconnects, or a failed board re-read (fatal = aborted). */
 export interface CommsStreamOptions {
 	readonly client: CommsClient;
 	readonly callerId: string;
@@ -42,8 +45,8 @@ export interface CommsStreamOptions {
 	 *  once per applied tail event. The store sets its signals from this. */
 	readonly onState: (state: CommsState) => void;
 	readonly signal?: AbortSignal;
-	/** Observed on a stream error before reconnect; the run continues (retries
-	 *  the subscribe). Not called on a clean abort. */
+	/** Observed on a stream error before reconnect, or on a failed board
+	 *  re-read that leaves the stream running. Not called on a clean abort. */
 	readonly onError?: (error: unknown) => void;
 }
 
@@ -103,6 +106,29 @@ export async function fetchSnapshot(
 	};
 }
 
+/** Re-read the board summary an AgentBoardChanged cannot carry; an agent not in
+ *  the caller's OWNER roster waits on no one. Undefined on failure. */
+async function readBoardSummary(
+	client: CommsClient,
+	accountId: string,
+	current: AgentBoardSummary | undefined,
+	signal: AbortSignal | undefined,
+	onError: ((error: unknown) => void) | undefined,
+): Promise<{ readonly board: AgentBoardSummary | undefined } | undefined> {
+	try {
+		const resp = await client.getRoster(
+			{ scope: RosterScope.OWNER },
+			{ signal },
+		);
+		const entry = resp.entries.find((e) => e.agentAccountId === accountId);
+		if (entry) return { board: adaptRosterEntry(entry)[1].board };
+		return { board: current && { ...current, waitingOnOperator: 0 } };
+	} catch (error) {
+		if (!signal?.aborted) onError?.(error);
+		return undefined;
+	}
+}
+
 /** Page one channel's messages fully at the snapshot boundary. ListMessages is
  *  newest-first, paged backward by `beforeMessageId` (exclusive); loop until a
  *  page is short. Returns wire messages (the caller maps them). */
@@ -152,6 +178,13 @@ function decodeEvent(
 	mapMessage: MapMessage,
 ): CommsEvent | null {
 	switch (payload.case) {
+		case "agentBoardChanged":
+			if (!payload.value.board) return null;
+			return {
+				kind: "boardChanged",
+				accountId: payload.value.agentAccountId,
+				board: adaptAgentBoard(payload.value.board),
+			};
 		case "messagePosted":
 		case "messageUpdated": {
 			// Singular message fields carry proto3 presence (X | undefined); a
@@ -333,6 +366,23 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 				if (event) {
 					state = applyEvent(state, event);
 					onState(state);
+				}
+				if (event?.kind === "boardChanged") {
+					const read = await readBoardSummary(
+						client,
+						event.accountId,
+						state.presence.get(event.accountId)?.board,
+						signal,
+						onError,
+					);
+					if (read && !signal?.aborted) {
+						state = applyEvent(state, {
+							kind: "boardSummary",
+							accountId: event.accountId,
+							board: read.board,
+						});
+						onState(state);
+					}
 				}
 			}
 			// A clean close that made no forward tail progress — zero responses,

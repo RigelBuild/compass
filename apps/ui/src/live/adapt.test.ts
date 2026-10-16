@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { fromBinary } from "@bufbuild/protobuf";
 import type { Ask as WireAsk } from "@compass/client";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentBoardSchema,
+	AgentBoardSummarySchema,
 	AgentPlanEntryStatus,
 	AgentPresence,
 	AgentSessionStatusSchema,
@@ -10,6 +13,17 @@ import {
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
+	BoardAskSchema,
+	BoardHaltKind,
+	BoardHaltSchema,
+	BoardPrGate,
+	BoardRefKind,
+	BoardRefSchema,
+	BoardSubagentSchema,
+	BoardTaskSchema,
+	BoardTaskState,
+	BoardWaitingOn,
+	BoardWaitingSchema,
 	ChannelGroupSchema,
 	ChannelGroupVisibility,
 	ChannelKind,
@@ -37,6 +51,8 @@ import type { IssueState as DomainIssueState } from "../stub-data";
 import { type Account, type Agent, agentTree } from "../stub-data";
 import {
 	adaptAccount,
+	adaptAgentBoard,
+	adaptAgentBoardSummary,
 	adaptAsk,
 	adaptChannel,
 	adaptChannelGroup,
@@ -1043,6 +1059,168 @@ describe("adaptIssue", () => {
 	});
 });
 
+describe("adaptAgentBoard", () => {
+	test("maps board enums, bigint timestamps, and empty optional strings", () => {
+		const wire = create(AgentBoardSchema, {
+			agentAccountId: "acc-cook",
+			handle: "cook",
+			focusTaskKey: "task-a",
+			halt: create(BoardHaltSchema, {
+				kind: BoardHaltKind.UNSPECIFIED,
+				ref: "",
+				reason: "",
+			}),
+			tasks: [
+				create(BoardTaskSchema, {
+					key: "task-a",
+					title: "Ship the board",
+					primaryRef: "",
+					state: BoardTaskState.ACTIVE,
+					note: "",
+					waiting: [
+						create(BoardWaitingSchema, {
+							on: BoardWaitingOn.OPERATOR,
+							agentHandle: "",
+							what: "",
+							ref: "",
+						}),
+						create(BoardWaitingSchema, { on: BoardWaitingOn.UNSPECIFIED }),
+					],
+					subagents: [
+						create(BoardSubagentSchema, {
+							id: "sub-1",
+							agent: "builder",
+							description: "",
+							status: "working",
+							startedAtUnixMs: 10n,
+							endedAtUnixMs: 0n,
+						}),
+					],
+				}),
+			],
+			refs: [
+				create(BoardRefSchema, {
+					ref: "RIG-12",
+					kind: BoardRefKind.UNSPECIFIED,
+					title: "",
+					url: "",
+					gate: BoardPrGate.UNSPECIFIED,
+					stackTipRef: "",
+					owned: true,
+					staleApproval: true,
+					mergeQueueState: "",
+					trackerStatus: "",
+				}),
+			],
+			asks: [
+				create(BoardAskSchema, {
+					askId: "ask-1",
+					messageId: "msg-1",
+					channelId: "ch-1",
+					ref: "",
+					header: "Pick a fix",
+					postedAtUnixMs: 77n,
+				}),
+			],
+			writtenAtUnixMs: 1234n,
+			stale: true,
+		});
+		const board = adaptAgentBoard(wire);
+		expect(board.agentId).toBe("acc-cook");
+		expect(board.focusTaskKey).toBe("task-a");
+		expect(board.halt).toBeUndefined();
+		expect(board.writtenAtUnixMs).toBe(1234);
+		expect(board.tasks[0]).toMatchObject({
+			state: "active",
+			primaryRef: undefined,
+			note: undefined,
+			waiting: [
+				{
+					on: "operator",
+					agentHandle: undefined,
+					what: undefined,
+					ref: undefined,
+				},
+				{ on: undefined },
+			],
+			subagents: [{ startedAtUnixMs: 10, endedAtUnixMs: undefined }],
+		});
+		expect(board.refs[0]).toMatchObject({
+			kind: "unknown",
+			title: undefined,
+			url: undefined,
+			gate: undefined,
+			stackTipRef: undefined,
+			mergeQueueState: undefined,
+			trackerStatus: undefined,
+		});
+		expect(board.asks).toEqual([
+			{
+				askId: "ask-1",
+				messageId: "msg-1",
+				channelId: "ch-1",
+				ref: undefined,
+				header: "Pick a fix",
+				answered: false,
+				postedAtUnixMs: 77,
+			},
+		]);
+	});
+
+	test("maps a ref kind from a newer server to unknown", () => {
+		// Field 2 (kind) = 99: a value this client's enum does not define.
+		const ref = fromBinary(BoardRefSchema, new Uint8Array([0x10, 0x63]));
+		const board = adaptAgentBoard(create(AgentBoardSchema, { refs: [ref] }));
+		expect(board.refs[0]?.kind).toBe("unknown");
+	});
+
+	test("maps wire board summaries", () => {
+		expect(
+			adaptAgentBoardSummary(
+				create(AgentBoardSummarySchema, {
+					focus: "",
+					taskCount: 3,
+					waitingOnOperator: 2,
+					halt: create(BoardHaltSchema, {
+						kind: BoardHaltKind.AWAITING_USER,
+						ref: "RIG-9",
+						reason: "Need a decision",
+					}),
+					writtenAtUnixMs: 100n,
+				}),
+			),
+		).toEqual({
+			focus: undefined,
+			taskCount: 3,
+			waitingOnOperator: 2,
+			halt: { kind: "awaiting_user", ref: "RIG-9", reason: "Need a decision" },
+			writtenAtUnixMs: 100,
+			stale: false,
+		});
+	});
+});
+
+test("adaptRosterEntry carries the board summary", () => {
+	const [, info] = adaptRosterEntry(
+		create(RosterEntrySchema, {
+			agentAccountId: "acc-cook",
+			board: create(AgentBoardSummarySchema, {
+				focus: "Review pull request",
+				taskCount: 2,
+				waitingOnOperator: 1,
+				writtenAtUnixMs: 100n,
+			}),
+		}),
+	);
+	expect(info.board).toEqual({
+		focus: "Review pull request",
+		taskCount: 2,
+		waitingOnOperator: 1,
+		halt: undefined,
+		writtenAtUnixMs: 100,
+		stale: false,
+	});
+});
 describe("presenceLifecycle", () => {
 	test("maps each modeled AgentPresence to its AgentState dot", () => {
 		expect(presenceLifecycle(AgentPresence.WORKING)).toBe("working");

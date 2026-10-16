@@ -483,6 +483,11 @@ const FleetPane: Component<{ item: AvatarTabItem }> = (props) => {
 							>
 								Open {a().account.handle}'s workspace
 							</button>
+							<Show when={(a().board?.waitingOnOperator ?? 0) > 0}>
+								<span class="fleet-waiting-count">
+									{a().board?.waitingOnOperator} waiting on you
+								</span>
+							</Show>
 						</div>
 						<ChannelView channel={homeDm()} />
 					</div>

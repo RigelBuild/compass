@@ -7,6 +7,11 @@ import {
 	AgentPlanEntryStatus,
 	AgentPresence,
 	AgentToolCallStatus,
+	BoardHaltKind,
+	BoardPrGate,
+	BoardRefKind,
+	BoardTaskState,
+	BoardWaitingOn,
 	ChannelGroupVisibility,
 	ChannelKind,
 	ChannelMembershipMode,
@@ -19,9 +24,17 @@ import {
 	SessionInjectionKind,
 	type Account as WireAccount,
 	type AgentAttribution as WireAgentAttribution,
+	type AgentBoard as WireAgentBoard,
+	type AgentBoardSummary as WireAgentBoardSummary,
 	type AgentSessionStatus as WireAgentSessionStatus,
 	type Ask as WireAsk,
 	type AskQuestion as WireAskQuestion,
+	type BoardAsk as WireBoardAsk,
+	type BoardHalt as WireBoardHalt,
+	type BoardRef as WireBoardRef,
+	type BoardSubagent as WireBoardSubagent,
+	type BoardTask as WireBoardTask,
+	type BoardWaiting as WireBoardWaiting,
 	type ChangedStats as WireChangedStats,
 	type Channel as WireChannel,
 	type ChannelGroup as WireChannelGroup,
@@ -63,8 +76,17 @@ import type {
 } from "../session-events";
 import type {
 	Account,
+	AgentBoard,
+	AgentBoardSummary,
 	AgentState,
+	BoardAsk,
+	BoardRef,
+	BoardSubagent,
+	BoardTask,
+	BoardWaiting,
 	AgentAttribution as DomainAgentAttribution,
+	BoardHalt as DomainBoardHalt,
+	BoardPrGate as DomainBoardPrGate,
 	ChangedStats as DomainChangedStats,
 	Check as DomainCheck,
 	ChecksSummary as DomainChecksSummary,
@@ -113,6 +135,181 @@ const MEMBERSHIP_MODE: Record<
 	[ChannelMembershipMode.EXPLICIT]: "explicit",
 	[ChannelMembershipMode.TREE]: "tree",
 };
+
+const TASK_STATE: Record<
+	BoardTaskState,
+	NonNullable<BoardTask["state"]> | undefined
+> = {
+	[BoardTaskState.UNSPECIFIED]: undefined,
+	[BoardTaskState.ACTIVE]: "active",
+	[BoardTaskState.BLOCKED]: "blocked",
+	[BoardTaskState.WAITING]: "waiting",
+	[BoardTaskState.PARKED]: "parked",
+	[BoardTaskState.DONE]: "done",
+} satisfies Record<BoardTaskState, NonNullable<BoardTask["state"]> | undefined>;
+
+const HALT_KIND: Record<BoardHaltKind, DomainBoardHalt["kind"] | undefined> = {
+	[BoardHaltKind.UNSPECIFIED]: undefined,
+	[BoardHaltKind.DONE]: "done",
+	[BoardHaltKind.BLOCKED]: "blocked",
+	[BoardHaltKind.AWAITING_USER]: "awaiting_user",
+} satisfies Record<BoardHaltKind, DomainBoardHalt["kind"] | undefined>;
+
+const WAITING_ON: Record<
+	BoardWaitingOn,
+	NonNullable<BoardWaiting["on"]> | undefined
+> = {
+	[BoardWaitingOn.UNSPECIFIED]: undefined,
+	[BoardWaitingOn.OPERATOR]: "operator",
+	[BoardWaitingOn.AGENT]: "agent",
+	[BoardWaitingOn.EXTERNAL]: "external",
+} satisfies Record<BoardWaitingOn, NonNullable<BoardWaiting["on"]> | undefined>;
+
+const REF_KIND: Record<BoardRefKind, BoardRef["kind"]> = {
+	[BoardRefKind.UNSPECIFIED]: "unknown",
+	[BoardRefKind.ISSUE]: "issue",
+	[BoardRefKind.PULL_REQUEST]: "pr",
+} satisfies Record<BoardRefKind, BoardRef["kind"]>;
+
+const PR_GATE: Record<BoardPrGate, DomainBoardPrGate | undefined> = {
+	[BoardPrGate.UNSPECIFIED]: undefined,
+	[BoardPrGate.DRAFT]: "draft",
+	[BoardPrGate.CHECKS_PENDING]: "checks_pending",
+	[BoardPrGate.CHECKS_FAILED]: "checks_failed",
+	[BoardPrGate.CHANGES_REQUESTED]: "changes_requested",
+	[BoardPrGate.AWAITING_REVIEW]: "awaiting_review",
+	[BoardPrGate.AWAITING_ENQUEUE]: "awaiting_enqueue",
+	[BoardPrGate.MERGED]: "merged",
+	[BoardPrGate.CLOSED]: "closed",
+	[BoardPrGate.QUEUED]: "queued",
+	[BoardPrGate.QUEUE_FAILED]: "queue_failed",
+	[BoardPrGate.QUEUE_REMOVED]: "queue_removed",
+	[BoardPrGate.CONFLICTS]: "conflicts",
+} satisfies Record<BoardPrGate, DomainBoardPrGate | undefined>;
+
+function optionalText(value: string): string | undefined {
+	return value || undefined;
+}
+
+function adaptBoardHalt(
+	w: WireBoardHalt | undefined,
+): DomainBoardHalt | undefined {
+	if (!w) return undefined;
+	const kind = HALT_KIND[w.kind];
+	if (!kind) return undefined;
+	return { kind, ref: optionalText(w.ref), reason: optionalText(w.reason) };
+}
+
+function adaptBoardWaiting(w: WireBoardWaiting): BoardWaiting {
+	return {
+		on: WAITING_ON[w.on],
+		agentHandle: optionalText(w.agentHandle),
+		what: optionalText(w.what),
+		ref: optionalText(w.ref),
+		blocks: w.blocks,
+	};
+}
+
+function adaptBoardSubagent(w: WireBoardSubagent): BoardSubagent {
+	return {
+		id: w.id,
+		agent: w.agent,
+		description: w.description,
+		status: w.status,
+		startedAtUnixMs: Number(w.startedAtUnixMs),
+		endedAtUnixMs: w.endedAtUnixMs === 0n ? undefined : Number(w.endedAtUnixMs),
+	};
+}
+
+function adaptBoardTask(w: WireBoardTask): BoardTask {
+	return {
+		key: w.key,
+		title: w.title,
+		primaryRef: optionalText(w.primaryRef),
+		refs: w.refs,
+		state: TASK_STATE[w.state],
+		note: optionalText(w.note),
+		waiting: w.waiting.map(adaptBoardWaiting),
+		subagents: w.subagents.map(adaptBoardSubagent),
+	};
+}
+
+function adaptBoardRef(w: WireBoardRef): BoardRef {
+	return {
+		ref: w.ref,
+		kind: REF_KIND[w.kind] ?? "unknown",
+		title: optionalText(w.title),
+		url: optionalText(w.url),
+		gate: PR_GATE[w.gate],
+		draft: w.draft,
+		checksState: optionalText(w.checksState),
+		stackTipRef: optionalText(w.stackTipRef),
+		stackPosition: w.stackPosition || undefined,
+		owned: w.owned,
+		staleApproval: w.staleApproval,
+		mergeQueueState: optionalText(w.mergeQueueState),
+		trackerStatus: optionalText(w.trackerStatus),
+	};
+}
+
+function adaptBoardAsk(w: WireBoardAsk): BoardAsk {
+	return {
+		askId: w.askId,
+		messageId: w.messageId,
+		channelId: w.channelId,
+		ref: optionalText(w.ref),
+		header: w.header,
+		answered: w.answered,
+		postedAtUnixMs: Number(w.postedAtUnixMs),
+	};
+}
+
+export function adaptAgentBoardSummary(
+	w: WireAgentBoardSummary,
+): AgentBoardSummary {
+	return {
+		focus: optionalText(w.focus),
+		taskCount: w.taskCount,
+		waitingOnOperator: w.waitingOnOperator,
+		halt: adaptBoardHalt(w.halt),
+		writtenAtUnixMs: Number(w.writtenAtUnixMs),
+		stale: w.stale,
+	};
+}
+
+export function adaptAgentBoard(w: WireAgentBoard): AgentBoard {
+	return {
+		agentId: w.agentAccountId,
+		handle: w.handle,
+		focusTaskKey: optionalText(w.focusTaskKey),
+		halt: adaptBoardHalt(w.halt),
+		tasks: w.tasks.map(adaptBoardTask),
+		refs: w.refs.map(adaptBoardRef),
+		untrackedRefs: w.untrackedRefs,
+		asks: w.asks.map(adaptBoardAsk),
+		writtenAtUnixMs: Number(w.writtenAtUnixMs),
+		stale: w.stale,
+	};
+}
+
+/** Fold an AgentBoardChanged board into the roster summary. The event carries
+ *  no derived refs, so the server's waiting-on-you count stands until a re-read. */
+export function applyBoardEvent(
+	prev: AgentBoardSummary | undefined,
+	board: AgentBoard,
+): AgentBoardSummary {
+	const focusTask = board.tasks.find((task) => task.key === board.focusTaskKey);
+	return {
+		focus: focusTask
+			? [focusTask.primaryRef, focusTask.title].filter(Boolean).join(" ")
+			: undefined,
+		taskCount: board.tasks.length,
+		waitingOnOperator: prev?.waitingOnOperator ?? 0,
+		halt: board.halt,
+		writtenAtUnixMs: board.writtenAtUnixMs,
+		stale: board.stale,
+	};
+}
 
 /** Map a wire PinnedEntry to the domain one: the board pointer (message id +
  *  position) the strip renders. The wire's audit extras (`pinnedAtUnixMs`,
@@ -555,6 +752,7 @@ export function presenceLifecycle(p: AgentPresence): AgentState | undefined {
 export interface AgentPresenceInfo {
 	readonly lifecycle?: AgentState;
 	readonly activity?: string;
+	readonly board?: AgentBoardSummary;
 }
 
 /** Map one wire `RosterEntry` to its presence-map entry: `[agentAccountId,
@@ -573,6 +771,7 @@ export function adaptRosterEntry(
 		{
 			lifecycle: presenceLifecycle(w.presence),
 			activity: w.activity || undefined,
+			board: w.board ? adaptAgentBoardSummary(w.board) : undefined,
 		},
 	];
 }

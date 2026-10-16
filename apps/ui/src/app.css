@@ -252,6 +252,26 @@
 	font-variant-numeric: tabular-nums;
 }
 
+.agent-halt-dot {
+	width: 6px;
+	height: 6px;
+	flex: none;
+	background: var(--cx-st-error);
+}
+.agent-halt-dot[data-halt="done"] {
+	background: var(--cx-st-done);
+}
+.agent-halt-dot[data-halt="awaiting_user"] {
+	background: var(--cx-st-waiting);
+}
+
+.agent-waiting-count {
+	flex: none;
+	color: var(--cx-st-waiting);
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+}
+
 /* Presence activity string on an agent leaf (T8): a small dim run after the
  * badge, truncated so a long status never widens the tree row. */
 .agent-activity {
@@ -1907,6 +1927,14 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.fleet-waiting-count {
+	align-self: center;
+	margin-left: 10px;
+	color: var(--cx-st-waiting);
+	font-size: 11px;
+	white-space: nowrap;
 }
 /* A fleet tab's pane: a compact open-workspace header over the inline home-DM
    conversation (design: architecture-lineage). */

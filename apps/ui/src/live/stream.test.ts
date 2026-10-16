@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentBoardSchema,
+	AgentBoardSummarySchema,
 	AgentPresence,
 	ChannelGroupSchema,
 	ChannelKind,
@@ -11,6 +13,7 @@ import {
 	RosterEntrySchema,
 	UserAccountSchema,
 	type Account as WireAccount,
+	type AgentBoard as WireAgentBoard,
 	type Channel as WireChannel,
 	type ChannelGroup as WireChannelGroup,
 	type RosterEntry as WireRosterEntry,
@@ -103,6 +106,13 @@ type FakePayload =
 				readonly agentAccountId: string;
 				readonly presence: AgentPresence;
 				readonly activity: string;
+			};
+	  }
+	| {
+			readonly case: "agentBoardChanged";
+			readonly value: {
+				readonly agentAccountId: string;
+				readonly board?: WireAgentBoard;
 			};
 	  }
 	| { readonly case: "resyncRequired"; readonly value: Record<string, never> }
@@ -217,6 +227,12 @@ interface FakeConfig {
 	readonly subscribeScripts?: Array<() => AsyncGenerator<FakeResponse>>;
 	/** Roster entries GetRoster returns for the snapshot presence seed. */
 	readonly roster?: WireRosterEntry[];
+	/** When set, every GetRoster after the first returns these entries instead. */
+	readonly rosterAfter?: WireRosterEntry[];
+	/** When set, every GetRoster after the first rejects with this error. */
+	readonly rosterAfterError?: Error;
+	/** Runs inside every GetRoster after the first, before it returns. */
+	readonly onRosterAfter?: () => void;
 	/** When set, GetRoster rejects with this error instead of returning — the
 	 *  read-failure path (the snapshot must abort, not seed an empty map). */
 	readonly getRosterError?: Error;
@@ -267,7 +283,11 @@ function createFakeClient(
 		getRoster: async ({ scope }: { scope: number }) => {
 			calls.getRosterScopes.push(scope);
 			if (config.getRosterError) throw config.getRosterError;
-			return { entries: config.roster ?? [] };
+			if (calls.getRosterScopes.length === 1)
+				return { entries: config.roster ?? [] };
+			config.onRosterAfter?.();
+			if (config.rosterAfterError) throw config.rosterAfterError;
+			return { entries: config.rosterAfter ?? config.roster ?? [] };
 		},
 		listTopics: async (req: { channelId: string }) => ({
 			topics: config.topicsByChannel?.[req.channelId] ?? [],
@@ -1131,5 +1151,99 @@ describe("runCommsStream — presence seed + tail", () => {
 		// pushed from the failed snapshot round.
 		expect(errors).toContain(boom);
 		expect(states).toHaveLength(0);
+	});
+});
+
+describe("runCommsStream — board summary re-read", () => {
+	const entry = (waitingOnOperator: number) =>
+		create(RosterEntrySchema, {
+			agentAccountId: "acc-cook",
+			presence: AgentPresence.WORKING,
+			board: create(AgentBoardSummarySchema, { waitingOnOperator }),
+		});
+	const boardChanged = (seq: bigint): FakeResponse => ({
+		seq,
+		atUnixMs: 0n,
+		instanceEpoch: 1n,
+		snapshotSeq: 0n,
+		payload: {
+			case: "agentBoardChanged",
+			value: {
+				agentAccountId: "acc-cook",
+				board: create(AgentBoardSchema, { agentAccountId: "acc-cook" }),
+			},
+		},
+	});
+	const run = async (
+		config: Omit<FakeConfig, "subscribeScripts">,
+		controller = new AbortController(),
+	) => {
+		const { client, calls } = createFakeClient(controller, {
+			accounts: [wireUserAccount(CALLER)],
+			...config,
+			subscribeScripts: [
+				async function* () {
+					yield boundary(100n, 1n);
+					yield boundary(0n, 2n);
+					yield boardChanged(3n);
+					controller.abort();
+				},
+			],
+		});
+		const states: CommsState[] = [];
+		const errors: unknown[] = [];
+		await runCommsStream({
+			client,
+			callerId: CALLER,
+			mapMessage,
+			onState: (s) => states.push(s),
+			onError: (e) => errors.push(e),
+			signal: controller.signal,
+		});
+		const waiting = states.at(-1)?.presence.get("acc-cook")
+			?.board?.waitingOnOperator;
+		return { calls, waiting, errors };
+	};
+
+	test("a re-read that resolves after teardown applies nothing", async () => {
+		const controller = new AbortController();
+		const { calls, waiting } = await run(
+			{
+				roster: [entry(1)],
+				rosterAfter: [entry(0)],
+				onRosterAfter: () => controller.abort(),
+			},
+			controller,
+		);
+		expect(calls.getRosterScopes).toEqual([2, 2]);
+		expect(waiting).toBe(1);
+	});
+
+	test("an agentBoardChanged re-reads GetRoster for the server's waiting count", async () => {
+		const { calls, waiting } = await run({
+			roster: [entry(1)],
+			rosterAfter: [entry(0)],
+		});
+		expect(calls.getRosterScopes).toEqual([2, 2]);
+		expect(waiting).toBe(0);
+	});
+
+	test("a failed re-read reports the error and keeps the event's summary", async () => {
+		const boom = new Error("getRoster boom");
+		const { waiting, errors } = await run({
+			roster: [entry(1)],
+			rosterAfterError: boom,
+		});
+		expect(errors).toEqual([boom]);
+		expect(waiting).toBe(1);
+	});
+
+	test("an agent the re-read no longer lists waits on no one", async () => {
+		const { calls, waiting } = await run({
+			roster: [entry(2)],
+			rosterAfter: [],
+		});
+		expect(calls.getRosterScopes).toEqual([2, 2]);
+		expect(waiting).toBe(0);
 	});
 });
