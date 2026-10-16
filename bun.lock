@@ -147,6 +147,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/ci-timing": {
+      "name": "@compass/ci-timing",
+      "bin": {
+        "ci-timing": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/compass-app-dev": {
       "name": "@compass/compass-app-dev",
       "bin": {
@@ -574,6 +584,8 @@
     "@compass/bun-audit-gate": ["@compass/bun-audit-gate@workspace:tools/bun-audit-gate"],
 
     "@compass/ci-matrix": ["@compass/ci-matrix@workspace:tools/ci-matrix"],
+
+    "@compass/ci-timing": ["@compass/ci-timing@workspace:tools/ci-timing"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
 

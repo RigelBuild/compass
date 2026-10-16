@@ -1,0 +1,14 @@
+{
+	"name": "@compass/ci-timing",
+	"private": true,
+	"type": "module",
+	"description": "Measures CI workflow timing by run class from GitHub Actions metadata.",
+	"module": "index.ts",
+	"bin": {
+		"ci-timing": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

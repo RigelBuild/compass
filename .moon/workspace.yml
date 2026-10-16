@@ -177,6 +177,9 @@ projects:
   # query projects`, or the generator's zero-untagged assertion never covers the
   # very tool that enforces it.
   ci-matrix: 'tools/ci-matrix'
+  # CI Actions timing measurements; registering the project keeps its pure metric
+  # tests and typecheck in the normal Moon discovery and CI sweep.
+  ci-timing: 'tools/ci-timing'
   # The macOS .app/.dmg bundler (compass-distribution T3): templates Info.plist,
   # stages Compass.app/Contents/{MacOS,Resources}, ad-hoc signs (codesign
   # --sign -, GC6/DL-261) and wraps a UDZO .dmg via hdiutil. Registered so its
