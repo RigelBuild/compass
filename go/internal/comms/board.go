@@ -21,7 +21,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const boardStaleAfter = 30 * time.Minute
+const (
+	boardStaleAfter = 30 * time.Minute
+	boardAskWindow  = 24 * time.Hour
+)
 
 // UpdateBoardAsAccount validates and applies an agent patch before publishing the committed board.
 func (c *Comms) UpdateBoardAsAccount(
@@ -53,6 +56,9 @@ func (c *Comms) UpdateBoardAsAccount(
 	if err != nil {
 		return nil, edgeError(err)
 	}
+	if c.driver != nil {
+		go c.driver.DriveAgent(context.WithoutCancel(ctx), caller)
+	}
 	authored := boardAuthoredToWire(account, row, nil)
 	if authored.decodeErr != nil {
 		slog.ErrorContext(ctx, "comms: board decode failed after committed update", "agent_account_id", string(caller), "error", authored.decodeErr)
@@ -73,12 +79,13 @@ func (c *Comms) UpdateBoardAsAccount(
 		}
 	}
 	wire := authored.wire
-	completed, completeErr := c.completeBoardWire(ctx, account, row, authored.wire, authored.refs)
+	completed, completeErr := c.completeBoardWire(ctx, caller, account, row, authored.wire, authored.refs)
 	if completeErr != nil {
 		slog.WarnContext(ctx, "comms: board refs unavailable after update", "agent_account_id", string(caller), "error", completeErr)
 	} else {
 		wire = completed
 	}
+	c.fillAskMirrors(ctx, []*compassv1.AgentBoard{wire})
 	return &compassv1.UpdateAgentBoardResponse{Board: wire}, nil
 }
 
@@ -510,7 +517,7 @@ func (c *Comms) ListBoardsAsAccount(
 			slog.WarnContext(ctx, "comms: board decode failed while listing", "agent_account_id", string(id), "error", authored.decodeErr)
 		}
 		wire := authored.wire
-		completed, err := c.completeBoardWire(ctx, account, rows[id], wire, authored.refs)
+		completed, err := c.completeBoardWire(ctx, caller, account, rows[id], wire, authored.refs)
 		if err != nil {
 			slog.WarnContext(ctx, "comms: board refs unavailable while listing", "agent_account_id", string(id), "error", err)
 		} else {
@@ -518,6 +525,7 @@ func (c *Comms) ListBoardsAsAccount(
 		}
 		boards = append(boards, wire)
 	}
+	c.fillAskMirrors(ctx, boards)
 	return &compassv1.ListAgentBoardsResponse{Boards: boards}, nil
 }
 
@@ -604,7 +612,7 @@ func boardAuthoredToWire(account store.Account, row store.BoardRow, matched []st
 	return authoredBoard{wire: out, refs: allRefs, decodeErr: decodeErr}
 }
 
-func (c *Comms) completeBoardWire(ctx context.Context, account store.Account, row store.BoardRow, out *compassv1.AgentBoard, allRefs []string) (*compassv1.AgentBoard, error) {
+func (c *Comms) completeBoardWire(ctx context.Context, viewer store.AccountID, account store.Account, row store.BoardRow, out *compassv1.AgentBoard, allRefs []string) (*compassv1.AgentBoard, error) {
 	presence := compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE
 	if c.presence != nil {
 		if live := c.presence.PresenceFor([]store.AccountID{account.ID}); live[account.ID] != compassv1.AgentPresence_AGENT_PRESENCE_UNSPECIFIED {
@@ -612,12 +620,73 @@ func (c *Comms) completeBoardWire(ctx context.Context, account store.Account, ro
 		}
 	}
 	out.Stale = presence == compassv1.AgentPresence_AGENT_PRESENCE_WORKING && row.WrittenAtUnixMs < time.Now().Add(-boardStaleAfter).UnixMilli()
+	asks, err := c.boardAsks(ctx, viewer, account.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "comms: board asks unavailable", "agent_account_id", string(account.ID), "error", err)
+	} else {
+		out.Asks = asks
+	}
 	derived, untracked, err := board.DeriveRefs(ctx, c.store, c.boardForges, account.ID, allRefs)
 	if err != nil {
 		return out, err
 	}
 	out.Refs, out.UntrackedRefs = derived, untracked
 	return out, nil
+}
+
+func (c *Comms) boardAsks(ctx context.Context, viewer, agent store.AccountID) ([]*compassv1.BoardAsk, error) {
+	rows, err := c.store.AsksByAuthor(ctx, viewer, agent, time.Now().Add(-boardAskWindow), 0)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	out := make([]*compassv1.BoardAsk, len(rows))
+	for i, r := range rows {
+		out[i] = &compassv1.BoardAsk{
+			AskId: r.AskID, MessageId: r.MessageID, ChannelId: r.ChannelID,
+			Ref: r.Ref, Header: r.Header, Answered: r.Answered, PostedAtUnixMs: r.PostedAtUnixMs,
+		}
+	}
+	return out, nil
+}
+
+// fillAskMirrors sets each ask's forge mirror state with one lookup for all
+// boards; a failed lookup leaves the asks without mirror state.
+func (c *Comms) fillAskMirrors(ctx context.Context, boards []*compassv1.AgentBoard) {
+	var askIDs []string
+	for _, b := range boards {
+		for _, ask := range b.GetAsks() {
+			askIDs = append(askIDs, ask.GetAskId())
+		}
+	}
+	if len(askIDs) == 0 {
+		return
+	}
+	mirrors, err := c.store.AskForgeMirrors(ctx, askIDs)
+	if err != nil {
+		slog.WarnContext(ctx, "comms: board ask mirrors unavailable", "error", err)
+		return
+	}
+	byAsk := make(map[string]store.ForgeMirrorRow, len(askIDs))
+	for _, mirror := range mirrors {
+		current, found := byAsk[mirror.AskID]
+		// The agent's automatic row wins over a user's click row, then the newest row.
+		auto, curAuto := mirror.Agent != "", current.Agent != ""
+		if !found || (auto && !curAuto) || (auto == curAuto && mirror.UpdatedAt.After(current.UpdatedAt)) {
+			byAsk[mirror.AskID] = mirror
+		}
+	}
+	for _, b := range boards {
+		for _, ask := range b.GetAsks() {
+			mirror, ok := byAsk[ask.GetAskId()]
+			if !ok {
+				continue
+			}
+			ask.MirrorState = compassv1.BoardMirrorState(mirror.State)
+			if ask.GetMirrorState() == compassv1.BoardMirrorState_BOARD_MIRROR_STATE_DONE {
+				ask.MirrorUrl = mirror.CommentURL
+			}
+		}
+	}
 }
 
 func haltToWire(halt store.BoardHalt) *compassv1.BoardHalt {

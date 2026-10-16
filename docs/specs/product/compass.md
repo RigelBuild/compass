@@ -725,9 +725,12 @@ the authored fields only.
 ### Requirement: `ListAgentBoards` returns visible boards and derived refs
 
 `ListAgentBoards` SHALL return each matching agent's whole board when the
-caller can see that agent, with the matching task keys and derived refs. The
-request's optional handle, text, ref, waiting, state, and halt filters SHALL be
-combined with AND; the default limit is 20 and the maximum is 100.
+caller can see that agent, with the matching task keys and derived refs. Each
+board SHALL carry that agent's asks the caller can see: every pending ask and
+asks answered in the last 24 hours, at most 20, pending asks first and each
+group newest first, with each ask's forge mirror state and URL. The request's
+optional handle, text, ref, waiting, state, and halt filters SHALL be combined
+with AND; the default board limit is 20 and the maximum is 100.
 
 #### Scenario: A peer lists a matching board
 
@@ -735,6 +738,12 @@ combined with AND; the default limit is 20 and the maximum is 100.
 - **When** the caller lists boards with that query
 - **Then** the response contains the whole board and identifies the matching
   task key.
+
+#### Scenario: A peer cannot see an ask in an invisible channel
+
+- **Given** a caller who can see an agent but cannot see one of its ask channels
+- **When** the caller lists boards
+- **Then** the response contains the agent's board without that ask.
 
 ### Requirement: The caller is the connection's account, never a request field
 
@@ -1055,7 +1064,8 @@ after its message commits. An ask with no ref, or whose coordinate is OFF or
 MANUAL, SHALL NOT be automatically posted. The server SHALL check mode again
 immediately before every post; a coordinate turned OFF while queued SHALL not
 be posted. Answering an ask SHALL update the same forge comment with its answer
-and answerer rather than create a second comment.
+and answerer rather than create a second comment. A pending or failed mirror
+SHALL be re-driven on the agent's next board write.
 
 ### Requirement: Channel membership carries a separate subscribe opt-in
 
