@@ -7,19 +7,19 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// OpenTraced is Open with tracer on every pooled connection, for pgtest suites
-// in any package that pin a query count. It is build-tagged so production never
-// links it. Open has no tracer seam, so the migrated store's pool is swapped for
-// a traced one on the same DSN; s.q reads s.pool per call.
+// OpenTraced adds tracer to Open's query tracer on every pooled connection. It
+// is build-tagged for pgtest suites that also count statements. The store's
+// migrated query set reads s.pool per call, so replacing its pool is safe.
 func OpenTraced(ctx context.Context, dsn string, tracer pgx.QueryTracer) (*Store, error) {
 	cfg, err := poolConfig(dsn)
 	if err != nil {
 		return nil, err
 	}
-	cfg.ConnConfig.Tracer = tracer
+	cfg.ConnConfig.Tracer = multitracer.New(cfg.ConnConfig.Tracer, tracer)
 	s, err := Open(ctx, dsn)
 	if err != nil {
 		return nil, err

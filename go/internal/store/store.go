@@ -101,6 +101,7 @@ func poolConfig(dsn string) (*pgxpool.Config, error) {
 	if _, set := raw.RuntimeParams["pool_max_conns"]; !set {
 		cfg.MaxConns = defaultPoolMaxConns
 	}
+	cfg.ConnConfig.Tracer = spanTracer{tracer: otel.Tracer(instrumentationScope)}
 	return cfg, nil
 }
 
