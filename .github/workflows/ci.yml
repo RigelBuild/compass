@@ -780,6 +780,17 @@ jobs:
             -f tools/toolchain/secretspec-env.nix secretspec)
           echo "$secretspec/bin" >>"$GITHUB_PATH"
 
+      - name: Turn off durability on the throwaway service Postgres
+        # The service database is discarded with the job, so crash safety buys
+        # nothing; skipping fsync cuts the suite's commit-heavy schema setup.
+        run: |
+          docker exec "${{ job.services.postgres.id }}" psql -U postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
+          docker exec "${{ job.services.postgres.id }}" psql -U postgres -tAc "SHOW fsync" | grep -qx off
+
       - name: Real-Postgres suites
         working-directory: go
         env:
