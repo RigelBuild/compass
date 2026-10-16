@@ -24,7 +24,7 @@ import {
 import { render } from "@solidjs/testing-library";
 import App from "./App";
 import { STUB_COMMS_STATE } from "./comms-stub";
-import { StoreContext } from "./context";
+import { RefLinkRulesContext, StoreContext } from "./context";
 import { appRoutes } from "./routes";
 import { type AppStore, type AppStoreOptions, createAppStore } from "./store";
 import { testQueryClient } from "./test-support";
@@ -57,7 +57,9 @@ export function mountApp(
 		});
 		return (
 			<StoreContext value={store}>
-				<Router>{(props) => <App {...props} />}</Router>
+				<RefLinkRulesContext value={store.refLinkRules}>
+					<Router>{(props) => <App {...props} />}</Router>
+				</RefLinkRulesContext>
 			</StoreContext>
 		);
 	});

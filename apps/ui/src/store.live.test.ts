@@ -1488,6 +1488,35 @@ describe("store live reference rules", () => {
 		}
 	});
 
+	test("a live response replaces the seeded rules", async () => {
+		const compass = createFakeCompass();
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				compass: compass.client,
+				queryClient: testQueryClient(),
+				initialRefLinkRules: [
+					{
+						kind: "linear",
+						prefix: "OPS",
+						urlTemplate: "https://example.com/{key}-{number}",
+					},
+				],
+			});
+		});
+		try {
+			expect(store.refLinkRules().map((rule) => rule.prefix)).toEqual(["OPS"]);
+			for (let i = 0; i < 5; i++) await Promise.resolve();
+			expect(store.refLinkRules().map((rule) => rule.prefix)).toEqual([
+				"github.com",
+				"RIG",
+			]);
+		} finally {
+			dispose();
+		}
+	});
+
 	test("reports failed rule loading and leaves the accessor empty", async () => {
 		const compass = createFakeCompass();
 		const errors: unknown[] = [];

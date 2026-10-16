@@ -17,6 +17,21 @@ import {
 	SubscribeEventsResponseSchema,
 	type SessionEvent as WireSessionEvent,
 } from "@compass/client";
+import type { RefLinkRule } from "../refs/grammar";
+
+/** The fixture targets served by GetRefLinkRules and used by offline UI boot. */
+export const FIXTURE_REF_LINK_RULES: readonly RefLinkRule[] = [
+	{
+		kind: "github",
+		prefix: "github.com",
+		urlTemplate: "https://github.com/{owner}/{repo}/issues/{number}",
+	},
+	{
+		kind: "linear",
+		prefix: "RIG",
+		urlTemplate: "https://linear.app/rigel/issue/{key}-{number}",
+	},
+];
 
 /** A push queue one stream at a time drains: items pushed with no reader wait
  *  for the next one. */
@@ -136,18 +151,7 @@ export function createFakeCompass(opts?: {
 	let probeFailure: Error | undefined;
 	let whoAmIFailure: Error | undefined;
 	let rulesFailure: Error | undefined;
-	const refLinkRules = [
-		{
-			kind: "github",
-			prefix: "github.com",
-			urlTemplate: "https://github.com/{owner}/{repo}/issues/{number}",
-		},
-		{
-			kind: "linear",
-			prefix: "RIG",
-			urlTemplate: "https://linear.app/rigel/issue/{key}-{number}",
-		},
-	];
+	const refLinkRules = FIXTURE_REF_LINK_RULES.map((rule) => ({ ...rule }));
 	const serverInfo = {
 		version: "9.9.9-test",
 		apiVersion: "compass.v1",

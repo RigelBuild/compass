@@ -663,6 +663,8 @@ export interface AppStoreOptions {
 	 *  route passes [] to construct a board with no issues. The live event stream
 	 *  still replaces it (the accessor stays the seam). */
 	readonly initialIssues?: readonly Issue[];
+	/** Link rules seeded before any live GetRefLinkRules response. Defaults to []. */
+	readonly initialRefLinkRules?: readonly RefLinkRule[];
 	/** The live compass client — the agent-lifecycle surface (StopAgentSession).
 	 *  Absent → offline: `stopAgent` reports through `onCommsError` instead of
 	 *  dialing. Separate from `comms`: the two services are separate clients over
@@ -1433,7 +1435,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// async, so a `disposed` flag guards a late probe; a rejection routes through onCommsError.
 	const [daemon, setDaemon] = createSignal<DaemonInfo>(STUB_DAEMON);
 	const [refLinkRules, setRefLinkRules] = createSignal<readonly RefLinkRule[]>(
-		[],
+		options.initialRefLinkRules ?? [],
 	);
 	if (options.compass) {
 		const client = options.compass;

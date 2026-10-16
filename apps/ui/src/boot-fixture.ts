@@ -13,7 +13,7 @@ import {
 	REPLAY_EVENTS,
 } from "./fixture-wire";
 import { createFakeComms } from "./live/comms-fake";
-import { createFakeCompass } from "./live/compass-fake";
+import { createFakeCompass, FIXTURE_REF_LINK_RULES } from "./live/compass-fake";
 import { mountShell, newAppQueryClient } from "./mount";
 import { createAppStore, type TourClient } from "./store";
 import { sessionLayoutStorage } from "./window-layout";
@@ -73,6 +73,7 @@ export function bootFixture(root: HTMLElement): () => void {
 		const store = createAppStore({
 			queryClient,
 			initialComms: STUB_COMMS_STATE,
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
 			workspaceKey: "fixture",
 			layoutStorage: sessionLayoutStorage(),
 			tour: createMemoryTourClient(),
