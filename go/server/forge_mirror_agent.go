@@ -103,10 +103,9 @@ func (s *forgeService) claimedMirrorResult(ctx context.Context, caller store.Acc
 		}
 		return s.mirrorRetryResult(ctx, row, ref)
 	default:
-		if row.Source != 2 || row.Actor != caller || row.Agent != caller {
-			return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another actor"))
-		}
-		return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another mirror"))
+		// An agent claim has no ask ID, so a Conflict row holds its source key
+		// under another actor or agent.
+		return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, "forge mirror: source conflicts with another actor"))
 	}
 	result, ok := s.awaitMirrorDrive(ctx, row, s.agentMessagesBodyForRow())
 	if !ok {

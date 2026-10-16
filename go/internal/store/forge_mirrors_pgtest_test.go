@@ -778,6 +778,45 @@ func TestClaimConflictResolvesRacingKeyedInsertAsReserved(t *testing.T) {
 	}
 }
 
+// A keyed agent claim's source is held by another actor's row (a plain
+// conflict), while a racing re-mirror has reserved the claim's key on a row
+// whose own key differs. claimConflict must report that row Reserved.
+func TestClaimConflictPrefersKeyReservedOnAnotherRow(t *testing.T) {
+	ctx := context.Background() // test root context
+	s := newTestStore(t)
+	agent, owner := seedAgent(t, s, "mirror-key-remirror")
+	held, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-held", Actor: owner, TargetRef: "owner/repo#11", BodyRev: 1, State: 1,
+	})
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(held) = (created=%v, err=%v)", created, err)
+	}
+	remirrored, created, err := s.ClaimForgeMirror(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-remirrored", Actor: agent, Agent: agent, ClientRequestID: "call-first",
+		TargetRef: "owner/repo#11", BodyRev: 1, State: 1, SessionID: "sess-h", SourcePayload: []byte(`{}`),
+	})
+	if err != nil || !created {
+		t.Fatalf("ClaimForgeMirror(remirrored) = (created=%v, err=%v)", created, err)
+	}
+	// The racing re-mirror's reservation; the raw handle needs the row's tenant.
+	tag, err := s.pool.Exec(ctx, `INSERT INTO forge_mirror_requests (agent_account_id, client_request_id, mirror_id, tenant_id)
+		SELECT $1, $2, id, tenant_id FROM forge_mirrors WHERE id = $3`,
+		string(agent), "call-raced", remirrored.ID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("reserve call-raced = (%d rows, err %v), want 1 row", tag.RowsAffected(), err)
+	}
+	got, resolution, err := s.claimConflict(ctx, ForgeMirrorRow{
+		Source: 2, SourceKey: "topic-held", Actor: agent, Agent: agent, ClientRequestID: "call-raced",
+		TargetRef: "owner/repo#11", BodyRev: 1, State: 1, SessionID: "sess-h", SourcePayload: []byte(`{}`),
+	})
+	if err != nil || resolution != ClaimReserved || got.ID != remirrored.ID {
+		t.Fatalf("claimConflict = (%s, %v, err=%v), want the reserved row %s", got.ID, resolution, err, remirrored.ID)
+	}
+	if after, err := s.ForgeMirrorByID(ctx, held.ID); err != nil || after.BodyRev != 1 {
+		t.Fatalf("held row body_rev = %d (err %v), want untouched 1", after.BodyRev, err)
+	}
+}
+
 // Two same-key re-mirrors of one source interleave: both missed the key
 // lookup, and the winner reserved the key and bumped the row. The loser, via
 // claimConflict, reaches remirrorSource with bumped=false and must not bump.

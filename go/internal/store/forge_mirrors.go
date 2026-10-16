@@ -154,12 +154,14 @@ type ClaimResolution int
 const (
 	// ClaimInserted: this call inserted the row.
 	ClaimInserted ClaimResolution = iota + 1
-	// ClaimRemirrored: this call bumped an existing same-source agent row.
+	// ClaimRemirrored: this call bumped an existing same-source row of the
+	// same actor and agent.
 	ClaimRemirrored
 	// ClaimReserved: a keyed claim whose request key already names a row,
 	// returned untouched.
 	ClaimReserved
-	// ClaimConflict: another ask or source key holds the row, untouched.
+	// ClaimConflict: a row holding the claim's ask ID, or its source key under
+	// another actor or agent, returned untouched.
 	ClaimConflict
 )
 
@@ -201,8 +203,9 @@ func (s *Store) ClaimForgeMirrorResolved(ctx context.Context, mirror ForgeMirror
 }
 
 // claimConflict resolves a claim that inserted nothing to the row at its
-// conflicting key, re-mirroring a same-source agent row. A key that comes to
-// name a row after the caller's lookup missed resolves to that row, Reserved.
+// conflicting key, re-mirroring a same-source agent row. A keyed claim whose
+// key came to name a row after the caller's lookup missed, by insert or by
+// re-mirror, resolves to that row as Reserved rather than a conflict.
 func (s *Store) claimConflict(ctx context.Context, mirror ForgeMirrorRow) (ForgeMirrorRow, ClaimResolution, error) {
 	conflict, err := s.forgeMirrorByConflictKeys(ctx, mirror)
 	if err != nil {
@@ -229,6 +232,16 @@ func (s *Store) claimConflict(ctx context.Context, mirror ForgeMirrorRow) (Forge
 		conflict, err = s.forgeMirrorByConflictKeys(ctx, mirror)
 		if err != nil {
 			return ForgeMirrorRow{}, 0, fmt.Errorf("store: reload claimed forge mirror: %w", err)
+		}
+	}
+	if resolution == ClaimConflict && mirror.Agent != "" && mirror.ClientRequestID != "" {
+		// A racing re-mirror may have reserved the key on a row whose own key differs.
+		reserved, found, err := s.ForgeMirrorByRequest(ctx, mirror.Agent, mirror.ClientRequestID)
+		if err != nil {
+			return ForgeMirrorRow{}, 0, err
+		}
+		if found {
+			return reserved, ClaimReserved, nil
 		}
 	}
 	return forgeMirrorFromDB(db.ClaimForgeMirrorRow{

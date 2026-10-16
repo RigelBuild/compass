@@ -558,40 +558,40 @@ func TestMirrorMessagesSequentialRemirrorRetryReturnsStoredFailure(t *testing.T)
 		Source: 2, SourceKey: stored.SourceKey, Actor: f.agent.ID, Agent: f.agent.ID, ClientRequestID: "call-again",
 		TargetRef: stored.TargetRef, BodyRev: 1, State: 1, SessionID: agentMirrorSession, SourcePayload: stored.SourcePayload,
 	}
-	won, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, again)
-	if err != nil || resolution != store.ClaimRemirrored || won.ID != stored.ID {
-		t.Fatalf("winning re-mirror = (%s, %v, err=%v), want %s re-mirrored", won.ID, resolution, err, stored.ID)
+	remirrored, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, again)
+	if err != nil || resolution != store.ClaimRemirrored || remirrored.ID != stored.ID {
+		t.Fatalf("re-mirror = (%s, %v, err=%v), want %s re-mirrored", remirrored.ID, resolution, err, stored.ID)
 	}
-	// The winner's drive fails with a coded error.
-	if _, ok, err := f.st.LeaseForgeMirror(f.ctx, won.ID, "winner-token", time.Minute); err != nil || !ok {
+	// The re-mirror's drive fails with a coded error.
+	if _, ok, err := f.st.LeaseForgeMirror(f.ctx, remirrored.ID, "drive-token", time.Minute); err != nil || !ok {
 		t.Fatalf("LeaseForgeMirror = (ok=%v, err=%v)", ok, err)
 	}
-	if err := f.st.MarkForgeMirror(f.ctx, won.ID, "winner-token", store.ForgeMirrorMark{State: 3, Err: "forge mirror: source not found", ErrCode: "not_found"}); err != nil {
+	if err := f.st.MarkForgeMirror(f.ctx, remirrored.ID, "drive-token", store.ForgeMirrorMark{State: 3, Err: "forge mirror: source not found", ErrCode: "not_found"}); err != nil {
 		t.Fatalf("MarkForgeMirror: %v", err)
 	}
-	failed, err := f.st.ForgeMirrorByID(f.ctx, won.ID)
+	failed, err := f.st.ForgeMirrorByID(f.ctx, remirrored.ID)
 	if err != nil || failed.State != 3 {
 		t.Fatalf("row after failed drive = (%+v, %v), want failed", failed, err)
 	}
 	calls := len(f.author.Calls())
-	lost, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, again)
-	if err != nil || resolution != store.ClaimReserved || lost.ID != won.ID {
-		t.Fatalf("losing re-mirror = (%s, %v, err=%v), want %s reserved", lost.ID, resolution, err, won.ID)
+	retried, resolution, err := f.st.ClaimForgeMirrorResolved(f.ctx, again)
+	if err != nil || resolution != store.ClaimReserved || retried.ID != remirrored.ID {
+		t.Fatalf("retried re-mirror = (%s, %v, err=%v), want %s reserved", retried.ID, resolution, err, remirrored.ID)
 	}
 	ref, err := refs.Parse("owner/auto#12")
 	if err != nil {
 		t.Fatalf("refs.Parse: %v", err)
 	}
-	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, ref, lost, resolution)
+	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, ref, retried, resolution)
 	if fe := result.GetError(); fe.GetCode() != connect.CodeNotFound.String() || fe.GetMessage() != failed.LastError {
-		t.Fatalf("losing re-mirror result = %v, want not_found %q", result, failed.LastError)
+		t.Fatalf("retried re-mirror result = %v, want not_found %q", result, failed.LastError)
 	}
-	after, err := f.st.ForgeMirrorByID(f.ctx, won.ID)
+	after, err := f.st.ForgeMirrorByID(f.ctx, remirrored.ID)
 	if err != nil || after.State != 3 || after.Attempts != failed.Attempts || after.BodyRev != failed.BodyRev {
-		t.Fatalf("row after losing re-mirror = (%+v, %v), want untouched %+v", after, err, failed)
+		t.Fatalf("row after retried re-mirror = (%+v, %v), want untouched %+v", after, err, failed)
 	}
 	if got := len(f.author.Calls()); got != calls {
-		t.Fatalf("provider calls = %d after the losing re-mirror, want %d", got, calls)
+		t.Fatalf("provider calls = %d after the retried re-mirror, want %d", got, calls)
 	}
 }
 
@@ -615,32 +615,5 @@ func TestMirrorMessagesSourceHeldByAnotherActorIsRefused(t *testing.T) {
 	}
 	if after, err := f.st.ForgeMirrorByID(f.ctx, held.ID); err != nil || after.BodyRev != 1 || after.State != 1 {
 		t.Fatalf("user row = (%+v, %v), want untouched", after, err)
-	}
-}
-
-// A ClaimConflict on the caller's own agent row, held under another key, is
-// refused as a source conflict and never driven.
-func TestMirrorMessagesConflictOnOwnRowIsRefused(t *testing.T) {
-	f := newAgentMirrorFixture(t)
-	own, created, err := f.st.ClaimForgeMirror(f.ctx, store.ForgeMirrorRow{
-		Source: 2, SourceKey: "other-source", Actor: f.agent.ID, Agent: f.agent.ID, ClientRequestID: "call-own",
-		TargetRef: "owner/auto#12", BodyRev: 1, State: 1, SessionID: agentMirrorSession, SourcePayload: []byte(`{}`),
-	})
-	if err != nil || !created {
-		t.Fatalf("ClaimForgeMirror(own) = (created=%v, err=%v)", created, err)
-	}
-	ref, err := refs.Parse("owner/auto#12")
-	if err != nil {
-		t.Fatalf("refs.Parse: %v", err)
-	}
-	result := f.svc.claimedMirrorResult(f.ctx, f.agent.ID, ref, own, store.ClaimConflict)
-	if fe := result.GetError(); fe.GetCode() != connect.CodeFailedPrecondition.String() || fe.GetMessage() != "forge mirror: source conflicts with another mirror" {
-		t.Fatalf("result = %v, want failed_precondition source conflicts with another mirror", result)
-	}
-	if calls := f.author.Calls(); len(calls) != 0 {
-		t.Fatalf("provider calls = %+v, want none", calls)
-	}
-	if after, err := f.st.ForgeMirrorByID(f.ctx, own.ID); err != nil || after.State != 1 || after.Attempts != 0 {
-		t.Fatalf("own row = (%+v, %v), want undriven", after, err)
 	}
 }
