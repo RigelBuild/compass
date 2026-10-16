@@ -219,6 +219,8 @@ projects:
   # The Bun advisory check is a dedicated, always-run workflow job; this project
   # keeps its typecheck and tests in the affected Moon matrix.
   bun-audit-gate: 'tools/bun-audit-gate'
+  # The full-sweep failure backstop: a pure issue decision plus its tests.
+  ci-backstop: 'tools/ci-backstop'
 
 # File hashing uses moon's in-process native walker (the v2.5+ default), NOT the
 # git shell-out. This is load-bearing: the git hasher (`git ls-files` then `git

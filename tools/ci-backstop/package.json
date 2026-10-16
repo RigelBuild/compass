@@ -1,0 +1,14 @@
+{
+	"name": "@compass/ci-backstop",
+	"private": true,
+	"type": "module",
+	"description": "Routes failed full CI sweeps to one GitHub issue.",
+	"module": "index.ts",
+	"bin": {
+		"ci-backstop": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

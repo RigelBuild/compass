@@ -2909,6 +2909,45 @@ jobs:
           fi
           echo "all required work jobs succeeded (or correctly skipped per their setup flag)"
 
+
+  backstop:
+    name: backstop
+    needs: rollup
+    if: ${{ !cancelled() && contains(fromJSON('["push","schedule"]'), github.event_name) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: ci-backstop
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+      - name: Put the pinned bun toolchain on PATH
+        # bun comes from the nix-pinned toolchain, never setup-bun, so it is the
+        # same derivation as the dev shell's. `jq -r` renders a missing `.store`
+        # as the literal `null`, so guard for it explicitly.
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+      - name: Route failed full sweep
+        env:
+          ROLLUP_RESULT: ${{ needs.rollup.result }}
+          GH_TOKEN: ${{ github.token }}
+        run: bun tools/ci-backstop/index.ts
+
   regen-forge-fixtures:
     name: regen-fixtures
     runs-on: ubuntu-latest
