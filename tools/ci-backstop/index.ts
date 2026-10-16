@@ -103,14 +103,18 @@ function runStartedAt(value: unknown, source: string): string {
 	return startedAt;
 }
 
-function failedJobNames(value: unknown): string[] {
+// A rollup also fails on a timed-out or cancelled need, so name those jobs too.
+const UNSUCCESSFUL = new Set(["failure", "timed_out", "cancelled"]);
+
+export function failedJobNames(value: unknown): string[] {
 	const response = record(value);
 	if (!Array.isArray(response.jobs)) {
 		throw new Error("gh jobs response has no jobs array");
 	}
 	return response.jobs.flatMap((job) => {
 		const data = record(job);
-		if (data.conclusion !== "failure") return [];
+		if (typeof data.conclusion !== "string") return [];
+		if (!UNSUCCESSFUL.has(data.conclusion)) return [];
 		if (typeof data.name !== "string") {
 			throw new Error("gh returned a failed job without a name");
 		}
