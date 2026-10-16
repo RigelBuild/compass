@@ -781,6 +781,9 @@ func TestCallbackErrorParksOnDLQ(t *testing.T) {
 	ctx := testCtx(t)
 	url := testServer(t)
 	f := newFabric(t, Config{URL: url, MaxDeliver: 2, Log: quietLogger(t)})
+	tracer := sdktrace.NewTracerProvider().Tracer("fabric-test")
+	publishCtx, publishSpan := tracer.Start(ctx, "publish")
+	defer publishSpan.End()
 
 	raw, err := nats.Connect(url)
 	if err != nil {
@@ -810,9 +813,10 @@ func TestCallbackErrorParksOnDLQ(t *testing.T) {
 	defer unsub()
 
 	failing := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-failing"}
-	if err := f.Publish(ctx, concrete, failing); err != nil {
+	if err := f.Publish(publishCtx, concrete, failing); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
+	wantTraceparent := storedTraceparent(ctx, t, f, concrete)
 
 	msg, err := dlq.NextMsgWithContext(ctx)
 	if err != nil {
@@ -827,6 +831,9 @@ func TestCallbackErrorParksOnDLQ(t *testing.T) {
 	}
 	if got := msg.Header.Get(dlqHeaderSubject); got != concrete {
 		t.Errorf("park header %s = %q, want concrete subject %q", dlqHeaderSubject, got, concrete)
+	}
+	if got := msg.Header.Get(traceparentHeader); got != wantTraceparent {
+		t.Errorf("park header %s = %q, want published traceparent %q", traceparentHeader, got, wantTraceparent)
 	}
 	if reason := msg.Header.Get(dlqHeaderReason); !strings.Contains(reason, "store read failed") {
 		t.Errorf("park header %s = %q, want the callback's error", dlqHeaderReason, reason)
@@ -2023,6 +2030,9 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	cfg := Config{URL: url, AckWait: slowAckWait, MaxDeliver: 2, Log: quietLogger(t)}
 	a := newFabric(t, cfg)
 	b := newFabric(t, cfg)
+	tracer := sdktrace.NewTracerProvider().Tracer("fabric-test")
+	publishCtx, publishSpan := tracer.Start(ctx, "publish")
+	defer publishSpan.End()
 
 	raw, err := nats.Connect(url)
 	if err != nil {
@@ -2065,9 +2075,10 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommsSubject: %v", err)
 	}
-	if err := a.Publish(ctx, subject, ref); err != nil {
+	if err := a.Publish(publishCtx, subject, ref); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
+	wantTraceparent := storedTraceparent(ctx, t, a, subject)
 	stream, err := a.ensureStream(ctx)
 	if err != nil {
 		t.Fatalf("ensureStream: %v", err)
@@ -2121,6 +2132,9 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	if got := parked.Header.Get(dlqHeaderSubject); got != "compass.t1.comms.message_posted" {
 		t.Errorf("parked original subject = %q, want the event's subject", got)
 	}
+	if got := parked.Header.Get(traceparentHeader); got != wantTraceparent {
+		t.Errorf("park header %s = %q, want published traceparent %q", traceparentHeader, got, wantTraceparent)
+	}
 	if !strings.Contains(parked.Header.Get(dlqHeaderReason), "2 delivery attempts") {
 		t.Errorf("parked reason = %q, want it to name the 2 attempts", parked.Header.Get(dlqHeaderReason))
 	}
@@ -2130,6 +2144,25 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
 		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
 	}
+}
+
+// storedTraceparent returns the traceparent Fabric.Publish stamped on the last
+// message stored for subject, failing the test when it is missing.
+func storedTraceparent(ctx context.Context, t *testing.T, f *Fabric, subject string) string {
+	t.Helper()
+	stream, err := f.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	stored, err := stream.GetLastMsgForSubject(ctx, subject)
+	if err != nil {
+		t.Fatalf("GetLastMsgForSubject: %v", err)
+	}
+	tp := stored.Header.Get(traceparentHeader)
+	if tp == "" {
+		t.Fatalf("published headers %v lack %q", stored.Header, traceparentHeader)
+	}
+	return tp
 }
 
 // TestQueuedFinalAttemptParksOnce verifies a buffered final attempt parks once.

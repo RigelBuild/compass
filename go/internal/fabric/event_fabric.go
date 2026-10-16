@@ -467,10 +467,10 @@ func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error
 // republish the raw payload to DLQSubject, then Term the message so the server
 // stops redelivering it.
 //
-// The payload goes out verbatim over CORE NATS, with the original subject and
-// the reason in headers. Core rather than JetStream because the DLQ is a
-// diagnostic tap, not a recovery path — recovery is always the Postgres row —
-// and because a DLQ publish that itself needed a stream would need its own DLQ.
+// The payload goes out verbatim over CORE NATS, with the original subject, the
+// reason, and the publisher's traceparent in headers. Core rather than JetStream
+// because the DLQ is a diagnostic tap, not a recovery path — recovery is always
+// the Postgres row — and because the DLQ publish would otherwise need its own DLQ.
 //
 // Term is issued even if the DLQ publish fails: leaving a poison message
 // redelivering forever is the worse failure, and the reason is logged either
@@ -501,7 +501,7 @@ func (f *Fabric) park(ctx context.Context, msg jetstream.Msg, cause error) {
 	}
 	if shouldPublish {
 		var publishErr error
-		reason, publishErr = f.publishDLQ(ctx, msg.Subject(), msg.Data(), cause)
+		reason, publishErr = f.publishDLQ(ctx, msg.Subject(), msg.Data(), traceparent(msg.Headers()), cause)
 		published = publishErr == nil
 		if hasKey {
 			if !f.finishParkClaim(key, claim, published) && !published {
@@ -623,8 +623,15 @@ func (f *Fabric) notifyParkDecided(path string, published bool) {
 	}
 }
 
-// publishDLQ writes one DLQ record and returns its sanitized reason and publish error.
-func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, cause error) (string, error) {
+// publishDLQ writes one DLQ record with its publisher traceparent and returns its
+// sanitized reason and publish error.
+func (f *Fabric) publishDLQ(
+	ctx context.Context,
+	subject string,
+	data []byte,
+	traceparent string,
+	cause error,
+) (string, error) {
 	f.log.ErrorContext(ctx, "fabric: parking event on the dlq",
 		"subject", subject, "dlq_subject", DLQSubject, "error", cause)
 	if hook := f.beforeDLQPublish; hook != nil {
@@ -637,6 +644,9 @@ func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, ca
 	dlq.Header.Set(dlqHeaderSubject, subject)
 	reason := sanitizeReason(cause.Error())
 	dlq.Header.Set(dlqHeaderReason, reason)
+	if traceparent != "" {
+		dlq.Header.Set(traceparentHeader, traceparent)
+	}
 	if err := f.nc.PublishMsg(dlq); err != nil {
 		f.log.ErrorContext(ctx, "fabric: publishing to the dlq failed",
 			"subject", subject, "error", err)
@@ -702,7 +712,7 @@ func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats
 			f.notifyParkDecided(path, false)
 			return
 		}
-		_, publishErr := f.publishDLQ(ctx, raw.Subject, raw.Data,
+		_, publishErr := f.publishDLQ(ctx, raw.Subject, raw.Data, traceparent(raw.Header),
 			fmt.Errorf("fabric: dropped by the server after %d delivery attempts (callback outlived ack_wait)", adv.Deliveries))
 		published := publishErr == nil
 		f.finishParkClaim(key, claim, published)
@@ -714,8 +724,8 @@ func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats
 	return sub, nil
 }
 
-// DLQ message headers, so a consumer of DLQSubject knows what the payload was
-// and why it parked without parsing a log line.
+// DLQ message headers, including "traceparent", tell a consumer what the
+// payload was and why it parked without parsing a log line.
 const (
 	dlqHeaderSubject = "Compass-Original-Subject"
 	dlqHeaderReason  = "Compass-Park-Reason"
