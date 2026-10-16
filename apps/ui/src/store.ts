@@ -57,7 +57,7 @@ import { adaptMessage } from "./live/adapt";
 import { loadRefLinkRules, probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
 import { type AccountSession, runEventStream } from "./live/events";
-import { createConnectQuery } from "./live/query";
+import { type ConnectQueryDeps, createConnectQuery } from "./live/query";
 import {
 	appendSessionEvent,
 	isTerminalSessionState,
@@ -244,6 +244,8 @@ export interface TourClient {
  * type rather than coupling to `ReturnType<typeof createAppStore>`.
  */
 export interface AppStore {
+	/** The shared live transport and query cache; absent when the app is offline. */
+	readonly connectQueryDeps: ConnectQueryDeps | undefined;
 	/** Per-agent most recent focused-view open time, persisted per workspace. */
 	lastOpened: Accessor<ReadonlyMap<string, number>>;
 	// ── View routing ──
@@ -2584,5 +2586,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		assignedIssues,
 		trackerConfig: () => DEFAULT_TRACKER_CONFIG,
 		modelRegistry,
+		connectQueryDeps: options.transport
+			? { transport: options.transport, queryClient: options.queryClient }
+			: undefined,
 	};
 }

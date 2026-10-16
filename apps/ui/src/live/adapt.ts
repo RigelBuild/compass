@@ -753,6 +753,8 @@ export interface AgentPresenceInfo {
 	readonly lifecycle?: AgentState;
 	readonly activity?: string;
 	readonly board?: AgentBoardSummary;
+	/** Counts AgentBoardChanged events; an automatic patch keeps the board's write time. */
+	readonly boardEvents?: number;
 }
 
 /** Map one wire `RosterEntry` to its presence-map entry: `[agentAccountId,

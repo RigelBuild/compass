@@ -38,6 +38,7 @@ export function joinAgents(
 			activity: info?.activity,
 			runtime: runtime.get(account.id),
 			board: info?.board,
+			boardEvents: info?.boardEvents,
 			terminals: [],
 		});
 	}

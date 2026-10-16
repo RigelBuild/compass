@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+	AgentBoardSchema,
 	AskQuestionSchema,
 	AskSchema,
+	BoardTaskSchema,
+	BoardTaskState,
 	CommsService,
 	CompassService,
 	create,
@@ -578,6 +581,88 @@ describe("createStoreDestinationProviders", () => {
 			expect(byKind?.get("message")).toBeUndefined();
 			expect(byKind?.get("view")?.map((view) => view.title)).toEqual([
 				"Settings",
+			]);
+		});
+	});
+	test("the tasks provider finds a reference and opens its agent", async () => {
+		await withStoreAsync(async (store) => {
+			const task = create(BoardTaskSchema, {
+				key: "task-a",
+				title: "Ship the board panel",
+				primaryRef: "RIG-123",
+				state: BoardTaskState.ACTIVE,
+			});
+			const board = create(AgentBoardSchema, {
+				agentAccountId: "acc-compass-ui",
+				handle: "compass-ui",
+				tasks: [task],
+				matchedTaskKeys: ["task-a"],
+			});
+			let rejectedRefCalls = 0;
+			const transport = createRouterTransport(({ service }) => {
+				service(CommsService, {
+					listAgentBoards: (request) => {
+						if (request.ref) {
+							rejectedRefCalls++;
+							throw new Error("InvalidArgument: unsupported ref");
+						}
+						return { boards: [board] };
+					},
+					searchMessages: () => ({ messages: [] }),
+				});
+				service(CompassService, {
+					searchIssues: () => ({ issues: [] }),
+				});
+			});
+			const clients = {
+				comms: createCommsClient(transport),
+				compass: createCompassClient(transport),
+			};
+			const provider = createStoreDestinationProviders(store, clients).find(
+				(item) => item.id === "tasks",
+			);
+			const tasks = await provider?.query("RIG-123");
+			expect(rejectedRefCalls).toBe(1);
+			expect(tasks?.map((row) => [row.id, row.title, row.kind])).toEqual([
+				["acc-compass-ui:task-a", "RIG-123 · Ship the board panel", "task"],
+			]);
+			tasks?.[0]?.navigate();
+			await flush();
+			expect(store.selectedAgentId()).toBe("acc-compass-ui");
+		});
+	});
+	test("the tasks provider keeps server order across boards", async () => {
+		await withStoreAsync(async (store) => {
+			const boardOf = (agent: string, keys: string[]) =>
+				create(AgentBoardSchema, {
+					agentAccountId: agent,
+					handle: agent,
+					tasks: keys.map((key) =>
+						create(BoardTaskSchema, { key, title: key }),
+					),
+					matchedTaskKeys: keys,
+				});
+			const transport = createRouterTransport(({ service }) => {
+				service(CommsService, {
+					listAgentBoards: () => ({
+						boards: [boardOf("acc-a", ["a1", "a2"]), boardOf("acc-b", ["b1"])],
+					}),
+					searchMessages: () => ({ messages: [] }),
+				});
+				service(CompassService, { searchIssues: () => ({ issues: [] }) });
+			});
+			const clients = {
+				comms: createCommsClient(transport),
+				compass: createCompassClient(transport),
+			};
+			const providers = createStoreDestinationProviders(store, clients).filter(
+				(item) => item.id === "tasks",
+			);
+			const groups = await queryDestinations(providers, "ship", 1, () => 1);
+			expect(groups?.get("task")?.map((row) => row.title)).toEqual([
+				"a1",
+				"a2",
+				"b1",
 			]);
 		});
 	});

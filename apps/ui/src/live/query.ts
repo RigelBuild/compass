@@ -41,11 +41,14 @@ export function createConnectQuery<
 >(
 	schema: DescMethodUnary<I, O>,
 	input: () => MessageInitShape<I> | SkipToken,
-	opts: ConnectQueryDeps,
+	opts: ConnectQueryDeps & { readonly refetchInterval?: number },
 ): CreateQueryResult<MessageShape<O>> {
 	return useQuery(
 		() => ({
 			...createQueryOptions(schema, input(), { transport: opts.transport }),
+			...(opts.refetchInterval === undefined
+				? {}
+				: { refetchInterval: opts.refetchInterval }),
 		}),
 		() => opts.queryClient,
 	);

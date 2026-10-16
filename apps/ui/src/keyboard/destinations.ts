@@ -1,6 +1,6 @@
 /** Destination providers for palette and top-bar search (RIG-2483, A4/D9).
- * Agents, channels, topics, and views are local. Issues, PRs, and messages use
- * live search clients; without clients, issues and PRs fall back to the held board.
+ * Agents, channels, topics, and views are local. Issues, PRs, messages, and tasks
+ * use live search clients; without clients, issues and PRs fall back to the held board.
  *
  * Providers are async; `queryDestinations` isolates failures and drops stale
  * results. Local rows use fuzzy scores; remote rows retain server rank.
@@ -8,7 +8,7 @@
 
 import type { Message } from "@compass/client";
 import { prRows } from "../board";
-import { adaptIssue } from "../live/adapt";
+import { adaptAgentBoard, adaptIssue } from "../live/adapt";
 import type { LiveClients } from "../live/client";
 import type { AppStore } from "../store";
 import type { Issue } from "../stub-data";
@@ -145,7 +145,54 @@ export function createStoreDestinationProviders(
 		inFlight = entry;
 		return entry.promise;
 	};
+	const searchBoards = async (query: string, ref: string) => {
+		if (!clients) return [];
+		const search = (request: { query?: string; ref?: string }) =>
+			clients.comms.listAgentBoards({ ...request, limit: 20 });
+		const queryRead = search({ query });
+		const refRead = ref ? search({ ref }).catch(() => undefined) : undefined;
+		const [queryResponse, refResponse] = await Promise.all([
+			queryRead,
+			refRead,
+		]);
+		const unique = new Set<string>();
+		const destinations: Destination[] = [];
+		for (const response of [queryResponse, refResponse]) {
+			if (!response) continue;
+			for (const wireBoard of response.boards) {
+				const board = adaptAgentBoard(wireBoard);
+				for (const key of wireBoard.matchedTaskKeys) {
+					const task = board.tasks.find((candidate) => candidate.key === key);
+					if (!task) continue;
+					const id = `${board.agentId}:${key}`;
+					if (unique.has(id)) continue;
+					unique.add(id);
+					destinations.push({
+						id,
+						title: [task.primaryRef, task.title].filter(Boolean).join(" · "),
+						kind: "task",
+						// Server order across boards; a task both reads return keeps its first place.
+						score: -destinations.length,
+						navigate: () => store.openAgent(board.agentId),
+					});
+				}
+			}
+		}
+		return destinations;
+	};
 	return [
+		{
+			id: "tasks",
+			query: async (input) => {
+				const query = input.trim();
+				if (!query || !clients) return [];
+				const looksLikeRef =
+					/^(?:[A-Z][A-Z0-9]{1,9}-\d+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+)$/.test(
+						query,
+					);
+				return searchBoards(query, looksLikeRef ? query : "");
+			},
+		},
 		{
 			id: "agents",
 			query: (input) =>

@@ -259,6 +259,7 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 			presence.set(event.accountId, {
 				...prev,
 				board: applyBoardEvent(prev?.board, event.board),
+				boardEvents: (prev?.boardEvents ?? 0) + 1,
 			});
 			return { ...state, presence };
 		}
