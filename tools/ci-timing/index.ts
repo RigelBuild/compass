@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import type { ClassSummary, Quantiles, RunRecord } from "./core.ts";
+import type { ClassSummary, JobRecord, Quantiles, RunRecord } from "./core.ts";
 import { summarize } from "./core.ts";
 
 const RUN_CLASSES = [
@@ -187,7 +187,7 @@ function knownConclusion(value: unknown): RunRecord["conclusion"] | undefined {
 	return undefined;
 }
 
-function readRuns(value: unknown): RunRecord[] {
+export function readRuns(value: unknown): RunRecord[] {
 	const result: RunRecord[] = [];
 	let listed = 0;
 	let total = 0;
@@ -225,19 +225,30 @@ function readRuns(value: unknown): RunRecord[] {
 	return result;
 }
 
-function readJobs(value: unknown, runId: number): RunRecord["jobs"] {
+// GitHub's extra job conclusions folded into the record's four: a timeout ran and failed,
+// and a job left waiting on approval or superseded never ran.
+const JOB_CONCLUSIONS: Readonly<Record<string, JobRecord["conclusion"]>> = {
+	success: "success",
+	neutral: "success",
+	failure: "failure",
+	timed_out: "failure",
+	cancelled: "cancelled",
+	skipped: "skipped",
+	action_required: "skipped",
+	stale: "skipped",
+};
+
+export function readJobs(value: unknown, runId: number): RunRecord["jobs"] {
 	const result: RunRecord["jobs"] = [];
 	for (const page of pages(value, `jobs for run ${runId}`)) {
 		for (const job of pageItems(page, "jobs", `jobs for run ${runId}`)) {
-			const conclusion = job.conclusion;
-			if (
-				conclusion !== "success" &&
-				conclusion !== "failure" &&
-				conclusion !== "cancelled" &&
-				conclusion !== "skipped"
-			) {
+			const conclusion =
+				typeof job.conclusion === "string"
+					? JOB_CONCLUSIONS[job.conclusion]
+					: undefined;
+			if (conclusion === undefined) {
 				throw new Error(
-					`Job in run ${runId} has unsupported conclusion: ${String(conclusion)}`,
+					`Job in run ${runId} has unsupported conclusion: ${String(job.conclusion)}`,
 				);
 			}
 			result.push({
