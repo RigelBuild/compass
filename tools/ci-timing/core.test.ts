@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JobRecord, RunRecord } from "./core.ts";
-import { classify, summarize } from "./core.ts";
+import { AGGREGATOR_JOBS, classify, summarize } from "./core.ts";
 
 function job(
 	name: string,
@@ -85,6 +85,30 @@ describe("summarize", () => {
 		expect(summary.pr.skipRate.build).toBeCloseTo(1 / 3);
 		expect(summary.pr.longPole.build).toBeCloseTo(1 / 3);
 		expect(summary.pr.longPole.deploy).toBeCloseTo(2 / 3);
+	});
+	test("never counts an aggregator job as the long pole", () => {
+		const summary = summarize([
+			run(1, [job("e2e", 100, 101, 200), job("rollup", 100, 201, 205)]),
+		]);
+
+		expect(summary.pr.longPole.e2e).toBe(1);
+		expect(summary.pr.longPole.rollup).toBeUndefined();
+		expect(summary.pr.jobDuration.rollup?.n).toBe(1);
+	});
+
+	test("AGGREGATOR_JOBS name ci.yml jobs that wait on the PR gate's jobs", async () => {
+		const workflow = await Bun.file(
+			new URL("../../.github/workflows/ci.yml", import.meta.url),
+		).text();
+		const jobs = Bun.YAML.parse(workflow) as {
+			jobs: Record<string, { needs?: string | string[] }>;
+		};
+		for (const name of AGGREGATOR_JOBS) {
+			const needs = [jobs.jobs[name]?.needs ?? []].flat();
+			// e2e is the measured long pole, so an aggregator that skipped it would hide it.
+			expect(needs).toContain("e2e");
+			expect(needs.length).toBeGreaterThan(5);
+		}
 	});
 	test("computes max wait and runner minutes from job timestamps", () => {
 		const summary = summarize([

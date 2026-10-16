@@ -24,6 +24,9 @@ export type RunRecord = {
 	jobs: JobRecord[];
 };
 
+// Jobs that wait on every other job always finish last, so they can never be the long pole.
+export const AGGREGATOR_JOBS: readonly string[] = ["rollup"];
+
 export function classify(
 	run: Pick<RunRecord, "event" | "headBranch">,
 ): RunClass {
@@ -194,6 +197,9 @@ function summarizeJob(
 	const duration = job.completedAt - job.startedAt;
 	appendValue(summary.jobDuration, job.name, duration);
 	current.runnerSeconds += duration;
+	if (AGGREGATOR_JOBS.includes(job.name)) {
+		return;
+	}
 	if (job.completedAt > current.latestCompletion) {
 		current.latestCompletion = job.completedAt;
 		current.lastJobs.length = 0;
