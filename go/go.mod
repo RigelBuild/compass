@@ -18,7 +18,7 @@ require (
 	connectrpc.com/connect v1.20.0
 	connectrpc.com/cors v0.1.0
 	connectrpc.com/grpchealth v1.5.0
-	connectrpc.com/otelconnect v0.9.0
+	connectrpc.com/otelconnect v0.12.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/google/uuid v1.6.0
@@ -54,6 +54,7 @@ require (
 require golang.org/x/sys v0.48.0
 
 require (
+	connectrpc.com/connect/v2 v2.0.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.7.2-default-no-op // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
