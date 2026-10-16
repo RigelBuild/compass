@@ -138,34 +138,41 @@ function openIssueNumber(value: unknown): number | null {
 	return data.number;
 }
 
+// A cancelled run never produced a rollup verdict, so it must not supersede this one.
+const VERDICTS = new Set(["success", "failure"]);
+
+export function newestVerdictStartedAt(runs: unknown): string | null {
+	if (!Array.isArray(runs)) {
+		throw new Error("gh returned no workflow_runs array");
+	}
+	for (const run of runs) {
+		const data = record(run);
+		if (data.status !== "completed") {
+			throw new Error("gh returned a run that is not completed");
+		}
+		if (typeof data.conclusion !== "string") continue;
+		if (!VERDICTS.has(data.conclusion)) continue;
+		return runStartedAt(data, "completed workflow run");
+	}
+	return null;
+}
+
 async function startedAtForLatestCompletedSweep(
 	repository: string,
 	event: "push" | "schedule",
 ): Promise<string | null> {
-	const endpoint = `repos/${repository}/actions/workflows/ci.yml/runs?event=${event}&status=completed&per_page=1`;
-	const response = parseJson(
-		await gh([
-			"api",
-			"--jq",
-			".workflow_runs | map({id, run_started_at, status, event})",
-			endpoint,
-		]),
-		`api ${endpoint}`,
+	const endpoint = `repos/${repository}/actions/workflows/ci.yml/runs?event=${event}&status=completed&per_page=50`;
+	return newestVerdictStartedAt(
+		parseJson(
+			await gh([
+				"api",
+				"--jq",
+				".workflow_runs | map({run_started_at, status, conclusion})",
+				endpoint,
+			]),
+			`api ${endpoint}`,
+		),
 	);
-	if (!Array.isArray(response)) {
-		throw new Error(`gh api ${endpoint} returned no workflow_runs array`);
-	}
-	const latestRun = response[0];
-	if (latestRun === undefined) return null;
-	const runData = record(latestRun);
-	if (
-		runData.status !== "completed" ||
-		runData.event !== event ||
-		typeof runData.id !== "number"
-	) {
-		throw new Error(`gh api ${endpoint} returned an invalid completed run`);
-	}
-	return runStartedAt(runData, "completed workflow run");
 }
 
 async function main(): Promise<void> {
