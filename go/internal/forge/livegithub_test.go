@@ -732,6 +732,172 @@ func TestLiveLinearCreateIssue(t *testing.T) {
 	assertMatchesFixture(t, got, f.Response.Want)
 }
 
+// TestLiveLinearSelfDelegateProbe pins app-user self-delegation on create and update.
+func TestLiveLinearSelfDelegateProbe(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx, cancel := liveCtx(t)
+	defer cancel()
+	ln := liveLinear(ts)
+
+	var viewer struct {
+		Viewer struct {
+			ID  string `json:"id"`
+			App bool   `json:"app"`
+		} `json:"viewer"`
+	}
+	if err := linearDirectGraphQL(ctx, ts, `query CompassActorProbe { viewer { id app } }`, nil, &viewer); err != nil {
+		t.Fatalf("read Linear viewer: %v", err)
+	}
+	if !viewer.Viewer.App || viewer.Viewer.ID == "" {
+		t.Fatalf("viewer = %+v, want an app actor with an id", viewer.Viewer)
+	}
+
+	teamID, err := ln.resolveTeamID(ctx, team)
+	if err != nil {
+		t.Fatalf("resolve Linear team: %v", err)
+	}
+	var created struct {
+		IssueCreate struct {
+			Issue struct {
+				ID     string  `json:"id"`
+				Number float64 `json:"number"`
+			} `json:"issue"`
+		} `json:"issueCreate"`
+	}
+	createQuery := `mutation CompassSelfDelegateProbeCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) { issue { id number } }
+}`
+	if err := linearDirectGraphQL(ctx, ts, createQuery, map[string]any{"input": map[string]any{
+		"teamId": teamID, "title": "compass-live-delegate-probe-" + newRunID(), "delegateId": viewer.Viewer.ID,
+	}}, &created); err != nil {
+		t.Fatalf("create self-delegated Linear issue: %v", err)
+	}
+	if created.IssueCreate.Issue.Number == 0 {
+		t.Fatalf("issueCreate returned no issue number: %+v", created.IssueCreate.Issue)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, uint64(created.IssueCreate.Issue.Number)) })
+
+	readIssue := func(id string) struct {
+		Issue struct {
+			Delegate *struct {
+				ID string `json:"id"`
+			} `json:"delegate"`
+			Assignee *struct {
+				ID string `json:"id"`
+			} `json:"assignee"`
+		} `json:"issue"`
+	} {
+		var result struct {
+			Issue struct {
+				Delegate *struct {
+					ID string `json:"id"`
+				} `json:"delegate"`
+				Assignee *struct {
+					ID string `json:"id"`
+				} `json:"assignee"`
+			} `json:"issue"`
+		}
+		query := `query CompassSelfDelegateProbeRead($id: String!) {
+  issue(id: $id) { delegate { id } assignee { id } }
+}`
+		if err := linearDirectGraphQL(ctx, ts, query, map[string]any{"id": id}, &result); err != nil {
+			t.Fatalf("read Linear delegate slots: %v", err)
+		}
+		return result
+	}
+	createdSlots := readIssue(created.IssueCreate.Issue.ID).Issue
+	if createdSlots.Delegate == nil || createdSlots.Delegate.ID != viewer.Viewer.ID {
+		t.Errorf("created delegate = %+v, want viewer id %q", createdSlots.Delegate, viewer.Viewer.ID)
+	}
+	if createdSlots.Assignee != nil {
+		t.Errorf("created assignee = %+v, want null", createdSlots.Assignee)
+	}
+
+	var second struct {
+		IssueCreate struct {
+			Issue struct {
+				ID     string  `json:"id"`
+				Number float64 `json:"number"`
+			} `json:"issue"`
+		} `json:"issueCreate"`
+	}
+	if err := linearDirectGraphQL(ctx, ts, createQuery, map[string]any{"input": map[string]any{
+		"teamId": teamID, "title": "compass-live-delegate-update-" + newRunID(),
+	}}, &second); err != nil {
+		t.Fatalf("create Linear issue for update leg: %v", err)
+	}
+	if second.IssueCreate.Issue.Number == 0 {
+		t.Fatalf("issueCreate returned no issue number: %+v", second.IssueCreate.Issue)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, uint64(second.IssueCreate.Issue.Number)) })
+	updateQuery := `mutation CompassSelfDelegateProbeUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { issue { id } }
+}`
+	if err := linearDirectGraphQL(ctx, ts, updateQuery, map[string]any{
+		"id": second.IssueCreate.Issue.ID, "input": map[string]any{"delegateId": viewer.Viewer.ID},
+	}, &struct{}{}); err != nil {
+		t.Fatalf("update Linear issue delegate: %v", err)
+	}
+	updatedSlots := readIssue(second.IssueCreate.Issue.ID).Issue
+	if updatedSlots.Delegate == nil || updatedSlots.Delegate.ID != viewer.Viewer.ID {
+		t.Errorf("updated delegate = %+v, want viewer id %q", updatedSlots.Delegate, viewer.Viewer.ID)
+	}
+	if updatedSlots.Assignee != nil {
+		t.Errorf("updated assignee = %+v, want null", updatedSlots.Assignee)
+	}
+}
+
+// linearDirectGraphQL is the raw-API path used to pin Linear's unadapted capabilities.
+func linearDirectGraphQL(ctx context.Context, ts TokenSource, query string, variables map[string]any, out any) (err error) {
+	token, err := ts.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve Linear token: %w", err)
+	}
+	payload, err := json.Marshal(map[string]any{"query": query, "variables": variables})
+	if err != nil {
+		return fmt.Errorf("marshal Linear GraphQL request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.linear.app/graphql", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build Linear GraphQL request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("post Linear GraphQL request: %w", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close Linear GraphQL response: %w", closeErr))
+		}
+	}()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read Linear GraphQL response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("Linear GraphQL returned HTTP %d: %s", resp.StatusCode, body)
+	}
+	var envelope struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return fmt.Errorf("decode Linear GraphQL response: %w", err)
+	}
+	if len(envelope.Errors) != 0 {
+		return fmt.Errorf("Linear GraphQL error: %s", envelope.Errors[0].Message)
+	}
+	if err := json.Unmarshal(envelope.Data, out); err != nil {
+		return fmt.Errorf("decode Linear GraphQL data: %w", err)
+	}
+	return nil
+}
+
 // TestLiveLinearCommentOnIssue comments on a freshly-created Linear issue and
 // asserts the decoded comment's shape DIRECTLY (non-empty URL and the sent Body
 // echoed back): all four Comment fields are volatile, so a fixture compare
