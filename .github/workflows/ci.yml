@@ -173,6 +173,7 @@ jobs:
       # backstop lives in the generator, not here.
       matrix: ${{ steps.gen.outputs.matrix }}
       pgtest_affected: ${{ steps.gen.outputs.pgtest_affected }}
+      e2e_affected: ${{ steps.gen.outputs.e2e_affected }}
       microvm_affected: ${{ steps.gen.outputs.microvm_affected }}
       forge_affected: ${{ steps.gen.outputs.forge_affected }}
       gtk4_affected: ${{ steps.gen.outputs.gtk4_affected }}
@@ -2139,6 +2140,7 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    needs: setup
     # A DEDICATED job in a PRIVILEGED container, split off from the moon battery, for one
     # reason: the image-affected seed path. On a PR that changes the image
     # closure the gate builds the agent image from THIS tree and copies it into
@@ -2174,13 +2176,13 @@ jobs:
       # --init: the runner's `tail` PID 1 never reaps, so a lingering stack child
       # orphaned by `compass-stack up` would stay a zombie after `down`.
       options: --privileged --init
-    # Mirror the moon battery's dispatch-aware gate guard: run on
-    # push/schedule/pull_request and on a base-re-point re-trigger
-    # (workflow_dispatch with a non-empty pr); stay off the fixture-regen
-    # dispatch (empty pr, regen-only).
+    # The job-level guard mirrors the moon battery's dispatch condition and
+    # runs only on affected PRs; full sweeps remain enabled on push and schedule.
     if: >-
-      github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.pr != ''
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.e2e_affected == 'true')
     timeout-minutes: 60
     env:
       # Same short temp root as the moon battery: the e2e suite binds AF_UNIX sockets
@@ -2833,6 +2835,7 @@ jobs:
           gtk4='${{ needs.gtk4-e2e.result }}'
           darwin='${{ needs.darwin.result }}'
           agent_fod='${{ needs.agent-fod-arm64.result }}'
+          e2e_flag='${{ needs.setup.outputs.e2e_affected }}'
           pgtest_flag='${{ needs.setup.outputs.pgtest_affected }}'
           microvm_flag='${{ needs.setup.outputs.microvm_affected }}'
           forge_flag='${{ needs.setup.outputs.forge_affected }}'
@@ -2840,7 +2843,7 @@ jobs:
           darwin_flag='${{ needs.setup.outputs.darwin_affected }}'
           agent_fod_flag='${{ needs.setup.outputs.agent_fod_affected }}'
           echo "setup=$setup moon=$moon bun-audit=$bun_audit e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4 darwin=$darwin agent-fod-arm64=$agent_fod"
-          echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag darwin=$darwin_flag agent-fod=$agent_fod_flag"
+          echo "flags: e2e=$e2e_flag pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag darwin=$darwin_flag agent-fod=$agent_fod_flag"
           rc=0
           # setup, moon, and bun-audit must plainly succeed.
           if [ "$setup" != "success" ]; then
@@ -2855,11 +2858,7 @@ jobs:
             echo "::error::bun-audit did not succeed (result=$bun_audit)"
             rc=1
           fi
-          # e2e is not affected-gated — plain success required.
-          if [ "$e2e" != "success" ]; then
-            echo "::error::e2e did not succeed (result=$e2e)"
-            rc=1
-          fi
+          require_gated e2e "$e2e" "$e2e_flag"
           # Each gated special leg: success always passes; skipped passes ONLY
           # when its paired setup flag is 'false' (a failed setup → empty flag →
           # '' != 'false' → reds, never blanket skipped-is-green).

@@ -17,7 +17,8 @@ import { $ } from "bun";
 import {
 	checksPrMergeRef,
 	type GenInput,
-	generate,
+	type GenOutput,
+	generate as generateCore,
 	outputLines,
 	type ProjectInput,
 	parseAffectedTaskTargets,
@@ -26,6 +27,32 @@ import {
 	prDesignWrites,
 	unionAffectedIds,
 } from "./index.ts";
+
+function testSelection(
+	input: Pick<GenInput, "event" | "affectedIds">,
+): GenInput["goSelection"] {
+	const full = input.event === "push" || input.event === "schedule";
+	return {
+		pgtest: {
+			run: full || input.affectedIds.includes("compass-go"),
+			reason: "none",
+			roots: [],
+		},
+		microvm: {
+			run:
+				full ||
+				input.affectedIds.includes("compass-go") ||
+				input.affectedIds.includes("compass-guest-image"),
+			reason: "none",
+			roots: [],
+		},
+		e2e: { run: full, reason: "none", roots: [] },
+	};
+}
+
+function generate(input: Omit<GenInput, "goSelection">): GenOutput {
+	return generateCore({ ...input, goSelection: testSelection(input) });
+}
 
 /** A grouped project with a `ci` task target derived from its id. */
 function proj(id: string, group: string): ProjectInput {
@@ -45,8 +72,8 @@ function workspace(): ProjectInput[] {
 
 /** A PR-shaped input over the canonical workspace. */
 function prInput(
-	over: Partial<GenInput> & { affectedIds: string[] },
-): GenInput {
+	over: Omit<Partial<GenInput>, "goSelection"> & { affectedIds: string[] },
+): Omit<GenInput, "goSelection"> {
 	return {
 		projects: workspace(),
 		changedPaths: [],
@@ -724,6 +751,7 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		"matrix",
 		"pgtest_affected",
 		"microvm_affected",
+		"e2e_affected",
 		"forge_affected",
 		"gtk4_affected",
 		"darwin_affected",
@@ -774,6 +802,7 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		);
 		expect(none).toContain("pgtest_affected=false");
 		expect(none).toContain("microvm_affected=false");
+		expect(none).toContain("e2e_affected=false");
 
 		// Positive control on the same keys: naming the pgtest project flips
 		// both, since each is derived from the affected set.
@@ -787,6 +816,7 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		);
 		expect(some).toContain("pgtest_affected=true");
 		expect(some).toContain("microvm_affected=true");
+		expect(some).toContain("e2e_affected=false");
 	});
 
 	test("each path-derived flag renders its own boolean, not a sibling's", () => {

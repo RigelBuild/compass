@@ -81,16 +81,20 @@ so jobs can be added or renamed without touching it.
   check, today `moon (go)`, `moon (bun)` and `moon (nix)`. This is the same task
   graph the local gate and the `hk` pre-push hook run.
 - **Special jobs** need an environment the moon battery does not have. On a
-  pull request each runs only when its flag says the change affects it, except
-  `e2e`, which runs on every pull request. On `main` and nightly each always
-  runs.
+  pull request each runs only when its flag says the change affects it. The Go
+  suites derive those flags from tagged test roots and first-party dependency
+  closures; gate changes and declared owner-task inputs widen selection. On
+  `main` and nightly each always runs.
   - `pgtest`: the real-Postgres suites (`go test -tags pgtest -race ./...`)
     against a Postgres service container. `COMPASS_REQUIRE_LIVE=1` turns a
     missing database into a failure.
   - `e2e`: the podman tier in a privileged container, so rootless podman can
-    load and run a tree-built agent image. The stack starts its own Postgres.
-    The command is
+    load and run a tree-built agent image. On a pull request it runs for changes
+    in its Go dependency closures or when an owner task widens the suite. The
+    stack starts its own Postgres. The command is
     `go test -tags podman -race -count=1 -p 1 ./e2e/... ./cmd/compass-stack/...`.
+    It builds `compass-postgres`, `compass-server` and `compass-runner`; the
+    `compass-stack` package is tested as an E2E root but is not a built child.
   - `microvm`, `forge`, `gtk4`, `darwin` and `agent-fod-arm64` cover the
     microVM suites, the live forge contract, the GTK UI, the macOS bundle, and
     the arm64 agent dependency pin.
