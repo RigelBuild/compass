@@ -139,40 +139,53 @@ function openIssueNumber(value: unknown): number | null {
 }
 
 // A cancelled run never produced a rollup verdict, so it must not supersede this one.
-const VERDICTS = new Set(["success", "failure"]);
+const VERDICTS = ["success", "failure"] as const;
 
 export function newestVerdictStartedAt(runs: unknown): string | null {
 	if (!Array.isArray(runs)) {
 		throw new Error("gh returned no workflow_runs array");
 	}
+	let newest: string | null = null;
 	for (const run of runs) {
 		const data = record(run);
 		if (data.status !== "completed") {
 			throw new Error("gh returned a run that is not completed");
 		}
-		if (typeof data.conclusion !== "string") continue;
-		if (!VERDICTS.has(data.conclusion)) continue;
-		return runStartedAt(data, "completed workflow run");
+		if (data.conclusion !== "success" && data.conclusion !== "failure") {
+			continue;
+		}
+		const startedAt = runStartedAt(data, "completed workflow run");
+		if (newest === null || Date.parse(startedAt) > Date.parse(newest)) {
+			newest = startedAt;
+		}
 	}
-	return null;
+	return newest;
 }
 
-async function startedAtForLatestCompletedSweep(
+async function startedAtForLatestVerdict(
 	repository: string,
 	event: "push" | "schedule",
 ): Promise<string | null> {
-	const endpoint = `repos/${repository}/actions/workflows/ci.yml/runs?event=${event}&status=completed&per_page=50`;
-	return newestVerdictStartedAt(
-		parseJson(
-			await gh([
-				"api",
-				"--jq",
-				".workflow_runs | map({run_started_at, status, conclusion})",
-				endpoint,
-			]),
-			`api ${endpoint}`,
-		),
+	// The status filter takes a conclusion, so each query returns that verdict's newest run.
+	const pages = await Promise.all(
+		VERDICTS.map(async (verdict) => {
+			const endpoint = `repos/${repository}/actions/workflows/ci.yml/runs?event=${event}&status=${verdict}&per_page=1`;
+			const runs = parseJson(
+				await gh([
+					"api",
+					"--jq",
+					".workflow_runs | map({run_started_at, status, conclusion})",
+					endpoint,
+				]),
+				`api ${endpoint}`,
+			);
+			if (!Array.isArray(runs)) {
+				throw new Error(`gh api ${endpoint} returned no workflow_runs array`);
+			}
+			return runs;
+		}),
 	);
+	return newestVerdictStartedAt(pages.flat());
 }
 
 async function main(): Promise<void> {
@@ -197,8 +210,8 @@ async function main(): Promise<void> {
 	);
 
 	const [latestPush, latestSchedule] = await Promise.all([
-		startedAtForLatestCompletedSweep(repository, "push"),
-		startedAtForLatestCompletedSweep(repository, "schedule"),
+		startedAtForLatestVerdict(repository, "push"),
+		startedAtForLatestVerdict(repository, "schedule"),
 	]);
 	const newestSweepStartedAt =
 		[latestPush, latestSchedule]
