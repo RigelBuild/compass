@@ -249,8 +249,8 @@ func (s *supervisor) Provision(
 	// keeps refusing every exec; a retried Provision may run.
 	if script := m.GetNftScript(); script != "" {
 		if err := s.armFunc(ctx, script); err != nil {
-			return nil, connect.NewError(connect.CodeInternal,
-				fmt.Errorf("arming nft egress: %w", err))
+			wrappedErr := fmt.Errorf("arming nft egress: %w", err)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 		}
 	}
 	// Start the unix→vsock forwarder before opening the gate (§(d)): after the V3
@@ -269,8 +269,8 @@ func (s *supervisor) Provision(
 		}
 		closer, err := s.startGatewayProxy(proxyCtx, socketPath, m.GetDefaultExecUid(), s.gatewayPort) //nolint:contextcheck // deliberate: the forwarder is bound to the serve-lifetime ctx (proxyCtx=s.serveCtx), not the per-request Provision ctx, so it outlives this RPC (§(d))
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal,
-				fmt.Errorf("starting agent gateway proxy: %w", err))
+			wrappedErr := fmt.Errorf("starting agent gateway proxy: %w", err)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 		}
 		s.gatewayProxyCloser = closer
 	}
@@ -617,8 +617,8 @@ func (s *supervisor) buildChild(ctx context.Context, argv []string, uid uint32, 
 	merged := s.mergeEnv(env)
 	prog, resolveErr := resolveProgram(argv[0], merged, workdir)
 	if resolveErr != nil {
-		return cmd, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("resolving exec program %q: %w", argv[0], resolveErr))
+		wrappedErr := fmt.Errorf("resolving exec program %q: %w", argv[0], resolveErr)
+		return cmd, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	// guestd is PID 1 with no PATH, so use the session-env resolution above and
 	// clear exec.Command's process-PATH lookup error.
