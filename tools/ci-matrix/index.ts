@@ -481,6 +481,28 @@ export async function prChangedPaths(cwd = process.cwd()): Promise<string[]> {
 		.filter((path) => path !== "");
 }
 
+/** Design records live in RigelBuild/docs; a PR may delete records here, never add or edit one. */
+export async function prDesignWrites(cwd = process.cwd()): Promise<string[]> {
+	const diff =
+		await $`git diff --name-only --no-renames --diff-filter=d HEAD^1 HEAD -- docs/designs/`
+			.cwd(cwd)
+			.quiet()
+			.text();
+	return diff
+		.split("\n")
+		.map((path) => path.trim())
+		.filter((path) => path !== "");
+}
+
+async function assertNoDesignWrites(): Promise<void> {
+	const writes = await prDesignWrites();
+	if (writes.length > 0) {
+		throw new Error(
+			`design records live in RigelBuild/docs; this PR adds or edits ${writes.join(", ")}`,
+		);
+	}
+}
+
 async function main(): Promise<void> {
 	const eventNameRaw = process.env.GITHUB_EVENT_NAME ?? "push";
 	const event: GenInput["event"] =
@@ -524,6 +546,7 @@ async function main(): Promise<void> {
 		// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
 		// where the flags are unconditionally true).
 		const changedPaths = event === "pull_request" ? await prChangedPaths() : [];
+		if (event === "pull_request") await assertNoDesignWrites();
 
 		const out = generate({
 			projects,

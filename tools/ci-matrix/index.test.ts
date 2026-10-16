@@ -22,6 +22,7 @@ import {
 	parseAffectedTaskTargets,
 	parseTaskAffectedIds,
 	prChangedPaths,
+	prDesignWrites,
 	unionAffectedIds,
 } from "./index.ts";
 
@@ -1117,5 +1118,65 @@ describe("prChangedPaths", () => {
 		await expect(prChangedPaths(repo)).rejects.toThrow(
 			"HEAD^2 does not resolve",
 		);
+	});
+});
+
+describe("prDesignWrites", () => {
+	const tempRepos: string[] = [];
+	afterEach(async () => {
+		await Promise.all(
+			tempRepos
+				.splice(0)
+				.map((repo) => rm(repo, { recursive: true, force: true })),
+		);
+	});
+
+	// Merge ref whose PR side runs `change`; returns the repo path.
+	const mergeRef = async (change: (repo: string) => Promise<void>) => {
+		const repo = await mkdtemp(join(tmpdir(), "ci-matrix-designs-"));
+		tempRepos.push(repo);
+		const git = (args: string[]) =>
+			$`git -c user.name=t -c user.email=t@t ${args}`.cwd(repo).quiet();
+		await git(["init", "-q", "-b", "main"]);
+		await mkdir(join(repo, "docs/designs"), { recursive: true });
+		await writeFile(join(repo, "docs/designs/old.md"), "old\n");
+		await writeFile(join(repo, "docs/designs/keep.md"), "keep\n");
+		await git(["add", "-A"]);
+		await git(["commit", "-q", "-m", "base"]);
+		await git(["switch", "-q", "-c", "pr"]);
+		await change(repo);
+		await git(["add", "-A"]);
+		await git(["commit", "-q", "-m", "pr"]);
+		await git(["switch", "-q", "main"]);
+		await writeFile(join(repo, "drift.txt"), "drift\n");
+		await git(["add", "-A"]);
+		await git(["commit", "-q", "-m", "drift"]);
+		await git(["merge", "--no-ff", "-q", "pr", "-m", "merge pr"]);
+		return repo;
+	};
+
+	test("reports added and edited records", async () => {
+		const repo = await mergeRef(async (r) => {
+			await writeFile(join(r, "docs/designs/new.md"), "new\n");
+			await writeFile(join(r, "docs/designs/keep.md"), "edited\n");
+		});
+		expect(await prDesignWrites(repo)).toEqual([
+			"docs/designs/keep.md",
+			"docs/designs/new.md",
+		]);
+	});
+
+	test("allows deleting records", async () => {
+		const repo = await mergeRef(async (r) => {
+			await rm(join(r, "docs/designs/old.md"));
+		});
+		expect(await prDesignWrites(repo)).toEqual([]);
+	});
+
+	test("reports a rename destination", async () => {
+		const repo = await mergeRef(async (r) => {
+			await $`git mv docs/designs/old.md docs/designs/moved.md`.cwd(r).quiet();
+		});
+		expect(await prDesignWrites(repo)).toEqual(["docs/designs/moved.md"]);
 	});
 });
