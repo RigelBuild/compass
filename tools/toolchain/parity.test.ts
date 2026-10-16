@@ -167,6 +167,13 @@ describe("parity.ts Go analysis battery", () => {
 		expect(res.exitCode).toBe(1);
 		expect(res.output).toContain("0 Go analysis tools");
 	});
+
+	test("refuses a pass when the langs identity set is empty", async () => {
+		await writeSet("langs", {});
+		const res = await runParity(goodPath);
+		expect(res.exitCode).toBe(1);
+		expect(res.output).toContain("0 language toolchains");
+	});
 });
 
 describe("parity.ts --print-nix-attrs", () => {
