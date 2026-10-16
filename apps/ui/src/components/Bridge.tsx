@@ -35,19 +35,27 @@ import {
 	reviewBadge,
 } from "../board-render";
 import { BOARD_LANES, PR_LANES } from "../constants";
-import { useStore } from "../context";
+import { useRefLinkRules, useStore } from "../context";
 import type { Command, CommandId } from "../keyboard/commands";
+import { detectPlatform } from "../keyboard/dispatch";
+import { shortcutForAria } from "../keyboard/keymap";
 import { createRovingGroup, type Stop } from "../keyboard/roving";
 import { openLink } from "../open-link";
+import type { RefLinkRule } from "../refs/grammar";
 import type { IssueState } from "../stub-data";
 import { useView } from "../view-scope";
 import { BacklogList } from "./BacklogView";
 import { BadgeGlyph } from "./BadgeGlyph";
 import { DoneList } from "./DoneView";
 import { IssueCard } from "./IssueCard";
-import { RefText } from "./RefText";
+import { hasLinkedRef, RefText } from "./RefText";
 import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
+
+const CARD_REF_SELECTOR = ".card-title .ref-link";
+function cardRefs(card: HTMLElement): HTMLElement[] {
+	return [...card.querySelectorAll<HTMLElement>(CARD_REF_SELECTOR)];
+}
 
 /** How the board groups rows. Swimlane = one row per agent (default); status =
  *  a plain column board with no agent rows. */
@@ -111,11 +119,41 @@ type StopAction =
 	| {
 			kind: "card";
 			issueId: string;
+			title: string;
 			assignee: string | null;
 			crossLink?: () => void;
 			ariaLabel: string;
 			ariaDescription: string;
 	  };
+
+function setCardShortcuts(
+	el: HTMLElement,
+	action: StopAction,
+	isCursor: boolean,
+	spaceShortcut: string | undefined,
+	refShortcut: string | undefined,
+	rules: readonly RefLinkRule[],
+): void {
+	if (action.kind !== "card" || !isCursor) {
+		el.removeAttribute("aria-keyshortcuts");
+		return;
+	}
+	const shortcuts: string[] = [];
+	if (action.crossLink && spaceShortcut) shortcuts.push(spaceShortcut);
+	if (hasLinkedRef(action.title, rules) && refShortcut) {
+		shortcuts.push(refShortcut);
+	}
+	if (shortcuts.length > 0) {
+		el.setAttribute("aria-keyshortcuts", shortcuts.join(" "));
+	} else {
+		el.removeAttribute("aria-keyshortcuts");
+	}
+}
+
+const CARD_REF_EDGES: Partial<Record<string, "first" | "last">> = {
+	"board.focusCardRef": "first",
+	"board.focusCardRefPrev": "last",
+};
 
 /** One PRs-board card — mirrors the IssueCard anatomy (IssueCard.tsx:49-115)
  *  with the PR's own facts. The card body selects the owning issue (staying on
@@ -220,6 +258,7 @@ export const Bridge: Component = () => {
 	const store = useStore();
 	const view = useView();
 	const [mode, setMode] = createSignal<BoardMode>("swimlane");
+	const refLinkRules = useRefLinkRules();
 	// The active artifact tab — a Bridge-local view axis, peer to `mode`.
 	const [tab, setTab] = createSignal<BoardTab>("issues");
 	// Backlog and Done are routed segments (DL-438); Issues/PRs stay local.
@@ -337,6 +376,7 @@ export const Bridge: Component = () => {
 				map.set(stop.id, {
 					kind: "card",
 					issueId: row.issue.id,
+					title: row.pr.title,
 					assignee: row.issue.assignee,
 					crossLink: () => {
 						store.selectIssue(row.issue.id);
@@ -358,6 +398,7 @@ export const Bridge: Component = () => {
 			map.set(stop.id, {
 				kind: "card",
 				issueId: issue.id,
+				title: issue.title,
 				assignee: issue.assignee,
 				crossLink: openPr,
 				ariaLabel: `Issue ${issueKey(issue, multiForge())}`,
@@ -436,6 +477,19 @@ export const Bridge: Component = () => {
 			return el ? [{ id: s.id, el }] : [];
 		});
 	};
+	const focusedStop = (): Stop | undefined =>
+		rovingStops().find((stop) => stop.el === document.activeElement);
+	const enterRefs = (edge: "first" | "last"): boolean => {
+		const stop =
+			focusedStop() ??
+			rovingStops().find((candidate) => candidate.id === cursorId());
+		if (!stop) return true;
+		const action = actions().get(stop.id);
+		if (action?.kind !== "card") return true;
+		const refs = cardRefs(stop.el);
+		(edge === "first" ? refs[0] : refs.at(-1))?.focus();
+		return true;
+	};
 
 	// The single chord→command→direction table (design §481-483). The dispatcher
 	// routes a group-relative id here; we return true when the board claims it
@@ -465,6 +519,8 @@ export const Bridge: Component = () => {
 			if (next) setCursorId(next);
 			return true;
 		}
+		const refEdge = CARD_REF_EDGES[id];
+		if (refEdge) return enterRefs(refEdge);
 		if (id === "list.openOrSelect") {
 			const cur = cursorId();
 			const action = cur ? actions().get(cur) : undefined;
@@ -495,7 +551,7 @@ export const Bridge: Component = () => {
 
 	// Consumer of the app keyboard spine (RIG-2456): the board does NOT install
 	// its own keymap — App.tsx installs the one root listener. It registers its
-	// two `board.*` commands into the shared registry (so the palette can surface
+	// four `board.*` commands into the shared registry (so the palette can surface
 	// them; their keyboard path is `onCommand` above — the dispatcher routes
 	// group-relative ids to the group, not `registry.get` — so `run` mirrors the
 	// group behavior for the palette's sake) and PUBLISHES its roving group to the
@@ -530,6 +586,20 @@ export const Bridge: Component = () => {
 			scope: "main",
 			run: () => onCommand("board.openCardCrossLink" as CommandId),
 		},
+		{
+			id: "board.focusCardRef" as CommandId,
+			title: "Focus next link in card title",
+			keywords: ["ref", "link", "title", "issue", "pr"],
+			scope: "main",
+			run: () => onCommand("board.focusCardRef" as CommandId),
+		},
+		{
+			id: "board.focusCardRefPrev" as CommandId,
+			title: "Focus previous link in card title",
+			keywords: ["ref", "link", "title", "issue", "pr"],
+			scope: "main",
+			run: () => onCommand("board.focusCardRefPrev" as CommandId),
+		},
 		...LIST_COMMANDS.map((spec) => ({
 			id: spec.id as CommandId,
 			title: spec.title,
@@ -562,16 +632,23 @@ export const Bridge: Component = () => {
 		return () => store.keyboard.unregisterGroup(rovingGroup);
 	});
 
-	// Apply the positional a11y strings to each stop element, and name the Space
-	// cross-link on the cursor card (design §219-223, §491). Static-dep effect
-	// over (stops, cursor, actions) — the roving group owns tabindex/focus; this
-	// owns only the descriptive attributes, kept off IssueCard's prop surface.
+	// Apply positional labels and announce only shortcuts with a target here.
+	const platform = detectPlatform();
+	const spaceShortcut = shortcutForAria(
+		"list.expandOrToggle" as CommandId,
+		platform,
+	);
+	const refShortcut = shortcutForAria(
+		"board.focusCardRef" as CommandId,
+		platform,
+	);
 	createEffect(
-		() => [stops(), cursorId(), actions()] as const,
-		([list, cursor, actionMap]: readonly [
+		() => [stops(), cursorId(), actions(), refLinkRules()] as const,
+		([list, cursor, actionMap, rules]: readonly [
 			BoardStop[],
 			string | null,
 			Map<string, StopAction>,
+			readonly RefLinkRule[],
 		]) => {
 			for (const stop of list) {
 				const el = els.get(stop.id);
@@ -581,11 +658,14 @@ export const Bridge: Component = () => {
 				if (action.kind === "card") {
 					el.setAttribute("aria-description", action.ariaDescription);
 				}
-				if (stop.id === cursor && action.kind === "card") {
-					el.setAttribute("aria-keyshortcuts", "Space");
-				} else {
-					el.removeAttribute("aria-keyshortcuts");
-				}
+				setCardShortcuts(
+					el,
+					action,
+					stop.id === cursor,
+					spaceShortcut,
+					refShortcut,
+					rules,
+				);
 			}
 		},
 	);

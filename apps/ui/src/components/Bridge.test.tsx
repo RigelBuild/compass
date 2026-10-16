@@ -6,6 +6,7 @@ import App from "../App";
 import { backlogIssues, prBoardRows, prCount } from "../board";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
+import { FIXTURE_REF_LINK_RULES } from "../live/compass-fake";
 import { appRoutes } from "../routes";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
@@ -402,14 +403,14 @@ const cursorLabel = (container: HTMLElement): string | null =>
 	container
 		.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')
 		?.getAttribute("aria-label") ?? null;
-// A real window keydown — the dispatcher's one listener resolves it.
+// Dispatch on the focused target so bubbling and editable guards match browser input.
 const press = (init: KeyboardEventInit): KeyboardEvent => {
 	const event = new KeyboardEvent("keydown", {
 		bubbles: true,
 		cancelable: true,
 		...init,
 	});
-	window.dispatchEvent(event);
+	document.activeElement?.dispatchEvent(event);
 	flushSync();
 	return event;
 };
@@ -422,6 +423,16 @@ const press = (init: KeyboardEventInit): KeyboardEvent => {
 const enterBoard = (container: HTMLElement): void => {
 	container.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')?.focus();
 };
+
+const REF_ISSUE_TITLE = "Port RIG-12 from rigelbuild/compass#3 and OPS-4";
+const issuesWithTitleRefs = (includeWs1022Ref = false) =>
+	STUB_ISSUES.map((issue) => {
+		if (issue.id === "ws-965") return { ...issue, title: REF_ISSUE_TITLE };
+		if (issue.id === "ws-1022" && includeWs1022Ref) {
+			return { ...issue, title: `${issue.title} RIG-12` };
+		}
+		return issue;
+	});
 
 describe("Bridge board roving group (T4, DL-220/221)", () => {
 	// Non-keyboard DOM-shape tests keep their direct `<Bridge/>` mount — they
@@ -568,6 +579,116 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
 	});
+	test("aria-keyshortcuts names only cursor-card chords with targets", () => {
+		const { container } = mountApp("/", {
+			initialIssues: STUB_ISSUES,
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+		});
+		enterBoard(container);
+		const initialCursor = container.querySelector<HTMLElement>(
+			'.bridge-grid [tabindex="0"]',
+		);
+		expect(initialCursor?.getAttribute("aria-keyshortcuts")).toBe("Space");
+		press({ key: "ArrowLeft" });
+		const cursor = container.querySelector<HTMLElement>(
+			'.bridge-grid [tabindex="0"]',
+		);
+		expect(cursor?.getAttribute("aria-label")).toBe("Issue RIG-965");
+		expect(cursor?.hasAttribute("aria-keyshortcuts")).toBe(false);
+	});
+
+	test("aria-keyshortcuts names R when the cursor title has a linked ref", () => {
+		const { container } = mountApp("/", {
+			initialIssues: issuesWithTitleRefs(),
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+		});
+		enterBoard(container);
+		press({ key: "ArrowLeft" });
+		const cursor = container.querySelector<HTMLElement>(
+			'.bridge-grid [tabindex="0"]',
+		);
+		expect(cursor?.getAttribute("aria-label")).toBe("Issue RIG-965");
+		expect(cursor?.getAttribute("aria-keyshortcuts")).toBe("R");
+	});
+
+	test("aria-keyshortcuts combines Space and R when both have targets", () => {
+		const { container } = mountApp("/", {
+			initialIssues: issuesWithTitleRefs(true),
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+		});
+		enterBoard(container);
+		const cursor = container.querySelector<HTMLElement>(
+			'.bridge-grid [tabindex="0"]',
+		);
+		expect(cursor?.getAttribute("aria-keyshortcuts")).toBe("Space R");
+	});
+
+	test("R on a link-less card is claimed without changing focus or selection", () => {
+		const { store, container } = mountApp("/", {
+			initialIssues: STUB_ISSUES,
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+		});
+		enterBoard(container);
+		const focusedBefore = document.activeElement;
+		const selectedBefore = store.selectedIssueId();
+		const event = press({ key: "r" });
+		expect(event.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(focusedBefore);
+		expect(store.selectedIssueId()).toBe(selectedBefore);
+	});
+
+	test("R on a gutter is claimed without changing focus or selection", () => {
+		const { store, container } = mountApp("/", {
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+		});
+		enterBoard(container);
+		press({ key: "ArrowLeft" });
+		press({ key: "ArrowLeft" });
+		expect(cursorLabel(container)).toBe("compass-ui lane");
+		const focusedBefore = document.activeElement;
+		const selectedBefore = store.selectedIssueId();
+		const event = press({ key: "r" });
+		expect(event.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(focusedBefore);
+		expect(store.selectedIssueId()).toBe(selectedBefore);
+	});
+
+	test("R on a toolbar button is not claimed", () => {
+		const { container } = mountApp("/", {
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+		});
+		const toolbarButton = tabButtons(container)[0];
+		if (!toolbarButton) throw new Error("no toolbar tab button");
+		toolbarButton.focus();
+		const event = press({ key: "r" });
+		expect(event.defaultPrevented).toBe(false);
+	});
+
+	test("R and Shift+R focus the first and last linked title refs", () => {
+		const { container } = mountApp("/", {
+			initialIssues: issuesWithTitleRefs(),
+			initialRefLinkRules: FIXTURE_REF_LINK_RULES,
+		});
+		enterBoard(container);
+		press({ key: "ArrowLeft" });
+		const card = container.querySelector<HTMLElement>(
+			'.bridge-grid [tabindex="0"]',
+		);
+		if (!card) throw new Error("no cursor card");
+		const refs = [
+			...card.querySelectorAll<HTMLElement>(".card-title .ref-link"),
+		];
+		expect(refs.map((ref) => ref.textContent)).toEqual([
+			"RIG-12",
+			"rigelbuild/compass#3",
+		]);
+		expect(refs.some((ref) => ref.textContent === "OPS-4")).toBe(false);
+		press({ key: "r" });
+		expect(document.activeElement?.textContent).toBe("RIG-12");
+		card.focus();
+		press({ key: "R", shiftKey: true });
+		expect(document.activeElement?.textContent).toBe("rigelbuild/compass#3");
+	});
 
 	test("the cursor stop carries a positional aria-label and names its Space shortcut", () => {
 		const { container } = mountBridge();
@@ -683,16 +804,16 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 			disposeStore = d;
 			return createAppStore({ queryClient: testQueryClient() });
 		});
-		// Widened to collect the ten `scope:'main'` board commands: the two `board.*`
-		// ids and the eight group-relative `list.*` ids (RIG-2529). All ten must
-		// retract on unmount — a stale `scope:'main'` registration can never outlive
-		// its surface.
+		// Twelve `scope:'main'` board commands stay registered only while the
+		// Bridge is mounted: four `board.*` ids and eight `list.*` ids.
 		const boardCommandIds = (): string[] =>
 			store.keyboard.registry
 				.all()
 				.map((c) => c.id as string)
 				.filter((id) => id.startsWith("board.") || id.startsWith("list."));
-		const ALL_TEN = [
+		const ALL_TWELVE = [
+			"board.focusCardRef",
+			"board.focusCardRefPrev",
 			"board.openAssignedAgent",
 			"board.openCardCrossLink",
 			"list.expandOrToggle",
@@ -706,12 +827,12 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		];
 
 		const first = mountShell(store, "/");
-		expect(boardCommandIds().sort()).toEqual(ALL_TEN);
+		expect(boardCommandIds().sort()).toEqual(ALL_TWELVE);
 		first.unmount();
 		expect(boardCommandIds()).toEqual([]); // retracted on cleanup
 
 		const second = mountShell(store, "/");
-		expect(boardCommandIds().sort()).toEqual(ALL_TEN);
+		expect(boardCommandIds().sort()).toEqual(ALL_TWELVE);
 
 		// Exactly one listener: spy the shared `view.bridge` command and fire one
 		// Ctrl+B. Two stacked App listeners over the one registry would run it twice.
