@@ -1572,25 +1572,21 @@ func archiveLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, n
 		t.Logf("teardown: resolve linear issue %s-%d node id: %v", team, number, err)
 		return
 	}
-	token, err := ts.Token(ctx)
-	if err != nil {
-		t.Logf("teardown: resolve linear token: %v", err)
-		return
+	// Bearer auth plus a checked success flag: the app token is an OAuth token,
+	// and an unchecked archive leaked every created issue without a trace.
+	var out struct {
+		IssueArchive struct {
+			Success bool `json:"success"`
+		} `json:"issueArchive"`
 	}
-	query := fmt.Sprintf(`{"query":"mutation { issueArchive(id: %q) { success } }"}`, id)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.linear.app/graphql", strings.NewReader(query))
-	if err != nil {
-		t.Logf("teardown: build linear archive request: %v", err)
-		return
-	}
-	req.Header.Set("Authorization", token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+	const query = `mutation CompassLiveTeardownArchive($id: String!) { issueArchive(id: $id) { success } }`
+	if err := linearDirectGraphQL(ctx, ts, query, map[string]any{"id": id}, &out); err != nil {
 		t.Logf("teardown: archive linear issue %s-%d: %v", team, number, err)
 		return
 	}
-	_ = resp.Body.Close() // teardown drain; close error not actionable
+	if !out.IssueArchive.Success {
+		t.Logf("teardown: archive linear issue %s-%d: issueArchive reported success=false", team, number)
+	}
 }
 
 // --- -update live capture (RIG-2229 T2) --------------------------------------
