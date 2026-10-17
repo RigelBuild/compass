@@ -27,7 +27,8 @@ func (s *service) GetTourState(
 	}
 	state, err := s.store.GetTourState(ctx, caller)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get tour state: %w", err))
+		wrappedErr := fmt.Errorf("get tour state: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return connect.NewResponse(&compassv1.GetTourStateResponse{
 		Outcome: tourOutcomeToProto(state.Outcome),
@@ -48,7 +49,8 @@ func (s *service) ClaimTourStart(
 	}
 	claimed, err := s.store.ClaimTourStart(ctx, caller, req.Msg.GetStepId())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claim tour start: %w", err))
+		wrappedErr := fmt.Errorf("claim tour start: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return connect.NewResponse(&compassv1.ClaimTourStartResponse{Claimed: claimed}), nil
 }
@@ -72,7 +74,8 @@ func (s *service) SetTourState(
 		if errors.Is(err, store.ErrInvalidArgument) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set tour state: %w", err))
+		wrappedErr := fmt.Errorf("set tour state: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return connect.NewResponse(&compassv1.SetTourStateResponse{}), nil
 }

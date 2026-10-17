@@ -336,7 +336,8 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	}
 	resolved, err := h.resolver.ResolveFor(tctx, agent, "runner fetch")
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving secrets: %w", err))
+		wrappedErr := fmt.Errorf("resolving secrets: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	out := make([]*compassv1internal.ResolvedSecret, 0, len(resolved))
 	for _, s := range resolved {
@@ -387,7 +388,8 @@ func (h *Handler) FetchAgentConfig(ctx context.Context, req *connect.Request[com
 	}
 	version, bundle, err := h.configStore.CurrentAgentConfig(ctx)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("reading current agent config: %w", err))
+		wrappedErr := fmt.Errorf("reading current agent config: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	// ErrNotFound → empty version, no bundle: the valid unconfigured state.
 	if errors.Is(err, store.ErrNotFound) {

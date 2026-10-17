@@ -69,7 +69,8 @@ func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, session
 		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewError(connect.CodePermissionDenied, errBindDenied)
 		}
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("binding lifetime: %w", err))
+		wrappedErr := fmt.Errorf("binding lifetime: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return nil
 }
@@ -85,7 +86,8 @@ func (h *Hub) accountTenantContext(ctx context.Context, account store.AccountID)
 	}
 	tenant, err := binder.AccountTenant(store.WithSystemRole(ctx), account)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving account tenant: %w", err))
+		wrappedErr := fmt.Errorf("resolving account tenant: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return store.WithTenant(store.WithoutSystemRole(ctx), tenant), nil
 }

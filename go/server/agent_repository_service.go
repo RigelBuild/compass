@@ -93,7 +93,8 @@ func resolveOwnedAgent(ctx context.Context, st *store.Store, caller store.Accoun
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) || connect.CodeOf(err) == connect.CodeNotFound {
 			return store.Account{}, handleNotFound(raw)
 		}
-		return store.Account{}, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving agent handle %q: %w", raw, err))
+		wrappedErr := fmt.Errorf("resolving agent handle %q: %w", raw, err)
+		return store.Account{}, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	if agent.Agent == nil || agent.Agent.OwnerUserID != caller {
 		return store.Account{}, handleNotFound(raw)
@@ -213,7 +214,8 @@ func (s *agentRepositoryService) ListAgentRepositories(
 	}
 	repos, err := s.store.ListAgentForgeScopeRepos(ctx, agent.ID, store.ForgeProviderGitHub, s.host)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing agent repositories: %w", err))
+		wrappedErr := fmt.Errorf("listing agent repositories: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return connect.NewResponse(&compassv1.ListAgentRepositoriesResponse{Repositories: repos}), nil
 }
@@ -245,7 +247,8 @@ func (s *agentRepositoryService) callerLookupError(caller store.AccountID, err e
 	if errors.Is(err, store.ErrNotFound) {
 		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("caller account %q not found", caller))
 	}
-	return connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller account: %w", err))
+	wrappedErr := fmt.Errorf("resolving caller account: %w", err)
+	return connect.NewError(connect.CodeInternal, wrappedErr)
 }
 
 func (s *agentRepositoryService) requireHost() error {
@@ -258,7 +261,8 @@ func (s *agentRepositoryService) requireHost() error {
 func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.AccountID, repo string) error {
 	grants, err := s.store.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, s.host)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("checking agent credential org: %w", err))
+		wrappedErr := fmt.Errorf("checking agent credential org: %w", err)
+		return connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	org, _, _ := strings.Cut(repo, "/")
 	wildcard := false
@@ -283,7 +287,8 @@ func (s *agentRepositoryService) mapStoreError(operation string, err error) erro
 	if errors.Is(err, store.ErrInvalidArgument) {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	return connect.NewError(connect.CodeInternal, fmt.Errorf("%s: %w", operation, err))
+	wrappedErr := fmt.Errorf("%s: %w", operation, err)
+	return connect.NewError(connect.CodeInternal, wrappedErr)
 }
 
 func (s *agentRepositoryService) signalSecretsVersion(ctx context.Context, agent store.AccountID) {

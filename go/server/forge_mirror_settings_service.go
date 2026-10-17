@@ -23,11 +23,13 @@ func (s *service) ListForgeMirrorSettings(
 	}
 	account, err := s.store.GetAccount(ctx, caller)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolve mirror settings caller: %w", err))
+		wrappedErr := fmt.Errorf("resolve mirror settings caller: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	settings, err := s.store.ListForgeMirrorSettings(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list forge mirror settings: %w", err))
+		wrappedErr := fmt.Errorf("list forge mirror settings: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	out := make([]*compassv1.ForgeMirrorSetting, 0, len(settings))
 	for _, setting := range settings {
@@ -55,7 +57,8 @@ func (s *service) SetForgeMirrorSetting(
 	}
 	account, err := s.store.GetAccount(ctx, caller)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolve mirror settings caller: %w", err))
+		wrappedErr := fmt.Errorf("resolve mirror settings caller: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	if account.User == nil || account.User.Role != store.UserRoleAdmin {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("setting forge mirror mode requires a tenant admin"))
@@ -75,7 +78,8 @@ func (s *service) SetForgeMirrorSetting(
 	coordinate := (store.ForgeCoord{Provider: store.ForgeProvider(provider), Host: wire.GetForge().GetHost(), Repo: wire.GetRepo()}).Normalized()
 	enabled, err := s.store.ListForgeMirrorSettings(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list enabled forge repositories: %w", err))
+		wrappedErr := fmt.Errorf("list enabled forge repositories: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	found := false
 	for _, candidate := range enabled {

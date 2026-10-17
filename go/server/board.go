@@ -197,7 +197,8 @@ func (b *boardService) SetIssueState(
 	// failure as the transition's code and must move off the lock to avoid serializing.
 	if b.mirror != nil && target != store.IssueStateArchived {
 		if err := b.mirror.MirrorIssueState(ctx, committed); err != nil {
-			return store.Issue{}, connect.NewError(connect.CodeInternal, fmt.Errorf("mirroring issue state: %w", err))
+			wrappedErr := fmt.Errorf("mirroring issue state: %w", err)
+			return store.Issue{}, connect.NewError(connect.CodeInternal, wrappedErr)
 		}
 	}
 

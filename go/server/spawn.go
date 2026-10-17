@@ -132,7 +132,8 @@ func awaitSpawn(ctx context.Context, call *spawnCall) (*connect.Response[compass
 		}
 		return connect.NewResponse(call.resp), nil
 	case <-ctx.Done():
-		return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
+		wrappedErr := ctx.Err()
+		return nil, connect.NewError(connect.CodeCanceled, wrappedErr)
 	}
 }
 

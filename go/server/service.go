@@ -304,7 +304,8 @@ func (s *service) RemoveAgentWorkspace(
 		return nil, err
 	}
 	if err := s.store.DeleteAgentPlacement(ctx, req.Msg.GetContainerName()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("releasing agent placement: %w", err))
+		wrappedErr := fmt.Errorf("releasing agent placement: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -673,7 +674,8 @@ func (s *service) provisionAgent(
 	// the container->account mapping survive a Server restart, and what reattach
 	// recovery reads to name agents stranded by a Runner restart.
 	if err := s.store.RecordAgentPlacement(ctx, acc.ID, runnerID, resp.GetContainerName()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
+		wrappedErr := fmt.Errorf("recording agent placement: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	return resp, nil
 }
@@ -708,7 +710,8 @@ func handleLookupError(raw string, err error) error {
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 		return handleNotFound(raw)
 	}
-	return connect.NewError(connect.CodeInternal, fmt.Errorf("resolving handle %q: %w", raw, err))
+	wrappedErr := fmt.Errorf("resolving handle %q: %w", raw, err)
+	return connect.NewError(connect.CodeInternal, wrappedErr)
 }
 
 // startResumeSession is the resume leg of StartAgentSession (T6, RIG-1667). It
@@ -740,7 +743,8 @@ func (s *service) startResumeSession(
 			// the caller cannot tell "exists but forbidden" from "does not exist".
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", resumeSessionID))
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("authorizing resume: %w", err))
+		wrappedErr := fmt.Errorf("authorizing resume: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
 	}
 	body, err := s.hub.ReconstructSessionBody(ctx, resumeSessionID)
 	if err != nil {
@@ -777,7 +781,8 @@ func (s *service) abandonStartedSession(ctx context.Context, containerName, sess
 		slog.ErrorContext(ctx, "started agent session could not be recorded; stopped it to avoid stranding",
 			"session_id", sessionID, "container_name", containerName, "cause", cause)
 	}
-	return connect.NewError(connect.CodeInternal, fmt.Errorf("%w (started session %q was rolled back)", cause, sessionID))
+	wrappedErr := fmt.Errorf("%w (started session %q was rolled back)", cause, sessionID)
+	return connect.NewError(connect.CodeInternal, wrappedErr)
 }
 
 // forward drains the replay snapshot (oldest first), then forwards the live tail
