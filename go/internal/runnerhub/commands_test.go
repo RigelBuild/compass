@@ -224,10 +224,10 @@ func TestSessionsCommandsCarryCallerTraceparent(t *testing.T) {
 		t.Fatalf("DispatchControl: %v", err)
 	}
 	assertTraceparent("DispatchControl")
-	if err := hub.SignalConfigVersion(ctx, "v1"); err != nil {
-		t.Fatalf("SignalConfigVersion: %v", err)
+	if err := hub.SignalConfigChanged(ctx); err != nil {
+		t.Fatalf("SignalConfigChanged: %v", err)
 	}
-	assertTraceparent("SignalConfigVersion")
+	assertTraceparent("SignalConfigChanged")
 	if err := hub.SignalSecretsVersion(ctx); err != nil {
 		t.Fatalf("SignalSecretsVersion: %v", err)
 	}

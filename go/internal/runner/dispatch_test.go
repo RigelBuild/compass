@@ -582,12 +582,12 @@ func TestExecuteSecretsVersionRefreshErrorLoggedAndContinues(t *testing.T) {
 	}
 }
 
-// configVersionCommand builds a signal-only ConfigVersion command. Fleet-wide (no
-// session id), no request id, expects no result on the request half.
-func configVersionCommand(version string) *compassv1internal.SessionsResponse {
+// configVersionCommand builds a payload-free signal-only ConfigVersion command.
+// Fleet-wide (no session id), no request id, expects no result on the request half.
+func configVersionCommand() *compassv1internal.SessionsResponse {
 	return &compassv1internal.SessionsResponse{
 		Command: &compassv1internal.SessionsResponse_ConfigVersion{
-			ConfigVersion: &compassv1internal.ConfigVersion{Version: version},
+			ConfigVersion: &compassv1internal.ConfigVersion{},
 		},
 	}
 }
@@ -600,7 +600,7 @@ func configVersionCommand(version string) *compassv1internal.SessionsResponse {
 func TestExecuteConfigVersionRecognizedNoResult(t *testing.T) {
 	host := &fakeSessionHost{}
 	d := newDispatcher(host, discardLoggerRunner())
-	res := d.execute(context.Background(), "", configVersionCommand("v-1"))
+	res := d.execute(context.Background(), "", configVersionCommand())
 	if res != nil {
 		t.Fatalf("ConfigVersion produced a result frame %+v, want nil (signal-only)", res)
 	}
@@ -620,7 +620,7 @@ func TestConfigVersionSignalDrivesRefreshConfig(t *testing.T) {
 		<-d.configWorkerDone
 	}()
 
-	res := d.execute(ctx, "", configVersionCommand("v-1"))
+	res := d.execute(ctx, "", configVersionCommand())
 	if res != nil {
 		t.Fatalf("ConfigVersion produced a result frame %+v, want nil (signal-only)", res)
 	}
@@ -638,10 +638,10 @@ func TestConfigVersionSignalDrivesRefreshConfig(t *testing.T) {
 func TestHandleConfigVersionNotDeduped(t *testing.T) {
 	host := &fakeSessionHost{}
 	d := newDispatcher(host, discardLoggerRunner())
-	if r := d.handle(context.Background(), configVersionCommand("v-1")); r != nil {
+	if r := d.handle(context.Background(), configVersionCommand()); r != nil {
 		t.Fatalf("first ConfigVersion signal returned a result %+v, want nil", r)
 	}
-	if r := d.handle(context.Background(), configVersionCommand("v-2")); r != nil {
+	if r := d.handle(context.Background(), configVersionCommand()); r != nil {
 		t.Fatalf("second ConfigVersion signal returned a result %+v, want nil", r)
 	}
 }
