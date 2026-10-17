@@ -16,6 +16,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -37,7 +39,8 @@ type tunnelSub struct {
 	body       io.Closer
 	deliveries chan tunnelDelivery
 	done       chan struct{}
-	err        error // set before done closes
+	stop       chan struct{} // closed by close; unblocks a pending delivery send
+	err        error         // set before done closes
 	closeOnce  sync.Once
 }
 
@@ -52,6 +55,10 @@ func tunnelSubscribe(ctx context.Context, relay, channel string) (*tunnelSub, er
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		// The *url.Error text carries the channel, a read capability: keep only its cause.
+		if urlErr, ok := errors.AsType[*url.Error](err); ok {
+			err = urlErr.Err
+		}
 		return nil, fmt.Errorf("webhook relay %s unreachable: %w", relay, err)
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -63,6 +70,7 @@ func tunnelSubscribe(ctx context.Context, relay, channel string) (*tunnelSub, er
 		body:       resp.Body,
 		deliveries: make(chan tunnelDelivery, 16),
 		done:       make(chan struct{}),
+		stop:       make(chan struct{}),
 	}
 	ready := make(chan struct{})
 	go sub.read(resp.Body, ready)
@@ -78,7 +86,10 @@ func tunnelSubscribe(ctx context.Context, relay, channel string) (*tunnelSub, er
 }
 
 func (s *tunnelSub) close() {
-	s.closeOnce.Do(func() { _ = s.body.Close() })
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		_ = s.body.Close()
+	})
 }
 
 // read parses the SSE stream until it ends, closing ready on the relay's
@@ -113,7 +124,13 @@ func (s *tunnelSub) read(stream io.Reader, ready chan struct{}) {
 		case isReady:
 			readyOnce.Do(func() { close(ready) })
 		case d != nil:
-			s.deliveries <- *d
+			select {
+			case s.deliveries <- *d:
+			case <-s.stop:
+				s.err = fmt.Errorf("webhook relay %s: subscription closed", s.relay)
+				close(s.done)
+				return
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -331,6 +348,33 @@ func TestTunnelRelay_DownNamesRelay(t *testing.T) {
 				t.Fatalf("err = %v, want an error naming relay %s", err, relay)
 			}
 		})
+	}
+}
+
+func TestTunnelRelay_UnreachableHidesChannel(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close()
+	_, err := tunnelSubscribe(tunnelCtx(t), gone.URL, "secret-channel-name")
+	if err == nil || strings.Contains(err.Error(), "secret-channel-name") {
+		t.Fatalf("err = %v, want an error without the channel name", err)
+	}
+}
+
+// A reader blocked on a full delivery queue must exit when the test closes it.
+func TestTunnelRelay_CloseUnblocksSaturatedReader(t *testing.T) {
+	relay := newStubRelay(t)
+	sub := subscribeStub(t, relay)
+	for range cap(sub.deliveries) + 1 {
+		relay.publish(t, http.Header{}, []byte(`{}`))
+	}
+	for len(sub.deliveries) < cap(sub.deliveries) {
+		runtime.Gosched()
+	}
+	sub.close()
+	select {
+	case <-sub.done:
+	case <-tunnelCtx(t).Done():
+		t.Fatal("reader goroutine still running after close")
 	}
 }
 
