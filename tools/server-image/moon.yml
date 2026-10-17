@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# Build tasks stay local; CI covers the TypeScript mapping and release cores.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    # build.ts imports the runner-image build core, so its changes must re-run this check.
+    inputs: ['*.ts', '/tools/runner-image/*-core.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    # The Dockerfile contract test reads the committed Dockerfile.
+    inputs: ['*.ts', '/tools/runner-image/*-core.ts', '/server-image/Dockerfile', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  # The CI matrix runs only `:ci` targets.
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

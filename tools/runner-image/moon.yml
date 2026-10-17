@@ -28,4 +28,9 @@ tasks:
     # The pure cores over fixtures: build-core.ts (out-path parsing, the
     # artifact→build-arg mapping, closure-root selection) and retag-core.ts (the
     # release re-tag walk's fail-closed probe classification and coherence).
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', '/runner-image/Dockerfile', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  # The CI matrix runs only `:ci` targets; without this the suites above never ran in CI.
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

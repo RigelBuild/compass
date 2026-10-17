@@ -1,8 +1,8 @@
-// The pure core of the runner-image release lane: mint `:vX.Y.Z` by copying an
+// The pure core of an image lane's release step: mint `:vX.Y.Z` by copying an
 // already-published `:git-<sha12>` manifest, never by building. No I/O, so
 // retag-core.test.ts drives every fail-closed edge without a registry.
 //
-// The per-push lane publishes only when a push touches the runner closure, so
+// The per-push lane publishes only when a push touches the lane's closure, so
 // the release sha itself often has no image. The tag names the newest published
 // closure image at or before the release sha. The version string stamped into
 // that image may lag the release, because version.txt is outside the closure.
@@ -26,10 +26,14 @@ export const EXIT = {
  * walk makes a publish outage fail fast instead of probing all of history. */
 export const MAX_WALK = 50;
 
+/** The retag lane whose publish job repairs a missing ancestor image. */
+export type ImageLane = "runner" | "server";
+
 /** The fix for exit 3. A main dispatch publishes main's HEAD, so it helps only
  * while that HEAD is still the release sha. */
-const REMEDIATION =
-	"Remediation: while the release sha is still main's HEAD, workflow_dispatch the release workflow on main so publish-runner-image publishes it, then re-run this job. Once main has moved on, that dispatch publishes a different commit and cannot fix this. Never rebuild here.";
+function remediation(lane: ImageLane): string {
+	return `Remediation: while the release sha is still main's HEAD, workflow_dispatch the release workflow on main so publish-${lane}-image publishes it, then re-run this job. Once main has moved on, that dispatch publishes a different commit and cannot fix this. Never rebuild here.`;
+}
 
 /** A resolver fault carrying the exit code the CLI should die with. */
 export class RetagError extends Error {
@@ -119,6 +123,7 @@ export type Resolved = {
 export async function resolveAncestor(
 	ancestors: readonly string[],
 	probe: (sha12: string) => Promise<ProbeResult>,
+	lane: ImageLane,
 ): Promise<Resolved> {
 	const walk = ancestors.slice(0, MAX_WALK);
 	for (const [index, commit] of walk.entries()) {
@@ -139,7 +144,7 @@ export async function resolveAncestor(
 		}
 	}
 	throw new RetagError(
-		`no :git-<sha12> image resolved within ${MAX_WALK} first-parent ancestors (walked ${walk.length}). ${REMEDIATION}`,
+		`no :git-<sha12> image resolved within ${MAX_WALK} first-parent ancestors (walked ${walk.length}). ${remediation(lane)}`,
 		EXIT.noAncestor,
 	);
 }
@@ -158,13 +163,14 @@ export function splitNulPaths(stdout: string): string[] {
 export function closureChanges(
 	closurePaths: string,
 	changed: readonly string[],
+	lane: ImageLane,
 ): string[] {
 	const patterns = closurePaths
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0);
 	if (patterns.length === 0) {
-		throw new RetagError("the runner closure path set is empty", EXIT.usage);
+		throw new RetagError(`the ${lane} closure path set is empty`, EXIT.usage);
 	}
 	return changed.filter((path) =>
 		patterns.some((pattern) =>
@@ -182,11 +188,12 @@ export function assertNoClosureChange(
 	closurePaths: string,
 	resolvedSha12: string,
 	changed: readonly string[],
+	lane: ImageLane,
 ): void {
-	const hits = closureChanges(closurePaths, changed);
+	const hits = closureChanges(closurePaths, changed, lane);
 	if (hits.length > 0) {
 		throw new RetagError(
-			`:git-${resolvedSha12} predates runner closure changes it lacks (${hits.join(", ")}); a newer publish is missing. ${REMEDIATION}`,
+			`:git-${resolvedSha12} predates ${lane} closure changes it lacks (${hits.join(", ")}); a newer publish is missing. ${remediation(lane)}`,
 			EXIT.noAncestor,
 		);
 	}

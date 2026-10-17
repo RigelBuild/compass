@@ -49,6 +49,10 @@ result-*
 /runner-image/store/
 /runner-image/out/
 
+# Server image build outputs: the staged Nix closure and local OCI layout.
+/server-image/store/
+/server-image/out/
+
 # guest-image publish output: the OCI layout a local dry run writes, multi-GiB
 # because it holds a copy of the rootfs blob.
 /guest-image/oci-layout/
