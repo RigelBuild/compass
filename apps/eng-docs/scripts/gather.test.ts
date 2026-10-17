@@ -643,16 +643,18 @@ describe("buildSidebar", () => {
 	test("emits groups in SECTIONS order regardless of input order, with SECTIONS labels", () => {
 		// All sections, shuffled — output must use the canonical order.
 		const groups = parseSidebar(
-			buildSidebar(["contributing", "architecture", "specs"]),
+			buildSidebar(["contributing", "packages", "architecture", "specs"]),
 		);
 		expect(groups.map((g) => g.label)).toEqual([
 			"Specs",
 			"Architecture",
+			"Packages",
 			"Contributing",
 		]);
 		expect(groups.map((g) => g.items[0].autogenerate.directory)).toEqual([
 			"specs",
 			"architecture",
+			"packages",
 			"contributing",
 		]);
 	});

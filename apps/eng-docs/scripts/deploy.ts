@@ -136,7 +136,7 @@ export function changedFilesArgs(repo: string, pr: string): string[] {
 
 /** A changed file as reported by the GitHub PR files API. */
 export interface ChangedFile {
-	/** Repo-relative path, e.g. "docs/designs/platform/foo.md". */
+	/** Repo-relative path, e.g. "docs/specs/platform/foo.md". */
 	filename: string;
 	/** "added" | "modified" | "removed" | "renamed" | … — deleted files are dropped. */
 	status: string;
@@ -144,10 +144,10 @@ export interface ChangedFile {
 
 /** A changed docsite page: the changed source path and the site route it renders at. */
 export interface ChangedPage {
-	/** The changed source path as it appears in the PR, e.g. "docs/designs/platform/foo.md". */
+	/** The changed source path as it appears in the PR, e.g. "docs/specs/platform/foo.md". */
 	sourcePath: string;
 	/**
-	 * The site route it renders at (no host), e.g. "/designs/platform/foo". This
+	 * The site route it renders at (no host), e.g. "/specs/platform/foo". This
 	 * is a RAW route — NOT URL-safe. Any consumer building a link target from it
 	 * MUST pass it through `encodeRoutePath` first (as `commentBody` does); a
 	 * `sourcePath` is an attacker-controlled git filename, so an un-encoded route

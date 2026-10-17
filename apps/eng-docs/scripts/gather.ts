@@ -7,7 +7,9 @@
 //
 // Coverage is the whole monorepo: every tracked `*.md` except the canonical
 // top-level exclusion set (`.rumdl.toml` `[global] exclude`, the single
-// source of truth) and generated `outputs/`. Each file is classified into one
+// source of truth), generated `outputs/`, the docsite's own `apps/eng-docs/`,
+// and `docs/designs/` (records now live in RigelBuild/docs). Each file is
+// classified into one
 // nav SECTION (Specs, Architecture, Packages, Contributing); the
 // section drives both its dest path under the content root and the generated
 // sidebar. This file stays the single gather entry point and emits
