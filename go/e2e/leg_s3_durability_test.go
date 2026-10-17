@@ -270,8 +270,7 @@ func waitHistoryContains(t *testing.T, ctx context.Context, f *Fixture, st *stor
 	}
 }
 
-// assertSessionEndCoversTail requires the session_end object to span the PG tail. A valve pass in flight at
-// teardown can still prune the oldest rows, so the current tail must be a suffix of the segment, not equal to it.
+// assertSessionEndCoversTail requires the session_end object to hold every row still in the PG tail.
 func assertSessionEndCoversTail(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID string) {
 	t.Helper()
 	pool, err := pgxpool.New(ctx, f.DSN())
@@ -301,13 +300,17 @@ func assertSessionEndCoversTail(t *testing.T, ctx context.Context, f *Fixture, s
 	if segMin > tailMin || segMax != tailMax {
 		t.Fatalf("session_end segment spans [%d..%d], PG tail spans [%d..%d]", segMin, segMax, tailMin, tailMax)
 	}
-	// The segment body is its entries joined by newlines; one entry can itself span several lines.
-	want := make([]string, 0, len(tail))
+	// A concurrent valve pass may prune rows between the checkpoint and the newest row, so require order, not adjacency.
+	rest := string(body)
 	for _, entry := range tail {
-		want = append(want, entry.EntryJSON)
+		i := strings.Index(rest, entry.EntryJSON)
+		if i < 0 {
+			t.Fatalf("session_end segment lacks PG tail entry %d, in order", entry.EntrySeq)
+		}
+		rest = rest[i+len(entry.EntryJSON):]
 	}
-	if !strings.HasSuffix(string(body), strings.Join(want, "\n")) {
-		t.Fatalf("session_end segment does not end with the %d PG tail entries [%d..%d]", len(tail), tailMin, tailMax)
+	if rest != "" {
+		t.Fatalf("session_end segment has %d bytes after the newest PG tail entry %d", len(rest), tailMax)
 	}
 }
 
