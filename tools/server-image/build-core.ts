@@ -9,16 +9,16 @@ export const IMAGE_USER = "65532:65532";
 
 /** Return contract violations between a Dockerfile's text and the staged layout. */
 export function dockerfileViolations(dockerfile: string): string[] {
+	const lines = dockerfile.split("\n").map((line) => line.trim());
+	// A later directive overrides an earlier one, so only the last of each counts.
+	const last = (directive: string) =>
+		lines.filter((line) => line.startsWith(`${directive} `)).at(-1);
 	const violations: string[] = [];
-	const entrypoint = `ENTRYPOINT ["/nix/store/${ENTRYPOINT_LINK}"]`;
-	if (!dockerfile.split("\n").some((line) => line.trim() === entrypoint)) {
-		violations.push(`missing ${entrypoint}`);
+	const entrypoint = `["/nix/store/${ENTRYPOINT_LINK}"]`;
+	if (last("ENTRYPOINT") !== `ENTRYPOINT ${entrypoint}`) {
+		violations.push(`last ENTRYPOINT must be ${entrypoint}`);
 	}
-	const users = dockerfile
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.startsWith("USER "));
-	if (users.at(-1) !== `USER ${IMAGE_USER}`) {
+	if (last("USER") !== `USER ${IMAGE_USER}`) {
 		violations.push(`last USER must be ${IMAGE_USER}`);
 	}
 	return violations;

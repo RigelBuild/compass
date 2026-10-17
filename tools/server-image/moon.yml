@@ -10,3 +10,11 @@ tasks:
     deps: ['install']
     # build.ts imports the runner-image build core, so its changes must re-run this check.
     inputs: ['*.ts', '/tools/runner-image/*-core.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    # The Dockerfile contract test reads the committed Dockerfile.
+    inputs: ['*.ts', '/tools/runner-image/*-core.ts', '/server-image/Dockerfile', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  # The CI matrix runs only `:ci` targets.
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

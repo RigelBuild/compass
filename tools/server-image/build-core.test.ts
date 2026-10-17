@@ -29,7 +29,7 @@ describe("server-image Dockerfile contract", () => {
 				'USER 0\nENTRYPOINT ["/nix/store/x/bin/compass-server"]\n',
 			),
 		).toEqual([
-			'missing ENTRYPOINT ["/nix/store/.compass-server"]',
+			'last ENTRYPOINT must be ["/nix/store/.compass-server"]',
 			"last USER must be 65532:65532",
 		]);
 		expect(
@@ -37,6 +37,14 @@ describe("server-image Dockerfile contract", () => {
 				'USER 65532:65532\nUSER root\nENTRYPOINT ["/nix/store/.compass-server"]\n',
 			),
 		).toEqual(["last USER must be 65532:65532"]);
+	});
+
+	test("rejects a later ENTRYPOINT that overrides the staged one", () => {
+		expect(
+			dockerfileViolations(
+				'USER 65532:65532\nENTRYPOINT ["/nix/store/.compass-server"]\nENTRYPOINT ["/bin/sh"]\n',
+			),
+		).toEqual(['last ENTRYPOINT must be ["/nix/store/.compass-server"]']);
 	});
 });
 
