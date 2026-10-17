@@ -156,6 +156,41 @@
 	font-size: var(--cx-text-sm);
 }
 
+.mirror-control {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: var(--cx-space-2);
+}
+
+.mirror-form {
+	display: flex;
+	align-items: end;
+	flex-wrap: wrap;
+	gap: var(--cx-space-2);
+}
+
+.mirror-form label {
+	display: flex;
+	flex-direction: column;
+	gap: var(--cx-space-1);
+	color: var(--cx-text-dim);
+	font-size: var(--cx-text-xs);
+}
+
+.mirror-form .cx-input {
+	min-width: 18rem;
+}
+
+.mirror-error {
+	color: var(--cx-danger);
+	font-size: var(--cx-text-xs);
+}
+
+.mirror-result {
+	font-size: var(--cx-text-xs);
+}
+
 @container view-panel (width < 560px) {
 	.settings-view {
 		grid-template-columns: minmax(0, 1fr);

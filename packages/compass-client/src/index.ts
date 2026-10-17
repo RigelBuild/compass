@@ -528,6 +528,7 @@ export {
 	AgentToolCallStatus,
 	CompassService,
 	EgressPosture,
+	ForgeMirrorMode,
 	ForgeProvider,
 	GetModelRegistryResponseSchema,
 	GetServerInfoResponseSchema,

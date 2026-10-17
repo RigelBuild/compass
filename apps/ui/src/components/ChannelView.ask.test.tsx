@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import { StoreContext } from "../context";
 import {
 	createFakeComms,
@@ -49,6 +50,7 @@ const snapshot = () => ({
 				authorAccountId: CALLER,
 				askId: "ask-1",
 				questionIds: ["q-1", "q-2"],
+				ref: "rigelbuild/compass#12",
 			}),
 		],
 	},
@@ -618,6 +620,71 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 			const submit = submitControl(container);
 			if (!submit) throw new Error("submit control did not render");
 			expect(submit.disabled).toBe(true);
+		} finally {
+			fake.close();
+		}
+	});
+});
+
+describe("ask forge mirroring", () => {
+	test("prefills the ask ref, mirrors its channel ask, and shows the comment URL", async () => {
+		const fake = createFakeComms(snapshot());
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const ref = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!ref) throw new Error("ask mirror ref input did not render");
+			expect(ref.value).toBe("rigelbuild/compass#12");
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+
+			expect(fake.mirrors).toEqual([
+				{
+					ref: "rigelbuild/compass#12",
+					askId: "ask-1",
+					topicId: "",
+					messageIds: [],
+					channelId: CHANNEL,
+				},
+			]);
+			expect(
+				container.querySelector<HTMLAnchorElement>(".mirror-result a")?.href,
+			).toBe("https://github.com/owner/repo/issues/12#issuecomment-1");
+		} finally {
+			fake.close();
+		}
+	});
+
+	test("shows a refused ask mirror error inline", async () => {
+		const fake = createFakeComms(snapshot());
+		fake.failNextMirror(new Error("target is not enabled"));
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+
+			expect(container.querySelector(".mirror-error")?.textContent).toBe(
+				"target is not enabled",
+			);
 		} finally {
 			fake.close();
 		}

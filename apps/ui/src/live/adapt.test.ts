@@ -645,6 +645,7 @@ describe("adaptAsk", () => {
 		const r = adaptAsk(
 			create(AskSchema, {
 				askId: "ask-1",
+				ref: "owner/repo#12",
 				questions: [
 					create(AskQuestionSchema, {
 						questionId: "q-1",
@@ -666,6 +667,7 @@ describe("adaptAsk", () => {
 			}),
 		);
 		expect(r.askId).toBe("ask-1");
+		expect(r.ref).toBe("owner/repo#12");
 		// Question order is the ask order, not a set.
 		expect(r.questions.map((q) => q.questionId)).toEqual(["q-1", "q-2"]);
 		const [q1, q2] = r.questions;

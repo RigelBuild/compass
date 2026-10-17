@@ -180,6 +180,8 @@ export interface Ask {
 	 *  `chosenOptionIds` empty, so scanning the questions cannot tell a CLOSED
 	 *  ask from a pending one (comms.proto Ask.answered). */
 	answered: boolean;
+	/** Optional issue or pull-request ref associated with the ask. */
+	ref?: string;
 }
 
 /** An option-less question — free text is the ONLY way to answer it

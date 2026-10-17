@@ -1045,6 +1045,11 @@ remove the stored setting, and an absent setting SHALL behave as OFF.
 - **When** a user answers the ask
 - **Then** the same forge comment is edited to include the answer and answerer
 
+The UI SHALL list every enabled forge coordinate in Settings with an Off,
+Manual, or Auto select, editable only by a tenant admin. An ask and a topic
+header SHALL offer an inline ref field that calls `MirrorToForge` and shows the
+comment URL or the refusal beside the source.
+
 `MirrorToForge` SHALL accept exactly one ask, topic, or one-to-fifty-message
 source. The caller SHALL be a user who can see the source channel. The destination
 mode SHALL be MANUAL or AUTO. The agent scope check applies only to agent posts.
