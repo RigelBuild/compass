@@ -42,8 +42,9 @@ func newAgentStatusClient(t *testing.T) (compassv1connect.CompassServiceClient, 
 }
 
 // pub drives one board transition as the writer the RunnerHub feeds.
-func pub(brd *board.Projection, id string, state compassv1.AgentSessionState) {
-	brd.PublishSessionStatus(&compassv1.AgentSessionStatus{SessionId: id, State: state})
+func pub(t *testing.T, brd *board.Projection, id string, state compassv1.AgentSessionState) {
+	t.Helper()
+	brd.PublishSessionStatus(t.Context(), &compassv1.AgentSessionStatus{SessionId: id, State: state})
 }
 
 // TestGetAgentStatusByIDLive pins that a session_id-scoped request returns
@@ -52,8 +53,8 @@ func pub(brd *board.Projection, id string, state compassv1.AgentSessionState) {
 // off the wire response reddens this.
 func TestGetAgentStatusByIDLive(t *testing.T) {
 	client, brd := newAgentStatusClient(t)
-	pub(brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
-	pub(brd, "s2", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	pub(t, brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	pub(t, brd, "s2", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 
 	resp, err := client.GetAgentStatus(context.Background(),
 		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: "s1"}))
@@ -73,7 +74,7 @@ func TestGetAgentStatusByIDLive(t *testing.T) {
 // or filtered them even on a by-id query reddens this (empty result).
 func TestGetAgentStatusByIDTerminal(t *testing.T) {
 	client, brd := newAgentStatusClient(t)
-	pub(brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED)
+	pub(t, brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED)
 
 	resp, err := client.GetAgentStatus(context.Background(),
 		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: "s1"}))
@@ -92,10 +93,10 @@ func TestGetAgentStatusByIDTerminal(t *testing.T) {
 // the listing) or lost the sort reddens this.
 func TestGetAgentStatusAllLiveSorted(t *testing.T) {
 	client, brd := newAgentStatusClient(t)
-	pub(brd, "s3", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)      // live
-	pub(brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED) // live
-	pub(brd, "s2", compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED)      // terminal
-	pub(brd, "s4", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)      // terminal
+	pub(t, brd, "s3", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)      // live
+	pub(t, brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED) // live
+	pub(t, brd, "s2", compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED)      // terminal
+	pub(t, brd, "s4", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)      // terminal
 
 	resp, err := client.GetAgentStatus(context.Background(),
 		connect.NewRequest(&compassv1.GetAgentStatusRequest{}))
@@ -119,7 +120,7 @@ func TestGetAgentStatusAllLiveSorted(t *testing.T) {
 // would return the whole board here.
 func TestGetAgentStatusUnseenEmpty(t *testing.T) {
 	client, brd := newAgentStatusClient(t)
-	pub(brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	pub(t, brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
 
 	resp, err := client.GetAgentStatus(context.Background(),
 		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: "nope"}))

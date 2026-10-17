@@ -50,7 +50,7 @@ func TestSubscribeEventsSinceZeroSendsBoundaryFirstEvenEmpty(t *testing.T) {
 
 	// The boundary precedes the tail: a post-subscribe publish arrives next,
 	// carrying a positioned seq and a payload — proving the boundary led.
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 	tail := recvOne(t, stream)
 	if tail.GetSeq() != 1 {
 		t.Fatalf("first tail msg seq = %d, want 1 (the seq after the empty snapshot)", tail.GetSeq())
@@ -69,8 +69,8 @@ func TestSubscribeEventsSinceNonZeroSendsNoBoundary(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	// Two events pre-subscribe so a since_seq==1 cursor has seq 2 to replay.
-	bus.Publish(statusEvent())
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 
 	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)

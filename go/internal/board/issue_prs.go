@@ -154,7 +154,7 @@ func (p *IssueProjection) republishPrsLocked(ctx context.Context, coords []store
 		next := cloneIssue(p.issues[id])
 		next.Prs = prs[c.Normalized()]
 		p.issues[id] = next
-		p.bus.Publish(&compassv1.SubscribeEventsResponse{
+		p.bus.Publish(ctx, &compassv1.SubscribeEventsResponse{
 			Payload: &compassv1.SubscribeEventsResponse_Issue{Issue: next},
 		})
 	}

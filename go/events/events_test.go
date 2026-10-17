@@ -69,9 +69,9 @@ func equalSeqs(a, b []uint64) bool {
 
 func TestPublishAssignsMonotonicSeqsReplayedInOrder(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ready())
-	bus.Publish(ready())
-	bus.Publish(ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
 
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
@@ -85,7 +85,7 @@ func TestPublishAssignsMonotonicSeqsReplayedInOrder(t *testing.T) {
 func TestSubscribeWithCursorFiltersReplayToSeqsAboveIt(t *testing.T) {
 	bus := NewBus[ev]()
 	for range 5 {
-		bus.Publish(ready())
+		bus.Publish(t.Context(), ready())
 	}
 	sub, err := bus.Subscribe(3, bus.InstanceEpoch())
 	if err != nil {
@@ -99,7 +99,7 @@ func TestSubscribeWithCursorFiltersReplayToSeqsAboveIt(t *testing.T) {
 func TestSubscribeAtZeroSnapshotsTheWholeRing(t *testing.T) {
 	bus := NewBus[ev]()
 	for range 7 {
-		bus.Publish(ready())
+		bus.Publish(t.Context(), ready())
 	}
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
@@ -119,7 +119,7 @@ func TestSubscribeAtZeroSnapshotsTheWholeRing(t *testing.T) {
 func TestSubscribeBelowEvictedSpanUnderflows(t *testing.T) {
 	bus := NewBus[ev]()
 	for range RingCapacity + 10 {
-		bus.Publish(ready())
+		bus.Publish(t.Context(), ready())
 	}
 	// seqs 1..=10 were evicted; oldest retained is 11. A cursor of 5 wants
 	// events from 6 onward, but 6..=10 are gone — the gap is unrecoverable.
@@ -133,7 +133,7 @@ func TestSubscribeAtEvictionBoundarySucceedsAndReplaysFromNewOldest(t *testing.T
 	// One eviction: fill the ring, then push one more so seq 1 drops and the
 	// oldest retained becomes seq 2.
 	for range RingCapacity + 1 {
-		bus.Publish(ready())
+		bus.Publish(t.Context(), ready())
 	}
 	// cursor=1 wants events from 2 onward, which are exactly what remains — the
 	// boundary case where oldest.seq (2) > sinceSeq+1 (2) is false.
@@ -151,7 +151,7 @@ func TestSubscribeAtEvictionBoundarySucceedsAndReplaysFromNewOldest(t *testing.T
 
 func TestLiveTailDeliversEventsPublishedAfterSubscribe(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ready())
+	bus.Publish(t.Context(), ready())
 
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestLiveTailDeliversEventsPublishedAfterSubscribe(t *testing.T) {
 		t.Fatalf("replay len = %d, want 1 (the pre-subscribe event)", len(sub.Replay))
 	}
 
-	bus.Publish(ready())
+	bus.Publish(t.Context(), ready())
 	live, ok := recvWithin(t, sub.Live)
 	if !ok {
 		t.Fatal("live tail closed instead of delivering the post-subscribe event")
@@ -173,8 +173,8 @@ func TestLiveTailDeliversEventsPublishedAfterSubscribe(t *testing.T) {
 
 func TestPublishStampsTimestampAndPreservesPayloadVariant(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ev{kind: "status"})
-	bus.Publish(ev{kind: "resync"})
+	bus.Publish(t.Context(), ev{kind: "status"})
+	bus.Publish(t.Context(), ev{kind: "resync"})
 
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
@@ -195,9 +195,9 @@ func TestPublishStampsTimestampAndPreservesPayloadVariant(t *testing.T) {
 
 func TestSubscribeAtOrBeyondNextSeqUnderflows(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ready())
-	bus.Publish(ready())
-	bus.Publish(ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
 	// Three publishes leave nextSeq at 4; the highest cursor a caller can
 	// legitimately hold is 3.
 	if _, err := bus.Subscribe(4, bus.InstanceEpoch()); err != ErrBufferUnderflow {
@@ -234,9 +234,9 @@ func TestSubscribeOnEmptyBusRejectsSeqOneButAllowsSnapshotCursor(t *testing.T) {
 
 func TestPositionedCursorWithMismatchedEpochForcesResync(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ready())
-	bus.Publish(ready())
-	bus.Publish(ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
 	// nextSeq is 4 and the ring holds 1..=3, so cursor 1 is otherwise a
 	// perfectly in-range positioned cursor. The epoch guard must still reject
 	// it: a cursor from a prior instance names seqs in a seq space this boot
@@ -249,8 +249,8 @@ func TestPositionedCursorWithMismatchedEpochForcesResync(t *testing.T) {
 
 func TestPositionedCursorWithUnsetEpochForcesResync(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ready())
-	bus.Publish(ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
 	// Epoch 0 is the wire's "unset" — an old client that never observed an
 	// instance epoch. A positioned cursor from such a client must resync.
 	if _, err := bus.Subscribe(1, 0); err != ErrBufferUnderflow {
@@ -261,7 +261,7 @@ func TestPositionedCursorWithUnsetEpochForcesResync(t *testing.T) {
 func TestPositionedCursorWithMatchingEpochTailsGapFree(t *testing.T) {
 	bus := NewBus[ev]()
 	for range 4 {
-		bus.Publish(ready())
+		bus.Publish(t.Context(), ready())
 	}
 	// Same cursor, stamped with this instance's live epoch: the guard passes
 	// and the in-range cursor replays exactly the seqs above it.
@@ -277,7 +277,7 @@ func TestPositionedCursorWithMatchingEpochTailsGapFree(t *testing.T) {
 func TestSnapshotCursorIgnoresEpoch(t *testing.T) {
 	bus := NewBus[ev]()
 	for range 3 {
-		bus.Publish(ready())
+		bus.Publish(t.Context(), ready())
 	}
 	// A sinceSeq=0 snapshot re-reads the whole ring regardless of epoch, so the
 	// epoch is never consulted — neither the unset 0 nor a foreign value can
@@ -293,8 +293,8 @@ func TestSnapshotCursorIgnoresEpoch(t *testing.T) {
 
 func TestResponsesCarryTheInstanceEpoch(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ready())
-	bus.Publish(ready())
+	bus.Publish(t.Context(), ready())
+	bus.Publish(t.Context(), ready())
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
 		t.Fatalf("Subscribe(0,0): %v", err)
@@ -315,9 +315,9 @@ func TestBusIsGenericOverArbitraryPayloadTypes(t *testing.T) {
 	type other struct{ v uint32 }
 
 	bus := NewBus[other]()
-	bus.Publish(other{v: 10})
-	bus.Publish(other{v: 20})
-	bus.Publish(other{v: 30})
+	bus.Publish(t.Context(), other{v: 10})
+	bus.Publish(t.Context(), other{v: 20})
+	bus.Publish(t.Context(), other{v: 30})
 
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
@@ -340,7 +340,7 @@ func TestBusIsGenericOverArbitraryPayloadTypes(t *testing.T) {
 	}
 
 	// Live tail must deliver the arbitrary payload too, round-tripped by value.
-	bus.Publish(other{v: 40})
+	bus.Publish(t.Context(), other{v: 40})
 	live, ok := recvWithin(t, sub.Live)
 	if !ok {
 		t.Fatal("live tail closed instead of delivering the post-subscribe generic event")
@@ -369,7 +369,7 @@ func TestOverrunClosesLiveAndLatchesLagged(t *testing.T) {
 	// non-blocking fan-out cannot place — that publish marks the subscriber
 	// lagged and closes its channel.
 	for i := range liveBufferCapacity + 1 {
-		bus.Publish(ev{n: i})
+		bus.Publish(t.Context(), ev{n: i})
 	}
 
 	// Drain: the buffered events come through, then the channel is closed.
@@ -428,7 +428,7 @@ func TestOverrunMiddleSubscriberCompactsAndRetainsOrder(t *testing.T) {
 	// Fill every buffer to capacity: each non-blocking send still lands, so no
 	// subscriber is dropped yet.
 	for i := range liveBufferCapacity {
-		bus.Publish(ev{n: i})
+		bus.Publish(t.Context(), ev{n: i})
 	}
 	// Drain the outer two so their buffers have room again; leave the middle
 	// buffer full.
@@ -443,7 +443,7 @@ func TestOverrunMiddleSubscriberCompactsAndRetainsOrder(t *testing.T) {
 
 	// One more publish: the middle buffer is full, so only it overruns and is
 	// dropped from the fan-out set; the outer two accept the event.
-	bus.Publish(ev{n: liveBufferCapacity})
+	bus.Publish(t.Context(), ev{n: liveBufferCapacity})
 
 	if got := len(bus.subscribers); got != 2 {
 		t.Fatalf("subscribers = %d after middle overrun, want 2 (middle dropped)", got)
@@ -502,7 +502,7 @@ func TestHeadSeqIsRingHeadAtSubscribeTime(t *testing.T) {
 	t.Run("equals nextSeq-1 after publishes", func(t *testing.T) {
 		bus := NewBus[ev]()
 		for range 5 {
-			bus.Publish(ready())
+			bus.Publish(t.Context(), ready())
 		}
 		snap, err := bus.Subscribe(0, 0)
 		if err != nil {
@@ -549,7 +549,7 @@ func TestCancelUnsubscribesAndClosesLive(t *testing.T) {
 	}
 	// A subsequent Publish delivers to nobody and must not touch the cancelled
 	// slot; it simply returns the next seq.
-	if seq := bus.Publish(ready()); seq == 0 {
+	if seq := bus.Publish(t.Context(), ready()); seq == 0 {
 		t.Fatal("Publish returned seq 0")
 	}
 	// Cancel is a clean unsubscribe, not an overrun.
@@ -596,7 +596,7 @@ func TestCancelAfterOverrunDoesNotPanic(t *testing.T) {
 	// Fill the buffer then one more: the last publish cannot place the event,
 	// so it latches the subscriber lagged and closes its channel.
 	for i := range liveBufferCapacity + 1 {
-		bus.Publish(ev{n: i})
+		bus.Publish(t.Context(), ev{n: i})
 	}
 
 	// Cancel after the overrun already closed the channel — a no-op, no panic.
@@ -618,7 +618,7 @@ func TestCancelAfterOverrunDoesNotPanic(t *testing.T) {
 // dead stream, not a registered subscriber.
 func TestClosedBusSubscribeReturnsTerminalStream(t *testing.T) {
 	bus := NewBus[ev]()
-	bus.Publish(ready()) // ring holds an event, to prove Replay is still empty.
+	bus.Publish(t.Context(), ready()) // ring holds an event, to prove Replay is still empty.
 	bus.Close()
 
 	sub, err := bus.Subscribe(0, 0)
@@ -681,9 +681,9 @@ func TestClosedBusSubscribeWithInvalidCursorReturnsTerminalStream(t *testing.T) 
 			// this instance's — the epoch gate, an underflow on a live bus.
 			name: "mismatched epoch",
 			prepare: func(bus *Bus[ev]) (uint64, uint64) {
-				bus.Publish(ready())
-				bus.Publish(ready())
-				bus.Publish(ready())
+				bus.Publish(t.Context(), ready())
+				bus.Publish(t.Context(), ready())
+				bus.Publish(t.Context(), ready())
 				return 1, bus.InstanceEpoch() + 1
 			},
 		},
@@ -692,9 +692,9 @@ func TestClosedBusSubscribeWithInvalidCursorReturnsTerminalStream(t *testing.T) 
 			// leave nextSeq at 4, so 8 trips the at/beyond-nextSeq gate.
 			name: "at or beyond nextSeq",
 			prepare: func(bus *Bus[ev]) (uint64, uint64) {
-				bus.Publish(ready())
-				bus.Publish(ready())
-				bus.Publish(ready())
+				bus.Publish(t.Context(), ready())
+				bus.Publish(t.Context(), ready())
+				bus.Publish(t.Context(), ready())
 				return 8, bus.InstanceEpoch()
 			},
 		},
@@ -705,7 +705,7 @@ func TestClosedBusSubscribeWithInvalidCursorReturnsTerminalStream(t *testing.T) 
 			name: "below evicted span",
 			prepare: func(bus *Bus[ev]) (uint64, uint64) {
 				for range RingCapacity + 10 {
-					bus.Publish(ready())
+					bus.Publish(t.Context(), ready())
 				}
 				return 5, bus.InstanceEpoch()
 			},
@@ -751,7 +751,7 @@ func TestReplayLiveHandoffIsGapFreeUnderConcurrency(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := range n {
-			bus.Publish(ev{n: i})
+			bus.Publish(t.Context(), ev{n: i})
 		}
 		close(done)
 	}()
@@ -795,37 +795,34 @@ func TestReplayLiveHandoffIsGapFreeUnderConcurrency(t *testing.T) {
 	}
 }
 
-// TestPublishCtxStampsActiveSpanTraceparent pins Move 1's bus bridge: PublishCtx
-// stamps the active span's W3C traceparent onto the enqueued Stamped, while the
-// ctx-free Publish (and PublishCtx under a no-span ctx) leaves it empty
-// (empty-in ⇒ empty-out). This is the publish-point origin of the whole T5
-// propagation chain.
-func TestPublishCtxStampsActiveSpanTraceparent(t *testing.T) {
+// TestPublishStampsActiveSpanTraceparent pins the bus trace bridge: Publish
+// stamps the active span's traceparent and leaves it empty without a span.
+func TestPublishStampsActiveSpanTraceparent(t *testing.T) {
 	tp := sdktrace.NewTracerProvider()
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	ctx, span := tp.Tracer("test").Start(context.Background(), "publish")
-	defer span.End()
+	t.Cleanup(func() {
+		if err := tp.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("shutdown tracer provider: %v", err)
+		}
+	})
+	ctx, span := tp.Tracer("test").Start(t.Context(), "publish")
+	t.Cleanup(func() { span.End() })
 	want := otelx.Traceparent(ctx)
 	if want == "" {
 		t.Fatal("precondition: active span produced an empty traceparent")
 	}
 
 	bus := NewBus[ev]()
-	bus.PublishCtx(ctx, ready())                  // under a span: stamps want
-	bus.PublishCtx(context.Background(), ready()) // no span: empty
-	bus.Publish(ready())                          // ctx-free: empty
+	bus.Publish(ctx, ready())
+	bus.Publish(t.Context(), ready())
 
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
 		t.Fatalf("Subscribe(0,0): %v", err)
 	}
 	if got := sub.Replay[0].Traceparent; got != want {
-		t.Fatalf("PublishCtx(span) Traceparent = %q, want %q", got, want)
+		t.Fatalf("Publish(span) Traceparent = %q, want %q", got, want)
 	}
 	if got := sub.Replay[1].Traceparent; got != "" {
-		t.Fatalf("PublishCtx(no-span) Traceparent = %q, want empty", got)
-	}
-	if got := sub.Replay[2].Traceparent; got != "" {
-		t.Fatalf("Publish Traceparent = %q, want empty", got)
+		t.Fatalf("Publish(no-span) Traceparent = %q, want empty", got)
 	}
 }

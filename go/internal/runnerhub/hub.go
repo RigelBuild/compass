@@ -56,7 +56,7 @@ type RunnerEvent struct {
 // extracts to one AgentSessionStatus here.
 type LifecycleSink interface {
 	// PublishSessionStatus fans an AgentSessionStatus onto SubscribeEvents.
-	PublishSessionStatus(status *compassv1.AgentSessionStatus)
+	PublishSessionStatus(ctx context.Context, status *compassv1.AgentSessionStatus)
 }
 
 // SettleSink is notified of an agent session's lifecycle transition at the SAME
@@ -971,7 +971,7 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	if hasAccount {
 		status.AgentAccountId = string(account)
 	}
-	h.lifecycle.PublishSessionStatus(status)
+	h.lifecycle.PublishSessionStatus(ctx, status)
 	// Same arm, right after the lifecycle publish: notify the delivery consumer of the
 	// author's settle edge so it fires any held agent-authored messages (RIG-1569 T3).
 	// Read the sink under mu; nil-safe. The sink enqueues into the consumer's own loop

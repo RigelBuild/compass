@@ -204,7 +204,7 @@ func (p *Publisher) PresenceSnapshot() map[store.AccountID]compassv1.AgentPresen
 // presence differs from the last published for it (design.md:481-485) — the
 // exactly-one-per-change guarantee. It records the new value under the lock and
 // publishes outside it, so the bus Publish never runs under mu.
-func (p *Publisher) publishIfChanged(account store.AccountID, presence compassv1.AgentPresence) {
+func (p *Publisher) publishIfChanged(ctx context.Context, account store.AccountID, presence compassv1.AgentPresence) {
 	p.mu.Lock()
 	if prev, ok := p.last[account]; ok && prev == presence {
 		p.mu.Unlock()
@@ -213,7 +213,7 @@ func (p *Publisher) publishIfChanged(account store.AccountID, presence compassv1
 	p.last[account] = presence
 	p.mu.Unlock()
 
-	p.bus.Publish(&compassv1.SubscribeCommsResponse{
+	p.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_AgentPresenceChanged{
 			AgentPresenceChanged: &compassv1.AgentPresenceChanged{
 				AgentAccountId: string(account),

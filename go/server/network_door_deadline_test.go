@@ -464,7 +464,7 @@ func TestNetworkDoorBodyDeadlineDoesNotCutServerStreamResponse(t *testing.T) {
 	// handler's first Send, and SubscribeEvents RoundTrip blocks until they arrive —
 	// with an empty bus the open would deadlock. Its snapshot replay below is also the
 	// proof the stream opened and delivered a frame.
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 
 	url := startServerStreamDeadlineDoor(t, newService("test", bus, nil, nil, nil, nil, nil), deadline)
 	client := newH2CClient(t, url)
@@ -484,7 +484,7 @@ func TestNetworkDoorBodyDeadlineDoesNotCutServerStreamResponse(t *testing.T) {
 	// response half, the stream would already have errored and this Receive
 	// would fail instead of delivering the frame.
 	time.Sleep(postDeadlineWait) //nolint:forbidigo // deliberately waits past the deadline to prove the response half is NOT deadline-bounded; the sleep IS the timing subject (rule://go-no-sleep-in-test timing-under-test exemption)
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 
 	live := recvOne(t, stream)
 	if live.GetSeq() != 2 {

@@ -15,6 +15,7 @@
 package board
 
 import (
+	"context"
 	"sort"
 	"sync"
 
@@ -92,7 +93,7 @@ func NewProjection(bus *events.Bus[busPayload]) *Projection {
 // create a phantom row (keyed on "" or holding the zero state). The state guard
 // is defense-in-depth: the hub already skips UNSPECIFIED frames upstream, but the
 // board enforces its own recorded-state invariant rather than trusting the caller.
-func (p *Projection) PublishSessionStatus(status *compassv1.AgentSessionStatus) {
+func (p *Projection) PublishSessionStatus(ctx context.Context, status *compassv1.AgentSessionStatus) {
 	if status == nil || status.GetSessionId() == "" ||
 		status.GetState() == compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
 		return
@@ -106,7 +107,7 @@ func (p *Projection) PublishSessionStatus(status *compassv1.AgentSessionStatus) 
 		egressPosture: status.GetEgressPosture(),
 	}
 
-	p.bus.Publish(&compassv1.SubscribeEventsResponse{
+	p.bus.Publish(ctx, &compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_AgentSessionStatus{
 			AgentSessionStatus: status,
 		},

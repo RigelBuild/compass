@@ -173,7 +173,7 @@ func (p *Publisher) recomputeFromStore(ctx context.Context, account store.Accoun
 		p.log.ErrorContext(ctx, "presence: resolve open ask", "error", err, "account", string(account))
 		return
 	}
-	p.publishIfChanged(account, presenceFor(state, openAsk))
+	p.publishIfChanged(ctx, account, presenceFor(state, openAsk))
 }
 
 // drainEdges fires every queued hub-fed edge under the loop's ctx.
@@ -209,7 +209,7 @@ func (p *Publisher) applyLifecycle(ctx context.Context, account store.AccountID,
 	p.mu.Lock()
 	p.lastState[account] = state
 	p.mu.Unlock()
-	p.publishIfChanged(account, presenceFor(state, openAsk))
+	p.publishIfChanged(ctx, account, presenceFor(state, openAsk))
 }
 
 // applyPromoted reconstructs presence at a session promotion (the restart-
@@ -239,5 +239,5 @@ func (p *Publisher) applyPromoted(ctx context.Context, account store.AccountID, 
 	p.mu.Lock()
 	p.lastState[account] = state
 	p.mu.Unlock()
-	p.publishIfChanged(account, presenceFor(state, openAsk))
+	p.publishIfChanged(ctx, account, presenceFor(state, openAsk))
 }

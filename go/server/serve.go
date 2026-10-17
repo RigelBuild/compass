@@ -836,7 +836,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// status so a snapshot subscriber sees liveness immediately.
 	bus := events.NewBus[busPayload]()
 	defer bus.Close()
-	publishReady(bus)
+	publishReady(ctx, bus)
 
 	// The event fabric carries comms publishes and delivery's trigger; the store
 	// of record backs comms, the token store, and the transcript archive seam.
@@ -1305,8 +1305,8 @@ func awaitReadyHooks(shutdownCtx context.Context, hooksDone <-chan struct{}) err
 }
 
 // publishReady stamps the initial ServerStatus{Ready} onto the bus.
-func publishReady(bus *events.Bus[busPayload]) {
-	bus.Publish(&compassv1.SubscribeEventsResponse{
+func publishReady(ctx context.Context, bus *events.Bus[busPayload]) {
+	bus.Publish(ctx, &compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_ServerStatus{
 			ServerStatus: &compassv1.ServerStatus{State: compassv1.ServerState_SERVER_STATE_READY},
 		},

@@ -27,7 +27,7 @@ func TestPublishChannelChangedCarriesTreeAttachment(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	h.svc.publishChannelChanged(channel, nil)
+	h.svc.publishChannelChanged(t.Context(), channel, nil)
 	select {
 	case event := <-sub.Live:
 		changed := event.Payload.GetChannelChanged()

@@ -504,16 +504,16 @@ func askQuestionsFromWire(a *compassv1.Ask) []store.AskQuestion {
 // payload is the whole SubscribeCommsResponse with only its oneof set; the bus
 // stamps seq/at_unix_ms/instance_epoch at publish and the stream edge copies them.
 
-func (c *Comms) publishAccountChanged(a store.Account) {
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+func (c *Comms) publishAccountChanged(ctx context.Context, a store.Account) {
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_AccountChanged{
 			AccountChanged: &compassv1.AccountChanged{Account: accountToWire(a)},
 		},
 	})
 }
 
-func (c *Comms) publishChannelGroupChanged(g store.ChannelGroup) {
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+func (c *Comms) publishChannelGroupChanged(ctx context.Context, g store.ChannelGroup) {
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_ChannelGroupChanged{
 			ChannelGroupChanged: &compassv1.ChannelGroupChanged{Group: groupToWire(g)},
 		},
@@ -525,8 +525,8 @@ func (c *Comms) publishChannelGroupChanged(g store.ChannelGroup) {
 // the stream edge can deliver a departing member its one final event before the
 // channel goes silent to it (the removed member no longer matches the
 // membership-visibility filter on the channel's current member set).
-func (c *Comms) publishChannelChanged(ch store.Channel, removed []store.AccountID) {
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+func (c *Comms) publishChannelChanged(ctx context.Context, ch store.Channel, removed []store.AccountID) {
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_ChannelChanged{
 			ChannelChanged: &compassv1.ChannelChanged{
 				Channel:           channelToWire(ch),
@@ -535,9 +535,8 @@ func (c *Comms) publishChannelChanged(ch store.Channel, removed []store.AccountI
 		},
 	})
 }
-
-func (c *Comms) publishAgentWorkspaceChanged(w store.AgentWorkspace) {
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+func (c *Comms) publishAgentWorkspaceChanged(ctx context.Context, w store.AgentWorkspace) {
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_AgentWorkspaceChanged{
 			AgentWorkspaceChanged: &compassv1.AgentWorkspaceChanged{Workspace: workspaceToWire(w)},
 		},
@@ -549,7 +548,7 @@ func (c *Comms) publishAgentWorkspaceChanged(w store.AgentWorkspace) {
 const fabricPublishTimeout = 5 * time.Second
 
 func (c *Comms) publishMessagePosted(ctx context.Context, m store.Message) {
-	c.bus.PublishCtx(ctx, &compassv1.SubscribeCommsResponse{
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
 			MessagePosted: &compassv1.MessagePosted{Message: MessageToWire(m), TurnSequence: m.TurnSequence},
 		},
@@ -577,8 +576,8 @@ func (c *Comms) publishMessagePosted(ctx context.Context, m store.Message) {
 	}
 }
 
-func (c *Comms) publishMessageUpdated(m store.Message) {
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+func (c *Comms) publishMessageUpdated(ctx context.Context, m store.Message) {
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessageUpdated{
 			MessageUpdated: &compassv1.MessageUpdated{Message: MessageToWire(m)},
 		},
@@ -589,8 +588,8 @@ func (c *Comms) publishMessageUpdated(m store.Message) {
 // after a topic create/rename/merge/archive commit (write-through fan-out), so
 // a live topic index stays current without re-reading (design.md: the new event
 // covers the topic namespace the way MessagePosted covers messages).
-func (c *Comms) publishTopicUpserted(t store.Topic) {
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+func (c *Comms) publishTopicUpserted(ctx context.Context, t store.Topic) {
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_TopicUpserted{
 			TopicUpserted: &compassv1.TopicUpserted{Topic: topicToWire(t)},
 		},

@@ -892,7 +892,7 @@ type blockingLifecycleSink struct {
 	releaseWorking chan struct{}
 }
 
-func (s *blockingLifecycleSink) PublishSessionStatus(status *compassv1.AgentSessionStatus) {
+func (s *blockingLifecycleSink) PublishSessionStatus(_ context.Context, status *compassv1.AgentSessionStatus) {
 	if status.GetState() == compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
 		close(s.workingEntered)
 		<-s.releaseWorking

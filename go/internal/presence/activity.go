@@ -3,6 +3,8 @@
 package presence
 
 import (
+	"context"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -37,7 +39,7 @@ func (p *Publisher) PresenceFor(accountIDs []store.AccountID) map[store.AccountI
 // publishes, because the activity string can change with the presence unchanged.
 // An agent with no published presence publishes OFFLINE, matching the roster's
 // absent-from-map posture.
-func (p *Publisher) PublishActivity(agentAccountID store.AccountID, activity string) {
+func (p *Publisher) PublishActivity(ctx context.Context, agentAccountID store.AccountID, activity string) {
 	p.mu.Lock()
 	presence, ok := p.last[agentAccountID]
 	p.mu.Unlock()
@@ -45,7 +47,7 @@ func (p *Publisher) PublishActivity(agentAccountID store.AccountID, activity str
 		presence = compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE
 	}
 
-	p.bus.Publish(&compassv1.SubscribeCommsResponse{
+	p.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_AgentPresenceChanged{
 			AgentPresenceChanged: &compassv1.AgentPresenceChanged{
 				AgentAccountId: string(agentAccountID),

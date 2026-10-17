@@ -9,6 +9,7 @@ package runnerhub
 // context.Background() is the test root (test-root ctx exemption).
 
 import (
+	"context"
 	"testing"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -38,7 +39,7 @@ func (f *fakePresenceSourceHub) PresenceFor(accountIDs []store.AccountID) map[st
 	return out
 }
 
-func (f *fakePresenceSourceHub) PublishActivity(account store.AccountID, activity string) {
+func (f *fakePresenceSourceHub) PublishActivity(_ context.Context, account store.AccountID, activity string) {
 	f.published = append(f.published, publishedActivity{account: account, activity: activity})
 }
 
@@ -78,7 +79,7 @@ func TestHubPublishActivityForwardsToSource(t *testing.T) {
 	src := &fakePresenceSourceHub{presence: map[store.AccountID]compassv1.AgentPresence{}}
 	hub.SetPresenceSource(src)
 
-	hub.PublishActivity("acct-a", "building the world")
+	hub.PublishActivity(t.Context(), "acct-a", "building the world")
 
 	if len(src.published) != 1 {
 		t.Fatalf("published count = %d, want 1", len(src.published))
@@ -92,5 +93,5 @@ func TestHubPublishActivityForwardsToSource(t *testing.T) {
 // publish without panicking (best-effort; the durable table is the record).
 func TestHubPublishActivityNilSourceIsSafe(t *testing.T) {
 	hub := newHubOnly()
-	hub.PublishActivity("acct-a", "no source wired") // must not panic
+	hub.PublishActivity(t.Context(), "acct-a", "no source wired") // must not panic
 }

@@ -98,7 +98,7 @@ func TestAskOpenPublishesWaitingThenAnsweredPublishesPrior(t *testing.T) {
 	// Open an ask: the store now reports an open ask; a MessagePosted carrying an
 	// ask drives the ask arm to recompute → WAITING.
 	reads.setOpen(agent, true)
-	bus.Publish(askPosted(agent))
+	bus.Publish(t.Context(), askPosted(agent))
 	rec.waitForPublishes(t, 2)
 	if got := rec.snapshot()[1]; got.presence != compassv1.AgentPresence_AGENT_PRESENCE_WAITING {
 		t.Fatalf("ask-open publish = %+v, want WAITING", got)
@@ -107,7 +107,7 @@ func TestAskOpenPublishesWaitingThenAnsweredPublishesPrior(t *testing.T) {
 	// Answer it: the store now reports no open ask; a MessageUpdated drives the
 	// arm to recompute → back to IDLE (the prior state).
 	reads.setOpen(agent, false)
-	bus.Publish(askAnsweredUpdate(agent))
+	bus.Publish(t.Context(), askAnsweredUpdate(agent))
 	rec.waitForPublishes(t, 3)
 
 	got := rec.snapshot()
@@ -133,10 +133,10 @@ func TestNonAskPostedDoesNotPublish(t *testing.T) {
 	// A text post while the store (hypothetically) has an open ask must STILL not
 	// trigger the arm — only an ask-carrying post is a trigger.
 	reads.setOpen(agent, true)
-	bus.Publish(textPosted(agent))
+	bus.Publish(t.Context(), textPosted(agent))
 	// Drive a real ask post right after; when THAT publish lands, a spurious
 	// text-triggered publish (if any) would already be recorded before it.
-	bus.Publish(askPosted(agent))
+	bus.Publish(t.Context(), askPosted(agent))
 	rec.waitForPublishes(t, 2)
 
 	got := rec.snapshot()
@@ -279,7 +279,7 @@ func TestAskFromUnknownAuthorPublishesNothing(t *testing.T) {
 
 	// The human has an open ask in the store but NO lifecycle state recorded.
 	reads.setOpen(human, true)
-	bus.Publish(askPosted(human))
+	bus.Publish(t.Context(), askPosted(human))
 
 	// Drive a real agent ask right after; when THAT publish lands, a spurious
 	// human-triggered publish (if any) would already be recorded before it. The
@@ -287,7 +287,7 @@ func TestAskFromUnknownAuthorPublishesNothing(t *testing.T) {
 	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	rec.waitForPublishes(t, 1)
 	reads.setOpen(agent, true)
-	bus.Publish(askPosted(agent))
+	bus.Publish(t.Context(), askPosted(agent))
 	rec.waitForPublishes(t, 2)
 
 	got := rec.snapshot()
@@ -339,7 +339,7 @@ func TestBlockingResolveDoesNotWedgeFollowingEdges(t *testing.T) {
 	// the loop is free again — a following ask edge for the live agent is
 	// serviced (→ WAITING). If the loop were frozen (pre-fix), neither lands.
 	reads.setOpen(live, true)
-	bus.Publish(askPosted(live))
+	bus.Publish(t.Context(), askPosted(live))
 	rec.waitForPublishes(t, 3)
 
 	var sawWedgedOffline, sawLiveWaiting bool

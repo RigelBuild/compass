@@ -83,8 +83,8 @@ func idsOf(snap []*compassv1.AgentSessionStatus) []string {
 func TestRecordsLatestStateLastWriteWins(t *testing.T) {
 	p, _ := newBoard(t)
 
-	p.PublishSessionStatus(status("s1", starting))
-	p.PublishSessionStatus(status("s1", working))
+	p.PublishSessionStatus(t.Context(), status("s1", starting))
+	p.PublishSessionStatus(t.Context(), status("s1", working))
 
 	snap := p.Snapshot("s1")
 	if len(snap) != 1 {
@@ -103,9 +103,9 @@ func TestSnapshotByIDAndAllSorted(t *testing.T) {
 	p, _ := newBoard(t)
 
 	// Insertion order is deliberately unsorted to prove the sort, not luck.
-	p.PublishSessionStatus(status("s3", working))
-	p.PublishSessionStatus(status("s1", starting))
-	p.PublishSessionStatus(status("s2", ready))
+	p.PublishSessionStatus(t.Context(), status("s3", working))
+	p.PublishSessionStatus(t.Context(), status("s1", starting))
+	p.PublishSessionStatus(t.Context(), status("s2", ready))
 
 	all := p.Snapshot("")
 	wantIDs := []string{"s1", "s2", "s3"}
@@ -148,7 +148,7 @@ func TestPublishFansOutOntoBus(t *testing.T) {
 	}
 	t.Cleanup(sub.Cancel)
 
-	p.PublishSessionStatus(status("s1", working))
+	p.PublishSessionStatus(t.Context(), status("s1", working))
 
 	got := recvStatus(t, sub.Live)
 	if got.GetSessionId() != "s1" || got.GetState() != working {
@@ -161,7 +161,7 @@ func TestPublishFansOutOntoBus(t *testing.T) {
 // state. Guards against handing out a shared pointer into the aggregate.
 func TestSnapshotReturnsIndependentCopies(t *testing.T) {
 	p, _ := newBoard(t)
-	p.PublishSessionStatus(status("s1", starting))
+	p.PublishSessionStatus(t.Context(), status("s1", starting))
 
 	first := p.Snapshot("s1")
 	first[0].SessionId = "hijacked"
@@ -191,8 +191,8 @@ func TestNilAndEmptySessionIgnored(t *testing.T) {
 	}
 	t.Cleanup(sub.Cancel)
 
-	p.PublishSessionStatus(nil)
-	p.PublishSessionStatus(status("", ready)) // empty session_id
+	p.PublishSessionStatus(t.Context(), nil)
+	p.PublishSessionStatus(t.Context(), status("", ready)) // empty session_id
 
 	if snap := p.Snapshot(""); len(snap) != 0 {
 		t.Errorf("Snapshot(\"\") = %v after nil/empty publishes, want empty (nothing recorded)", idsOf(snap))
@@ -200,7 +200,7 @@ func TestNilAndEmptySessionIgnored(t *testing.T) {
 
 	// The sentinel is the only valid publish; if either ignored input had been
 	// fanned out, it would be the first event instead.
-	p.PublishSessionStatus(status("sentinel", working))
+	p.PublishSessionStatus(t.Context(), status("sentinel", working))
 	got := recvStatus(t, sub.Live)
 	if got.GetSessionId() != "sentinel" {
 		t.Errorf("first live event = %s, want sentinel (nil/empty must not publish)", got.GetSessionId())
@@ -219,7 +219,7 @@ func TestConcurrentPublishAndSnapshotRaceClean(t *testing.T) {
 	var writers sync.WaitGroup
 	for i := range n {
 		writers.Go(func() {
-			p.PublishSessionStatus(status(fmt.Sprintf("s%03d", i), working))
+			p.PublishSessionStatus(t.Context(), status(fmt.Sprintf("s%03d", i), working))
 		})
 	}
 
@@ -260,10 +260,10 @@ func TestConcurrentPublishAndSnapshotRaceClean(t *testing.T) {
 func TestTerminalFilteredFromAllButQueryableByID(t *testing.T) {
 	p, _ := newBoard(t)
 
-	p.PublishSessionStatus(status("s1", working))      // live
-	p.PublishSessionStatus(status("s2", stopped))      // terminal
-	p.PublishSessionStatus(status("s3", errored))      // terminal
-	p.PublishSessionStatus(status("s4", disconnected)) // live (awaits reattach)
+	p.PublishSessionStatus(t.Context(), status("s1", working))      // live
+	p.PublishSessionStatus(t.Context(), status("s2", stopped))      // terminal
+	p.PublishSessionStatus(t.Context(), status("s3", errored))      // terminal
+	p.PublishSessionStatus(t.Context(), status("s4", disconnected)) // live (awaits reattach)
 
 	// All-mode: exactly the two live sessions, sorted; terminals filtered out,
 	// DISCONNECTED retained.
@@ -299,12 +299,12 @@ func TestTerminalFilteredFromAllButQueryableByID(t *testing.T) {
 func TestLiveToTerminalTransitionLeavesAllModeKeepsByID(t *testing.T) {
 	p, _ := newBoard(t)
 
-	p.PublishSessionStatus(status("s1", working))
+	p.PublishSessionStatus(t.Context(), status("s1", working))
 	if ids := idsOf(p.Snapshot("")); len(ids) != 1 || ids[0] != "s1" {
 		t.Fatalf("Snapshot(\"\") = %v after WORKING, want [s1]", ids)
 	}
 
-	p.PublishSessionStatus(status("s1", stopped))
+	p.PublishSessionStatus(t.Context(), status("s1", stopped))
 	if ids := idsOf(p.Snapshot("")); len(ids) != 0 {
 		t.Errorf("Snapshot(\"\") = %v after STOPPED, want empty (terminal drops from all-mode)", ids)
 	}
@@ -329,13 +329,13 @@ func TestUnspecifiedStateIgnored(t *testing.T) {
 	}
 	t.Cleanup(sub.Cancel)
 
-	p.PublishSessionStatus(status("s9", compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED))
+	p.PublishSessionStatus(t.Context(), status("s9", compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED))
 
 	if snap := p.Snapshot("s9"); len(snap) != 0 {
 		t.Errorf("Snapshot(s9) = %v after UNSPECIFIED publish, want empty (nothing recorded)", idsOf(snap))
 	}
 
-	p.PublishSessionStatus(status("sentinel", working))
+	p.PublishSessionStatus(t.Context(), status("sentinel", working))
 	if got := recvStatus(t, sub.Live); got.GetSessionId() != "sentinel" {
 		t.Errorf("first live event = %s, want sentinel (UNSPECIFIED must not publish)", got.GetSessionId())
 	}
@@ -365,7 +365,7 @@ func TestConcurrentSameSessionRecordPublishAgree(t *testing.T) {
 	var writers sync.WaitGroup
 	for _, st := range raced {
 		writers.Go(func() {
-			p.PublishSessionStatus(status("s1", st))
+			p.PublishSessionStatus(t.Context(), status("s1", st))
 		})
 	}
 	writers.Wait()
@@ -401,8 +401,8 @@ func TestSnapshotEchoesAgentAccount(t *testing.T) {
 	p, _ := newBoard(t)
 
 	const account = "0123456789abcdef0123456789abcdef"
-	p.PublishSessionStatus(&compassv1.AgentSessionStatus{SessionId: "s-bound", State: working, AgentAccountId: account})
-	p.PublishSessionStatus(&compassv1.AgentSessionStatus{SessionId: "s-unbound", State: working})
+	p.PublishSessionStatus(t.Context(), &compassv1.AgentSessionStatus{SessionId: "s-bound", State: working, AgentAccountId: account})
+	p.PublishSessionStatus(t.Context(), &compassv1.AgentSessionStatus{SessionId: "s-unbound", State: working})
 
 	byID := p.Snapshot("s-bound")
 	if len(byID) != 1 || byID[0].GetAgentAccountId() != account {

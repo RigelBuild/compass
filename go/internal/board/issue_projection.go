@@ -92,7 +92,7 @@ func (p *IssueProjection) PublishIssueUpdate(ctx context.Context, issue *compass
 	// (5) record + fan out atomically under the write lock.
 	p.mu.Lock()
 	p.record(wire, coord)
-	p.bus.Publish(&compassv1.SubscribeEventsResponse{
+	p.bus.Publish(ctx, &compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_Issue{Issue: wire},
 	})
 	p.mu.Unlock()
@@ -146,7 +146,7 @@ func (p *IssueProjection) RecordAndPublish(ctx context.Context, committed store.
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.record(wire, storeIssueCoord(committed))
-	p.bus.Publish(&compassv1.SubscribeEventsResponse{
+	p.bus.Publish(ctx, &compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_Issue{Issue: wire},
 	})
 	return readErr
