@@ -5,7 +5,7 @@
 // contract — the four banned categories, the mark allowlist's exact scope, and
 // the WARN-vs-ERROR exit posture.
 //
-// Conventions (mirroring tools/design-ledger-gate/index.test.ts):
+// Conventions:
 // - Literal paths, NOT values derived from the module constants (UI_SRC_DIR /
 //   TOKENS_REL): those constants ARE the thing under test.
 // - `.message` is human prose, asserted only by its identifying substring.

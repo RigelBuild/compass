@@ -104,9 +104,7 @@ instead of running.
 **Affected on pull requests, full on `main`.** Affected detection trusts each
 task's `inputs` globs and the affected closure, so an incomplete glob can skip
 a task on a pull request. The full run on every push to `main` and the nightly
-sweep catch that as soon as the change lands. The design-ledger gate is the one
-target added to every pull request whatever the closure says, because no
-affected edge reaches it.
+sweep catch that as soon as the change lands.
 
 Which test tier to write at, and how the Go test harness is built:
 [Go testing tiers](testing-tiers.md).

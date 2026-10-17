@@ -95,13 +95,9 @@ projects:
   # (RIG-1405). Separate from compass-proto because its subject is the plugin
   # rather than the schema.
   stamp-gate: 'tools/stamp-gate'
-  # The design-ledger gate: validates the Compass design-decision ledger
-  # (docs/designs/decisions/<area>/DL-NNN.md), the per-record `Status:` headers, and
-  # dangling supersession/Record pointers (RIG-1187).
-  design-ledger-gate: 'tools/design-ledger-gate'
   # The orion-ref-gate boundary gate (RIG-2489): fail-closed scan that the PUBLIC
-  # compass repo carries no out-of-tree reference the managed boundary forbids. Mirrors
-  # design-ledger-gate; registered here so its check + typecheck + unit test run
+  # compass repo carries no out-of-tree reference the managed boundary forbids.
+  # Registered here so its check + typecheck + unit test run
   # in the moon-driven CI sweep — unregistered, moon never discovers it and the
   # boundary re-rots uncaught.
   orion-ref-gate: 'tools/orion-ref-gate'
@@ -113,9 +109,8 @@ projects:
   sea-ref-gate: 'tools/sea-ref-gate'
   # The cx-token consumption gate: scans apps/ui/src CSS for raw hex, --rigel-*
   # primitives, and literal duration/easing values banned outside tokens.css
-  # (D2/D9 consumption rule; RIG-1812). Mirrors design-ledger-gate; the mark
-  # file's --rigel-purple is the one narrow allowlist. WARN until the adoption
-  # step-5 flip, then ERROR.
+  # (D2/D9 consumption rule; RIG-1812). The mark file's --rigel-purple is the one
+  # narrow allowlist. WARN until the adoption step-5 flip, then ERROR.
   cx-token-gate: 'tools/cx-token-gate'
   # The font-coverage gate (RIG-3603 T8 precondition): parses the branded font
   # cmaps (Space Mono / Departure Mono) and scans apps/ui/src for a rendered
@@ -207,15 +202,8 @@ projects:
   agent-image-index: 'tools/agent-image-index'
   # The homebrew-tap formula renderer the release lane runs on a semver release.
   homebrew-tap: 'tools/homebrew-tap'
-  # The design-ledger reconciler: posts the landed DL-NNN frontier to the DL
-  # counter, which must hydrate before any claim. Registered so its typecheck +
-  # unit tests ride the moon-driven CI sweep.
-  dl-reconcile: 'tools/dl-reconcile'
   # The post-build CLI artifact smoke gate: proves the operator binary was produced, is current, and runs.
   operator-cli-check: 'tools/operator-cli-check'
-  # The design-ledger ID claimer: mints IDs atomically from the shared counter.
-  # Registered so its typecheck and behavior tests ride the moon-driven CI sweep.
-  dl-claim: 'tools/dl-claim'
   # The Bun advisory check is a dedicated, always-run workflow job; this project
   # keeps its typecheck and tests in the affected Moon matrix.
   bun-audit-gate: 'tools/bun-audit-gate'

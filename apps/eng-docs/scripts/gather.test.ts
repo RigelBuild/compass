@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseDecisionFile } from "../../../tools/design-ledger-gate/decision-files.ts";
 import {
-	buildDecisionIndex,
 	buildFrontmatter,
 	buildIndex,
 	buildSidebar,
@@ -159,8 +157,8 @@ describe("stripFirstH1", () => {
 
 describe("destRelPath", () => {
 	test("maps a docs/ path to the same relative path under content", () => {
-		expect(destRelPath("docs/designs/repo/compass-eng-docs/design.md")).toBe(
-			"designs/repo/compass-eng-docs/design.md",
+		expect(destRelPath("docs/specs/repo/compass-eng-docs/design.md")).toBe(
+			"specs/repo/compass-eng-docs/design.md",
 		);
 	});
 
@@ -177,9 +175,9 @@ describe("destRelPath", () => {
 
 describe("classify", () => {
 	test("keeps a docs/<domain> file under its section verbatim", () => {
-		expect(classify("docs/designs/repo/compass-eng-docs/design.md")).toEqual({
-			section: "designs",
-			destRel: "designs/repo/compass-eng-docs/design.md",
+		expect(classify("docs/specs/repo/compass-eng-docs/design.md")).toEqual({
+			section: "specs",
+			destRel: "specs/repo/compass-eng-docs/design.md",
 		});
 	});
 
@@ -269,6 +267,11 @@ describe("isExcluded", () => {
 		expect(isExcluded("apps/eng-docs/src/whatever.md", [])).toBe(true);
 	});
 
+	test("excludes design records left in docs/designs/ but not other docs", () => {
+		expect(isExcluded("docs/designs/repo/x/design.md", [])).toBe(true);
+		expect(isExcluded("docs/specs/product/compass.md", [])).toBe(false);
+	});
+
 	test("does not exclude an ordinary package doc", () => {
 		expect(
 			isExcluded("go/README.md", ["config/prompts/**", "**/outputs/**"]),
@@ -305,8 +308,8 @@ describe("isExcluded", () => {
 
 describe("editUrlFor", () => {
 	test("builds the GitHub edit URL for a repo-relative source path", () => {
-		expect(editUrlFor("docs/designs/repo/compass-eng-docs/design.md")).toBe(
-			"https://github.com/RigelBuild/compass/edit/main/docs/designs/repo/compass-eng-docs/design.md",
+		expect(editUrlFor("docs/specs/repo/compass-eng-docs/design.md")).toBe(
+			"https://github.com/RigelBuild/compass/edit/main/docs/specs/repo/compass-eng-docs/design.md",
 		);
 	});
 });
@@ -318,12 +321,12 @@ describe("editUrlFor", () => {
 // Anchors and queries ride along; `.`/`..` are collapsed against the source dir.
 
 describe("rewriteLinks", () => {
-	const src = "docs/designs/repo/compass-eng-docs/design.md";
+	const src = "docs/specs/repo/compass-eng-docs/design.md";
 	// The gather's collected file list. Only a link resolving to a member .md
 	// becomes a site route; everything else degrades to a GitHub source URL.
 	const gathered = new Set([
 		"docs/specs/platform/technology-stack.md",
-		"docs/designs/repo/compass-eng-docs/sibling.md",
+		"docs/specs/repo/compass-eng-docs/sibling.md",
 	]);
 
 	test("rewrites a relative .md link to its site route, collapsing `..`", () => {
@@ -348,7 +351,7 @@ describe("rewriteLinks", () => {
 
 	test("preserves a ?query suffix on a rewritten .md route", () => {
 		expect(rewriteLinks("see [x](./sibling.md?v=1)", src, gathered)).toBe(
-			"see [x](/designs/repo/compass-eng-docs/sibling?v=1)",
+			"see [x](/specs/repo/compass-eng-docs/sibling?v=1)",
 		);
 	});
 
@@ -385,6 +388,7 @@ describe("rewriteLinks", () => {
 	test("leaves absolute, protocol-relative, anchor, root-absolute and mailto links untouched", () => {
 		const links =
 			"[abs](https://example.com/a) " +
+			"[docs](https://github.com/RigelBuild/docs/tree/main/docs/designs/compass/) " +
 			"[proto](//cdn.example.com/x.md) " +
 			"[anchor](#section) " +
 			"[root](/already/routed) " +
@@ -483,9 +487,9 @@ describe("transform", () => {
 	test("preserves a title with a colon end-to-end", () => {
 		const src = "# Docs consumption: Notion as the read layer\n\nWhy...\n";
 		expect(
-			transform(src, "docs/designs/platform/docs-consumption.md", gathered),
+			transform(src, "docs/specs/platform/docs-consumption.md", gathered),
 		).toBe(
-			'---\ntitle: "Docs consumption: Notion as the read layer"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/designs/platform/docs-consumption.md"\n---\nWhy...\n',
+			'---\ntitle: "Docs consumption: Notion as the read layer"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/specs/platform/docs-consumption.md"\n---\nWhy...\n',
 		);
 	});
 
@@ -506,57 +510,8 @@ describe("transform", () => {
 	test("rewrites body links while injecting the editUrl (md→route, code→blob)", () => {
 		const src =
 			"# Docsite\n\nSee [tech](../../specs/platform/technology-stack.md) and [deploy](./deploy.ts).\n";
-		expect(transform(src, "docs/designs/platform/docsite.md", gathered)).toBe(
-			'---\ntitle: "Docsite"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/designs/platform/docsite.md"\n---\nSee [tech](/specs/platform/technology-stack) and [deploy](https://github.com/RigelBuild/compass/blob/main/docs/designs/platform/deploy.ts).\n',
-		);
-	});
-});
-describe("decision pages", () => {
-	const path = "docs/designs/decisions/meta/DL-021.md";
-	const recordPath = "docs/designs/meta/compass-architecture-lineage/design.md";
-	const source =
-		'---\nid: DL-021\ndecision: "Postgres fan-out"\nstatus: "Superseded by DL-313 (Matt, 2026-08-31)"\nrecord: ../../meta/compass-architecture-lineage/design.md\n---\n\nSee [lineage](../../meta/compass-architecture-lineage/design.md).\n';
-	const gathered = new Set([path, recordPath]);
-
-	test("renders decision fields as prose and rewrites record and body links", () => {
-		const rendered = transform(source, path, gathered);
-		expect(rendered).toContain('title: "DL-021"');
-		expect(rendered).toContain(
-			"Postgres fan-out\n\n**Status:** Superseded by DL-313 (Matt, 2026-08-31)",
-		);
-		expect(rendered).toContain(
-			"**Record:** [../../meta/compass-architecture-lineage/design.md](/designs/meta/compass-architecture-lineage/design)",
-		);
-		expect(rendered).toContain(
-			"See [lineage](/designs/meta/compass-architecture-lineage/design).",
-		);
-		expect(rendered).not.toContain("id: DL-021");
-	});
-
-	test("throws the parser's path, line, and reason for malformed decisions", () => {
-		expect(() =>
-			transform(source.replace("id: DL-021", "id: DL-022"), path, gathered),
-		).toThrow(
-			`${path}:2: id \`DL-022\` does not match file name \`DL-021.md\``,
-		);
-	});
-
-	test("builds sorted area sections with rewritten decision and record links", () => {
-		const agent = parseDecisionFile(
-			"docs/designs/decisions/agent/DL-001.md",
-			'---\nid: DL-001\ndecision: "Agent boundary"\nstatus: "Active (Matt, 2026-08-31)"\nrecord: ../../agent/contracts/design.md\n---\n',
-		);
-		const meta = parseDecisionFile(path, source);
-		if (!agent.ok || !meta.ok) throw new Error("fixture must parse");
-
-		const index = buildDecisionIndex(
-			[meta.row, agent.row],
-			new Set([path, recordPath]),
-		);
-		expect(index.indexOf("## agent")).toBeLessThan(index.indexOf("## meta"));
-		expect(index).toContain("[DL-021](/designs/decisions/meta/dl-021)");
-		expect(index).toContain(
-			"[../../meta/compass-architecture-lineage/design.md](/designs/meta/compass-architecture-lineage/design)",
+		expect(transform(src, "docs/specs/platform/docsite.md", gathered)).toBe(
+			'---\ntitle: "Docsite"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/specs/platform/docsite.md"\n---\nSee [tech](/specs/platform/technology-stack) and [deploy](https://github.com/RigelBuild/compass/blob/main/docs/specs/platform/deploy.ts).\n',
 		);
 	});
 });
@@ -568,16 +523,9 @@ describe("decision pages", () => {
 
 describe("routeSlug", () => {
 	test("maps a content-relative md path to a leading-slash route", () => {
-		expect(routeSlug("designs/repo/compass-eng-docs/design.md")).toBe(
-			"/designs/repo/compass-eng-docs/design",
+		expect(routeSlug("specs/repo/compass-eng-docs/design.md")).toBe(
+			"/specs/repo/compass-eng-docs/design",
 		);
-	});
-
-	test("keeps README and generated index on distinct Starlight routes", () => {
-		expect(routeSlug("designs/decisions/README.md")).toBe(
-			"/designs/decisions/readme",
-		);
-		expect(routeSlug("designs/decisions/index.md")).toBe("/designs/decisions");
 	});
 
 	test("lowercases the route (Starlight lowercases slugs)", () => {
@@ -590,20 +538,20 @@ describe("routeSlug", () => {
 	// becomes `compass-06` on the deployed site. routeSlug must match, or the
 	// landing-page link 404s.
 	test("slugifies a dotted directory segment like Astro (strips the dot)", () => {
-		expect(routeSlug("designs/product/compass-0.6/design.md")).toBe(
-			"/designs/product/compass-06/design",
+		expect(routeSlug("specs/product/compass-0.6/design.md")).toBe(
+			"/specs/product/compass-06/design",
 		);
 	});
 
 	test("slugifies the compass-0.5-server dotted segment", () => {
-		expect(routeSlug("designs/product/compass-0.5-server/design.md")).toBe(
-			"/designs/product/compass-05-server/design",
+		expect(routeSlug("specs/product/compass-0.5-server/design.md")).toBe(
+			"/specs/product/compass-05-server/design",
 		);
 	});
 
 	test("slugifies the compass-0.4 dotted segment", () => {
-		expect(routeSlug("designs/product/compass-0.4/design.md")).toBe(
-			"/designs/product/compass-04/design",
+		expect(routeSlug("specs/product/compass-0.4/design.md")).toBe(
+			"/specs/product/compass-04/design",
 		);
 	});
 
@@ -614,8 +562,8 @@ describe("routeSlug", () => {
 	// Astro drops a trailing `/index` segment so `.../guide/index.md` renders at
 	// `.../guide`, not `.../guide/index` (astro/dist/content/utils.js:272).
 	test("strips a trailing /index segment", () => {
-		expect(routeSlug("designs/platform/guide/index.md")).toBe(
-			"/designs/platform/guide",
+		expect(routeSlug("specs/platform/guide/index.md")).toBe(
+			"/specs/platform/guide",
 		);
 	});
 
@@ -623,8 +571,8 @@ describe("routeSlug", () => {
 	// mis-anchoring it (e.g. `/index$` without the `/`) would eat the tail of a
 	// real `myindex` page and 404 that route on the deployed site.
 	test("does not strip a segment merely ending in index", () => {
-		expect(routeSlug("designs/platform/myindex.md")).toBe(
-			"/designs/platform/myindex",
+		expect(routeSlug("specs/platform/myindex.md")).toBe(
+			"/specs/platform/myindex",
 		);
 	});
 });
@@ -644,11 +592,7 @@ describe("buildIndex", () => {
 			route: "/architecture/overview",
 			title: "Overview",
 		},
-		{
-			domain: "designs",
-			route: "/designs/repo/compass-eng-docs/design",
-			title: "Docsite",
-		},
+		{ domain: "specs", route: "/specs/product/overview", title: "Spec" },
 	];
 
 	test("emits splash frontmatter with a title", () => {
@@ -659,32 +603,22 @@ describe("buildIndex", () => {
 
 	test("links each section to its real page route with the SECTIONS label", () => {
 		const md = buildIndex(entries);
-		expect(md).toContain(
-			"- [Designs](/designs/repo/compass-eng-docs/design) — Docsite",
-		);
+		expect(md).toContain("- [Specs](/specs/product/overview) — Spec");
 		expect(md).toContain("- [Architecture](/architecture/overview) — Overview");
 		expect(md).toContain("- [Contributing](/contributing/readme) — Readme");
 	});
 
-	test("links to the generated decision index", () => {
-		const md = buildIndex(entries, "/designs/decisions");
-		expect(md).toContain(
-			"- [Design decisions](/designs/decisions) — Every decision, by area.",
-		);
-	});
-
 	test("orders the links by SECTIONS, not by entry order", () => {
 		const md = buildIndex(entries);
-		expect(md.indexOf("[Designs]")).toBeLessThan(md.indexOf("[Architecture]"));
+		expect(md.indexOf("[Specs]")).toBeLessThan(md.indexOf("[Architecture]"));
 		expect(md.indexOf("[Architecture]")).toBeLessThan(
 			md.indexOf("[Contributing]"),
 		);
 	});
 
 	test("omits a section with no gathered page", () => {
-		// specs/packages empty this run → not linked (would 404).
+		// packages empty this run → not linked (would 404).
 		const md = buildIndex(entries);
-		expect(md).not.toContain("[Specs]");
 		expect(md).not.toContain("[Packages]");
 	});
 });
@@ -707,25 +641,17 @@ function parseSidebar(module: string): SidebarGroup[] {
 
 describe("buildSidebar", () => {
 	test("emits groups in SECTIONS order regardless of input order, with SECTIONS labels", () => {
-		// All five keys, shuffled — output must be the canonical order.
+		// All sections, shuffled — output must use the canonical order.
 		const groups = parseSidebar(
-			buildSidebar([
-				"contributing",
-				"packages",
-				"architecture",
-				"specs",
-				"designs",
-			]),
+			buildSidebar(["contributing", "packages", "architecture", "specs"]),
 		);
 		expect(groups.map((g) => g.label)).toEqual([
-			"Designs",
 			"Specs",
 			"Architecture",
 			"Packages",
 			"Contributing",
 		]);
 		expect(groups.map((g) => g.items[0].autogenerate.directory)).toEqual([
-			"designs",
 			"specs",
 			"architecture",
 			"packages",
@@ -734,11 +660,10 @@ describe("buildSidebar", () => {
 	});
 
 	test("omits sections that are not present", () => {
-		const groups = parseSidebar(buildSidebar(["packages", "designs"]));
-		expect(groups.map((g) => g.label)).toEqual(["Designs", "Packages"]);
+		const groups = parseSidebar(buildSidebar(["specs"]));
+		expect(groups.map((g) => g.label)).toEqual(["Specs"]);
 		expect(groups.map((g) => g.items[0].autogenerate.directory)).toEqual([
-			"designs",
-			"packages",
+			"specs",
 		]);
 	});
 });

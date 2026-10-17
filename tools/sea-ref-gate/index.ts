@@ -2,8 +2,7 @@
 // no `SEA-NNN` issue reference. The Linear team key was renamed SEA→RIG with
 // issue numbers preserved 1:1 (SEA-1512 == RIG-1512); a one-time codemod flipped
 // every tracked ref (RIG-2804 P1). This gate keeps the boundary from silently
-// re-rotting — the same fail-closed pattern as orion-ref-gate and
-// design-ledger-gate.
+// re-rotting.
 //
 // SCOPE: the `SEA-<n>` issue-ref token ONLY. A sibling to orion-ref-gate, not an
 // extension of it: orion-ref-gate is deliberately scoped to its single token
