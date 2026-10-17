@@ -50,5 +50,4 @@ minimumReleaseAgeExcludes = [
   "@tanstack/solid-query",
   "@tanstack/query-core",
   "@rigelbuild/ref-gate",
-  "@rigelbuild/renovate-preflight",
 ]

@@ -4,12 +4,14 @@ layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
 
-# Code-free: no test files, so skip the inherited bun test task.
-workspace:
-  inheritedTasks:
-    exclude: ['test']
-
 tasks:
+  test:
+    inputs:
+      - '*.ts'
+      - '*.json'
+      - 'moon.yml'
+      - '/docs/concepts/self-host-and-managed.md'
+      - '/bun.lock'
   sea:
     command: 'GATE_ROOT=. bun node_modules/@rigelbuild/ref-gate/index.ts --config tools/ref-gates/sea.json'
     deps: ['install']
@@ -29,6 +31,6 @@ tasks:
     options:
       cache: false
   ci:
-    deps: ['check']
+    deps: ['check', 'test']
     options:
       cache: false

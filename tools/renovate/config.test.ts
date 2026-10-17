@@ -1644,15 +1644,14 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 	// The catalog-scoped soak-exemption packageRule governs ONLY catalog deps
 	// (matchManagers custom.regex + matchDepTypes workspaces.catalog), so its
 	// matchPackageNames must equal exactly the bunfig `minimumReleaseAgeExcludes`
-	// entries that ARE catalog deps — i.e. bun-types plus first-party tool pins.
-	// Solid prerelease pins are outside the catalog manager and use a separate
-	// apps/ui-scoped rule, so they do not appear in this package-name set.
+	// entries that ARE catalog deps — i.e. @types/bun, bun-types and the
+	// first-party gate pin. Solid prerelease pins are outside the catalog
+	// manager and use a separate apps/ui-scoped rule.
 	// Deriving the catalog set from the real manifest (not a hard-coded list)
 	// keeps this guard current as the migration track lands and later retires.
-	const firstPartyToolNames = [
-		"@rigelbuild/ref-gate",
-		"@rigelbuild/renovate-preflight",
-	];
+	const firstPartyToolNames = ["@rigelbuild/ref-gate"];
+	// Runs with the Renovate App token in renovate.yml, so it must stay soaked.
+	const tokenBearingPackage = "@rigelbuild/renovate-preflight";
 	const soakRule = cfg.packageRules.find(
 		(r) =>
 			r.minimumReleaseAge === null &&
@@ -1716,6 +1715,13 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 				?.filter((name) => firstPartyToolNames.includes(name))
 				.sort(),
 		).toEqual(expected);
+	});
+	test("the token-bearing preflight package keeps the release soak", () => {
+		expect(bunfigExcludes()).not.toContain(tokenBearingPackage);
+		for (const rule of cfg.packageRules) {
+			if (rule.minimumReleaseAge !== null) continue;
+			expect(rule.matchPackageNames ?? []).not.toContain(tokenBearingPackage);
+		}
 	});
 	test("RigelBuild git-ref packages bypass the release-age cooldown", () => {
 		const managers =
@@ -1798,6 +1804,15 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 		const endRel = rest.findIndex((l) => /^\s*-\s+(name|uses):/.test(l));
 		const stepBody = (endRel === -1 ? rest : rest.slice(0, endRel)).join("\n");
 		expect(/^\s*RENOVATE_TOKEN:\s*\S/m.test(stepBody)).toBe(true);
+	});
+
+	test("the preflight runs the installed package after a frozen install", () => {
+		const install = workflow.indexOf("bun install --frozen-lockfile");
+		const preflight = workflow.indexOf(
+			"bun node_modules/@rigelbuild/renovate-preflight/index.ts",
+		);
+		expect(install).toBeGreaterThanOrEqual(0);
+		expect(preflight).toBeGreaterThan(install);
 	});
 });
 

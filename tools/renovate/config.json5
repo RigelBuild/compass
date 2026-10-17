@@ -680,15 +680,11 @@
       allowedVersions: "/^v?3\\.0\\./",
     },
     {
-      // First-party package pins do not use the third-party release soak.
+      // First-party gate pins skip the soak; renovate-preflight runs with the
+      // Renovate App token, so it keeps the soak.
       matchManagers: ["custom.regex"],
       matchDepTypes: ["workspaces.catalog"],
-      matchPackageNames: [
-        "@types/bun",
-        "bun-types",
-        "@rigelbuild/ref-gate",
-        "@rigelbuild/renovate-preflight",
-      ],
+      matchPackageNames: ["@types/bun", "bun-types", "@rigelbuild/ref-gate"],
       minimumReleaseAge: null,
     },
     {
