@@ -116,36 +116,48 @@ function assertHTTPSURL(value: string, field: string): void {
 	throw new Error(`${field} must be an https:// URL`);
 }
 
-function parseGoDurationSeconds(duration: string, field: string): number {
+const GO_MAX_DURATION_NS = 2n ** 63n - 1n;
+const MIN_TOKEN_LIFETIME_NS = 600n * 1_000_000_000n;
+const DURATION_UNIT_NS: Record<string, bigint> = {
+	ns: 1n,
+	us: 1_000n,
+	µs: 1_000n,
+	μs: 1_000n,
+	ms: 1_000_000n,
+	s: 1_000_000_000n,
+	m: 60_000_000_000n,
+	h: 3_600_000_000_000n,
+};
+
+// Exact int64 nanoseconds, as Go's time.ParseDuration computes them, so the
+// range check cannot round past what the loader accepts.
+function parseGoDurationNanos(duration: string, field: string): bigint {
 	const pattern = /(?:[0-9]+(?:\.[0-9]+)?)(?:ns|us|µs|μs|ms|s|m|h)/g;
 	const pieces = duration.match(pattern);
 	if (pieces === null || pieces.join("") !== duration) {
 		throw new Error(`${field} must be a valid Go duration`);
 	}
-	const factors: Record<string, number> = {
-		ns: 1e-9,
-		us: 1e-6,
-		µs: 1e-6,
-		μs: 1e-6,
-		ms: 1e-3,
-		s: 1,
-		m: 60,
-		h: 3600,
-	};
-	let seconds = 0;
+	let nanos = 0n;
 	for (const piece of pieces) {
-		const match = /^([0-9]+(?:\.[0-9]+)?)(ns|us|µs|μs|ms|s|m|h)$/.exec(piece);
-		const amount = match?.[1];
-		const unit = match?.[2];
-		if (amount === undefined || unit === undefined) {
+		const match = /^([0-9]+)(?:\.([0-9]+))?(ns|us|µs|μs|ms|s|m|h)$/.exec(piece);
+		const whole = match?.[1];
+		const unit =
+			match?.[3] === undefined ? undefined : DURATION_UNIT_NS[match[3]];
+		if (whole === undefined || unit === undefined) {
 			throw new Error(`${field} must be a valid Go duration`);
 		}
-		seconds += Number(amount) * (factors[unit] ?? 0);
+		const frac = match?.[2] ?? "";
+		nanos +=
+			BigInt(whole) * unit +
+			(frac === "" ? 0n : (BigInt(frac) * unit) / 10n ** BigInt(frac.length));
+		if (nanos > GO_MAX_DURATION_NS) {
+			throw new Error(`${field} exceeds Go's maximum duration`);
+		}
 	}
-	if (!Number.isFinite(seconds) || seconds < 600) {
+	if (nanos < MIN_TOKEN_LIFETIME_NS) {
 		throw new Error(`${field} must be at least 600s`);
 	}
-	return seconds;
+	return nanos;
 }
 
 function validateRunnerCluster(
@@ -178,10 +190,7 @@ function validateRunnerCluster(
 		}
 	}
 	if (cluster.maxTokenLifetime !== undefined) {
-		parseGoDurationSeconds(
-			cluster.maxTokenLifetime,
-			`${field}.maxTokenLifetime`,
-		);
+		parseGoDurationNanos(cluster.maxTokenLifetime, `${field}.maxTokenLifetime`);
 	}
 }
 

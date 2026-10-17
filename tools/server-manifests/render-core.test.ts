@@ -617,6 +617,18 @@ describe("renderServerManifests", () => {
 		expect(() => rejectCluster({ maxTokenLifetime: "599s" })).toThrow(
 			"maxTokenLifetime",
 		);
+		expect(() => rejectCluster({ maxTokenLifetime: "3000000h" })).toThrow(
+			"maximum duration",
+		);
+		expect(() =>
+			rejectCluster({ maxTokenLifetime: "9223372036854775808ns" }),
+		).toThrow("maximum duration");
+		expect(() =>
+			rejectCluster({ maxTokenLifetime: "2562047h47m16.854775808s" }),
+		).toThrow("maximum duration");
+		for (const max of ["9223372036854775807ns", "2562047h47m16.854775807s"]) {
+			expect(() => rejectCluster({ maxTokenLifetime: max })).not.toThrow();
+		}
 		expect(() => rejectCluster({ maxTokenLifetime: "not a duration" })).toThrow(
 			"maxTokenLifetime",
 		);
