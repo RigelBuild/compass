@@ -61,7 +61,7 @@ function turnEndForStatus(
 /** Map an issue's server-clock state stamp into the browser clock, given the
  *  latest server-minus-browser offset. Clamped to now, so a stamp the offset
  *  cannot fully correct never reads as future. */
-export function toLocalClock(
+function toLocalClock(
 	issue: DomainIssue,
 	offsetMs: number,
 	nowMs: number,
@@ -99,7 +99,8 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 	// epoch. Both 0 means a cold start → re-read + re-tail. Never persisted.
 	let sinceSeq = 0n;
 	let instanceEpoch = 0n;
-	// Server wall time minus browser time, from the latest frame's at_unix_ms.
+	// Server wall time minus browser time. Sampled only from seq-0 control
+	// frames: those are minted at send time, a replayed event keeps its old time.
 	let clockOffsetMs = 0;
 	// Reset the moment a subscribe yields forward progress (the connection is live again).
 	const backoff = createReconnectBackoff(signal);
@@ -190,9 +191,7 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 					break;
 				}
 
-				// Every frame, the boundary included, carries server wall time; the
-				// offset maps issue state stamps into the browser clock.
-				if (resp.atUnixMs > 0n)
+				if (resp.seq === 0n && resp.atUnixMs > 0n)
 					clockOffsetMs = Number(resp.atUnixMs) - Date.now();
 
 				// The first cold-start response is the boundary frame carrying snapshot_seq;

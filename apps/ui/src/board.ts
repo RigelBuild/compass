@@ -90,9 +90,9 @@ export function cellItems(
  *  seen on a glance at the board, short enough that one move reads as motion. */
 export const ADVANCING_WINDOW_MS = 60_000;
 
-/** Whether an issue changed column within the advancing window of `nowMs`. The
- *  stream maps stamps into the browser clock; a stamp still ahead of it counts
- *  only within one window, so a bad clock can never pin a card advancing. */
+/** Whether an issue changed column within the advancing window of `nowMs`.
+ *  Expects stamps in the browser clock (the event stream maps and clamps them);
+ *  any stamp further ahead than one window is ignored rather than pinned. */
 export function isAdvancing(issue: Issue, nowMs: number): boolean {
 	const at = issue.stateChangedAtUnixMs;
 	if (at === undefined || !isActiveState(issue.state)) return false;

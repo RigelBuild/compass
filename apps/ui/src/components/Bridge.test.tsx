@@ -1224,16 +1224,26 @@ describe("Bridge advancing card", () => {
 		).toHaveLength(1);
 	});
 
+	// Timer counts are relative to the same board with no stamps, so unrelated
+	// app timers cannot move them.
+	function baselineTimers(): number {
+		mountWithStamps({});
+		const count = jest.getTimerCount();
+		cleanup();
+		return count;
+	}
+
 	test("the cue ends at the window boundary without a poll", () => {
 		jest.useFakeTimers();
 		try {
 			jest.setSystemTime(new Date(5_000_000));
+			const base = baselineTimers();
 			const container = mountWithStamps({ "ws-1022": 5_000_000 - 1_000 });
 			expect(
 				cardByLabel(container, "Issue RIG-1022, advancing"),
 			).not.toBeNull();
-			// One timer, armed for the expiry: no polling interval.
-			expect(jest.getTimerCount()).toBe(1);
+			// One extra timer, armed for the expiry: no polling interval.
+			expect(jest.getTimerCount()).toBe(base + 1);
 			jest.advanceTimersByTime(ADVANCING_WINDOW_MS - 1_001);
 			flushSync();
 			expect(
@@ -1243,7 +1253,7 @@ describe("Bridge advancing card", () => {
 			flushSync();
 			const card = cardByLabel(container, "Issue RIG-1022");
 			expect(card?.hasAttribute("data-advancing")).toBe(false);
-			expect(jest.getTimerCount()).toBe(0);
+			expect(jest.getTimerCount()).toBe(base);
 		} finally {
 			jest.useRealTimers();
 		}
@@ -1253,16 +1263,17 @@ describe("Bridge advancing card", () => {
 		jest.useFakeTimers();
 		try {
 			jest.setSystemTime(new Date(5_000_000));
+			const base = baselineTimers();
 			mountWithStamps({ "ws-1022": 5_000_000 });
-			expect(jest.getTimerCount()).toBe(1);
+			expect(jest.getTimerCount()).toBe(base + 1);
 			cleanup();
-			expect(jest.getTimerCount()).toBe(0);
+			expect(jest.getTimerCount()).toBe(base);
 		} finally {
 			jest.useRealTimers();
 		}
 	});
 
-	test("a live column move marks the card after mount", async () => {
+	test("a live issue upsert with a fresh stamp marks the card after mount", async () => {
 		const compass = createFakeCompass();
 		let store!: AppStore;
 		const { container } = render(() => {
