@@ -18,6 +18,21 @@ const TEST_JWK = {
 	e: "AQAB",
 };
 
+const PADDED_RSA_JWK = {
+	...TEST_JWK,
+	n: Buffer.concat([
+		Buffer.from([0]),
+		Buffer.from(TEST_JWK.n, "base64url"),
+	]).toString("base64url"),
+};
+
+const SHORT_P256_JWK = {
+	kty: "EC",
+	crv: "P-256",
+	x: "xlVlwWVNqy-VAUogc1Lh-cL1iv0N3qxKGNZLAcUGgg",
+	y: "66ly01W5151UW-U6UDqrPG3NJFkiDbkUgtgYOZQNYk4",
+};
+
 const values: ServerDeployValues = {
 	namespace: "compass",
 	serverImage: digest("compass-server"),
@@ -146,15 +161,21 @@ describe("renderServerManifests", () => {
 			scheme: "HTTPS",
 		});
 	});
-	test("rejects a duplicate public key across runner clusters", () => {
+	test("rejects duplicate RSA keys with a leading zero in the modulus", () => {
 		const cluster = values.runnerClusters[0];
 		if (cluster === undefined) throw new Error("cluster test value missing");
+		const jwks = (key: object) => JSON.stringify({ keys: [key] });
 		expect(() =>
 			parseServerDeployValues({
 				...values,
 				runnerClusters: [
-					cluster,
-					{ ...cluster, name: "other", issuer: "https://other.example.test" },
+					{ ...cluster, jwks: jwks(TEST_JWK) },
+					{
+						...cluster,
+						name: "other",
+						issuer: "https://other.example.test",
+						jwks: jwks(PADDED_RSA_JWK),
+					},
 				],
 			}),
 		).toThrow("same public key");
@@ -215,10 +236,10 @@ describe("renderServerManifests", () => {
 		}
 	});
 
-	test("requires runner-cluster names to be DNS labels", () => {
+	test("requires runner-cluster names to be DNS labels of at most 40 characters", () => {
 		const cluster = values.runnerClusters[0];
 		if (cluster === undefined) throw new Error("cluster test value missing");
-		for (const name of ["-leading", "trailing-", "A-upper", "a".repeat(64)]) {
+		for (const name of ["-leading", "trailing-", "A-upper", "a".repeat(41)]) {
 			expect(() =>
 				parseServerDeployValues({
 					...values,
@@ -226,6 +247,12 @@ describe("renderServerManifests", () => {
 				}),
 			).toThrow("runnerClusters[0].name");
 		}
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				runnerClusters: [{ ...cluster, name: "a".repeat(40) }],
+			}),
+		).not.toThrow();
 	});
 
 	test("changes the Server pod checksum when runner-cluster ConfigMap data changes", () => {
@@ -667,6 +694,67 @@ describe("renderServerManifests", () => {
 					...values,
 					runnerClusters: [
 						{ ...cluster, jwks: JSON.stringify({ keys: [jwk] }) },
+					],
+				}),
+			).toThrow("usable public key");
+		}
+	});
+	test("rejects EC coordinates with widths below the named curve size", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				runnerClusters: [
+					{ ...cluster, jwks: JSON.stringify({ keys: [SHORT_P256_JWK] }) },
+				],
+			}),
+		).toThrow("usable public key");
+	});
+
+	test("rejects weak Ed25519 public keys", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		const weakKeys = [
+			Buffer.alloc(32).toString("base64url"),
+			Buffer.concat([Buffer.alloc(31), Buffer.from([0x80])]).toString(
+				"base64url",
+			),
+		];
+		for (const x of weakKeys) {
+			expect(() =>
+				parseServerDeployValues({
+					...values,
+					runnerClusters: [
+						{
+							...cluster,
+							jwks: JSON.stringify({
+								keys: [{ kty: "OKP", crv: "Ed25519", x }],
+							}),
+						},
+					],
+				}),
+			).toThrow("usable public key");
+		}
+	});
+
+	test("rejects Ed25519 public keys with incorrect widths", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		for (const x of [
+			Buffer.alloc(31).toString("base64url"),
+			Buffer.alloc(33).toString("base64url"),
+		]) {
+			expect(() =>
+				parseServerDeployValues({
+					...values,
+					runnerClusters: [
+						{
+							...cluster,
+							jwks: JSON.stringify({
+								keys: [{ kty: "OKP", crv: "Ed25519", x }],
+							}),
+						},
 					],
 				}),
 			).toThrow("usable public key");

@@ -187,74 +187,128 @@ function parseGoDurationNanos(duration: string, field: string): bigint {
 	return nanos;
 }
 
-const EC_CURVES = new Set(["P-256", "P-384", "P-521"]);
+const EC_CURVE_COORDINATE_BYTES: Record<string, number> = {
+	"P-256": 32,
+	"P-384": 48,
+	"P-521": 66,
+};
+
+const WEAK_ED25519_PUBLIC_KEYS: Record<string, true> = {
+	"0000000000000000000000000000000000000000000000000000000000000000": true,
+	"0000000000000000000000000000000000000000000000000000000000000080": true,
+	"0100000000000000000000000000000000000000000000000000000000000000": true,
+	"0100000000000000000000000000000000000000000000000000000000000080": true,
+	"26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05": true,
+	"26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85": true,
+	c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a: true,
+	c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa: true,
+	ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f: true,
+	ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff: true,
+	edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f: true,
+	edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff: true,
+	eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f: true,
+	eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff: true,
+};
+
+type PublicJWK =
+	| { kty: "RSA"; n: string; e: string }
+	| { kty: "EC"; crv: string; x: string; y: string }
+	| { kty: "OKP"; crv: "Ed25519"; x: string };
+
+function parseRSAPublicJWK(
+	key: Record<string, unknown>,
+): PublicJWK | undefined {
+	const { n, e } = key;
+	if (typeof n !== "string" || n === "" || typeof e !== "string" || e === "") {
+		return undefined;
+	}
+	return { kty: "RSA", n, e };
+}
+
+function parseECPublicJWK(key: Record<string, unknown>): PublicJWK | undefined {
+	const { crv, x, y } = key;
+	if (
+		typeof crv !== "string" ||
+		!Object.hasOwn(EC_CURVE_COORDINATE_BYTES, crv) ||
+		typeof x !== "string" ||
+		x === "" ||
+		typeof y !== "string" ||
+		y === ""
+	)
+		return undefined;
+	const coordinateBytes = EC_CURVE_COORDINATE_BYTES[crv];
+	if (
+		coordinateBytes === undefined ||
+		Buffer.from(x, "base64url").length !== coordinateBytes ||
+		Buffer.from(y, "base64url").length !== coordinateBytes
+	)
+		return undefined;
+	return { kty: "EC", crv, x, y };
+}
+
+function parseEd25519PublicJWK(
+	key: Record<string, unknown>,
+): PublicJWK | undefined {
+	const { crv, x } = key;
+	if (crv !== "Ed25519" || typeof x !== "string" || x === "") return undefined;
+	const publicKeyBytes = Buffer.from(x, "base64url");
+	if (
+		publicKeyBytes.length !== 32 ||
+		Object.hasOwn(WEAK_ED25519_PUBLIC_KEYS, publicKeyBytes.toString("hex"))
+	)
+		return undefined;
+	return { kty: "OKP", crv, x };
+}
+
+function parsePublicJWK(key: unknown): PublicJWK | undefined {
+	if (!isPlainObject(key) || key.d !== undefined) return undefined;
+	switch (key.kty) {
+		case "RSA":
+			return parseRSAPublicJWK(key);
+		case "EC":
+			return parseECPublicJWK(key);
+		case "OKP":
+			return parseEd25519PublicJWK(key);
+		default:
+			return undefined;
+	}
+}
 
 // Mirrors the Server's JWKS loader, which drops private, symmetric and
 // incomplete keys and refuses to start when none remain.
 function isUsablePublicJWK(key: unknown): boolean {
-	if (!isPlainObject(key) || key.d !== undefined) return false;
-	let publicJWK:
-		| { kty: "RSA"; n: string; e: string }
-		| { kty: "EC"; crv: string; x: string; y: string }
-		| { kty: "OKP"; crv: "Ed25519"; x: string };
-	switch (key.kty) {
-		case "RSA": {
-			const n = key.n;
-			const e = key.e;
-			if (
-				typeof n !== "string" ||
-				n === "" ||
-				typeof e !== "string" ||
-				e === ""
-			)
-				return false;
-			publicJWK = { kty: "RSA", n, e };
-			break;
-		}
-		case "EC": {
-			const crv = key.crv;
-			const x = key.x;
-			const y = key.y;
-			if (
-				typeof crv !== "string" ||
-				!EC_CURVES.has(crv) ||
-				typeof x !== "string" ||
-				x === "" ||
-				typeof y !== "string" ||
-				y === ""
-			)
-				return false;
-			publicJWK = { kty: "EC", crv, x, y };
-			break;
-		}
-		case "OKP": {
-			const crv = key.crv;
-			const x = key.x;
-			if (crv !== "Ed25519" || typeof x !== "string" || x === "") return false;
-			publicJWK = { kty: "OKP", crv, x };
-			break;
-		}
-		default:
-			return false;
-	}
+	const publicJWK = parsePublicJWK(key);
+	if (publicJWK === undefined) return false;
 	try {
 		const publicKey = createPublicKey({ key: publicJWK, format: "jwk" });
-		if (
+		return !(
 			publicKey.asymmetricKeyType === "rsa" &&
 			publicKey.asymmetricKeyDetails?.modulusLength === 0
-		)
-			return false;
-		return true;
+		);
 	} catch {
 		return false;
 	}
+}
+
+function minimalBase64urlUint(value: unknown): string {
+	if (typeof value !== "string") throw new Error("invalid RSA JWK integer");
+	const bytes = Buffer.from(value, "base64url");
+	let firstNonZero = 0;
+	while (firstNonZero < bytes.length && bytes[firstNonZero] === 0) {
+		firstNonZero++;
+	}
+	return bytes.subarray(firstNonZero).toString("base64url");
 }
 
 function publicJWKThumbprint(key: Record<string, unknown>): string {
 	let canonical: string;
 	switch (key.kty) {
 		case "RSA":
-			canonical = JSON.stringify({ e: key.e, kty: key.kty, n: key.n });
+			canonical = JSON.stringify({
+				e: minimalBase64urlUint(key.e),
+				kty: key.kty,
+				n: minimalBase64urlUint(key.n),
+			});
 			break;
 		case "EC":
 			canonical = JSON.stringify({
@@ -297,7 +351,7 @@ function validateRunnerCluster(
 	index: number,
 ): string[] {
 	const field = `runnerClusters[${index}]`;
-	assertDNS1123(cluster.name, `${field}.name`);
+	assertDNS1123(cluster.name, `${field}.name`, 40);
 	assertHTTPSURL(cluster.issuer, `${field}.issuer`);
 	assertDNS1123(cluster.namespace, `${field}.namespace`);
 	assertDNS1123(cluster.serviceAccount, `${field}.serviceAccount`);
