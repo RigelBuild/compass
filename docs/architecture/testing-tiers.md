@@ -97,5 +97,5 @@ stack starts or stops Postgres.
 
 ## Related
 
-- Design record: `docs/designs/infra/ci/compass-test-harness-tiers/design.md`.
+- Design record: `RigelBuild/docs:docs/designs/compass/infra/ci/compass-test-harness-tiers/design.md`.
 - CI jobs: [Build & CI](build-and-ci.md).

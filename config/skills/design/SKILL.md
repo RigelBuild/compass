@@ -73,7 +73,9 @@ design owns supporting files, matching the layout its sibling records already
 use. **You pick that exact path and pass it in the subagent's brief** — it is the
 same path you poll for liveness, so the caller owns it, never the subagent. It is
 a committed file that ships as a PR (see **Ship it as a reviewed PR**), never a
-local scratch artifact. Four short sections:
+local scratch artifact. When the repo's `AGENTS.md` names a separate docs
+repository for design records, write the record there instead, at the path it
+gives. Four short sections:
 
 - **Problem / Intent** — what and why, 1-3 sentences.
 - **Approach** — the chosen approach; list alternatives only when the choice

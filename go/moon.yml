@@ -123,7 +123,7 @@ tasks:
     # error path with a wire-contract message (GC3), and a believed false
     # positive with no guardable shape escalates to Matt — never a file opt-out
     # or a scope-narrowing of this command (GC1). See
-    # docs/designs/repo/compass-nilaway-gating/design.md.
+    # RigelBuild/docs:docs/designs/compass/repo/compass-nilaway-gating/design.md.
     # `-include-pkgs` scopes it to first-party code, not deps/stdlib; the two
     # exclusions pair with .golangci.yml so both tools agree on what is out of
     # scope. `-exclude-errors-in-files` drops the checked-in protoc/connect

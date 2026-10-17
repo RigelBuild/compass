@@ -51,7 +51,7 @@ export const SESSION_BLOB_PUT_TIMEOUT_MS = 30_000;
  *    consumes it.
  *  - `close()` — release the underlying HTTP/2 session AND dispose the single
  *    transport-owned `ManagedRuntime` that backs the sink/spine/source lanes
- *    (design docs/designs/repo/compass-agent-effect-adoption/design.md §T5).
+ *    (design RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-adoption/design.md §T5).
  *    The composition root calls it AFTER the sink's drain barrier: the session
  *    manager keeps an idle connection alive for `idleConnectionTimeoutMs` (15
  *    minutes by default), so a self-terminating agent that only drains would

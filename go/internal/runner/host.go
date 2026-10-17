@@ -611,7 +611,7 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 // NOT be called from a caller that already holds the container lock — the
 // config worker's RefreshConfig leg calls reloadLocked directly for exactly that
 // reason (the lock is non-reentrant; calling Reload while holding it would
-// self-deadlock). See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
+// self-deadlock). See RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 func (h *agentHost) Reload(ctx context.Context, sessionID string) error {
 	// Resolve session→container under h.mu, release, take the container lock,
 	// then delegate — the resolve-then-lock protocol, mirroring Stop. A session

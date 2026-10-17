@@ -436,7 +436,7 @@ export function deriveLitellmMcpUrl(
 /**
  * Whether an OTLP trace endpoint is configured — the pre-registration gate for
  * the loop's OpenTelemetry activation (design
- * docs/designs/observability/compass-agent-loop-otel/design.md T1). Mirrors the
+ * RigelBuild/docs:docs/designs/compass/observability/compass-agent-loop-otel/design.md T1). Mirrors the
  * predicate `initTelemetryExport` applies before it registers a provider
  * (`telemetry-export.ts`): an endpoint present via
  * `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (falling back to the base
@@ -819,7 +819,7 @@ export interface MainDeps {
 	connectMcp?: (cwd: string, mcp: MountedMcp) => Promise<ConnectedMcp>;
 	/**
 	 * Loop-OpenTelemetry activation hooks (design
-	 * docs/designs/observability/compass-agent-loop-otel/design.md T1). Defaults to the
+	 * RigelBuild/docs:docs/designs/compass/observability/compass-agent-loop-otel/design.md T1). Defaults to the
 	 * reused telemetry-export module. Injectable ONLY so a test asserts the
 	 * gating/env logic without the real `initTelemetryExport` — it registers a
 	 * live global provider + OTLP exporter with no teardown (F3), so it must never

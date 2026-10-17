@@ -40,7 +40,7 @@ var ErrStackVersionMismatch = errors.New("embedded stack version mismatch")
 
 // DefaultAgentImage is the canonical agent image ref the embedded stack runs
 // when no --image/$COMPASS_AGENT_IMAGE is supplied. The ref is locked
-// (docs/designs/infra/ci/compass-agent-image-publish/design.md, "the name/tag
+// (RigelBuild/docs:docs/designs/compass/infra/ci/compass-agent-image-publish/design.md, "the name/tag
 // contract"); the native app does not bundle the image (DL-112) —
 // compass-stack podman-pulls it from GHCR at first run.
 const DefaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"

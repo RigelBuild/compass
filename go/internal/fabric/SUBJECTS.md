@@ -2,7 +2,7 @@
 
 The written spec for the NATS eventing substrate: the five subject grammars, the
 dead-letter subject, and the JetStream stream/consumer configuration. Set by
-`docs/designs/infra/runtime/compass-managed-multitenancy/design.md` §T3/§Q3;
+`RigelBuild/docs:docs/designs/compass/infra/runtime/compass-managed-multitenancy/design.md` §T3/§Q3;
 this file is the operational restatement that later tasks build against, and
 `package fabric` is its only implementation.
 

@@ -262,8 +262,8 @@ type RoutingFabric interface {
 
 // TranscriptStore is the durable transcript surface the hub's commit arm writes
 // a relayed transcript_entry frame to, the durable counterpart to the
-// loss-tolerant Deliver path (docs/designs/agent/compass-agent-session-persistence/design.md;
-// flush timing in docs/designs/agent/compass-transcript-flush-off-commit.md).
+// loss-tolerant Deliver path (RigelBuild/docs:docs/designs/compass/agent/compass-agent-session-persistence/design.md;
+// flush timing in RigelBuild/docs:docs/designs/compass/agent/compass-transcript-flush-off-commit.md).
 // *store.Store implements it; the hub depends
 // only on this narrow surface (pattern: DeliveryStore). Wired via
 // SetTranscriptStore after construction so no NewHub caller signature changes,

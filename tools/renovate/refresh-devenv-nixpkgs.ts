@@ -8,7 +8,7 @@
 // flake-parity gate does not red on the skew. The biome catalog pin follows
 // Meissa, not this channel; refresh-biome-catalog.ts runs after this task.
 
-// Design: docs/designs/repo/compass-renovate-migration.md. Invoked by the
+// Design: RigelBuild/docs:docs/designs/compass/repo/compass-renovate-migration.md. Invoked by the
 // devenv-nixpkgs packageRule (config.json5), allowlisted in bot-config.json5.
 // Requires nix + devenv + bun + network on the runner PATH (the workflow
 // provisions nix and the vendored devenv shim; no ambient devenv on compass CI).

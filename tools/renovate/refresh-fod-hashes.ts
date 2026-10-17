@@ -40,7 +40,7 @@
 
 // Requires nix + bun + git on PATH and network; nix build fetches the toolchains
 // itself. Provided by renovate.yml's bootstrap.
-// Design: docs/designs/repo/compass-renovate-migration.md
+// Design: RigelBuild/docs:docs/designs/compass/repo/compass-renovate-migration.md
 
 // Exit 0 = hash(es) refreshed (or a no-op branch); 1 = a step failed (no got:,
 // a missing marker) — fail loud, never ship a half-refreshed pin set.

@@ -19,7 +19,7 @@ and the agent process is the third tier.
   lifecycle from the outside, secrets brokering, and the forge relay; it holds
   the sole forge write credential as a `server_only` declared secret. It places
   nothing and knows no internals of how sessions are packed.
-  (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:174-179`,
+  (`RigelBuild/docs:docs/designs/compass/infra/runtime/compass-elastic-session-runtime/design.md:174-179`,
   ledger DL-052)
 - **Runner — the host substrate.** It provisions, starts, and stops session
   environments: `SpecBuilder` maps each provision request to a complete
@@ -45,7 +45,7 @@ and the agent process is the third tier.
   (push-guard/git-guard as `tool_call` gates) and MCP servers that run
   session-long in-heap. Density comes from suspending idle sessions, not from
   shrinking the per-process footprint.
-  (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:180-184`)
+  (`RigelBuild/docs:docs/designs/compass/infra/runtime/compass-elastic-session-runtime/design.md:180-184`)
 
 ## The privileged-op path
 
