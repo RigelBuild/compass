@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# A full-sweep failure backstop. Its pure action decision and tests ride the
+# bun CI group; the workflow job routes push and schedule results to one issue.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'oss', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

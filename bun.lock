@@ -137,6 +137,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/ci-backstop": {
+      "name": "@compass/ci-backstop",
+      "bin": {
+        "ci-backstop": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/ci-matrix": {
       "name": "@compass/ci-matrix",
       "bin": {
@@ -580,6 +590,8 @@
     "@compass/agent-image-index": ["@compass/agent-image-index@workspace:tools/agent-image-index"],
 
     "@compass/bun-audit-gate": ["@compass/bun-audit-gate@workspace:tools/bun-audit-gate"],
+
+    "@compass/ci-backstop": ["@compass/ci-backstop@workspace:tools/ci-backstop"],
 
     "@compass/ci-matrix": ["@compass/ci-matrix@workspace:tools/ci-matrix"],
 
