@@ -9,11 +9,21 @@ package server
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
@@ -717,4 +727,100 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 	if ghResolved.author != forge.Provider(primary) {
 		t.Fatal("GitHub coordinate author is not the primaryClient passed to buildForgeWriteService")
 	}
+}
+
+func installServerHTTPSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := provider.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+	return recorder
+}
+
+func requireOneClientSpan(t *testing.T, recorder *tracetest.SpanRecorder) {
+	t.Helper()
+	var count int
+	for _, span := range recorder.Ended() {
+		if span.SpanKind() == trace.SpanKindClient {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("client spans = %d, want 1", count)
+	}
+}
+
+func TestForgeHTTPClientRecordsClientSpan(t *testing.T) {
+	t.Run("default transport", func(t *testing.T) {
+		recorder := installServerHTTPSpanRecorder(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		t.Cleanup(server.Close)
+		client, err := forgeHTTPClient("")
+		if err != nil {
+			t.Fatalf("forgeHTTPClient: %v", err)
+		}
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+		if err != nil {
+			t.Fatalf("building GET request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatalf("closing response body: %v", err)
+		}
+		requireOneClientSpan(t, recorder)
+	})
+
+	t.Run("custom CA transport", func(t *testing.T) {
+		recorder := installServerHTTPSpanRecorder(t)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		t.Cleanup(server.Close)
+		caPath := filepath.Join(t.TempDir(), "ca.pem")
+		if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+			t.Fatalf("writing CA bundle: %v", err)
+		}
+		client, err := forgeHTTPClient(caPath)
+		if err != nil {
+			t.Fatalf("forgeHTTPClient: %v", err)
+		}
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+		if err != nil {
+			t.Fatalf("building GET request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatalf("closing response body: %v", err)
+		}
+		requireOneClientSpan(t, recorder)
+	})
+}
+
+func TestTracedHTTPClientRecordsClientSpan(t *testing.T) {
+	recorder := installServerHTTPSpanRecorder(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	t.Cleanup(server.Close)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("building GET request: %v", err)
+	}
+	response, err := tracedHTTPClient(time.Second).Do(request)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("closing response body: %v", err)
+	}
+	requireOneClientSpan(t, recorder)
 }

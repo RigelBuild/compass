@@ -208,3 +208,43 @@ func TestS3ConfigPresent(t *testing.T) {
 		t.Fatal("endpoint+bucket: want present")
 	}
 }
+
+type countingRoundTripper struct {
+	requests int
+	inner    http.RoundTripper
+}
+
+func (rt *countingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.requests++
+	return rt.inner.RoundTrip(req)
+}
+
+func TestS3ObjectStoreWrapTransport(t *testing.T) {
+	fake := newFakeS3()
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parsing test server URL: %v", err)
+	}
+
+	transport := &countingRoundTripper{inner: http.DefaultTransport}
+	objectStore, err := NewS3ObjectStore(S3Config{
+		Endpoint: endpoint.Host,
+		Bucket:   "archive",
+		Region:   "us-east-1",
+		UseTLS:   false,
+		WrapTransport: func(http.RoundTripper) http.RoundTripper {
+			return transport
+		},
+	})
+	if err != nil {
+		t.Fatalf("constructing S3 object store: %v", err)
+	}
+	if err := objectStore.PutSegment(t.Context(), "sessions/s1/1-1.jsonl", []byte("{}")); err != nil {
+		t.Fatalf("PutSegment: %v", err)
+	}
+	if transport.requests != 1 {
+		t.Fatalf("wrapped transport requests = %d, want 1", transport.requests)
+	}
+}
