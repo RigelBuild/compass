@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -214,7 +214,7 @@ func (g *AdminGate) check(ctx context.Context, procedure string) error {
 	case adminOnly:
 		caller, ok := CallerFrom(ctx)
 		if !ok || caller != g.admin {
-			return connect.NewError(connect.CodePermissionDenied, errAdminOnly)
+			return connect.NewError(connect.CodePermissionDenied, errAdminOnly.Error()).WithCause(errAdminOnly)
 		}
 		return nil
 	case authenticatedOpen:
@@ -223,5 +223,5 @@ func (g *AdminGate) check(ctx context.Context, procedure string) error {
 	// Fail closed: privilege is a sealed two-variant sum, so this fallthrough is
 	// unreachable today, but an authorization gate must deny — not admit — any
 	// class it does not explicitly recognize.
-	return connect.NewError(connect.CodePermissionDenied, errAdminOnly)
+	return connect.NewError(connect.CodePermissionDenied, errAdminOnly.Error()).WithCause(errAdminOnly)
 }

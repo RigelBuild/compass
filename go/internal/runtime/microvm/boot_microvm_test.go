@@ -25,8 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
 )
@@ -330,10 +328,10 @@ func TestInGuestEgressArmAutoloadsNetfilter(t *testing.T) {
 	// armTimeout (guestd/supervisor.go), not this deadline.
 	provCtx, provCancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer provCancel()
-	if _, provErr := client.Provision(provCtx, connect.NewRequest(&compassv1.ProvisionRequest{
+	if _, provErr := client.Provision(provCtx, &compassv1.ProvisionRequest{
 		NftScript:      armRuleset,
 		DefaultExecUid: 1000,
-	})); provErr != nil {
+	}); provErr != nil {
 		t.Fatalf("Provision with non-empty nft_script failed — in-guest netfilter "+
 			"autoload broken (RIG-3028): %v\n%s", provErr, vm.Diagnostics())
 	}

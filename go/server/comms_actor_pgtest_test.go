@@ -15,7 +15,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -40,7 +41,7 @@ func newTLSCommsClient(t *testing.T, addr string, pool *x509.CertPool) compassv1
 		Protocols:       p,
 	}
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewCommsServiceClient(&http.Client{Transport: tr}, "https://"+addr)
+	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "https://"+addr, connecthttp.WithReadMaxBytes(0))))
 }
 
 // TestNetworkDoorCommsActorIsBearerCallerNotAdmin pins invariant #2 (the
@@ -98,7 +99,7 @@ func TestNetworkDoorCommsActorIsBearerCallerNotAdmin(t *testing.T) {
 	// CreateChannelGroup is authenticatedOpen, so the member's valid bearer clears
 	// the bearer resolve and the admin gate and reaches the comms handler.
 	client := newTLSCommsClient(t, addr, pool)
-	req := connect.NewRequest(&compassv1.CreateChannelGroupRequest{Name: "caller-space"})
+	req := &compassv1.CreateChannelGroupRequest{Name: "caller-space"}
 	req.Header().Set("Authorization", "Bearer "+memberTok)
 	rctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -107,7 +108,7 @@ func TestNetworkDoorCommsActorIsBearerCallerNotAdmin(t *testing.T) {
 		t.Fatalf("member bearer CreateChannelGroup over the network door: %v", err)
 	}
 
-	owner := resp.Msg.GetGroup().GetOwnerUserId()
+	owner := resp.GetGroup().GetOwnerUserId()
 	if owner != string(member.ID) {
 		t.Fatalf("channel group owner = %q, want the member caller %q (buildNetworkServer must thread withCaller's comms actor through the mounted interceptor chain, not fall back to the admin %q)", owner, member.ID, admin.ID)
 	}

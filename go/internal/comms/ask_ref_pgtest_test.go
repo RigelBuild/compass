@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -35,16 +35,16 @@ func TestAskRefRoundTrip(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	const want = "rigelbuild/compass#12"
-	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	posted, err := svc.PostMessage(WithActor(ctx, author.ID), &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      []*compassv1.MessageBlock{askWithRef("RigelBuild/Compass#12")},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	ask := posted.Msg.GetMessage().GetBlocks()[0].GetAsk()
+	ask := posted.GetMessage().GetBlocks()[0].GetAsk()
 	if ask.GetRef() != want {
 		t.Fatalf("posted ask ref = %q, want %q", ask.GetRef(), want)
 	}
@@ -53,13 +53,13 @@ func TestAskRefRoundTrip(t *testing.T) {
 	// ref off the ListMessages wire read.
 	refsOnWire := func() (askRef, answerRef string) {
 		t.Helper()
-		list, err := svc.ListMessages(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+		list, err := svc.ListMessages(WithActor(ctx, author.ID), &compassv1.ListMessagesRequest{
 			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
-		}))
+		})
 		if err != nil {
 			t.Fatalf("ListMessages: %v", err)
 		}
-		for _, m := range list.Msg.GetMessages() {
+		for _, m := range list.GetMessages() {
 			for _, b := range m.GetBlocks() {
 				if a := b.GetAsk(); a.GetAskId() == ask.GetAskId() {
 					askRef = a.GetRef()
@@ -75,10 +75,10 @@ func TestAskRefRoundTrip(t *testing.T) {
 		t.Fatalf("ListMessages ask ref = %q, want %q", got, want)
 	}
 
-	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), &compassv1.RespondToAskRequest{
 		AskId:   ask.GetAskId(),
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"yes"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 	askRef, answerRef := refsOnWire()
@@ -100,20 +100,20 @@ func TestPostMessageRejectsMalformedAskRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	_, err = svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	_, err = svc.PostMessage(WithActor(ctx, author.ID), &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      []*compassv1.MessageBlock{askWithRef("see RIG-12")},
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "post an ask with a malformed ref")
-	list, err := svc.ListMessages(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	list, err := svc.ListMessages(WithActor(ctx, author.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
-	if len(list.Msg.GetMessages()) != 0 {
-		t.Fatalf("ListMessages = %d messages after a refused post, want 0", len(list.Msg.GetMessages()))
+	if len(list.GetMessages()) != 0 {
+		t.Fatalf("ListMessages = %d messages after a refused post, want 0", len(list.GetMessages()))
 	}
 }

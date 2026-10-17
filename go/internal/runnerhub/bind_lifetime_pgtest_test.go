@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/jackc/pgx/v5"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -49,10 +49,10 @@ func TestBindLifetimeHandlerTenantScopedAndFailsClosed(t *testing.T) {
 	foreign := newRawRunnerClient(t, url, "foreign-runner-tok")
 
 	bind := func(client interface {
-		BindLifetime(ctx context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest]) (*connect.Response[compassv1internal.BindLifetimeResponse], error)
+		BindLifetime(ctx context.Context, req *compassv1internal.BindLifetimeRequest) (*compassv1internal.BindLifetimeResponse, error)
 	}, container, session string,
 	) error {
-		_, err := client.BindLifetime(ctx, connect.NewRequest(&compassv1internal.BindLifetimeRequest{ContainerName: container, SessionId: session}))
+		_, err := client.BindLifetime(ctx, &compassv1internal.BindLifetimeRequest{ContainerName: container, SessionId: session})
 		return err
 	}
 

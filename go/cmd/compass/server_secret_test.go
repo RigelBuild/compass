@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -26,13 +24,13 @@ type fakeServerSecrets struct {
 	gotAuth string
 }
 
-func (f *fakeServerSecrets) ListServerSecrets(_ context.Context, req *connect.Request[compassv1.ListServerSecretsRequest]) (*connect.Response[compassv1.ListServerSecretsResponse], error) {
+func (f *fakeServerSecrets) ListServerSecrets(_ context.Context, req *compassv1.ListServerSecretsRequest) (*compassv1.ListServerSecretsResponse, error) {
 	f.gotAuth = req.Header().Get("Authorization")
 	list := f.list
 	if list == nil {
 		list = &compassv1.ListServerSecretsResponse{}
 	}
-	return connect.NewResponse(list), nil
+	return list, nil
 }
 
 // startFakeServerSecretsServer stands up the fake SecretsService over a

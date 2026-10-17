@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/otelconnect"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -179,7 +179,7 @@ func TestRelayCommsCallLogCarriesServerSpan(t *testing.T) {
 	server.Start()
 	t.Cleanup(server.Close)
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
-	_, err = client.RelayCommsCall(t.Context(), connect.NewRequest(&compassv1internal.RelayCommsCallRequest{SessionId: "sess-1"}))
+	_, err = client.RelayCommsCall(t.Context(), &compassv1internal.RelayCommsCallRequest{SessionId: "sess-1"})
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("RelayCommsCall error = %v, want FailedPrecondition", err)
 	}
@@ -229,7 +229,10 @@ func TestPublishEventsHubDeliverLogHasNoStreamTrace(t *testing.T) {
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
 	ctx, span := otel.Tracer("runnerhub.trace-test").Start(t.Context(), "publish-events-test")
 	defer span.End()
-	publish := client.PublishEvents(ctx)
+	publish, err := client.PublishEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "sess-1",
@@ -316,7 +319,10 @@ func TestRunnerHubStreamsStripWorkSpanAndRetainStreamMetrics(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
 
-	publish := client.PublishEvents(t.Context())
+	publish, err := client.PublishEvents(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "unmapped-session",
@@ -333,7 +339,10 @@ func TestRunnerHubStreamsStripWorkSpanAndRetainStreamMetrics(t *testing.T) {
 	assertNoSpanAtBindingCall(t, bindings, "resolve")
 
 	bindings.seedBinding("lost-session", testAgentAccount, testRunnerID)
-	sessions := client.Sessions(t.Context())
+	sessions, err := client.Sessions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	loopErr := make(chan error, 1)
 	go runnerSessionsLoopWithNotFound(sessions, loopErr)
 	waitRouterAttached(t, hub)
@@ -344,7 +353,7 @@ func TestRunnerHubStreamsStripWorkSpanAndRetainStreamMetrics(t *testing.T) {
 		t.Fatalf("NotFound binding call = %q, want tenant", got)
 	}
 	assertNoSpanAtBindingCall(t, bindings, "tenant")
-	if err := sessions.CloseRequest(); err != nil {
+	if err := sessions.CloseSend(); err != nil {
 		t.Fatalf("Sessions.CloseRequest: %v", err)
 	}
 	if err := recvLoopErr(t, loopErr); err != nil {

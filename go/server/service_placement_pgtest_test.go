@@ -23,7 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	"github.com/jackc/pgx/v5"
 
@@ -147,13 +148,13 @@ func TestStartAgentSessionWithBackfilledPlacementRecordsSession(t *testing.T) {
 		 SELECT $1, '', $2, a.tenant_id FROM accounts a WHERE a.id = $1`,
 		string(f.agentID), fakeContainer)
 
-	resp, err := f.client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	resp, err := f.client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: fakeContainer,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("StartAgentSession on a backfilled placement = %v, want success (a pre-upgrade container must stay Startable)", err)
 	}
-	if got := resp.Msg.GetSessionId(); got != fakeSessionID {
+	if got := resp.GetSessionId(); got != fakeSessionID {
 		t.Fatalf("session id = %q, want %q (the Runner's answer)", got, fakeSessionID)
 	}
 
@@ -195,9 +196,9 @@ func TestStartAgentSessionStopsTheSessionItCannotRecord(t *testing.T) {
 
 	// No placement is seeded, so the post-relay AgentForContainer read fails
 	// after the Runner has started the agent.
-	_, err := f.client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	_, err := f.client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: fakeContainer,
-	}))
+	})
 	if err == nil {
 		t.Fatal("StartAgentSession on an unplaced container = success, want an error")
 	}
@@ -241,9 +242,9 @@ func TestStartAgentSessionRollbackStopIsBounded(t *testing.T) {
 	// timeout here rather than stalling the whole suite.
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+		_, err := f.client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{
 			ContainerName: fakeContainer,
-		}))
+		})
 		done <- err
 	}()
 
@@ -279,11 +280,11 @@ func TestProvisionAgentWorkspaceRecordsPlacementNamingServingRunner(t *testing.T
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 
-	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-1"}))
+	resp, err := f.client.ProvisionAgentWorkspace(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-1"})
 	if err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
-	if got := resp.Msg.GetContainerName(); got != fakeContainer {
+	if got := resp.GetContainerName(); got != fakeContainer {
 		t.Fatalf("container name = %q, want %q (the Runner's answer)", got, fakeContainer)
 	}
 
@@ -305,13 +306,13 @@ func TestProvisionAgentWorkspaceRecordsPlacementNamingServingRunner(t *testing.T
 		t.Fatalf("placement container = %q, want %q", got.ContainerName, fakeContainer)
 	}
 
-	startResp, err := f.client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	startResp, err := f.client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: fakeContainer,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("StartAgentSession after Provision = %v, want success", err)
 	}
-	if owner := sessionOwner(t, ctx, f.dsn, startResp.Msg.GetSessionId()); owner != string(f.agentID) {
+	if owner := sessionOwner(t, ctx, f.dsn, startResp.GetSessionId()); owner != string(f.agentID) {
 		t.Fatalf("session owner = %q, want %q", owner, f.agentID)
 	}
 }
@@ -344,8 +345,8 @@ func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/withpersona", ClientRequestId: "prov-persona",
-		Persona: "CLIENT-INJECTED-EVIL"})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/withpersona", ClientRequestId: "prov-persona",
+		Persona: "CLIENT-INJECTED-EVIL"}); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 
@@ -382,8 +383,8 @@ func TestProvisionAgentWorkspaceOverwritesRoleFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/withrole", ClientRequestId: "prov-role",
-		Role: "client-injected-evil"})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/withrole", ClientRequestId: "prov-role",
+		Role: "client-injected-evil"}); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 
@@ -412,7 +413,7 @@ func TestProvisionAgentWorkspaceUnresolvedHandleIsNotFound(t *testing.T) {
 	}
 
 	for _, handle := range []string{"atlas", "nobody/atlas", "admin/nobody", "admin/admin", "/atlas", "admin/"} {
-		_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: "prov-miss"}))
+		_, err := f.client.ProvisionAgentWorkspace(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: "prov-miss"})
 		if code := connect.CodeOf(err); code != connect.CodeNotFound {
 			t.Fatalf("ProvisionAgentWorkspace(%q) code = %v, want CodeNotFound", handle, code)
 		}
@@ -439,7 +440,7 @@ func TestProvisionAgentWorkspaceRelaysResolvedAccountID(t *testing.T) {
 	ctx := context.Background() // the test root context
 	f.runner.forget()           // discard the attach probe
 
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-relay"})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-relay"}); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 	cmd := f.runner.provisionEnvelope(t)
@@ -541,15 +542,19 @@ func attachRecordingRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, re
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	rc := compassv1internalconnect.NewRunnerServiceClient(
+	rc := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: tr}, srv.URL,
-		connect.WithInterceptors(runnerBearer(fakeRunnerToken)),
-	)
-	if _, err := rc.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: fakeRunnerID})); err != nil {
+		connecthttp.WithReadMaxBytes(0),
+	), runnerBearer(fakeRunnerToken),
+	))
+	if _, err := rc.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: fakeRunnerID}); err != nil {
 		t.Fatalf("Enroll = %v, want success", err)
 	}
 
-	stream := rc.Sessions(ctx)
+	stream, err := rc.Sessions(ctx)
+	if err != nil {
+		return nil
+	}
 	loopDone := make(chan error, 1)
 	go rec.serve(stream, loopDone)
 	t.Cleanup(func() {
@@ -563,7 +568,7 @@ func attachRecordingRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, re
 		// the server's Sessions handler detaches the router — the seam test's
 		// proven teardown. (Cancelling ctx alone does not unblock a client-side
 		// Receive already parked on the HTTP/2 body.)
-		if err := stream.CloseRequest(); err != nil {
+		if err := stream.CloseSend(); err != nil {
 			t.Errorf("CloseRequest = %v", err)
 		}
 		if err := <-loopDone; err != nil {

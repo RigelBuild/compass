@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
@@ -46,11 +44,11 @@ func TestEmbeddedPostgresSmoke(t *testing.T) {
 
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().GetServerInfo(rctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	resp, err := f.Compass().GetServerInfo(rctx, &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("authed GetServerInfo over the embedded postgres: %v", err)
 	}
-	if resp.Msg.GetVersion() == "" {
+	if resp.GetVersion() == "" {
 		t.Fatal("GetServerInfo returned an empty version")
 	}
 

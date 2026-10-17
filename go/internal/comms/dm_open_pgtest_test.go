@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/jackc/pgx/v5"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -32,14 +32,14 @@ func TestOpenDMSameOwnerCreatesDMChannel(t *testing.T) {
 	alice := mustAgent(t, st, owner.ID, "alice")
 	bob := mustAgent(t, st, owner.ID, "bob")
 
-	resp, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	resp, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM = %v, want success", err)
 	}
-	if !resp.Msg.GetCreated() {
+	if !resp.GetCreated() {
 		t.Fatalf("created = false, want true on a first open")
 	}
-	ch := resp.Msg.GetChannel()
+	ch := resp.GetChannel()
 	if ch.GetName() != "dm:alice:bob" {
 		t.Fatalf("channel name = %q, want dm:alice:bob (deterministic sorted-handle)", ch.GetName())
 	}
@@ -72,13 +72,13 @@ func TestOpenDMSurvivesOwnerHandleRename(t *testing.T) {
 	alice := mustAgent(t, st, owner.ID, "alice")
 	bob := mustAgent(t, st, owner.ID, "bob")
 
-	first, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+	first, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{
 		PeerHandle: bob.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("OpenDM before owner rename: %v", err)
 	}
-	original := first.Msg.GetChannel()
+	original := first.GetChannel()
 	if original.GetName() != store.DMChannelName(alice.Handle, bob.Handle) {
 		t.Fatalf("initial DM name = %q, want %q", original.GetName(), store.DMChannelName(alice.Handle, bob.Handle))
 	}
@@ -87,18 +87,18 @@ func TestOpenDMSurvivesOwnerHandleRename(t *testing.T) {
 		t.Fatalf("RenameHandle(owner): %v", err)
 	}
 
-	second, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+	second, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{
 		PeerHandle: bob.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("OpenDM after owner rename: %v", err)
 	}
-	if second.Msg.GetCreated() || second.Msg.GetChannel().GetId() != original.GetId() {
+	if second.GetCreated() || second.GetChannel().GetId() != original.GetId() {
 		t.Fatalf("OpenDM after owner rename = (id %q, created %t), want original channel %q resumed",
-			second.Msg.GetChannel().GetId(), second.Msg.GetCreated(), original.GetId())
+			second.GetChannel().GetId(), second.GetCreated(), original.GetId())
 	}
-	if second.Msg.GetChannel().GetName() != original.GetName() {
-		t.Fatalf("agent DM name after owner rename = %q, want unchanged %q", second.Msg.GetChannel().GetName(), original.GetName())
+	if second.GetChannel().GetName() != original.GetName() {
+		t.Fatalf("agent DM name after owner rename = %q, want unchanged %q", second.GetChannel().GetName(), original.GetName())
 	}
 }
 
@@ -110,33 +110,33 @@ func TestOpenOwnerAgentDMSurvivesOwnerHandleRename(t *testing.T) {
 	owner := mustUser(t, st, "owner-before")
 	agent := mustAgent(t, st, owner.ID, "agent")
 
-	first, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+	first, err := svc.OpenDM(WithActor(ctx, owner.ID), &compassv1.OpenDMRequest{
 		PeerHandle: agent.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("OpenDM before owner rename: %v", err)
 	}
-	original := first.Msg.GetChannel()
-	if !first.Msg.GetCreated() {
+	original := first.GetChannel()
+	if !first.GetCreated() {
 		t.Fatal("first owner-agent OpenDM reported created=false")
 	}
 
 	if _, _, err := st.RenameHandle(ctx, owner.ID, "owner-after"); err != nil {
 		t.Fatalf("RenameHandle(owner): %v", err)
 	}
-	second, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+	second, err := svc.OpenDM(WithActor(ctx, owner.ID), &compassv1.OpenDMRequest{
 		PeerHandle: agent.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("OpenDM after owner rename: %v", err)
 	}
-	if second.Msg.GetCreated() || second.Msg.GetChannel().GetId() != original.GetId() {
+	if second.GetCreated() || second.GetChannel().GetId() != original.GetId() {
 		t.Fatalf("OpenDM after owner rename = (id %q, created %t), want original channel %q resumed",
-			second.Msg.GetChannel().GetId(), second.Msg.GetCreated(), original.GetId())
+			second.GetChannel().GetId(), second.GetCreated(), original.GetId())
 	}
-	if second.Msg.GetChannel().GetName() != store.DMChannelName("owner-after", agent.Handle) {
+	if second.GetChannel().GetName() != store.DMChannelName("owner-after", agent.Handle) {
 		t.Fatalf("owner-agent DM name after owner rename = %q, want %q",
-			second.Msg.GetChannel().GetName(), store.DMChannelName("owner-after", agent.Handle))
+			second.GetChannel().GetName(), store.DMChannelName("owner-after", agent.Handle))
 	}
 }
 
@@ -159,7 +159,7 @@ func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
 	}
 
 	peerHandle := "b/y"
-	_, unknownErr := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "ghost"}))
+	_, unknownErr := svc.OpenDM(WithActor(ctx, agentA.ID), &compassv1.OpenDMRequest{PeerHandle: "ghost"})
 	connectNotFoundFor(t, unknownErr, "ghost", "OpenDM(unknown handle)")
 
 	openDone := make(chan error, 1)
@@ -214,7 +214,7 @@ func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
 		t.Fatalf("timed out waiting for directed-approval delete transaction: %v", ctx.Err())
 	}
 	go func() {
-		_, err := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peerHandle}))
+		_, err := svc.OpenDM(WithActor(ctx, agentA.ID), &compassv1.OpenDMRequest{PeerHandle: peerHandle})
 		openDone <- err
 	}()
 
@@ -259,12 +259,12 @@ func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
 }
 
 type openDMResult struct {
-	response *connect.Response[compassv1.OpenDMResponse]
+	response *compassv1.OpenDMResponse
 	err      error
 }
 
 type revokePeerResult struct {
-	response *connect.Response[compassv1.RevokePeerResponse]
+	response *compassv1.RevokePeerResponse
 	err      error
 }
 
@@ -332,9 +332,9 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 	}
 
 	go func() {
-		response, err := svc.OpenDM(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.OpenDMRequest{
+		response, err := svc.OpenDM(WithActor(ctx, caller.ID), &compassv1.OpenDMRequest{
 			PeerHandle: ownerB.Handle + "/" + peer.Handle,
-		}))
+		})
 		openDone <- openDMResult{response: response, err: err}
 		close(openFinished)
 	}()
@@ -345,9 +345,9 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 	}
 
 	go func() {
-		response, err := svc.RevokePeer(WithActor(ctx, ownerA.ID), connect.NewRequest(&compassv1.RevokePeerRequest{
+		response, err := svc.RevokePeer(WithActor(ctx, ownerA.ID), &compassv1.RevokePeerRequest{
 			PeerHandle: ownerB.Handle,
-		}))
+		})
 		revokeDone <- revokePeerResult{response: response, err: err}
 		close(revokeFinished)
 	}()
@@ -384,7 +384,7 @@ func TestOpenDMRevokeWaitsForOpenDMCommit(t *testing.T) {
 	}
 	assertRevokeDeleted(t, revoked.response, revoked.err)
 
-	assertDMSurvivesRevoke(t, ctx, st, ownerA.ID, ownerB.ID, store.ChannelID(opened.response.Msg.GetChannel().GetId()), wantName, caller.ID, peer.ID)
+	assertDMSurvivesRevoke(t, ctx, st, ownerA.ID, ownerB.ID, store.ChannelID(opened.response.GetChannel().GetId()), wantName, caller.ID, peer.ID)
 }
 
 // waitForPeeringLockWait polls, inside the deleting transaction, until OpenDM blocks on its row lock.
@@ -496,16 +496,16 @@ func assertDMSurvivesRevoke(t *testing.T, ctx context.Context, st *store.Store, 
 }
 
 // assertCreatedDM fails unless OpenDM succeeded and created a DM with the wanted name.
-func assertCreatedDM(t *testing.T, response *connect.Response[compassv1.OpenDMResponse], err error, wantName string) {
+func assertCreatedDM(t *testing.T, response *compassv1.OpenDMResponse, err error, wantName string) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("OpenDM while peered: %v", err)
 	}
-	if response == nil || response.Msg.GetChannel() == nil {
+	if response == nil || response.GetChannel() == nil {
 		t.Fatal("OpenDM returned no channel")
 	}
-	if !response.Msg.GetCreated() || response.Msg.GetChannel().GetName() != wantName {
-		t.Fatalf("OpenDM = created %v name %q, want created %v name %q", response.Msg.GetCreated(), response.Msg.GetChannel().GetName(), true, wantName)
+	if !response.GetCreated() || response.GetChannel().GetName() != wantName {
+		t.Fatalf("OpenDM = created %v name %q, want created %v name %q", response.GetCreated(), response.GetChannel().GetName(), true, wantName)
 	}
 }
 
@@ -527,12 +527,12 @@ func ensureHostDMGroup(t *testing.T, ctx context.Context, st *store.Store, host 
 }
 
 // assertRevokeDeleted fails unless RevokePeer succeeded and reports the peering deleted.
-func assertRevokeDeleted(t *testing.T, response *connect.Response[compassv1.RevokePeerResponse], err error) {
+func assertRevokeDeleted(t *testing.T, response *compassv1.RevokePeerResponse, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("RevokePeer after OpenDM commit: %v", err)
 	}
-	if response == nil || !response.Msg.GetDeleted() {
+	if response == nil || !response.GetDeleted() {
 		t.Fatal("RevokePeer deleted = false, want true")
 	}
 }
@@ -569,25 +569,25 @@ func TestOpenDMReopenResumesSameChannel(t *testing.T) {
 	alice := mustAgent(t, st, owner.ID, "alice")
 	bob := mustAgent(t, st, owner.ID, "bob")
 
-	first, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	first, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(alice->bob) = %v, want success", err)
 	}
-	if !first.Msg.GetCreated() {
+	if !first.GetCreated() {
 		t.Fatalf("first open created = false, want true")
 	}
 
 	// Reverse order (bob opens with alice): same deterministic name, so it must
 	// resume the same channel, not create a second.
-	second, err := svc.OpenDM(WithActor(ctx, bob.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "alice"}))
+	second, err := svc.OpenDM(WithActor(ctx, bob.ID), &compassv1.OpenDMRequest{PeerHandle: "alice"})
 	if err != nil {
 		t.Fatalf("OpenDM(bob->alice) = %v, want success", err)
 	}
-	if second.Msg.GetCreated() {
+	if second.GetCreated() {
 		t.Fatalf("reopen created = true, want false (resume)")
 	}
-	if second.Msg.GetChannel().GetId() != first.Msg.GetChannel().GetId() {
-		t.Fatalf("reopen channel id = %q, want the first open's %q", second.Msg.GetChannel().GetId(), first.Msg.GetChannel().GetId())
+	if second.GetChannel().GetId() != first.GetChannel().GetId() {
+		t.Fatalf("reopen channel id = %q, want the first open's %q", second.GetChannel().GetId(), first.GetChannel().GetId())
 	}
 }
 
@@ -599,7 +599,7 @@ func TestOpenDMUnknownHandleIsNotFound(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	alice := mustAgent(t, st, owner.ID, "alice")
 
-	_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "ghost"}))
+	_, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "ghost"})
 	connectNotFoundFor(t, err, "ghost", "OpenDM(unknown handle)")
 }
 
@@ -616,7 +616,7 @@ func TestOpenDMCrossOwnerIsIndistinguishableNotFound(t *testing.T) {
 	assertSameMiss := func() {
 		t.Helper()
 		for _, peer := range []string{"other/foreign", "other/ghost"} {
-			_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peer}))
+			_, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: peer})
 			connectNotFoundFor(t, err, peer, "OpenDM("+peer+")")
 		}
 	}
@@ -640,11 +640,11 @@ func TestOpenDMCrossOwnerMutualPeeringUsesStableNameAndHome(t *testing.T) {
 		}
 	}
 
-	first, err := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "dm-owner-b/agent-b"}))
+	first, err := svc.OpenDM(WithActor(ctx, agentA.ID), &compassv1.OpenDMRequest{PeerHandle: "dm-owner-b/agent-b"})
 	if err != nil {
 		t.Fatalf("OpenDM(agent-a->agent-b): %v", err)
 	}
-	channel := first.Msg.GetChannel()
+	channel := first.GetChannel()
 	lo, hi := string(agentA.ID), string(agentB.ID)
 	if lo > hi {
 		lo, hi = hi, lo
@@ -652,8 +652,8 @@ func TestOpenDMCrossOwnerMutualPeeringUsesStableNameAndHome(t *testing.T) {
 	if got, want := channel.GetName(), "xdm:"+lo+":"+hi; got != want {
 		t.Fatalf("cross-owner DM name = %q, want %q", got, want)
 	}
-	if !first.Msg.GetCreated() || channel.GetKind() != compassv1.ChannelKind_CHANNEL_KIND_DM {
-		t.Fatalf("first open = created %v kind %v, want created DM", first.Msg.GetCreated(), channel.GetKind())
+	if !first.GetCreated() || channel.GetKind() != compassv1.ChannelKind_CHANNEL_KIND_DM {
+		t.Fatalf("first open = created %v kind %v, want created DM", first.GetCreated(), channel.GetKind())
 	}
 	host := min(ownerA.ID, ownerB.ID)
 	groups, err := st.ListChannelGroups(ctx, host)
@@ -676,12 +676,12 @@ func TestOpenDMCrossOwnerMutualPeeringUsesStableNameAndHome(t *testing.T) {
 		}
 	}
 
-	second, err := svc.OpenDM(WithActor(ctx, agentB.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "dm-owner-a/agent-a"}))
+	second, err := svc.OpenDM(WithActor(ctx, agentB.ID), &compassv1.OpenDMRequest{PeerHandle: "dm-owner-a/agent-a"})
 	if err != nil {
 		t.Fatalf("OpenDM(agent-b->agent-a): %v", err)
 	}
-	if second.Msg.GetCreated() || second.Msg.GetChannel().GetId() != channel.GetId() {
-		t.Fatalf("reverse open = created %v channel %q, want resume %q", second.Msg.GetCreated(), second.Msg.GetChannel().GetId(), channel.GetId())
+	if second.GetCreated() || second.GetChannel().GetId() != channel.GetId() {
+		t.Fatalf("reverse open = created %v channel %q, want resume %q", second.GetCreated(), second.GetChannel().GetId(), channel.GetId())
 	}
 }
 
@@ -697,16 +697,16 @@ func TestOpenDMUserCallerMayAddressPeeredOwner(t *testing.T) {
 		}
 	}
 
-	resp, err := svc.OpenDM(WithActor(ctx, ownerA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "dm-human-owner-b/dm-human-peer"}))
+	resp, err := svc.OpenDM(WithActor(ctx, ownerA.ID), &compassv1.OpenDMRequest{PeerHandle: "dm-human-owner-b/dm-human-peer"})
 	if err != nil {
 		t.Fatalf("OpenDM(user->peered agent): %v", err)
 	}
-	if !resp.Msg.GetCreated() {
+	if !resp.GetCreated() {
 		t.Fatal("OpenDM(user->peered agent) created = false, want true")
 	}
 	for _, member := range []store.AccountID{ownerA.ID, ownerB.ID, peer.ID} {
-		if !containsString(resp.Msg.GetChannel().GetMemberAccountIds(), string(member)) {
-			t.Errorf("DM members %v omit %q", resp.Msg.GetChannel().GetMemberAccountIds(), member)
+		if !containsString(resp.GetChannel().GetMemberAccountIds(), string(member)) {
+			t.Errorf("DM members %v omit %q", resp.GetChannel().GetMemberAccountIds(), member)
 		}
 	}
 }
@@ -727,7 +727,7 @@ func TestOpenDMRejectsUnpeeredCoMemberAndRevokedPeer(t *testing.T) {
 	}
 	assertOpenNotFound := func(handle string) {
 		t.Helper()
-		_, err := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: handle}))
+		_, err := svc.OpenDM(WithActor(ctx, agentA.ID), &compassv1.OpenDMRequest{PeerHandle: handle})
 		connectCodeIs(t, err, connect.CodeNotFound, "OpenDM("+handle+")")
 		ce, ok := errors.AsType[*connect.Error](err)
 		if !ok || ce.Message() != notFoundFor(handle) {
@@ -746,7 +746,7 @@ func TestOpenDMRejectsUnpeeredCoMemberAndRevokedPeer(t *testing.T) {
 			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
 		}
 	}
-	opened, err := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "dm-revoke-owner-b/dm-revoke-agent-b"}))
+	opened, err := svc.OpenDM(WithActor(ctx, agentA.ID), &compassv1.OpenDMRequest{PeerHandle: "dm-revoke-owner-b/dm-revoke-agent-b"})
 	if err != nil {
 		t.Fatalf("OpenDM after peering: %v", err)
 	}
@@ -763,13 +763,13 @@ func TestOpenDMRejectsUnpeeredCoMemberAndRevokedPeer(t *testing.T) {
 		}
 		found := false
 		for _, channel := range channels {
-			if channel.ID == store.ChannelID(opened.Msg.GetChannel().GetId()) {
+			if channel.ID == store.ChannelID(opened.GetChannel().GetId()) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("ListChannels(%q) omits existing DM %q after revoke", viewer, opened.Msg.GetChannel().GetId())
+			t.Errorf("ListChannels(%q) omits existing DM %q after revoke", viewer, opened.GetChannel().GetId())
 		}
 	}
 	if !containsAccount(shared.MemberAccountIDs, agentB.ID) {
@@ -789,11 +789,11 @@ func TestOpenDMCrossOwnerNameSurvivesHandleReclaim(t *testing.T) {
 			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
 		}
 	}
-	oldDM, err := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "dm-reclaim-owner-b/dm-reclaim-agent-b"}))
+	oldDM, err := svc.OpenDM(WithActor(ctx, agentA.ID), &compassv1.OpenDMRequest{PeerHandle: "dm-reclaim-owner-b/dm-reclaim-agent-b"})
 	if err != nil {
 		t.Fatalf("OpenDM before reclaim: %v", err)
 	}
-	oldMembers := append([]string(nil), oldDM.Msg.GetChannel().GetMemberAccountIds()...)
+	oldMembers := append([]string(nil), oldDM.GetChannel().GetMemberAccountIds()...)
 
 	if err := st.WithTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, "UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(ownerA.ID), "dm-reclaim-owner-a-old")
@@ -812,19 +812,19 @@ func TestOpenDMCrossOwnerNameSurvivesHandleReclaim(t *testing.T) {
 		}
 	}
 
-	newDM, err := svc.OpenDM(WithActor(ctx, reclaimedAgent.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "dm-reclaim-owner-b/dm-reclaim-agent-b"}))
+	newDM, err := svc.OpenDM(WithActor(ctx, reclaimedAgent.ID), &compassv1.OpenDMRequest{PeerHandle: "dm-reclaim-owner-b/dm-reclaim-agent-b"})
 	if err != nil {
 		t.Fatalf("OpenDM after reclaim: %v", err)
 	}
-	if !newDM.Msg.GetCreated() || newDM.Msg.GetChannel().GetId() == oldDM.Msg.GetChannel().GetId() {
-		t.Fatalf("reclaimed owner's open = created %v channel %q; want a new channel, not old %q", newDM.Msg.GetCreated(), newDM.Msg.GetChannel().GetId(), oldDM.Msg.GetChannel().GetId())
+	if !newDM.GetCreated() || newDM.GetChannel().GetId() == oldDM.GetChannel().GetId() {
+		t.Fatalf("reclaimed owner's open = created %v channel %q; want a new channel, not old %q", newDM.GetCreated(), newDM.GetChannel().GetId(), oldDM.GetChannel().GetId())
 	}
-	newMembers := newDM.Msg.GetChannel().GetMemberAccountIds()
+	newMembers := newDM.GetChannel().GetMemberAccountIds()
 	wantMembers := []string{string(reclaimedAgent.ID), string(reclaimer.ID), string(agentB.ID), string(ownerB.ID)}
 	if !sameStringSet(newMembers, wantMembers) {
 		t.Fatalf("new DM members = %v, want %v", newMembers, wantMembers)
 	}
-	after, err := st.GetChannel(ctx, store.ChannelID(oldDM.Msg.GetChannel().GetId()))
+	after, err := st.GetChannel(ctx, store.ChannelID(oldDM.GetChannel().GetId()))
 	if err != nil {
 		t.Fatalf("GetChannel(old DM): %v", err)
 	}
@@ -874,7 +874,7 @@ func TestOpenDMMalformedQualifierIsNotFound(t *testing.T) {
 	mustAgent(t, st, owner.ID, "bob")
 
 	for _, peer := range []string{"/bob", "owner/bob/x", "owner/", "/"} {
-		_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peer}))
+		_, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: peer})
 		connectCodeIs(t, err, connect.CodeNotFound, "OpenDM("+peer+")")
 		if ce, ok := errors.AsType[*connect.Error](err); !ok || ce.Message() != notFoundFor(peer) {
 			t.Fatalf("OpenDM(%q) error = %v, want message %q naming the submitted handle", peer, err, notFoundFor(peer))
@@ -890,7 +890,7 @@ func TestOpenDMSelfIsInvalidArgument(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	alice := mustAgent(t, st, owner.ID, "alice")
 
-	_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "alice"}))
+	_, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "alice"})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "OpenDM(self handle)")
 }
 
@@ -916,11 +916,11 @@ func TestOpenDMEmitsChannelChangedOnCreate(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, alice.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	resp, err := h.svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	resp, err := h.svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM: %v", err)
 	}
-	wantID := resp.Msg.GetChannel().GetId()
+	wantID := resp.GetChannel().GetId()
 
 	got := awaitFirst(t, events)
 	cc := got.GetChannelChanged()
@@ -981,25 +981,25 @@ func TestOpenDMDoubleHyphenHandlesResolveDistinctChannels(t *testing.T) {
 	c := mustAgent(t, st, owner.ID, "c")
 
 	// Pair {a, b--c}.
-	first, err := svc.OpenDM(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "b--c"}))
+	first, err := svc.OpenDM(WithActor(ctx, a.ID), &compassv1.OpenDMRequest{PeerHandle: "b--c"})
 	if err != nil {
 		t.Fatalf("OpenDM(a->b--c) = %v, want success", err)
 	}
 	// Pair {a--b, c} — a DIFFERENT unordered pair. Must mint its OWN channel, not
 	// resume the first pair's.
-	second, err := svc.OpenDM(WithActor(ctx, ab.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "c"}))
+	second, err := svc.OpenDM(WithActor(ctx, ab.ID), &compassv1.OpenDMRequest{PeerHandle: "c"})
 	if err != nil {
 		t.Fatalf("OpenDM(a--b->c) = %v, want success", err)
 	}
-	if !second.Msg.GetCreated() {
+	if !second.GetCreated() {
 		t.Fatalf("second pair created = false, want true (a distinct pair must mint its own DM, not resume)")
 	}
-	if second.Msg.GetChannel().GetId() == first.Msg.GetChannel().GetId() {
-		t.Fatalf("the two distinct pairs collided onto one channel %q — DMChannelName is not injective", first.Msg.GetChannel().GetId())
+	if second.GetChannel().GetId() == first.GetChannel().GetId() {
+		t.Fatalf("the two distinct pairs collided onto one channel %q — DMChannelName is not injective", first.GetChannel().GetId())
 	}
 	// And the first DM's membership is uncorrupted: exactly a + b--c (+ their
 	// owner), never the second pair's ab or c.
-	m := first.Msg.GetChannel().GetMemberAccountIds()
+	m := first.GetChannel().GetMemberAccountIds()
 	if !containsString(m, string(a.ID)) || !containsString(m, string(bc.ID)) {
 		t.Fatalf("first DM members = %v, want its own pair a=%s and b--c=%s", m, a.ID, bc.ID)
 	}
@@ -1023,14 +1023,14 @@ func TestOpenDMResumeEmitsNoChannelChanged(t *testing.T) {
 	mustAgent(t, h.store, owner.ID, "bob")
 
 	// Create the DM first (drains the create event out of the way).
-	created, err := h.svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	created, err := h.svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(create): %v", err)
 	}
-	dmID := created.Msg.GetChannel().GetId()
+	dmID := created.GetChannel().GetId()
 
 	// Resume the SAME pair — must emit nothing.
-	if _, err := h.svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"})); err != nil {
+	if _, err := h.svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"}); err != nil {
 		t.Fatalf("OpenDM(resume): %v", err)
 	}
 
@@ -1060,17 +1060,17 @@ func TestRenameReclaimsSameOwnerDMWithoutSharingHistory(t *testing.T) {
 	original := mustAgent(t, st, owner.ID, "alice")
 	bob := mustAgent(t, st, owner.ID, "bob")
 
-	first, err := svc.OpenDM(WithActor(ctx, original.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	first, err := svc.OpenDM(WithActor(ctx, original.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(original -> bob): %v", err)
 	}
-	oldID := store.ChannelID(first.Msg.GetChannel().GetId())
-	if _, err := svc.PostMessage(WithActor(ctx, original.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	oldID := store.ChannelID(first.GetChannel().GetId())
+	if _, err := svc.PostMessage(WithActor(ctx, original.ID), &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(oldID)},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
 		CreateTopic: true,
 		Blocks:      textBlocks("private history"),
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("PostMessage(original DM): %v", err)
 	}
 
@@ -1086,12 +1086,12 @@ func TestRenameReclaimsSameOwnerDMWithoutSharingHistory(t *testing.T) {
 	}
 	reclaimer := mustAgent(t, st, owner.ID, "alice")
 
-	newDM, err := svc.OpenDM(WithActor(ctx, reclaimer.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	newDM, err := svc.OpenDM(WithActor(ctx, reclaimer.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(reclaimer -> bob): %v", err)
 	}
-	if !newDM.Msg.GetCreated() || newDM.Msg.GetChannel().GetId() == string(oldID) {
-		t.Fatalf("reclaimer DM = (id %q, created %v), want a new channel distinct from %q", newDM.Msg.GetChannel().GetId(), newDM.Msg.GetCreated(), oldID)
+	if !newDM.GetCreated() || newDM.GetChannel().GetId() == string(oldID) {
+		t.Fatalf("reclaimer DM = (id %q, created %v), want a new channel distinct from %q", newDM.GetChannel().GetId(), newDM.GetCreated(), oldID)
 	}
 	oldChannel, err := st.GetChannel(ctx, oldID)
 	if err != nil {
@@ -1108,12 +1108,12 @@ func TestRenameReclaimsSameOwnerDMWithoutSharingHistory(t *testing.T) {
 		t.Fatalf("reclaimer can read old DM history: %+v", reclaimedMessages)
 	}
 
-	resumed, err := svc.OpenDM(WithActor(ctx, original.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	resumed, err := svc.OpenDM(WithActor(ctx, original.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(renamed original -> bob): %v", err)
 	}
-	if resumed.Msg.GetCreated() || resumed.Msg.GetChannel().GetId() != string(oldID) {
-		t.Fatalf("renamed original DM = (id %q, created %v), want resume of %q", resumed.Msg.GetChannel().GetId(), resumed.Msg.GetCreated(), oldID)
+	if resumed.GetCreated() || resumed.GetChannel().GetId() != string(oldID) {
+		t.Fatalf("renamed original DM = (id %q, created %v), want resume of %q", resumed.GetChannel().GetId(), resumed.GetCreated(), oldID)
 	}
 	if bob.ID == reclaimer.ID {
 		t.Fatal("test setup returned duplicate account ids")
@@ -1129,24 +1129,24 @@ func TestOpenDMPostAndReadBothParties(t *testing.T) {
 	alice := mustAgent(t, st, owner.ID, "alice")
 	bob := mustAgent(t, st, owner.ID, "bob")
 
-	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(alice->bob) = %v, want success", err)
 	}
-	dmID := opened.Msg.GetChannel().GetId()
+	dmID := opened.GetChannel().GetId()
 
 	post := func(actor store.AccountID, text string) string {
 		t.Helper()
-		resp, err := svc.PostMessage(WithActor(ctx, actor), connect.NewRequest(&compassv1.PostMessageRequest{
+		resp, err := svc.PostMessage(WithActor(ctx, actor), &compassv1.PostMessageRequest{
 			Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
 			Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 			CreateTopic: true,
 			Blocks:      textBlocks(text),
-		}))
+		})
 		if err != nil {
 			t.Fatalf("PostMessage(%s): %v", text, err)
 		}
-		return resp.Msg.GetMessage().GetId()
+		return resp.GetMessage().GetId()
 	}
 	aliceMsg := post(alice.ID, "from alice")
 	bobMsg := post(bob.ID, "from bob")
@@ -1154,14 +1154,14 @@ func TestOpenDMPostAndReadBothParties(t *testing.T) {
 	// Each party's read of the DM must surface BOTH posts — its own and the peer's.
 	readSees := func(reader store.AccountID) map[string]bool {
 		t.Helper()
-		listed, err := svc.ListMessages(WithActor(ctx, reader), connect.NewRequest(&compassv1.ListMessagesRequest{
+		listed, err := svc.ListMessages(WithActor(ctx, reader), &compassv1.ListMessagesRequest{
 			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: dmID},
-		}))
+		})
 		if err != nil {
 			t.Fatalf("ListMessages(%s): %v", reader, err)
 		}
 		ids := map[string]bool{}
-		for _, m := range listed.Msg.GetMessages() {
+		for _, m := range listed.GetMessages() {
 			ids[m.GetId()] = true
 		}
 		return ids
@@ -1188,32 +1188,32 @@ func TestOpenDMThirdPartySameOwnerCannotSee(t *testing.T) {
 	bob := mustAgent(t, st, owner.ID, "bob")
 	carol := mustAgent(t, st, owner.ID, "carol")
 
-	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(alice->bob) = %v, want success", err)
 	}
-	dmID := opened.Msg.GetChannel().GetId()
+	dmID := opened.GetChannel().GetId()
 
-	posted, err := svc.PostMessage(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	posted, err := svc.PostMessage(WithActor(ctx, alice.ID), &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic: true,
 		Blocks:      textBlocks("private to alice and bob"),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostMessage(alice): %v", err)
 	}
-	msgID := posted.Msg.GetMessage().GetId()
+	msgID := posted.GetMessage().GetId()
 
 	list := func(reader store.AccountID) []*compassv1.Message {
 		t.Helper()
-		listed, err := svc.ListMessages(WithActor(ctx, reader), connect.NewRequest(&compassv1.ListMessagesRequest{
+		listed, err := svc.ListMessages(WithActor(ctx, reader), &compassv1.ListMessagesRequest{
 			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: dmID},
-		}))
+		})
 		if err != nil {
 			t.Fatalf("ListMessages(%s): %v", reader, err)
 		}
-		return listed.Msg.GetMessages()
+		return listed.GetMessages()
 	}
 
 	// Canary: bob, a real party, DOES read the post — proves it was delivered,
@@ -1245,15 +1245,15 @@ func TestConvertBareThirdPartyAddOnDMIsInvalidArgument(t *testing.T) {
 	mustAgent(t, st, owner.ID, "t15bob")
 	mustAgent(t, st, owner.ID, "t15carol")
 
-	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "t15bob"}))
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "t15bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(t15alice->t15bob) = %v, want success", err)
 	}
 
-	_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:        opened.Msg.GetChannel().GetId(),
+	_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
+		ChannelId:        opened.GetChannel().GetId(),
 		AddMemberHandles: []string{"t15carol"},
-	}))
+	})
 	connectCodeIs(t, addErr, connect.CodeInvalidArgument, "bare third-party add on a DM without a convert name")
 }
 
@@ -1270,20 +1270,20 @@ func TestConvertThirdPartyAddSucceedsWithAllEffects(t *testing.T) {
 	bob := mustAgent(t, st, owner.ID, "t15bob")
 	carol := mustAgent(t, st, owner.ID, "t15carol")
 
-	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "t15bob"}))
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), &compassv1.OpenDMRequest{PeerHandle: "t15bob"})
 	if err != nil {
 		t.Fatalf("OpenDM(t15alice->t15bob) = %v, want success", err)
 	}
 
-	resp, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:          opened.Msg.GetChannel().GetId(),
+	resp, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
+		ChannelId:          opened.GetChannel().GetId(),
 		AddMemberHandles:   []string{"t15carol"},
 		ConvertChannelName: "t15-war-room",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(convert) = %v, want success", err)
 	}
-	ch := resp.Msg.GetChannel()
+	ch := resp.GetChannel()
 	if ch.GetKind() != compassv1.ChannelKind_CHANNEL_KIND_CHANNEL {
 		t.Fatalf("kind = %v, want CHANNEL_KIND_CHANNEL after convert", ch.GetKind())
 	}
@@ -1313,22 +1313,22 @@ func TestConvertChannelNameIsNoOpOnNonDM(t *testing.T) {
 	owner := mustUser(t, st, "t15owner")
 	newcomer := mustUser(t, st, "t15newcomer")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "t15-room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel = %v, want success", err)
 	}
 
-	resp, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:          created.Msg.GetChannel().GetId(),
+	resp, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
+		ChannelId:          created.GetChannel().GetId(),
 		AddMemberHandles:   []string{"t15newcomer"},
 		ConvertChannelName: "t15-ignored",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(add + convert name on non-DM) = %v, want success (name ignored, not an error)", err)
 	}
-	ch := resp.Msg.GetChannel()
+	ch := resp.GetChannel()
 	if ch.GetName() != "t15-room" {
 		t.Fatalf("name = %q, want t15-room unchanged (convert_channel_name is a no-op on a non-DM)", ch.GetName())
 	}
@@ -1347,7 +1347,7 @@ func TestRenameReclaimsOwnerAgentDMWithoutResume(t *testing.T) {
 	ctx := t.Context()
 	owner := mustUser(t, st, "probe-owner")
 	alice := mustAgent(t, st, owner.ID, "alice")
-	first, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "alice"}))
+	first, err := svc.OpenDM(WithActor(ctx, owner.ID), &compassv1.OpenDMRequest{PeerHandle: "alice"})
 	if err != nil {
 		t.Fatalf("OpenDM(owner -> alice): %v", err)
 	}
@@ -1355,18 +1355,18 @@ func TestRenameReclaimsOwnerAgentDMWithoutResume(t *testing.T) {
 		t.Fatalf("RenameHandle(alice): %v", err)
 	}
 	reclaimer := mustAgent(t, st, owner.ID, "alice")
-	second, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "alice"}))
+	second, err := svc.OpenDM(WithActor(ctx, owner.ID), &compassv1.OpenDMRequest{PeerHandle: "alice"})
 	if err != nil {
 		t.Fatalf("OpenDM(owner -> reclaimed alice): %v", err)
 	}
-	if second.Msg.GetChannel().GetId() == first.Msg.GetChannel().GetId() {
-		t.Fatalf("owner's DM with the reclaimed handle resumed the renamed agent's channel %q", first.Msg.GetChannel().GetId())
+	if second.GetChannel().GetId() == first.GetChannel().GetId() {
+		t.Fatalf("owner's DM with the reclaimed handle resumed the renamed agent's channel %q", first.GetChannel().GetId())
 	}
-	if containsString(second.Msg.GetChannel().GetMemberAccountIds(), string(alice.ID)) {
-		t.Fatalf("new DM members %v include the renamed agent", second.Msg.GetChannel().GetMemberAccountIds())
+	if containsString(second.GetChannel().GetMemberAccountIds(), string(alice.ID)) {
+		t.Fatalf("new DM members %v include the renamed agent", second.GetChannel().GetMemberAccountIds())
 	}
-	if !containsString(second.Msg.GetChannel().GetMemberAccountIds(), string(reclaimer.ID)) {
-		t.Fatalf("new DM members %v omit the reclaimer", second.Msg.GetChannel().GetMemberAccountIds())
+	if !containsString(second.GetChannel().GetMemberAccountIds(), string(reclaimer.ID)) {
+		t.Fatalf("new DM members %v omit the reclaimer", second.GetChannel().GetMemberAccountIds())
 	}
 }
 
@@ -1377,18 +1377,18 @@ func TestRenameOwnerResumesOwnerAgentDM(t *testing.T) {
 	ctx := t.Context()
 	owner := mustUser(t, st, "rename-owner")
 	mustAgent(t, st, owner.ID, "helper")
-	first, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "helper"}))
+	first, err := svc.OpenDM(WithActor(ctx, owner.ID), &compassv1.OpenDMRequest{PeerHandle: "helper"})
 	if err != nil {
 		t.Fatalf("OpenDM(owner -> helper): %v", err)
 	}
 	if _, _, err := st.RenameHandle(ctx, owner.ID, "rename-owner-2"); err != nil {
 		t.Fatalf("RenameHandle(owner): %v", err)
 	}
-	again, err := svc.OpenDM(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "helper"}))
+	again, err := svc.OpenDM(WithActor(ctx, owner.ID), &compassv1.OpenDMRequest{PeerHandle: "helper"})
 	if err != nil {
 		t.Fatalf("OpenDM(renamed owner -> helper): %v", err)
 	}
-	if again.Msg.GetCreated() || again.Msg.GetChannel().GetId() != first.Msg.GetChannel().GetId() {
-		t.Fatalf("renamed owner DM = (id %q, created %v), want resume of %q", again.Msg.GetChannel().GetId(), again.Msg.GetCreated(), first.Msg.GetChannel().GetId())
+	if again.GetCreated() || again.GetChannel().GetId() != first.GetChannel().GetId() {
+		t.Fatalf("renamed owner DM = (id %q, created %v), want resume of %q", again.GetChannel().GetId(), again.GetCreated(), first.GetChannel().GetId())
 	}
 }

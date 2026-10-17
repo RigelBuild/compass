@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -69,14 +69,14 @@ func TestGetRosterNeighborhoodScope(t *testing.T) {
 	child := mustChildAgent(t, st, owner.ID, "child", mid.ID) // child of mid
 	niece := mustChildAgent(t, st, owner.ID, "niece", sib.ID) // NOT in mid's neighborhood
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_NEIGHBORHOOD,
 		VantageHandle: mid.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(neighborhood): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	for _, want := range []store.Account{root, mid, sib, child} {
 		if _, ok := got[string(want.ID)]; !ok {
 			t.Errorf("neighborhood missing %q (%s)", want.Handle, want.ID)
@@ -100,14 +100,14 @@ func TestGetRosterSubtreeScope(t *testing.T) {
 	child := mustChildAgent(t, st, owner.ID, "child", mid.ID)
 	grand := mustChildAgent(t, st, owner.ID, "grand", child.ID)
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
 		VantageHandle: mid.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(subtree): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	for _, want := range []store.Account{mid, child, grand} {
 		if _, ok := got[string(want.ID)]; !ok {
 			t.Errorf("subtree missing %q (%s)", want.Handle, want.ID)
@@ -133,14 +133,14 @@ func TestGetRosterOwnerScope(t *testing.T) {
 	a2 := mustChildAgent(t, st, owner.ID, "a2", a1.ID)
 	foreign := mustAgent(t, st, other.ID, "foreign")
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: a1.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(owner): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	for _, want := range []store.Account{a1, a2} {
 		if _, ok := got[string(want.ID)]; !ok {
 			t.Errorf("owner scope missing %q (%s)", want.Handle, want.ID)
@@ -171,10 +171,10 @@ func TestGetRosterInvisibleVantageNotFound(t *testing.T) {
 	// victim: victim is not visible to it (not owned, no shared channel).
 	intruder := mustAgent(t, st, intruderOwner.ID, "intruder")
 
-	_, err := svc.GetRoster(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	_, err := svc.GetRoster(WithActor(ctx, intruder.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: "owner/victim", // resolves (not viewer-scoped), then invisibility → NOT_FOUND
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeNotFound, "invisible vantage → NOT_FOUND, not empty success")
 }
 
@@ -193,14 +193,14 @@ func TestGetRosterOfflineDefaultAndPresenceJoin(t *testing.T) {
 		// offline deliberately absent from the map.
 	}})
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: working.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(presence): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	if p := got[string(working.ID)].GetPresence(); p != compassv1.AgentPresence_AGENT_PRESENCE_WORKING {
 		t.Errorf("working agent presence = %v, want WORKING", p)
 	}
@@ -224,14 +224,14 @@ func TestGetRosterEmptyVantageDefaultsToAgentCaller(t *testing.T) {
 	_ = mustChildAgent(t, st, owner.ID, "child", parent.ID)
 
 	// parent calls with an EMPTY vantage → its own subtree, rooted at itself.
-	resp, err := svc.GetRoster(WithActor(ctx, parent.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, parent.ID), &compassv1.GetRosterRequest{
 		Scope: compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
 		// VantageHandle deliberately empty.
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(empty vantage, agent caller): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	if _, ok := got[string(parent.ID)]; !ok {
 		t.Fatalf("empty-vantage subtree must root at the caller itself; got %v", got)
 	}
@@ -253,14 +253,14 @@ func TestGetRosterActivityRoundTripsThroughDurableStore(t *testing.T) {
 		t.Fatalf("SetActivity: %v", err)
 	}
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: busy.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(activity): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	if a := got[string(busy.ID)].GetActivity(); a != "reviewing PR #1090" {
 		t.Errorf("busy activity = %q, want the durable string", a)
 	}
@@ -297,14 +297,14 @@ func TestGetRosterActivitySurvivesSimulatedRestart(t *testing.T) {
 	// presence projection empty (nothing re-enrolled yet).
 	fresh := NewComms(t.Context(), st, newBus(t), nil, owner.ID)
 
-	resp, err := fresh.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := fresh.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: agent.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(after restart): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	entry := got[string(agent.ID)]
 	if entry == nil {
 		t.Fatalf("agent missing from roster after restart")
@@ -338,14 +338,14 @@ func TestSetStatusAsAccountTruncatesOverCap(t *testing.T) {
 		t.Errorf("returned activity len = %d runes, want cap %d", len([]rune(returned)), activityCap)
 	}
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: agent.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(after set_status): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	landed := got[string(agent.ID)].GetActivity()
 	if len([]rune(landed)) != activityCap {
 		t.Errorf("activity landed in table = %d runes, want the truncated cap %d", len([]rune(landed)), activityCap)
@@ -433,14 +433,14 @@ func TestGetRosterJoinsEachPresenceStatePerAgent(t *testing.T) {
 		// offline deliberately absent from the map → OFFLINE default.
 	}})
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
 		VantageHandle: treetop.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(presence states): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	want := map[store.Account]compassv1.AgentPresence{
 		working: compassv1.AgentPresence_AGENT_PRESENCE_WORKING,
 		idle:    compassv1.AgentPresence_AGENT_PRESENCE_IDLE,
@@ -470,14 +470,14 @@ func TestGetRosterNilPresenceSourceDefaultsAllOffline(t *testing.T) {
 	treetop := mustAgent(t, st, owner.ID, "treetop")
 	child := mustChildAgent(t, st, owner.ID, "child", treetop.ID)
 
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
 		VantageHandle: treetop.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(nil presence): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	for _, acc := range []store.Account{treetop, child} {
 		e, ok := got[string(acc.ID)]
 		if !ok {
@@ -512,14 +512,14 @@ func TestGetRosterClipsCallerInvisibleTreeMember(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	resp, err := svc.GetRoster(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, caller.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: "owner/treetop",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(clip invisible member): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	if _, ok := got[string(visible.ID)]; !ok {
 		t.Fatalf("canary: shared-channel agent %q must be present", visible.Handle)
 	}
@@ -545,14 +545,14 @@ func TestGetRosterAgentCallerSeesSameOwnerGrandchild(t *testing.T) {
 		compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
 		compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 	} {
-		resp, err := svc.GetRoster(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+		resp, err := svc.GetRoster(WithActor(ctx, supervisor.ID), &compassv1.GetRosterRequest{
 			Scope:         scope,
 			VantageHandle: supervisor.Handle,
-		}))
+		})
 		if err != nil {
 			t.Fatalf("GetRoster(%v): %v", scope, err)
 		}
-		got := rosterByID(resp.Msg.GetEntries())
+		got := rosterByID(resp.GetEntries())
 		for _, want := range []store.Account{manager, grandchild} {
 			if _, ok := got[string(want.ID)]; !ok {
 				t.Errorf("%v: supervisor missing same-owner %q", scope, want.Handle)
@@ -585,14 +585,14 @@ func TestGetRosterAgentCallerSeesSameOwnerSiblingsWithoutSharedChannel(t *testin
 	foreignOwner := mustUser(t, st, "roster-foreign-owner")
 	foreign := mustAgent(t, st, foreignOwner.ID, "roster-foreign")
 
-	resp, err := svc.GetRoster(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, caller.ID), &compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
 		VantageHandle: caller.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster(agent caller, owner scope): %v", err)
 	}
-	got := rosterByID(resp.Msg.GetEntries())
+	got := rosterByID(resp.GetEntries())
 	if _, ok := got[string(sibling.ID)]; !ok {
 		t.Fatalf("agent caller roster omits same-owner sibling %q", sibling.ID)
 	}

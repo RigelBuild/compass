@@ -33,14 +33,14 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"io"
 	"testing"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runnertest"
-
-	"connectrpc.com/connect"
 )
 
 // controlSub is one agent Control subscription dialed over a container's real
@@ -61,7 +61,7 @@ type controlSub struct {
 func subscribeControl(ctx context.Context, client compassv1internalconnect.AgentGatewayClient, name string) *controlSub {
 	sub := &controlSub{name: name, done: make(chan error, 1)}
 	go func() {
-		stream, err := client.Control(ctx, connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		stream, err := client.Control(ctx, &compassv1internal.ControlSubscribeRequest{})
 		if err != nil {
 			sub.done <- err
 			return
@@ -69,9 +69,18 @@ func subscribeControl(ctx context.Context, client compassv1internalconnect.Agent
 		defer func() { _ = stream.Close() }()
 		// Drain to termination: the ops themselves are the gateway package's
 		// contract, so only the stream's END is this test's business.
-		for stream.Receive() {
+		var streamErr error
+		for {
+			_, err := stream.Receive()
+			if err != nil {
+				streamErr = err
+				break
+			}
 		}
-		sub.done <- stream.Err()
+		if errors.Is(streamErr, io.EOF) {
+			streamErr = nil
+		}
+		sub.done <- streamErr
 	}()
 	return sub
 }

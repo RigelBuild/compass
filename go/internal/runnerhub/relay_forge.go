@@ -13,7 +13,7 @@ import (
 	"context"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -70,7 +70,7 @@ func (h *Hub) RelayForgeCall(
 	caller := h.forgeCaller
 	h.mu.Unlock()
 	if caller == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errForgeUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errForgeUnavailable.Error()).WithCause(errForgeUnavailable)
 	}
 	sessionID := req.GetSessionId()
 	scopedCtx, account, err := h.runnerSessionAccountError(ctx, runnerID, sessionID)
@@ -102,7 +102,7 @@ func (h *Hub) RelayForgeCall(
 			Result: &compassv1internal.ForgeCallResult{
 				CallId: callID,
 				Result: &compassv1internal.ForgeCallResult_Error{
-					Error: forgeCallError(connect.NewError(connect.CodeInternal, errForgeNoResult)),
+					Error: forgeCallError(connect.NewError(connect.CodeInternal, errForgeNoResult.Error()).WithCause(errForgeNoResult)),
 				},
 			},
 		}, nil

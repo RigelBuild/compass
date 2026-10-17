@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -36,18 +36,18 @@ var errGatewayTokenInvalid = errors.New("invalid agent token")
 
 // VerifyAgentToken resolves an agent's gateway bearer to its agent and owner. It
 // never logs req.Msg: protobuf-go treats debug_redact as metadata, not redaction.
-func (s *gatewayAuthService) VerifyAgentToken(ctx context.Context, req *connect.Request[compassv1internal.VerifyAgentTokenRequest]) (*connect.Response[compassv1internal.VerifyAgentTokenResponse], error) {
-	caller, err := s.tokens.Verify(ctx, req.Msg.GetToken())
+func (s *gatewayAuthService) VerifyAgentToken(ctx context.Context, req *compassv1internal.VerifyAgentTokenRequest) (*compassv1internal.VerifyAgentTokenResponse, error) {
+	caller, err := s.tokens.Verify(ctx, req.GetToken())
 	if err != nil {
 		if errors.Is(err, auth.ErrGatewayTokenInvalid) {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errGatewayTokenInvalid)
+			return nil, connect.NewError(connect.CodeUnauthenticated, errGatewayTokenInvalid.Error()).WithCause(errGatewayTokenInvalid)
 		}
 		// The error never carries the token: Verify wraps only store faults.
 		slog.ErrorContext(ctx, "gateway agent token verification failed", "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("agent token verification failed"))
+		return nil, connect.NewError(connect.CodeInternal, "agent token verification failed")
 	}
-	return connect.NewResponse(&compassv1internal.VerifyAgentTokenResponse{
+	return &compassv1internal.VerifyAgentTokenResponse{
 		AgentAccountId: string(caller.AgentAccountID),
 		OwnerUserId:    string(caller.OwnerUserID),
-	}), nil
+	}, nil
 }

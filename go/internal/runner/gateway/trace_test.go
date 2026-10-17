@@ -4,13 +4,16 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -42,11 +45,11 @@ type spanRelayServer struct {
 
 func (spanRelayServer) RelayCommsCall(
 	_ context.Context,
-	req *connect.Request[compassv1internal.RelayCommsCallRequest],
-) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {
-	return connect.NewResponse(&compassv1internal.RelayCommsCallResponse{
-		Result: &compassv1internal.CommsCallResult{CallId: req.Msg.GetCall().GetCallId()},
-	}), nil
+	req *compassv1internal.RelayCommsCallRequest,
+) (*compassv1internal.RelayCommsCallResponse, error) {
+	return &compassv1internal.RelayCommsCallResponse{
+		Result: &compassv1internal.CommsCallResult{CallId: req.GetCall().GetCallId()},
+	}, nil
 }
 
 func newSpanRelayClient(t *testing.T) compassv1internalconnect.RunnerServiceClient {
@@ -62,9 +65,10 @@ func newSpanRelayClient(t *testing.T) compassv1internalconnect.RunnerServiceClie
 	server.Config.Protocols = cleartextHTTP2()
 	server.Start()
 	t.Cleanup(server.Close)
-	return compassv1internalconnect.NewRunnerServiceClient(
-		h2cHTTPClient(t), server.URL, connect.WithInterceptors(clientInterceptor),
-	)
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
+		h2cHTTPClient(t), server.URL, connecthttp.WithReadMaxBytes(0),
+	), clientInterceptor,
+	))
 }
 
 func closeGatewaySocket(t *testing.T, listener *SocketListener) func() {
@@ -95,11 +99,11 @@ func TestServeCommsEmitsServerAndChildRelaySpans(t *testing.T) {
 	closeListener := closeGatewaySocket(t, listener)
 
 	client := agentClient(t, listener.Path())
-	resp, err := client.Comms(t.Context(), connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "span-call"}))
+	resp, err := client.Comms(t.Context(), &compassv1internal.CommsCallRequest{CallId: "span-call"})
 	if err != nil {
 		t.Fatalf("Comms: %v", err)
 	}
-	if got := resp.Msg.GetCallId(); got != "span-call" {
+	if got := resp.GetCallId(); got != "span-call" {
 		t.Fatalf("Comms call id = %q, want span-call", got)
 	}
 	closeListener()
@@ -150,11 +154,20 @@ func TestServeControlEmitsServerSpanAfterStreamCloses(t *testing.T) {
 	client := agentClient(t, listener.Path())
 	completed := make(chan error, 1)
 	go func() {
-		stream, err := client.Control(ctx, connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		stream, err := client.Control(ctx, &compassv1internal.ControlSubscribeRequest{})
 		if err == nil {
-			for stream.Receive() {
+			var streamErr error
+			for {
+				_, err := stream.Receive()
+				if err != nil {
+					streamErr = err
+					break
+				}
 			}
-			err = stream.Err()
+			if errors.Is(streamErr, io.EOF) {
+				streamErr = nil
+			}
+			err = streamErr
 		}
 		completed <- err
 	}()
@@ -191,7 +204,10 @@ func TestServePublishSpanHasNoMessageEvents(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	client := newAgentGatewayServer(t, g)
 
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, text := range []string{"alpha", "bravo", "charlie"} {
 		if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame(text)}); err != nil {
 			t.Fatalf("send %q: %v", text, err)

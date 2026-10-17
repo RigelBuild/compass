@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -107,8 +107,9 @@ func subscribeErr(t *testing.T, client compassv1connect.CompassServiceClient, be
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	req := connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{SessionId: sessionID})
-	req.Header().Set("Authorization", "Bearer "+bearer)
+	req := &compassv1.SubscribeAgentSessionRequest{SessionId: sessionID}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
 	stream, err := client.SubscribeAgentSession(ctx, req)
 	if err == nil {
 		defer func() { _ = stream.Close() }()
@@ -224,8 +225,9 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req := connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{SessionId: f.sessionID})
-	req.Header().Set("Authorization", "Bearer "+f.ownerToken)
+	req := &compassv1.SubscribeAgentSessionRequest{SessionId: f.sessionID}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+f.ownerToken)
 	stream, err := f.client.SubscribeAgentSession(ctx, req)
 	if err != nil {
 		cancel()
@@ -289,7 +291,7 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 func TestSubscribeAgentSessionSendsLeadingRegistrationAck(t *testing.T) {
 	f := newAgentSessionFixture(t)
 
-	req := connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{SessionId: f.sessionID})
+	req := &compassv1.SubscribeAgentSessionRequest{SessionId: f.sessionID}
 	req.Header().Set("Authorization", "Bearer "+f.ownerToken)
 	stream, err := f.client.SubscribeAgentSession(t.Context(), req)
 	if err != nil {

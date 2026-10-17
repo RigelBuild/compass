@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -25,12 +25,12 @@ func TestRunnerDoorCapsInboundMessageSize(t *testing.T) {
 	client := newRawRunnerClient(t, newMountedH2CServer(t, hub, resolver.resolve), "runner-tok")
 
 	commit := func(entryJSON string) error {
-		_, err := client.CommitConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.CommitConversationFrameRequest{
+		_, err := client.CommitConversationFrame(context.Background(), &compassv1internal.CommitConversationFrameRequest{
 			SessionId: "sess-unknown",
 			Frame: &compassv1internal.AgentFrame{Frame: &compassv1internal.AgentFrame_TranscriptEntry{
 				TranscriptEntry: &compassv1internal.TranscriptEntry{EntryJson: entryJSON},
 			}},
-		}))
+		})
 		return err
 	}
 

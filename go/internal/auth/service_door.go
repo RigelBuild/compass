@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"slices"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -16,7 +16,7 @@ const LLMGatewayServiceID = "llm-gateway"
 
 type serviceSubjectKey struct{}
 
-var errServiceUnauthenticated = connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))
+var errServiceUnauthenticated = connect.NewError(connect.CodeUnauthenticated, "unauthenticated")
 
 // ServiceSubjectFrom returns the service principal attached by the service bearer door.
 func ServiceSubjectFrom(ctx context.Context) (store.Subject, bool) {

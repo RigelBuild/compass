@@ -25,8 +25,6 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
@@ -385,11 +383,11 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id WorkloadID) error {
 		return fmt.Errorf("microvm: session %s has a zero exec uid; Provision requires a non-zero default_exec_uid", id)
 	}
 	client := m.newGuestClient(session.cfg.VsockSocket, session.cfg.VsockPort)
-	if _, err := client.Provision(ctx, connect.NewRequest(&compassv1.ProvisionRequest{
+	if _, err := client.Provision(ctx, &compassv1.ProvisionRequest{
 		NftScript:      session.nftScript,
 		DefaultExecUid: session.uid,
 		BaseEnv:        session.env,
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("microvm: provisioning session %s: %w", id, err)
 	}
 
@@ -624,10 +622,10 @@ func (m *MicroVMRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.D
 // caller escalates to a VMM kill regardless — so it is threaded into the Stop
 // error rather than handled here.
 func stopGuest(ctx context.Context, client compassv1internalconnect.GuestControlClient) error {
-	_, err := client.Signal(ctx, connect.NewRequest(&compassv1.SignalRequest{
+	_, err := client.Signal(ctx, &compassv1.SignalRequest{
 		ExecId: "",
 		Signal: int32(syscall.SIGTERM),
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("microvm: sending guest stop signal: %w", err)
 	}

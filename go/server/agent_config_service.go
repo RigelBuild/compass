@@ -11,7 +11,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/auth"
@@ -48,8 +48,8 @@ type configSignaler interface {
 // self-heals on the Runner's reconnect version reconciliation (design record).
 func (s *service) PutAgentConfig(
 	ctx context.Context,
-	req *connect.Request[compassv1.PutAgentConfigRequest],
-) (*connect.Response[compassv1.PutAgentConfigResponse], error) {
+	req *compassv1.PutAgentConfigRequest,
+) (*compassv1.PutAgentConfigResponse, error) {
 	caller, err := s.requireCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -65,17 +65,17 @@ func (s *service) PutAgentConfig(
 		}
 		currentVersion = ""
 	}
-	version, err := s.store.PutAgentConfig(ctx, caller, req.Msg.GetBundle())
+	version, err := s.store.PutAgentConfig(ctx, caller, req.GetBundle())
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidArgument) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if version != currentVersion {
 		s.signalConfigVersion(ctx, version)
 	}
-	return connect.NewResponse(&compassv1.PutAgentConfigResponse{Version: version}), nil
+	return &compassv1.PutAgentConfigResponse{Version: version}, nil
 }
 
 // GetAgentConfigInfo reports the current bundle's version and its member NAMES,
@@ -85,23 +85,23 @@ func (s *service) PutAgentConfig(
 // value-free posture the resolve/fetch path treats as materialize-empty.
 func (s *service) GetAgentConfigInfo(
 	ctx context.Context,
-	_ *connect.Request[compassv1.GetAgentConfigInfoRequest],
-) (*connect.Response[compassv1.GetAgentConfigInfoResponse], error) {
+	_ *compassv1.GetAgentConfigInfoRequest,
+) (*compassv1.GetAgentConfigInfoResponse, error) {
 	info, err := s.store.AgentConfigInfo(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewResponse(&compassv1.GetAgentConfigInfoResponse{}), nil
+			return &compassv1.GetAgentConfigInfoResponse{}, nil
 		}
 		// Unreachable-by-construction for a Put-validated bundle: the Info walk
 		// (configBundleMemberNames) applies a strict SUBSET of the Put door's
 		// validation (validateAndHashConfigBundle), so a bundle already stored via
 		// Put can never fail it. Kept as defense-in-depth, not a reachable path.
 		if errors.Is(err, store.ErrInvalidArgument) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&compassv1.GetAgentConfigInfoResponse{
+	return &compassv1.GetAgentConfigInfoResponse{
 		Version:     info.Version,
 		Skills:      info.Skills,
 		Extensions:  info.Extensions,
@@ -112,7 +112,7 @@ func (s *service) GetAgentConfigInfo(
 		Subagents:   info.Subagents,
 		HasModels:   info.HasModels,
 		Prompts:     info.Prompts,
-	}), nil
+	}, nil
 }
 
 // DeleteAgentConfig clears the fleet config bundle back to unconfigured, then
@@ -121,15 +121,15 @@ func (s *service) GetAgentConfigInfo(
 // already-empty fleet succeeds.
 func (s *service) DeleteAgentConfig(
 	ctx context.Context,
-	_ *connect.Request[compassv1.DeleteAgentConfigRequest],
-) (*connect.Response[compassv1.DeleteAgentConfigResponse], error) {
+	_ *compassv1.DeleteAgentConfigRequest,
+) (*compassv1.DeleteAgentConfigResponse, error) {
 	if err := s.store.DeleteAgentConfig(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Empty version: the fleet-cleared marker (record §514-519) — Runners
 	// re-fetch and materialize an empty dir.
 	s.signalConfigVersion(ctx, "")
-	return connect.NewResponse(&compassv1.DeleteAgentConfigResponse{}), nil
+	return &compassv1.DeleteAgentConfigResponse{}, nil
 }
 
 // requireCaller returns the authenticated caller id, or CodeUnauthenticated when
@@ -138,7 +138,7 @@ func (s *service) DeleteAgentConfig(
 func (s *service) requireCaller(ctx context.Context) (store.AccountID, error) {
 	callerID, ok := auth.CallerFrom(ctx)
 	if !ok {
-		return "", connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+		return "", connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
 	return callerID, nil
 }

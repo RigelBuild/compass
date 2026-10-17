@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -59,12 +59,13 @@ func TestServiceBearerInterceptor(t *testing.T) {
 				if !ok || subj != tt.subject {
 					t.Fatalf("ServiceSubjectFrom() = (%+v, %v), want (%+v, true)", subj, ok, tt.subject)
 				}
-				return connect.NewResponse(&compassv1.GetServerInfoResponse{}), nil
+				return &compassv1.GetServerInfoResponse{}, nil
 			}
 			interceptor := ServiceBearerInterceptor(resolve, tt.allow...)
-			request := connect.NewRequest(&compassv1.GetServerInfoRequest{})
+			request := &compassv1.GetServerInfoRequest{}
+			ctx, info := connect.NewClientContext(ctx)
 			if tt.header != "" {
-				request.Header().Set("Authorization", tt.header)
+				info.RequestHeader().Set("Authorization", tt.header)
 			}
 			_, err := interceptor(next)(ctx, request)
 			if tt.wantReason == "" {

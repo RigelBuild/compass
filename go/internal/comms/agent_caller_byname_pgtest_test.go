@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -392,9 +392,9 @@ func TestListTopicsAsAccountByNameHonorsIncludeArchived(t *testing.T) {
 		t.Fatalf("PostAsAccount: %v", err)
 	}
 	archived := true
-	if _, err := svc.UpdateTopic(WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.UpdateTopicRequest{
+	if _, err := svc.UpdateTopic(WithActor(ctx, agent.ID), &compassv1.UpdateTopicRequest{
 		TopicId: posted.GetMessage().GetTopicId(), Archived: &archived,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("UpdateTopic(archive): %v", err)
 	}
 	for _, tc := range []struct {

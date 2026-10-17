@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"

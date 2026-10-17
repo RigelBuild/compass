@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
@@ -199,12 +199,12 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 	call *compassv1internal.ForgeCallRequest,
 ) (*compassv1internal.ForgeCallResult, error) {
 	if caller == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: caller account is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "forge: caller account is required")
 	}
 
 	variant := call.GetCall()
 	if variant == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: call has no operation variant set"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "forge: call has no operation variant set")
 	}
 	switch c := variant.(type) {
 	case *compassv1internal.ForgeCallRequest_CreateIssue:
@@ -234,7 +234,7 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 	case *compassv1internal.ForgeCallRequest_MirrorMessages:
 		return s.mirrorMessages(ctx, caller, sessionID, call, c.MirrorMessages), nil
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: call has no operation variant set"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "forge: call has no operation variant set")
 	}
 }
 

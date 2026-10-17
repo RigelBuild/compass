@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/gatewaycred"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -112,7 +112,7 @@ func newGatewayServiceFixture(t *testing.T) gatewayServiceTestFixture {
 func gatewayServiceContext(t *testing.T) context.Context {
 	t.Helper()
 	token := "service-token-for-gateway-tests"
-	request := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{})
+	request := &compassv1internal.ListCredentialPoolRequest{}
 	request.Header().Set("Authorization", "Bearer "+token)
 	interceptor := auth.ServiceBearerInterceptor(func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		if presented != token || want != store.SubjectService {
@@ -123,7 +123,7 @@ func gatewayServiceContext(t *testing.T) context.Context {
 	var captured gatewayServiceContextCapture
 	_, err := interceptor(func(requestCtx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 		captured.capture(requestCtx)
-		return connect.NewResponse(&compassv1internal.ListCredentialPoolResponse{}), nil
+		return &compassv1internal.ListCredentialPoolResponse{}, nil
 	})(t.Context(), request)
 	if err != nil {
 		t.Fatalf("authenticate test request: %v", err)
@@ -137,7 +137,7 @@ func gatewayServiceContext(t *testing.T) context.Context {
 func TestGatewayCredentialsResolveCallerRequiresGatewayServiceID(t *testing.T) {
 	fixture := newGatewayServiceFixture(t)
 	token := "other-service-token"
-	request := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{})
+	request := &compassv1internal.ListCredentialPoolRequest{}
 	request.Header().Set("Authorization", "Bearer "+token)
 	interceptor := auth.ServiceBearerInterceptor(func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		if presented != token || want != store.SubjectService {
@@ -148,7 +148,7 @@ func TestGatewayCredentialsResolveCallerRequiresGatewayServiceID(t *testing.T) {
 	var capture gatewayServiceContextCapture
 	_, err := interceptor(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 		capture.capture(ctx)
-		return connect.NewResponse(&compassv1internal.ListCredentialPoolResponse{}), nil
+		return &compassv1internal.ListCredentialPoolResponse{}, nil
 	})(t.Context(), request)
 	if err != nil {
 		t.Fatalf("authenticate other service: %v", err)
@@ -172,32 +172,32 @@ func TestGatewayCredentialsServiceInvalidArguments(t *testing.T) {
 		{
 			name: "list empty agent token",
 			call: func(s *gatewayCredentialsService, ctx context.Context) error {
-				_, err := s.ListCredentialPool(ctx, connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{}))
+				_, err := s.ListCredentialPool(ctx, &compassv1internal.ListCredentialPoolRequest{})
 				return err
 			},
 		},
 		{
 			name: "disable empty agent token",
 			call: func(s *gatewayCredentialsService, ctx context.Context) error {
-				_, err := s.DisableCredential(ctx, connect.NewRequest(&compassv1internal.DisableCredentialRequest{Id: "id", ExpectedVersion: 1}))
+				_, err := s.DisableCredential(ctx, &compassv1internal.DisableCredentialRequest{Id: "id", ExpectedVersion: 1})
 				return err
 			},
 		},
 		{
 			name: "disable empty id",
 			call: func(s *gatewayCredentialsService, ctx context.Context) error {
-				_, err := s.DisableCredential(ctx, connect.NewRequest(&compassv1internal.DisableCredentialRequest{
+				_, err := s.DisableCredential(ctx, &compassv1internal.DisableCredentialRequest{
 					AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
-				}))
+				})
 				return err
 			},
 		},
 		{
 			name: "disable zero version",
 			call: func(s *gatewayCredentialsService, ctx context.Context) error {
-				_, err := s.DisableCredential(ctx, connect.NewRequest(&compassv1internal.DisableCredentialRequest{
+				_, err := s.DisableCredential(ctx, &compassv1internal.DisableCredentialRequest{
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this",
-				}))
+				})
 				return err
 			},
 		},
@@ -234,7 +234,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
 					Token: &compassv1internal.GatewayOAuthToken{Access: "access"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -245,7 +245,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this",
 					Token: &compassv1internal.GatewayOAuthToken{Access: "access"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -256,7 +256,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					Id: "id", ExpectedVersion: 1,
 					Token: &compassv1internal.GatewayOAuthToken{Access: "access"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -266,7 +266,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 				req := &compassv1internal.UpdateCredentialOAuthRequest{
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -277,7 +277,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
 					Token: &compassv1internal.GatewayOAuthToken{Refresh: "refresh"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -288,7 +288,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
 					Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"org_id", "nope"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -299,7 +299,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
 					Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"access"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -310,7 +310,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
 					Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"refresh"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -321,7 +321,7 @@ func invalidGatewayUpdateCases() []gatewayInvalidArgumentCase {
 					Id: "id", AgentToken: "distinctive-agent-token-never-log-this", ExpectedVersion: 1,
 					Token: &compassv1internal.GatewayOAuthToken{Access: "access"}, ClearFields: []string{"expires_unix_ms"},
 				}
-				_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(req))
+				_, err := s.UpdateCredentialOAuth(ctx, req)
 				return err
 			},
 		},
@@ -334,15 +334,15 @@ func TestGatewayCredentialsServiceInvalidAgentToken(t *testing.T) {
 		call func(*gatewayCredentialsService, context.Context) error
 	}{
 		{name: "list", call: func(s *gatewayCredentialsService, ctx context.Context) error {
-			_, err := s.ListCredentialPool(ctx, connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: "unknown-token"}))
+			_, err := s.ListCredentialPool(ctx, &compassv1internal.ListCredentialPoolRequest{AgentToken: "unknown-token"})
 			return err
 		}},
 		{name: "update", call: func(s *gatewayCredentialsService, ctx context.Context) error {
-			_, err := s.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentToken: "unknown-token", ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}}))
+			_, err := s.UpdateCredentialOAuth(ctx, &compassv1internal.UpdateCredentialOAuthRequest{Id: "id", AgentToken: "unknown-token", ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "access"}})
 			return err
 		}},
 		{name: "disable", call: func(s *gatewayCredentialsService, ctx context.Context) error {
-			_, err := s.DisableCredential(ctx, connect.NewRequest(&compassv1internal.DisableCredentialRequest{Id: "id", AgentToken: "unknown-token", ExpectedVersion: 1}))
+			_, err := s.DisableCredential(ctx, &compassv1internal.DisableCredentialRequest{Id: "id", AgentToken: "unknown-token", ExpectedVersion: 1})
 			return err
 		}},
 	}
@@ -382,7 +382,7 @@ func TestGatewayCredentialsServiceMapsCredentialErrorsAndHidesIDs(t *testing.T) 
 		{name: "random credential", id: "random-missing-id"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			request := connect.NewRequest(&compassv1internal.DisableCredentialRequest{Id: tt.id, AgentToken: "valid-other-agent-token", ExpectedVersion: 1})
+			request := &compassv1internal.DisableCredentialRequest{Id: tt.id, AgentToken: "valid-other-agent-token", ExpectedVersion: 1}
 			_, err := svc.DisableCredential(gatewayServiceContext(t), request)
 			if connect.CodeOf(err) != connect.CodeNotFound {
 				t.Fatalf("credential error = %v, want NotFound", err)
@@ -401,11 +401,11 @@ func TestGatewayCredentialsServiceMapsCredentialErrorsAndHidesIDs(t *testing.T) 
 		t.Fatalf("disable system role contexts = %v, want false for each call", fixture.creds.disableSystemRoles)
 	}
 
-	_, stale := svc.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: oauth.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 2, Token: &compassv1internal.GatewayOAuthToken{Access: "next"}}))
+	_, stale := svc.UpdateCredentialOAuth(ctx, &compassv1internal.UpdateCredentialOAuthRequest{Id: oauth.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 2, Token: &compassv1internal.GatewayOAuthToken{Access: "next"}})
 	if connect.CodeOf(stale) != connect.CodeAborted {
 		t.Fatalf("stale update code = %v, want Aborted (err %v)", connect.CodeOf(stale), stale)
 	}
-	_, wrongKind := svc.UpdateCredentialOAuth(ctx, connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: apiKey.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "next"}}))
+	_, wrongKind := svc.UpdateCredentialOAuth(ctx, &compassv1internal.UpdateCredentialOAuthRequest{Id: apiKey.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "next"}})
 	if connect.CodeOf(wrongKind) != connect.CodeFailedPrecondition {
 		t.Fatalf("api-key update code = %v, want FailedPrecondition (err %v)", connect.CodeOf(wrongKind), wrongKind)
 	}
@@ -441,7 +441,7 @@ func TestGatewayCredentialsServiceListPoolAndMapsValues(t *testing.T) {
 		t.Fatalf("create shared gemini: %v", err)
 	}
 
-	response, err := svc.ListCredentialPool(ctx, connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: tokens.validAgentToken()}))
+	response, err := svc.ListCredentialPool(ctx, &compassv1internal.ListCredentialPoolRequest{AgentToken: tokens.validAgentToken()})
 	if err != nil {
 		t.Fatalf("ListCredentialPool: %v", err)
 	}
@@ -451,25 +451,25 @@ func TestGatewayCredentialsServiceListPoolAndMapsValues(t *testing.T) {
 
 func assertGatewayCredentialPoolResponse(
 	t *testing.T,
-	response *connect.Response[compassv1internal.ListCredentialPoolResponse],
+	response *compassv1internal.ListCredentialPoolResponse,
 	ownAnthropic, apiKeyCredential, sharedOpenAI, sharedAnthropic gatewaycred.Credential,
 ) {
 	t.Helper()
-	if len(response.Msg.GetCredentials()) != 3 {
-		t.Fatalf("pool contains %d credentials, want own anthropic, shared openai and shared gemini", len(response.Msg.GetCredentials()))
+	if len(response.GetCredentials()) != 3 {
+		t.Fatalf("pool contains %d credentials, want own anthropic, shared openai and shared gemini", len(response.GetCredentials()))
 	}
-	if got := response.Msg.GetCredentials()[0]; got.GetId() != ownAnthropic.ID || got.GetScope() != compassv1internal.GatewayCredentialScope_GATEWAY_CREDENTIAL_SCOPE_OWN {
+	if got := response.GetCredentials()[0]; got.GetId() != ownAnthropic.ID || got.GetScope() != compassv1internal.GatewayCredentialScope_GATEWAY_CREDENTIAL_SCOPE_OWN {
 		t.Fatalf("first pool credential = %+v, want own anthropic", got)
 	} else if token := got.GetOauth(); token == nil || token.GetAccess() != "own-access" || token.GetRefresh() != "own-refresh" || token.GetExpiresUnixMs() != 123 || token.GetEnterpriseUrl() != "enterprise" || token.GetProjectId() != "project" || token.GetEmail() != "mail" || token.GetAccountId() != "account" || token.GetApiEndpoint() != "endpoint" || token.GetOrgId() != "org" || token.GetOrgName() != "name" || token.GetAuthorizedAtUnixMs() != 456 || token.GetRegion() != "eu" || token.GetInferenceRegion() != "global" || token.GetActiveOrganizationId() != "active-org" {
 		t.Fatalf("OAuth response fields = %+v, want explicit full-field conversion", token)
 	}
-	if got := response.Msg.GetCredentials()[1]; got.GetId() != apiKeyCredential.ID || got.GetScope() != compassv1internal.GatewayCredentialScope_GATEWAY_CREDENTIAL_SCOPE_SHARED || got.GetApiKey() != "gemini-key" {
+	if got := response.GetCredentials()[1]; got.GetId() != apiKeyCredential.ID || got.GetScope() != compassv1internal.GatewayCredentialScope_GATEWAY_CREDENTIAL_SCOPE_SHARED || got.GetApiKey() != "gemini-key" {
 		t.Fatalf("second pool credential = %+v, want shared gemini api key", got)
 	}
-	if got := response.Msg.GetCredentials()[2]; got.GetId() != sharedOpenAI.ID || got.GetScope() != compassv1internal.GatewayCredentialScope_GATEWAY_CREDENTIAL_SCOPE_SHARED || got.GetOauth().GetAccess() != "shared-openai-access" {
+	if got := response.GetCredentials()[2]; got.GetId() != sharedOpenAI.ID || got.GetScope() != compassv1internal.GatewayCredentialScope_GATEWAY_CREDENTIAL_SCOPE_SHARED || got.GetOauth().GetAccess() != "shared-openai-access" {
 		t.Fatalf("third pool credential = %+v, want shared openai OAuth", got)
 	}
-	for _, credential := range response.Msg.GetCredentials() {
+	for _, credential := range response.GetCredentials() {
 		if credential.GetId() == sharedAnthropic.ID {
 			t.Fatal("shared anthropic must be suppressed by the owner's enabled credential")
 		}
@@ -486,12 +486,12 @@ func assertGatewayCredentialPoolFilterAndAudit(
 	logs *bytes.Buffer,
 ) {
 	t.Helper()
-	filtered, err := svc.ListCredentialPool(ctx, connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: tokens.validAgentToken(), Provider: "anthropic"}))
+	filtered, err := svc.ListCredentialPool(ctx, &compassv1internal.ListCredentialPoolRequest{AgentToken: tokens.validAgentToken(), Provider: "anthropic"})
 	if err != nil {
 		t.Fatalf("filtered ListCredentialPool: %v", err)
 	}
-	if len(filtered.Msg.GetCredentials()) != 1 || filtered.Msg.GetCredentials()[0].GetId() != ownAnthropic.ID {
-		t.Fatalf("anthropic pool filter = %+v, want own anthropic only", filtered.Msg.GetCredentials())
+	if len(filtered.GetCredentials()) != 1 || filtered.GetCredentials()[0].GetId() != ownAnthropic.ID {
+		t.Fatalf("anthropic pool filter = %+v, want own anthropic only", filtered.GetCredentials())
 	}
 	if len(pool.tenants) != 2 || pool.tenants[0] != store.TenantID("tenant-resolved") || pool.tenants[1] != store.TenantID("tenant-resolved") {
 		t.Fatalf("Pool tenant contexts = %v, want tenant-resolved for each call", pool.tenants)
@@ -518,12 +518,12 @@ func TestGatewayCredentialsServiceWriteTenantAndAuditLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create OAuth credential: %v", err)
 	}
-	updated, err := svc.UpdateCredentialOAuth(gatewayServiceContext(t), connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: credential.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "new"}}))
+	updated, err := svc.UpdateCredentialOAuth(gatewayServiceContext(t), &compassv1internal.UpdateCredentialOAuthRequest{Id: credential.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "new"}})
 	if err != nil {
 		t.Fatalf("UpdateCredentialOAuth: %v", err)
 	}
-	if updated.Msg.GetVersion() != 2 {
-		t.Fatalf("updated version = %d, want 2", updated.Msg.GetVersion())
+	if updated.GetVersion() != 2 {
+		t.Fatalf("updated version = %d, want 2", updated.GetVersion())
 	}
 	if len(creds.updateTenants) != 1 || creds.updateTenants[0] != store.TenantID("tenant-resolved") {
 		t.Fatalf("update tenant contexts = %v, want tenant-resolved", creds.updateTenants)
@@ -546,7 +546,7 @@ func TestGatewayCredentialsServiceUpdateClearsNamedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create OAuth credential: %v", err)
 	}
-	if _, err := fixture.svc.UpdateCredentialOAuth(gatewayServiceContext(t), connect.NewRequest(&compassv1internal.UpdateCredentialOAuthRequest{Id: credential.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "new"}, ClearFields: []string{"org_id"}})); err != nil {
+	if _, err := fixture.svc.UpdateCredentialOAuth(gatewayServiceContext(t), &compassv1internal.UpdateCredentialOAuthRequest{Id: credential.ID, AgentToken: fixture.tokens.validAgentToken(), ExpectedVersion: 1, Token: &compassv1internal.GatewayOAuthToken{Access: "new"}, ClearFields: []string{"org_id"}}); err != nil {
 		t.Fatalf("UpdateCredentialOAuth: %v", err)
 	}
 	got, err := fixture.memory.List(ctx, gatewayTestOwner, "openai")
@@ -565,7 +565,7 @@ func TestGatewayCredentialsServiceMapsInternalErrorsWithoutDetails(t *testing.T)
 	fixture.svc.log = logger
 	fixture.tokens.err = errors.New("database includes secret detail")
 	agentToken := fixture.tokens.validAgentToken()
-	_, err := fixture.svc.ListCredentialPool(gatewayServiceContext(t), connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken}))
+	_, err := fixture.svc.ListCredentialPool(gatewayServiceContext(t), &compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken})
 	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), "secret detail") || strings.Contains(err.Error(), agentToken) {
 		t.Fatalf("internal error = %v, want fixed Internal error without token or underlying detail", err)
 	}

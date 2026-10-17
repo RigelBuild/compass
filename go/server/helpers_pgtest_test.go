@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
@@ -69,7 +70,7 @@ func newUDSClient(t *testing.T, socketPath string) compassv1connect.CompassServi
 		return d.DialContext(ctx, "unix", socketPath)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewCompassServiceClient(&http.Client{Transport: tr}, "http://unix")
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "http://unix", connecthttp.WithReadMaxBytes(0))))
 }
 
 // newUDSCommsClient builds a connect client for the CommsService that speaks
@@ -85,7 +86,7 @@ func newUDSCommsClient(t *testing.T, socketPath string) compassv1connect.CommsSe
 		return d.DialContext(ctx, "unix", socketPath)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewCommsServiceClient(&http.Client{Transport: tr}, "http://unix")
+	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "http://unix", connecthttp.WithReadMaxBytes(0))))
 }
 
 // newH2CTestServerWithInterceptors stands up the compass.v1 handler on an h2c
@@ -133,5 +134,5 @@ func newSecretsH2CClient(t *testing.T, baseURL string) compassv1connect.SecretsS
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewSecretsServiceClient(&http.Client{Transport: tr}, baseURL)
+	return compassv1connect.NewSecretsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL, connecthttp.WithReadMaxBytes(0))))
 }

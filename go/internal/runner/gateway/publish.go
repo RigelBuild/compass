@@ -10,10 +10,12 @@ package gateway
 import (
 	"context"
 	"errors"
+	"io"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
 // Publish forwards agent frames through the ordered per-session publisher and
@@ -22,13 +24,13 @@ import (
 // empty id. Stream end closes the upstream PublishEvents stream and awaits its ack.
 func (g *Gateway) Publish(
 	ctx context.Context,
-	stream *connect.ClientStream[compassv1internal.PublishFrameRequest],
-) (*connect.Response[compassv1internal.PublishFrameResponse], error) {
+	stream compassv1internalconnect.AgentGatewayPublishServerStream,
+) (*compassv1internal.PublishFrameResponse, error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	// An empty session id is unbound too (mirrors Comms): never forward telemetry
 	// under an empty session id.
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForPublish)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForPublish.Error()).WithCause(errNoSessionForPublish)
 	}
 
 	if err := g.beginPublish(sessionID); err != nil {
@@ -40,8 +42,16 @@ func (g *Gateway) Publish(
 	// the replaced process and must not touch the new process's control state.
 	epoch := g.control.Epoch(sessionID)
 
-	for stream.Receive() {
-		frame := stream.Msg().GetFrame()
+	for {
+		msg, err2 := stream.Receive()
+		if err2 != nil {
+			if errors.Is(err2, io.EOF) {
+				break
+			}
+			_ = g.releasePublisher(pub)
+			return nil, err2
+		}
+		frame := msg.GetFrame()
 		if frame == nil {
 			// An empty PublishFrameRequest (no frame set) carries nothing to
 			// forward and is not an ack — skip it, matching the stdout relay's
@@ -79,19 +89,16 @@ func (g *Gateway) Publish(
 			return nil, err
 		}
 	}
-	if err := stream.Err(); err != nil {
-		// The inbound stream failed (an over-limit message past WithReadMaxBytes,
-		// or a transport drop). Release the upstream and surface the error.
-		_ = g.releasePublisher(pub)
-		return nil, err
-	}
+
+	// The inbound stream failed (an over-limit message past WithReadMaxBytes,
+	// or a transport drop). Release the upstream and surface the error.
 
 	// Clean stream end == stdout EOF: close the upstream PublishEvents stream and
 	// await its ack, then ack the agent's stream.
 	if err := g.releasePublisher(pub); err != nil && !errors.Is(err, context.Canceled) {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&compassv1internal.PublishFrameResponse{}), nil
+	return &compassv1internal.PublishFrameResponse{}, nil
 }
 
 // publishGate tracks one session's Publish handlers. draining refuses new handlers
@@ -115,7 +122,7 @@ func (g *Gateway) beginPublish(sessionID string) error {
 		g.publishes[sessionID] = gate
 	}
 	if gate.draining || gate.sealed {
-		return connect.NewError(connect.CodeFailedPrecondition, errSessionEnded)
+		return connect.NewError(connect.CodeFailedPrecondition, errSessionEnded.Error()).WithCause(errSessionEnded)
 	}
 	if gate.handlers == 0 {
 		gate.idle = make(chan struct{})
@@ -145,7 +152,7 @@ func (g *Gateway) admitFrame(sessionID string) (uint64, error) {
 	defer g.publishMu.Unlock()
 	gate := g.publishes[sessionID]
 	if gate != nil && gate.sealed {
-		return 0, connect.NewError(connect.CodeFailedPrecondition, errSessionEnded)
+		return 0, connect.NewError(connect.CodeFailedPrecondition, errSessionEnded.Error()).WithCause(errSessionEnded)
 	}
 	return g.seq.next(), nil
 }

@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -38,41 +38,41 @@ type spawnCompass struct {
 	gotSpawn []*compassv1.SpawnAgentRequest
 }
 
-func (f *spawnFakes) CreateAgent(_ context.Context, req *connect.Request[compassv1.CreateAgentRequest]) (*connect.Response[compassv1.CreateAgentResponse], error) {
+func (f *spawnFakes) CreateAgent(_ context.Context, req *compassv1.CreateAgentRequest) (*compassv1.CreateAgentResponse, error) {
 	f.calls = append(f.calls, "CreateAgent")
 	f.gotAuth = append(f.gotAuth, req.Header().Get("Authorization"))
-	f.gotCreate = req.Msg
+	f.gotCreate = req
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
 	acc := &compassv1.Account{
-		Id: "agent-1", Handle: req.Msg.GetHandle(),
+		Id: "agent-1", Handle: req.GetHandle(),
 		Kind: &compassv1.Account_Agent{Agent: &compassv1.AgentAccount{OwnerUserId: "admin-1"}},
 	}
 	f.accounts = append(f.accounts, acc)
-	return connect.NewResponse(&compassv1.CreateAgentResponse{Account: acc}), nil
+	return &compassv1.CreateAgentResponse{Account: acc}, nil
 }
 
-func (f *spawnFakes) ListAccounts(_ context.Context, req *connect.Request[compassv1.ListAccountsRequest]) (*connect.Response[compassv1.ListAccountsResponse], error) {
+func (f *spawnFakes) ListAccounts(_ context.Context, req *compassv1.ListAccountsRequest) (*compassv1.ListAccountsResponse, error) {
 	f.calls = append(f.calls, "ListAccounts")
 	f.gotAuth = append(f.gotAuth, req.Header().Get("Authorization"))
-	return connect.NewResponse(&compassv1.ListAccountsResponse{Accounts: f.accounts}), nil
+	return &compassv1.ListAccountsResponse{Accounts: f.accounts}, nil
 }
 
-func (c *spawnCompass) WhoAmI(_ context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+func (c *spawnCompass) WhoAmI(_ context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
 	c.parent.calls = append(c.parent.calls, "WhoAmI")
 	c.parent.gotAuth = append(c.parent.gotAuth, req.Header().Get("Authorization"))
-	return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "admin-1"}), nil
+	return &compassv1.WhoAmIResponse{AccountId: "admin-1"}, nil
 }
 
-func (c *spawnCompass) SpawnAgent(_ context.Context, req *connect.Request[compassv1.SpawnAgentRequest]) (*connect.Response[compassv1.SpawnAgentResponse], error) {
+func (c *spawnCompass) SpawnAgent(_ context.Context, req *compassv1.SpawnAgentRequest) (*compassv1.SpawnAgentResponse, error) {
 	c.parent.calls = append(c.parent.calls, "SpawnAgent")
 	c.parent.gotAuth = append(c.parent.gotAuth, req.Header().Get("Authorization"))
-	c.gotSpawn = append(c.gotSpawn, req.Msg)
+	c.gotSpawn = append(c.gotSpawn, req)
 	if c.spawnErr != nil {
 		return nil, c.spawnErr
 	}
-	return connect.NewResponse(&compassv1.SpawnAgentResponse{SessionId: "sess-1", ContainerName: "ctr-1"}), nil
+	return &compassv1.SpawnAgentResponse{SessionId: "sess-1", ContainerName: "ctr-1"}, nil
 }
 
 func newSpawnFakes() *spawnFakes {
@@ -90,8 +90,11 @@ func newSpawnFakes() *spawnFakes {
 func startSpawnServer(t *testing.T, f *spawnFakes) agentSpawnClients {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.Handle(compassv1connect.NewCommsServiceHandler(f))
-	mux.Handle(compassv1connect.NewCompassServiceHandler(&f.compass))
+	server := connect.NewServer()
+	compassv1connect.RegisterCommsServiceHandler(server, f)
+	compassv1connect.RegisterCompassServiceHandler(server, &f.compass)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	cfg := connConfig{serverAddr: srv.URL, token: "test-token"}
@@ -273,7 +276,7 @@ func TestRunAgentSpawnPersonaFileValidation(t *testing.T) {
 // the key so the operator can retry with it.
 func TestRunAgentSpawnDefaults(t *testing.T) {
 	f := newSpawnFakes()
-	f.compass.spawnErr = connect.NewError(connect.CodeDeadlineExceeded, errors.New("slow runner"))
+	f.compass.spawnErr = connect.NewError(connect.CodeDeadlineExceeded, "slow runner")
 	clients := startSpawnServer(t, f)
 
 	args := agentSpawnArgs{handle: "lead", role: "owner"}
@@ -298,7 +301,7 @@ func TestRunAgentSpawnDefaults(t *testing.T) {
 // spawn failure.
 func TestRunAgentSpawnExistingAccount(t *testing.T) {
 	f := newSpawnFakes()
-	f.createErr = connect.NewError(connect.CodeAlreadyExists, errors.New("handle taken"))
+	f.createErr = connect.NewError(connect.CodeAlreadyExists, "handle taken")
 	f.accounts = append(f.accounts, &compassv1.Account{
 		Id: "agent-1", Handle: "lead",
 		Kind: &compassv1.Account_Agent{Agent: &compassv1.AgentAccount{OwnerUserId: "admin-1"}},
@@ -323,7 +326,7 @@ func TestRunAgentSpawnExistingAccount(t *testing.T) {
 // and offers --request-id only when a retry with it can succeed.
 func TestRunAgentSpawnErrors(t *testing.T) {
 	spawnFails := func(code connect.Code) func(*spawnFakes) {
-		return func(f *spawnFakes) { f.compass.spawnErr = connect.NewError(code, errors.New("spawn failed")) }
+		return func(f *spawnFakes) { f.compass.spawnErr = connect.NewError(code, "spawn failed") }
 	}
 	cases := []struct {
 		name      string
@@ -341,7 +344,7 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 		{
 			name: "create fails",
 			setup: func(f *spawnFakes) {
-				f.createErr = connect.NewError(connect.CodePermissionDenied, errors.New("admin only"))
+				f.createErr = connect.NewError(connect.CodePermissionDenied, "admin only")
 			},
 			args:    agentSpawnArgs{handle: "lead", role: "owner"},
 			wantErr: []string{"creating agent", "admin only"},
@@ -349,7 +352,7 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 		{
 			name: "existing account under another owner is not visible",
 			setup: func(f *spawnFakes) {
-				f.createErr = connect.NewError(connect.CodeAlreadyExists, errors.New("handle taken"))
+				f.createErr = connect.NewError(connect.CodeAlreadyExists, "handle taken")
 				f.accounts = append(f.accounts, &compassv1.Account{
 					Id: "agent-x", Handle: "lead",
 					Kind: &compassv1.Account_Agent{Agent: &compassv1.AgentAccount{OwnerUserId: "other-owner"}},

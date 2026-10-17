@@ -8,7 +8,6 @@ import (
 	"slices"
 	"testing"
 
-	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -96,13 +95,13 @@ func TestGetRefLinkRules(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &service{refLinkRules: tc.source}
-			resp, err := svc.GetRefLinkRules(t.Context(), connect.NewRequest(&compassv1.GetRefLinkRulesRequest{}))
+			resp, err := svc.GetRefLinkRules(t.Context(), &compassv1.GetRefLinkRulesRequest{})
 			if err != nil {
 				t.Fatalf("GetRefLinkRules: %v", err)
 			}
 			want := &compassv1.GetRefLinkRulesResponse{Rules: tc.want}
-			if !proto.Equal(resp.Msg, want) {
-				t.Fatalf("rules = %v, want %v", resp.Msg.GetRules(), want.GetRules())
+			if !proto.Equal(resp, want) {
+				t.Fatalf("rules = %v, want %v", resp.GetRules(), want.GetRules())
 			}
 			if tc.source != nil {
 				teams := tc.source.teams.(*refLinkTeamsFake)

@@ -22,7 +22,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 func TestAgentHostConfigCarriesRunnerSettings(t *testing.T) {
@@ -53,7 +53,7 @@ func TestRunDialWithRetryTransientThenSuccess(t *testing.T) {
 	got, err := runDialWithRetry(context.Background(), cfg, discardLoggerRunner(), func(context.Context, RunnerConfig) (*ServerLink, error) {
 		attempts++
 		if attempts < 3 {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("server restarting"))
+			return nil, connect.NewError(connect.CodeUnavailable, "server restarting")
 		}
 		return want, nil
 	}, func(_ context.Context, delay time.Duration) bool {
@@ -99,10 +99,10 @@ func TestRunDialWithRetryFailsFastOnNonRetryableErrors(t *testing.T) {
 		name string
 		err  error
 	}{
-		{name: "unauthenticated", err: connect.NewError(connect.CodeUnauthenticated, errors.New("bad token"))},
-		{name: "permission denied", err: connect.NewError(connect.CodePermissionDenied, errors.New("denied"))},
-		{name: "invalid argument", err: connect.NewError(connect.CodeInvalidArgument, errors.New("bad request"))},
-		{name: "failed precondition", err: connect.NewError(connect.CodeFailedPrecondition, errors.New("not ready"))},
+		{name: "unauthenticated", err: connect.NewError(connect.CodeUnauthenticated, "bad token")},
+		{name: "permission denied", err: connect.NewError(connect.CodePermissionDenied, "denied")},
+		{name: "invalid argument", err: connect.NewError(connect.CodeInvalidArgument, "bad request")},
+		{name: "failed precondition", err: connect.NewError(connect.CodeFailedPrecondition, "not ready")},
 		{name: "dial configuration", err: &dialConfigurationError{err: errors.New("bad client config")}},
 	}
 	for _, tc := range cases {

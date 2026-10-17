@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -115,7 +115,7 @@ func TestSpawnDespawnOverTheWire(t *testing.T) {
 func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerContainer string, peerHome store.ChannelID) {
 	t.Helper()
 	ctx := w.ctx
-	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
+	resp, err := w.supervisorClient.Lifecycle(ctx, &compassv1internal.LifecycleCallRequest{
 		CallId: "spawn-call-1",
 		Call: &compassv1internal.LifecycleCallRequest_Spawn{Spawn: &compassv1internal.SpawnPeerRequest{
 			Handle:          "peer-1",
@@ -123,22 +123,22 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 			ClientRequestId: "spawn-req-1",
 			Role:            "manager",
 		}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Lifecycle(spawn) over the socket = %v, want the round-trip result", err)
 	}
 	// A spawn is a SUCCESS variant (never the in-band _Error): an _Error here
 	// means the happy-path spawn tripped a tool-level guard it should not.
-	if e := resp.Msg.GetError(); e != nil {
+	if e := resp.GetError(); e != nil {
 		t.Fatalf("spawn returned in-band error {code=%q msg=%q}, want a spawn result", e.GetCode(), e.GetMessage())
 	}
-	spawn := resp.Msg.GetSpawn()
+	spawn := resp.GetSpawn()
 	if spawn == nil {
 		t.Fatal("spawn result carried no SpawnPeerResponse")
 	}
 	// call_id rides back verbatim: the hub stamps the inbound call_id onto the
 	// result (RelayLifecycleCall). Dropping that stamp reddens this.
-	if got := resp.Msg.GetCallId(); got != "spawn-call-1" {
+	if got := resp.GetCallId(); got != "spawn-call-1" {
 		t.Fatalf("result call id = %q, want the verbatim %q", got, "spawn-call-1")
 	}
 
@@ -199,14 +199,14 @@ func e2ePeerPostsUnderOwnAccount(t *testing.T, w *e2eWire, peerID store.AccountI
 	// to the PEER — never the supervisor. Mutation: if spawn promoted the binding onto
 	// the wrong account, this author check reddens — proof of an independent session.
 	client := w.dialPeer(t, peerContainer)
-	resp, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	resp, err := client.Comms(ctx, &compassv1internal.CommsCallRequest{
 		CallId: "peer-post-1",
 		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "peer-1"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: peerPostText}}}}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Comms(post) over the peer socket = %v, want the round-trip result", err)
 	}
-	posted := resp.Msg.GetPost().GetMessage()
+	posted := resp.GetPost().GetMessage()
 	if posted == nil {
 		t.Fatal("peer comms post result carried no message")
 	}
@@ -232,23 +232,23 @@ func e2ePeerPostsUnderOwnAccount(t *testing.T, w *e2eWire, peerID store.AccountI
 func e2eDespawnPeer(t *testing.T, w *e2eWire, peerID store.AccountID, peerContainer string) {
 	t.Helper()
 	ctx := w.ctx
-	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
+	resp, err := w.supervisorClient.Lifecycle(ctx, &compassv1internal.LifecycleCallRequest{
 		CallId: "despawn-call-1",
 		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: "peer-1"}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Lifecycle(despawn) over the socket = %v, want the round-trip result", err)
 	}
 	// Same-owner despawn is a SUCCESS variant. Mutation: an authz regression
 	// that treated the supervisor's own owner's peer as foreign would flip this
 	// to the in-band _Error not_found.
-	if e := resp.Msg.GetError(); e != nil {
+	if e := resp.GetError(); e != nil {
 		t.Fatalf("despawn returned in-band error {code=%q msg=%q}, want a despawn result", e.GetCode(), e.GetMessage())
 	}
-	if resp.Msg.GetDespawn() == nil {
+	if resp.GetDespawn() == nil {
 		t.Fatal("despawn result carried no DespawnPeerResponse")
 	}
-	if got := resp.Msg.GetCallId(); got != "despawn-call-1" {
+	if got := resp.GetCallId(); got != "despawn-call-1" {
 		t.Fatalf("result call id = %q, want the verbatim %q", got, "despawn-call-1")
 	}
 
@@ -278,10 +278,10 @@ func e2ePeerFailsClosedAfterDespawn(t *testing.T, w *e2eWire, peerID store.Accou
 	// TRANSPORT layer (socket file gone). Mutation: a despawn that stopped short of
 	// removing the container would let this post SUCCEED — the regression this pins.
 	client := w.dialPeer(t, peerContainer)
-	_, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	_, err := client.Comms(ctx, &compassv1internal.CommsCallRequest{
 		CallId: "peer-post-after-despawn",
 		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "peer-1"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "should never commit"}}}}},
-	}))
+	})
 	if err == nil {
 		t.Fatal("peer comms post after despawn SUCCEEDED, want a fail-closed error (container + socket torn down)")
 	}
@@ -332,10 +332,10 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	// The supervisor (owner A's agent) despawns owner B's peer over its OWN
 	// socket, naming it owner-qualified (`owner-b/peer-b`), since a bare handle
 	// resolves only in the caller owner's namespace.
-	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
+	resp, err := w.supervisorClient.Lifecycle(ctx, &compassv1internal.LifecycleCallRequest{
 		CallId: "foreign-despawn-1",
 		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: userB.Handle + "/peer-b"}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Lifecycle(foreign despawn) over the socket = %v, want an in-band result", err)
 	}
@@ -343,9 +343,9 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	// transport error: a tool-level failure never tears the transport down. Mutation:
 	// returning a Connect error here (or a distinct code) instead of the in-band
 	// not_found would redden this.
-	e := resp.Msg.GetError()
+	e := resp.GetError()
 	if e == nil {
-		t.Fatalf("foreign despawn returned a success result %+v, want the in-band not_found error", resp.Msg.GetResult())
+		t.Fatalf("foreign despawn returned a success result %+v, want the in-band not_found error", resp.GetResult())
 	}
 	// The code is EXACTLY not_found — the same token an UNKNOWN id yields — so a
 	// foreign-but-existing peer is indistinguishable from one that does not exist.
@@ -356,14 +356,14 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	}
 	// Cross-check indistinguishability against a genuinely unknown handle over the
 	// same wire: both must return the SAME in-band not_found.
-	unknownResp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
+	unknownResp, err := w.supervisorClient.Lifecycle(ctx, &compassv1internal.LifecycleCallRequest{
 		CallId: "unknown-despawn-1",
 		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: "never-minted"}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Lifecycle(unknown despawn) = %v, want an in-band result", err)
 	}
-	ue := unknownResp.Msg.GetError()
+	ue := unknownResp.GetError()
 	if ue == nil || ue.GetCode() != connect.CodeNotFound.String() {
 		t.Fatalf("unknown despawn error = %+v, want the SAME in-band not_found the foreign despawn returned", ue)
 	}
@@ -387,14 +387,14 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	// And owner B's peer can STILL act: its socket + session binding are intact,
 	// so a post over its socket still commits under the peer B account.
 	clientB := w.dialPeer(t, peerBContainer)
-	postResp, err := clientB.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	postResp, err := clientB.Comms(ctx, &compassv1internal.CommsCallRequest{
 		CallId: "peer-b-post-1",
 		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "peer-b"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "peer B still alive"}}}}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Comms(post) over peer B socket after the foreign despawn = %v, want success (peer B untouched)", err)
 	}
-	if got := postResp.Msg.GetPost().GetMessage().GetAuthorAccountId(); got != string(peerBID) {
+	if got := postResp.GetPost().GetMessage().GetAuthorAccountId(); got != string(peerBID) {
 		t.Fatalf("peer B post author = %q, want the peer B account %q (session binding intact)", got, peerBID)
 	}
 }

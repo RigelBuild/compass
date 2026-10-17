@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 // The agent is the untrusted side of this seam, and it chooses when to emit.

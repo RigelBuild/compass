@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
@@ -27,26 +25,26 @@ type fakeSecrets struct {
 	gotAuth     string
 }
 
-func (f *fakeSecrets) SetSecret(_ context.Context, req *connect.Request[compassv1.SetSecretRequest]) (*connect.Response[compassv1.SetSecretResponse], error) {
-	f.gotSet = req.Msg
+func (f *fakeSecrets) SetSecret(_ context.Context, req *compassv1.SetSecretRequest) (*compassv1.SetSecretResponse, error) {
+	f.gotSet = req
 	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.SetSecretResponse{}), nil
+	return &compassv1.SetSecretResponse{}, nil
 }
 
-func (f *fakeSecrets) ListSecrets(_ context.Context, req *connect.Request[compassv1.ListSecretsRequest]) (*connect.Response[compassv1.ListSecretsResponse], error) {
+func (f *fakeSecrets) ListSecrets(_ context.Context, req *compassv1.ListSecretsRequest) (*compassv1.ListSecretsResponse, error) {
 	f.gotAuth = req.Header().Get("Authorization")
 	list := f.list
 	if list == nil {
 		list = &compassv1.ListSecretsResponse{}
 	}
-	return connect.NewResponse(list), nil
+	return list, nil
 }
 
-func (f *fakeSecrets) DeleteSecret(_ context.Context, req *connect.Request[compassv1.DeleteSecretRequest]) (*connect.Response[compassv1.DeleteSecretResponse], error) {
+func (f *fakeSecrets) DeleteSecret(_ context.Context, req *compassv1.DeleteSecretRequest) (*compassv1.DeleteSecretResponse, error) {
 	f.deleteCalls++
-	f.gotDelete = req.Msg.GetName()
+	f.gotDelete = req.GetName()
 	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
+	return &compassv1.DeleteSecretResponse{}, nil
 }
 
 // startFakeSecretsServer stands up the fake SecretsService over a plain-HTTP

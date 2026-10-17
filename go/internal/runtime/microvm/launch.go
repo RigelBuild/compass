@@ -16,8 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
@@ -471,11 +469,11 @@ func waitForSockets(ctx context.Context, paths []string, waiting []*child, timeo
 // without a vsock device.
 func (vm *VM) Health(ctx context.Context) (*compassv1.HealthResponse, error) {
 	client := GuestClient(vm.vsockSocket, vm.vsockPort)
-	resp, err := client.Health(ctx, connect.NewRequest(&compassv1.HealthRequest{}))
+	resp, err := client.Health(ctx, &compassv1.HealthRequest{})
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // Shutdown tears the guest and its daemons down: the VMM is killed first (a VM

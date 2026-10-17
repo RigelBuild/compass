@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	natsd "github.com/nats-io/nats-server/v2/server"
 	natsserver "github.com/nats-io/nats-server/v2/test"
 
@@ -649,13 +648,13 @@ func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassService
 	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().IssueToken(rctx, connect.NewRequest(&compassv1.IssueTokenRequest{
+	resp, err := f.Compass().IssueToken(rctx, &compassv1.IssueTokenRequest{
 		AccountHandle: target,
-	}))
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("IssueToken RPC: %w", err)
 	}
-	token := resp.Msg.GetToken()
+	token := resp.GetToken()
 	if token == "" {
 		return nil, nil, fmt.Errorf("IssueToken for %q returned an empty token", handle)
 	}
@@ -674,14 +673,14 @@ func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassService
 func (f *Fixture) CreateUser(ctx context.Context, handle, displayName string) (ownerID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().CreateUser(rctx, connect.NewRequest(&compassv1.CreateUserRequest{
+	resp, err := f.Comms().CreateUser(rctx, &compassv1.CreateUserRequest{
 		Handle:      handle,
 		DisplayName: displayName,
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("CreateUser RPC: %w", err)
 	}
-	return resp.Msg.GetAccount().GetId(), nil
+	return resp.GetAccount().GetId(), nil
 }
 
 // CreateChannel creates a plain (kind=CHANNEL) channel over CommsService with
@@ -730,16 +729,16 @@ func (f *Fixture) CreateChannel(ctx context.Context, ownerID, name string, priva
 	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().CreateChannel(rctx, connect.NewRequest(&compassv1.CreateChannelRequest{
+	resp, err := f.Comms().CreateChannel(rctx, &compassv1.CreateChannelRequest{
 		Name:          name,
 		GroupId:       groupID,
 		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{ownerHandle},
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("CreateChannel RPC: %w", err)
 	}
-	return resp.Msg.GetChannel().GetId(), nil
+	return resp.GetChannel().GetId(), nil
 }
 
 // wireHandle maps an account ref (an id or a bare handle) to the handle the admin
@@ -753,15 +752,15 @@ func (f *Fixture) wireHandle(ctx context.Context, ref string) (string, error) {
 	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	resp, err := f.Comms().ListAccounts(rctx, &compassv1.ListAccountsRequest{})
 	if err != nil {
 		return "", fmt.Errorf("ListAccounts RPC: %w", err)
 	}
-	byID := make(map[string]*compassv1.Account, len(resp.Msg.GetAccounts()))
-	for _, acc := range resp.Msg.GetAccounts() {
+	byID := make(map[string]*compassv1.Account, len(resp.GetAccounts()))
+	for _, acc := range resp.GetAccounts() {
 		byID[acc.GetId()] = acc
 	}
-	for _, acc := range resp.Msg.GetAccounts() {
+	for _, acc := range resp.GetAccounts() {
 		if acc.GetId() != ref && acc.GetHandle() != ref {
 			continue
 		}
@@ -785,11 +784,11 @@ func (f *Fixture) wireHandle(ctx context.Context, ref string) (string, error) {
 func (f *Fixture) lookupAccount(ctx context.Context, ref string) (*compassv1.Account, error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	resp, err := f.Comms().ListAccounts(rctx, &compassv1.ListAccountsRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("ListAccounts RPC: %w", err)
 	}
-	for _, acc := range resp.Msg.GetAccounts() {
+	for _, acc := range resp.GetAccounts() {
 		if acc.GetId() == ref || acc.GetHandle() == ref {
 			return acc, nil
 		}
@@ -804,14 +803,14 @@ func (f *Fixture) lookupAccount(ctx context.Context, ref string) (*compassv1.Acc
 func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().CreateChannelGroup(rctx, connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+	resp, err := f.Comms().CreateChannelGroup(rctx, &compassv1.CreateChannelGroupRequest{
 		Name:       name,
 		Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_SHARED,
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("CreateChannelGroup RPC: %w", err)
 	}
-	return resp.Msg.GetGroup().GetId(), nil
+	return resp.GetGroup().GetId(), nil
 }
 
 // cannedAgentDir is the in-container path the canned models.yml is delivered

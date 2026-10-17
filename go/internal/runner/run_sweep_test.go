@@ -325,12 +325,12 @@ type sessionsStartedTestHandler struct {
 	sessions chan struct{}
 }
 
-func (h *sessionsStartedTestHandler) Enroll(ctx context.Context, req *connect.Request[compassv1internal.EnrollRequest]) (*connect.Response[compassv1internal.EnrollResponse], error) {
+func (h *sessionsStartedTestHandler) Enroll(ctx context.Context, req *compassv1internal.EnrollRequest) (*compassv1internal.EnrollResponse, error) {
 	resp, err := h.recordingEnroll.Enroll(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	resp.Msg.RunnerId = "cluster/node"
+	resp.RunnerId = "cluster/node"
 	return resp, nil
 }
 
@@ -424,10 +424,10 @@ type assignedIdentityRunHandler struct {
 	result chan *compassv1internal.SessionsRequest
 }
 
-func (h *assignedIdentityRunHandler) FetchAgentConfig(_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+func (h *assignedIdentityRunHandler) FetchAgentConfig(_ context.Context, _ *compassv1internal.FetchAgentConfigRequest, stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream) error {
 	return sendEmptyAgentConfig(stream)
 }
-func (h *assignedIdentityRunHandler) Sessions(_ context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+func (h *assignedIdentityRunHandler) Sessions(_ context.Context, stream compassv1internalconnect.RunnerServiceSessionsServerStream) error {
 	for {
 		request, err := stream.Receive()
 		if err != nil {

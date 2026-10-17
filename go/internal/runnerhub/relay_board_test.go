@@ -18,10 +18,9 @@ package runnerhub
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -123,7 +122,7 @@ func TestRelayBoardCallDelegatesUnderResolvedCallerAccount(t *testing.T) {
 // reddens the err==nil assertion.
 func TestRelayBoardCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, fake := newHubWithBoard()
-	fake.err = connect.NewError(connect.CodeNotFound, errors.New("issue \"iss-x\" does not exist"))
+	fake.err = connect.NewError(connect.CodeNotFound, "issue \"iss-x\" does not exist")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("sess-1", "bc-4", &compassv1internal.SetIssueStateRequest{IssueId: "iss-x", State: compassv1.IssueState_ISSUE_STATE_DONE}))

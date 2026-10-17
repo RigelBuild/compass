@@ -13,7 +13,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -50,7 +50,7 @@ func subscribeAgentSessionCode(t *testing.T, client compassv1connect.CompassServ
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	stream, err := client.SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{SessionId: sessionID}))
+	stream, err := client.SubscribeAgentSession(ctx, &compassv1.SubscribeAgentSessionRequest{SessionId: sessionID})
 	if err != nil {
 		return connect.CodeOf(err)
 	}
@@ -137,7 +137,7 @@ func TestSkipBatchWindowEarlyFailuresSkipStore(t *testing.T) {
 			client := newH2CClient(t, url)
 			ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 			defer cancel()
-			_, err := client.SkipBatchWindow(ctx, connect.NewRequest(&compassv1.SkipBatchWindowRequest{SessionId: tc.id}))
+			_, err := client.SkipBatchWindow(ctx, &compassv1.SkipBatchWindowRequest{SessionId: tc.id})
 			if got := connect.CodeOf(err); got != tc.want {
 				t.Fatalf("SkipBatchWindow error = %v, want %v", got, tc.want)
 			}

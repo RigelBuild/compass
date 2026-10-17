@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -516,17 +516,17 @@ func TestRemoveAgentWorkspaceHandler(t *testing.T) {
 	ctx := context.Background()
 
 	// Provision a real placement to release.
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-rm"})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-rm"}); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 	if _, _, err := f.store.PlacementForAgent(ctx, f.agentID); err != nil {
 		t.Fatalf("PlacementForAgent after provision = %v, want a live placement", err)
 	}
 
-	if _, err := f.client.RemoveAgentWorkspace(ctx, connect.NewRequest(&compassv1.RemoveAgentWorkspaceRequest{
+	if _, err := f.client.RemoveAgentWorkspace(ctx, &compassv1.RemoveAgentWorkspaceRequest{
 		ContainerName:   fakeContainer,
 		ClientRequestId: "rm-1",
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RemoveAgentWorkspace = %v, want success", err)
 	}
 	if !f.runner.sawRemove(fakeContainer) {
@@ -537,10 +537,10 @@ func TestRemoveAgentWorkspaceHandler(t *testing.T) {
 	}
 
 	// Idempotent: removing an unknown container succeeds.
-	if _, err := f.client.RemoveAgentWorkspace(ctx, connect.NewRequest(&compassv1.RemoveAgentWorkspaceRequest{
+	if _, err := f.client.RemoveAgentWorkspace(ctx, &compassv1.RemoveAgentWorkspaceRequest{
 		ContainerName:   "compass-agent-unknown",
 		ClientRequestId: "rm-2",
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RemoveAgentWorkspace(unknown container) = %v, want idempotent success", err)
 	}
 }
@@ -554,9 +554,9 @@ func TestRemoveAgentWorkspaceWithoutRunnerHubIsUnavailable(t *testing.T) {
 	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
-	_, err := client.RemoveAgentWorkspace(context.Background(), connect.NewRequest(&compassv1.RemoveAgentWorkspaceRequest{
+	_, err := client.RemoveAgentWorkspace(context.Background(), &compassv1.RemoveAgentWorkspaceRequest{
 		ContainerName: "c1",
-	}))
+	})
 	if err == nil {
 		t.Fatal("RemoveAgentWorkspace on a hubless server = nil error, want CodeUnavailable")
 	}

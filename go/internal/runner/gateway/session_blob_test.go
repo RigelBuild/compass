@@ -4,10 +4,9 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -19,13 +18,13 @@ type fakeSessionBlobRelay struct {
 	calls int
 }
 
-func (f *fakeSessionBlobRelay) RelaySessionBlob(_ context.Context, req *connect.Request[compassv1internal.RelaySessionBlobRequest]) (*connect.Response[compassv1internal.RelaySessionBlobResponse], error) {
+func (f *fakeSessionBlobRelay) RelaySessionBlob(_ context.Context, req *compassv1internal.RelaySessionBlobRequest) (*compassv1internal.RelaySessionBlobResponse, error) {
 	f.calls++
-	f.req = req.Msg
+	f.req = req
 	if f.err != nil {
 		return nil, f.err
 	}
-	return connect.NewResponse(f.resp), nil
+	return f.resp, nil
 }
 
 func TestPutSessionBlobForwardsUnderBoundSession(t *testing.T) {
@@ -34,11 +33,11 @@ func TestPutSessionBlobForwardsUnderBoundSession(t *testing.T) {
 	g := NewGateway(t.Context(), "cont-A", Deps{Sessions: sessions, SessionBlobs: relay})
 	want := &compassv1internal.PutSessionBlobRequest{Sha256: "abc", Data: []byte{0, 1, 255}}
 
-	resp, err := g.PutSessionBlob(t.Context(), connect.NewRequest(want))
+	resp, err := g.PutSessionBlob(t.Context(), want)
 	if err != nil {
 		t.Fatalf("PutSessionBlob = %v, want success", err)
 	}
-	if resp.Msg == nil {
+	if resp == nil {
 		t.Fatal("PutSessionBlob response is nil")
 	}
 	if relay.calls != 1 {
@@ -56,7 +55,7 @@ func TestPutSessionBlobUnboundSessionFailsClosed(t *testing.T) {
 	relay := &fakeSessionBlobRelay{}
 	g := NewGateway(t.Context(), "cont-A", Deps{Sessions: &staticSessions{}, SessionBlobs: relay})
 
-	_, err := g.PutSessionBlob(t.Context(), connect.NewRequest(&compassv1internal.PutSessionBlobRequest{Data: []byte("blob")}))
+	_, err := g.PutSessionBlob(t.Context(), &compassv1internal.PutSessionBlobRequest{Data: []byte("blob")})
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("PutSessionBlob error code = %v, want FailedPrecondition", got)
 	}
@@ -69,9 +68,9 @@ func TestPutSessionBlobRejectsOversizeBeforeRelay(t *testing.T) {
 	relay := &fakeSessionBlobRelay{}
 	g := NewGateway(t.Context(), "cont-A", Deps{Sessions: boundSessions(), SessionBlobs: relay})
 
-	_, err := g.PutSessionBlob(t.Context(), connect.NewRequest(&compassv1internal.PutSessionBlobRequest{
+	_, err := g.PutSessionBlob(t.Context(), &compassv1internal.PutSessionBlobRequest{
 		Data: make([]byte, 15<<20+1),
-	}))
+	})
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("PutSessionBlob error code = %v, want InvalidArgument", got)
 	}
@@ -81,11 +80,11 @@ func TestPutSessionBlobRejectsOversizeBeforeRelay(t *testing.T) {
 }
 
 func TestPutSessionBlobPassesServerErrorUnchanged(t *testing.T) {
-	wantErr := connect.NewError(connect.CodeFailedPrecondition, errors.New("no object store"))
+	wantErr := connect.NewError(connect.CodeFailedPrecondition, "no object store")
 	relay := &fakeSessionBlobRelay{err: wantErr}
 	g := NewGateway(t.Context(), "cont-A", Deps{Sessions: boundSessions(), SessionBlobs: relay})
 
-	_, err := g.PutSessionBlob(t.Context(), connect.NewRequest(&compassv1internal.PutSessionBlobRequest{Data: []byte("blob")}))
+	_, err := g.PutSessionBlob(t.Context(), &compassv1internal.PutSessionBlobRequest{Data: []byte("blob")})
 	if err != wantErr {
 		t.Fatalf("PutSessionBlob error = %v, want original Server error %v", err, wantErr)
 	}
@@ -97,7 +96,7 @@ func TestPutSessionBlobAcceptsBinaryProtoOverAgentGateway(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 	want := &compassv1internal.PutSessionBlobRequest{Sha256: "digest", Data: []byte{0, 1, 2, 255}}
 
-	if _, err := client.PutSessionBlob(t.Context(), connect.NewRequest(want)); err != nil {
+	if _, err := client.PutSessionBlob(t.Context(), want); err != nil {
 		t.Fatalf("binary PutSessionBlob = %v, want success", err)
 	}
 	if relay.calls != 1 || relay.req.GetBlob().GetSha256() != want.GetSha256() || string(relay.req.GetBlob().GetData()) != string(want.GetData()) {

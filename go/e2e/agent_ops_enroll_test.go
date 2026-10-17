@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -35,28 +35,28 @@ func TestClassifyEnrollProbe(t *testing.T) {
 		},
 		{
 			name:      "unavailable no runner enrolled retries",
-			err:       connect.NewError(connect.CodeUnavailable, errors.New("unavailable: no runner enrolled to serve session")),
+			err:       connect.NewError(connect.CodeUnavailable, "unavailable: no runner enrolled to serve session"),
 			wantReady: false,
 			wantRetry: true,
 			wantErr:   false,
 		},
 		{
 			name:      "unavailable sessions stream not attached retries",
-			err:       connect.NewError(connect.CodeUnavailable, errors.New(`no live runner sessions stream for command "x"`)),
+			err:       connect.NewError(connect.CodeUnavailable, `no live runner sessions stream for command "x"`),
 			wantReady: false,
 			wantRetry: true,
 			wantErr:   false,
 		},
 		{
 			name:      "internal error is surfaced",
-			err:       connect.NewError(connect.CodeInternal, errors.New("boom")),
+			err:       connect.NewError(connect.CodeInternal, "boom"),
 			wantReady: false,
 			wantRetry: false,
 			wantErr:   true,
 		},
 		{
 			name:      "unavailable with other message is surfaced not retried",
-			err:       connect.NewError(connect.CodeUnavailable, errors.New("some other unavailable")),
+			err:       connect.NewError(connect.CodeUnavailable, "some other unavailable"),
 			wantReady: false,
 			wantRetry: false,
 			wantErr:   true,
@@ -195,9 +195,9 @@ type enrollProbeClient struct {
 	hasDL    bool
 }
 
-func (c *enrollProbeClient) StopAgentSession(ctx context.Context, _ *connect.Request[compassv1.StopAgentSessionRequest]) (*connect.Response[compassv1.StopAgentSessionResponse], error) {
+func (c *enrollProbeClient) StopAgentSession(ctx context.Context, _ *compassv1.StopAgentSessionRequest) (*compassv1.StopAgentSessionResponse, error) {
 	c.deadline, c.hasDL = ctx.Deadline()
-	return nil, connect.NewError(connect.CodeUnavailable, errors.New(runnerhub.ErrMsgNoRunnerEnrolled+" to serve session"))
+	return nil, connect.NewError(connect.CodeUnavailable, runnerhub.ErrMsgNoRunnerEnrolled+" to serve session")
 }
 
 // TestRunnerEnrolledProbeBound pins each probe's timeout to

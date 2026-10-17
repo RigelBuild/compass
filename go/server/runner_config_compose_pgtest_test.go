@@ -17,7 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -167,14 +168,15 @@ func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 	waitServing(t, socketPath)
 
 	httpClient := newTLSRunnerHTTPClient(t, pool)
-	client := compassv1internalconnect.NewRunnerServiceClient(
+	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, "https://"+addr,
-		connect.WithInterceptors(runnerBearer(token)),
-	)
+		connecthttp.WithReadMaxBytes(0),
+	), runnerBearer(token),
+	))
 
 	fctx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	stream, err := client.FetchAgentConfig(fctx, connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{}))
+	stream, err := client.FetchAgentConfig(fctx, &compassv1internal.FetchAgentConfigRequest{})
 	if err != nil {
 		t.Fatalf("FetchAgentConfig open: %v", err)
 	}

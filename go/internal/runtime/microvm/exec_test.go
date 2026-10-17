@@ -20,7 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -31,20 +32,20 @@ import (
 // embeds UnimplementedGuestControlHandler's CodeUnimplemented.
 type fakeGuest struct {
 	compassv1internalconnect.UnimplementedGuestControlHandler
-	execFn       func(context.Context, *connect.Request[compassv1.ExecRequest]) (*connect.Response[compassv1.ExecResponse], error)
+	execFn       func(context.Context, *compassv1.ExecRequest) (*compassv1.ExecResponse, error)
 	execStreamFn func(context.Context, *connect.BidiStream[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse]) error
-	signalFn     func(context.Context, *connect.Request[compassv1.SignalRequest]) (*connect.Response[compassv1.SignalResponse], error)
+	signalFn     func(context.Context, *compassv1.SignalRequest) (*compassv1.SignalResponse, error)
 }
 
-func (f *fakeGuest) Exec(ctx context.Context, req *connect.Request[compassv1.ExecRequest]) (*connect.Response[compassv1.ExecResponse], error) {
+func (f *fakeGuest) Exec(ctx context.Context, req *compassv1.ExecRequest) (*compassv1.ExecResponse, error) {
 	return f.execFn(ctx, req)
 }
 
-func (f *fakeGuest) ExecStream(ctx context.Context, stream *connect.BidiStream[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse]) error {
+func (f *fakeGuest) ExecStream(ctx context.Context, stream compassv1internalconnect.GuestControlExecStreamServerStream) error {
 	return f.execStreamFn(ctx, stream)
 }
 
-func (f *fakeGuest) Signal(ctx context.Context, req *connect.Request[compassv1.SignalRequest]) (*connect.Response[compassv1.SignalResponse], error) {
+func (f *fakeGuest) Signal(ctx context.Context, req *compassv1.SignalRequest) (*compassv1.SignalResponse, error) {
 	return f.signalFn(ctx, req)
 }
 
@@ -62,7 +63,9 @@ func serveFakeGuest(t *testing.T, fake *fakeGuest) *GuestExec {
 	t.Cleanup(func() { _ = ln.Close() }) // listener teardown
 
 	mux := http.NewServeMux()
-	mux.Handle(compassv1internalconnect.NewGuestControlHandler(fake))
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterGuestControlHandler(server, fake)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
 	srv := &http.Server{Handler: mux, Protocols: protocols}
@@ -80,22 +83,22 @@ func serveFakeGuest(t *testing.T, fake *fakeGuest) *GuestExec {
 			},
 		},
 	}
-	client := compassv1internalconnect.NewGuestControlClient(httpClient, "http://guest")
+	client := compassv1internalconnect.NewGuestControlClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://guest", connecthttp.WithReadMaxBytes(0))))
 	return NewGuestExec(client)
 }
 
 func TestGuestExec_OneShot_NonZeroExitIsSuccess(t *testing.T) {
 	ge := serveFakeGuest(t, &fakeGuest{
-		execFn: func(_ context.Context, req *connect.Request[compassv1.ExecRequest]) (*connect.Response[compassv1.ExecResponse], error) {
+		execFn: func(_ context.Context, req *compassv1.ExecRequest) (*compassv1.ExecResponse, error) {
 			// Echo the command back so we also prove the spec mapped through.
-			if got := req.Msg.GetCommand(); len(got) != 1 || got[0] != "false" {
+			if got := req.GetCommand(); len(got) != 1 || got[0] != "false" {
 				t.Errorf("command = %v, want [false]", got)
 			}
-			return connect.NewResponse(&compassv1.ExecResponse{
+			return &compassv1.ExecResponse{
 				Stdout:   []byte("out"),
 				Stderr:   []byte("err"),
 				ExitCode: 3,
-			}), nil
+			}, nil
 		},
 	})
 
@@ -113,8 +116,8 @@ func TestGuestExec_OneShot_NonZeroExitIsSuccess(t *testing.T) {
 
 func TestGuestExec_OneShot_RefusalIsError(t *testing.T) {
 	ge := serveFakeGuest(t, &fakeGuest{
-		execFn: func(context.Context, *connect.Request[compassv1.ExecRequest]) (*connect.Response[compassv1.ExecResponse], error) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("uid 0 refused"))
+		execFn: func(context.Context, *compassv1.ExecRequest) (*compassv1.ExecResponse, error) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, "uid 0 refused")
 		},
 	})
 
@@ -129,9 +132,9 @@ func TestGuestExec_OneShot_RefusalIsError(t *testing.T) {
 
 func TestGuestExec_OneShot_Timeout(t *testing.T) {
 	ge := serveFakeGuest(t, &fakeGuest{
-		execFn: func(ctx context.Context, _ *connect.Request[compassv1.ExecRequest]) (*connect.Response[compassv1.ExecResponse], error) {
+		execFn: func(ctx context.Context, _ *compassv1.ExecRequest) (*compassv1.ExecResponse, error) {
 			<-ctx.Done() // outlive the host deadline
-			return nil, connect.NewError(connect.CodeDeadlineExceeded, ctx.Err())
+			return nil, connect.NewError(connect.CodeDeadlineExceeded, ctx.Err().Error())
 		},
 	})
 
@@ -289,15 +292,15 @@ func TestGuestExec_Stream_KillIssuesSignalAndUnblocksWait(t *testing.T) {
 				Frame: &compassv1.ExecStreamResponse_Exit{Exit: &compassv1.ExecExit{Signal: 9}},
 			})
 		},
-		signalFn: func(_ context.Context, req *connect.Request[compassv1.SignalRequest]) (*connect.Response[compassv1.SignalResponse], error) {
+		signalFn: func(_ context.Context, req *compassv1.SignalRequest) (*compassv1.SignalResponse, error) {
 			mu.Lock()
-			gotSignal = req.Msg.GetSignal()
+			gotSignal = req.GetSignal()
 			mu.Unlock()
-			if req.Msg.GetExecId() != "exec-kill" {
-				t.Errorf("signal exec_id = %q, want exec-kill", req.Msg.GetExecId())
+			if req.GetExecId() != "exec-kill" {
+				t.Errorf("signal exec_id = %q, want exec-kill", req.GetExecId())
 			}
 			close(signalled)
-			return connect.NewResponse(&compassv1.SignalResponse{}), nil
+			return &compassv1.SignalResponse{}, nil
 		},
 	})
 

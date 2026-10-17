@@ -70,8 +70,8 @@ func TestHandlerInterceptorsMountsSpanAndTraceResponseBeforeRest(t *testing.T) {
 			return resp, err
 		}
 	})
-	handler := connect.NewUnaryHandler("/test.Service/Call", func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
-		return connect.NewResponse(&emptypb.Empty{}), nil
+	handler := connect.NewUnaryHandler("/test.Service/Call", func(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+		return &emptypb.Empty{}, nil
 	}, HandlerInterceptors(ic, rest))
 	mux := http.NewServeMux()
 	mux.Handle("/test.Service/Call", handler)
@@ -79,7 +79,7 @@ func TestHandlerInterceptorsMountsSpanAndTraceResponseBeforeRest(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](server.Client(), server.URL+"/test.Service/Call")
-	response, err := client.CallUnary(t.Context(), connect.NewRequest(&emptypb.Empty{}))
+	response, err := client.CallUnary(t.Context(), &emptypb.Empty{})
 	if err != nil {
 		t.Fatalf("CallUnary: %v", err)
 	}

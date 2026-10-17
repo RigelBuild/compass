@@ -13,7 +13,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -31,17 +31,17 @@ type fakeFetchServer struct {
 	err           error
 }
 
-func (f *fakeFetchServer) FetchSecrets(_ context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
-	f.lastSessionID = req.Msg.GetSessionId()
+func (f *fakeFetchServer) FetchSecrets(_ context.Context, req *compassv1internal.FetchSecretsRequest) (*compassv1internal.FetchSecretsResponse, error) {
+	f.lastSessionID = req.GetSessionId()
 	if f.err != nil {
 		return nil, f.err
 	}
-	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: f.secrets}), nil
+	return &compassv1internal.FetchSecretsResponse{Secrets: f.secrets}, nil
 }
 
 // FetchAgentConfig serves the unconfigured-fleet bundle so the provision path
 // (used by secrets_refresh_test's host fixture) gets past its config materialize.
-func (f *fakeFetchServer) FetchAgentConfig(_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+func (f *fakeFetchServer) FetchAgentConfig(_ context.Context, _ *compassv1internal.FetchAgentConfigRequest, stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream) error {
 	return sendEmptyAgentConfig(stream)
 }
 
@@ -99,7 +99,7 @@ func TestFetchSecretsMapsWireToResolveSurface(t *testing.T) {
 // error, never a silent empty set — a wiring/authz failure must be loud so the
 // dispatch hook can log it and recover on the next signal.
 func TestFetchSecretsPropagatesError(t *testing.T) {
-	server := &fakeFetchServer{err: connect.NewError(connect.CodePermissionDenied, errTestDenied)}
+	server := &fakeFetchServer{err: connect.NewError(connect.CodePermissionDenied, errTestDenied.Error()).WithCause(errTestDenied)}
 	client := newRunnerServiceServer(t, server)
 	link := newLink(client)
 

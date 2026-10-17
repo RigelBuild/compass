@@ -18,8 +18,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnertest"
@@ -750,7 +748,7 @@ func TestStopReapsBeforeJoiningTheDrains(t *testing.T) {
 
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	go func() {
-		_, _ = client.Comms(context.Background(), connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "tc-stop"}))
+		_, _ = client.Comms(context.Background(), &compassv1internal.CommsCallRequest{CallId: "tc-stop"})
 	}()
 
 	// Event-gated, not slept: proceed only once the forward is really in-flight.

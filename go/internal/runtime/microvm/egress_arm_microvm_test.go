@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
@@ -70,10 +70,10 @@ func TestInGuestArmFailureKeepsExecGateClosed(t *testing.T) {
 	// shell exited.
 	provCtx, provCancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer provCancel()
-	_, provErr := client.Provision(provCtx, connect.NewRequest(&compassv1.ProvisionRequest{
+	_, provErr := client.Provision(provCtx, &compassv1.ProvisionRequest{
 		NftScript:      "set -eu\nnft add rule inet nonexistent_table output accept",
 		DefaultExecUid: 1000,
-	}))
+	})
 	if provErr == nil {
 		t.Fatalf("Provision with a failing arm script succeeded; want a fail-closed error.\n%s", vm.Diagnostics())
 	}
@@ -88,10 +88,10 @@ func TestInGuestArmFailureKeepsExecGateClosed(t *testing.T) {
 	execCtx, execCancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer execCancel()
 	uid := uint32(1000)
-	_, execErr := client.Exec(execCtx, connect.NewRequest(&compassv1.ExecRequest{
+	_, execErr := client.Exec(execCtx, &compassv1.ExecRequest{
 		Command: []string{"true"},
 		Uid:     &uid,
-	}))
+	})
 	if execErr == nil {
 		t.Fatalf("Exec after a failed arm succeeded; the exec gate must stay closed.\n%s", vm.Diagnostics())
 	}

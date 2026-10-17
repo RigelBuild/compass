@@ -21,7 +21,7 @@ import (
 	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -172,39 +172,39 @@ func secretsFixtureKey(t *testing.T) envelope.Key {
 	return k
 }
 
-func setReq(bearer, name, value string) *connect.Request[compassv1.SetSecretRequest] {
-	req := connect.NewRequest(&compassv1.SetSecretRequest{
+func setReq(bearer, name, value string) *compassv1.SetSecretRequest {
+	req := &compassv1.SetSecretRequest{
 		Name:     name,
 		Value:    value,
 		Delivery: compassv1.SecretDelivery_SECRET_DELIVERY_ENV,
 		Kind:     compassv1.SecretKind_SECRET_KIND_GENERIC,
-	})
+	}
 	req.Header().Set("Authorization", "Bearer "+bearer)
 	return req
 }
 
-func delReq(bearer, name string) *connect.Request[compassv1.DeleteSecretRequest] {
-	req := connect.NewRequest(&compassv1.DeleteSecretRequest{Name: name})
+func delReq(bearer, name string) *compassv1.DeleteSecretRequest {
+	req := &compassv1.DeleteSecretRequest{Name: name}
 	req.Header().Set("Authorization", "Bearer "+bearer)
 	return req
 }
 
 // scopedSetReq is setReq with an explicit D9 scope selector. setReq deliberately
 // leaves scope unset, so it exercises the unspecified-means-user default.
-func scopedSetReq(bearer, name, value string, scope compassv1.SecretScope) *connect.Request[compassv1.SetSecretRequest] {
+func scopedSetReq(bearer, name, value string, scope compassv1.SecretScope) *compassv1.SetSecretRequest {
 	req := setReq(bearer, name, value)
-	req.Msg.Scope = scope
+	req.Scope = scope
 	return req
 }
 
-func scopedDelReq(bearer, name string, scope compassv1.SecretScope) *connect.Request[compassv1.DeleteSecretRequest] {
+func scopedDelReq(bearer, name string, scope compassv1.SecretScope) *compassv1.DeleteSecretRequest {
 	req := delReq(bearer, name)
-	req.Msg.Scope = scope
+	req.Scope = scope
 	return req
 }
 
-func listReq(bearer string) *connect.Request[compassv1.ListSecretsRequest] {
-	req := connect.NewRequest(&compassv1.ListSecretsRequest{})
+func listReq(bearer string) *compassv1.ListSecretsRequest {
+	req := &compassv1.ListSecretsRequest{}
 	req.Header().Set("Authorization", "Bearer "+bearer)
 	return req
 }
@@ -240,8 +240,8 @@ func TestSetSecretUserOnly(t *testing.T) {
 func TestSetSecretRejectsGitHubKind(t *testing.T) {
 	f := newSecretsFixture(t)
 	req := setReq(f.userToken, "GH_TOKEN", "user-token")
-	req.Msg.Kind = compassv1.SecretKind_SECRET_KIND_GH
-	req.Msg.Host = "github.com"
+	req.Kind = compassv1.SecretKind_SECRET_KIND_GH
+	req.Host = "github.com"
 
 	_, err := f.client.SetSecret(context.Background(), req)
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
@@ -393,7 +393,7 @@ func TestListSecretsUserAndAgent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListSecrets as %s = %v, want success", tc.name, err)
 			}
-			got := resp.Msg.GetSecrets()
+			got := resp.GetSecrets()
 			if len(got) != 1 {
 				t.Fatalf("ListSecrets returned %d statuses, want 1", len(got))
 			}
@@ -411,8 +411,8 @@ func TestListSecretsUserAndAgent(t *testing.T) {
 	}
 }
 
-func listServerReq(bearer string) *connect.Request[compassv1.ListServerSecretsRequest] {
-	req := connect.NewRequest(&compassv1.ListServerSecretsRequest{})
+func listServerReq(bearer string) *compassv1.ListServerSecretsRequest {
+	req := &compassv1.ListServerSecretsRequest{}
 	req.Header().Set("Authorization", "Bearer "+bearer)
 	return req
 }
@@ -449,7 +449,7 @@ func TestListServerSecretsReportsDeclaredButUnset(t *testing.T) {
 		t.Fatalf("ListServerSecrets: %v", err)
 	}
 	got := map[string]bool{}
-	for _, s := range resp.Msg.GetServerSecrets() {
+	for _, s := range resp.GetServerSecrets() {
 		got[s.GetName()] = s.GetIsSet()
 	}
 	if len(got) != 2 {
@@ -485,7 +485,7 @@ func TestListServerSecretsProviderFailureIsNotAllUnset(t *testing.T) {
 
 	resp, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken))
 	if err == nil {
-		t.Fatalf("want an error on a provider fault, got a list: %v", resp.Msg.GetServerSecrets())
+		t.Fatalf("want an error on a provider fault, got a list: %v", resp.GetServerSecrets())
 	}
 	if got := connect.CodeOf(err); got != connect.CodeInternal {
 		t.Fatalf("want CodeInternal, got %v (err=%v)", got, err)

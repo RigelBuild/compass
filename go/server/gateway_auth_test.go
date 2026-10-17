@@ -11,7 +11,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -48,19 +49,19 @@ func newGatewayAuthClient(t *testing.T, v gatewayTokenVerifier) compassv1interna
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1internalconnect.NewGatewayAuthClient(&http.Client{Transport: tr}, srv.URL)
+	return compassv1internalconnect.NewGatewayAuthClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, srv.URL, connecthttp.WithReadMaxBytes(0))))
 }
 
 func TestVerifyAgentTokenResolvesCaller(t *testing.T) {
 	client := newGatewayAuthClient(t, fakeGatewayVerifier{
 		"tok-a": {AgentAccountID: "agent-a", OwnerUserID: "owner-a"},
 	})
-	resp, err := client.VerifyAgentToken(t.Context(), connect.NewRequest(&compassv1internal.VerifyAgentTokenRequest{Token: "tok-a"}))
+	resp, err := client.VerifyAgentToken(t.Context(), &compassv1internal.VerifyAgentTokenRequest{Token: "tok-a"})
 	if err != nil {
 		t.Fatalf("VerifyAgentToken: %v", err)
 	}
-	if resp.Msg.GetAgentAccountId() != "agent-a" || resp.Msg.GetOwnerUserId() != "owner-a" {
-		t.Fatalf("response = %v, want agent-a/owner-a", resp.Msg)
+	if resp.GetAgentAccountId() != "agent-a" || resp.GetOwnerUserId() != "owner-a" {
+		t.Fatalf("response = %v, want agent-a/owner-a", resp)
 	}
 }
 
@@ -69,7 +70,7 @@ func TestVerifyAgentTokenInvalidIsUnauthenticated(t *testing.T) {
 	client := newGatewayAuthClient(t, fakeGatewayVerifier{})
 	var first string
 	for _, token := range []string{"unknown", ""} {
-		_, err := client.VerifyAgentToken(t.Context(), connect.NewRequest(&compassv1internal.VerifyAgentTokenRequest{Token: token}))
+		_, err := client.VerifyAgentToken(t.Context(), &compassv1internal.VerifyAgentTokenRequest{Token: token})
 		if code := connect.CodeOf(err); code != connect.CodeUnauthenticated {
 			t.Fatalf("token %q: code = %v, want Unauthenticated (err %v)", token, code, err)
 		}
@@ -84,7 +85,7 @@ func TestVerifyAgentTokenInvalidIsUnauthenticated(t *testing.T) {
 // A store fault is not reported as a bad token.
 func TestVerifyAgentTokenStoreFaultIsInternal(t *testing.T) {
 	client := newGatewayAuthClient(t, fakeGatewayVerifier{})
-	_, err := client.VerifyAgentToken(t.Context(), connect.NewRequest(&compassv1internal.VerifyAgentTokenRequest{Token: "store-fault"}))
+	_, err := client.VerifyAgentToken(t.Context(), &compassv1internal.VerifyAgentTokenRequest{Token: "store-fault"})
 	if code := connect.CodeOf(err); code != connect.CodeInternal {
 		t.Fatalf("code = %v, want Internal (err %v)", code, err)
 	}

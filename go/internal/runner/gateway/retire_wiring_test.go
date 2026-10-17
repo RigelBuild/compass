@@ -28,7 +28,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -65,7 +65,10 @@ func TestRetireSessionReachesTheServedProducer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l.Close(context.Background()) })
 
-	p := l.producer(t)
+	p, err := l.producer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// The lifecycle binds the session at Start, through the same listener seam
 	// the retirement uses at Stop.
@@ -84,7 +87,7 @@ func TestRetireSessionReachesTheServedProducer(t *testing.T) {
 	// t.Context is cancelled at test end, so a subscription that outlives the
 	// assertions is reaped rather than leaked into the rest of the package's run.
 	stream, err := agentClient(t, path).Control(t.Context(),
-		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		&compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
 	}
@@ -181,7 +184,7 @@ func TestSendControlReachesTheServedProducer(t *testing.T) {
 	}
 
 	stream, err := agentClient(t, path).Control(t.Context(),
-		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		&compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
 	}

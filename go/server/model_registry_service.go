@@ -12,7 +12,7 @@ import (
 	"context"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -27,17 +27,17 @@ import (
 // operator write landed first).
 func (s *service) PutModelRegistry(
 	ctx context.Context,
-	req *connect.Request[compassv1.PutModelRegistryRequest],
-) (*connect.Response[compassv1.PutModelRegistryResponse], error) {
+	req *compassv1.PutModelRegistryRequest,
+) (*compassv1.PutModelRegistryResponse, error) {
 	caller, err := s.requireCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	version, err := s.store.PutModelRegistry(ctx, caller, registryFromProto(req.Msg.GetRegistry()), req.Msg.GetExpectedVersion())
+	version, err := s.store.PutModelRegistry(ctx, caller, registryFromProto(req.GetRegistry()), req.GetExpectedVersion())
 	if err != nil {
 		return nil, mapModelRegistryErr(err)
 	}
-	return connect.NewResponse(&compassv1.PutModelRegistryResponse{Version: version}), nil
+	return &compassv1.PutModelRegistryResponse{Version: version}, nil
 }
 
 // GetModelRegistry reports the current registry version and payload. An
@@ -46,21 +46,21 @@ func (s *service) PutModelRegistry(
 // value-free posture GetAgentConfigInfo takes on an unconfigured fleet.
 func (s *service) GetModelRegistry(
 	ctx context.Context,
-	_ *connect.Request[compassv1.GetModelRegistryRequest],
-) (*connect.Response[compassv1.GetModelRegistryResponse], error) {
+	_ *compassv1.GetModelRegistryRequest,
+) (*compassv1.GetModelRegistryResponse, error) {
 	version, reg, err := s.store.CurrentModelRegistry(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewResponse(&compassv1.GetModelRegistryResponse{
+			return &compassv1.GetModelRegistryResponse{
 				Registry: registryToProto(store.ModelRegistry{}),
-			}), nil
+			}, nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&compassv1.GetModelRegistryResponse{
+	return &compassv1.GetModelRegistryResponse{
 		Version:  version,
 		Registry: registryToProto(reg),
-	}), nil
+	}, nil
 }
 
 // DeleteModelRegistry clears the fleet model registry back to unconfigured.
@@ -69,12 +69,12 @@ func (s *service) GetModelRegistry(
 // Idempotent at the store: clearing an already-empty registry succeeds.
 func (s *service) DeleteModelRegistry(
 	ctx context.Context,
-	_ *connect.Request[compassv1.DeleteModelRegistryRequest],
-) (*connect.Response[compassv1.DeleteModelRegistryResponse], error) {
+	_ *compassv1.DeleteModelRegistryRequest,
+) (*compassv1.DeleteModelRegistryResponse, error) {
 	if err := s.store.DeleteModelRegistry(ctx); err != nil {
 		return nil, mapModelRegistryErr(err)
 	}
-	return connect.NewResponse(&compassv1.DeleteModelRegistryResponse{}), nil
+	return &compassv1.DeleteModelRegistryResponse{}, nil
 }
 
 // mapModelRegistryErr maps a store error to its connect status code: a malformed
@@ -85,11 +85,11 @@ func (s *service) DeleteModelRegistry(
 func mapModelRegistryErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrInvalidArgument):
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	case errors.Is(err, store.ErrVersionConflict):
-		return connect.NewError(connect.CodeAborted, err)
+		return connect.NewError(connect.CodeAborted, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 }
 

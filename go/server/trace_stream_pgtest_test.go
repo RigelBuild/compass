@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
@@ -155,10 +156,11 @@ func TestSubscribeAgentSessionStoreQueryHasNoSpan(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	server := tracedStreamServer(t, mux)
-	client := compassv1connect.NewCompassServiceClient(newH2CStreamClient(t), server.URL)
+	client := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(newH2CStreamClient(t), server.URL, connecthttp.WithReadMaxBytes(0))))
 	ctx, cancel := context.WithCancel(t.Context())
-	req := connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{SessionId: sessionID})
-	req.Header().Set("Authorization", "Bearer "+ownerToken)
+	req := &compassv1.SubscribeAgentSessionRequest{SessionId: sessionID}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+ownerToken)
 	stream, err := client.SubscribeAgentSession(ctx, req)
 	if err != nil {
 		cancel()
@@ -234,10 +236,10 @@ func TestSubscribeCommsHeadQueryHasNoSpan(t *testing.T) {
 	mux.Handle(path, handler)
 	queries.reset()
 	server := tracedStreamServer(t, mux)
-	client := compassv1connect.NewCommsServiceClient(newH2CStreamClient(t), server.URL)
+	client := compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(newH2CStreamClient(t), server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	ctx, cancel := context.WithCancel(t.Context())
-	stream, err := client.SubscribeComms(ctx, connect.NewRequest(&compassv1.SubscribeCommsRequest{SinceSeq: 0}))
+	stream, err := client.SubscribeComms(ctx, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 	if err != nil {
 		cancel()
 		t.Fatalf("SubscribeComms: %v", err)

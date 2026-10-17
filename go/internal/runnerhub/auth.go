@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -50,14 +50,14 @@ const bearerPrefix = "Bearer "
 // errUnauthenticated is the single opaque error every credential failure maps to —
 // no detail distinguishes not-found, revoked, or wrong-kind to the client (no
 // oracle). The distinct store sentinels are logged server-side only.
-var errUnauthenticated = connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))
+var errUnauthenticated = connect.NewError(connect.CodeUnauthenticated, "unauthenticated")
 
 // errLookupUnavailable is the fixed store-fault response; the cause can name DB hosts, so it stays server-side.
-var errLookupUnavailable = connect.NewError(connect.CodeUnavailable, errors.New("credential check unavailable"))
+var errLookupUnavailable = connect.NewError(connect.CodeUnavailable, "credential check unavailable")
 
 // errKeysUnavailable is the fixed response when a projected token names a
 // registered cluster whose keys are unusable; retryable, unlike a bad token.
-var errKeysUnavailable = connect.NewError(connect.CodeUnavailable, errors.New("runner cluster keys unavailable"))
+var errKeysUnavailable = connect.NewError(connect.CodeUnavailable, "runner cluster keys unavailable")
 
 // authenticate extracts the bearer token from the request header, resolves it as
 // a SubjectRunner token, and returns a context carrying the subject. Any

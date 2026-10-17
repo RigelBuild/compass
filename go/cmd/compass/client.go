@@ -13,7 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -198,10 +199,11 @@ func newClient(cfg connConfig) (compassv1connect.CompassServiceClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewCompassServiceClient(
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+		connecthttp.WithReadMaxBytes(0),
+	), &bearerToken{token: cfg.token},
+	)), nil
 }
 
 // newSecretsClient constructs the SecretsService client for the resolved
@@ -211,10 +213,11 @@ func newSecretsClient(cfg connConfig) (compassv1connect.SecretsServiceClient, er
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewSecretsServiceClient(
+	return compassv1connect.NewSecretsServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+		connecthttp.WithReadMaxBytes(0),
+	), &bearerToken{token: cfg.token},
+	)), nil
 }
 
 // dialClient resolves the connection config and builds the client in one step —
@@ -242,10 +245,11 @@ func newAgentRepositoryClient(cfg connConfig) (compassv1connect.AgentRepositoryS
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewAgentRepositoryServiceClient(
+	return compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+		connecthttp.WithReadMaxBytes(0),
+	), &bearerToken{token: cfg.token},
+	)), nil
 }
 
 func dialAgentRepositoryClient(cmd *cobra.Command) (compassv1connect.AgentRepositoryServiceClient, error) {
@@ -263,10 +267,11 @@ func newCommsClient(cfg connConfig) (compassv1connect.CommsServiceClient, error)
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewCommsServiceClient(
+	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+		connecthttp.WithReadMaxBytes(0),
+	), &bearerToken{token: cfg.token},
+	)), nil
 }
 
 // dialCommsClient resolves the connection config and builds the CommsService

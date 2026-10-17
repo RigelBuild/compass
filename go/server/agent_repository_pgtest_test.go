@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"golang.org/x/time/rate"
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -58,7 +60,7 @@ func newAgentRepositoryLifecycleTest(t *testing.T) *agentRepositoryLifecycleTest
 	signal := &recordingAgentRepoSignaler{}
 	svc := newAgentRepositoryService(f.store, broker, signal)
 	url := newAgentRepositoryH2CServer(t, svc, f.store, f.ownerAdmin)
-	client := compassv1connect.NewAgentRepositoryServiceClient(newAgentRepositoryH2CClient(t), url)
+	client := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), url, connecthttp.WithReadMaxBytes(0))))
 	return &agentRepositoryLifecycleTest{
 		t: t, f: f, ctx: ctx, clock: &clock, minter: minter, resolver: resolver, client: client, token: token, signal: signal,
 	}
@@ -97,7 +99,7 @@ func (e *agentRepositoryLifecycleTest) assertMintRepos(index int, want []string,
 func (e *agentRepositoryLifecycleTest) grant(handle, repository string) {
 	e.t.Helper()
 	resp, err := grantAgentRepository(e.client, e.ctx, e.token, handle, repository)
-	if err != nil || !resp.Msg.GetAdded() {
+	if err != nil || !resp.GetAdded() {
 		e.t.Fatalf("GrantAgentRepository(%q, %q) = (%v, %v), want added", handle, repository, resp, err)
 	}
 }
@@ -105,7 +107,7 @@ func (e *agentRepositoryLifecycleTest) grant(handle, repository string) {
 func (e *agentRepositoryLifecycleTest) revoke(handle, repository string) {
 	e.t.Helper()
 	resp, err := revokeAgentRepository(e.client, e.ctx, e.token, handle, repository)
-	if err != nil || !resp.Msg.GetRemoved() {
+	if err != nil || !resp.GetRemoved() {
 		e.t.Fatalf("RevokeAgentRepository(%q, %q) = (%v, %v), want removed", handle, repository, resp, err)
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"context"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -49,7 +49,7 @@ func (h *Hub) RelayBoardCall( //nolint:dupl // mirrored security guard order in 
 	caller := h.boardCaller
 	h.mu.Unlock()
 	if caller == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errBoardUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errBoardUnavailable.Error()).WithCause(errBoardUnavailable)
 	}
 	ctx, account, err := h.runnerSessionAccountError(ctx, runnerID, req.GetSessionId())
 	if err != nil {
@@ -88,7 +88,7 @@ func (h *Hub) executeBoardCall(
 	if oneof == nil {
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: board call has no set_issue_state variant set"),
+			"runnerhub: board call has no set_issue_state variant set",
 		)
 	}
 	switch c := oneof.(type) {
@@ -103,7 +103,7 @@ func (h *Hub) executeBoardCall(
 	default:
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: board call has no set_issue_state variant set"),
+			"runnerhub: board call has no set_issue_state variant set",
 		)
 	}
 }

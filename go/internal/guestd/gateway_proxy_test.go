@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -273,9 +273,9 @@ func TestProvisionStartsGatewayProxy(t *testing.T) {
 	svc, chownedTo := newGatewaySupervisor(t, socketPath, 1025)
 
 	const uid = 1000
-	_, err := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+	_, err := svc.Provision(t.Context(), &compassv1internal.ProvisionRequest{
 		DefaultExecUid: uid,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Provision with gateway port: %v", err)
 	}
@@ -321,9 +321,9 @@ func TestProvisionGatewayListenFailureKeepsGateClosed(t *testing.T) {
 	}
 	svc, _ := newGatewaySupervisor(t, socketPath, 1025)
 
-	_, err := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+	_, err := svc.Provision(t.Context(), &compassv1internal.ProvisionRequest{
 		DefaultExecUid: 1000,
-	}))
+	})
 	if err == nil {
 		t.Fatal("Provision with a pre-occupied socket path returned nil, want CodeInternal")
 	}
@@ -350,9 +350,9 @@ func TestProvisionNoGatewayPortStartsNoProxy(t *testing.T) {
 		state:         stateReady,
 		execs:         map[string]*childExec{},
 	}
-	_, err := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+	_, err := svc.Provision(t.Context(), &compassv1internal.ProvisionRequest{
 		DefaultExecUid: 1000,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Provision with no gateway port: %v", err)
 	}

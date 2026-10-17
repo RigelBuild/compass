@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -69,12 +69,12 @@ type stubWhoAmIServer struct {
 }
 
 func (s *stubWhoAmIServer) WhoAmI(
-	_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest],
-) (*connect.Response[compassv1.WhoAmIResponse], error) {
+	_ context.Context, _ *compassv1.WhoAmIRequest,
+) (*compassv1.WhoAmIResponse, error) {
 	if s.whoErr != nil {
 		return nil, s.whoErr
 	}
-	return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: s.accountID}), nil
+	return &compassv1.WhoAmIResponse{AccountId: s.accountID}, nil
 }
 
 // serveWhoAmI stands up a real h2c compass.v1 server on a UDS listener, torn
@@ -119,7 +119,7 @@ func TestWhoAmIOverUDSReturnsAccountID(t *testing.T) {
 // TestWhoAmIOverUDSSurfacesError: an RPC error from the server surfaces as a
 // non-nil error and an empty id (the dial does not fabricate an identity).
 func TestWhoAmIOverUDSSurfacesError(t *testing.T) {
-	srv := &stubWhoAmIServer{whoErr: connect.NewError(connect.CodeUnavailable, errors.New("starting"))}
+	srv := &stubWhoAmIServer{whoErr: connect.NewError(connect.CodeUnavailable, "starting")}
 	socket := serveWhoAmI(t, srv)
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()

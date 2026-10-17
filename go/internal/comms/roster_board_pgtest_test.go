@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -72,13 +70,13 @@ func TestGetRosterBoardSummaryCountsOperatorGatesAndStaleness(t *testing.T) {
 		fresh.ID: compassv1.AgentPresence_AGENT_PRESENCE_WORKING,
 	}})
 	svc.SetBoardForges(board.Forges{GitHubHost: "github.com"})
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope: compassv1.RosterScope_ROSTER_SCOPE_OWNER, VantageHandle: agent.Handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster: %v", err)
 	}
-	entries := rosterByID(resp.Msg.GetEntries())
+	entries := rosterByID(resp.GetEntries())
 	summary := entries[string(agent.ID)].GetBoard()
 	if summary == nil || summary.GetFocus() != "owner/repo#12 Review task" || summary.GetTaskCount() != 3 || summary.GetWaitingOnOperator() != 3 {
 		t.Fatalf("board summary = %v, want focus, three tasks, and three distinct gate waits", summary)
@@ -119,13 +117,13 @@ func TestBoardSummaryStalenessUsesStrictThirtyMinuteBoundary(t *testing.T) {
 		accounts[0].ID: compassv1.AgentPresence_AGENT_PRESENCE_WORKING,
 		accounts[1].ID: compassv1.AgentPresence_AGENT_PRESENCE_WORKING,
 	}})
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope: compassv1.RosterScope_ROSTER_SCOPE_OWNER,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster: %v", err)
 	}
-	entries := rosterByID(resp.Msg.GetEntries())
+	entries := rosterByID(resp.GetEntries())
 	for i, wantStale := range []bool{false, true} {
 		summary := entries[string(accounts[i].ID)].GetBoard()
 		if summary == nil {
@@ -158,13 +156,13 @@ func TestGetRosterKeepsSummariesWhenBoardRefDerivationFails(t *testing.T) {
 		t.Fatalf("UpsertPullRequest(invalid protobuf JSON): %v", err)
 	}
 	svc.SetBoardForges(board.Forges{GitHubHost: "github.com"})
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope: compassv1.RosterScope_ROSTER_SCOPE_OWNER,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster: %v", err)
 	}
-	entries := rosterByID(resp.Msg.GetEntries())
+	entries := rosterByID(resp.GetEntries())
 	badEntry := entries[string(bad.ID)]
 	if badEntry == nil || badEntry.GetBoard() == nil || badEntry.GetBoard().GetTaskCount() != 1 {
 		t.Fatalf("malformed-ref board entry = %v, want roster row with its stored task summary", badEntry)
@@ -197,13 +195,13 @@ func TestBoardSummaryKeepsStoredCountsWhenRefDerivationFails(t *testing.T) {
 	svc.SetPresenceSource(fakePresenceSource{presence: map[store.AccountID]compassv1.AgentPresence{
 		agent.ID: compassv1.AgentPresence_AGENT_PRESENCE_WORKING,
 	}})
-	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), &compassv1.GetRosterRequest{
 		Scope: compassv1.RosterScope_ROSTER_SCOPE_OWNER,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("GetRoster: %v", err)
 	}
-	summary := rosterByID(resp.Msg.GetEntries())[string(agent.ID)].GetBoard()
+	summary := rosterByID(resp.GetEntries())[string(agent.ID)].GetBoard()
 	if summary == nil || summary.GetTaskCount() != 1 || summary.GetWaitingOnOperator() != 1 || !summary.GetStale() {
 		t.Fatalf("stored summary after ref derivation failure = %v, want one stale operator-waiting task", summary)
 	}

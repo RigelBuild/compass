@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -29,8 +29,8 @@ type fakeConfigFetchServer struct {
 	err           error
 }
 
-func (f *fakeConfigFetchServer) FetchAgentConfig(_ context.Context, req *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
-	f.lastIfVersion = req.Msg.GetIfVersion()
+func (f *fakeConfigFetchServer) FetchAgentConfig(_ context.Context, req *compassv1internal.FetchAgentConfigRequest, stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream) error {
+	f.lastIfVersion = req.GetIfVersion()
 	if f.err != nil {
 		return f.err
 	}
@@ -197,7 +197,7 @@ func TestFetchAgentConfigUnknownFrameErrs(t *testing.T) {
 // a silent empty bundle — a wiring/authz failure must be loud so the caller
 // recovers on the next signal or reconnect.
 func TestFetchAgentConfigPropagatesError(t *testing.T) {
-	server := &fakeConfigFetchServer{err: connect.NewError(connect.CodeFailedPrecondition, errTestDenied)}
+	server := &fakeConfigFetchServer{err: connect.NewError(connect.CodeFailedPrecondition, errTestDenied.Error()).WithCause(errTestDenied)}
 	link := newLink(newRunnerServiceServer(t, server))
 
 	_, err := link.FetchAgentConfig(context.Background(), "")

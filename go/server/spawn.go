@@ -11,7 +11,7 @@ import (
 	"errors"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -67,25 +67,25 @@ type spawnCall struct {
 // a stranded container back down).
 func (s *service) SpawnAgent(
 	ctx context.Context,
-	req *connect.Request[compassv1.SpawnAgentRequest],
-) (*connect.Response[compassv1.SpawnAgentResponse], error) {
+	req *compassv1.SpawnAgentRequest,
+) (*compassv1.SpawnAgentResponse, error) {
 	if s.hub == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
 
 	// Resolved before the memo so a retry keys on the account, not the spelling:
 	// a rename between attempts still joins the first spawn.
-	acc, err := resolveQualifiedAgent(ctx, s.store, req.Msg.GetAgentHandle())
+	acc, err := resolveQualifiedAgent(ctx, s.store, req.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
-	return s.spawnAccount(ctx, acc, req.Msg.GetClientRequestId())
+	return s.spawnAccount(ctx, acc, req.GetClientRequestId())
 }
 
 // spawnAccount is SpawnAgent past the wire edge, for an already-resolved agent
 // acc: the memo, reject-on-live, and runSpawn. The root-supervisor seed calls it
 // directly with the account it already holds. The caller has checked s.hub.
-func (s *service) spawnAccount(ctx context.Context, acc store.Account, crid string) (*connect.Response[compassv1.SpawnAgentResponse], error) {
+func (s *service) spawnAccount(ctx context.Context, acc store.Account, crid string) (*compassv1.SpawnAgentResponse, error) {
 	if err := runnerhub.CheckClientRequestID(crid); err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (s *service) spawnAccount(ctx context.Context, acc store.Account, crid stri
 		key := spawnKey{account: string(acc.ID), crid: crid}
 		call, joined := s.joinOrBeginSpawn(key)
 		if call == nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("spawn: join returned no memo entry"))
+			return nil, connect.NewError(connect.CodeInternal, "spawn: join returned no memo entry")
 		}
 		if joined {
 			// Joined an in-flight or completed spawn: wait for it to settle and
@@ -109,14 +109,14 @@ func (s *service) spawnAccount(ctx context.Context, acc store.Account, crid stri
 		if err != nil {
 			return nil, err
 		}
-		return connect.NewResponse(resp), nil
+		return resp, nil
 	}
 
 	resp, err := s.runSpawn(ctx, acc, crid)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // awaitSpawn blocks until the joined composite spawn settles, returning its
@@ -124,16 +124,16 @@ func (s *service) spawnAccount(ctx context.Context, acc store.Account, crid stri
 // first (the original beginner keeps running and still settles the entry). The
 // read of call.resp/err is safe without the lock: it happens-after the
 // close(call.done) settleSpawn issues, per the Go memory model.
-func awaitSpawn(ctx context.Context, call *spawnCall) (*connect.Response[compassv1.SpawnAgentResponse], error) {
+func awaitSpawn(ctx context.Context, call *spawnCall) (*compassv1.SpawnAgentResponse, error) {
 	select {
 	case <-call.done:
 		if call.err != nil {
 			return nil, call.err
 		}
-		return connect.NewResponse(call.resp), nil
+		return call.resp, nil
 	case <-ctx.Done():
 		wrappedErr := ctx.Err()
-		return nil, connect.NewError(connect.CodeCanceled, wrappedErr)
+		return nil, connect.NewError(connect.CodeCanceled, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 }
 
@@ -158,15 +158,15 @@ func (s *service) runSpawn(ctx context.Context, acc store.Account, crid string) 
 	}
 	container := provResp.GetContainerName()
 
-	startResp, err := s.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	startResp, err := s.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: container,
-	}))
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	return &compassv1.SpawnAgentResponse{
-		SessionId:     startResp.Msg.GetSessionId(),
+		SessionId:     startResp.GetSessionId(),
 		ContainerName: container,
 	}, nil
 }
@@ -186,12 +186,12 @@ func (s *service) rejectIfAgentLive(ctx context.Context, agentAccountID string) 
 			continue
 		}
 		if st.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-			return connect.NewError(connect.CodeAlreadyExists, errAgentAlreadyLive)
+			return connect.NewError(connect.CodeAlreadyExists, errAgentAlreadyLive.Error()).WithCause(errAgentAlreadyLive)
 		}
 		errored = true
 	}
 	if errored {
-		return connect.NewError(connect.CodeFailedPrecondition, errAgentErrored)
+		return connect.NewError(connect.CodeFailedPrecondition, errAgentErrored.Error()).WithCause(errAgentErrored)
 	}
 	return nil
 }

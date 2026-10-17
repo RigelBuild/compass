@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -57,7 +57,7 @@ func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]b
 	reader := h.reader
 	h.mu.Unlock()
 	if reader == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errReaderUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errReaderUnavailable.Error()).WithCause(errReaderUnavailable)
 	}
 
 	// One atomic snapshot: PG hot-tail and safety_valve manifest are read together
@@ -154,8 +154,8 @@ func reconstructReadError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, store.ErrNotFound):
-		return connect.NewError(connect.CodeNotFound, err)
+		return connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"io"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -69,9 +68,9 @@ func runRevoke(ctx context.Context, client compassv1connect.CompassServiceClient
 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := client.RevokeToken(ctx, connect.NewRequest(&compassv1.RevokeTokenRequest{
+	if _, err := client.RevokeToken(ctx, &compassv1.RevokeTokenRequest{
 		Token: token,
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("revoking token: %w", err)
 	}
 	_, err = fmt.Fprintln(out, "revoked token")

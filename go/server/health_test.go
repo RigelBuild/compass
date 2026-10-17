@@ -13,8 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/grpchealth"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/grpchealth/v2"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -39,7 +40,7 @@ func TestServerHealthCheck(t *testing.T) {
 		return dialer.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(transport.CloseIdleConnections)
-	client := grpchealth.NewClient(&http.Client{Transport: transport}, server.URL, connect.WithGRPC())
+	client := grpchealth.NewClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 
 	for _, service := range []string{"", "compass.v1.CompassService"} {
 		response, err := client.Check(t.Context(), &grpchealth.CheckRequest{Service: service})

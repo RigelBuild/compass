@@ -119,7 +119,7 @@ func assertFirstReplayComplete(t *testing.T, client compassv1internalconnect.Age
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	t.Cleanup(cancel)
-	stream, err := client.Control(ctx, connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+	stream, err := client.Control(ctx, &compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control subscription = %v", err)
 	}
@@ -190,7 +190,10 @@ func TestReloadAfterAckedBarrierSendsFreshReplayComplete(t *testing.T) {
 	}
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	first := assertFirstReplayComplete(t, client)
-	publish := client.Publish(ctx)
+	publish, err := client.Publish(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishFrameRequest{Frame: &compassv1internal.AgentFrame{
 		Frame: &compassv1internal.AgentFrame_ControlAck{ControlAck: &compassv1internal.ControlAck{AckedSeq: first.Msg().GetControlSeq()}},
 	}}); err != nil {

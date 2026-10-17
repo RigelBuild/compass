@@ -53,7 +53,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/agentuid"
@@ -105,9 +105,9 @@ func newW3Relay() *w3Relay { return &w3Relay{recordingRelay: &recordingRelay{}} 
 // (host.go:367-370) — so Start skips the in-guest secret materialize the
 // read-only guest rootfs cannot host.
 func (r *w3Relay) FetchSecrets(
-	context.Context, *connect.Request[compassv1internal.FetchSecretsRequest],
-) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
-	return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("w3: no secrets surface"))
+	context.Context, *compassv1internal.FetchSecretsRequest,
+) (*compassv1internal.FetchSecretsResponse, error) {
+	return nil, connect.NewError(connect.CodeFailedPrecondition, "w3: no secrets surface")
 }
 
 // newMicroVMGatewayFixture builds a concrete *agentHost whose engine is a REAL
@@ -244,12 +244,12 @@ func TestVsockGateway_HostServesSuffixedSocket(t *testing.T) {
 	client := runnertest.DialAgentSocket(t, gotPath)
 	callCtx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
-	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	resp, err := client.Comms(callCtx, &compassv1internal.CommsCallRequest{
 		CallId: w3ProbeCallID,
 		Call: &compassv1internal.CommsCallRequest_Post{
 			Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "chan-1"}},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Comms over the real suffixed socket = %v, want the round-trip result", err)
 	}
@@ -260,8 +260,8 @@ func TestVsockGateway_HostServesSuffixedSocket(t *testing.T) {
 	if got[0].GetSessionId() != sessionID {
 		t.Fatalf("relayed session id = %q, want the Start-minted %q", got[0].GetSessionId(), sessionID)
 	}
-	if resp.Msg.GetCallId() != w3ProbeCallID {
-		t.Fatalf("result call id = %q, want %q (the Server result flowed back)", resp.Msg.GetCallId(), w3ProbeCallID)
+	if resp.GetCallId() != w3ProbeCallID {
+		t.Fatalf("result call id = %q, want %q (the Server result flowed back)", resp.GetCallId(), w3ProbeCallID)
 	}
 }
 
@@ -283,7 +283,7 @@ func TestVsockGateway_FailClosedBeforeStart(t *testing.T) {
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	callCtx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
-	_, err = client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "w3-early"}))
+	_, err = client.Comms(callCtx, &compassv1internal.CommsCallRequest{CallId: "w3-early"})
 	if err == nil {
 		t.Fatal("Comms before Start = nil, want CodeFailedPrecondition")
 	}

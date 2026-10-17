@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -18,23 +18,23 @@ var errNilBoardResult = errors.New("gateway: relay returned no board result")
 // Board forwards an agent board call under the session bound to this container.
 // A missing binding returns FailedPrecondition; the Runner sets no actor.
 func (g *Gateway) Board(
-	ctx context.Context, req *connect.Request[compassv1internal.BoardCallRequest],
-) (*connect.Response[compassv1internal.BoardCallResult], error) {
+	ctx context.Context, req *compassv1internal.BoardCallRequest,
+) (*compassv1internal.BoardCallResult, error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForBoard)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForBoard.Error()).WithCause(errNoSessionForBoard)
 	}
 
-	resp, err := g.board.RelayBoardCall(ctx, connect.NewRequest(&compassv1internal.RelayBoardCallRequest{
+	resp, err := g.board.RelayBoardCall(ctx, &compassv1internal.RelayBoardCallRequest{
 		SessionId: sessionID,
-		Call:      req.Msg,
-	}))
+		Call:      req,
+	})
 	if err != nil {
 		return nil, err
 	}
-	result := resp.Msg.GetResult()
+	result := resp.GetResult()
 	if result == nil {
-		return nil, connect.NewError(connect.CodeInternal, errNilBoardResult)
+		return nil, connect.NewError(connect.CodeInternal, errNilBoardResult.Error()).WithCause(errNilBoardResult)
 	}
-	return connect.NewResponse(result), nil
+	return result, nil
 }

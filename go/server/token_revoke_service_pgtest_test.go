@@ -12,7 +12,7 @@ import (
 	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -44,7 +44,7 @@ func TestRevokeTokenRoundTrip(t *testing.T) {
 	}
 
 	revoke := func(bearer, token string) error {
-		req := connect.NewRequest(&compassv1.RevokeTokenRequest{Token: token})
+		req := &compassv1.RevokeTokenRequest{Token: token}
 		req.Header().Set("Authorization", "Bearer "+bearer)
 		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 		defer cancel()

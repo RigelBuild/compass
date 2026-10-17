@@ -13,7 +13,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -46,8 +47,8 @@ func enrollHub(t *testing.T, hub *runnerhub.Hub) {
 	srv.Config.Protocols = runnertest.CleartextH2()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	client := compassv1internalconnect.NewRunnerServiceClient(runnertest.H2CClient(t), srv.URL)
-	req := connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: testRunnerID})
+	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(runnertest.H2CClient(t), srv.URL, connecthttp.WithReadMaxBytes(0))))
+	req := &compassv1internal.EnrollRequest{RunnerId: testRunnerID}
 	req.Header().Set("Authorization", "Bearer runner-tok")
 	if _, err := client.Enroll(context.Background(), req); err != nil {
 		t.Fatalf("Enroll: %v", err)

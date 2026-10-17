@@ -12,7 +12,7 @@ import (
 	"slices"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -449,16 +449,16 @@ func TestCreateChannelGroupAsAccountResolvesParentGroupNamePath(t *testing.T) {
 
 func TestCreateChannelHumanRPCRejectsGroupRef(t *testing.T) {
 	svc, _ := newHandler(t)
-	_, err := svc.CreateChannel(WithActor(context.Background(), "human"), connect.NewRequest(&compassv1.CreateChannelRequest{
+	_, err := svc.CreateChannel(WithActor(context.Background(), "human"), &compassv1.CreateChannelRequest{
 		Name: "room", GroupName: "team",
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "human CreateChannel group_name")
 }
 
 func TestCreateChannelGroupHumanRPCRejectsParentGroupRef(t *testing.T) {
 	svc, _ := newHandler(t)
-	_, err := svc.CreateChannelGroup(WithActor(context.Background(), "human"), connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+	_, err := svc.CreateChannelGroup(WithActor(context.Background(), "human"), &compassv1.CreateChannelGroupRequest{
 		Name: "child", ParentGroupName: "team",
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "human CreateChannelGroup parent_group_name")
 }

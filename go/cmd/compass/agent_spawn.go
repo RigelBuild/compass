@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -138,10 +138,10 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 
 	sctx, cancel := context.WithTimeout(ctx, spawnTimeout)
 	defer cancel()
-	resp, err := c.compass.SpawnAgent(sctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
+	resp, err := c.compass.SpawnAgent(sctx, &compassv1.SpawnAgentRequest{
 		AgentHandle:     qualified,
 		ClientRequestId: args.requestID,
-	}))
+	})
 	if err != nil {
 		return spawnError(qualified, args.requestID, err)
 	}
@@ -152,7 +152,7 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 		}
 	}
 	_, err = fmt.Fprintf(out, "agent:     %s\nsession:   %s\ncontainer: %s\n",
-		qualified, resp.Msg.GetSessionId(), resp.Msg.GetContainerName())
+		qualified, resp.GetSessionId(), resp.GetContainerName())
 	return err
 }
 
@@ -216,13 +216,13 @@ func spawnError(qualified, requestID string, err error) error {
 func createAgent(ctx context.Context, comms compassv1connect.CommsServiceClient, args agentSpawnArgs) (existed bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	_, err = comms.CreateAgent(ctx, connect.NewRequest(&compassv1.CreateAgentRequest{
+	_, err = comms.CreateAgent(ctx, &compassv1.CreateAgentRequest{
 		Handle:       args.handle,
 		DisplayName:  args.displayName,
 		ParentHandle: args.parent,
 		Role:         args.role,
 		Persona:      args.persona,
-	}))
+	})
 	if err != nil {
 		return connect.CodeOf(err) == connect.CodeAlreadyExists, fmt.Errorf("creating agent %q: %w", args.handle, err)
 	}
@@ -236,18 +236,18 @@ func createAgent(ctx context.Context, comms compassv1connect.CommsServiceClient,
 func qualifiedAgentHandle(ctx context.Context, c agentSpawnClients, handle string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	who, err := c.compass.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{}))
+	who, err := c.compass.WhoAmI(ctx, &compassv1.WhoAmIRequest{})
 	if err != nil {
 		return "", fmt.Errorf("resolving the caller: %w", err)
 	}
-	owner := who.Msg.GetAccountId()
-	resp, err := c.comms.ListAccounts(ctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	owner := who.GetAccountId()
+	resp, err := c.comms.ListAccounts(ctx, &compassv1.ListAccountsRequest{})
 	if err != nil {
 		return "", fmt.Errorf("listing accounts: %w", err)
 	}
 	var ownerHandle string
 	found := false
-	for _, acc := range resp.Msg.GetAccounts() {
+	for _, acc := range resp.GetAccounts() {
 		if acc.GetId() == owner {
 			ownerHandle = acc.GetHandle()
 		}

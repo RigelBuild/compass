@@ -40,7 +40,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -154,12 +154,12 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	client := runnertest.DialAgentSocket(t, agentSocketPath(runtimeDir, containerName))
 	callCtx, cancelCall := context.WithTimeout(ctx, integrationTimeout)
 	defer cancelCall()
-	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	resp, err := client.Comms(callCtx, &compassv1internal.CommsCallRequest{
 		CallId: "call-1",
 		Call: &compassv1internal.CommsCallRequest_Post{
 			Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "atlas"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: relayText}}}},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Comms over the socket = %v, want the round-trip result", err)
 	}
@@ -167,7 +167,7 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	// The Server resolved session→account from its own binding and attributed
 	// the post to the AGENT account (never the bootstrap admin): the round-trip
 	// result carries the call id verbatim and the agent as author.
-	result := resp.Msg
+	result := resp
 	if got := result.GetCallId(); got != "call-1" {
 		t.Fatalf("result call id = %q, want the agent's %q (verbatim forward)", got, "call-1")
 	}

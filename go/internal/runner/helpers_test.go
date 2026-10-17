@@ -12,6 +12,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -24,7 +25,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -433,35 +435,40 @@ func newCapturePublish() *capturePublish {
 	return &capturePublish{frames: make(chan *compassv1internal.PublishEventsRequest, 64)}
 }
 
-func (c *capturePublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+func (c *capturePublish) PublishEvents(_ context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
 	c.opened.Add(1)
-	for stream.Receive() {
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
 		c.frames <- stream.Msg()
 	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+
+	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
 // FetchSecrets serves the Runner's pre-exec (by-container) and rotation
 // (by-session) fetch, returning the configured set and recording the request
 // so a test can assert which selector the Runner used. Default set is empty.
-func (c *capturePublish) FetchSecrets(_ context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
+func (c *capturePublish) FetchSecrets(_ context.Context, req *compassv1internal.FetchSecretsRequest) (*compassv1internal.FetchSecretsResponse, error) {
 	c.mu.Lock()
-	c.fetchReqs = append(c.fetchReqs, req.Msg)
+	c.fetchReqs = append(c.fetchReqs, req)
 	secrets, fetchErr := c.secrets, c.fetchErr
 	c.mu.Unlock()
 	if fetchErr != nil {
 		return nil, fetchErr
 	}
-	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: secrets}), nil
+	return &compassv1internal.FetchSecretsResponse{Secrets: secrets}, nil
 }
 
 // BindLifetime records the Runner's resume/reload bind and returns bindErr.
-func (c *capturePublish) BindLifetime(_ context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest]) (*connect.Response[compassv1internal.BindLifetimeResponse], error) {
+func (c *capturePublish) BindLifetime(_ context.Context, req *compassv1internal.BindLifetimeRequest) (*compassv1internal.BindLifetimeResponse, error) {
 	c.mu.Lock()
-	c.bindReqs = append(c.bindReqs, req.Msg)
+	c.bindReqs = append(c.bindReqs, req)
 	bindErr, onBind := c.bindErr, c.onBind
 	c.mu.Unlock()
 	if onBind != nil {
@@ -470,7 +477,7 @@ func (c *capturePublish) BindLifetime(_ context.Context, req *connect.Request[co
 	if bindErr != nil {
 		return nil, bindErr
 	}
-	return connect.NewResponse(&compassv1internal.BindLifetimeResponse{}), nil
+	return &compassv1internal.BindLifetimeResponse{}, nil
 }
 
 // FetchAgentConfig serves the Runner's config fetch as a server stream: it sends
@@ -478,7 +485,7 @@ func (c *capturePublish) BindLifetime(_ context.Context, req *connect.Request[co
 // returns configErr before any frame so a test can force the materialize path to
 // fail. The default (zero) bundle streams an empty version frame — the
 // unconfigured-fleet path Materialize accepts with no error.
-func (c *capturePublish) FetchAgentConfig(_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+func (c *capturePublish) FetchAgentConfig(_ context.Context, _ *compassv1internal.FetchAgentConfigRequest, stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream) error {
 	c.mu.Lock()
 	bundle, err := c.configBundle, c.configErr
 	c.mu.Unlock()
@@ -496,9 +503,9 @@ func (c *capturePublish) FetchAgentConfig(_ context.Context, _ *connect.Request[
 	return nil
 }
 
-func (c *capturePublish) FetchSessionBlobs(_ context.Context, req *connect.Request[compassv1internal.FetchSessionBlobsRequest], stream *connect.ServerStream[compassv1internal.FetchSessionBlobsResponse]) error {
+func (c *capturePublish) FetchSessionBlobs(_ context.Context, req *compassv1internal.FetchSessionBlobsRequest, stream compassv1internalconnect.RunnerServiceFetchSessionBlobsServerStream) error {
 	c.mu.Lock()
-	c.blobReqs = append(c.blobReqs, req.Msg)
+	c.blobReqs = append(c.blobReqs, req)
 	frames, err := c.blobFrames, c.blobErr
 	c.mu.Unlock()
 	if err != nil {
@@ -691,7 +698,7 @@ func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerSer
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return compassv1internalconnect.NewRunnerServiceClient(h2cHTTPClient(t), srv.URL)
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(h2cHTTPClient(t), srv.URL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // newLink builds a ServerLink over the given RunnerService client (white-box:

@@ -15,7 +15,8 @@ import (
 	"runtime"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -84,7 +85,7 @@ func newTracedCommsClient(t *testing.T, baseURL string) compassv1connect.CommsSe
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewCommsServiceClient(&http.Client{Transport: tr}, baseURL)
+	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // newRelayRunnerClient mounts a SECOND RunnerService door over the wire's OWN
@@ -138,10 +139,11 @@ func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) com
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor (client): %v", err)
 	}
-	return compassv1internalconnect.NewRunnerServiceClient(
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: tr}, srv.URL,
-		connect.WithInterceptors(clientIC, runnerBearer(fakeRunnerToken)),
-	)
+		connecthttp.WithReadMaxBytes(0),
+	), clientIC, runnerBearer(fakeRunnerToken),
+	))
 }
 
 // relayAgentPost issues ONE agent-initiated RelayCommsCall Post through client,
@@ -156,7 +158,7 @@ func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) com
 // the AGENT's visible set (comms/agent_caller.go:201-227).
 func relayAgentPost(t *testing.T, ctx context.Context, client compassv1internalconnect.RunnerServiceClient, sessionID, channelName, body, triggerTP string) string {
 	t.Helper()
-	resp, err := client.RelayCommsCall(ctx, connect.NewRequest(&compassv1internal.RelayCommsCallRequest{
+	resp, err := client.RelayCommsCall(ctx, &compassv1internal.RelayCommsCallRequest{
 		SessionId: sessionID,
 		Call: &compassv1internal.CommsCallRequest{
 			CallId:             "tc-relay-" + body,
@@ -168,11 +170,11 @@ func relayAgentPost(t *testing.T, ctx context.Context, client compassv1internalc
 				Blocks:      textBlock(body),
 			}},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("RelayCommsCall(post %q): %v", body, err)
 	}
-	result := resp.Msg.GetResult()
+	result := resp.GetResult()
 	if e := result.GetError(); e != nil {
 		t.Fatalf("RelayCommsCall(post %q) rendered an in-band tool error {code=%q message=%q}; the Post arm did not complete", body, e.GetCode(), e.GetMessage())
 	}
@@ -188,18 +190,18 @@ func relayAgentPost(t *testing.T, ctx context.Context, client compassv1internalc
 // traceresponse) plus the created message id. It is postOverSocket's sibling for
 // this file's mounted door and per-case body text (that helper hardcodes its
 // body, so a mention case needs this one rather than a change over there).
-func postOverTracedDoor(t *testing.T, ctx context.Context, client compassv1connect.CommsServiceClient, channel store.ChannelID, body string) (*connect.Response[compassv1.PostMessageResponse], string) {
+func postOverTracedDoor(t *testing.T, ctx context.Context, client compassv1connect.CommsServiceClient, channel store.ChannelID, body string) (*compassv1.PostMessageResponse, string) {
 	t.Helper()
-	resp, err := client.PostMessage(ctx, connect.NewRequest(&compassv1.PostMessageRequest{
+	resp, err := client.PostMessage(ctx, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(channel)},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
 		CreateTopic: true,
 		Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostMessage(%q) over the traced door: %v", body, err)
 	}
-	msgID := resp.Msg.GetMessage().GetId()
+	msgID := resp.GetMessage().GetId()
 	if msgID == "" {
 		t.Fatalf("PostMessage(%q) returned an empty message id", body)
 	}
@@ -974,10 +976,10 @@ func traceContinuityG(t *testing.T) {
 	}
 
 	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-	if _, err := client.RespondToAsk(ctx, connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := client.RespondToAsk(ctx, &compassv1.RespondToAskRequest{
 		AskId:   askID,
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk over the traced door: %v", err)
 	}
 	waitForControlDelivers(t, w.runner, recipSess, 2)

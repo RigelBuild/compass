@@ -8,7 +8,6 @@ import (
 	"io"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -72,14 +71,14 @@ func newAgentRepoListCmd() *cobra.Command {
 func runAgentRepoAdd(ctx context.Context, client compassv1connect.AgentRepositoryServiceClient, agent, repo string, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.GrantAgentRepository(ctx, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{
+	resp, err := client.GrantAgentRepository(ctx, &compassv1.GrantAgentRepositoryRequest{
 		AgentHandle: agent, Repository: repo,
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("adding agent repository: %w", err)
 	}
 	result := "already present"
-	if resp.Msg.GetAdded() {
+	if resp.GetAdded() {
 		result = "added"
 	}
 	_, err = fmt.Fprintf(out, "%s %s\n", result, strings.ToLower(repo))
@@ -89,14 +88,14 @@ func runAgentRepoAdd(ctx context.Context, client compassv1connect.AgentRepositor
 func runAgentRepoRemove(ctx context.Context, client compassv1connect.AgentRepositoryServiceClient, agent, repo string, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.RevokeAgentRepository(ctx, connect.NewRequest(&compassv1.RevokeAgentRepositoryRequest{
+	resp, err := client.RevokeAgentRepository(ctx, &compassv1.RevokeAgentRepositoryRequest{
 		AgentHandle: agent, Repository: repo,
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("removing agent repository: %w", err)
 	}
 	result := "not present"
-	if resp.Msg.GetRemoved() {
+	if resp.GetRemoved() {
 		result = "removed"
 	}
 	_, err = fmt.Fprintf(out, "%s %s\n", result, strings.ToLower(repo))
@@ -106,13 +105,13 @@ func runAgentRepoRemove(ctx context.Context, client compassv1connect.AgentReposi
 func runAgentRepoList(ctx context.Context, client compassv1connect.AgentRepositoryServiceClient, agent string, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.ListAgentRepositories(ctx, connect.NewRequest(&compassv1.ListAgentRepositoriesRequest{
+	resp, err := client.ListAgentRepositories(ctx, &compassv1.ListAgentRepositoriesRequest{
 		AgentHandle: agent,
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("listing agent repositories: %w", err)
 	}
-	for _, repo := range resp.Msg.GetRepositories() {
+	for _, repo := range resp.GetRepositories() {
 		if _, err := fmt.Fprintln(out, repo); err != nil {
 			return err
 		}

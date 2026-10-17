@@ -21,8 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -39,22 +37,22 @@ type recordingEnroll struct {
 	authorization    []string
 }
 
-func (r *recordingEnroll) Enroll(_ context.Context, req *connect.Request[compassv1internal.EnrollRequest]) (*connect.Response[compassv1internal.EnrollResponse], error) {
+func (r *recordingEnroll) Enroll(_ context.Context, req *compassv1internal.EnrollRequest) (*compassv1internal.EnrollResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.req = req.Msg
+	r.req = req
 	r.authorization = append(r.authorization, req.Header().Get("Authorization"))
-	return connect.NewResponse(&compassv1internal.EnrollResponse{
+	return &compassv1internal.EnrollResponse{
 		Reattached: false,
 		RunnerId:   r.assignedRunnerID,
-	}), nil
+	}, nil
 }
 
-func (r *recordingEnroll) FetchSecrets(_ context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
+func (r *recordingEnroll) FetchSecrets(_ context.Context, req *compassv1internal.FetchSecretsRequest) (*compassv1internal.FetchSecretsResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.authorization = append(r.authorization, req.Header().Get("Authorization"))
-	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{}), nil
+	return &compassv1internal.FetchSecretsResponse{}, nil
 }
 
 func (r *recordingEnroll) authRequests() []string {
@@ -201,7 +199,7 @@ type sessionsHeaderRecorder struct {
 	authorization chan string
 }
 
-func (h *sessionsHeaderRecorder) Sessions(_ context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+func (h *sessionsHeaderRecorder) Sessions(_ context.Context, stream compassv1internalconnect.RunnerServiceSessionsServerStream) error {
 	h.authorization <- stream.RequestHeader().Get("Authorization")
 	_, err := stream.Receive()
 	if errors.Is(err, io.EOF) {

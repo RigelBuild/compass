@@ -13,10 +13,9 @@ package runnerhub
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -153,7 +152,7 @@ func TestRelayCommsCallCreateChannelGroupArmForwardsUnderBoundAccount(t *testing
 // on a new org-management arm (mirrors the post-arm invariant).
 func TestRelayCommsCallCreateChannelToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.createChannelErr = connect.NewError(connect.CodeNotFound, errors.New("group not found"))
+	comms.createChannelErr = connect.NewError(connect.CodeNotFound, "group not found")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayCreateChannel("sess-1", "tc-cc-err", &compassv1.CreateChannelRequest{Name: "room"}))
@@ -178,7 +177,7 @@ func TestRelayCommsCallCreateChannelToolErrorIsInBandNotStreamError(t *testing.T
 // the update_members arm.
 func TestRelayCommsCallUpdateMembersToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.updateMembersErr = connect.NewError(connect.CodeNotFound, errors.New("channel not found"))
+	comms.updateMembersErr = connect.NewError(connect.CodeNotFound, "channel not found")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayUpdateMembers("sess-1", "tc-um-err", &compassv1.UpdateChannelMembersRequest{ChannelId: "ch-x", AddMemberHandles: []string{"a-2"}}))
@@ -202,7 +201,7 @@ func TestRelayCommsCallUpdateMembersToolErrorIsInBandNotStreamError(t *testing.T
 // CommsCallError, not a Connect stream error.
 func TestRelayCommsCallCreateChannelGroupToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.createChannelGroupErr = connect.NewError(connect.CodeNotFound, errors.New("parent group not found"))
+	comms.createChannelGroupErr = connect.NewError(connect.CodeNotFound, "parent group not found")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayCreateChannelGroup("sess-1", "tc-cg-err", &compassv1.CreateChannelGroupRequest{Name: "team"}))

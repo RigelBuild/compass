@@ -85,11 +85,11 @@ func TestBearerInterceptorSetsCommsActorNotAdminFallback(t *testing.T) {
 	// handler. The handler (comms) reads the comms actor off that ctx.
 	var ownerID string
 	next := func(hctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		resp, err := commsSvc.CreateChannelGroup(hctx, connect.NewRequest(&compassv1.CreateChannelGroupRequest{Name: "caller-space"}))
+		resp, err := commsSvc.CreateChannelGroup(hctx, &compassv1.CreateChannelGroupRequest{Name: "caller-space"})
 		if err != nil {
 			return nil, err
 		}
-		ownerID = resp.Msg.GetGroup().GetOwnerUserId()
+		ownerID = resp.GetGroup().GetOwnerUserId()
 		return resp, nil
 	}
 	wrapped := BearerInterceptor(st)(next)

@@ -24,7 +24,7 @@ import (
 	"regexp"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/RigelBuild/compass/go/internal/runner/gateway"
 	yaml "go.yaml.in/yaml/v3"
 )

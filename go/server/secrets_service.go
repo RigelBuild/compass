@@ -23,7 +23,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -98,25 +98,25 @@ var errNoServerResolver = errors.New("no server secret resolver configured on th
 // successful write the secrets version is bumped so live sessions re-fetch.
 func (s *secretsService) SetSecret(
 	ctx context.Context,
-	req *connect.Request[compassv1.SetSecretRequest],
-) (*connect.Response[compassv1.SetSecretResponse], error) {
+	req *compassv1.SetSecretRequest,
+) (*compassv1.SetSecretResponse, error) {
 	callerID, role, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if s.resolver == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver.Error()).WithCause(errNoResolver)
 	}
-	msg := req.Msg
+	msg := req
 	delivery, kind, err := secretRoutingFromProto(msg.GetDelivery(), msg.GetKind())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	if secrets.IsReservedGitHubEnvName(msg.GetName()) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("GitHub credential environment names are reserved for the GitHub App"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "GitHub credential environment names are reserved for the GitHub App")
 	}
 	if strings.TrimSpace(msg.GetValue()) == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("secret value is empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "secret value is empty")
 	}
 
 	scopeKind, scopeID, err := resolveSecretScope(msg.GetScope(), callerID, role)
@@ -130,13 +130,13 @@ func (s *secretsService) SetSecret(
 	// store door and never logged; the error wraps the name only, never the value.
 	if err := s.resolver.Upsert(ctx, callerID, msg.GetName(), scopeKind, scopeID, msg.GetValue(), delivery, kind, msg.GetProvider(), msg.GetHost()); err != nil {
 		if errors.Is(err, store.ErrInvalidArgument) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 		slog.ErrorContext(ctx, "writing secret value", "err", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("writing secret value failed"))
+		return nil, connect.NewError(connect.CodeInternal, "writing secret value failed")
 	}
 	s.bumpSecretsVersion(ctx)
-	return connect.NewResponse(&compassv1.SetSecretResponse{}), nil
+	return &compassv1.SetSecretResponse{}, nil
 }
 
 // ListSecrets returns the value-free status of every declared secret. Open to
@@ -153,15 +153,15 @@ func (s *secretsService) SetSecret(
 // current SetSecret flow.)
 func (s *secretsService) ListSecrets(
 	ctx context.Context,
-	req *connect.Request[compassv1.ListSecretsRequest],
-) (*connect.Response[compassv1.ListSecretsResponse], error) {
+	req *compassv1.ListSecretsRequest,
+) (*compassv1.ListSecretsResponse, error) {
 	if _, err := s.requireCaller(ctx); err != nil {
 		return nil, err
 	}
 	decls, err := s.store.DeclaredSecrets(ctx)
 	if err != nil {
 		wrappedErr := fmt.Errorf("listing declared secrets: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	out := make([]*compassv1.SecretStatus, 0, len(decls))
 	for _, d := range decls {
@@ -176,7 +176,7 @@ func (s *secretsService) ListSecrets(
 			Host:     d.Host,
 		})
 	}
-	return connect.NewResponse(&compassv1.ListSecretsResponse{Secrets: out}), nil
+	return &compassv1.ListSecretsResponse{Secrets: out}, nil
 }
 
 // DeleteSecret removes a user secret's row (declaration and value are the same
@@ -188,21 +188,21 @@ func (s *secretsService) ListSecrets(
 // is a malformed request (defense in depth beside Upsert's own reject).
 func (s *secretsService) DeleteSecret(
 	ctx context.Context,
-	req *connect.Request[compassv1.DeleteSecretRequest],
-) (*connect.Response[compassv1.DeleteSecretResponse], error) {
+	req *compassv1.DeleteSecretRequest,
+) (*compassv1.DeleteSecretResponse, error) {
 	callerID, role, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if s.resolver == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver.Error()).WithCause(errNoResolver)
 	}
-	name := req.Msg.GetName()
+	name := req.GetName()
 	if store.ShadowsServerSecretPrefix(name) {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("secret name %q uses a reserved server-secret prefix", name))
+		return nil, connect.Errorf(connect.CodeInvalidArgument,
+			"secret name %q uses a reserved server-secret prefix", name)
 	}
-	scopeKind, scopeID, err := resolveSecretScope(req.Msg.GetScope(), callerID, role)
+	scopeKind, scopeID, err := resolveSecretScope(req.GetScope(), callerID, role)
 	if err != nil {
 		return nil, err
 	}
@@ -210,13 +210,13 @@ func (s *secretsService) DeleteSecret(
 	// half-deleted state to order or recover from (record A5).
 	if err := s.resolver.Remove(ctx, callerID, name, scopeKind, scopeID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("secret %q", name))
+			return nil, connect.Errorf(connect.CodeNotFound, "secret %q", name)
 		}
 		wrappedErr := fmt.Errorf("deleting secret: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	s.bumpSecretsVersion(ctx)
-	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
+	return &compassv1.DeleteSecretResponse{}, nil
 }
 
 // ListServerSecrets returns every declared SERVER secret's name with its
@@ -239,27 +239,27 @@ func (s *secretsService) DeleteSecret(
 // since the remedy for each is the opposite of the other.
 func (s *secretsService) ListServerSecrets(
 	ctx context.Context,
-	_ *connect.Request[compassv1.ListServerSecretsRequest],
-) (*connect.Response[compassv1.ListServerSecretsResponse], error) {
+	_ *compassv1.ListServerSecretsRequest,
+) (*compassv1.ListServerSecretsResponse, error) {
 	if _, err := s.requireCaller(ctx); err != nil {
 		return nil, err
 	}
 	if s.serverResolver == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoServerResolver)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoServerResolver.Error()).WithCause(errNoServerResolver)
 	}
 	decls, err := s.store.DeclaredServerSecrets(ctx)
 	if err != nil {
 		wrappedErr := fmt.Errorf("listing declared server secrets: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if len(decls) == 0 {
-		return connect.NewResponse(&compassv1.ListServerSecretsResponse{}), nil
+		return &compassv1.ListServerSecretsResponse{}, nil
 	}
 	// The audit reason names this RPC so the provider log identifies the probe.
 	statuses, err := s.serverResolver.Statuses(ctx, "compass: server secret status probe via ListServerSecrets RPC")
 	if err != nil {
 		wrappedErr := fmt.Errorf("probing server secret values: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	isSet := make(map[string]bool, len(statuses))
 	for _, st := range statuses {
@@ -274,7 +274,7 @@ func (s *secretsService) ListServerSecrets(
 		// prefix strip is the CLI's, so the wire form stays unambiguous.
 		out = append(out, &compassv1.ServerSecretStatus{Name: d.Name, IsSet: isSet[d.Name]})
 	}
-	return connect.NewResponse(&compassv1.ListServerSecretsResponse{ServerSecrets: out}), nil
+	return &compassv1.ListServerSecretsResponse{ServerSecrets: out}, nil
 }
 
 // requireCaller returns the authenticated caller id, or CodeUnauthenticated when
@@ -283,7 +283,7 @@ func (s *secretsService) ListServerSecrets(
 func (s *secretsService) requireCaller(ctx context.Context) (store.AccountID, error) {
 	callerID, ok := auth.CallerFrom(ctx)
 	if !ok {
-		return "", connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+		return "", connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
 	return callerID, nil
 }
@@ -306,13 +306,13 @@ func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, stor
 		if errors.Is(err, store.ErrNotFound) {
 			// A caller the bearer door authenticated but whose account row is gone:
 			// fail closed rather than admit a write under an unresolvable identity.
-			return "", 0, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("caller account %q not found", callerID))
+			return "", 0, connect.Errorf(connect.CodePermissionDenied, "caller account %q not found", callerID)
 		}
 		wrappedErr := fmt.Errorf("resolving caller account: %w", err)
-		return "", 0, connect.NewError(connect.CodeInternal, wrappedErr)
+		return "", 0, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if acct.IsAgent() {
-		return "", 0, connect.NewError(connect.CodePermissionDenied, errors.New("secret writes are user-only"))
+		return "", 0, connect.NewError(connect.CodePermissionDenied, "secret writes are user-only")
 	}
 	var role store.UserRole
 	if acct.User != nil {
@@ -400,10 +400,10 @@ func resolveSecretScope(scope compassv1.SecretScope, callerID store.AccountID, r
 		return store.SecretScopeUser, string(callerID), nil
 	case compassv1.SecretScope_SECRET_SCOPE_TENANT:
 		if role != store.UserRoleAdmin {
-			return 0, "", connect.NewError(connect.CodePermissionDenied, errors.New("tenant-scoped secret writes require an admin"))
+			return 0, "", connect.NewError(connect.CodePermissionDenied, "tenant-scoped secret writes require an admin")
 		}
 		return store.SecretScopeTenant, "", nil
 	default:
-		return 0, "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown secret scope %d", scope))
+		return 0, "", connect.Errorf(connect.CodeInvalidArgument, "unknown secret scope %d", scope)
 	}
 }

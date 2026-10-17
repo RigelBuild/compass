@@ -17,7 +17,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -78,7 +79,7 @@ func subscribe(t *testing.T, client compassv1connect.CompassServiceClient, req *
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stream, err := client.SubscribeEvents(ctx, connect.NewRequest(req))
+	stream, err := client.SubscribeEvents(ctx, req)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
@@ -145,11 +146,11 @@ func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 	url := newH2CTestServer(t, newService("9.9.9-test", bus, nil, hub, nil, nil, nil))
 	client := newH2CClient(t, url)
 
-	resp, err := client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	resp, err := client.GetServerInfo(context.Background(), &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo before enroll: %v", err)
 	}
-	if got := resp.Msg.GetEnrolledRunners(); len(got) != 0 {
+	if got := resp.GetEnrolledRunners(); len(got) != 0 {
 		t.Fatalf("EnrolledRunners before enroll = %v, want empty", got)
 	}
 	runnerURL := mountInfoRunner(t, hub)
@@ -158,25 +159,26 @@ func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	runnerClient := compassv1internalconnect.NewRunnerServiceClient(
+	runnerClient := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: tr},
 		runnerURL,
-		connect.WithInterceptors(&serverTestBearer{token: "runner-token"}),
-	)
-	if _, err := runnerClient.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"})); err != nil {
+		connecthttp.WithReadMaxBytes(0),
+	), &serverTestBearer{token: "runner-token"},
+	))
+	if _, err := runnerClient.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"}); err != nil {
 		t.Fatalf("RunnerService.Enroll: %v", err)
 	}
-	resp, err = client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	resp, err = client.GetServerInfo(context.Background(), &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo after enroll: %v", err)
 	}
-	if got := resp.Msg.GetEnrolledRunners(); len(got) != 1 || got[0].GetId() != "runner-1" || got[0].GetEnrollment() != 1 {
+	if got := resp.GetEnrolledRunners(); len(got) != 1 || got[0].GetId() != "runner-1" || got[0].GetEnrollment() != 1 {
 		t.Fatalf("EnrolledRunners after enroll = %v, want runner-1 at enrollment 1", got)
 	}
-	if got := resp.Msg.GetVersion(); got != "9.9.9-test" {
+	if got := resp.GetVersion(); got != "9.9.9-test" {
 		t.Fatalf("Version = %q, want %q (the configured build version)", got, "9.9.9-test")
 	}
-	if got := resp.Msg.GetApiVersion(); got != apiVersion {
+	if got := resp.GetApiVersion(); got != apiVersion {
 		t.Fatalf("ApiVersion = %q, want %q", got, apiVersion)
 	}
 }
@@ -279,7 +281,7 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stream, err := client.SubscribeEvents(ctx, connect.NewRequest(&compassv1.SubscribeEventsRequest{SinceSeq: 0}))
+	stream, err := client.SubscribeEvents(ctx, &compassv1.SubscribeEventsRequest{SinceSeq: 0})
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
@@ -377,21 +379,21 @@ func TestAgentSessionRPCsWithoutRunnerHubAreUnavailable(t *testing.T) {
 		{
 			name: "StartAgentSession",
 			call: func(ctx context.Context, client compassv1connect.CompassServiceClient) error {
-				_, err := client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{ContainerName: "c1"}))
+				_, err := client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "c1"})
 				return err
 			},
 		},
 		{
 			name: "StopAgentSession",
 			call: func(ctx context.Context, client compassv1connect.CompassServiceClient) error {
-				_, err := client.StopAgentSession(ctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{SessionId: "s1"}))
+				_, err := client.StopAgentSession(ctx, &compassv1.StopAgentSessionRequest{SessionId: "s1"})
 				return err
 			},
 		},
 		{
 			name: "ReloadAgentSession",
 			call: func(ctx context.Context, client compassv1connect.CompassServiceClient) error {
-				_, err := client.ReloadAgentSession(ctx, connect.NewRequest(&compassv1.ReloadAgentSessionRequest{SessionId: "s1"}))
+				_, err := client.ReloadAgentSession(ctx, &compassv1.ReloadAgentSessionRequest{SessionId: "s1"})
 				return err
 			},
 		},

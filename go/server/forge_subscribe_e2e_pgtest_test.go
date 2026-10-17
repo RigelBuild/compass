@@ -80,7 +80,7 @@ func openForgeSubscribeControl(
 	t.Helper()
 	ctx, cancel := context.WithTimeout(w.ctx, e2eTimeout)
 	t.Cleanup(cancel)
-	stream, err := w.supervisorClient.Control(ctx, connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+	stream, err := w.supervisorClient.Control(ctx, &compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control: %v", err)
 	}
@@ -165,7 +165,10 @@ func ackForgeNotificationAndAssertCursor(
 ) {
 	t.Helper()
 	subscriptionID, revision := notification.GetSubscriptionId(), notification.GetRevision()
-	publish := w.supervisorClient.Publish(ctx)
+	publish, err := w.supervisorClient.Publish(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishFrameRequest{Frame: &compassv1internal.AgentFrame{
 		Frame: &compassv1internal.AgentFrame_ForgeNotificationAck{ForgeNotificationAck: &compassv1internal.ForgeNotificationAck{
 			SubscriptionId: subscriptionID,
@@ -201,18 +204,18 @@ func TestForgeSubscribeOverTheWire(t *testing.T) {
 
 	subscribe := func(callID string, number uint64) *compassv1internal.SubscribeForgeResponse {
 		t.Helper()
-		response, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
+		response, err := w.supervisorClient.Forge(ctx, &compassv1internal.ForgeCallRequest{
 			CallId: callID,
 			Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
 				Repo: forgeE2ERepo, Kind: mxIssue, Number: number,
 			}},
-		}))
+		})
 		if err != nil {
 			t.Fatalf("Forge subscribe %s: %v", callID, err)
 		}
-		result := response.Msg.GetSubscribed()
+		result := response.GetSubscribed()
 		if result == nil || result.GetSubscriptionId() == "" {
-			t.Fatalf("Forge subscribe %s result = %v, want subscription id", callID, response.Msg.GetResult())
+			t.Fatalf("Forge subscribe %s result = %v, want subscription id", callID, response.GetResult())
 		}
 		return result
 	}
@@ -244,15 +247,15 @@ func TestForgeSubscribeOverTheWire(t *testing.T) {
 	}
 	ackForgeNotificationAndAssertCursor(ctx, t, w, notification)
 
-	unsubscribed, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
+	unsubscribed, err := w.supervisorClient.Forge(ctx, &compassv1internal.ForgeCallRequest{
 		CallId: "unsubscribe-issue-11",
 		Call:   &compassv1internal.ForgeCallRequest_Unsubscribe{Unsubscribe: &compassv1internal.UnsubscribeForgeRequest{SubscriptionId: issue11}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Forge unsubscribe: %v", err)
 	}
-	if unsubscribed.Msg.GetUnsubscribed() == nil {
-		t.Fatalf("Forge unsubscribe result = %v, want unsubscribed", unsubscribed.Msg.GetResult())
+	if unsubscribed.GetUnsubscribed() == nil {
+		t.Fatalf("Forge unsubscribe result = %v, want unsubscribed", unsubscribed.GetResult())
 	}
 	issue12 := subscribe("subscribe-issue-12", 12).GetSubscriptionId()
 
@@ -293,7 +296,7 @@ func TestForgeContainerSubscribeOverTheWire(t *testing.T) {
 	ctx, control := openForgeSubscribeControl(t, w)
 	github := newFakeGitHubForge(secret, forgeE2ERepo)
 
-	response, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
+	response, err := w.supervisorClient.Forge(ctx, &compassv1internal.ForgeCallRequest{
 		CallId: "subscribe-repo-container",
 		Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
 			Repo:   forgeE2ERepo,
@@ -301,13 +304,13 @@ func TestForgeContainerSubscribeOverTheWire(t *testing.T) {
 			Number: 0,
 			Scope:  compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER,
 		}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Forge container subscribe: %v", err)
 	}
-	subscription := response.Msg.GetSubscribed()
+	subscription := response.GetSubscribed()
 	if subscription == nil || subscription.GetSubscriptionId() == "" {
-		t.Fatalf("Forge container subscribe result = %v, want subscription id", response.Msg.GetResult())
+		t.Fatalf("Forge container subscribe result = %v, want subscription id", response.GetResult())
 	}
 
 	postForgeSubscribeGitHub(t, w.ctx, endpoint, github.openIssue(
@@ -334,7 +337,7 @@ func TestForgeLinearProjectSubscribeOverTheWire(t *testing.T) {
 	ctx, control := openForgeSubscribeControl(t, w)
 	const team, project = "RIG", "proj-alpha"
 
-	response, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
+	response, err := w.supervisorClient.Forge(ctx, &compassv1internal.ForgeCallRequest{
 		CallId: "subscribe-linear-project",
 		Forge:  &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR},
 		Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
@@ -343,13 +346,13 @@ func TestForgeLinearProjectSubscribeOverTheWire(t *testing.T) {
 			Scope:   compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER,
 			Project: project,
 		}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Forge Linear project subscribe: %v", err)
 	}
-	subscription := response.Msg.GetSubscribed()
+	subscription := response.GetSubscribed()
 	if subscription == nil || subscription.GetSubscriptionId() == "" {
-		t.Fatalf("Forge Linear project subscribe result = %v, want subscription id", response.Msg.GetResult())
+		t.Fatalf("Forge Linear project subscribe result = %v, want subscription id", response.GetResult())
 	}
 
 	// The matching-project issue is posted second, so its arrival proves the other-project issue was dropped.

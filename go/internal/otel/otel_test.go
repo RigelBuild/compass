@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -16,7 +16,7 @@ import (
 // passthrough is the inner handler for interceptor tests: it returns an empty
 // response and no error, so the assertion is about the interceptor alone.
 func passthrough(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-	return connect.NewResponse(&struct{}{}), nil
+	return &struct{}{}, nil
 }
 
 // w3cTraceparent matches the W3C traceparent grammar: 00-<32hex>-<16hex>-<2hex>.
@@ -129,26 +129,27 @@ func TestTraceResponseInterceptor(t *testing.T) {
 
 	t.Run("valid span sets header", func(t *testing.T) {
 		ctx := trace.ContextWithSpanContext(context.Background(), validSC)
-		resp := connect.NewResponse(&struct{}{})
+		resp := &struct{}{}
 		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 			return resp, nil
 		})
-		got, err := interceptor(next)(ctx, connect.NewRequest(&struct{}{}))
+		ctx, info := connect.NewClientContext(ctx)
+		got, err := interceptor(next)(ctx, &struct{}{})
 		if err != nil {
 			t.Fatalf("interceptor err = %v, want nil", err)
 		}
 		want := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
-		if h := got.Header().Get(traceResponseHeader); h != want {
+		if h := info.ResponseHeader().Get(traceResponseHeader); h != want {
 			t.Errorf("%s = %q, want %q", traceResponseHeader, h, want)
 		}
 	})
 
 	t.Run("no span sets no header", func(t *testing.T) {
-		resp := connect.NewResponse(&struct{}{})
+		resp := &struct{}{}
 		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 			return resp, nil
 		})
-		got, err := interceptor(next)(context.Background(), connect.NewRequest(&struct{}{}))
+		got, err := interceptor(next)(context.Background(), &struct{}{})
 		if err != nil {
 			t.Fatalf("interceptor err = %v, want nil", err)
 		}
@@ -159,11 +160,11 @@ func TestTraceResponseInterceptor(t *testing.T) {
 
 	t.Run("handler error passthrough", func(t *testing.T) {
 		ctx := trace.ContextWithSpanContext(context.Background(), validSC)
-		wantErr := connect.NewError(connect.CodeInternal, errSentinel)
+		wantErr := connect.NewError(connect.CodeInternal, errSentinel.Error()).WithCause(errSentinel)
 		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 			return nil, wantErr
 		})
-		_, err := interceptor(next)(ctx, connect.NewRequest(&struct{}{}))
+		_, err := interceptor(next)(ctx, &struct{}{})
 		if err != wantErr {
 			t.Errorf("interceptor err = %v, want the handler's error unchanged", err)
 		}
@@ -187,9 +188,10 @@ func TestSessionIDInterceptor(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
 
-		req := connect.NewRequest(&struct{}{})
+		req := &struct{}{}
+		ctx, info := connect.NewClientContext(ctx)
 		if set {
-			req.Header().Set("X-POSTHOG-SESSION-ID", header)
+			info.RequestHeader().Set("X-POSTHOG-SESSION-ID", header)
 		}
 		if _, err := interceptor(passthrough)(ctx, req); err != nil {
 			t.Fatalf("interceptor: %v", err)
@@ -275,7 +277,7 @@ func TestSessionIDInterceptor(t *testing.T) {
 	t.Run("no active span is a no-op, not a panic", func(t *testing.T) {
 		// The provider-absent path: SpanFromContext returns a non-recording
 		// span, and stamping it must be harmless.
-		req := connect.NewRequest(&struct{}{})
+		req := &struct{}{}
 		req.Header().Set("X-POSTHOG-SESSION-ID", "sess-noop")
 		if _, err := interceptor(passthrough)(context.Background(), req); err != nil {
 			t.Fatalf("interceptor with no span: %v", err)
@@ -296,8 +298,9 @@ func TestSessionIDInterceptorStampOrdering(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
 
-		req := connect.NewRequest(&struct{}{})
-		req.Header().Set("X-POSTHOG-SESSION-ID", "sess-err")
+		req := &struct{}{}
+		ctx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("X-POSTHOG-SESSION-ID", "sess-err")
 		failing := func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 			return nil, errSentinel
 		}
@@ -329,8 +332,9 @@ func TestSessionIDInterceptorStampOrdering(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
 
-		req := connect.NewRequest(&struct{}{})
-		req.Header().Set("X-POSTHOG-SESSION-ID", "sess-live")
+		req := &struct{}{}
+		ctx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("X-POSTHOG-SESSION-ID", "sess-live")
 
 		var seen []string
 		observing := func(hctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
@@ -347,7 +351,7 @@ func TestSessionIDInterceptorStampOrdering(t *testing.T) {
 					seen = append(seen, attr.Value.AsString())
 				}
 			}
-			return connect.NewResponse(&struct{}{}), nil
+			return &struct{}{}, nil
 		}
 		if _, err := interceptor(observing)(ctx, req); err != nil {
 			t.Fatalf("interceptor: %v", err)

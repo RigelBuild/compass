@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
@@ -53,7 +55,7 @@ func newH2CClient(t *testing.T, baseURL string) compassv1connect.CompassServiceC
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewCompassServiceClient(&http.Client{Transport: tr}, baseURL)
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // h2cTransport is a stdlib HTTP transport that speaks prior-knowledge cleartext

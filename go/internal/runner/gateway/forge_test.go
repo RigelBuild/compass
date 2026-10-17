@@ -13,10 +13,9 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -40,13 +39,13 @@ type fakeForgeRelay struct {
 }
 
 func (f *fakeForgeRelay) RelayForgeCall(
-	ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest],
-) (*connect.Response[compassv1internal.RelayForgeCallResponse], error) {
-	f.calls = append(f.calls, recordedForgeCall{ctx: ctx, req: req.Msg})
+	ctx context.Context, req *compassv1internal.RelayForgeCallRequest,
+) (*compassv1internal.RelayForgeCallResponse, error) {
+	f.calls = append(f.calls, recordedForgeCall{ctx: ctx, req: req})
 	if f.err != nil {
 		return nil, f.err
 	}
-	return connect.NewResponse(f.resp), nil
+	return f.resp, nil
 }
 
 // forgeCreateIssueCall builds a ForgeCallRequest carrying a create_issue variant
@@ -68,7 +67,7 @@ func TestForgeNoSessionFailsClosedFailedPrecondition(t *testing.T) {
 	relay := &fakeForgeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Forge: relay})
 
-	resp, err := g.Forge(context.Background(), connect.NewRequest(forgeCreateIssueCall()))
+	resp, err := g.Forge(context.Background(), forgeCreateIssueCall())
 	if err == nil {
 		t.Fatal("Forge with no session bound = nil error, want CodeFailedPrecondition")
 	}
@@ -89,7 +88,7 @@ func TestForgeEmptySessionIDFailsClosedFailedPrecondition(t *testing.T) {
 	relay := &fakeForgeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Forge: relay})
 
-	resp, err := g.Forge(context.Background(), connect.NewRequest(forgeCreateIssueCall()))
+	resp, err := g.Forge(context.Background(), forgeCreateIssueCall())
 	if err == nil {
 		t.Fatal("Forge with an empty session id = nil error, want CodeFailedPrecondition")
 	}
@@ -118,7 +117,7 @@ func TestForgeHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 	relay := &fakeForgeRelay{resp: &compassv1internal.RelayForgeCallResponse{Result: wantResult}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Forge: relay})
 
-	resp, err := g.Forge(context.Background(), connect.NewRequest(forgeCreateIssueCall()))
+	resp, err := g.Forge(context.Background(), forgeCreateIssueCall())
 	if err != nil {
 		t.Fatalf("Forge = %v, want success", err)
 	}
@@ -135,8 +134,8 @@ func TestForgeHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 	if got.GetCall().GetCreateIssue().GetRepo() != "o/r" {
 		t.Fatalf("forwarded repo = %q, want o/r (verbatim payload)", got.GetCall().GetCreateIssue().GetRepo())
 	}
-	if resp.Msg.GetIssueComment().GetUrl() != "https://forge/1" {
-		t.Fatalf("returned result = %+v, want the Server's forge result", resp.Msg)
+	if resp.GetIssueComment().GetUrl() != "https://forge/1" {
+		t.Fatalf("returned result = %+v, want the Server's forge result", resp)
 	}
 }
 
@@ -144,10 +143,10 @@ func TestForgeHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 // agent renders it in-band), never a success wrapping a nil result.
 func TestForgeTransportFailurePropagatesConnectError(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
-	relay := &fakeForgeRelay{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
+	relay := &fakeForgeRelay{err: connect.NewError(connect.CodeUnavailable, "server unreachable")}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Forge: relay})
 
-	resp, err := g.Forge(context.Background(), connect.NewRequest(forgeCreateIssueCall()))
+	resp, err := g.Forge(context.Background(), forgeCreateIssueCall())
 	if err == nil {
 		t.Fatal("Forge with a failing relay = nil error, want the transport error propagated")
 	}
@@ -167,7 +166,7 @@ func TestForgeNilResultIsInternalError(t *testing.T) {
 	relay := &fakeForgeRelay{resp: &compassv1internal.RelayForgeCallResponse{}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Forge: relay})
 
-	resp, err := g.Forge(context.Background(), connect.NewRequest(forgeCreateIssueCall()))
+	resp, err := g.Forge(context.Background(), forgeCreateIssueCall())
 	if err == nil {
 		t.Fatal("Forge with a nil relay result = nil error, want CodeInternal")
 	}

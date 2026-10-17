@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2/connecthttp"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
@@ -1110,19 +1111,19 @@ func buildDoors(
 	// CommsService rides the socket + dev doors and the network shared chain with
 	// no auth pair of its own here: comms attributes every RPC to the bootstrap admin.
 	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc,
-		otel.HandlerInterceptors(otelIC), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		otel.HandlerInterceptors(otelIC), connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	// Shipped door: the Unix socket serves native gRPC, gRPC-Web, and Connect off
 	// one connect-go handler. No CORS: same-origin. The 0600 socket is the credential,
 	// so each service mounts the ambient-identity pair (the bootstrap admin, a user).
 	ambient := []connect.Interceptor{auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)}
 	socketPath, socketHandler := compassv1connect.NewCompassServiceHandler(svc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(compassServiceMaxReadBytes))
+		otel.HandlerInterceptors(otelIC, ambient...), connecthttp.WithReadMaxBytes(compassServiceMaxReadBytes))
 	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		otel.HandlerInterceptors(otelIC, ambient...), connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	agentRepositoryPath, agentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		otel.HandlerInterceptors(otelIC, ambient...), connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	usageSocketPath, usageSocketHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		otel.HandlerInterceptors(otelIC, ambient...), connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	udsMux := http.NewServeMux()
 	udsMux.Handle(socketPath, socketHandler)
 	udsMux.Handle(commsPath, commsHandler)
@@ -1142,13 +1143,13 @@ func buildDoors(
 		// them; the ambient pair then attaches the admin for the user-only write authz.
 		devAmbient := []connect.Interceptor{auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)}
 		devPath, devHandler := compassv1connect.NewCompassServiceHandler(svc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(compassServiceMaxReadBytes))
+			otel.HandlerInterceptors(otelIC, devAmbient...), connecthttp.WithReadMaxBytes(compassServiceMaxReadBytes))
 		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+			otel.HandlerInterceptors(otelIC, devAmbient...), connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 		devAgentRepositoryPath, devAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+			otel.HandlerInterceptors(otelIC, devAmbient...), connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 		devUsagePath, devUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+			otel.HandlerInterceptors(otelIC, devAmbient...), connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 		devMux := http.NewServeMux()
 		devMux.Handle(devPath, devHandler)
 		devMux.Handle(commsPath, commsHandler)

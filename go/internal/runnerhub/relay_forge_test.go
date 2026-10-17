@@ -23,7 +23,7 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -186,7 +186,7 @@ func TestRelayForgeCallDelegatesUnderResolvedCallerAccount(t *testing.T) {
 // reddens the err==nil assertion.
 func TestRelayForgeCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, fake := newHubWithForge()
-	fake.err = connect.NewError(connect.CodeNotFound, errors.New("repo \"o/x\" does not exist"))
+	fake.err = connect.NewError(connect.CodeNotFound, "repo \"o/x\" does not exist")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-4", &compassv1internal.CreateIssueRequest{Repo: "o/x", Title: "t"}))

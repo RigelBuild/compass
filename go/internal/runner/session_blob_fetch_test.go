@@ -6,13 +6,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -26,8 +25,8 @@ type fakeSessionBlobFetchServer struct {
 	req    *compassv1internal.FetchSessionBlobsRequest
 }
 
-func (f *fakeSessionBlobFetchServer) FetchSessionBlobs(ctx context.Context, req *connect.Request[compassv1internal.FetchSessionBlobsRequest], stream *connect.ServerStream[compassv1internal.FetchSessionBlobsResponse]) error {
-	f.req = req.Msg
+func (f *fakeSessionBlobFetchServer) FetchSessionBlobs(ctx context.Context, req *compassv1internal.FetchSessionBlobsRequest, stream compassv1internalconnect.RunnerServiceFetchSessionBlobsServerStream) error {
+	f.req = req
 	for _, frame := range f.frames {
 		if err := stream.Send(frame); err != nil {
 			return err
@@ -123,7 +122,7 @@ func TestFetchSessionBlobsEnforcesResumeBudget(t *testing.T) {
 func TestFetchSessionBlobsPropagatesMidStreamError(t *testing.T) {
 	server := &fakeSessionBlobFetchServer{
 		frames: []*compassv1internal.FetchSessionBlobsResponse{blobHeaderFrame("digest", 1, false), blobChunkFrame([]byte("x"))},
-		err:    connect.NewError(connect.CodeUnavailable, errors.New("stream broke")),
+		err:    connect.NewError(connect.CodeUnavailable, "stream broke"),
 	}
 	link := newLink(newRunnerServiceServer(t, server))
 
@@ -177,7 +176,7 @@ func TestResumeBlobsTreatsOnlyUnimplementedAsAbsent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &fakeSessionBlobFetchServer{err: connect.NewError(tc.code, errors.New("blob fetch unavailable"))}
+			server := &fakeSessionBlobFetchServer{err: connect.NewError(tc.code, "blob fetch unavailable")}
 			host := &agentHost{link: newLink(newRunnerServiceServer(t, server)), log: discardLoggerRunner()}
 
 			marked, files, err := host.resumeBlobs(t.Context(), "container-1", "session-1", body, false)

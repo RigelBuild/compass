@@ -8,8 +8,6 @@ import (
 	"os"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnertest"
@@ -62,7 +60,7 @@ func TestFailedReprovisionKeepsLiveContainerSocket(t *testing.T) {
 
 	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	stream, err := runnertest.DialAgentSocket(t, path).Control(subCtx, connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+	stream, err := runnertest.DialAgentSocket(t, path).Control(subCtx, &compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("agent Control over the kept socket = %v", err)
 	}

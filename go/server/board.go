@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/board"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -122,7 +122,7 @@ func (b *boardService) SetIssueStateAsAccount(
 	}
 	wire, err := b.issueBrd.CommittedIssue(ctx, committed)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	return &compassv1internal.SetIssueStateResponse{Issue: wire}, nil
 }
@@ -159,7 +159,7 @@ func (b *boardService) SetIssueState(
 	// Argument validation, inside the serialized region (never a pre-lock step):
 	// an UNSPECIFIED target is malformed regardless of current state.
 	if target == store.IssueStateUnspecified {
-		return store.Issue{}, connect.NewError(connect.CodeInvalidArgument, errUnspecifiedTarget)
+		return store.Issue{}, connect.NewError(connect.CodeInvalidArgument, errUnspecifiedTarget.Error()).WithCause(errUnspecifiedTarget)
 	}
 
 	// Read current truth under the lock.
@@ -198,7 +198,7 @@ func (b *boardService) SetIssueState(
 	if b.mirror != nil && target != store.IssueStateArchived {
 		if err := b.mirror.MirrorIssueState(ctx, committed); err != nil {
 			wrappedErr := fmt.Errorf("mirroring issue state: %w", err)
-			return store.Issue{}, connect.NewError(connect.CodeInternal, wrappedErr)
+			return store.Issue{}, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 	}
 
@@ -212,10 +212,10 @@ func (b *boardService) SetIssueState(
 func transitionStoreError(err error) error {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return connect.NewError(connect.CodeNotFound, err)
+		return connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
 	case errors.Is(err, store.ErrInvalidArgument):
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -45,10 +45,10 @@ func (h *Hub) RelaySessionBlob(ctx context.Context, runnerID string, req *compas
 	blobs := h.sessionBlobs
 	h.mu.Unlock()
 	if blobs == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errSessionBlobStoreUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errSessionBlobStoreUnavailable.Error()).WithCause(errSessionBlobStoreUnavailable)
 	}
 	if req == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("runnerhub: session blob request is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "runnerhub: session blob request is required")
 	}
 	sessionID := req.GetSessionId()
 	tenantCtx, _, err := h.runnerSessionAccountError(ctx, runnerID, sessionID)
@@ -57,17 +57,17 @@ func (h *Hub) RelaySessionBlob(ctx context.Context, runnerID string, req *compas
 	}
 	blob := req.GetBlob()
 	if blob == nil || !sessionBlobHashPattern.MatchString(blob.GetSha256()) || len(blob.GetData()) == 0 || len(blob.GetData()) > agentmsg.MaxSessionBlobBytes {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("runnerhub: invalid session blob"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "runnerhub: invalid session blob")
 	}
 	if err := blobs.PutSessionBlob(tenantCtx, sessionID, blob.GetSha256(), blob.GetData()); err != nil {
 		switch {
 		case errors.Is(err, store.ErrFailedPrecondition):
-			return nil, connect.NewError(connect.CodeUnimplemented, err)
+			return nil, connect.NewError(connect.CodeUnimplemented, err.Error()).WithCause(err)
 		case errors.Is(err, store.ErrInvalidArgument):
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		default:
 			wrappedErr := fmt.Errorf("storing session blob: %w", err)
-			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 	}
 	return &compassv1internal.RelaySessionBlobResponse{}, nil
@@ -79,17 +79,17 @@ func (h *Hub) FetchSessionBlobs(ctx context.Context, runnerID string, req *compa
 	blobs := h.sessionBlobs
 	h.mu.Unlock()
 	if blobs == nil {
-		return connect.NewError(connect.CodeUnavailable, errSessionBlobStoreUnavailable)
+		return connect.NewError(connect.CodeUnavailable, errSessionBlobStoreUnavailable.Error()).WithCause(errSessionBlobStoreUnavailable)
 	}
 	if req == nil {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("runnerhub: session blob request is required"))
+		return connect.NewError(connect.CodeInvalidArgument, "runnerhub: session blob request is required")
 	}
 	account, ok := h.AccountForContainer(runnerID, req.GetContainerName())
 	if !ok {
-		return connect.NewError(connect.CodePermissionDenied, errors.New("runnerhub: container is not provisioned on this runner"))
+		return connect.NewError(connect.CodePermissionDenied, "runnerhub: container is not provisioned on this runner")
 	}
 	if req.GetSessionId() == "" || len(req.GetSha256()) == 0 {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("runnerhub: session blob request requires hashes and a session id"))
+		return connect.NewError(connect.CodeInvalidArgument, "runnerhub: session blob request requires hashes and a session id")
 	}
 	hashes := req.GetSha256()
 	if len(hashes) > maxResumeBlobs {
@@ -97,19 +97,19 @@ func (h *Hub) FetchSessionBlobs(ctx context.Context, runnerID string, req *compa
 	}
 	for _, hash := range hashes {
 		if !sessionBlobHashPattern.MatchString(hash) {
-			return connect.NewError(connect.CodeInvalidArgument, errors.New("runnerhub: invalid session blob hash"))
+			return connect.NewError(connect.CodeInvalidArgument, "runnerhub: invalid session blob hash")
 		}
 	}
 	tenant, err := blobs.AccountTenant(store.WithSystemRole(ctx), account)
 	if err != nil {
 		wrappedErr := fmt.Errorf("resolving session blob tenant: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	tenantCtx := store.WithTenant(store.WithoutSystemRole(ctx), tenant)
 	rows, err := blobs.ResumeSessionBlobs(tenantCtx, req.GetSessionId(), account, hashes)
 	if err != nil {
 		wrappedErr := fmt.Errorf("listing session blobs: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return h.streamResumeSessionBlobs(ctx, blobs, tenantCtx, req.GetSessionId(), hashes, rows, send)
 }
@@ -148,7 +148,7 @@ func (h *Hub) streamResumeSessionBlobs(ctx context.Context, blobs SessionBlobSto
 		data, err := blobs.ReadSessionBlob(tenantCtx, sessionID, hash)
 		if err != nil {
 			if errors.Is(err, store.ErrFailedPrecondition) {
-				return connect.NewError(connect.CodeUnimplemented, err)
+				return connect.NewError(connect.CodeUnimplemented, err.Error()).WithCause(err)
 			}
 			h.log.WarnContext(ctx, "read session blob failed; skipping resume blob", "session_id", sessionID, "sha256", hash, "error", err)
 			continue

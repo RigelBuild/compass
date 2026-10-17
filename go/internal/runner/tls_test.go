@@ -14,7 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/internal/certgen"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -81,8 +82,8 @@ type enrollStub struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 }
 
-func (enrollStub) Enroll(_ context.Context, _ *connect.Request[compassv1internal.EnrollRequest]) (*connect.Response[compassv1internal.EnrollResponse], error) {
-	return connect.NewResponse(&compassv1internal.EnrollResponse{Reattached: false}), nil
+func (enrollStub) Enroll(_ context.Context, _ *compassv1internal.EnrollRequest) (*compassv1internal.EnrollResponse, error) {
+	return &compassv1internal.EnrollResponse{Reattached: false}, nil
 }
 
 // startTLSRunnerServer stands up an httptest TLS server on 127.0.0.1 serving the
@@ -122,14 +123,14 @@ func TestCATrustEnrollEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewCATrustClient: %v", err)
 		}
-		client := compassv1internalconnect.NewRunnerServiceClient(httpClient, srv.URL)
+		client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, srv.URL, connecthttp.WithReadMaxBytes(0))))
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		resp, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+		resp, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 		if err != nil {
 			t.Fatalf("Enroll over trusted TLS = %v, want success", err)
 		}
-		if resp.Msg.GetReattached() {
+		if resp.GetReattached() {
 			t.Errorf("Reattached = true, want false (stub returns a fresh enrollment)")
 		}
 	})
@@ -146,10 +147,10 @@ func TestCATrustEnrollEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewCATrustClient: %v", err)
 		}
-		client := compassv1internalconnect.NewRunnerServiceClient(httpClient, srv.URL)
+		client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, srv.URL, connecthttp.WithReadMaxBytes(0))))
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		_, err = client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+		_, err = client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 		if err == nil {
 			t.Fatal("Enroll against an untrusted server cert = nil error, want a TLS trust failure")
 		}

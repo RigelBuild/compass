@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/stack"
@@ -24,8 +22,8 @@ type infoService struct {
 	enrolledRunners []*compassv1.EnrolledRunner
 }
 
-func (s *infoService) GetServerInfo(_ context.Context, _ *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error) {
-	return connect.NewResponse(&compassv1.GetServerInfoResponse{Version: s.version, EnrolledRunners: s.enrolledRunners}), nil
+func (s *infoService) GetServerInfo(_ context.Context, _ *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
+	return &compassv1.GetServerInfoResponse{Version: s.version, EnrolledRunners: s.enrolledRunners}, nil
 }
 
 // serveInfo serves GetServerInfo over a temporary Unix socket.

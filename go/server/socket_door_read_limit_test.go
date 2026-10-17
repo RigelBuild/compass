@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -56,7 +56,7 @@ func TestSocketDoorPutAgentConfigReadLimit(t *testing.T) {
 			}
 			callCtx, cancel := context.WithTimeout(ctx, testTimeout)
 			defer cancel()
-			_, err := client.PutAgentConfig(callCtx, connect.NewRequest(request))
+			_, err := client.PutAgentConfig(callCtx, request)
 			if tc.wantCode == connect.CodeResourceExhausted {
 				if got := connect.CodeOf(err); got != tc.wantCode {
 					t.Fatalf("PutAgentConfig code = %v, want %v (error %v)", got, tc.wantCode, err)

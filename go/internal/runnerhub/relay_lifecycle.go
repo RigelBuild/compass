@@ -13,7 +13,7 @@ import (
 	"context"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -49,7 +49,7 @@ func (h *Hub) RelayLifecycleCall( //nolint:dupl // mirrored security guard order
 	caller := h.lifecycleCaller
 	h.mu.Unlock()
 	if caller == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errLifecycleUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errLifecycleUnavailable.Error()).WithCause(errLifecycleUnavailable)
 	}
 	ctx, account, err := h.runnerSessionAccountError(ctx, runnerID, req.GetSessionId())
 	if err != nil {
@@ -88,7 +88,7 @@ func (h *Hub) executeLifecycleCall(
 	if oneof == nil {
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: lifecycle call has no spawn/despawn variant set"),
+			"runnerhub: lifecycle call has no spawn/despawn variant set",
 		)
 	}
 	switch c := oneof.(type) {
@@ -111,7 +111,7 @@ func (h *Hub) executeLifecycleCall(
 	default:
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: lifecycle call has no spawn/despawn variant set"),
+			"runnerhub: lifecycle call has no spawn/despawn variant set",
 		)
 	}
 }

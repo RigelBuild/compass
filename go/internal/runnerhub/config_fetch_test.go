@@ -23,7 +23,7 @@ import (
 	"io"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -88,7 +88,7 @@ func TestFetchAgentConfigNoConfigStoreFailsPrecondition(t *testing.T) {
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, nil)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	stream, err := client.FetchAgentConfig(context.Background(), connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{}))
+	stream, err := client.FetchAgentConfig(context.Background(), &compassv1internal.FetchAgentConfigRequest{})
 	if err == nil {
 		// Server-streaming: the error may surface on first Receive, not on open.
 		stream.Receive()
@@ -116,7 +116,7 @@ func TestFetchAgentConfigStreamsVersionThenChunks(t *testing.T) {
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	stream, err := client.FetchAgentConfig(context.Background(), connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{}))
+	stream, err := client.FetchAgentConfig(context.Background(), &compassv1internal.FetchAgentConfigRequest{})
 	if err != nil {
 		t.Fatalf("FetchAgentConfig = %v, want nil", err)
 	}
@@ -143,7 +143,7 @@ func TestFetchAgentConfigUnconfiguredEmptyVersion(t *testing.T) {
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	stream, err := client.FetchAgentConfig(context.Background(), connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{}))
+	stream, err := client.FetchAgentConfig(context.Background(), &compassv1internal.FetchAgentConfigRequest{})
 	if err != nil {
 		t.Fatalf("FetchAgentConfig = %v, want nil (unconfigured is valid)", err)
 	}
@@ -167,7 +167,7 @@ func TestFetchAgentConfigStoreErrorMapsToInternal(t *testing.T) {
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	stream, err := client.FetchAgentConfig(context.Background(), connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{}))
+	stream, err := client.FetchAgentConfig(context.Background(), &compassv1internal.FetchAgentConfigRequest{})
 	if err == nil {
 		stream.Receive()
 		err = stream.Err()
@@ -192,7 +192,7 @@ func TestFetchAgentConfigIfVersionMatchStreamsVersionOnly(t *testing.T) {
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	stream, err := client.FetchAgentConfig(context.Background(), connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{IfVersion: "v-held"}))
+	stream, err := client.FetchAgentConfig(context.Background(), &compassv1internal.FetchAgentConfigRequest{IfVersion: "v-held"})
 	if err != nil {
 		t.Fatalf("FetchAgentConfig = %v, want nil", err)
 	}
@@ -216,7 +216,7 @@ func TestFetchAgentConfigIfVersionMismatchStreamsBundle(t *testing.T) {
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	stream, err := client.FetchAgentConfig(context.Background(), connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{IfVersion: "v-old"}))
+	stream, err := client.FetchAgentConfig(context.Background(), &compassv1internal.FetchAgentConfigRequest{IfVersion: "v-old"})
 	if err != nil {
 		t.Fatalf("FetchAgentConfig = %v, want nil", err)
 	}

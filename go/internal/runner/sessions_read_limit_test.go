@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -25,7 +23,7 @@ type sessionsResumeServer struct {
 	results    chan *compassv1internal.SessionsRequest
 }
 
-func (s *sessionsResumeServer) Sessions(_ context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+func (s *sessionsResumeServer) Sessions(_ context.Context, stream compassv1internalconnect.RunnerServiceSessionsServerStream) error {
 	if _, err := stream.Receive(); err != nil {
 		return fmt.Errorf("receive Runner bootstrap: %w", err)
 	}

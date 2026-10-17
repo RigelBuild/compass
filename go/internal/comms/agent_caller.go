@@ -8,9 +8,8 @@ package comms
 
 import (
 	"context"
-	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -22,7 +21,7 @@ import (
 // wiring fault, never a silent bootstrap-admin attribution.
 var errNoActor = connect.NewError(
 	connect.CodeInvalidArgument,
-	noActorError{},
+	noActorError{}.Error(),
 )
 
 type noActorError struct{}
@@ -47,7 +46,7 @@ func (noActorError) Error() string {
 // that session will fail identically, so it must not read as routine garbage.
 var errNotAgentAccount = connect.NewError(
 	connect.CodeFailedPrecondition,
-	notAgentAccountError{},
+	notAgentAccountError{}.Error(),
 )
 
 type notAgentAccountError struct{}
@@ -73,14 +72,14 @@ func (c *Comms) PostAsAccount(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.PostMessage(WithActor(ctx, account), connect.NewRequest(req))
+	resp, err := c.PostMessage(WithActor(ctx, account), req)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms PostAsAccount: PostMessage returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, "comms PostAsAccount: PostMessage returned nil response")
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // ListAsAccount executes one agent-initiated ListMessages as account, mirroring
@@ -106,14 +105,14 @@ func (c *Comms) ListAsAccount(
 		SnapshotSeq:     req.GetSnapshotSeq(),
 		TopicId:         req.GetTopicId(),
 	}
-	resp, err := c.ListMessages(WithActor(ctx, account), connect.NewRequest(listReq))
+	resp, err := c.ListMessages(WithActor(ctx, account), listReq)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms ListAsAccount: ListMessages returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, "comms ListAsAccount: ListMessages returned nil response")
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // PostAsAccountByName is the AGENT TOOL entry for comms_post_message /
@@ -231,14 +230,14 @@ func (c *Comms) UpdatePinnedBoardAsAccount(
 	if account == "" {
 		return nil, errNoActor
 	}
-	resp, err := c.UpdatePinnedBoard(WithActor(ctx, account), connect.NewRequest(req))
+	resp, err := c.UpdatePinnedBoard(WithActor(ctx, account), req)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms UpdatePinnedBoardAsAccount: UpdatePinnedBoard returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, "comms UpdatePinnedBoardAsAccount: UpdatePinnedBoard returned nil response")
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 func (c *Comms) resolveAgentGroupRef(
@@ -249,7 +248,7 @@ func (c *Comms) resolveAgentGroupRef(
 	nameField string,
 ) (string, error) {
 	if groupID != "" {
-		return "", connect.NewError(connect.CodeInvalidArgument, errors.New("comms: agent tools name groups; use "+nameField))
+		return "", connect.NewError(connect.CodeInvalidArgument, "comms: agent tools name groups; use "+nameField)
 	}
 	if groupName == "" {
 		return "", nil
@@ -281,14 +280,14 @@ func (c *Comms) CreateChannelAsAccount(
 		resolved.GroupName = ""
 		req = resolved
 	}
-	resp, err := c.CreateChannel(WithActor(ctx, account), connect.NewRequest(req))
+	resp, err := c.CreateChannel(WithActor(ctx, account), req)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms CreateChannelAsAccount: CreateChannel returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, "comms CreateChannelAsAccount: CreateChannel returned nil response")
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // UpdateChannelMembersAsAccountByName executes one agent-initiated UpdateChannelMembers
@@ -311,14 +310,14 @@ func (c *Comms) UpdateChannelMembersAsAccountByName(
 	}
 	resolved := proto.CloneOf(req)
 	resolved.ChannelId = string(ch.ID)
-	resp, err := c.UpdateChannelMembers(WithActor(ctx, account), connect.NewRequest(resolved))
+	resp, err := c.UpdateChannelMembers(WithActor(ctx, account), resolved)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms UpdateChannelMembersAsAccountByName: UpdateChannelMembers returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, "comms UpdateChannelMembersAsAccountByName: UpdateChannelMembers returned nil response")
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // CreateChannelGroupAsAccount resolves a parent group name within the agent's
@@ -341,14 +340,14 @@ func (c *Comms) CreateChannelGroupAsAccount(
 		resolved.ParentGroupName = ""
 		req = resolved
 	}
-	resp, err := c.CreateChannelGroup(WithActor(ctx, account), connect.NewRequest(req))
+	resp, err := c.CreateChannelGroup(WithActor(ctx, account), req)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms CreateChannelGroupAsAccount: CreateChannelGroup returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, "comms CreateChannelGroupAsAccount: CreateChannelGroup returned nil response")
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // OpenDMAsAccount executes an agent-initiated OpenDM as account, mirroring
@@ -364,14 +363,14 @@ func (c *Comms) OpenDMAsAccount(
 	if account == "" {
 		return nil, errNoActor
 	}
-	resp, err := c.OpenDM(WithActor(ctx, account), connect.NewRequest(req))
+	resp, err := c.OpenDM(WithActor(ctx, account), req)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms OpenDMAsAccount: OpenDM returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, "comms OpenDMAsAccount: OpenDM returned nil response")
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // defaultChannel returns req with an empty channel_id filled from the account's

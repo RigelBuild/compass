@@ -4,7 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -148,7 +149,7 @@ func newAgentGatewayInterceptor() (*otelconnect.Interceptor, error) {
 func agentGatewayHandlerOptions(ic *otelconnect.Interceptor) []connect.HandlerOption {
 	return []connect.HandlerOption{
 		otelx.HandlerInterceptors(ic),
-		connect.WithReadMaxBytes(maxAgentMessageBytes),
+		connecthttp.WithReadMaxBytes(maxAgentMessageBytes),
 		connect.WithCodec(ackBoundCodec{}),
 		connect.WithCodec(frameJSONCodec{name: "json"}),
 		connect.WithCodec(frameJSONCodec{name: "json; charset=utf-8"}),

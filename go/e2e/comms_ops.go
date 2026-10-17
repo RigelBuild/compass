@@ -25,16 +25,16 @@ import (
 func (f *Fixture) PostMessage(ctx context.Context, channelID, topicName, text string) (messageID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().PostMessage(rctx, connect.NewRequest(&compassv1.PostMessageRequest{
+	resp, err := f.Comms().PostMessage(rctx, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: topicName},
 		CreateTopic: true,
 		Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("PostMessage RPC: %w", err)
 	}
-	return resp.Msg.GetMessage().GetId(), nil
+	return resp.GetMessage().GetId(), nil
 }
 
 // SubscribeMember adds memberHandle to channelID's membership AND marks it
@@ -52,11 +52,11 @@ func (f *Fixture) PostMessage(ctx context.Context, channelID, topicName, text st
 func (f *Fixture) SubscribeMember(ctx context.Context, channelID, memberHandle string) error {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := f.Comms().UpdateChannelMembers(rctx, connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	if _, err := f.Comms().UpdateChannelMembers(rctx, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        channelID,
 		AddMemberHandles: []string{memberHandle},
 		SubscribeHandles: []string{memberHandle},
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("UpdateChannelMembers RPC: %w", err)
 	}
 	return nil
@@ -71,9 +71,9 @@ func (f *Fixture) SubscribeMember(ctx context.Context, channelID, memberHandle s
 // stream. Returns an error rather than panicking so the caller (a test) decides
 // fatality.
 func (f *Fixture) SubscribeComms(ctx context.Context, sinceSeq uint64) (*connect.ServerStreamForClient[compassv1.SubscribeCommsResponse], error) {
-	stream, err := f.Comms().SubscribeComms(ctx, connect.NewRequest(&compassv1.SubscribeCommsRequest{
+	stream, err := f.Comms().SubscribeComms(ctx, &compassv1.SubscribeCommsRequest{
 		SinceSeq: sinceSeq,
-	}))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("SubscribeComms RPC: %w", err)
 	}
@@ -91,16 +91,16 @@ func (f *Fixture) SubscribeComms(ctx context.Context, sinceSeq uint64) (*connect
 func (f *Fixture) PostMessageAsObserver(ctx context.Context, comms commsServiceClient, channelID, topicName, text string) (messageID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := comms.PostMessage(rctx, connect.NewRequest(&compassv1.PostMessageRequest{
+	resp, err := comms.PostMessage(rctx, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: topicName},
 		CreateTopic: true,
 		Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("PostMessage RPC (observer): %w", err)
 	}
-	return resp.Msg.GetMessage().GetId(), nil
+	return resp.GetMessage().GetId(), nil
 }
 
 // SubscribeCommsAsObserver is SubscribeComms threaded through an EXPLICIT comms
@@ -113,9 +113,9 @@ func (f *Fixture) PostMessageAsObserver(ctx context.Context, comms commsServiceC
 // unchanged. Returns an error rather than panicking so the caller (a test)
 // decides fatality.
 func (f *Fixture) SubscribeCommsAsObserver(ctx context.Context, comms commsServiceClient, sinceSeq uint64) (*connect.ServerStreamForClient[compassv1.SubscribeCommsResponse], error) {
-	stream, err := comms.SubscribeComms(ctx, connect.NewRequest(&compassv1.SubscribeCommsRequest{
+	stream, err := comms.SubscribeComms(ctx, &compassv1.SubscribeCommsRequest{
 		SinceSeq: sinceSeq,
-	}))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("SubscribeComms RPC (observer): %w", err)
 	}

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -28,14 +28,14 @@ func TestReparentAgentHappyPathEmitsAccountChanged(t *testing.T) {
 	events := firstEventAfterBoundary(t, h, owner.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
 	// Bare handles resolve in the caller-owner's agent namespace.
-	resp, err := h.svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	resp, err := h.svc.ReparentAgent(WithActor(ctx, owner.ID), &compassv1.ReparentAgentRequest{
 		AgentHandle:     "b",
 		NewParentHandle: "a",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ReparentAgent: %v", err)
 	}
-	if got := resp.Msg.GetAccount().GetAgent().GetParentAgentId(); got != string(a.ID) {
+	if got := resp.GetAccount().GetAgent().GetParentAgentId(); got != string(a.ID) {
 		t.Fatalf("returned account parent = %q, want %q", got, a.ID)
 	}
 
@@ -66,18 +66,18 @@ func TestReparentAgentForeignCallerNotFound(t *testing.T) {
 	// The intruder owner-qualifies the target into owner's namespace; the
 	// resolver resolves it (AgentByHandle is not viewer-scoped), but the store's
 	// clause-0 authority check then fails and is remapped to NOT_FOUND.
-	_, foreignErr := svc.ReparentAgent(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	_, foreignErr := svc.ReparentAgent(WithActor(ctx, intruder.ID), &compassv1.ReparentAgentRequest{
 		AgentHandle:     "owner/b",
 		NewParentHandle: "intruder",
-	}))
+	})
 	connectNotFoundFor(t, foreignErr, "owner/b", "foreign caller")
 
 	// An unknown target from the same vantage with the same parent: a resolver
 	// miss carrying the same template for its own spelling.
-	_, unknownErr := svc.ReparentAgent(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	_, unknownErr := svc.ReparentAgent(WithActor(ctx, intruder.ID), &compassv1.ReparentAgentRequest{
 		AgentHandle:     "owner/ghost",
 		NewParentHandle: "intruder",
-	}))
+	})
 	connectNotFoundFor(t, unknownErr, "owner/ghost", "unknown target")
 }
 
@@ -100,18 +100,18 @@ func TestReparentAgentCrossOwnerParentNotFound(t *testing.T) {
 	// Existing-but-foreign parent: resolves (AgentByHandle is not viewer-scoped),
 	// then the edge same-owner pre-check rejects it as NOT_FOUND naming the
 	// submitted new_parent_handle.
-	_, foreignErr := svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	_, foreignErr := svc.ReparentAgent(WithActor(ctx, owner.ID), &compassv1.ReparentAgentRequest{
 		AgentHandle:     "a",
 		NewParentHandle: "other/foreign",
-	}))
+	})
 	connectCodeIs(t, foreignErr, connect.CodeNotFound, "cross-owner parent")
 
 	// Unknown parent under the same owner-qualifier: misses at resolution,
 	// NOT_FOUND naming the same submitted spelling.
-	_, unknownErr := svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	_, unknownErr := svc.ReparentAgent(WithActor(ctx, owner.ID), &compassv1.ReparentAgentRequest{
 		AgentHandle:     "a",
 		NewParentHandle: "other/ghost",
-	}))
+	})
 	connectCodeIs(t, unknownErr, connect.CodeNotFound, "unknown parent")
 
 	// The oracle invariant: a foreign parent must be indistinguishable from an
@@ -154,10 +154,10 @@ func TestReparentAgentCycleFailedPrecondition(t *testing.T) {
 	// Clause 2: cycle → FailedPrecondition. Both handles resolve (same owner), so
 	// the cycle check runs and its distinct code survives (it is not an
 	// authority/visibility failure, so DL-269's merge does not apply).
-	_, err = svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	_, err = svc.ReparentAgent(WithActor(ctx, owner.ID), &compassv1.ReparentAgentRequest{
 		AgentHandle:     "a",
 		NewParentHandle: "b",
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeFailedPrecondition, "cycle")
 }
 
@@ -168,10 +168,10 @@ func TestReparentAgentMissingParentNotFound(t *testing.T) {
 	mustAgent(t, st, owner.ID, "a")
 
 	// A non-existent parent handle misses at resolution → NotFound.
-	_, err := svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	_, err := svc.ReparentAgent(WithActor(ctx, owner.ID), &compassv1.ReparentAgentRequest{
 		AgentHandle:     "a",
 		NewParentHandle: "no-such-agent",
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeNotFound, "missing parent")
 }
 
@@ -182,45 +182,45 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 	parent := mustAgent(t, st, owner.ID, "parent")
 
 	// Happy path: a parent the caller's owner owns (bare handle) is accepted.
-	resp, err := svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	resp, err := svc.CreateAgent(WithActor(ctx, owner.ID), &compassv1.CreateAgentRequest{
 		Handle:       "child",
 		DisplayName:  "Child",
 		ParentHandle: "parent",
 		Role:         "manager",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateAgent with parent: %v", err)
 	}
-	if got := resp.Msg.GetAccount().GetAgent().GetParentAgentId(); got != string(parent.ID) {
+	if got := resp.GetAccount().GetAgent().GetParentAgentId(); got != string(parent.ID) {
 		t.Fatalf("created child parent = %q, want %q", got, parent.ID)
 	}
 
 	// A parent that does not exist → NotFound (resolver miss).
-	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), &compassv1.CreateAgentRequest{
 		Handle:       "orphan",
 		DisplayName:  "Orphan",
 		ParentHandle: "no-such-agent",
 		Role:         "manager",
-	}))
+	})
 	connectNotFoundFor(t, err, "no-such-agent", "create with missing parent")
 
 	// A foreign parent resolves, but the same-owner check must read as an unknown
 	// parent under the same qualifier, code AND message.
 	other := mustUser(t, st, "other")
 	mustAgent(t, st, other.ID, "foreign")
-	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), &compassv1.CreateAgentRequest{
 		Handle:       "cross",
 		DisplayName:  "Cross",
 		ParentHandle: "other/foreign",
 		Role:         "manager",
-	}))
+	})
 	connectNotFoundFor(t, err, "other/foreign", "create with cross-owner parent")
-	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), &compassv1.CreateAgentRequest{
 		Handle:       "cross",
 		DisplayName:  "Cross",
 		ParentHandle: "other/ghost",
 		Role:         "manager",
-	}))
+	})
 	connectNotFoundFor(t, err, "other/ghost", "create with unknown parent under a real owner")
 }
 
@@ -244,12 +244,12 @@ func TestCreateAgentRequiresTaxonomyRole(t *testing.T) {
 				mustAgent(t, st, owner.ID, tt.parentHandle)
 			}
 
-			_, err := svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+			_, err := svc.CreateAgent(WithActor(ctx, owner.ID), &compassv1.CreateAgentRequest{
 				Handle:       tt.handle,
 				DisplayName:  tt.handle,
 				ParentHandle: tt.parentHandle,
 				Role:         tt.role,
-			}))
+			})
 			if err == nil {
 				t.Fatal("CreateAgent with invalid role = nil error, want CodeInvalidArgument")
 			}
@@ -274,11 +274,11 @@ func TestCreateAgentPersistsRole(t *testing.T) {
 	for _, role := range []string{"supervisor", "owner", "manager"} {
 		t.Run(role, func(t *testing.T) {
 			handle := "role-" + role
-			if _, err := svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+			if _, err := svc.CreateAgent(WithActor(ctx, owner.ID), &compassv1.CreateAgentRequest{
 				Handle:      handle,
 				DisplayName: handle,
 				Role:        role,
-			})); err != nil {
+			}); err != nil {
 				t.Fatalf("CreateAgent(role=%q): %v", role, err)
 			}
 
@@ -310,19 +310,19 @@ func TestCreateAgentByAgentCallerResolvesOwner(t *testing.T) {
 	parentAgent := mustAgent(t, st, owner.ID, "parent")
 	callerAgent := mustAgent(t, st, owner.ID, "caller")
 
-	resp, err := svc.CreateAgent(WithActor(ctx, callerAgent.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	resp, err := svc.CreateAgent(WithActor(ctx, callerAgent.ID), &compassv1.CreateAgentRequest{
 		Handle:       "child",
 		DisplayName:  "Child",
 		ParentHandle: "parent",
 		Role:         "manager",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateAgent by agent caller: %v", err)
 	}
-	if got := resp.Msg.GetAccount().GetAgent().GetParentAgentId(); got != string(parentAgent.ID) {
+	if got := resp.GetAccount().GetAgent().GetParentAgentId(); got != string(parentAgent.ID) {
 		t.Fatalf("created child parent = %q, want %q", got, parentAgent.ID)
 	}
-	childID := store.AccountID(resp.Msg.GetAccount().GetId())
+	childID := store.AccountID(resp.GetAccount().GetId())
 	gotOwner, err := st.AgentOwner(ctx, childID)
 	if err != nil {
 		t.Fatalf("AgentOwner(child): %v", err)
@@ -336,11 +336,11 @@ func TestCreateAgentByAgentCallerResolvesOwner(t *testing.T) {
 	// exists → NOT_FOUND (resolver miss).
 	other := mustUser(t, st, "other")
 	intruder := mustAgent(t, st, other.ID, "intruder")
-	_, err = svc.CreateAgent(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	_, err = svc.CreateAgent(WithActor(ctx, intruder.ID), &compassv1.CreateAgentRequest{
 		Handle:       "hijack",
 		DisplayName:  "Hijack",
 		ParentHandle: "parent",
 		Role:         "manager",
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeNotFound, "cross-owner agent caller")
 }

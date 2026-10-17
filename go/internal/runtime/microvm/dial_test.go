@@ -20,7 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -246,8 +247,8 @@ type healthHandler struct {
 	resp *compassv1.HealthResponse
 }
 
-func (h healthHandler) Health(context.Context, *connect.Request[compassv1.HealthRequest]) (*connect.Response[compassv1.HealthResponse], error) {
-	return connect.NewResponse(h.resp), nil
+func (h healthHandler) Health(context.Context, *compassv1.HealthRequest) (*compassv1.HealthResponse, error) {
+	return h.resp, nil
 }
 
 func TestGuestClient_HealthRoundTrip(t *testing.T) {
@@ -255,13 +256,16 @@ func TestGuestClient_HealthRoundTrip(t *testing.T) {
 
 	// h2c Connect server for the GuestControl handler.
 	mux := http.NewServeMux()
-	mux.Handle(compassv1internalconnect.NewGuestControlHandler(healthHandler{
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterGuestControlHandler(server, healthHandler{
 		resp: &compassv1.HealthResponse{
 			GuestdVersion:    "v2a-spike",
 			NetProvisioned:   true,
 			WorkspaceMounted: true,
 		},
-	}))
+	})
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
@@ -312,17 +316,17 @@ func TestGuestClient_HealthRoundTrip(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	resp, err := client.Health(ctx, connect.NewRequest(&compassv1.HealthRequest{}))
+	resp, err := client.Health(ctx, &compassv1.HealthRequest{})
 	if err != nil {
 		t.Fatalf("Health: %v", err)
 	}
-	if got := resp.Msg.GetGuestdVersion(); got != "v2a-spike" {
+	if got := resp.GetGuestdVersion(); got != "v2a-spike" {
 		t.Fatalf("guestd_version = %q, want %q", got, "v2a-spike")
 	}
-	if !resp.Msg.GetNetProvisioned() {
+	if !resp.GetNetProvisioned() {
 		t.Fatal("net_provisioned = false, want true")
 	}
-	if !resp.Msg.GetWorkspaceMounted() {
+	if !resp.GetWorkspaceMounted() {
 		t.Fatal("workspace_mounted = false, want true")
 	}
 }

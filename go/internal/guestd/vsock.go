@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/mdlayher/vsock"
 
@@ -91,7 +91,7 @@ func serveVsock(ctx context.Context, port uint32, svc *supervisor) error {
 func serveHandshake(ctx context.Context, ln net.Listener, svc *supervisor) error {
 	mux := http.NewServeMux()
 	path, handler := compassv1internalconnect.NewGuestControlHandler(svc,
-		connect.WithReadMaxBytes(16<<20))
+		connecthttp.WithReadMaxBytes(16<<20))
 	mux.Handle(path, handler)
 
 	srv := &http.Server{Handler: mux, Protocols: cleartextHTTP2()} //nolint:gosec // vsock-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply

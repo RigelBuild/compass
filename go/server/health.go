@@ -8,8 +8,9 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/grpchealth"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/grpchealth/v2"
 
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 )
@@ -32,7 +33,7 @@ type serverHealth struct {
 func newServerHealth(hub *runnerhub.Hub) *serverHealth {
 	health := &serverHealth{hub: hub}
 	health.grpcPath, health.grpc = grpchealth.NewHandler(health,
-		connect.WithReadMaxBytes(healthMaxReadBytes),
+		connecthttp.WithReadMaxBytes(healthMaxReadBytes),
 	)
 	return health
 }
@@ -48,7 +49,7 @@ func (h *serverHealth) Check(_ context.Context, req *grpchealth.CheckRequest) (*
 		return &grpchealth.CheckResponse{Status: grpchealth.StatusNotServing}, nil
 	}
 	if req.Service != "" && req.Service != compassHealthService {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("unknown health service %q", req.Service))
+		return nil, connect.Errorf(connect.CodeNotFound, "unknown health service %q", req.Service)
 	}
 	if h.draining.Load() {
 		return &grpchealth.CheckResponse{Status: grpchealth.StatusNotServing}, nil

@@ -12,9 +12,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -212,11 +211,11 @@ func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1intern
 	cmd.Traceparent = otelx.Traceparent(ctx)
 	router, runnerID, err := h.routerFor(sessionKey)
 	if err != nil {
-		return nil, "", connect.NewError(connect.CodeUnavailable, err)
+		return nil, "", connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	result, err := router.dispatch(ctx, cmd)
 	if err != nil {
-		return nil, "", connect.NewError(connect.CodeUnavailable, err)
+		return nil, "", connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	if runnerErr := result.GetError(); runnerErr != nil {
 		return nil, "", runnerErrorToConnect(runnerErr)
@@ -237,7 +236,7 @@ func runnerErrorToConnect(e *compassv1internal.RunnerError) error {
 	default:
 		code = connect.CodeInternal
 	}
-	return connect.NewError(code, fmt.Errorf("runner: %s", e.GetMessage()))
+	return connect.Errorf(code, "runner: %s", e.GetMessage())
 }
 
 // MaxClientRequestIDBytes bounds a caller's client_request_id, which the Hub
@@ -247,8 +246,8 @@ const MaxClientRequestIDBytes = 256
 // CheckClientRequestID refuses an over-long client_request_id with InvalidArgument.
 func CheckClientRequestID(id string) error {
 	if len(id) > MaxClientRequestIDBytes {
-		return connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("client_request_id is %d bytes; the limit is %d", len(id), MaxClientRequestIDBytes))
+		return connect.Errorf(connect.CodeInvalidArgument,
+			"client_request_id is %d bytes; the limit is %d", len(id), MaxClientRequestIDBytes)
 	}
 	return nil
 }

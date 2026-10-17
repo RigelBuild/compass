@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -25,16 +25,16 @@ func TestApprovePeerHandlerAuthorizationAndTargetTypes(t *testing.T) {
 		t.Fatalf("EnsureSystemAccount: %v", err)
 	}
 
-	_, err := svc.ApprovePeer(WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: peer.Handle}))
+	_, err := svc.ApprovePeer(WithActor(ctx, agent.ID), &compassv1.ApprovePeerRequest{PeerHandle: peer.Handle})
 	connectCodeIs(t, err, connect.CodePermissionDenied, "agent approval")
 
-	_, err = svc.ApprovePeer(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: owner.Handle}))
+	_, err = svc.ApprovePeer(WithActor(ctx, owner.ID), &compassv1.ApprovePeerRequest{PeerHandle: owner.Handle})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "self approval")
 	// Agent, system and unknown targets must be indistinguishable apart from the
 	// submitted handle, so none reveals which kind of account it names.
 	var shape string
 	for _, handle := range []string{"peering-agent", "peering-owner/peering-agent", store.SystemAccountHandle, "peering-missing"} {
-		_, err := svc.ApprovePeer(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: handle}))
+		_, err := svc.ApprovePeer(WithActor(ctx, owner.ID), &compassv1.ApprovePeerRequest{PeerHandle: handle})
 		connectCodeIs(t, err, connect.CodeNotFound, "approval target "+handle)
 		ce, ok := errors.AsType[*connect.Error](err)
 		if !ok {
@@ -55,22 +55,22 @@ func TestApprovePeerHandlerReturnsPeeringState(t *testing.T) {
 	a := mustUser(t, st, "peering-ok-a")
 	b := mustUser(t, st, "peering-ok-b")
 
-	resp, err := svc.ApprovePeer(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: b.Handle}))
+	resp, err := svc.ApprovePeer(WithActor(ctx, a.ID), &compassv1.ApprovePeerRequest{PeerHandle: b.Handle})
 	if err != nil {
 		t.Fatalf("ApprovePeer(a->b): %v", err)
 	}
-	if p := resp.Msg.GetPeering(); p.GetUserAccountId() != string(b.ID) || p.GetHandle() != b.Handle || p.GetState() != compassv1.PeeringState_PEERING_STATE_PENDING_OUTGOING {
+	if p := resp.GetPeering(); p.GetUserAccountId() != string(b.ID) || p.GetHandle() != b.Handle || p.GetState() != compassv1.PeeringState_PEERING_STATE_PENDING_OUTGOING {
 		t.Fatalf("ApprovePeer(a->b) peering = %+v, want %s/%s pending outgoing", p, b.ID, b.Handle)
 	}
-	resp, err = svc.ApprovePeer(WithActor(ctx, b.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: a.Handle}))
+	resp, err = svc.ApprovePeer(WithActor(ctx, b.ID), &compassv1.ApprovePeerRequest{PeerHandle: a.Handle})
 	if err != nil {
 		t.Fatalf("ApprovePeer(b->a): %v", err)
 	}
-	if p := resp.Msg.GetPeering(); p.GetUserAccountId() != string(a.ID) || p.GetHandle() != a.Handle || p.GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
+	if p := resp.GetPeering(); p.GetUserAccountId() != string(a.ID) || p.GetHandle() != a.Handle || p.GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
 		t.Fatalf("ApprovePeer(b->a) peering = %+v, want %s/%s approved", p, a.ID, a.Handle)
 	} // A retry after the peering is live must report it, not the caller's own row alone.
-	resp, err = svc.ApprovePeer(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: b.Handle}))
-	if err != nil || resp.Msg.GetPeering().GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
+	resp, err = svc.ApprovePeer(WithActor(ctx, a.ID), &compassv1.ApprovePeerRequest{PeerHandle: b.Handle})
+	if err != nil || resp.GetPeering().GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
 		t.Fatalf("repeat ApprovePeer(a->b) = %+v, %v; want approved", resp, err)
 	}
 }
@@ -89,12 +89,12 @@ func TestListPeersHandlerShowsThreeStates(t *testing.T) {
 		}
 	}
 
-	resp, err := svc.ListPeers(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.ListPeersRequest{}))
+	resp, err := svc.ListPeers(WithActor(ctx, a.ID), &compassv1.ListPeersRequest{})
 	if err != nil {
 		t.Fatalf("ListPeers: %v", err)
 	}
 	got := make(map[string]compassv1.PeeringState)
-	for _, peer := range resp.Msg.GetPeerings() {
+	for _, peer := range resp.GetPeerings() {
 		got[peer.GetHandle()] = peer.GetState()
 	}
 	want := map[string]compassv1.PeeringState{
@@ -135,18 +135,18 @@ func TestRevokePeerHandlerReclaimedHandleDoesNotRevokeOldAccount(t *testing.T) {
 	}
 
 	svc := NewComms(ctx, s, newBus(t), nil, a.ID)
-	resp, err := svc.RevokePeer(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.RevokePeerRequest{PeerHandle: "peering-reclaim-b"}))
+	resp, err := svc.RevokePeer(WithActor(ctx, a.ID), &compassv1.RevokePeerRequest{PeerHandle: "peering-reclaim-b"})
 	if err != nil {
 		t.Fatalf("RevokePeer(reclaimed handle): %v", err)
 	}
-	if resp.Msg.GetDeleted() {
+	if resp.GetDeleted() {
 		t.Fatal("RevokePeer(reclaimed handle) reported deleted=true, want false")
 	}
-	peers, err := svc.ListPeers(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.ListPeersRequest{}))
+	peers, err := svc.ListPeers(WithActor(ctx, a.ID), &compassv1.ListPeersRequest{})
 	if err != nil {
 		t.Fatalf("ListPeers after reclaimed revoke: %v", err)
 	}
-	if len(peers.Msg.GetPeerings()) != 1 || peers.Msg.GetPeerings()[0].GetUserAccountId() != string(b.ID) || peers.Msg.GetPeerings()[0].GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
-		t.Fatalf("old account peering after reclaimed revoke = %+v, want original approved peer", peers.Msg.GetPeerings())
+	if len(peers.GetPeerings()) != 1 || peers.GetPeerings()[0].GetUserAccountId() != string(b.ID) || peers.GetPeerings()[0].GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
+		t.Fatalf("old account peering after reclaimed revoke = %+v, want original approved peer", peers.GetPeerings())
 	}
 }

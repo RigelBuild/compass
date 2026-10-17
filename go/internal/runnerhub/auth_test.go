@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -95,7 +95,7 @@ func TestAuthenticateLookupFailureIsUnavailable(t *testing.T) {
 		return nil, errors.New("unexpected handler invocation")
 	})
 
-	request := connect.NewRequest(&compassv1internal.EnrollRequest{})
+	request := &compassv1internal.EnrollRequest{}
 	request.Header().Set("Authorization", "Bearer runner-tok")
 	_, err := next(context.Background(), request)
 	if err == nil {
@@ -171,12 +171,15 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 	rejectClient := newRawRunnerClient(t, url, "account-tok")
 
 	t.Run("enroll", func(t *testing.T) {
-		_, err := rejectClient.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+		_, err := rejectClient.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 		assertUnauthenticated(t, err)
 	})
 
 	t.Run("sessions", func(t *testing.T) {
-		stream := rejectClient.Sessions(context.Background())
+		stream, err := rejectClient.Sessions(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
 		// The interceptor rejects at connect (before the handler). Per the
 		// connect-go contract, if the server has already closed when Send runs,
 		// Send returns an io.EOF-wrapped error and the authoritative status is
@@ -192,7 +195,10 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 	})
 
 	t.Run("publish events", func(t *testing.T) {
-		stream := rejectClient.PublishEvents(context.Background())
+		stream, err := rejectClient.PublishEvents(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
 		// Same reject-race as sessions: the authoritative code is on
 		// CloseAndReceive, not Send's closed-stream write.
 		if err := stream.Send(&compassv1internal.PublishEventsRequest{}); err != nil && !errors.Is(err, io.EOF) {
@@ -203,12 +209,12 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 	})
 
 	t.Run("relay comms call", func(t *testing.T) {
-		_, err := rejectClient.RelayCommsCall(context.Background(), connect.NewRequest(&compassv1internal.RelayCommsCallRequest{}))
+		_, err := rejectClient.RelayCommsCall(context.Background(), &compassv1internal.RelayCommsCallRequest{})
 		assertUnauthenticated(t, err)
 	})
 
 	t.Run("commit conversation frame", func(t *testing.T) {
-		_, err := rejectClient.CommitConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.CommitConversationFrameRequest{}))
+		_, err := rejectClient.CommitConversationFrame(context.Background(), &compassv1internal.CommitConversationFrameRequest{})
 		assertUnauthenticated(t, err)
 	})
 }
@@ -220,9 +226,9 @@ func TestSessionBlobRPCsRejectNonRunnerSubject(t *testing.T) {
 	}}
 	url := newMountedH2CServer(t, h, resolver.resolve)
 	client := newRawRunnerClient(t, url, "account-tok")
-	_, err := client.RelaySessionBlob(context.Background(), connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{}))
+	_, err := client.RelaySessionBlob(context.Background(), &compassv1internal.RelaySessionBlobRequest{})
 	assertUnauthenticated(t, err)
-	stream, err := client.FetchSessionBlobs(context.Background(), connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{}))
+	stream, err := client.FetchSessionBlobs(context.Background(), &compassv1internal.FetchSessionBlobsRequest{})
 	if err != nil {
 		assertUnauthenticated(t, err)
 		return
@@ -237,9 +243,9 @@ func TestSessionBlobRPCsRejectNonRunnerSubject(t *testing.T) {
 func TestSessionBlobHandlersRejectAccountSubject(t *testing.T) {
 	handler := NewHandler(newHubOnly(), nil, nil)
 	ctx := withRunnerSubject(context.Background(), store.Subject{Kind: store.SubjectAccount, ID: "account-1"})
-	_, err := handler.RelaySessionBlob(ctx, connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{}))
+	_, err := handler.RelaySessionBlob(ctx, &compassv1internal.RelaySessionBlobRequest{})
 	assertUnauthenticated(t, err)
-	err = handler.FetchSessionBlobs(ctx, connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{}), nil)
+	err = handler.FetchSessionBlobs(ctx, &compassv1internal.FetchSessionBlobsRequest{}, nil)
 	assertUnauthenticated(t, err)
 }
 
@@ -247,11 +253,11 @@ func TestSessionBlobRPCsRegisteredOverWire(t *testing.T) {
 	h := newHubOnly()
 	url := newMountedH2CServer(t, h, runnerResolverForFetch().resolve)
 	client := newRawRunnerClient(t, url, "runner-tok")
-	_, err := client.RelaySessionBlob(context.Background(), connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{}))
+	_, err := client.RelaySessionBlob(context.Background(), &compassv1internal.RelaySessionBlobRequest{})
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Fatalf("RelaySessionBlob without store = %v, want Unavailable (err %v)", got, err)
 	}
-	stream, err := client.FetchSessionBlobs(context.Background(), connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{}))
+	stream, err := client.FetchSessionBlobs(context.Background(), &compassv1internal.FetchSessionBlobsRequest{})
 	if err == nil {
 		if stream.Receive() {
 			t.Fatal("FetchSessionBlobs without store unexpectedly received a frame")
@@ -273,11 +279,11 @@ func TestRunnerTokenAcceptedOverWire(t *testing.T) {
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	resp, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	resp, err := client.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 	if err != nil {
 		t.Fatalf("Enroll with a valid runner token = %v, want success", err)
 	}
-	if resp.Msg.GetReattached() {
+	if resp.GetReattached() {
 		t.Fatal("first Enroll reattached = true, want false")
 	}
 }
@@ -293,11 +299,11 @@ func TestEnrollReturnsSubjectRunnerID(t *testing.T) {
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 	client := newRawRunnerClient(t, url, "projected-tok")
 
-	resp, err := client.Enroll(t.Context(), connect.NewRequest(&compassv1internal.EnrollRequest{}))
+	resp, err := client.Enroll(t.Context(), &compassv1internal.EnrollRequest{})
 	if err != nil {
 		t.Fatalf("Enroll with empty runner_id = %v, want success", err)
 	}
-	if got := resp.Msg.GetRunnerId(); got != id {
+	if got := resp.GetRunnerId(); got != id {
 		t.Fatalf("EnrollResponse.runner_id = %q, want %q", got, id)
 	}
 }
@@ -312,7 +318,7 @@ func TestEnrollMismatchedRunnerIDIsUnauthenticated(t *testing.T) {
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.Enroll(t.Context(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "prod/node-b"}))
+	_, err := client.Enroll(t.Context(), &compassv1internal.EnrollRequest{RunnerId: "prod/node-b"})
 	if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
 		t.Fatalf("Enroll with mismatched runner_id = code %v (%v), want Unauthenticated", got, err)
 	}
@@ -343,7 +349,7 @@ func TestEnrollFaultedDurableReapReturnsUnavailableOverWire(t *testing.T) {
 	}}
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 	client := newRawRunnerClient(t, url, "runner-tok")
-	_, err = client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	_, err = client.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 	if err == nil {
 		t.Fatal("Enroll with a durable reap fault succeeded, want Unavailable")
 	}
@@ -380,12 +386,12 @@ func TestSuccessfulDurableReapEnrollsNormallyOverWire(t *testing.T) {
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	first, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
-	if err != nil || first.Msg.GetReattached() {
+	first, err := client.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
+	if err != nil || first.GetReattached() {
 		t.Fatalf("first Enroll = (%v, %v), want fresh success", first, err)
 	}
-	second, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
-	if err != nil || !second.Msg.GetReattached() {
+	second, err := client.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
+	if err != nil || !second.GetReattached() {
 		t.Fatalf("second Enroll = (%v, %v), want successful reattached response", second, err)
 	}
 }
@@ -399,7 +405,7 @@ func TestResolverFaultReturnsUnavailableOverWire(t *testing.T) {
 	url := newMountedH2CServer(t, hub, resolve)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	_, err := client.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 	if err == nil {
 		t.Fatal("Enroll during resolver failure succeeded, want Unavailable")
 	}
@@ -420,7 +426,7 @@ func TestMissingTokenRejectedOverWire(t *testing.T) {
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 	client := newRawRunnerClient(t, url, "") // no token stamped
 
-	_, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	_, err := client.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 	assertUnauthenticated(t, err)
 }
 

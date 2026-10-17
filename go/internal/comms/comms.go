@@ -18,11 +18,10 @@ package comms
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -152,17 +151,17 @@ var _ compassv1connect.CommsServiceHandler = (*Comms)(nil)
 // separate path, never a signup field (comms.proto:39-42).
 func (c *Comms) CreateUser(
 	ctx context.Context,
-	req *connect.Request[compassv1.CreateUserRequest],
-) (*connect.Response[compassv1.CreateUserResponse], error) {
+	req *compassv1.CreateUserRequest,
+) (*compassv1.CreateUserResponse, error) {
 	acc, err := c.store.CreateUser(ctx, store.NewUser{
-		Handle:      req.Msg.GetHandle(),
-		DisplayName: req.Msg.GetDisplayName(),
+		Handle:      req.GetHandle(),
+		DisplayName: req.GetDisplayName(),
 	})
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	c.publishAccountChanged(ctx, acc)
-	return connect.NewResponse(&compassv1.CreateUserResponse{Account: accountToWire(acc)}), nil
+	return &compassv1.CreateUserResponse{Account: accountToWire(acc)}, nil
 }
 
 // CreateAgent creates an agent account owned by the caller's resolved owner (an
@@ -171,11 +170,11 @@ func (c *Comms) CreateUser(
 // in the same transaction.
 func (c *Comms) CreateAgent(
 	ctx context.Context,
-	req *connect.Request[compassv1.CreateAgentRequest],
-) (*connect.Response[compassv1.CreateAgentResponse], error) {
+	req *compassv1.CreateAgentRequest,
+) (*compassv1.CreateAgentResponse, error) {
 	caller := c.actorFromContext(ctx)
-	if !store.IsManagerRole(req.Msg.GetRole()) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrUnknownRole)
+	if !store.IsManagerRole(req.GetRole()) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrUnknownRole.Error()).WithCause(store.ErrUnknownRole)
 	}
 	owner, err := c.store.ResolveOwner(ctx, caller)
 	if err != nil {
@@ -186,7 +185,7 @@ func (c *Comms) CreateAgent(
 	// parent_handle must resolve to an existing agent of that owner (else NotFound).
 	// Oracle-safe (DL-269): a foreign parent is NOT_FOUND naming the SUBMITTED handle.
 	var parentID store.AccountID
-	if parent := req.Msg.GetParentHandle(); parent != "" {
+	if parent := req.GetParentHandle(); parent != "" {
 		parentID, err = c.resolveAgentHandle(ctx, caller, parent)
 		if err != nil {
 			return nil, edgeError(err) // resolver miss → NOT_FOUND naming the handle
@@ -204,25 +203,25 @@ func (c *Comms) CreateAgent(
 	// change here; drained + emitted post-commit below (RIG-1722 T5).
 	ctx, coordChanges := withCoordChanges(ctx)
 	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
-		Handle:        req.Msg.GetHandle(),
-		DisplayName:   req.Msg.GetDisplayName(),
-		Persona:       req.Msg.GetPersona(),
+		Handle:        req.GetHandle(),
+		DisplayName:   req.GetDisplayName(),
+		Persona:       req.GetPersona(),
 		ParentAgentID: parentID,
-		Role:          req.Msg.GetRole(),
+		Role:          req.GetRole(),
 	})
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	c.publishAccountChanged(ctx, acc)
 	c.emitCoordChanges(ctx, coordChanges)
-	return connect.NewResponse(&compassv1.CreateAgentResponse{Account: accountToWire(acc)}), nil
+	return &compassv1.CreateAgentResponse{Account: accountToWire(acc)}, nil
 }
 
 // ListAccounts lists the accounts visible to the caller (store-scoped in SQL).
 func (c *Comms) ListAccounts(
 	ctx context.Context,
-	_ *connect.Request[compassv1.ListAccountsRequest],
-) (*connect.Response[compassv1.ListAccountsResponse], error) {
+	_ *compassv1.ListAccountsRequest,
+) (*compassv1.ListAccountsResponse, error) {
 	accs, err := c.store.ListAccounts(ctx, c.actorFromContext(ctx))
 	if err != nil {
 		return nil, edgeError(err)
@@ -231,7 +230,7 @@ func (c *Comms) ListAccounts(
 	for i, a := range accs {
 		out[i] = accountToWire(a)
 	}
-	return connect.NewResponse(&compassv1.ListAccountsResponse{Accounts: out}), nil
+	return &compassv1.ListAccountsResponse{Accounts: out}, nil
 }
 
 // ---- channel group + channel RPCs (D9) ----
@@ -239,28 +238,28 @@ func (c *Comms) ListAccounts(
 // CreateChannelGroup creates a namespace node owned by the caller.
 func (c *Comms) CreateChannelGroup(
 	ctx context.Context,
-	req *connect.Request[compassv1.CreateChannelGroupRequest],
-) (*connect.Response[compassv1.CreateChannelGroupResponse], error) {
-	if req.Msg.GetParentGroupName() != "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: parent_group_name is for agent tools; use parent_group_id"))
+	req *compassv1.CreateChannelGroupRequest,
+) (*compassv1.CreateChannelGroupResponse, error) {
+	if req.GetParentGroupName() != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "comms: parent_group_name is for agent tools; use parent_group_id")
 	}
 	grp, err := c.store.CreateChannelGroup(ctx, c.actorFromContext(ctx), store.NewChannelGroup{
-		Name:          req.Msg.GetName(),
-		ParentGroupID: store.ChannelGroupID(req.Msg.GetParentGroupId()),
-		Visibility:    groupVisibilityFromWire(req.Msg.GetVisibility()),
+		Name:          req.GetName(),
+		ParentGroupID: store.ChannelGroupID(req.GetParentGroupId()),
+		Visibility:    groupVisibilityFromWire(req.GetVisibility()),
 	})
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	c.publishChannelGroupChanged(ctx, grp)
-	return connect.NewResponse(&compassv1.CreateChannelGroupResponse{Group: groupToWire(grp)}), nil
+	return &compassv1.CreateChannelGroupResponse{Group: groupToWire(grp)}, nil
 }
 
 // ListChannelGroups lists the channel groups visible to the caller.
 func (c *Comms) ListChannelGroups(
 	ctx context.Context,
-	_ *connect.Request[compassv1.ListChannelGroupsRequest],
-) (*connect.Response[compassv1.ListChannelGroupsResponse], error) {
+	_ *compassv1.ListChannelGroupsRequest,
+) (*compassv1.ListChannelGroupsResponse, error) {
 	grps, err := c.store.ListChannelGroups(ctx, c.actorFromContext(ctx))
 	if err != nil {
 		return nil, edgeError(err)
@@ -269,14 +268,14 @@ func (c *Comms) ListChannelGroups(
 	for i, g := range grps {
 		out[i] = groupToWire(g)
 	}
-	return connect.NewResponse(&compassv1.ListChannelGroupsResponse{Groups: out}), nil
+	return &compassv1.ListChannelGroupsResponse{Groups: out}, nil
 }
 
 // ListChannels lists the channels the caller may see.
 func (c *Comms) ListChannels(
 	ctx context.Context,
-	_ *connect.Request[compassv1.ListChannelsRequest],
-) (*connect.Response[compassv1.ListChannelsResponse], error) {
+	_ *compassv1.ListChannelsRequest,
+) (*compassv1.ListChannelsResponse, error) {
 	chans, err := c.store.ListChannels(ctx, c.actorFromContext(ctx))
 	if err != nil {
 		return nil, edgeError(err)
@@ -285,7 +284,7 @@ func (c *Comms) ListChannels(
 	for i, ch := range chans {
 		out[i] = channelToWire(ch)
 	}
-	return connect.NewResponse(&compassv1.ListChannelsResponse{Channels: out}), nil
+	return &compassv1.ListChannelsResponse{Channels: out}, nil
 }
 
 // CreateChannel creates a channel in a group or under an agent of the caller's
@@ -293,28 +292,28 @@ func (c *Comms) ListChannels(
 // ChannelChanged is emitted after commit.
 func (c *Comms) CreateChannel(
 	ctx context.Context,
-	req *connect.Request[compassv1.CreateChannelRequest],
-) (*connect.Response[compassv1.CreateChannelResponse], error) {
-	if req.Msg.GetGroupName() != "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: group_name is for agent tools; use group_id"))
+	req *compassv1.CreateChannelRequest,
+) (*compassv1.CreateChannelResponse, error) {
+	if req.GetGroupName() != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "comms: group_name is for agent tools; use group_id")
 	}
 	caller := c.actorFromContext(ctx)
-	members, err := c.resolveHandles(ctx, caller, req.Msg.GetMemberHandles())
+	members, err := c.resolveHandles(ctx, caller, req.GetMemberHandles())
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	mode, err := channelMembershipModeFromWire(req.Msg.GetMembershipMode())
+	mode, err := channelMembershipModeFromWire(req.GetMembershipMode())
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	parentID, err := c.resolveSameOwnerAgent(ctx, caller, req.Msg.GetParentAgentHandle())
+	parentID, err := c.resolveSameOwnerAgent(ctx, caller, req.GetParentAgentHandle())
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	ch, err := c.store.CreateChannel(ctx, caller, store.NewChannel{
-		Name:             req.Msg.GetName(),
-		GroupID:          store.ChannelGroupID(req.Msg.GetGroupId()),
-		Kind:             channelKindFromWire(req.Msg.GetKind()),
+		Name:             req.GetName(),
+		GroupID:          store.ChannelGroupID(req.GetGroupId()),
+		Kind:             channelKindFromWire(req.GetKind()),
 		MemberAccountIDs: members,
 		ParentAgentID:    parentID,
 		MembershipMode:   mode,
@@ -323,7 +322,7 @@ func (c *Comms) CreateChannel(
 		return nil, edgeError(err)
 	}
 	c.publishChannelChanged(ctx, ch, nil)
-	return connect.NewResponse(&compassv1.CreateChannelResponse{Channel: channelToWire(ch)}), nil
+	return &compassv1.CreateChannelResponse{Channel: channelToWire(ch)}, nil
 }
 
 // UpdateChannelMembers adds/removes members and flips the per-member subscribe
@@ -333,25 +332,25 @@ func (c *Comms) CreateChannel(
 // store's per-member MemberUpdate set.
 func (c *Comms) UpdateChannelMembers(
 	ctx context.Context,
-	req *connect.Request[compassv1.UpdateChannelMembersRequest],
-) (*connect.Response[compassv1.UpdateChannelMembersResponse], error) {
+	req *compassv1.UpdateChannelMembersRequest,
+) (*compassv1.UpdateChannelMembersResponse, error) {
 	caller := c.actorFromContext(ctx)
-	updates, err := c.memberUpdatesFromWire(ctx, caller, req.Msg)
+	updates, err := c.memberUpdatesFromWire(ctx, caller, req)
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	ch, removed, err := c.store.UpdateChannelMembers(
 		ctx,
 		caller,
-		store.ChannelID(req.Msg.GetChannelId()),
+		store.ChannelID(req.GetChannelId()),
 		updates,
-		store.MemberUpdatesOptions{ConvertChannelName: req.Msg.GetConvertChannelName()},
+		store.MemberUpdatesOptions{ConvertChannelName: req.GetConvertChannelName()},
 	)
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	c.publishChannelChanged(ctx, ch, removed)
-	return connect.NewResponse(&compassv1.UpdateChannelMembersResponse{Channel: channelToWire(ch)}), nil
+	return &compassv1.UpdateChannelMembersResponse{Channel: channelToWire(ch)}, nil
 }
 
 // ReparentAgent moves an agent to a new parent in the agent tree, or promotes it
@@ -363,20 +362,20 @@ func (c *Comms) UpdateChannelMembers(
 // the edge (edgeError).
 func (c *Comms) ReparentAgent(
 	ctx context.Context,
-	req *connect.Request[compassv1.ReparentAgentRequest],
-) (*connect.Response[compassv1.ReparentAgentResponse], error) {
+	req *compassv1.ReparentAgentRequest,
+) (*compassv1.ReparentAgentResponse, error) {
 	// Install the coordination emit buffer so the store's in-tx coordination hook
 	// (fired inside ReparentAgent for both the new and old managers) records its
 	// channel changes here; drained + emitted post-commit below (RIG-1722 T5).
 	ctx, coordChanges := withCoordChanges(ctx)
 	caller := c.actorFromContext(ctx)
-	agentID, err := c.resolveAgentHandle(ctx, caller, req.Msg.GetAgentHandle())
+	agentID, err := c.resolveAgentHandle(ctx, caller, req.GetAgentHandle())
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	// new_parent_handle empty ⇒ promote to root. A foreign parent is refused
 	// here, naming the SUBMITTED handle; the store's error would name the agent.
-	newParentID, err := c.resolveSameOwnerAgent(ctx, caller, req.Msg.GetNewParentHandle())
+	newParentID, err := c.resolveSameOwnerAgent(ctx, caller, req.GetNewParentHandle())
 	if err != nil {
 		return nil, edgeError(err)
 	}
@@ -392,13 +391,13 @@ func (c *Comms) ReparentAgent(
 		// NOT_FOUND — a real-but-foreign handle is guessable, so it cannot leak a
 		// distinct code/message. Re-key to NOT_FOUND naming the SUBMITTED handle.
 		if errors.Is(err, store.ErrPermissionDenied) {
-			return nil, edgeError(notFoundHandle(store.ErrNotFound, req.Msg.GetAgentHandle()))
+			return nil, edgeError(notFoundHandle(store.ErrNotFound, req.GetAgentHandle()))
 		}
 		return nil, edgeError(err)
 	}
 	c.publishAccountChanged(ctx, acc)
 	c.emitCoordChanges(ctx, coordChanges)
-	return connect.NewResponse(&compassv1.ReparentAgentResponse{Account: accountToWire(acc)}), nil
+	return &compassv1.ReparentAgentResponse{Account: accountToWire(acc)}, nil
 }
 
 // ReparentChannel attaches a channel under an agent, moves it, or (EXPLICIT
@@ -406,20 +405,20 @@ func (c *Comms) ReparentAgent(
 // gates participation before any shape refusal, so a refusal reveals nothing.
 func (c *Comms) ReparentChannel(
 	ctx context.Context,
-	req *connect.Request[compassv1.ReparentChannelRequest],
-) (*connect.Response[compassv1.ReparentChannelResponse], error) {
+	req *compassv1.ReparentChannelRequest,
+) (*compassv1.ReparentChannelResponse, error) {
 	caller := c.actorFromContext(ctx)
-	parentID, err := c.resolveSameOwnerAgent(ctx, caller, req.Msg.GetNewParentAgentHandle())
+	parentID, err := c.resolveSameOwnerAgent(ctx, caller, req.GetNewParentAgentHandle())
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	channelID := store.ChannelID(req.Msg.GetChannelId())
+	channelID := store.ChannelID(req.GetChannelId())
 	ch, priorParent, err := c.store.ReparentChannel(ctx, caller, channelID, parentID)
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	c.publishChannelChanged(ctx, ch, c.lostAnchorViewers(ctx, priorParent, ch.ParentAgentID, channelID))
-	return connect.NewResponse(&compassv1.ReparentChannelResponse{Channel: channelToWire(ch)}), nil
+	return &compassv1.ReparentChannelResponse{Channel: channelToWire(ch)}, nil
 }
 
 // ---- agent workspace RPC (D5) ----
@@ -429,10 +428,10 @@ func (c *Comms) ReparentChannel(
 // the store. Idempotent.
 func (c *Comms) OpenAgentWorkspace(
 	ctx context.Context,
-	req *connect.Request[compassv1.OpenAgentWorkspaceRequest],
-) (*connect.Response[compassv1.OpenAgentWorkspaceResponse], error) {
+	req *compassv1.OpenAgentWorkspaceRequest,
+) (*compassv1.OpenAgentWorkspaceResponse, error) {
 	caller := c.actorFromContext(ctx)
-	agentID, err := c.resolveAgentHandle(ctx, caller, req.Msg.GetAgentHandle())
+	agentID, err := c.resolveAgentHandle(ctx, caller, req.GetAgentHandle())
 	if err != nil {
 		return nil, edgeError(err)
 	}
@@ -443,12 +442,12 @@ func (c *Comms) OpenAgentWorkspace(
 		// an invisible target. Re-key to name the SUBMITTED handle (DL-269), so
 		// an invisible/unknown/foreign target is byte-identical.
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, edgeError(notFoundHandle(store.ErrNotFound, req.Msg.GetAgentHandle()))
+			return nil, edgeError(notFoundHandle(store.ErrNotFound, req.GetAgentHandle()))
 		}
 		return nil, edgeError(err)
 	}
 	c.publishAgentWorkspaceChanged(ctx, ws)
-	return connect.NewResponse(&compassv1.OpenAgentWorkspaceResponse{Workspace: workspaceToWire(ws)}), nil
+	return &compassv1.OpenAgentWorkspaceResponse{Workspace: workspaceToWire(ws)}, nil
 }
 
 // ---- message RPCs (D5) ----
@@ -456,46 +455,46 @@ func (c *Comms) OpenAgentWorkspace(
 // ListMessages pages a channel's message history, newest-first.
 func (c *Comms) ListMessages(
 	ctx context.Context,
-	req *connect.Request[compassv1.ListMessagesRequest],
-) (*connect.Response[compassv1.ListMessagesResponse], error) {
+	req *compassv1.ListMessagesRequest,
+) (*compassv1.ListMessagesResponse, error) {
 	msgs, err := c.store.ListMessages(ctx, store.ListMessagesQuery{
 		Actor:     c.actorFromContext(ctx),
-		ChannelID: store.ChannelID(req.Msg.GetChannelId()),
-		TopicID:   req.Msg.GetTopicId(),
+		ChannelID: store.ChannelID(req.GetChannelId()),
+		TopicID:   req.GetTopicId(),
 		Page: store.Page{
-			Limit:           req.Msg.GetLimit(),
-			BeforeMessageID: store.MessageID(req.Msg.GetBeforeMessageId()),
-			SnapshotSeq:     req.Msg.GetSnapshotSeq(),
+			Limit:           req.GetLimit(),
+			BeforeMessageID: store.MessageID(req.GetBeforeMessageId()),
+			SnapshotSeq:     req.GetSnapshotSeq(),
 		},
 	})
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	return connect.NewResponse(&compassv1.ListMessagesResponse{Messages: messagesToWire(msgs)}), nil
+	return &compassv1.ListMessagesResponse{Messages: messagesToWire(msgs)}, nil
 }
 
 // PostMessage posts a message to a channel — a human turn, or a human prompt
 // into an agent's channel; emits MessagePosted (write-through).
 func (c *Comms) PostMessage(
 	ctx context.Context,
-	req *connect.Request[compassv1.PostMessageRequest],
-) (*connect.Response[compassv1.PostMessageResponse], error) {
-	if req.Msg.GetTurnSequence() > math.MaxInt64 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("turn_sequence %d exceeds signed BIGINT range", req.Msg.GetTurnSequence()))
+	req *compassv1.PostMessageRequest,
+) (*compassv1.PostMessageResponse, error) {
+	if req.GetTurnSequence() > math.MaxInt64 {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "turn_sequence %d exceeds signed BIGINT range", req.GetTurnSequence())
 	}
-	blocks, err := blocksFromWire(req.Msg.GetBlocks(), c.githubHost)
+	blocks, err := blocksFromWire(req.GetBlocks(), c.githubHost)
 	if err != nil {
 		return nil, err
 	}
 	msg, inserted, err := c.store.AppendMessage(ctx, store.Message{
 		AuthorAccountID: c.actorFromContext(ctx),
-		TurnSequence:    req.Msg.GetTurnSequence(),
+		TurnSequence:    req.GetTurnSequence(),
 		Blocks:          blocks,
-	}, req.Msg.GetChannelId(), store.TopicRef{
-		ID:     req.Msg.GetTopicId(),
-		Name:   req.Msg.GetTopicName(),
-		Create: req.Msg.GetCreateTopic(),
-	}, req.Msg.GetClientRequestId())
+	}, req.GetChannelId(), store.TopicRef{
+		ID:     req.GetTopicId(),
+		Name:   req.GetTopicName(),
+		Create: req.GetCreateTopic(),
+	}, req.GetClientRequestId())
 	if err != nil {
 		return nil, edgeError(err)
 	}
@@ -510,7 +509,7 @@ func (c *Comms) PostMessage(
 		c.publishMessagePosted(ctx, msg)
 		c.driveCommittedAsks(ctx, msg)
 	}
-	return connect.NewResponse(&compassv1.PostMessageResponse{Message: MessageToWire(msg)}), nil
+	return &compassv1.PostMessageResponse{Message: MessageToWire(msg)}, nil
 }
 
 // RespondToAsk answers a pending structured ask; the caller must be a member of
@@ -522,10 +521,10 @@ func (c *Comms) PostMessage(
 // agent — RIG-2257).
 func (c *Comms) RespondToAsk(
 	ctx context.Context,
-	req *connect.Request[compassv1.RespondToAskRequest],
-) (*connect.Response[compassv1.RespondToAskResponse], error) {
-	answers := make([]store.AskAnswer, len(req.Msg.GetAnswers()))
-	for i, a := range req.Msg.GetAnswers() {
+	req *compassv1.RespondToAskRequest,
+) (*compassv1.RespondToAskResponse, error) {
+	answers := make([]store.AskAnswer, len(req.GetAnswers()))
+	for i, a := range req.GetAnswers() {
 		answers[i] = store.AskAnswer{
 			QuestionID:      a.GetQuestionId(),
 			ChosenOptionIDs: a.GetChosenOptionIds(),
@@ -535,7 +534,7 @@ func (c *Comms) RespondToAsk(
 	askMsg, answerMsg, err := c.store.AnswerAsk(
 		ctx,
 		c.actorFromContext(ctx),
-		req.Msg.GetAskId(),
+		req.GetAskId(),
 		answers,
 	)
 	if err != nil {
@@ -552,49 +551,49 @@ func (c *Comms) RespondToAsk(
 	c.publishMessageUpdated(ctx, askMsg)
 	c.publishMessagePosted(ctx, answerMsg)
 	c.driveCommittedAsks(ctx, askMsg)
-	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
+	return &compassv1.RespondToAskResponse{}, nil
 }
 
 // MirrorToForge accepts a user click after confirming that the caller is a user.
 func (c *Comms) MirrorToForge(
 	ctx context.Context,
-	req *connect.Request[compassv1.MirrorToForgeRequest],
-) (*connect.Response[compassv1.MirrorToForgeResponse], error) {
+	req *compassv1.MirrorToForgeRequest,
+) (*compassv1.MirrorToForgeResponse, error) {
 	user := c.actorFromContext(ctx)
 	account, err := c.store.GetAccount(ctx, user)
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	if account.User == nil {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("comms: forge mirroring is user-only"))
+		return nil, connect.NewError(connect.CodePermissionDenied, "comms: forge mirroring is user-only")
 	}
 	if c.mirrorer == nil {
-		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("comms: forge mirroring is not configured"))
+		return nil, connect.NewError(connect.CodeUnimplemented, "comms: forge mirroring is not configured")
 	}
-	url, err := c.mirrorer.MirrorAsUser(ctx, account, req.Msg)
+	url, err := c.mirrorer.MirrorAsUser(ctx, account, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&compassv1.MirrorToForgeResponse{CommentUrl: url}), nil
+	return &compassv1.MirrorToForgeResponse{CommentUrl: url}, nil
 }
 
 // SearchMessages runs a visibility-scoped full-text search; the store scopes
 // results to the caller's visible set regardless of the scope field.
 func (c *Comms) SearchMessages(
 	ctx context.Context,
-	req *connect.Request[compassv1.SearchMessagesRequest],
-) (*connect.Response[compassv1.SearchMessagesResponse], error) {
+	req *compassv1.SearchMessagesRequest,
+) (*compassv1.SearchMessagesResponse, error) {
 	msgs, err := c.store.SearchMessages(
 		ctx,
 		c.actorFromContext(ctx),
-		store.SearchScope{ChannelID: store.ChannelID(req.Msg.GetChannelId())},
-		req.Msg.GetQuery(),
-		store.Page{Limit: req.Msg.GetLimit(), SnapshotSeq: req.Msg.GetSnapshotSeq()},
+		store.SearchScope{ChannelID: store.ChannelID(req.GetChannelId())},
+		req.GetQuery(),
+		store.Page{Limit: req.GetLimit(), SnapshotSeq: req.GetSnapshotSeq()},
 	)
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	return connect.NewResponse(&compassv1.SearchMessagesResponse{Messages: messagesToWire(msgs)}), nil
+	return &compassv1.SearchMessagesResponse{Messages: messagesToWire(msgs)}, nil
 }
 
 // ---- topic RPCs (D5) ----
@@ -604,13 +603,13 @@ func (c *Comms) SearchMessages(
 // the tidiness-archived topics are returned.
 func (c *Comms) ListTopics(
 	ctx context.Context,
-	req *connect.Request[compassv1.ListTopicsRequest],
-) (*connect.Response[compassv1.ListTopicsResponse], error) {
-	topics, err := c.store.ListTopics(ctx, string(c.actorFromContext(ctx)), req.Msg.GetChannelId(), req.Msg.GetIncludeArchived())
+	req *compassv1.ListTopicsRequest,
+) (*compassv1.ListTopicsResponse, error) {
+	topics, err := c.store.ListTopics(ctx, string(c.actorFromContext(ctx)), req.GetChannelId(), req.GetIncludeArchived())
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	return connect.NewResponse(&compassv1.ListTopicsResponse{Topics: topicsToWire(topics)}), nil
+	return &compassv1.ListTopicsResponse{Topics: topicsToWire(topics)}, nil
 }
 
 // UpdateTopic renames and/or archives a topic, caller-authorized against the
@@ -618,14 +617,14 @@ func (c *Comms) ListTopics(
 // successful commit) so the live topic index stays current.
 func (c *Comms) UpdateTopic(
 	ctx context.Context,
-	req *connect.Request[compassv1.UpdateTopicRequest],
-) (*connect.Response[compassv1.UpdateTopicResponse], error) {
-	topic, err := c.store.UpdateTopic(ctx, string(c.actorFromContext(ctx)), req.Msg.GetTopicId(), req.Msg.Name, req.Msg.Archived)
+	req *compassv1.UpdateTopicRequest,
+) (*compassv1.UpdateTopicResponse, error) {
+	topic, err := c.store.UpdateTopic(ctx, string(c.actorFromContext(ctx)), req.GetTopicId(), req.Name, req.Archived)
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	c.publishTopicUpserted(ctx, topic)
-	return connect.NewResponse(&compassv1.UpdateTopicResponse{Topic: topicToWire(topic)}), nil
+	return &compassv1.UpdateTopicResponse{Topic: topicToWire(topic)}, nil
 }
 
 // ---- manager-comms-substrate RPCs (RIG-1740 T1) ----
@@ -642,38 +641,38 @@ func (c *Comms) UpdateTopic(
 // projection carries the updated policy.
 func (c *Comms) SetChannelPolicy(
 	ctx context.Context,
-	req *connect.Request[compassv1.SetChannelPolicyRequest],
-) (*connect.Response[compassv1.SetChannelPolicyResponse], error) {
+	req *compassv1.SetChannelPolicyRequest,
+) (*compassv1.SetChannelPolicyResponse, error) {
 	caller := c.actorFromContext(ctx)
 	// owner_handle empty ⇒ the channel is left unowned (no resolution). A
 	// non-empty owner_handle names a user OR agent, so it resolves through the
 	// general batch resolver; a miss is NOT_FOUND naming the submitted handle.
 	var ownerID store.AccountID
-	if h := req.Msg.GetOwnerHandle(); h != "" {
+	if h := req.GetOwnerHandle(); h != "" {
 		ids, err := c.resolveHandles(ctx, caller, []string{h})
 		if err != nil {
 			return nil, edgeError(err)
 		}
 		if len(ids) == 0 {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("comms SetChannelPolicy: owner handle resolved to no account"))
+			return nil, connect.NewError(connect.CodeNotFound, "comms SetChannelPolicy: owner handle resolved to no account")
 		}
 		ownerID = ids[0]
 	}
 	ch, err := c.store.SetChannelPolicy(
 		ctx,
 		caller,
-		store.ChannelID(req.Msg.GetChannelId()),
+		store.ChannelID(req.GetChannelId()),
 		store.ChannelPolicy{
-			PostPolicy:            channelPostPolicyFromWire(req.Msg.GetPostPolicy()),
+			PostPolicy:            channelPostPolicyFromWire(req.GetPostPolicy()),
 			OwnerAccountID:        ownerID,
-			MandatorySubscription: req.Msg.GetMandatorySubscription(),
+			MandatorySubscription: req.GetMandatorySubscription(),
 		},
 	)
 	if err != nil {
 		return nil, edgeError(err)
 	}
 	c.publishChannelChanged(ctx, ch, nil)
-	return connect.NewResponse(&compassv1.SetChannelPolicyResponse{Channel: channelToWire(ch)}), nil
+	return &compassv1.SetChannelPolicyResponse{Channel: channelToWire(ch)}, nil
 }
 
 // GetRoster joins the three roster sources for the vantage agent's scope: the
@@ -682,13 +681,13 @@ func (c *Comms) SetChannelPolicy(
 // visible set (D9). Implemented in roster.go.
 func (c *Comms) GetRoster(
 	ctx context.Context,
-	req *connect.Request[compassv1.GetRosterRequest],
-) (*connect.Response[compassv1.GetRosterResponse], error) {
-	entries, err := c.roster(ctx, c.actorFromContext(ctx), req.Msg.GetVantageHandle(), req.Msg.GetScope())
+	req *compassv1.GetRosterRequest,
+) (*compassv1.GetRosterResponse, error) {
+	entries, err := c.roster(ctx, c.actorFromContext(ctx), req.GetVantageHandle(), req.GetScope())
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&compassv1.GetRosterResponse{Entries: entries}), nil
+	return &compassv1.GetRosterResponse{Entries: entries}, nil
 }
 
 // UpdatePinnedBoard mutates a channel's pinned board (T6): a plain pin, a
@@ -704,12 +703,12 @@ func (c *Comms) GetRoster(
 // not pre-check authz on a non-tx snapshot (no TOCTOU).
 func (c *Comms) UpdatePinnedBoard(
 	ctx context.Context,
-	req *connect.Request[compassv1.UpdatePinnedBoardRequest],
-) (*connect.Response[compassv1.UpdatePinnedBoardResponse], error) {
+	req *compassv1.UpdatePinnedBoardRequest,
+) (*compassv1.UpdatePinnedBoardResponse, error) {
 	actor := c.actorFromContext(ctx)
-	channelID := store.ChannelID(req.Msg.GetChannelId())
+	channelID := store.ChannelID(req.GetChannelId())
 
-	entries, err := c.applyBoardOp(ctx, channelID, actor, req.Msg)
+	entries, err := c.applyBoardOp(ctx, channelID, actor, req)
 	if err != nil {
 		return nil, err
 	}
@@ -730,7 +729,7 @@ func (c *Comms) UpdatePinnedBoard(
 			ChannelChanged: &compassv1.ChannelChanged{Channel: wire},
 		},
 	})
-	return connect.NewResponse(&compassv1.UpdatePinnedBoardResponse{Channel: wire}), nil
+	return &compassv1.UpdatePinnedBoardResponse{Channel: wire}, nil
 }
 
 // OpenDM resolves-or-creates the two-party DM channel between the caller and a
@@ -741,11 +740,11 @@ func (c *Comms) UpdatePinnedBoard(
 // id. A create emits ChannelChanged after commit; a resume emits nothing.
 func (c *Comms) OpenDM(
 	ctx context.Context,
-	req *connect.Request[compassv1.OpenDMRequest],
-) (*connect.Response[compassv1.OpenDMResponse], error) {
+	req *compassv1.OpenDMRequest,
+) (*compassv1.OpenDMResponse, error) {
 	caller := c.actorFromContext(ctx)
 
-	peerHandle := req.Msg.GetPeerHandle()
+	peerHandle := req.GetPeerHandle()
 	peer, err := c.resolveAddressableAgent(ctx, caller, peerHandle)
 	if err != nil {
 		return nil, edgeError(err)
@@ -753,7 +752,7 @@ func (c *Comms) OpenDM(
 
 	// A handle that resolves to the caller itself is not a peer.
 	if peer.ID == caller {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: cannot open a DM with yourself"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "comms: cannot open a DM with yourself")
 	}
 
 	callerOwner, err := c.store.ResolveOwner(ctx, caller)
@@ -780,10 +779,10 @@ func (c *Comms) OpenDM(
 		return nil, edgeError(err)
 	}
 	c.emitDMCreated(ctx, ch, created)
-	return connect.NewResponse(&compassv1.OpenDMResponse{
+	return &compassv1.OpenDMResponse{
 		Channel: channelToWire(ch),
 		Created: created,
-	}), nil
+	}, nil
 }
 
 // applyBoardOp maps the request's op oneof to its store call: a plain pin
@@ -800,7 +799,7 @@ func (c *Comms) applyBoardOp(
 	switch op := msg.GetOp().(type) {
 	case *compassv1.UpdatePinnedBoardRequest_Pin:
 		if op == nil || op.Pin == nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: UpdatePinnedBoard pin op missing pin body"))
+			return nil, connect.NewError(connect.CodeInvalidArgument, "comms: UpdatePinnedBoard pin op missing pin body")
 		}
 		entries, err := c.store.PinMessage(
 			ctx,
@@ -815,7 +814,7 @@ func (c *Comms) applyBoardOp(
 		return entries, nil
 	case *compassv1.UpdatePinnedBoardRequest_UnpinMessageId:
 		if op == nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: UpdatePinnedBoard unpin op missing message id"))
+			return nil, connect.NewError(connect.CodeInvalidArgument, "comms: UpdatePinnedBoard unpin op missing message id")
 		}
 		entries, err := c.store.UnpinMessage(ctx, channelID, store.MessageID(op.UnpinMessageId), actor)
 		if err != nil {
@@ -823,7 +822,7 @@ func (c *Comms) applyBoardOp(
 		}
 		return entries, nil
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: UpdatePinnedBoard request has no pin/unpin op set"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "comms: UpdatePinnedBoard request has no pin/unpin op set")
 	}
 }
 func (c *Comms) driveCommittedAsks(ctx context.Context, msg store.Message) {

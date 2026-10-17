@@ -22,7 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -658,10 +659,11 @@ func newMountedH2CServerWith(t *testing.T, hub *Hub, resolve TokenResolver, reso
 // baseURL over h2c, stamping token on every RPC via a client bearer interceptor.
 func newRawRunnerClient(t *testing.T, baseURL, token string) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	return compassv1internalconnect.NewRunnerServiceClient(
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		h2cHTTPClient(t), baseURL,
-		connect.WithInterceptors(&clientBearer{token: token}),
-	)
+		connecthttp.WithReadMaxBytes(0),
+	), &clientBearer{token: token},
+	))
 }
 
 // clientBearer stamps a bearer token on every outbound RPC (unary + streaming),

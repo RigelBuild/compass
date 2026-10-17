@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	compassv1internalconnect "github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
@@ -119,5 +121,5 @@ func GuestClient(vsockSocket string, port uint32) compassv1internalconnect.Guest
 			},
 		},
 	}
-	return compassv1internalconnect.NewGuestControlClient(httpClient, "http://guest")
+	return compassv1internalconnect.NewGuestControlClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://guest", connecthttp.WithReadMaxBytes(0))))
 }

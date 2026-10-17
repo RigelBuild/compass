@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -26,7 +26,7 @@ func twoEventsAfterBoundary(t *testing.T, h streamHarness, actor store.AccountID
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	out := make(chan []*compassv1.SubscribeCommsResponse, 1)
-	connectReq := connect.NewRequest(&compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	connectReq := &compassv1.SubscribeCommsRequest{SinceSeq: 0}
 	if actor != "" {
 		connectReq.Header().Set(commsTestActorHeader, string(actor))
 	}
@@ -79,10 +79,10 @@ func TestRespondToAskFansOutMessagePosted(t *testing.T) {
 
 	events := twoEventsAfterBoundary(t, h, agent.ID)
 
-	if _, err := h.svc.RespondToAsk(WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := h.svc.RespondToAsk(WithActor(ctx, agent.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 
@@ -137,14 +137,14 @@ func TestPostMessageRejectsAskAnswerBlock(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = h.svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
+	_, err = h.svc.PostMessage(WithActor(ctx, author.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
 		Ask: &compassv1.Ask{
 			AskId:     "ask-1",
 			Answered:  true,
 			Questions: []*compassv1.AskQuestion{{QuestionId: "q1", Question: "?"}},
 		},
 		AskerAccountId: "agent",
-	}}}}}))
+	}}}}})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostMessage with an ask_answer block")
 }
 

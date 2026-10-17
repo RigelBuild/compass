@@ -17,8 +17,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -170,17 +168,17 @@ func TestHostProvisionServesInStateDirWithNoMounts(t *testing.T) {
 	client := runnertest.DialAgentSocket(t, gotSocket)
 	callCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	resp, err := client.Comms(callCtx, &compassv1internal.CommsCallRequest{
 		CallId: "hc-1",
 		Call: &compassv1internal.CommsCallRequest_Post{
 			Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "chan-1"}},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Comms over the state-dir socket = %v, want the round-trip result", err)
 	}
-	if resp.Msg.GetCallId() != "hc-1" {
-		t.Fatalf("result call id = %q, want hc-1", resp.Msg.GetCallId())
+	if resp.GetCallId() != "hc-1" {
+		t.Fatalf("result call id = %q, want hc-1", resp.GetCallId())
 	}
 }
 

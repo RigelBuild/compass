@@ -10,7 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -151,8 +152,9 @@ type usageCase struct {
 
 func checkUsageCase(t *testing.T, ctx context.Context, client compassv1connect.UsageServiceClient, token string, tc usageCase) {
 	t.Helper()
-	req := connect.NewRequest(proto.Clone(tc.req).(*compassv1.GetUsageSeriesRequest))
-	req.Header().Set("Authorization", "Bearer "+token)
+	req := proto.Clone(tc.req).(*compassv1.GetUsageSeriesRequest)
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	resp, err := client.GetUsageSeries(ctx, req)
 	if tc.wantCode != 0 {
 		if connect.CodeOf(err) != tc.wantCode {
@@ -163,14 +165,14 @@ func checkUsageCase(t *testing.T, ctx context.Context, client compassv1connect.U
 	if err != nil {
 		t.Fatalf("GetUsageSeries: %v", err)
 	}
-	if len(resp.Msg.GetBuckets()) != tc.wantCount {
-		t.Fatalf("bucket count = %d, want %d (%+v)", len(resp.Msg.GetBuckets()), tc.wantCount, resp.Msg.GetBuckets())
+	if len(resp.GetBuckets()) != tc.wantCount {
+		t.Fatalf("bucket count = %d, want %d (%+v)", len(resp.GetBuckets()), tc.wantCount, resp.GetBuckets())
 	}
-	if tc.wantCount > 0 && resp.Msg.GetBuckets()[0].GetInputTokens() != tc.wantInput {
-		t.Fatalf("input tokens = %d, want %d", resp.Msg.GetBuckets()[0].GetInputTokens(), tc.wantInput)
+	if tc.wantCount > 0 && resp.GetBuckets()[0].GetInputTokens() != tc.wantInput {
+		t.Fatalf("input tokens = %d, want %d", resp.GetBuckets()[0].GetInputTokens(), tc.wantInput)
 	}
-	if tc.wantBucket != nil && !proto.Equal(resp.Msg.GetBuckets()[0], tc.wantBucket) {
-		t.Fatalf("bucket = %+v, want %+v", resp.Msg.GetBuckets()[0], tc.wantBucket)
+	if tc.wantBucket != nil && !proto.Equal(resp.GetBuckets()[0], tc.wantBucket) {
+		t.Fatalf("bucket = %+v, want %+v", resp.GetBuckets()[0], tc.wantBucket)
 	}
 }
 
@@ -230,15 +232,16 @@ func TestUsageSeriesNetworkDoor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAccountToken: %v", err)
 	}
-	client := compassv1connect.NewUsageServiceClient(httpServer.Client(), httpServer.URL)
-	req := connect.NewRequest(&compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 3_600_000, Granularity: compassv1.Granularity_GRANULARITY_HOUR})
-	req.Header().Set("Authorization", "Bearer "+token)
+	client := compassv1connect.NewUsageServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL, connecthttp.WithReadMaxBytes(0))))
+	req := &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 3_600_000, Granularity: compassv1.Granularity_GRANULARITY_HOUR}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	resp, err := client.GetUsageSeries(ctx, req)
 	if err != nil {
 		t.Fatalf("network GetUsageSeries: %v", err)
 	}
-	if len(resp.Msg.GetBuckets()) != 1 || resp.Msg.GetBuckets()[0].GetInputTokens() != 17 {
-		t.Fatalf("network buckets = %+v, want one bucket with 17 input tokens", resp.Msg.GetBuckets())
+	if len(resp.GetBuckets()) != 1 || resp.GetBuckets()[0].GetInputTokens() != 17 {
+		t.Fatalf("network buckets = %+v, want one bucket with 17 input tokens", resp.GetBuckets())
 	}
 }
 
@@ -262,7 +265,7 @@ func newUsageH2CClient(t *testing.T, baseURL string) compassv1connect.UsageServi
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewUsageServiceClient(&http.Client{Transport: tr}, baseURL)
+	return compassv1connect.NewUsageServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL, connecthttp.WithReadMaxBytes(0))))
 }
 
 func newUsageH2CServer(t *testing.T, handler http.Handler) string {

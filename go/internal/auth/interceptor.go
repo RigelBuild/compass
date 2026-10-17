@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -129,11 +129,11 @@ func (a ambientStream) WrapStreamingHandler(next connect.StreamingHandlerFunc) c
 // the unary and streaming bearer interceptors so both doors reject identically.
 func resolveBearer(ctx context.Context, st *store.Store, header string) (store.AccountID, store.TenantID, error) {
 	if header == "" {
-		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errMissingAuthorization)
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errMissingAuthorization.Error()).WithCause(errMissingAuthorization)
 	}
 	token, ok := bearerToken(header)
 	if !ok {
-		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errNotBearer)
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errNotBearer.Error()).WithCause(errNotBearer)
 	}
 	subj, err := ResolveToken(ctx, st, token, store.SubjectAccount)
 	if err != nil {
@@ -142,12 +142,12 @@ func resolveBearer(ctx context.Context, st *store.Store, header string) (store.A
 		// The distinct sentinel is logged (debug) as a server-side audit signal only.
 		// A store fault (ErrTokenLookupFailed) also stays Unauthenticated on this door.
 		slog.DebugContext(ctx, "network door rejected bearer token", "reason", err)
-		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errInvalidToken)
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errInvalidToken.Error()).WithCause(errInvalidToken)
 	}
 	// An unscoped caller would silently fall back to the bootstrap tenant; fail closed.
 	if subj.Tenant == "" {
 		slog.DebugContext(ctx, "network door rejected bearer token", "reason", "token has empty tenant")
-		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errInvalidToken)
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errInvalidToken.Error()).WithCause(errInvalidToken)
 	}
 	return store.AccountID(subj.ID), subj.Tenant, nil
 }

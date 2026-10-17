@@ -15,7 +15,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -180,13 +180,13 @@ func TestPostAsAccountEmptyAccountFailsClosedNoAdminWrite(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostAsAccount(empty account)")
 
 	// No message was written as admin: the admin's own channel is empty.
-	listed, err := svc.ListMessages(WithActor(ctx, admin.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	listed, err := svc.ListMessages(WithActor(ctx, admin.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages(admin): %v", err)
 	}
-	if got := len(listed.Msg.GetMessages()); got != 0 {
+	if got := len(listed.GetMessages()); got != 0 {
 		t.Fatalf("admin channel holds %d messages after an empty-account post, want 0 (no admin attribution)", got)
 	}
 }

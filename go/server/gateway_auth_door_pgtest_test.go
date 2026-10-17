@@ -10,7 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
@@ -21,8 +22,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-func verifyAgentTokenRequest(bearer, token string) *connect.Request[compassv1internal.VerifyAgentTokenRequest] {
-	req := connect.NewRequest(&compassv1internal.VerifyAgentTokenRequest{Token: token})
+func verifyAgentTokenRequest(bearer, token string) *compassv1internal.VerifyAgentTokenRequest {
+	req := &compassv1internal.VerifyAgentTokenRequest{Token: token}
 	if bearer != "" {
 		req.Header().Set("Authorization", "Bearer "+bearer)
 	}
@@ -76,14 +77,14 @@ func TestGatewayAuthDoorVerifiesAgentTokens(t *testing.T) {
 	mountGatewayServices(mux, newGatewayServices(st, key, 1), otelIC, newRunnerResolve(resolve, nil))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := compassv1internalconnect.NewGatewayAuthClient(http.DefaultClient, server.URL)
+	client := compassv1internalconnect.NewGatewayAuthClient(connect.NewClient(connecthttp.NewTransport(http.DefaultClient, server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	got, err := client.VerifyAgentToken(ctx, verifyAgentTokenRequest(serviceToken, agentToken))
 	if err != nil {
 		t.Fatalf("VerifyAgentToken as gateway: %v", err)
 	}
-	if got.Msg.GetAgentAccountId() != string(agent.ID) || got.Msg.GetOwnerUserId() != string(owner.ID) {
-		t.Fatalf("VerifyAgentToken = %v, want agent %q owner %q", got.Msg, agent.ID, owner.ID)
+	if got.GetAgentAccountId() != string(agent.ID) || got.GetOwnerUserId() != string(owner.ID) {
+		t.Fatalf("VerifyAgentToken = %v, want agent %q owner %q", got, agent.ID, owner.ID)
 	}
 	for name, bearer := range map[string]string{"no bearer": "", "account bearer": ownerToken, "other service": otherServiceToken} {
 		if _, err := client.VerifyAgentToken(ctx, verifyAgentTokenRequest(bearer, agentToken)); connect.CodeOf(err) != connect.CodeUnauthenticated {

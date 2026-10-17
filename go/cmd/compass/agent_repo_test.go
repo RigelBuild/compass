@@ -4,13 +4,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -30,28 +29,28 @@ type fakeAgentRepositoryService struct {
 	gotAuth       string
 }
 
-func (f *fakeAgentRepositoryService) GrantAgentRepository(_ context.Context, req *connect.Request[compassv1.GrantAgentRepositoryRequest]) (*connect.Response[compassv1.GrantAgentRepositoryResponse], error) {
-	f.grantRequest, f.gotAuth = req.Msg, req.Header().Get("Authorization")
+func (f *fakeAgentRepositoryService) GrantAgentRepository(_ context.Context, req *compassv1.GrantAgentRepositoryRequest) (*compassv1.GrantAgentRepositoryResponse, error) {
+	f.grantRequest, f.gotAuth = req, req.Header().Get("Authorization")
 	if f.grantErr != nil {
 		return nil, f.grantErr
 	}
-	return connect.NewResponse(&compassv1.GrantAgentRepositoryResponse{Added: f.grantAdded}), nil
+	return &compassv1.GrantAgentRepositoryResponse{Added: f.grantAdded}, nil
 }
 
-func (f *fakeAgentRepositoryService) RevokeAgentRepository(_ context.Context, req *connect.Request[compassv1.RevokeAgentRepositoryRequest]) (*connect.Response[compassv1.RevokeAgentRepositoryResponse], error) {
-	f.revokeRequest, f.gotAuth = req.Msg, req.Header().Get("Authorization")
+func (f *fakeAgentRepositoryService) RevokeAgentRepository(_ context.Context, req *compassv1.RevokeAgentRepositoryRequest) (*compassv1.RevokeAgentRepositoryResponse, error) {
+	f.revokeRequest, f.gotAuth = req, req.Header().Get("Authorization")
 	if f.revokeErr != nil {
 		return nil, f.revokeErr
 	}
-	return connect.NewResponse(&compassv1.RevokeAgentRepositoryResponse{Removed: f.revokeRemoved}), nil
+	return &compassv1.RevokeAgentRepositoryResponse{Removed: f.revokeRemoved}, nil
 }
 
-func (f *fakeAgentRepositoryService) ListAgentRepositories(_ context.Context, req *connect.Request[compassv1.ListAgentRepositoriesRequest]) (*connect.Response[compassv1.ListAgentRepositoriesResponse], error) {
-	f.listRequest, f.gotAuth = req.Msg, req.Header().Get("Authorization")
+func (f *fakeAgentRepositoryService) ListAgentRepositories(_ context.Context, req *compassv1.ListAgentRepositoriesRequest) (*compassv1.ListAgentRepositoriesResponse, error) {
+	f.listRequest, f.gotAuth = req, req.Header().Get("Authorization")
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return connect.NewResponse(f.listResponse), nil
+	return f.listResponse, nil
 }
 
 func startFakeAgentRepositoryServer(t *testing.T, fake *fakeAgentRepositoryService) compassv1connect.AgentRepositoryServiceClient {
@@ -96,7 +95,7 @@ func TestRunAgentRepoAdd(t *testing.T) {
 			}
 		})
 	}
-	fake := &fakeAgentRepositoryService{grantErr: connect.NewError(connect.CodePermissionDenied, errors.New("denied"))}
+	fake := &fakeAgentRepositoryService{grantErr: connect.NewError(connect.CodePermissionDenied, "denied")}
 	var out strings.Builder
 	err := runAgentRepoAdd(context.Background(), startFakeAgentRepositoryServer(t, fake), "worker", "owner/workstream", &out)
 	if err == nil || out.Len() != 0 {
@@ -128,7 +127,7 @@ func TestRunAgentRepoRemove(t *testing.T) {
 			}
 		})
 	}
-	fake := &fakeAgentRepositoryService{revokeErr: connect.NewError(connect.CodePermissionDenied, errors.New("denied"))}
+	fake := &fakeAgentRepositoryService{revokeErr: connect.NewError(connect.CodePermissionDenied, "denied")}
 	var out strings.Builder
 	err := runAgentRepoRemove(context.Background(), startFakeAgentRepositoryServer(t, fake), "worker", "owner/workstream", &out)
 	if err == nil || out.Len() != 0 {
@@ -151,7 +150,7 @@ func TestRunAgentRepoList(t *testing.T) {
 	if got, want := out.String(), "owner/alpha\nowner/beta\n"; got != want {
 		t.Errorf("output = %q, want %q", got, want)
 	}
-	fake = &fakeAgentRepositoryService{listErr: connect.NewError(connect.CodePermissionDenied, errors.New("denied"))}
+	fake = &fakeAgentRepositoryService{listErr: connect.NewError(connect.CodePermissionDenied, "denied")}
 	out.Reset()
 	err := runAgentRepoList(context.Background(), startFakeAgentRepositoryServer(t, fake), "worker", &out)
 	if err == nil || out.Len() != 0 {

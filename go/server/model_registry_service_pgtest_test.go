@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -41,18 +41,18 @@ func TestPutModelRegistryPersistsAndReadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutModelRegistry: %v", err)
 	}
-	if putResp.Msg.GetVersion() != 1 {
-		t.Fatalf("seed version = %d, want 1", putResp.Msg.GetVersion())
+	if putResp.GetVersion() != 1 {
+		t.Fatalf("seed version = %d, want 1", putResp.GetVersion())
 	}
 	getResp, err := f.client.GetModelRegistry(ctx, authReq(f, &compassv1.GetModelRegistryRequest{}))
 	if err != nil {
 		t.Fatalf("GetModelRegistry: %v", err)
 	}
-	if getResp.Msg.GetVersion() != 1 {
-		t.Errorf("read version = %d, want 1", getResp.Msg.GetVersion())
+	if getResp.GetVersion() != 1 {
+		t.Errorf("read version = %d, want 1", getResp.GetVersion())
 	}
-	if _, ok := getResp.Msg.GetRegistry().GetEntries()["opus"]; !ok {
-		t.Errorf("read registry missing 'opus': %+v", getResp.Msg.GetRegistry())
+	if _, ok := getResp.GetRegistry().GetEntries()["opus"]; !ok {
+		t.Errorf("read registry missing 'opus': %+v", getResp.GetRegistry())
 	}
 }
 
@@ -67,10 +67,10 @@ func TestGetModelRegistryUnconfiguredIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelRegistry on unconfigured fleet: %v", err)
 	}
-	if resp.Msg.GetVersion() != 0 {
-		t.Errorf("unconfigured version = %d, want 0", resp.Msg.GetVersion())
+	if resp.GetVersion() != 0 {
+		t.Errorf("unconfigured version = %d, want 0", resp.GetVersion())
 	}
-	if n := len(resp.Msg.GetRegistry().GetEntries()); n != 0 {
+	if n := len(resp.GetRegistry().GetEntries()); n != 0 {
 		t.Errorf("unconfigured registry has %d entries, want 0", n)
 	}
 }
@@ -89,20 +89,20 @@ func TestPutModelRegistryVersionBumpObservableViaGet(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	v2, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("sonnet"), ExpectedVersion: v1.Msg.GetVersion(),
+		Registry: wireReg1("sonnet"), ExpectedVersion: v1.GetVersion(),
 	}))
 	if err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	if v2.Msg.GetVersion() != v1.Msg.GetVersion()+1 {
-		t.Fatalf("replace version = %d, want %d", v2.Msg.GetVersion(), v1.Msg.GetVersion()+1)
+	if v2.GetVersion() != v1.GetVersion()+1 {
+		t.Fatalf("replace version = %d, want %d", v2.GetVersion(), v1.GetVersion()+1)
 	}
 	getResp, err := f.client.GetModelRegistry(ctx, authReq(f, &compassv1.GetModelRegistryRequest{}))
 	if err != nil {
 		t.Fatalf("GetModelRegistry: %v", err)
 	}
-	if getResp.Msg.GetVersion() != v2.Msg.GetVersion() {
-		t.Errorf("Get version = %d, want %d", getResp.Msg.GetVersion(), v2.Msg.GetVersion())
+	if getResp.GetVersion() != v2.GetVersion() {
+		t.Errorf("Get version = %d, want %d", getResp.GetVersion(), v2.GetVersion())
 	}
 }
 
@@ -120,13 +120,13 @@ func TestPutModelRegistryStaleVersionIsAborted(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("sonnet"), ExpectedVersion: v1.Msg.GetVersion(),
+		Registry: wireReg1("sonnet"), ExpectedVersion: v1.GetVersion(),
 	})); err != nil {
 		t.Fatalf("first replace: %v", err)
 	}
 	// Reuse the now-stale v1 version.
 	_, err = f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("haiku"), ExpectedVersion: v1.Msg.GetVersion(),
+		Registry: wireReg1("haiku"), ExpectedVersion: v1.GetVersion(),
 	}))
 	if connect.CodeOf(err) != connect.CodeAborted {
 		t.Fatalf("stale version = %v, want CodeAborted", connect.CodeOf(err))
@@ -175,7 +175,7 @@ func TestPutModelRegistryOrphaningRemovalIsInvalidArgument(t *testing.T) {
 		t.Fatalf("PutAgentConfig: %v", err)
 	}
 	_, err = f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("sonnet"), ExpectedVersion: v1.Msg.GetVersion(), // drops "opus"
+		Registry: wireReg1("sonnet"), ExpectedVersion: v1.GetVersion(), // drops "opus"
 	}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("orphaning removal = %v, want CodeInvalidArgument", connect.CodeOf(err))
@@ -202,7 +202,7 @@ func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	client := networkDoorHandler(t, svc, st, admin)
 
 	t.Run("PutModelRegistry as non-admin is PermissionDenied", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.PutModelRegistryRequest{Registry: wireReg1("opus")})
+		req := &compassv1.PutModelRegistryRequest{Registry: wireReg1("opus")}
 		req.Header().Set("Authorization", "Bearer "+memberTok)
 		cctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
@@ -212,7 +212,7 @@ func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	})
 
 	t.Run("DeleteModelRegistry as non-admin is PermissionDenied", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.DeleteModelRegistryRequest{})
+		req := &compassv1.DeleteModelRegistryRequest{}
 		req.Header().Set("Authorization", "Bearer "+memberTok)
 		cctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
@@ -222,7 +222,7 @@ func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	})
 
 	t.Run("GetModelRegistry as non-admin is admitted (open)", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.GetModelRegistryRequest{})
+		req := &compassv1.GetModelRegistryRequest{}
 		req.Header().Set("Authorization", "Bearer "+memberTok)
 		cctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
@@ -265,9 +265,9 @@ func TestPutModelRegistryMetadataRoundTripViaRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelRegistry: %v", err)
 	}
-	got, ok := getResp.Msg.GetRegistry().GetEntries()["opus"]
+	got, ok := getResp.GetRegistry().GetEntries()["opus"]
 	if !ok {
-		t.Fatalf("read registry missing 'opus': %+v", getResp.Msg.GetRegistry())
+		t.Fatalf("read registry missing 'opus': %+v", getResp.GetRegistry())
 	}
 	md := got.GetMetadata()
 	if md.GetContextWindow() != 200000 {
@@ -319,8 +319,8 @@ func TestDeleteModelRegistryClearsAndOrphaningIsInvalidArgument(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetModelRegistry after clear: %v", err)
 		}
-		if getResp.Msg.GetVersion() != 0 {
-			t.Fatalf("version after clear = %d, want 0", getResp.Msg.GetVersion())
+		if getResp.GetVersion() != 0 {
+			t.Fatalf("version after clear = %d, want 0", getResp.GetVersion())
 		}
 	})
 

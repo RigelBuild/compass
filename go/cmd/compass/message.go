@@ -9,7 +9,6 @@ import (
 	"io"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -127,17 +126,17 @@ func runMessagePost(ctx context.Context, client compassv1connect.CommsServiceCli
 	// genuine second post, not a retry of a lost one (connect-go does not
 	// auto-retry), so the (author, client_request_id) idempotency lane is left
 	// unused deliberately rather than minting a per-invocation key.
-	resp, err := client.PostMessage(ctx, connect.NewRequest(&compassv1.PostMessageRequest{
+	resp, err := client.PostMessage(ctx, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: args.channel},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: args.topic},
 		CreateTopic: true,
 		Blocks: []*compassv1.MessageBlock{
 			{Block: &compassv1.MessageBlock_Text{Text: body}},
 		},
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("posting message to channel %s topic %s: %w", args.channel, args.topic, err)
 	}
-	_, err = fmt.Fprintln(out, resp.Msg.GetMessage().GetId())
+	_, err = fmt.Fprintln(out, resp.GetMessage().GetId())
 	return err
 }

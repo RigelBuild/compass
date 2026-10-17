@@ -13,12 +13,11 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -78,13 +77,13 @@ type fakeRelay struct {
 }
 
 func (f *fakeRelay) RelayCommsCall(
-	ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest],
-) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {
-	f.calls = append(f.calls, recordedRelayCall{ctx: ctx, req: req.Msg})
+	ctx context.Context, req *compassv1internal.RelayCommsCallRequest,
+) (*compassv1internal.RelayCommsCallResponse, error) {
+	f.calls = append(f.calls, recordedRelayCall{ctx: ctx, req: req})
 	if f.err != nil {
 		return nil, f.err
 	}
-	return connect.NewResponse(f.resp), nil
+	return f.resp, nil
 }
 
 // testCallID is the agent-minted correlation id these tests send; asserting it
@@ -112,7 +111,7 @@ func TestCommsNoSessionFailsClosedFailedPrecondition(t *testing.T) {
 	relay := &fakeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
-	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
+	resp, err := g.Comms(context.Background(), postCall())
 	if err == nil {
 		t.Fatal("Comms with no session bound = nil error, want CodeFailedPrecondition (fail closed)")
 	}
@@ -144,7 +143,7 @@ func TestCommsHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
 	call := postCall()
-	resp, err := g.Comms(context.Background(), connect.NewRequest(call))
+	resp, err := g.Comms(context.Background(), call)
 	if err != nil {
 		t.Fatalf("Comms(happy) = %v, want success", err)
 	}
@@ -157,10 +156,10 @@ func TestCommsHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 	if relay.calls[0].req.GetCall() != call {
 		t.Fatalf("forwarded Call is not the verbatim request the handler received (Runner is a pure forwarder)")
 	}
-	if resp.Msg != wantResult {
+	if resp != wantResult {
 		t.Fatalf("returned result is not the unwrapped resp.Msg.Result")
 	}
-	if got := resp.Msg.GetCallId(); got != testCallID {
+	if got := resp.GetCallId(); got != testCallID {
 		t.Fatalf("returned result call_id = %q, want the request's %s", got, testCallID)
 	}
 }
@@ -177,7 +176,7 @@ func TestCommsResolvesConstructionContainerName(t *testing.T) {
 			}}
 			g := NewGateway(context.Background(), name, Deps{Sessions: sessions, Relay: relay})
 
-			if _, err := g.Comms(context.Background(), connect.NewRequest(postCall())); err != nil {
+			if _, err := g.Comms(context.Background(), postCall()); err != nil {
 				t.Fatalf("Comms = %v, want success", err)
 			}
 			gotName, calls := sessions.snapshot()
@@ -207,14 +206,14 @@ func TestCommsInBandErrorRidesThroughAsResult(t *testing.T) {
 	relay := &fakeRelay{resp: &compassv1internal.RelayCommsCallResponse{Result: errResult}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
-	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
+	resp, err := g.Comms(context.Background(), postCall())
 	if err != nil {
 		t.Fatalf("Comms with an in-band tool error = Go error %v, want nil (in-band failure is not a transport error)", err)
 	}
-	if resp.Msg.GetError() == nil {
+	if resp.GetError() == nil {
 		t.Fatal("returned result carries no Error variant, want the in-band CommsCallError passed through")
 	}
-	if got := resp.Msg.GetError().GetCode(); got != "not_found" {
+	if got := resp.GetError().GetCode(); got != "not_found" {
 		t.Fatalf("in-band error code = %q, want not_found (passed through untouched)", got)
 	}
 }
@@ -224,10 +223,10 @@ func TestCommsInBandErrorRidesThroughAsResult(t *testing.T) {
 // nil-result success.
 func TestCommsTransportFailurePropagatesConnectError(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
-	relay := &fakeRelay{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
+	relay := &fakeRelay{err: connect.NewError(connect.CodeUnavailable, "server unreachable")}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
-	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
+	resp, err := g.Comms(context.Background(), postCall())
 	if err == nil {
 		t.Fatal("Comms with a relay transport failure = nil error, want the Connect error propagated")
 	}
@@ -255,7 +254,7 @@ func TestCommsPropagatesContextToRelay(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.WithValue(context.Background(), ctxKey{}, want), deadline)
 	defer cancel()
 
-	if _, err := g.Comms(ctx, connect.NewRequest(postCall())); err != nil {
+	if _, err := g.Comms(ctx, postCall()); err != nil {
 		t.Fatalf("Comms = %v, want success", err)
 	}
 	if len(relay.calls) != 1 {
@@ -276,7 +275,7 @@ func TestCommsEmptySessionIDFailsClosedFailedPrecondition(t *testing.T) {
 	relay := &fakeRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
-	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
+	resp, err := g.Comms(context.Background(), postCall())
 	if err == nil {
 		t.Fatal("Comms with an empty session id = nil error, want CodeFailedPrecondition")
 	}
@@ -302,7 +301,7 @@ func TestCommsNilRelayResultFailsInternal(t *testing.T) {
 	relay := &fakeRelay{resp: &compassv1internal.RelayCommsCallResponse{}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Relay: relay})
 
-	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
+	resp, err := g.Comms(context.Background(), postCall())
 	if err == nil {
 		t.Fatal("Comms with a nil relay result = nil error, want CodeInternal (malformed Server reply)")
 	}

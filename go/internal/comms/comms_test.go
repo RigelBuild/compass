@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
@@ -125,9 +125,9 @@ func TestCreateAgentStoresRoleAndPersona(t *testing.T) {
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 
-	_, err := svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	_, err := svc.CreateAgent(WithActor(ctx, owner.ID), &compassv1.CreateAgentRequest{
 		Handle: "role-persona", Role: "owner", Persona: "You own the domain.",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
@@ -149,13 +149,13 @@ func TestPostMessageRejectsTurnSequenceBeyondSignedBigint(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	_, err = svc.PostMessage(WithActor(context.Background(), author.ID), &compassv1.PostMessageRequest{
 		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
 		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic:  true,
 		TurnSequence: uint64(math.MaxInt64) + 1,
 		Blocks:       textBlocks("out of range"),
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "turn_sequence above signed BIGINT range")
 	msgs, err := st.ListMessages(context.Background(), store.ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID})
 	if err != nil {
@@ -173,17 +173,17 @@ func TestPostMessageAcceptsMaxSignedBigintTurnSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), &compassv1.PostMessageRequest{
 		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
 		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic:  true,
 		TurnSequence: uint64(math.MaxInt64),
 		Blocks:       textBlocks("max valid sequence"),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostMessage at MaxInt64: %v", err)
 	}
-	if got := resp.Msg.GetMessage().GetTurnSequence(); got != uint64(math.MaxInt64) {
+	if got := resp.GetMessage().GetTurnSequence(); got != uint64(math.MaxInt64) {
 		t.Fatalf("turn_sequence = %d, want MaxInt64", got)
 	}
 }
@@ -194,13 +194,13 @@ func TestCreateChannelEmitsChannelChanged(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, creator.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	created, err := h.svc.CreateChannel(WithActor(ctx, creator.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := h.svc.CreateChannel(WithActor(ctx, creator.ID), &compassv1.CreateChannelRequest{
 		Name: "new-room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	wantID := created.Msg.GetChannel().GetId()
+	wantID := created.GetChannel().GetId()
 
 	got := awaitFirst(t, events)
 	cc := got.GetChannelChanged()
@@ -222,10 +222,10 @@ func TestCreateChannelUnknownOrInvisibleMemberHandleIsNotFound(t *testing.T) {
 	mustAgent(t, st, other.ID, "hidden")
 
 	for _, handle := range []string{"ghost", "other/ghost", "other/hidden", "hidden"} {
-		_, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		_, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 			Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 			MemberHandles: []string{handle},
-		}))
+		})
 		connectNotFoundFor(t, err, handle, "CreateChannel member "+handle)
 	}
 }
@@ -236,56 +236,56 @@ func TestMembershipTiersJoinVersusSubscribe(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	newcomer := mustUser(t, st, "newcomer")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	// Join tier: add as a member WITHOUT subscribing -> read access
 	// (MemberAccountIDs) but no push (absent from SubscriberAccountIDs).
-	joined, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	joined, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        chID,
 		AddMemberHandles: []string{newcomer.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(join): %v", err)
 	}
-	if !containsString(joined.Msg.GetChannel().GetMemberAccountIds(), string(newcomer.ID)) {
-		t.Fatalf("after join, members %v missing %s", joined.Msg.GetChannel().GetMemberAccountIds(), newcomer.ID)
+	if !containsString(joined.GetChannel().GetMemberAccountIds(), string(newcomer.ID)) {
+		t.Fatalf("after join, members %v missing %s", joined.GetChannel().GetMemberAccountIds(), newcomer.ID)
 	}
-	if containsString(joined.Msg.GetChannel().GetSubscriberAccountIds(), string(newcomer.ID)) {
-		t.Fatalf("join alone put %s in subscribers %v; join must not grant push", newcomer.ID, joined.Msg.GetChannel().GetSubscriberAccountIds())
+	if containsString(joined.GetChannel().GetSubscriberAccountIds(), string(newcomer.ID)) {
+		t.Fatalf("join alone put %s in subscribers %v; join must not grant push", newcomer.ID, joined.GetChannel().GetSubscriberAccountIds())
 	}
 
 	// Subscribe tier: a subscribe toggle flips the per-member boolean, so the
 	// member now appears in SubscriberAccountIDs too.
-	subbed, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	subbed, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        chID,
 		SubscribeHandles: []string{newcomer.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(subscribe): %v", err)
 	}
-	if !containsString(subbed.Msg.GetChannel().GetSubscriberAccountIds(), string(newcomer.ID)) {
-		t.Fatalf("after subscribe, subscribers %v missing %s", subbed.Msg.GetChannel().GetSubscriberAccountIds(), newcomer.ID)
+	if !containsString(subbed.GetChannel().GetSubscriberAccountIds(), string(newcomer.ID)) {
+		t.Fatalf("after subscribe, subscribers %v missing %s", subbed.GetChannel().GetSubscriberAccountIds(), newcomer.ID)
 	}
 
 	// Unsubscribe flips it back off while keeping membership.
-	unsubbed, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	unsubbed, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 		ChannelId:          chID,
 		UnsubscribeHandles: []string{newcomer.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(unsubscribe): %v", err)
 	}
-	if containsString(unsubbed.Msg.GetChannel().GetSubscriberAccountIds(), string(newcomer.ID)) {
-		t.Fatalf("after unsubscribe, subscribers %v still include %s", unsubbed.Msg.GetChannel().GetSubscriberAccountIds(), newcomer.ID)
+	if containsString(unsubbed.GetChannel().GetSubscriberAccountIds(), string(newcomer.ID)) {
+		t.Fatalf("after unsubscribe, subscribers %v still include %s", unsubbed.GetChannel().GetSubscriberAccountIds(), newcomer.ID)
 	}
-	if !containsString(unsubbed.Msg.GetChannel().GetMemberAccountIds(), string(newcomer.ID)) {
-		t.Fatalf("unsubscribe dropped %s from members %v; it should keep read access", newcomer.ID, unsubbed.Msg.GetChannel().GetMemberAccountIds())
+	if !containsString(unsubbed.GetChannel().GetMemberAccountIds(), string(newcomer.ID)) {
+		t.Fatalf("unsubscribe dropped %s from members %v; it should keep read access", newcomer.ID, unsubbed.GetChannel().GetMemberAccountIds())
 	}
 }
 
@@ -301,19 +301,19 @@ func TestUpdateChannelMembersUnknownOrInvisibleHandleIsNotFound(t *testing.T) {
 	other := mustUser(t, st, "other")
 	mustAgent(t, st, other.ID, "hidden")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	for _, handle := range []string{"ghost", "other/ghost", "other/hidden", "hidden"} {
-		_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 			ChannelId:        chID,
 			AddMemberHandles: []string{handle},
-		}))
+		})
 		connectNotFoundFor(t, addErr, handle, "add member "+handle)
 	}
 }
@@ -329,21 +329,21 @@ func TestUpdateChannelMembersNamesMissesAcrossAllLists(t *testing.T) {
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	// ghost-add is in the FIRST list, ghost-sub in a LATER one. Both must be
 	// named — the failure must not stop at the first list.
-	_, updErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	_, updErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        chID,
 		AddMemberHandles: []string{"ghost-add"},
 		SubscribeHandles: []string{"ghost-sub"},
-	}))
+	})
 	connectCodeIs(t, updErr, connect.CodeNotFound, "misses across add + subscribe lists")
 	if updErr == nil || !strings.Contains(updErr.Error(), "ghost-add") || !strings.Contains(updErr.Error(), "ghost-sub") {
 		t.Fatalf("error %v must name EVERY unresolved handle across all lists (ghost-add AND ghost-sub)", updErr)
@@ -366,25 +366,25 @@ func TestSearchMessagesAuthorizationScoped(t *testing.T) {
 	}
 
 	// alice, a member, finds her message.
-	aliceHits, err := svc.SearchMessages(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.SearchMessagesRequest{Query: "falcon"}))
+	aliceHits, err := svc.SearchMessages(WithActor(ctx, alice.ID), &compassv1.SearchMessagesRequest{Query: "falcon"})
 	if err != nil {
 		t.Fatalf("SearchMessages(alice): %v", err)
 	}
-	if len(aliceHits.Msg.GetMessages()) != 1 {
-		t.Fatalf("alice found %d, want her 1 message", len(aliceHits.Msg.GetMessages()))
+	if len(aliceHits.GetMessages()) != 1 {
+		t.Fatalf("alice found %d, want her 1 message", len(aliceHits.GetMessages()))
 	}
-	if got := aliceHits.Msg.GetMessages()[0].GetChannelId(); got != string(chA.ID) {
+	if got := aliceHits.GetMessages()[0].GetChannelId(); got != string(chA.ID) {
 		t.Fatalf("SearchMessages hit channel_id = %q, want %q", got, chA.ID)
 	}
 
 	// bob, a non-member, sees nothing — the store scopes the search to his
 	// visible set, so a private channel never leaks through search.
-	bobHits, err := svc.SearchMessages(WithActor(ctx, bob.ID), connect.NewRequest(&compassv1.SearchMessagesRequest{Query: "falcon"}))
+	bobHits, err := svc.SearchMessages(WithActor(ctx, bob.ID), &compassv1.SearchMessagesRequest{Query: "falcon"})
 	if err != nil {
 		t.Fatalf("SearchMessages(bob): %v", err)
 	}
-	if len(bobHits.Msg.GetMessages()) != 0 {
-		t.Fatalf("bob found %d messages in a channel he cannot see, want 0", len(bobHits.Msg.GetMessages()))
+	if len(bobHits.GetMessages()) != 0 {
+		t.Fatalf("bob found %d messages in a channel he cannot see, want 0", len(bobHits.GetMessages()))
 	}
 }
 
@@ -412,26 +412,26 @@ func TestListMessagesVisibilityScopedAtEdge(t *testing.T) {
 	}
 
 	// alice, a member, reads her channel.
-	aliceMsgs, err := svc.ListMessages(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	aliceMsgs, err := svc.ListMessages(WithActor(ctx, alice.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(chA.ID)},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages(alice): %v", err)
 	}
-	if len(aliceMsgs.Msg.GetMessages()) != 1 {
-		t.Fatalf("alice read %d messages, want her 1", len(aliceMsgs.Msg.GetMessages()))
+	if len(aliceMsgs.GetMessages()) != 1 {
+		t.Fatalf("alice read %d messages, want her 1", len(aliceMsgs.GetMessages()))
 	}
 
 	// bob, a non-member, must NOT read alice's private channel by id. Today the
 	// unscoped store returns the row — the D9 leak this test pins.
-	bobMsgs, err := svc.ListMessages(WithActor(ctx, bob.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	bobMsgs, err := svc.ListMessages(WithActor(ctx, bob.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(chA.ID)},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages(bob): %v", err)
 	}
-	if len(bobMsgs.Msg.GetMessages()) != 0 {
-		t.Fatalf("bob read %d messages from a channel he is not a member of, want 0 (D9 leak: ListMessages is unscoped)", len(bobMsgs.Msg.GetMessages()))
+	if len(bobMsgs.GetMessages()) != 0 {
+		t.Fatalf("bob read %d messages from a channel he is not a member of, want 0 (D9 leak: ListMessages is unscoped)", len(bobMsgs.GetMessages()))
 	}
 }
 
@@ -449,10 +449,10 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, author.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	if _, err := h.svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := h.svc.RespondToAsk(WithActor(ctx, author.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 
@@ -525,25 +525,25 @@ func TestRespondToAskIsChannelScopedAcrossTopics(t *testing.T) {
 
 	// Positive (the T6 contract): answerer, only ever in topic B, answers the
 	// ask in topic A and SUCCEEDS.
-	if _, err := svc.RespondToAsk(WithActor(ctx, answerer.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := svc.RespondToAsk(WithActor(ctx, answerer.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("a channel member who has only read topic B cannot answer an ask in topic A: %v (D6: answerable channel-wide, not topic-scoped)", err)
 	}
 
 	// Durability: re-read off the wire and assert the ask records the answer, so
 	// the positive can't pass vacuously.
-	list, err := svc.ListMessages(WithActor(ctx, asker.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	list, err := svc.ListMessages(WithActor(ctx, asker.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	var chosen []string
 	var answered bool
 	found := false
-	for _, m := range list.Msg.GetMessages() {
+	for _, m := range list.GetMessages() {
 		for _, b := range m.GetBlocks() {
 			if a := b.GetAsk(); a != nil && a.GetAskId() == "ask-1" {
 				found = true
@@ -570,10 +570,10 @@ func TestRespondToAskIsChannelScopedAcrossTopics(t *testing.T) {
 	// membership, no topic) is refused with the D9 not-found collapse — the
 	// boundary is the CHANNEL, not the topic.
 	outsider := mustUser(t, st, "outsider")
-	_, err = svc.RespondToAsk(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	_, err = svc.RespondToAsk(WithActor(ctx, outsider.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeNotFound, "outsider (no membership, no topic) cannot answer")
 }
 
@@ -606,7 +606,7 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 	// Every field the server owns, set by the caller to a value it must not
 	// keep, alongside every content field, which it must.
 	recommended := int32(1)
-	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
+	posted, err := svc.PostMessage(WithActor(ctx, author.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
 		AskId:    "forged-ask-id",
 		Answered: true,
 		Questions: []*compassv1.AskQuestion{{
@@ -623,13 +623,13 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 			CustomText:      "forged answer",
 			TimedOut:        true,
 		}},
-	}}}}}))
+	}}}}})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
 
 	var got *compassv1.Ask
-	for _, b := range posted.Msg.GetMessage().GetBlocks() {
+	for _, b := range posted.GetMessage().GetBlocks() {
 		if a := b.GetAsk(); a != nil {
 			got = a
 		}
@@ -692,10 +692,10 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 
 	// The ask is genuinely still answerable — the drop left real pending state,
 	// not a cosmetically-blanked row.
-	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), &compassv1.RespondToAskRequest{
 		AskId:   got.GetAskId(),
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-b"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk on the posted ask: %v", err)
 	}
 }
@@ -728,13 +728,13 @@ func TestAskAnsweredFlagReachesTheWire(t *testing.T) {
 	// a UI consumes, not the store row.
 	readAsk := func() *compassv1.Ask {
 		t.Helper()
-		list, err := svc.ListMessages(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+		list, err := svc.ListMessages(WithActor(ctx, author.ID), &compassv1.ListMessagesRequest{
 			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
-		}))
+		})
 		if err != nil {
 			t.Fatalf("ListMessages: %v", err)
 		}
-		for _, m := range list.Msg.GetMessages() {
+		for _, m := range list.GetMessages() {
 			for _, b := range m.GetBlocks() {
 				if a := b.GetAsk(); a != nil && a.GetAskId() == "ask-1" {
 					return a
@@ -749,10 +749,10 @@ func TestAskAnsweredFlagReachesTheWire(t *testing.T) {
 		t.Fatal("pending ask reads answered=true on the wire, want false")
 	}
 
-	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 
@@ -778,38 +778,38 @@ func TestPostMessageRoutesTopicOverWire(t *testing.T) {
 	}
 
 	// A post naming a topic echoes the resolved topic id on the wire.
-	first, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "planning"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "first"}}}}))
+	first, err := svc.PostMessage(WithActor(ctx, author.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "planning"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "first"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage(first): %v", err)
 	}
-	firstID := first.Msg.GetMessage().GetId()
-	topicID := first.Msg.GetMessage().GetTopicId()
+	firstID := first.GetMessage().GetId()
+	topicID := first.GetMessage().GetTopicId()
 	if topicID == "" {
 		t.Fatal("first response TopicId = \"\", want the resolved topic id")
 	}
 
 	// A second post to the SAME topic_name resolves to the same topic id
 	// (get-or-create), so the two messages share a topic.
-	second, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "planning"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "second"}}}}))
+	second, err := svc.PostMessage(WithActor(ctx, author.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "planning"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "second"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage(second): %v", err)
 	}
-	secondID := second.Msg.GetMessage().GetId()
-	if got := second.Msg.GetMessage().GetTopicId(); got != topicID {
+	secondID := second.GetMessage().GetId()
+	if got := second.GetMessage().GetTopicId(); got != topicID {
 		t.Fatalf("second response TopicId = %q, want the same topic %q (get-or-create on topic_name)", got, topicID)
 	}
 
 	// It survives the read path: a topic-scoped ListMessages carries each
 	// message's topic id on the wire and returns exactly this topic's messages.
-	listed, err := svc.ListMessages(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	listed, err := svc.ListMessages(WithActor(ctx, author.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
 		TopicId:   topicID,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	seen := map[string]string{}
-	for _, m := range listed.Msg.GetMessages() {
+	for _, m := range listed.GetMessages() {
 		seen[m.GetId()] = m.GetTopicId()
 	}
 	if got := seen[firstID]; got != topicID {
@@ -850,13 +850,13 @@ func TestPostMessageStripsCallerAskID(t *testing.T) {
 
 	// postMinted posts one ask and returns the ask_id on the response Message.
 	postMinted := func(ctx string) string {
-		resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{forgedBlock()}}))
+		resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{forgedBlock()}})
 		if err != nil {
 			t.Fatalf("PostMessage(%s): %v", ctx, err)
 		}
 		var id string
 		var count int
-		for _, b := range resp.Msg.GetMessage().GetBlocks() {
+		for _, b := range resp.GetMessage().GetBlocks() {
 			if a := b.GetAsk(); a != nil {
 				id = a.GetAskId()
 				count++
@@ -892,16 +892,16 @@ func TestPostMessageStripsCallerAskID(t *testing.T) {
 	// End-to-end: the minted id addresses the ask (RespondToAsk succeeds), while
 	// the caller-forged id addresses nothing (CodeNotFound). The strip is real,
 	// not cosmetic.
-	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), &compassv1.RespondToAskRequest{
 		AskId:   first,
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk(minted id %q): %v", first, err)
 	}
-	_, forgedErr := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	_, forgedErr := svc.RespondToAsk(WithActor(ctx, author.ID), &compassv1.RespondToAskRequest{
 		AskId:   "caller-forged-id",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	}))
+	})
 	connectCodeIs(t, forgedErr, connect.CodeNotFound, "answer by the stripped caller-forged id")
 }
 
@@ -921,17 +921,17 @@ func TestRespondToAskVisibilityCollapseNotFound(t *testing.T) {
 
 	// bob (non-member) answering alice's ask maps to CodeNotFound at the edge —
 	// NOT a permission-denied variant, so the ask's existence cannot leak.
-	_, err = svc.RespondToAsk(WithActor(ctx, bob.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	_, err = svc.RespondToAsk(WithActor(ctx, bob.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-secret",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeNotFound, "answer a non-visible ask")
 
 	// Indistinguishable from a genuinely nonexistent ask id.
-	_, ghostErr := svc.RespondToAsk(WithActor(ctx, bob.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	_, ghostErr := svc.RespondToAsk(WithActor(ctx, bob.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-nonexistent",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	}))
+	})
 	connectCodeIs(t, ghostErr, connect.CodeNotFound, "answer a nonexistent ask")
 }
 
@@ -940,21 +940,21 @@ func TestEdgeErrorMapping(t *testing.T) {
 	ctx := context.Background()
 
 	// ErrInvalidArgument -> CodeInvalidArgument: an empty required handle.
-	_, err := svc.CreateUser(ctx, connect.NewRequest(&compassv1.CreateUserRequest{DisplayName: "no handle"}))
+	_, err := svc.CreateUser(ctx, &compassv1.CreateUserRequest{DisplayName: "no handle"})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "create user with empty handle")
 
 	// ErrConflict -> CodeAlreadyExists: a duplicate handle.
 	if _, err := st.CreateUser(ctx, store.NewUser{Handle: "dup", DisplayName: "First"}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
-	_, dupErr := svc.CreateUser(ctx, connect.NewRequest(&compassv1.CreateUserRequest{Handle: "dup", DisplayName: "Second"}))
+	_, dupErr := svc.CreateUser(ctx, &compassv1.CreateUserRequest{Handle: "dup", DisplayName: "Second"})
 	connectCodeIs(t, dupErr, connect.CodeAlreadyExists, "create user with duplicate handle")
 
 	// ErrNotFound -> CodeNotFound: mutating an unknown channel.
-	_, nfErr := svc.UpdateChannelMembers(ctx, connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	_, nfErr := svc.UpdateChannelMembers(ctx, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        "ghost-channel",
 		AddMemberHandles: []string{"whoever"},
-	}))
+	})
 	connectCodeIs(t, nfErr, connect.CodeNotFound, "update members of an unknown channel")
 }
 

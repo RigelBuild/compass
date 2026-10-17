@@ -12,7 +12,8 @@ package e2e
 import (
 	"context"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/runner"
@@ -67,8 +68,8 @@ func newAuthedClients(caPath, serverURL, adminToken string) (compassv1connect.Co
 		return nil, nil, err
 	}
 	ic := connect.WithInterceptors(&bearerToken{token: adminToken})
-	compass := compassv1connect.NewCompassServiceClient(httpClient, serverURL, ic)
-	comms := compassv1connect.NewCommsServiceClient(httpClient, serverURL, ic)
+	compass := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, serverURL, connecthttp.WithReadMaxBytes(0)), ic))
+	comms := compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, serverURL, connecthttp.WithReadMaxBytes(0)), ic))
 	return compass, comms, nil
 }
 
@@ -81,5 +82,5 @@ func newUnauthedCompassClient(caPath, serverURL string) (compassv1connect.Compas
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewCompassServiceClient(httpClient, serverURL), nil
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, serverURL, connecthttp.WithReadMaxBytes(0)))), nil
 }

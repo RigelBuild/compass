@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -137,8 +137,9 @@ func skipBatchWindow(t *testing.T, f skipBatchWindowFixture, token, sessionID st
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
-	req := connect.NewRequest(&compassv1.SkipBatchWindowRequest{SessionId: sessionID})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req := &compassv1.SkipBatchWindowRequest{SessionId: sessionID}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	_, err := f.client.SkipBatchWindow(ctx, req)
 	return err
 }

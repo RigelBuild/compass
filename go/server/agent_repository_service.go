@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -94,7 +94,7 @@ func resolveOwnedAgent(ctx context.Context, st *store.Store, caller store.Accoun
 			return store.Account{}, handleNotFound(raw)
 		}
 		wrappedErr := fmt.Errorf("resolving agent handle %q: %w", raw, err)
-		return store.Account{}, connect.NewError(connect.CodeInternal, wrappedErr)
+		return store.Account{}, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if agent.Agent == nil || agent.Agent.OwnerUserID != caller {
 		return store.Account{}, handleNotFound(raw)
@@ -104,8 +104,8 @@ func resolveOwnedAgent(ctx context.Context, st *store.Store, caller store.Accoun
 
 func (s *agentRepositoryService) GrantAgentRepository(
 	ctx context.Context,
-	req *connect.Request[compassv1.GrantAgentRepositoryRequest],
-) (*connect.Response[compassv1.GrantAgentRepositoryResponse], error) {
+	req *compassv1.GrantAgentRepositoryRequest,
+) (*compassv1.GrantAgentRepositoryResponse, error) {
 	caller, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
@@ -113,14 +113,14 @@ func (s *agentRepositoryService) GrantAgentRepository(
 	if err := s.requireHost(); err != nil {
 		return nil, err
 	}
-	if req.Msg.GetAgentHandle() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("agent_handle is required"))
+	if req.GetAgentHandle() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "agent_handle is required")
 	}
-	repo, err := agentRepository(req.Msg.GetRepository())
+	repo, err := agentRepository(req.GetRepository())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	agent, err := resolveOwnedAgent(ctx, s.store, caller, req.Msg.GetAgentHandle())
+	agent, err := resolveOwnedAgent(ctx, s.store, caller, req.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
@@ -139,13 +139,13 @@ func (s *agentRepositoryService) GrantAgentRepository(
 		}
 		s.signalSecretsVersion(ctx, agent.ID)
 	}
-	return connect.NewResponse(&compassv1.GrantAgentRepositoryResponse{Added: added}), nil
+	return &compassv1.GrantAgentRepositoryResponse{Added: added}, nil
 }
 
 func (s *agentRepositoryService) RevokeAgentRepository(
 	ctx context.Context,
-	req *connect.Request[compassv1.RevokeAgentRepositoryRequest],
-) (*connect.Response[compassv1.RevokeAgentRepositoryResponse], error) {
+	req *compassv1.RevokeAgentRepositoryRequest,
+) (*compassv1.RevokeAgentRepositoryResponse, error) {
 	caller, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
@@ -153,14 +153,14 @@ func (s *agentRepositoryService) RevokeAgentRepository(
 	if err := s.requireHost(); err != nil {
 		return nil, err
 	}
-	if req.Msg.GetAgentHandle() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("agent_handle is required"))
+	if req.GetAgentHandle() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "agent_handle is required")
 	}
-	repo, err := agentRepository(req.Msg.GetRepository())
+	repo, err := agentRepository(req.GetRepository())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	agent, err := resolveOwnedAgent(ctx, s.store, caller, req.Msg.GetAgentHandle())
+	agent, err := resolveOwnedAgent(ctx, s.store, caller, req.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
@@ -176,13 +176,13 @@ func (s *agentRepositoryService) RevokeAgentRepository(
 		}
 		s.signalSecretsVersion(ctx, agent.ID)
 	}
-	return connect.NewResponse(&compassv1.RevokeAgentRepositoryResponse{Removed: removed}), nil
+	return &compassv1.RevokeAgentRepositoryResponse{Removed: removed}, nil
 }
 
 func (s *agentRepositoryService) ListAgentRepositories(
 	ctx context.Context,
-	req *connect.Request[compassv1.ListAgentRepositoriesRequest],
-) (*connect.Response[compassv1.ListAgentRepositoriesResponse], error) {
+	req *compassv1.ListAgentRepositoriesRequest,
+) (*compassv1.ListAgentRepositoriesResponse, error) {
 	caller, err := s.requireCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -197,33 +197,33 @@ func (s *agentRepositoryService) ListAgentRepositories(
 	var agent store.Account
 	switch {
 	case account.Agent != nil:
-		if req.Msg.GetAgentHandle() != "" {
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("agents may list only their own repositories"))
+		if req.GetAgentHandle() != "" {
+			return nil, connect.NewError(connect.CodePermissionDenied, "agents may list only their own repositories")
 		}
 		agent = account
 	case account.User != nil:
-		if req.Msg.GetAgentHandle() == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("agent_handle is required"))
+		if req.GetAgentHandle() == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, "agent_handle is required")
 		}
-		agent, err = resolveOwnedAgent(ctx, s.store, caller, req.Msg.GetAgentHandle())
+		agent, err = resolveOwnedAgent(ctx, s.store, caller, req.GetAgentHandle())
 		if err != nil {
 			return nil, err
 		}
 	default:
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("agent repository access is unavailable to this account"))
+		return nil, connect.NewError(connect.CodePermissionDenied, "agent repository access is unavailable to this account")
 	}
 	repos, err := s.store.ListAgentForgeScopeRepos(ctx, agent.ID, store.ForgeProviderGitHub, s.host)
 	if err != nil {
 		wrappedErr := fmt.Errorf("listing agent repositories: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
-	return connect.NewResponse(&compassv1.ListAgentRepositoriesResponse{Repositories: repos}), nil
+	return &compassv1.ListAgentRepositoriesResponse{Repositories: repos}, nil
 }
 
 func (s *agentRepositoryService) requireCaller(ctx context.Context) (store.AccountID, error) {
 	caller, ok := auth.CallerFrom(ctx)
 	if !ok {
-		return "", connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+		return "", connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
 	return caller, nil
 }
@@ -238,22 +238,22 @@ func (s *agentRepositoryService) requireUser(ctx context.Context) (store.Account
 		return "", s.callerLookupError(caller, err)
 	}
 	if account.User == nil {
-		return "", connect.NewError(connect.CodePermissionDenied, errors.New("agent repository changes are user-only"))
+		return "", connect.NewError(connect.CodePermissionDenied, "agent repository changes are user-only")
 	}
 	return caller, nil
 }
 
 func (s *agentRepositoryService) callerLookupError(caller store.AccountID, err error) error {
 	if errors.Is(err, store.ErrNotFound) {
-		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("caller account %q not found", caller))
+		return connect.Errorf(connect.CodePermissionDenied, "caller account %q not found", caller)
 	}
 	wrappedErr := fmt.Errorf("resolving caller account: %w", err)
-	return connect.NewError(connect.CodeInternal, wrappedErr)
+	return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 }
 
 func (s *agentRepositoryService) requireHost() error {
 	if s.host == "" {
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("GitHub App not configured"))
+		return connect.NewError(connect.CodeFailedPrecondition, "GitHub App not configured")
 	}
 	return nil
 }
@@ -262,7 +262,7 @@ func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.Accou
 	grants, err := s.store.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, s.host)
 	if err != nil {
 		wrappedErr := fmt.Errorf("checking agent credential org: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	org, _, _ := strings.Cut(repo, "/")
 	wildcard := false
@@ -278,17 +278,17 @@ func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.Accou
 		}
 	}
 	if mismatch && !wildcard {
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("repository org differs from the agent's credential org"))
+		return connect.NewError(connect.CodeFailedPrecondition, "repository org differs from the agent's credential org")
 	}
 	return nil
 }
 
 func (s *agentRepositoryService) mapStoreError(operation string, err error) error {
 	if errors.Is(err, store.ErrInvalidArgument) {
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	wrappedErr := fmt.Errorf("%s: %w", operation, err)
-	return connect.NewError(connect.CodeInternal, wrappedErr)
+	return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 }
 
 func (s *agentRepositoryService) signalSecretsVersion(ctx context.Context, agent store.AccountID) {

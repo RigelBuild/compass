@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -23,15 +23,15 @@ import (
 func (f *Fixture) CreateAgent(ctx context.Context, handle, displayName string) (accountID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().CreateAgent(rctx, connect.NewRequest(&compassv1.CreateAgentRequest{
+	resp, err := f.Comms().CreateAgent(rctx, &compassv1.CreateAgentRequest{
 		Handle:      handle,
 		DisplayName: displayName,
 		Role:        "manager",
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("CreateAgent RPC: %w", err)
 	}
-	return resp.Msg.GetAccount().GetId(), nil
+	return resp.GetAccount().GetId(), nil
 }
 
 // Provision provisions the agent's per-account workspace container over
@@ -45,11 +45,11 @@ func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID stri
 	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: clientRequestID}))
+	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: clientRequestID})
 	if err != nil {
 		return "", fmt.Errorf("ProvisionAgentWorkspace RPC: %w", err)
 	}
-	return resp.Msg.GetContainerName(), nil
+	return resp.GetContainerName(), nil
 }
 
 // StartSession brings the agent in a provisioned container online over
@@ -57,13 +57,13 @@ func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID stri
 func (f *Fixture) StartSession(ctx context.Context, containerName string) (sessionID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().StartAgentSession(rctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	resp, err := f.Compass().StartAgentSession(rctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: containerName,
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("StartAgentSession RPC: %w", err)
 	}
-	return resp.Msg.GetSessionId(), nil
+	return resp.GetSessionId(), nil
 }
 
 // Resume brings the agent in a freshly provisioned container online over
@@ -77,14 +77,14 @@ func (f *Fixture) StartSession(ctx context.Context, containerName string) (sessi
 func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID string) (sessionID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().StartAgentSession(rctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	resp, err := f.Compass().StartAgentSession(rctx, &compassv1.StartAgentSessionRequest{
 		ContainerName:   containerName,
 		ResumeSessionId: resumeSessionID,
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("StartAgentSession(resume) RPC: %w", err)
 	}
-	return resp.Msg.GetSessionId(), nil
+	return resp.GetSessionId(), nil
 }
 
 // OpenSessionTail opens the session frame stream (SubscribeAgentSession) and
@@ -110,9 +110,9 @@ func (f *Fixture) OpenSessionTail(ctx context.Context, sessionID string) (*conne
 // OpenSessionTailAs opens the tail as client's account, which must be a member
 // of the agent's home channel (another owner's agent is invisible to admin).
 func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceClient, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
-	stream, err := client.SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{
+	stream, err := client.SubscribeAgentSession(ctx, &compassv1.SubscribeAgentSessionRequest{
 		SessionId: sessionID,
-	}))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("SubscribeAgentSession RPC: %w", err)
 	}
@@ -275,10 +275,10 @@ func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.Se
 func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequestID string) error {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := f.Compass().RemoveAgentWorkspace(rctx, connect.NewRequest(&compassv1.RemoveAgentWorkspaceRequest{
+	if _, err := f.Compass().RemoveAgentWorkspace(rctx, &compassv1.RemoveAgentWorkspaceRequest{
 		ContainerName:   containerName,
 		ClientRequestId: clientRequestID,
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("RemoveAgentWorkspace RPC: %w", err)
 	}
 	return nil
@@ -618,9 +618,9 @@ func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (
 	}
 	rctx, cancel := context.WithTimeout(ctx, perProbe)
 	defer cancel()
-	_, err = f.Compass().StopAgentSession(rctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{
+	_, err = f.Compass().StopAgentSession(rctx, &compassv1.StopAgentSessionRequest{
 		SessionId: enrollProbeSessionID,
-	}))
+	})
 	ready, retry, cerr := classifyEnrollProbe(err)
 	if retry {
 		return false, nil

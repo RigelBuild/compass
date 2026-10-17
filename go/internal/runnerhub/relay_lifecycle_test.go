@@ -18,10 +18,9 @@ package runnerhub
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -129,7 +128,7 @@ func TestRelayLifecycleCallDelegatesUnderResolvedCallerAccount(t *testing.T) {
 // reddens the err==nil assertion.
 func TestRelayLifecycleCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, fake := newHubWithLifecycle()
-	fake.spawnErr = connect.NewError(connect.CodeAlreadyExists, errors.New("handle already taken"))
+	fake.spawnErr = connect.NewError(connect.CodeAlreadyExists, "handle already taken")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("sess-1", "lc-4", &compassv1internal.SpawnPeerRequest{Handle: "dup"}))
@@ -164,7 +163,7 @@ func TestRelayLifecycleCallToolErrorIsInBandNotStreamError(t *testing.T) {
 // caller that dropped despawn error propagation would surface here.
 func TestRelayLifecycleCallDespawnToolErrorIsInBand(t *testing.T) {
 	hub, fake := newHubWithLifecycle()
-	fake.despawnErr = connect.NewError(connect.CodeNotFound, errors.New("peer not found"))
+	fake.despawnErr = connect.NewError(connect.CodeNotFound, "peer not found")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relayDespawn("sess-1", "lc-4b", &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-victim"}))

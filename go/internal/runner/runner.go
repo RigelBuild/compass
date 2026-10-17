@@ -21,7 +21,8 @@ import (
 	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -132,28 +133,30 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 	if err != nil {
 		return nil, &dialConfigurationError{err: fmt.Errorf("otel: connect interceptor: %w", err)}
 	}
-	client := compassv1internalconnect.NewRunnerServiceClient(
+	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, cfg.ServerAddr,
+		connecthttp.WithReadMaxBytes(0),
 		// otelconnect goes first (outermost) so enroll/Sessions dials emit
 		// client spans; it is a no-op when no global provider is installed.
-		connect.WithInterceptors(otelInterceptor, &bearerToken{source: cfg.Token}),
-	)
-	resp, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{
+
+	), otelInterceptor, &bearerToken{source: cfg.Token},
+	))
+	resp, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{
 		RunnerId:      cfg.RunnerID,
 		RuntimeTier:   runtimeTierProto(runtime.TierOf(cfg.Engine)),
 		EgressPosture: egressPostureProto(runtime.PostureOf(cfg.Engine)),
-	}))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("enrolling runner %q: %w", cfg.RunnerID, err)
 	}
-	runnerID := resp.Msg.GetRunnerId()
+	runnerID := resp.GetRunnerId()
 	if runnerID == "" {
 		runnerID = cfg.RunnerID
 	}
 	return &ServerLink{
 		client:     client,
 		runnerID:   runnerID,
-		reattached: resp.Msg.GetReattached(),
+		reattached: resp.GetReattached(),
 	}, nil
 
 }

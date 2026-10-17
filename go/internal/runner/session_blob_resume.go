@@ -5,7 +5,7 @@ package runner
 import (
 	"context"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 

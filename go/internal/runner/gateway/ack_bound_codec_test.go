@@ -9,7 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -48,7 +49,10 @@ func TestPublishRejectsOversizedControlAck(t *testing.T) {
 	g.SetControlRouter(router)
 	client := newAgentGatewayServer(t, g)
 
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Send may not surface the read rejection; CloseAndReceive is authoritative.
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: oversizedAckFrame()}); err != nil && !errors.Is(err, context.Canceled) {
 		t.Logf("send oversized ack: %v", err)
@@ -151,9 +155,12 @@ func TestAgentGatewayRejectsJSON(t *testing.T) {
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	client := compassv1internalconnect.NewAgentGatewayClient(h2cHTTPClient(t), srv.URL, connect.WithProtoJSON())
+	client := compassv1internalconnect.NewAgentGatewayClient(connect.NewClient(connecthttp.NewTransport(h2cHTTPClient(t), srv.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithProtoJSON())))
 
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: controlAckFrame(1, []uint64{2})}); err != nil {
 		t.Logf("send over JSON: %v", err)
 	}

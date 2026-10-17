@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,7 +31,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -153,14 +155,14 @@ func driveForwardComms(t *testing.T, vis eventVisibility, sub events.Subscriptio
 	const proc = compassv1connect.CommsServiceSubscribeCommsProcedure
 	handler := connect.NewServerStreamHandler(
 		proc,
-		func(ctx context.Context, _ *connect.Request[compassv1.SubscribeCommsRequest], stream *connect.ServerStream[compassv1.SubscribeCommsResponse]) error {
+		func(ctx context.Context, _ *compassv1.SubscribeCommsRequest, stream *connect.ServerStream[compassv1.SubscribeCommsResponse]) error {
 			err := forwardComms(ctx, testActor, vis, sub, stream)
 			fwdErrCh <- err
 			if err != nil {
 				// Mirrors SubscribeComms (subscribe.go:56-58): the underlying
 				// error is never returned to the client, only the opaque
 				// errStreamVisibility under CodeInternal.
-				return connect.NewError(connect.CodeInternal, errStreamVisibility)
+				return connect.NewError(connect.CodeInternal, errStreamVisibility.Error()).WithCause(errStreamVisibility)
 			}
 			return nil
 		},
@@ -175,21 +177,30 @@ func driveForwardComms(t *testing.T, vis eventVisibility, sub events.Subscriptio
 		srv.Client(), srv.URL+proc,
 	)
 
-	stream, err := client.CallServerStream(context.Background(), connect.NewRequest(&compassv1.SubscribeCommsRequest{}))
+	stream, err := client.CallServerStream(context.Background(), &compassv1.SubscribeCommsRequest{})
 	if err != nil {
 		t.Fatalf("CallServerStream: %v", err)
 	}
 	t.Cleanup(func() { _ = stream.Close() })
 
 	var received []*compassv1.SubscribeCommsResponse
-	for stream.Receive() {
-		received = append(received, stream.Msg())
+	var streamErr2 error
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			streamErr2 = err
+			break
+		}
+		received = append(received, msg)
+	}
+	if errors.Is(streamErr2, io.EOF) {
+		streamErr2 = nil
 	}
 
 	return forwardResult{
 		fwdErr:    <-fwdErrCh,
 		received:  received,
-		streamErr: stream.Err(),
+		streamErr: streamErr2,
 	}
 }
 
@@ -472,20 +483,29 @@ func driveUnderflowResync(t *testing.T, bus *events.Bus[*compassv1.SubscribeComm
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client := compassv1connect.NewCommsServiceClient(srv.Client(), srv.URL)
+	client := compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(srv.Client(), srv.URL, connecthttp.WithReadMaxBytes(0))))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
-	stream, err := client.SubscribeComms(ctx, connect.NewRequest(req))
+	stream, err := client.SubscribeComms(ctx, req)
 	if err != nil {
 		t.Fatalf("SubscribeComms: %v", err)
 	}
 	t.Cleanup(func() { _ = stream.Close() })
 
 	var received []*compassv1.SubscribeCommsResponse
-	for stream.Receive() {
-		received = append(received, stream.Msg())
+	var streamErr2 error
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			streamErr2 = err
+			break
+		}
+		received = append(received, msg)
 	}
-	return forwardResult{received: received, streamErr: stream.Err()}
+	if errors.Is(streamErr2, io.EOF) {
+		streamErr2 = nil
+	}
+	return forwardResult{received: received, streamErr: streamErr2}
 }
 
 // TestSubscribeCommsCursorAtOrBeyondHeadResyncs pins arm 2's at/beyond-head

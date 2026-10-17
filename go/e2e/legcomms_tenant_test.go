@@ -31,7 +31,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
@@ -245,15 +245,15 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 	t.Helper()
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := comms.CreateAgent(rctx, connect.NewRequest(&compassv1.CreateAgentRequest{
+	resp, err := comms.CreateAgent(rctx, &compassv1.CreateAgentRequest{
 		Handle:      handle,
 		DisplayName: displayName,
 		Role:        "manager",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateAgent(%s) as the owning tenant: %v", handle, err)
 	}
-	account := resp.Msg.GetAccount()
+	account := resp.GetAccount()
 	id := account.GetId()
 	if id == "" {
 		t.Fatalf("CreateAgent(%s) returned an empty account id", handle)
@@ -329,10 +329,10 @@ func openDMRejection(ctx context.Context, t *testing.T, comms commsServiceClient
 	t.Helper()
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := comms.OpenDM(rctx, connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peerHandle}))
+	resp, err := comms.OpenDM(rctx, &compassv1.OpenDMRequest{PeerHandle: peerHandle})
 	if err == nil {
 		t.Fatalf("OpenDM(peer %q) succeeded and opened channel %q, want a NOT_FOUND rejection",
-			peerHandle, resp.Msg.GetChannel().GetId())
+			peerHandle, resp.GetChannel().GetId())
 	}
 	return connect.CodeOf(err), rejectionMessage(t, peerHandle, err)
 }

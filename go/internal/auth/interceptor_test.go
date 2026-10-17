@@ -40,7 +40,7 @@ func recordingSpy(rec *spyResult) connect.UnaryFunc {
 		rec.called = true
 		rec.caller, rec.hasCaller = CallerFrom(ctx)
 		rec.tenant, _ = store.TenantFromContext(ctx)
-		return connect.NewResponse(&compassv1.GetServerInfoResponse{}), nil
+		return &compassv1.GetServerInfoResponse{}, nil
 	}
 }
 
@@ -48,7 +48,7 @@ func recordingSpy(rec *spyResult) connect.UnaryFunc {
 // Authorization header set to value verbatim (so a test drives the raw wire form
 // — scheme, spacing, and all); "" leaves the header absent.
 func bearerRequest(value string) connect.AnyRequest {
-	req := connect.NewRequest(&compassv1.GetServerInfoRequest{})
+	req := &compassv1.GetServerInfoRequest{}
 	if value != "" {
 		req.Header().Set(authHeader, value)
 	}

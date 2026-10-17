@@ -34,7 +34,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -73,25 +74,25 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	target.SetBearer(f.AdminToken())
 
 	httpClient, baseURL := target.Client()
-	cc := compassv1connect.NewCompassServiceClient(httpClient, baseURL)
+	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0))))
 
 	infoCtx, cancelInfo := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelInfo()
-	infoResp, err := cc.GetServerInfo(infoCtx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	infoResp, err := cc.GetServerInfo(infoCtx, &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo over client bridge against real server: %v", err)
 	}
-	if infoResp.Msg.GetApiVersion() == "" {
+	if infoResp.GetApiVersion() == "" {
 		t.Fatal("GetServerInfo returned an empty api_version over the client bridge")
 	}
 
 	whoCtx, cancelWho := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelWho()
-	whoResp, err := cc.WhoAmI(whoCtx, connect.NewRequest(&compassv1.WhoAmIRequest{}))
+	whoResp, err := cc.WhoAmI(whoCtx, &compassv1.WhoAmIRequest{})
 	if err != nil {
 		t.Fatalf("WhoAmI over client bridge against real server: %v", err)
 	}
-	if whoResp.Msg.GetAccountId() == "" {
+	if whoResp.GetAccountId() == "" {
 		t.Fatal("WhoAmI returned an empty account id over the client bridge (bearer not accepted by the real door)")
 	}
 
@@ -104,10 +105,10 @@ func TestClientModeHeadlessChain(t *testing.T) {
 		t.Fatalf("NewTLSTarget (unarmed): %v", err)
 	}
 	unarmedClient, unarmedBase := unarmed.Client()
-	uc := compassv1connect.NewCompassServiceClient(unarmedClient, unarmedBase)
+	uc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(unarmedClient, unarmedBase, connecthttp.WithReadMaxBytes(0))))
 	unauthCtx, cancelUnauth := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelUnauth()
-	if _, err := uc.WhoAmI(unauthCtx, connect.NewRequest(&compassv1.WhoAmIRequest{})); err == nil {
+	if _, err := uc.WhoAmI(unauthCtx, &compassv1.WhoAmIRequest{}); err == nil {
 		t.Fatal("WhoAmI over an unarmed target unexpectedly succeeded; the real door did not enforce the bearer")
 	} else if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
 		t.Fatalf("unarmed WhoAmI: got code %v, want %v", got, connect.CodeUnauthenticated)

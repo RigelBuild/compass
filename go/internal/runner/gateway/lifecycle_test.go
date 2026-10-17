@@ -13,10 +13,9 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -40,13 +39,13 @@ type fakeLifecycleRelay struct {
 }
 
 func (f *fakeLifecycleRelay) RelayLifecycleCall(
-	ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest],
-) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error) {
-	f.calls = append(f.calls, recordedLifecycleCall{ctx: ctx, req: req.Msg})
+	ctx context.Context, req *compassv1internal.RelayLifecycleCallRequest,
+) (*compassv1internal.RelayLifecycleCallResponse, error) {
+	f.calls = append(f.calls, recordedLifecycleCall{ctx: ctx, req: req})
 	if f.err != nil {
 		return nil, f.err
 	}
-	return connect.NewResponse(f.resp), nil
+	return f.resp, nil
 }
 
 // spawnCall builds a LifecycleCallRequest carrying a spawn variant under
@@ -67,7 +66,7 @@ func TestLifecycleNoSessionFailsClosedFailedPrecondition(t *testing.T) {
 	relay := &fakeLifecycleRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
-	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
+	resp, err := g.Lifecycle(context.Background(), spawnCall())
 	if err == nil {
 		t.Fatal("Lifecycle with no session bound = nil error, want CodeFailedPrecondition")
 	}
@@ -88,7 +87,7 @@ func TestLifecycleEmptySessionIDFailsClosedFailedPrecondition(t *testing.T) {
 	relay := &fakeLifecycleRelay{}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
-	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
+	resp, err := g.Lifecycle(context.Background(), spawnCall())
 	if err == nil {
 		t.Fatal("Lifecycle with an empty session id = nil error, want CodeFailedPrecondition")
 	}
@@ -121,7 +120,7 @@ func TestLifecycleHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.
 	relay := &fakeLifecycleRelay{resp: &compassv1internal.RelayLifecycleCallResponse{Result: wantResult}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
-	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
+	resp, err := g.Lifecycle(context.Background(), spawnCall())
 	if err != nil {
 		t.Fatalf("Lifecycle = %v, want success", err)
 	}
@@ -138,8 +137,8 @@ func TestLifecycleHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.
 	if got.GetCall().GetSpawn().GetHandle() != "peer-1" {
 		t.Fatalf("forwarded spawn handle = %q, want peer-1 (verbatim payload)", got.GetCall().GetSpawn().GetHandle())
 	}
-	if resp.Msg.GetSpawn().GetAgentAccountId() != "acct-9" {
-		t.Fatalf("returned result = %+v, want the Server's spawn result", resp.Msg)
+	if resp.GetSpawn().GetAgentAccountId() != "acct-9" {
+		t.Fatalf("returned result = %+v, want the Server's spawn result", resp)
 	}
 }
 
@@ -156,7 +155,7 @@ func TestLifecycleResolvesConstructionContainerName(t *testing.T) {
 			}}
 			g := NewGateway(context.Background(), name, Deps{Sessions: sessions, Lifecycle: relay})
 
-			if _, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall())); err != nil {
+			if _, err := g.Lifecycle(context.Background(), spawnCall()); err != nil {
 				t.Fatalf("Lifecycle = %v, want success", err)
 			}
 			if gotName, _ := sessions.snapshot(); gotName != name {
@@ -170,10 +169,10 @@ func TestLifecycleResolvesConstructionContainerName(t *testing.T) {
 // (the agent renders it in-band), never a success wrapping a nil result.
 func TestLifecycleTransportFailurePropagatesConnectError(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
-	relay := &fakeLifecycleRelay{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
+	relay := &fakeLifecycleRelay{err: connect.NewError(connect.CodeUnavailable, "server unreachable")}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
-	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
+	resp, err := g.Lifecycle(context.Background(), spawnCall())
 	if err == nil {
 		t.Fatal("Lifecycle with a failing relay = nil error, want the transport error propagated")
 	}
@@ -193,7 +192,7 @@ func TestLifecycleNilResultIsInternalError(t *testing.T) {
 	relay := &fakeLifecycleRelay{resp: &compassv1internal.RelayLifecycleCallResponse{}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
-	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
+	resp, err := g.Lifecycle(context.Background(), spawnCall())
 	if err == nil {
 		t.Fatal("Lifecycle with a nil relay result = nil error, want CodeInternal")
 	}

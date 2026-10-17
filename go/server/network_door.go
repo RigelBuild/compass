@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2/connecthttp"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
@@ -334,20 +335,20 @@ func buildNetworkServer(
 	// connect-go has NO default cap, so an operator could otherwise stream a huge
 	// Put buffered whole in memory. Sized to PutAgentConfig's 64 MiB bundle plus
 	// wire/framing headroom; 128 MiB. Mirrors the internal doors' posture.
-	netPath, netHandler := compassv1connect.NewCompassServiceHandler(svc, interceptors, connect.WithReadMaxBytes(compassServiceMaxReadBytes))
-	netCommsPath, netCommsHandler := compassv1connect.NewCommsServiceHandler(commsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	netPath, netHandler := compassv1connect.NewCompassServiceHandler(svc, interceptors, connecthttp.WithReadMaxBytes(compassServiceMaxReadBytes))
+	netCommsPath, netCommsHandler := compassv1connect.NewCommsServiceHandler(commsSvc, interceptors, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux := http.NewServeMux()
 	netMux.Handle(netPath, netHandler)
 	netMux.Handle(netCommsPath, netCommsHandler)
 	// SecretsService rides the same bearer + admin-gate chain: the gate classifies
 	// its 3 procedures authenticatedOpen, so any authenticated account clears it
 	// and the handler enforces the split — user-only writes, user-or-agent list.
-	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netSecretsPath, netSecretsHandler)
 	// UsageService uses the same authenticated chain and applies agent scope in its handler.
-	netUsagePath, netUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	netUsagePath, netUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc, interceptors, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netUsagePath, netUsageHandler)
-	netAgentRepositoryPath, netAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	netAgentRepositoryPath, netAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc, interceptors, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netAgentRepositoryPath, netAgentRepositoryHandler)
 	health.mount(netMux)
 
@@ -442,7 +443,7 @@ func mountGatewayServices(
 		return
 	}
 	interceptors := otel.HandlerInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID))
-	options := []connect.HandlerOption{interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes)}
+	options := []connect.HandlerOption{interceptors, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes)}
 	if services.credentials != nil {
 		path, handler := compassv1internalconnect.NewGatewayCredentialsHandler(services.credentials, options...)
 		netMux.Handle(path, handler)
@@ -452,7 +453,7 @@ func mountGatewayServices(
 		netMux.Handle(path, handler)
 	}
 	if services.auth != nil {
-		path, handler := compassv1internalconnect.NewGatewayAuthHandler(services.auth, interceptors, connect.WithReadMaxBytes(gatewayAuthMaxReadBytes))
+		path, handler := compassv1internalconnect.NewGatewayAuthHandler(services.auth, interceptors, connecthttp.WithReadMaxBytes(gatewayAuthMaxReadBytes))
 		netMux.Handle(path, handler)
 	}
 }

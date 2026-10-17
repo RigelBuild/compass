@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -266,37 +265,37 @@ type fakeCompass struct {
 	gotAuth        string
 }
 
-func (f *fakeCompass) PutAgentConfig(_ context.Context, req *connect.Request[compassv1.PutAgentConfigRequest]) (*connect.Response[compassv1.PutAgentConfigResponse], error) {
-	f.gotBundle = req.Msg.GetBundle()
+func (f *fakeCompass) PutAgentConfig(_ context.Context, req *compassv1.PutAgentConfigRequest) (*compassv1.PutAgentConfigResponse, error) {
+	f.gotBundle = req.GetBundle()
 	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.PutAgentConfigResponse{Version: f.putVersion}), nil
+	return &compassv1.PutAgentConfigResponse{Version: f.putVersion}, nil
 }
 
-func (f *fakeCompass) GetAgentConfigInfo(_ context.Context, req *connect.Request[compassv1.GetAgentConfigInfoRequest]) (*connect.Response[compassv1.GetAgentConfigInfoResponse], error) {
+func (f *fakeCompass) GetAgentConfigInfo(_ context.Context, req *compassv1.GetAgentConfigInfoRequest) (*compassv1.GetAgentConfigInfoResponse, error) {
 	f.gotAuth = req.Header().Get("Authorization")
 	info := f.info
 	if info == nil {
 		info = &compassv1.GetAgentConfigInfoResponse{}
 	}
-	return connect.NewResponse(info), nil
+	return info, nil
 }
 
-func (f *fakeCompass) DeleteAgentConfig(_ context.Context, req *connect.Request[compassv1.DeleteAgentConfigRequest]) (*connect.Response[compassv1.DeleteAgentConfigResponse], error) {
+func (f *fakeCompass) DeleteAgentConfig(_ context.Context, req *compassv1.DeleteAgentConfigRequest) (*compassv1.DeleteAgentConfigResponse, error) {
 	f.deleteCalls++
 	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.DeleteAgentConfigResponse{}), nil
+	return &compassv1.DeleteAgentConfigResponse{}, nil
 }
 
-func (f *fakeCompass) RevokeToken(_ context.Context, req *connect.Request[compassv1.RevokeTokenRequest]) (*connect.Response[compassv1.RevokeTokenResponse], error) {
-	f.gotToken = req.Msg.GetToken()
+func (f *fakeCompass) RevokeToken(_ context.Context, req *compassv1.RevokeTokenRequest) (*compassv1.RevokeTokenResponse, error) {
+	f.gotToken = req.GetToken()
 	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.RevokeTokenResponse{}), nil
+	return &compassv1.RevokeTokenResponse{}, nil
 }
 
-func (f *fakeCompass) GetAgentStatus(_ context.Context, req *connect.Request[compassv1.GetAgentStatusRequest]) (*connect.Response[compassv1.GetAgentStatusResponse], error) {
-	f.gotStatus = req.Msg
+func (f *fakeCompass) GetAgentStatus(_ context.Context, req *compassv1.GetAgentStatusRequest) (*compassv1.GetAgentStatusResponse, error) {
+	f.gotStatus = req
 	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.GetAgentStatusResponse{Statuses: f.statuses, RunnerEnrolled: f.statusEnrolled}), nil
+	return &compassv1.GetAgentStatusResponse{Statuses: f.statuses, RunnerEnrolled: f.statusEnrolled}, nil
 }
 
 // startFakeServer stands up the fake CompassService over a plain-HTTP httptest

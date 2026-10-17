@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -97,13 +96,13 @@ func runPush(ctx context.Context, client compassv1connect.CompassServiceClient, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.PutAgentConfig(ctx, connect.NewRequest(&compassv1.PutAgentConfigRequest{
+	resp, err := client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{
 		Bundle: bundle,
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("pushing config bundle: %w", err)
 	}
-	_, err = fmt.Fprintf(out, "pushed config bundle, version %s\n", resp.Msg.GetVersion())
+	_, err = fmt.Fprintf(out, "pushed config bundle, version %s\n", resp.GetVersion())
 	return err
 }
 
@@ -113,11 +112,11 @@ func runPush(ctx context.Context, client compassv1connect.CompassServiceClient, 
 func runShow(ctx context.Context, client compassv1connect.CompassServiceClient, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.GetAgentConfigInfo(ctx, connect.NewRequest(&compassv1.GetAgentConfigInfoRequest{}))
+	resp, err := client.GetAgentConfigInfo(ctx, &compassv1.GetAgentConfigInfoRequest{})
 	if err != nil {
 		return fmt.Errorf("fetching config info: %w", err)
 	}
-	msg := resp.Msg
+	msg := resp
 	if msg.GetVersion() == "" && len(msg.GetSkills()) == 0 &&
 		len(msg.GetExtensions()) == 0 && len(msg.GetMcpServers()) == 0 {
 		_, err = fmt.Fprintln(out, "no config declared for this fleet")
@@ -179,7 +178,7 @@ func renderConfigInfo(out io.Writer, msg *compassv1.GetAgentConfigInfoResponse) 
 func runDelete(ctx context.Context, client compassv1connect.CompassServiceClient, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := client.DeleteAgentConfig(ctx, connect.NewRequest(&compassv1.DeleteAgentConfigRequest{})); err != nil {
+	if _, err := client.DeleteAgentConfig(ctx, &compassv1.DeleteAgentConfigRequest{}); err != nil {
 		return fmt.Errorf("deleting config bundle: %w", err)
 	}
 	_, err := fmt.Fprintln(out, "cleared fleet config bundle")

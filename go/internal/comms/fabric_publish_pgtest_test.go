@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -123,17 +122,17 @@ func seedTenant(t *testing.T, dsn, slug string) store.TenantID {
 
 func postText(ctx context.Context, t *testing.T, svc *Comms, actor store.AccountID, ch store.ChannelID, body, requestID string) string {
 	t.Helper()
-	resp, err := svc.PostMessage(WithActor(ctx, actor), connect.NewRequest(&compassv1.PostMessageRequest{
+	resp, err := svc.PostMessage(WithActor(ctx, actor), &compassv1.PostMessageRequest{
 		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch)},
 		Topic:           &compassv1.PostMessageRequest_TopicName{TopicName: testTopic},
 		CreateTopic:     true,
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
 		ClientRequestId: requestID,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostMessage(%q): %v", body, err)
 	}
-	return resp.Msg.GetMessage().GetId()
+	return resp.GetMessage().GetId()
 }
 
 func assertOnePostedRef(t *testing.T, fab *fakeEventFabric, tenant store.TenantID, wantRowID string) {
@@ -297,10 +296,10 @@ func TestRespondToAskPublishesAnswerRefOnFabric(t *testing.T) {
 		t.Fatalf("a store-level append published %d refs, want 0", len(got))
 	}
 
-	if _, err := svc.RespondToAsk(WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := svc.RespondToAsk(WithActor(ctx, agent.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 	got := fab.published()

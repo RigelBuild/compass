@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"testing"
 
-	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -57,11 +56,11 @@ func TestGetAgentStatusByIDLive(t *testing.T) {
 	pub(t, brd, "s2", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 
 	resp, err := client.GetAgentStatus(context.Background(),
-		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: "s1"}))
+		&compassv1.GetAgentStatusRequest{SessionId: "s1"})
 	if err != nil {
 		t.Fatalf("GetAgentStatus(s1) = %v", err)
 	}
-	got := resp.Msg.GetStatuses()
+	got := resp.GetStatuses()
 	if len(got) != 1 || got[0].GetSessionId() != "s1" ||
 		got[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
 		t.Errorf("GetAgentStatus(s1) statuses = %v, want single s1/WORKING", got)
@@ -77,11 +76,11 @@ func TestGetAgentStatusByIDTerminal(t *testing.T) {
 	pub(t, brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED)
 
 	resp, err := client.GetAgentStatus(context.Background(),
-		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: "s1"}))
+		&compassv1.GetAgentStatusRequest{SessionId: "s1"})
 	if err != nil {
 		t.Fatalf("GetAgentStatus(s1) = %v", err)
 	}
-	got := resp.Msg.GetStatuses()
+	got := resp.GetStatuses()
 	if len(got) != 1 || got[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED {
 		t.Errorf("GetAgentStatus(s1 terminal) statuses = %v, want single s1/STOPPED (terminal queryable by id)", got)
 	}
@@ -99,11 +98,11 @@ func TestGetAgentStatusAllLiveSorted(t *testing.T) {
 	pub(t, brd, "s4", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)      // terminal
 
 	resp, err := client.GetAgentStatus(context.Background(),
-		connect.NewRequest(&compassv1.GetAgentStatusRequest{}))
+		&compassv1.GetAgentStatusRequest{})
 	if err != nil {
 		t.Fatalf("GetAgentStatus(all) = %v", err)
 	}
-	got := resp.Msg.GetStatuses()
+	got := resp.GetStatuses()
 	wantIDs := []string{"s1", "s3"}
 	if len(got) != len(wantIDs) || got[0].GetSessionId() != wantIDs[0] || got[1].GetSessionId() != wantIDs[1] {
 		ids := make([]string, 0, len(got))
@@ -123,11 +122,11 @@ func TestGetAgentStatusUnseenEmpty(t *testing.T) {
 	pub(t, brd, "s1", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
 
 	resp, err := client.GetAgentStatus(context.Background(),
-		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: "nope"}))
+		&compassv1.GetAgentStatusRequest{SessionId: "nope"})
 	if err != nil {
 		t.Fatalf("GetAgentStatus(nope) = %v", err)
 	}
-	if got := resp.Msg.GetStatuses(); len(got) != 0 {
+	if got := resp.GetStatuses(); len(got) != 0 {
 		t.Errorf("GetAgentStatus(unseen) statuses = %v, want empty", got)
 	}
 }
@@ -143,26 +142,26 @@ func TestGetAgentStatusNilBoardNoPanic(t *testing.T) {
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
 	resp, err := client.GetAgentStatus(context.Background(),
-		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: "s1"}))
+		&compassv1.GetAgentStatusRequest{SessionId: "s1"})
 	if err != nil {
 		t.Fatalf("GetAgentStatus(nil board) = %v, want empty response no error", err)
 	}
-	if got := resp.Msg.GetStatuses(); len(got) != 0 {
+	if got := resp.GetStatuses(); len(got) != 0 {
 		t.Errorf("GetAgentStatus(nil board) statuses = %v, want empty", got)
 	}
-	if resp.Msg.RunnerEnrolled == nil || resp.Msg.GetRunnerEnrolled() {
-		t.Errorf("GetAgentStatus(nil board) runner_enrolled = %v, want explicit false", resp.Msg.RunnerEnrolled)
+	if resp.RunnerEnrolled == nil || resp.GetRunnerEnrolled() {
+		t.Errorf("GetAgentStatus(nil board) runner_enrolled = %v, want explicit false", resp.RunnerEnrolled)
 	}
 }
 
 func TestGetAgentStatusRunnerNotEnrolled(t *testing.T) {
 	client, _ := newAgentStatusClient(t)
-	resp, err := client.GetAgentStatus(context.Background(), connect.NewRequest(&compassv1.GetAgentStatusRequest{}))
+	resp, err := client.GetAgentStatus(context.Background(), &compassv1.GetAgentStatusRequest{})
 	if err != nil {
 		t.Fatalf("GetAgentStatus = %v", err)
 	}
-	if resp.Msg.RunnerEnrolled == nil || resp.Msg.GetRunnerEnrolled() {
-		t.Fatalf("GetAgentStatus runner_enrolled = %v without a Runner, want explicit false", resp.Msg.RunnerEnrolled)
+	if resp.RunnerEnrolled == nil || resp.GetRunnerEnrolled() {
+		t.Fatalf("GetAgentStatus runner_enrolled = %v without a Runner, want explicit false", resp.RunnerEnrolled)
 	}
 }
 
@@ -181,14 +180,14 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 	client := newH2CClient(t, newH2CTestServer(t, newService("test", bus, nil, hub, brd, nil, nil)))
 	enrolled := func() bool {
 		t.Helper()
-		resp, err := client.GetAgentStatus(context.Background(), connect.NewRequest(&compassv1.GetAgentStatusRequest{}))
+		resp, err := client.GetAgentStatus(context.Background(), &compassv1.GetAgentStatusRequest{})
 		if err != nil {
 			t.Fatalf("GetAgentStatus = %v", err)
 		}
-		if resp.Msg.RunnerEnrolled == nil {
+		if resp.RunnerEnrolled == nil {
 			t.Fatal("GetAgentStatus left runner_enrolled unset")
 		}
-		return resp.Msg.GetRunnerEnrolled()
+		return resp.GetRunnerEnrolled()
 	}
 	if enrolled() {
 		t.Fatal("runner_enrolled = true before any Runner enrolled")

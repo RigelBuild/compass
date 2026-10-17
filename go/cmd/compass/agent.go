@@ -8,7 +8,6 @@ import (
 	"io"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -59,17 +58,17 @@ func runAgentStatus(ctx context.Context, client compassv1connect.CompassServiceC
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	resp, err := client.GetAgentStatus(ctx,
-		connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: session}))
+		&compassv1.GetAgentStatusRequest{SessionId: session})
 	if err != nil {
 		return fmt.Errorf("getting agent status: %w", err)
 	}
 	// Unset means an older server that cannot report enrollment; stay silent then.
-	if resp.Msg.RunnerEnrolled != nil && !resp.Msg.GetRunnerEnrolled() {
+	if resp.RunnerEnrolled != nil && !resp.GetRunnerEnrolled() {
 		if _, err := fmt.Fprintln(out, "no enrolled runner"); err != nil {
 			return err
 		}
 	}
-	statuses := resp.Msg.GetStatuses()
+	statuses := resp.GetStatuses()
 	if len(statuses) == 0 {
 		_, err = fmt.Fprintln(out, "no live agent sessions")
 		return err

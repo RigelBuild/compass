@@ -15,7 +15,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -46,11 +46,11 @@ func TestWhoAmIReflectsAmbientCallerIdentity(t *testing.T) {
 	t.Cleanup(srv.Close)
 	client := newH2CClient(t, srv.URL)
 
-	resp, err := client.WhoAmI(context.Background(), connect.NewRequest(&compassv1.WhoAmIRequest{}))
+	resp, err := client.WhoAmI(context.Background(), &compassv1.WhoAmIRequest{})
 	if err != nil {
 		t.Fatalf("WhoAmI: %v", err)
 	}
-	if got := resp.Msg.GetAccountId(); got != account {
+	if got := resp.GetAccountId(); got != account {
 		t.Fatalf("AccountId = %q, want %q (the ambient caller's own id)", got, account)
 	}
 }
@@ -66,7 +66,7 @@ func TestWhoAmIWithoutCallerIsUnauthenticated(t *testing.T) {
 	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
-	_, err := client.WhoAmI(context.Background(), connect.NewRequest(&compassv1.WhoAmIRequest{}))
+	_, err := client.WhoAmI(context.Background(), &compassv1.WhoAmIRequest{})
 	if err == nil {
 		t.Fatal("WhoAmI with no caller returned nil error, want CodeUnauthenticated")
 	}

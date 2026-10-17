@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -150,7 +150,7 @@ func (g *GuestExec) Exec(ctx context.Context, call ExecCall) (ExecResult, error)
 		Stdin:          call.Stdin,
 		TimeoutSeconds: call.TimeoutSeconds,
 	}
-	resp, err := g.client.Exec(ctx, connect.NewRequest(req))
+	resp, err := g.client.Exec(ctx, req)
 	if err != nil {
 		if timeout > 0 && isDeadline(err) {
 			return ExecResult{}, &TimeoutError{Timeout: timeout}
@@ -158,9 +158,9 @@ func (g *GuestExec) Exec(ctx context.Context, call ExecCall) (ExecResult, error)
 		return ExecResult{}, fmt.Errorf("guest exec: %w", err)
 	}
 	return ExecResult{
-		Stdout:   resp.Msg.GetStdout(),
-		Stderr:   resp.Msg.GetStderr(),
-		ExitCode: int(resp.Msg.GetExitCode()),
+		Stdout:   resp.GetStdout(),
+		Stderr:   resp.GetStderr(),
+		ExitCode: int(resp.GetExitCode()),
 	}, nil
 }
 
@@ -178,15 +178,18 @@ func isDeadline(err error) bool {
 // goroutine: stdin is framed as stdin frames and stdout/stderr are demuxed
 // onto the read pipes, which close when ExecExit arrives.
 func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestStream, retErr error) {
-	stream := g.openBidi(ctx)
+	stream, err := g.openBidi(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Until the pumps take ownership, any early-error return must reap both
 	// halves itself — the bidi stream is already open, so a bare `return nil,
 	// err` leaks its response-body reader / makeRequest goroutine. The pumps own
 	// the reap once they start (a no-op on the success path).
 	defer func() {
 		if retErr != nil {
-			_ = stream.CloseRequest()
-			_ = stream.CloseResponse()
+			_ = stream.CloseSend()
+			_ = stream.Close()
 		}
 	}()
 	start := &compassv1.ExecStreamRequest{
@@ -290,10 +293,10 @@ type GuestStream struct {
 func (s *GuestStream) Kill(sig int) error {
 	ctx, cancel := context.WithTimeout(s.ctx, killSignalTimeout)
 	defer cancel()
-	_, err := s.client.Signal(ctx, connect.NewRequest(&compassv1.SignalRequest{
+	_, err := s.client.Signal(ctx, &compassv1.SignalRequest{
 		ExecId: s.execID,
 		Signal: int32(sig), //nolint:gosec // G115: sig is a small signal number (syscall.Signal), never overflows int32
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("guest exec kill: signal %d: %w", sig, err)
 	}
