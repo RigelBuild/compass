@@ -5,14 +5,11 @@ package pgtest
 import (
 	"context"
 	"slices"
-	"strings"
 	"sync"
 
+	"github.com/RigelBuild/compass/go/internal/sqlc"
 	"github.com/jackc/pgx/v5"
 )
-
-// sqlcHeader opens every sqlc-generated statement ("-- name: GetX :one").
-const sqlcHeader = "-- name: "
 
 // SQLCQueryCounter is a pgx.QueryTracer that records the sqlc-generated
 // statements a store runs, by query name. Only statements with the sqlc header
@@ -68,12 +65,11 @@ func (c *SQLCQueryCounter) TraceBatchQuery(_ context.Context, _ *pgx.Conn, d pgx
 // TraceBatchEnd is a no-op.
 func (c *SQLCQueryCounter) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-func (c *SQLCQueryCounter) record(sql string) {
-	rest, ok := strings.CutPrefix(sql, sqlcHeader)
+func (c *SQLCQueryCounter) record(query string) {
+	name, ok := sqlc.QueryName(query)
 	if !ok {
 		return
 	}
-	name, _, _ := strings.Cut(rest, " ")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.names = append(c.names, name)

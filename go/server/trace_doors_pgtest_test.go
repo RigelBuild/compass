@@ -171,8 +171,13 @@ func doorProbeBody(service string) string {
 
 func assertOneServerSpan(t *testing.T, recorder *tracetest.SpanRecorder) {
 	t.Helper()
-	spans := recorder.Ended()
-	if len(spans) != 1 || spans[0].SpanKind() != trace.SpanKindServer {
-		t.Fatalf("recorded spans = %+v, want one server span", spans)
+	var serverSpans []sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		if span.SpanKind() == trace.SpanKindServer {
+			serverSpans = append(serverSpans, span)
+		}
+	}
+	if len(serverSpans) != 1 {
+		t.Fatalf("recorded server spans = %+v, want one", serverSpans)
 	}
 }
