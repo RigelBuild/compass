@@ -538,17 +538,20 @@ async function affectedTasks(file: string): Promise<Set<string>> {
 	return new Set(Object.keys(tasks));
 }
 
-async function ownerInputCovered(
-	suite: GoSuite,
-	file: string,
-): Promise<boolean> {
-	const isGoPath =
+function isGoPath(file: string): boolean {
+	return (
 		file.startsWith("go/") &&
 		liveGraph.packages.some(
 			(pkg) => file === `go/${pkg}` || file.startsWith(`go/${pkg}/`),
-		);
-	if (isGoPath) return true;
-	const residueTasks = await affectedTasks(file);
+		)
+	);
+}
+
+function ownerInputCovered(
+	suite: GoSuite,
+	file: string,
+	residueTasks: ReadonlySet<string>,
+): boolean {
 	return selectGoSuites({
 		event: "pull_request",
 		changedPaths: [file],
@@ -662,11 +665,24 @@ describe("owner-task input coverage", () => {
 		"each sampled owner-task input maps to Go or widens its suite",
 		async () => {
 			const samples = ownerInputSamples();
-			const covered = await Promise.all(
-				samples.map(({ suite, file }) => ownerInputCovered(suite, file)),
-			);
+			const files = [
+				...new Set(samples.map(({ file }) => file).filter((f) => !isGoPath(f))),
+			];
+			const residue = new Map<string, Set<string>>();
+			// A few Moon processes at a time: one per input serially overruns
+			// the timeout, and one per input at once floods a small runner.
+			const queue = [...files];
+			const worker = async (): Promise<void> => {
+				for (let file = queue.pop(); file !== undefined; file = queue.pop())
+					residue.set(file, await affectedTasks(file));
+			};
+			await Promise.all(Array.from({ length: 8 }, worker));
 			const uncovered = samples
-				.filter((_, i) => !covered[i])
+				.filter(({ suite, file }) => {
+					if (isGoPath(file)) return false;
+					const tasks = residue.get(file);
+					return tasks === undefined || !ownerInputCovered(suite, file, tasks);
+				})
 				.map(({ file }) => file);
 			expect(uncovered).toEqual([]);
 		},
