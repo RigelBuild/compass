@@ -345,6 +345,7 @@ jobs:
       # guards against it are elsewhere; nothing about this repo's sockets should
       # be redesigned around one runner's choice of temp root.
       TMPDIR: /tmp
+      LENGTH_GATE_EVENT: ${{ (github.event_name == 'pull_request' || github.event.inputs.pr != '') && 'pull_request' || github.event_name }}
       # Only the go leg builds the Go battery; the others skip its parity half.
       TOOLCHAIN_PARITY_SCOPE: ${{ matrix.group != 'go' && 'core' || '' }}
     steps:

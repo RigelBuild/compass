@@ -1512,6 +1512,8 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 		"@rigelbuild/ref-gate",
 		"@rigelbuild/biome-config",
 		"@rigelbuild/tsconfig",
+		"@rigelbuild/comment-scan",
+		"@rigelbuild/length-gate",
 	];
 	// Runs with the Renovate App token in renovate.yml, so it must stay soaked.
 	const tokenBearingPackage = "@rigelbuild/renovate-preflight";

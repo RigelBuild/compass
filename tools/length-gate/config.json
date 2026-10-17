@@ -1,0 +1,44 @@
+{
+	"extensions": [
+		".ts",
+		".tsx",
+		".mts",
+		".cts",
+		".js",
+		".mjs",
+		".cjs",
+		".jsx",
+		".go",
+		".rs",
+		".py",
+		".sh",
+		".nix",
+		".astro",
+		".css",
+		".proto"
+	],
+	"exclude": ["**/decisions/**", "**/DECISIONS.md", "**/references/**"],
+	"docs": [
+		{
+			"name": "design record",
+			"include": ["docs/designs/*/*.md", "docs/designs/**/design.md"],
+			"exclude": [],
+			"target": 2500,
+			"markerAllowed": true
+		},
+		{
+			"name": "spec",
+			"include": ["docs/specs/**/*.md"],
+			"exclude": [],
+			"target": 1500,
+			"markerAllowed": false
+		},
+		{
+			"name": "repo doc",
+			"include": ["docs/**/*.md"],
+			"exclude": ["docs/designs/**"],
+			"target": 1500,
+			"markerAllowed": true
+		}
+	]
+}

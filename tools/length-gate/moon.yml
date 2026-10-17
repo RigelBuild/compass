@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+# The gate's tests live in the package; this project only runs it.
+workspace:
+  inheritedTasks:
+    exclude: ['test']
+
+tasks:
+  check:
+    command: 'bun run length-gate --config tools/length-gate/config.json'
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    env:
+      LENGTH_GATE_MERGE: '1'
+  ci:
+    deps: ['check']
+    options:
+      cache: false

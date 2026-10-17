@@ -19,6 +19,7 @@ import {
 	type GenInput,
 	type GenOutput,
 	generate as generateCore,
+	normalizeEvent,
 	outputLines,
 	type ProjectInput,
 	parseAffectedTaskTargets,
@@ -545,6 +546,84 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		// A sibling task of the same project is not the FOD check.
 		expect(flag(["renovate:test", "renovate:typecheck"])).toBe(false);
 		expect(flag([])).toBe(false);
+	});
+});
+
+describe("length-gate always-run selection", () => {
+	const gate = "length-gate:ci";
+
+	test("docs-only pull_request selects the gate when it is not affected", () => {
+		const projects = [
+			...workspace(),
+			proj("root", "bun"),
+			proj("length-gate", "bun"),
+		];
+		const out = generate(
+			prInput({
+				projects,
+				affectedIds: ["root"],
+				changedPaths: ["docs/guide.md"],
+			}),
+		);
+		const bun = out.matrix.find((entry) => entry.group === "bun");
+		expect(bun?.run).toBe("true");
+		expect(bun?.targets.filter((target) => target === gate)).toHaveLength(1);
+	});
+
+	test("docs-only pull_request selects the gate once when it is affected", () => {
+		const projects = [
+			...workspace(),
+			proj("root", "bun"),
+			proj("length-gate", "bun"),
+		];
+		const out = generate(
+			prInput({
+				projects,
+				affectedIds: ["root", "length-gate"],
+				changedPaths: ["docs/guide.md"],
+			}),
+		);
+		const targets = out.matrix.find((entry) => entry.group === "bun")?.targets;
+		expect(targets?.filter((target) => target === gate)).toHaveLength(1);
+	});
+
+	test("push selects the gate", () => {
+		const projects = [...workspace(), proj("length-gate", "bun")];
+		const out = generate({
+			projects,
+			affectedIds: projects.map((project) => project.id),
+			changedPaths: [],
+			event: "push",
+		});
+		expect(
+			out.matrix.find((entry) => entry.group === "bun")?.targets,
+		).toContain(gate);
+	});
+
+	test("skips an absent gate project", () => {
+		const out = generate(
+			prInput({ projects: workspace(), affectedIds: [], changedPaths: [] }),
+		);
+		expect(out.matrix.flatMap((entry) => entry.targets)).not.toContain(gate);
+	});
+
+	test("skips a gate with no ci target", () => {
+		const projects = [
+			...workspace(),
+			{ id: "length-gate", tags: ["ci-group.bun"], ciTarget: null },
+		];
+		const out = generate(
+			prInput({ projects, affectedIds: [], changedPaths: [] }),
+		);
+		expect(
+			out.matrix.find((entry) => entry.group === "bun")?.targets,
+		).not.toContain(gate);
+	});
+});
+
+describe("normalizeEvent", () => {
+	test("maps workflow_dispatch to push", () => {
+		expect(normalizeEvent("workflow_dispatch")).toBe("push");
 	});
 });
 

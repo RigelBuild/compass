@@ -659,6 +659,8 @@
         "@rigelbuild/ref-gate",
         "@rigelbuild/biome-config",
         "@rigelbuild/tsconfig",
+        "@rigelbuild/comment-scan",
+        "@rigelbuild/length-gate",
       ],
       minimumReleaseAge: null,
     },
