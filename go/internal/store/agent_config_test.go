@@ -936,12 +936,13 @@ func TestValidateConfigBundleAdmitsDefaultProfile(t *testing.T) {
 		t.Fatalf("shipped default profile rejected at the door: %v", err)
 	}
 }
+
 func TestValidateConfigBundleAcceptsDotSlashExtensionManifestEntry(t *testing.T) {
 	bundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
-		tarEntry{name: "extensions/foo/package.json", content: `{"omp":{"extensions":["./entry.js"]}}`},
-		tarEntry{name: "extensions/foo/entry.js", content: "export default {}\n"},
+		tarEntry{name: "extensions/foo/package.json", content: `{"omp":{"extensions":["./foo.js"]}}`},
+		tarEntry{name: "extensions/foo/foo.js", content: "export default {}\n"},
 	)
 	if _, _, err := validateAndHashConfigBundle(bundle, LayerDefault); err != nil {
-		t.Fatalf("door rejected ./entry.js manifest entry: %v", err)
+		t.Fatalf("door rejected ./foo.js manifest entry: %v", err)
 	}
 }

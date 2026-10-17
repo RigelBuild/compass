@@ -107,6 +107,9 @@ func TestValidateMCPMemberOverlayShapeAndCredentials(t *testing.T) {
 		{name: "mixed authority tokenUrl rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"auth":{"tokenUrl":"https://a\\b@c"}}}}`, wantErr: true},
 		{name: "userinfo authority URL argument rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"args":["https://host@evil/?x=v"]}}}`, wantErr: true},
 		{name: "backslash authority URL argument rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"args":["https://a\\b@c"]}}}`, wantErr: true},
+		{name: "leading space URL token query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":" https://host/?token=x"}}}`, wantErr: true},
+		{name: "leading tab tokenUrl password query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"auth":{"tokenUrl":"\thttps://host/?password=x"}}}}`, wantErr: true},
+		{name: "leading newline URL argument sig query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"args":["\nhttps://host/?sig=x"]}}}`, wantErr: true},
 		{name: "credential free URL accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/mcp"}}}`},
 	}
 	for _, tt := range tests {
@@ -131,9 +134,20 @@ func TestExtensionManifestIdentity(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "dot slash root entry resolves",
+			name:     "dot slash entry named for its directory resolves",
+			manifest: map[string][]byte{"foo": []byte(`{"omp":{"extensions":["./foo.js"]}}`)},
+			members:  map[string]bool{"extensions/foo/package.json": true, "extensions/foo/foo.js": true},
+		},
+		{
+			name:     "direct entry whose basename differs from its directory mismatches",
 			manifest: map[string][]byte{"foo": []byte(`{"omp":{"extensions":["./entry.js"]}}`)},
 			members:  map[string]bool{"extensions/foo/package.json": true, "extensions/foo/entry.js": true},
+			wantErr:  true,
+		},
+		{
+			name:     "direct index entry derives its directory",
+			manifest: map[string][]byte{"foo": []byte(`{"omp":{"extensions":["./index.js"]}}`)},
+			members:  map[string]bool{"extensions/foo/package.json": true, "extensions/foo/index.js": true},
 		},
 		{
 			name:     "nested src index derives src and mismatches extension ID",

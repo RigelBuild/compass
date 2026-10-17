@@ -953,13 +953,18 @@ func validateMCPArgs(value any, path, member string) error {
 	return nil
 }
 
+// isHTTPURL detects an http(s) URL after the C0-control/space trim WHATWG applies.
 func isHTTPURL(value string) bool {
-	scheme, _, ok := strings.Cut(value, ":")
+	scheme, _, ok := strings.Cut(trimURLSpace(value), ":")
 	return ok && (strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https"))
 }
 
+func trimURLSpace(value string) string {
+	return strings.TrimFunc(value, func(r rune) bool { return r <= ' ' })
+}
+
 func validateCredentialFreeMCPURL(value, path, member string) error {
-	normalized, authority, rawAuthority, isHTTP := normalizeCredentialMCPURL(value)
+	normalized, authority, rawAuthority, isHTTP := normalizeCredentialMCPURL(trimURLSpace(value))
 	if isHTTP && (strings.Contains(authority, "@") || strings.Contains(rawAuthority, "@")) {
 		return fmt.Errorf("%w: MCP member %q has URL userinfo at %s", ErrInvalidArgument, member, path)
 	}
@@ -1005,9 +1010,6 @@ func extensionIDFromPath(p string) string {
 	parts := strings.Split(p, "/")
 	if len(parts) < 3 || parts[0] != topDirExtensions {
 		return ""
-	}
-	if len(parts) == 3 {
-		return parts[1]
 	}
 	base := parts[len(parts)-1]
 	if base == "index.ts" || base == "index.js" {
