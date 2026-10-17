@@ -18,8 +18,8 @@
 #   langs    name -> identity for the language toolchains (bun/node/moon/go), the
 #            closed set appended outside the parsed `packages` literal. Never
 #            consumes `attrs` (the set is closed), which is why the head defaults it.
-#   goAnalysis name -> identity for the Go analysis battery. Kept out of `langs`
-#            because no cache holds these rebuilds and only the battery jobs run them.
+#   goAnalysis name -> identity for the Go analysis battery exported by Meissa.
+#            Kept out of `langs` because only the battery jobs need these tools.
 #   meissa   name -> identity for rumdl + biome, built by the Meissa flake at the
 #            rev devenv.lock pins — the derivations devenv.nix appends. Closed set.
 #   bun      the pinned bun derivation itself, for a runner with no cached `langs`
@@ -27,14 +27,18 @@
 { attrs ? [ ] }:
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
-  # By input name: Meissa's own nixpkgs can take the bare `nixpkgs` node key.
   node = lock.nodes.${lock.nodes.root.inputs.nixpkgs}.locked;
   nixpkgsSrc = builtins.fetchTarball {
     url = "https://github.com/${node.owner}/${node.repo}/archive/${node.rev}.tar.gz";
     sha256 = node.narHash;
   };
   pkgs = import nixpkgsSrc { };
-
+  meissaInput = lock.nodes.root.inputs.meissa;
+  meissaNode = lock.nodes.${meissaInput}.locked;
+  meissaFlake = builtins.getFlake "github:${meissaNode.owner}/${meissaNode.repo}/${meissaNode.rev}?narHash=${meissaNode.narHash}";
+  meissaPkgs = meissaFlake.packages.${builtins.currentSystem};
+  meissaTools = { inherit (meissaPkgs) rumdl biome; };
+  meissaLib = meissaFlake.lib;
   # go-overlay applied to the same devenv.lock-pinned nixpkgs, at the pinned
   # go-overlay rev — so CI and the dev shell build one go derivation. The overlay
   # exposes `go-bin`, keyed by the raw version string ("1.26.6"), NOT the
@@ -51,10 +55,9 @@ let
 
   toolchainTools = import ./toolchain-tools.nix { inherit pkgs; };
 
-  # The Go analysis battery, each rebuilt with the go-overlay toolchain the dev
-  # shell uses, passed the same goToolchain so CI and the dev shell resolve one
-  # store path per tool. Covered by the `goAnalysis` verdict, not the parsed attrs.
-  goAnalysisTools = import ./go-analysis.nix { inherit pkgs goToolchain; };
+  # The Go analysis battery comes from the locked Meissa input, using the same
+  # nixpkgs and Go toolchain as the dev shell.
+  goAnalysisTools = meissaLib.goAnalysis { inherit pkgs goToolchain; };
   # Built from Compass's Go module graph and included in the CI tool environment.
   protocGenConnectGo = import ./protoc-gen-connect-go.nix { inherit pkgs goToolchain; };
 
@@ -73,11 +76,6 @@ let
     bins = binsOf drv;
   };
 
-  # Meissa at its devenv.lock rev; getFlake evaluates it with Meissa's own lock,
-  # the same nixpkgs the dev shell's unfollowed `meissa` input resolves.
-  meissaNode = lock.nodes.${lock.nodes.root.inputs.meissa}.locked;
-  meissaPkgs = (builtins.getFlake "github:${meissaNode.owner}/${meissaNode.repo}/${meissaNode.rev}?narHash=${meissaNode.narHash}").packages.${builtins.currentSystem};
-  meissaTools = { inherit (meissaPkgs) rumdl biome; };
 in
 {
   env = pkgs.buildEnv {
@@ -101,15 +99,9 @@ in
     moon = identityOf toolchainTools.moon;
     go = identityOf goToolchain;
   };
-  goAnalysis = {
-    golangci-lint = identityOf goAnalysisTools.golangci-lint;
-    govulncheck = identityOf goAnalysisTools.govulncheck;
-    go-licenses = identityOf goAnalysisTools.go-licenses;
-    nilaway = identityOf goAnalysisTools.nilaway;
-  };
+  goAnalysis = builtins.mapAttrs (_: identityOf) goAnalysisTools;
   meissa = builtins.mapAttrs (_: identityOf) meissaTools;
   # The base policy .rumdl.toml extends; CI exports it as RUMDL_BASE_CONFIG.
   rumdlBaseConfig = meissaPkgs."rumdl-base-config";
-  analysis = goAnalysisTools;
   inherit (toolchainTools) bun;
 }

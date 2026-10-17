@@ -82,7 +82,7 @@
   // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
   // quietly.)
   //
-  // Eleven entries, all load-bearing:
+  // Ten entries, all load-bearing:
   //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
   //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
   //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
@@ -118,23 +118,21 @@
   //      agent-image/ under that lock's own devenv, then refreshes
   //      agent-image/entrypoint.nix's bun `outputHash` as a fail-safe — the
   //      FOD builds in this rev's pkgs, though with the repo-pinned bun.
-  //      SEPARATE from (3) because the root
-  //      channel script's flake lockstep has no counterpart in this scope:
-  //      agent-image bakes no dev shell (`packages = [ ]`) and has no flake.
+  //      SEPARATE from (3) because the root channel script's flake lockstep has
+  //      no counterpart in this scope: agent-image bakes no dev shell
+  //      (`packages = [ ]`) and has no flake.
   //   8. the guest-rootfs agent-image relock: on the moving `:latest` index
   //      digest it resolves the immutable `git-<sha12>` tag that shares it
   //      and rewrites the index digest plus each platform's manifest and layer
   //      descriptors. These are the rootfs's fixed-output fetch keys, so a
   //      digest-only rewrite would redden every fetch.
-  //   9. the Go analysis pin refresh, which derives the paired fields and refreshes
-  //      both source and vendor hashes after a nilaway or golangci-lint bump.
-  //  10. the Meissa relock: `devenv update meissa` rewrites the meissa input and
+  //   9. the Meissa relock: `devenv update meissa` rewrites the meissa input and
   //      its own nixpkgs nodes at the regex-bumped rev. A bare devenv command,
   //      run directly — the rule needs nothing a wrapper script would add.
-  //  11. the biome catalog writer, which moves the `@biomejs/biome` catalog pin
+  //  10. the biome catalog writer, which moves the `@biomejs/biome` catalog pin
   //      to the biome Meissa ships, re-resolves bun.lock, and runs that biome's
   //      migrate + format. Rides both the Meissa and devenv-nixpkgs rules.
-  // All but (2) and (10) are `bun <script>.ts` — the Renovate hooks are
+  // All but (2) and (9) are `bun <script>.ts` — the Renovate hooks are
   // TypeScript run via bun (AGENTS.md "Scripts: TypeScript over bash"); bun is
   // on the runner PATH.
   allowedCommands: [
@@ -146,7 +144,6 @@
     "^bun tools/renovate/refresh-devenv-lock\\.ts$",
     "^bun tools/renovate/refresh-agent-image-nixpkgs\\.ts$",
     "^bun tools/guest-image/pin-agent-image\\.ts --relock$",
-    "^bun tools/renovate/refresh-go-analysis-hashes\\.ts$",
     "^devenv update meissa$",
     "^bun tools/renovate/refresh-biome-catalog\\.ts$",
   ],

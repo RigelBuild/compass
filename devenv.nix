@@ -33,19 +33,18 @@ let
   # one module, so the two sides cannot drift.
   toolchainTools = import ./tools/toolchain/toolchain-tools.nix { inherit pkgs; };
 
-  # The Go analysis battery (golangci-lint, govulncheck, go-licenses, nilaway),
-  # each rebuilt with the go-overlay toolchain rather than the bare nixpkgs
-  # attrs: those are go1.26-built and fail under go1.27 with `file requires newer
-  # Go version`. Appended below (dotted refs), not in the parsed `with pkgs` list.
-  goAnalysis = import ./tools/toolchain/go-analysis.nix { inherit pkgs goToolchain; };
+  # Meissa's Go module adds analyzers rebuilt with this shell's Go toolchain.
+  # The module adds them to packages; the toolchain itself stays explicit below.
   # Build connect-go's protoc plugin from the same Go graph as Compass. Its
   # vendorHash mirrors guest-image/default.nix and flake.nix.
   protocGenConnectGo = import ./tools/toolchain/protoc-gen-connect-go.nix { inherit pkgs goToolchain; };
 
-  # Meissa's rumdl/biome and the rumdl base policy (devenv.yaml `meissa` input).
   meissaToolchain = inputs.meissa.packages.${pkgs.stdenv.hostPlatform.system};
 in
 {
+  imports = [ inputs.meissa.devenvModules.go ];
+  meissa.go.toolchain = goToolchain;
+
   packages = (with pkgs; [
     # compass.v1 contract codegen. buf drives the pipeline; protobuf supplies
     # protoc; protoc-gen-go and protoc-gen-es come from pinned nixpkgs. The
@@ -58,11 +57,6 @@ in
     protobuf # protoc
     protoc-gen-go
     protoc-gen-es
-
-    # Go gate battery (golangci-lint/govulncheck/go-licenses/nilaway) is NOT
-    # here — all four are rebuilt with the go-overlay toolchain and appended
-    # below, because the bare nixpkgs attrs are go1.26-built and cannot parse the
-    # go1.27 stdlib. Go itself is the go-overlay toolchain, also appended below.
 
     # sqlc: generates typed Go from the .sql query files in
     # go/internal/store/queries, compiled against the migrations schema. Bare
@@ -104,20 +98,13 @@ in
     # defaults to (postgresql-18.4 at this pin), so CI and dev share one postgres.
     postgresql
   ])
-  # The language toolchains (bun/node/moon vendored, go from go-overlay) plus the
-  # Go analysis battery rebuilt with that go toolchain. Appended OUTSIDE the
-  # `with pkgs` literal because each is a dotted reference and the parity gate
-  # THROWS on any non-bare token there; the gate covers these via the `langs` and
-  # `goAnalysis` outputs instead.
+  # The language toolchains, Go toolchain and Connect plugin are dotted references,
+  # so they stay outside the parsed pkgs list, which the parity gate requires.
   ++ [
     toolchainTools.bun
     toolchainTools.node
     toolchainTools.moon
     goToolchain
-    goAnalysis.golangci-lint
-    goAnalysis.govulncheck
-    goAnalysis.go-licenses
-    goAnalysis.nilaway
     protocGenConnectGo
   ]
   # hk (jdx/hk): the jj/git pre-push hook runner. A dotted input reference,
