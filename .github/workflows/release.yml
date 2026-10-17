@@ -63,10 +63,7 @@ env:
   RUNNER_IMAGE_CLOSURE_PATHS: |
     runner-image/**
     tools/runner-image/**
-    go/go.mod
-    go/go.sum
-    go/cmd/compass-runner/**
-    go/internal/**
+    go/**
     guest-image/**
     devenv.lock
     flake.nix
