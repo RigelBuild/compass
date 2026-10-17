@@ -28,3 +28,21 @@ describe("RUNNER_IMAGE_CLOSURE_PATHS in release.yml", () => {
 		).toEqual(RUNNER_GO_SOURCES);
 	});
 });
+
+describe("runner-image build inputs in moon.yml", () => {
+	test("hash all of go/ except the ignored lint caches and dev binary", () => {
+		const moon = Bun.YAML.parse(
+			readFileSync(join(root, "runner-image/moon.yml"), "utf8"),
+		) as { tasks: { build: { inputs: string[] } } };
+		const inputs = moon.tasks.build.inputs;
+		expect(inputs).toContain("/go/**");
+		// Matches the go/ entries in .gitignore; moon's walker does not skip them.
+		for (const ignored of [
+			"!/go/.golangci-cache/**",
+			"!/go/.golangci-cache-review/**",
+			"!/go/compass",
+		]) {
+			expect(inputs).toContain(ignored);
+		}
+	});
+});
