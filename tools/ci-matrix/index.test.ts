@@ -819,6 +819,30 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		expect(some).toContain("e2e_affected=false");
 	});
 
+	test("each Go suite flag renders its own selection", () => {
+		const selected = {
+			run: true,
+			reason: "closure: server",
+			roots: ["server"],
+		};
+		const skipped = { run: false, reason: "none", roots: [] };
+		for (const suite of ["pgtest", "microvm", "e2e"] as const) {
+			const lines = outputLines(
+				generateCore({
+					...prInput({ affectedIds: [] }),
+					goSelection: {
+						pgtest: suite === "pgtest" ? selected : skipped,
+						microvm: suite === "microvm" ? selected : skipped,
+						e2e: suite === "e2e" ? selected : skipped,
+					},
+				}),
+			);
+			for (const other of ["pgtest", "microvm", "e2e"] as const) {
+				expect(lines).toContain(`${other}_affected=${other === suite}`);
+			}
+		}
+	});
+
 	test("each path-derived flag renders its own boolean, not a sibling's", () => {
 		// forge/gtk4/darwin are the three flags a full sweep forces true, but
 		// on a pull_request they are purely changedPaths-derived, so each can

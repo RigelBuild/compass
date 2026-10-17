@@ -4,7 +4,8 @@ import { E2E_BUILT_BINARIES, E2E_ROOTS } from "./go-impact.ts";
 
 interface GoListPackage {
 	readonly ImportPath: string;
-	readonly Dir: string;
+	readonly Dir?: string;
+	readonly Module?: { readonly Path?: string };
 	readonly GoFiles?: readonly string[];
 	readonly CgoFiles?: readonly string[];
 	readonly TestGoFiles?: readonly string[];
@@ -18,24 +19,38 @@ function isStringArray(value: unknown): value is readonly string[] {
 	);
 }
 
+// A cold module cache yields external records with no Dir; only first-party ones need it.
 function isGoListPackage(value: unknown): value is GoListPackage {
 	return (
 		typeof value === "object" &&
 		value !== null &&
 		"ImportPath" in value &&
 		typeof value.ImportPath === "string" &&
-		"Dir" in value &&
-		typeof value.Dir === "string" &&
+		(!("Dir" in value) || typeof value.Dir === "string") &&
+		(!("Module" in value) ||
+			value.Module === null ||
+			(typeof value.Module === "object" &&
+				(!("Path" in value.Module) ||
+					typeof value.Module.Path === "string"))) &&
 		(!("GoFiles" in value) || isStringArray(value.GoFiles)) &&
 		(!("CgoFiles" in value) || isStringArray(value.CgoFiles)) &&
 		(!("TestGoFiles" in value) || isStringArray(value.TestGoFiles)) &&
 		(!("XTestGoFiles" in value) || isStringArray(value.XTestGoFiles)) &&
 		(!("Error" in value) ||
 			value.Error === undefined ||
+			value.Error === null ||
 			(typeof value.Error === "object" &&
-				value.Error !== null &&
 				(!("Err" in value.Error) || typeof value.Error.Err === "string")))
 	);
+}
+
+function hasError(pkg: GoListPackage): boolean {
+	const err = pkg.Error?.Err;
+	return err !== undefined && err !== "";
+}
+
+function isFirstParty(importPath: string, modulePath: string): boolean {
+	return importPath === modulePath || importPath.startsWith(`${modulePath}/`);
 }
 
 type JsonScanState = { depth: number; inString: boolean; escaped: boolean };
@@ -88,14 +103,19 @@ function parsePackageStream(source: string): GoListPackage[] {
 	return packages;
 }
 
-const commandEnv = {
-	...process.env,
-	GOFLAGS: "-mod=mod",
-	GOPROXY: "off",
-	CGO_ENABLED: "1",
-};
+function commandEnv(): Record<string, string | undefined> {
+	return {
+		...process.env,
+		GOFLAGS: "-mod=mod",
+		GOPROXY: "off",
+		CGO_ENABLED: "1",
+	};
+}
 
 function relativeDir(goDir: string, pkg: GoListPackage): string {
+	if (pkg.Dir === undefined) {
+		throw new Error(`go list returned ${pkg.ImportPath} without a Dir`);
+	}
 	const dir = relative(goDir, pkg.Dir).split(sep).join("/");
 	return dir === "" ? "." : dir;
 }
@@ -106,7 +126,7 @@ async function listPackages(
 ): Promise<GoListPackage[]> {
 	const child = Bun.spawn(["go", "list", "-e", "-json", ...args], {
 		cwd: goDir,
-		env: commandEnv,
+		env: commandEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -154,21 +174,22 @@ function erroredPackageRoots(
 ): string[] {
 	return [...new Set([...untagged.keys(), ...tagged.keys()])]
 		.filter((root) => {
-			const plain = untagged.get(root)?.Error?.Err;
-			const withTag = tagged.get(root)?.Error?.Err;
+			const plain = untagged.get(root);
+			const withTag = tagged.get(root);
 			return (
-				(plain !== undefined && plain !== "") ||
-				(withTag !== undefined && withTag !== "")
+				(plain !== undefined && hasError(plain)) ||
+				(withTag !== undefined && hasError(withTag))
 			);
 		})
 		.sort();
 }
 
+// A missing external module cannot hide a first-party edge, and go.mod edits widen anyway.
 async function dependencyClosure(
 	goDir: string,
 	root: string,
 	tag: string,
-	firstPartyPackages: ReadonlySet<string>,
+	modulePath: string,
 ): Promise<{ directories: string[]; errored: boolean }> {
 	const packages = await listPackages(goDir, [
 		"-tags",
@@ -180,8 +201,13 @@ async function dependencyClosure(
 	const directories: string[] = [];
 	let errored = false;
 	for (const pkg of packages) {
-		if (pkg.Error?.Err !== undefined && pkg.Error.Err !== "") errored = true;
-		if (firstPartyPackages.has(pkg.ImportPath))
+		const importPath = pkg.ImportPath.replace(/ \[.*\]$/, "");
+		if (!isFirstParty(importPath, modulePath)) continue;
+		if (hasError(pkg) || pkg.Dir === undefined) {
+			errored = true;
+			continue;
+		}
+		if (!importPath.endsWith(".test"))
 			directories.push(relativeDir(goDir, pkg));
 	}
 	return { directories: [...new Set(directories)].sort(), errored };
@@ -213,12 +239,12 @@ async function suiteClosureForRoots(
 	goDir: string,
 	suite: "pgtest" | "microvm",
 	roots: readonly string[],
-	packageNames: ReadonlySet<string>,
+	modulePath: string,
 	closure: Record<GoSuite, Record<string, string[]>>,
 	erroredRoots: Record<GoSuite, string[]>,
 ): Promise<void> {
 	for (const root of roots) {
-		const result = await dependencyClosure(goDir, root, suite, packageNames);
+		const result = await dependencyClosure(goDir, root, suite, modulePath);
 		if (result.errored && !erroredRoots[suite].includes(root)) {
 			erroredRoots[suite].push(root);
 		}
@@ -228,22 +254,17 @@ async function suiteClosureForRoots(
 
 async function loadE2eClosures(
 	goDir: string,
-	packageNames: ReadonlySet<string>,
+	modulePath: string,
 	closure: Record<GoSuite, Record<string, string[]>>,
 	erroredRoots: Record<GoSuite, string[]>,
 ): Promise<void> {
 	for (const root of E2E_ROOTS) {
-		const result = await dependencyClosure(goDir, root, "podman", packageNames);
+		const result = await dependencyClosure(goDir, root, "podman", modulePath);
 		if (result.errored) erroredRoots.e2e.push(root);
 		closure.e2e[root] = result.directories;
 	}
 	for (const binary of E2E_BUILT_BINARIES) {
-		const result = await dependencyClosure(
-			goDir,
-			binary,
-			"podman",
-			packageNames,
-		);
+		const result = await dependencyClosure(goDir, binary, "podman", modulePath);
 		if (result.errored) erroredRoots.e2e.push(...E2E_ROOTS);
 		for (const target of E2E_ROOTS) {
 			closure.e2e[target] = [
@@ -258,7 +279,7 @@ async function loadSuiteClosures(
 	roots: Record<GoSuite, string[]>,
 	untagged: ReadonlyMap<string, GoListPackage>,
 	tagged: ReadonlyMap<GoSuite, ReadonlyMap<string, GoListPackage>>,
-	packageNames: ReadonlySet<string>,
+	modulePath: string,
 ): Promise<SuiteClosures> {
 	const closure: Record<GoSuite, Record<string, string[]>> = {
 		pgtest: {},
@@ -270,7 +291,7 @@ async function loadSuiteClosures(
 		goDir,
 		"pgtest",
 		roots.pgtest,
-		packageNames,
+		modulePath,
 		closure,
 		erroredRoots,
 	);
@@ -278,12 +299,19 @@ async function loadSuiteClosures(
 		goDir,
 		"microvm",
 		roots.microvm,
-		packageNames,
+		modulePath,
 		closure,
 		erroredRoots,
 	);
-	await loadE2eClosures(goDir, packageNames, closure, erroredRoots);
+	await loadE2eClosures(goDir, modulePath, closure, erroredRoots);
 	return { closure, erroredRoots };
+}
+
+async function goModulePath(goDir: string): Promise<string> {
+	const source = await Bun.file(`${goDir}/go.mod`).text();
+	const match = /^module\s+(\S+)\s*$/m.exec(source);
+	if (match?.[1] === undefined) throw new Error("go.mod has no module line");
+	return match[1];
 }
 
 export async function loadGoGraph(goDir: string): Promise<GoGraph> {
@@ -305,18 +333,13 @@ export async function loadGoGraph(goDir: string): Promise<GoGraph> {
 		microvm: changedTestRoots(untagged, tagged.get("microvm") ?? new Map()),
 		e2e: [...E2E_ROOTS].sort(),
 	};
-	const firstPartyPackages = new Set([
-		...untaggedPackages.map((pkg) => pkg.ImportPath),
-		...[...tagged.values()].flatMap((packages) =>
-			[...packages.values()].map((pkg) => pkg.ImportPath),
-		),
-	]);
+	const modulePath = await goModulePath(goDir);
 	const { closure, erroredRoots } = await loadSuiteClosures(
 		goDir,
 		roots,
 		untagged,
 		tagged,
-		firstPartyPackages,
+		modulePath,
 	);
 	return {
 		packages: [...untagged.keys()].sort(),

@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadGoGraph } from "./go-graph.ts";
@@ -300,6 +301,20 @@ describe("Go graph discovered from the module", () => {
 				.map(([root]) => root)
 				.sort(),
 		);
+	});
+
+	test("a cold module cache yields the same graph as the warm one", async () => {
+		// CI setup has no module cache, and GOPROXY=off leaves external records without a Dir.
+		const cold = mkdtempSync(join(tmpdir(), "ci-matrix-gomodcache-"));
+		const previous = process.env.GOMODCACHE;
+		process.env.GOMODCACHE = cold;
+		try {
+			expect(await loadGoGraph(goDir)).toEqual(liveGraph);
+		} finally {
+			if (previous === undefined) delete process.env.GOMODCACHE;
+			else process.env.GOMODCACHE = previous;
+			rmSync(cold, { recursive: true, force: true });
+		}
 	});
 
 	test("E2E roots and built binaries match their source", async () => {

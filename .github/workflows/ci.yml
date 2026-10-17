@@ -2858,7 +2858,6 @@ jobs:
             echo "::error::bun-audit did not succeed (result=$bun_audit)"
             rc=1
           fi
-          require_gated e2e "$e2e" "$e2e_flag"
           # Each gated special leg: success always passes; skipped passes ONLY
           # when its paired setup flag is 'false' (a failed setup → empty flag →
           # '' != 'false' → reds, never blanket skipped-is-green).
@@ -2873,6 +2872,7 @@ jobs:
             echo "::error::$name did not succeed (result=$result, affected flag=$flag) — skipped is accepted only when its setup flag is 'false'"
             rc=1
           }
+          require_gated e2e "$e2e" "$e2e_flag"
           require_gated pgtest "$pgtest" "$pgtest_flag"
           require_gated microvm "$microvm" "$microvm_flag"
           require_gated forge-oracle "$forge" "$forge_flag"
