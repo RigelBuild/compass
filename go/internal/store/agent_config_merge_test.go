@@ -101,7 +101,7 @@ func TestMergeConfigBundles(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, members, dropped, err := MergeConfigBundles(tt.in)
+			got, members, dropped, _, err := MergeConfigBundles(tt.in)
 			if err != nil {
 				t.Fatalf("MergeConfigBundles: %v", err)
 			}

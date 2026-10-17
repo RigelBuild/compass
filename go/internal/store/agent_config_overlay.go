@@ -139,24 +139,20 @@ func (s *Store) EffectiveAgentConfig(ctx context.Context, agent AccountID, ifVer
 	if ifVersion != "" && ifVersion == version {
 		return version, nil, nil
 	}
+	if s.afterConfigVersionsRead != nil {
+		s.afterConfigVersionsRead()
+	}
 	layers, err := loadEffectiveConfigLayers(ctx, s.q, s.resolveTenant(ctx), agent)
 	if err != nil {
 		return "", nil, err
 	}
-	if s.afterConfigVersionsRead != nil {
-		s.afterConfigVersionsRead()
-		layers, err = loadEffectiveConfigLayers(ctx, s.q, s.resolveTenant(ctx), agent)
-		if err != nil {
-			return "", nil, err
-		}
-	}
 	version = EffectiveConfigVersion(layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion)
-	bundle, _, dropped, err := MergeConfigBundles(layers.bundles)
+	bundle, _, dropped, orphans, err := MergeConfigBundles(layers.bundles)
 	if err != nil {
 		return "", nil, fmt.Errorf("effective config for agent %s invalid (default %s, tenant %s, user %s, role %s): %s", agent, layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion, err.Error())
 	}
 	warnDroppedConfigMembers(ctx, dropped)
-	warnEffectiveProfileAgentOrphans(ctx, bundle)
+	warnEffectiveProfileAgentOrphans(ctx, orphans)
 	return version, bundle, nil
 }
 
@@ -167,12 +163,12 @@ func (s *Store) EffectiveAgentConfigMembers(ctx context.Context, agent AccountID
 		return "", nil, err
 	}
 	version = EffectiveConfigVersion(layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion)
-	bundle, members, dropped, err := MergeConfigBundles(layers.bundles)
+	_, members, dropped, orphans, err := MergeConfigBundles(layers.bundles)
 	if err != nil {
 		return "", nil, fmt.Errorf("effective config for agent %s invalid (default %s, tenant %s, user %s, role %s): %s", agent, layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion, err.Error())
 	}
 	warnDroppedConfigMembers(ctx, dropped)
-	warnEffectiveProfileAgentOrphans(ctx, bundle)
+	warnEffectiveProfileAgentOrphans(ctx, orphans)
 	return version, members, nil
 }
 
@@ -235,9 +231,12 @@ func loadTenantConfigLocks(ctx context.Context, q *db.Queries, tenant TenantID) 
 		}
 		return ConfigLocks{}, fmt.Errorf("store: read tenant config locks: %w", err)
 	}
+	if err := validateStoredConfigBundle(bundle, LayerTenant); err != nil {
+		return ConfigLocks{}, fmt.Errorf("store: invalid stored tenant config bundle: %s", err.Error())
+	}
 	files, err := readConfigBundleMembers(bundle)
 	if err != nil {
-		return ConfigLocks{}, fmt.Errorf("store: read tenant config bundle: %w", err)
+		return ConfigLocks{}, fmt.Errorf("store: read stored tenant config bundle: %s", err.Error())
 	}
 	body, ok := files[memberLocksYML]
 	if !ok {
@@ -245,7 +244,7 @@ func loadTenantConfigLocks(ctx context.Context, q *db.Queries, tenant TenantID) 
 	}
 	locks, err := parseConfigLocks(body)
 	if err != nil {
-		return ConfigLocks{}, fmt.Errorf("store: parse stored tenant config locks: %w", err)
+		return ConfigLocks{}, fmt.Errorf("store: invalid stored tenant config locks: %s", err.Error())
 	}
 	return locks, nil
 }

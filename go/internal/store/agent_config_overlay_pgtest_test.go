@@ -4,9 +4,13 @@ package store
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestAgentConfigOverlayPutInfoDelete(t *testing.T) {
@@ -190,6 +194,56 @@ func TestAgentConfigOverlayLocksAndLayerScope(t *testing.T) {
 		t.Fatalf("admin tenant overlay: %v", err)
 	}
 }
+func TestPutAgentConfigOverlayRejectsInvalidStoredTenantLocksInternally(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-corrupt-locks-admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-corrupt-locks-owner")
+	validTenant := mkBundle(t, map[string]string{"locks.yml": "paths: []\n"})
+	if _, err := s.PutAgentConfigOverlay(ctx, admin.ID, OverlayKey{}, validTenant); err != nil {
+		t.Fatalf("Put tenant overlay: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		bundle []byte
+	}{
+		{name: "invalid stored member path", bundle: mkBundle(t, map[string]string{"unknown/a.txt": "invalid"})},
+		{name: "invalid stored locks content", bundle: mkBundle(t, map[string]string{"locks.yml": "paths:\n  - skills/web\n"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.pool.Exec(ctx, `UPDATE agent_config_overlays SET bundle = $1 WHERE tenant_id = $2 AND owner_user_id IS NULL AND role = ''`, tc.bundle, string(s.resolveTenant(ctx))); err != nil {
+				t.Fatalf("corrupt tenant overlay row: %v", err)
+			}
+			_, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, mkBundle(t, map[string]string{"skills/web/SKILL.md": "user"}))
+			if err == nil || errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("PutAgentConfigOverlay with corrupt stored tenant bundle error = %v, want non-wrapping internal error", err)
+			}
+		})
+	}
+}
+func TestEffectiveAgentConfigRejectsInvalidStoredTenantBundleInternally(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-read-corrupt-admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-read-corrupt-owner")
+	agent := mustAgent(t, s, owner.ID, "overlay-read-corrupt-agent")
+	if _, err := s.PutAgentConfigOverlay(ctx, admin.ID, OverlayKey{}, mkBundle(t, map[string]string{"locks.yml": "paths: []\n"})); err != nil {
+		t.Fatalf("Put tenant overlay: %v", err)
+	}
+	corrupt := mkBundle(t, map[string]string{"unknown/a.txt": "invalid"})
+	if _, err := s.pool.Exec(ctx, `UPDATE agent_config_overlays SET bundle = $1 WHERE tenant_id = $2 AND owner_user_id IS NULL AND role = ''`, corrupt, string(s.resolveTenant(ctx))); err != nil {
+		t.Fatalf("corrupt tenant overlay row: %v", err)
+	}
+	if _, _, err := s.EffectiveAgentConfig(ctx, agent.ID, ""); err == nil || errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("EffectiveAgentConfig with corrupt tenant bundle error = %v, want non-wrapping internal error", err)
+	}
+}
 
 func TestAgentConfigOverlayTenantIsolation(t *testing.T) {
 	s := newTestStore(t)
@@ -356,6 +410,40 @@ func TestEffectiveAgentConfigVersionAndBundleUseSeparateReadSnapshots(t *testing
 	files := bundleFiles(t, got)
 	if version != EffectiveConfigVersion("", "", secondVersion, "") || files["skills/x/SKILL.md"] != "second" {
 		t.Fatalf("raced response version=%q member=%q; want version for second overlay %q and new bundle", version, files["skills/x/SKILL.md"], secondVersion)
+	}
+}
+func TestEffectiveProfileAgentOrphansAreWarned(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-orphan-admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-orphan-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-orphan-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	defaultBundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "agents/impl.md", content: "---\nname: impl\n---\n"},
+		tarEntry{name: "profiles/default/profile.yml", content: "models:\n  agents:\n    impl: selector\n"},
+	)
+	if _, err := s.PutAgentConfig(ctx, admin.ID, defaultBundle); err != nil {
+		t.Fatalf("PutAgentConfig: %v", err)
+	}
+	userBundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tarEntry{name: "agents/impl.md", content: "---\nname: replacement\n---\n"})
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, userBundle); err != nil {
+		t.Fatalf("PutAgentConfigOverlay: %v", err)
+	}
+	var log bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(oldLogger)
+	if _, _, err := s.EffectiveAgentConfig(ctx, agent.ID, ""); err != nil {
+		t.Fatalf("EffectiveAgentConfig: %v", err)
+	}
+	if !strings.Contains(log.String(), "effective config profile references missing agent") || !strings.Contains(log.String(), "agent=impl") {
+		t.Fatalf("orphan warning = %q, want warning naming missing agent impl", log.String())
 	}
 }
 func TestAgentConfigOverlayUserAndAgentIsolation(t *testing.T) {

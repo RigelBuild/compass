@@ -57,8 +57,12 @@ type configMember struct {
 	layer   ConfigLayer
 }
 
-// MergeConfigBundles resolves the bundles in precedence order and returns winning members and tenant-lock drops.
-func MergeConfigBundles(in LayerBundles) ([]byte, []EffectiveMember, []EffectiveMember, error) {
+type profileAgentOrphan struct {
+	profile string
+	agent   string
+}
+
+func MergeConfigBundles(in LayerBundles) ([]byte, []EffectiveMember, []EffectiveMember, []profileAgentOrphan, error) {
 	layers := []configLayerBundle{
 		{layer: LayerDefault, bundle: in.Default},
 		{layer: LayerTenant, bundle: in.Tenant},
@@ -74,14 +78,14 @@ func MergeConfigBundles(in LayerBundles) ([]byte, []EffectiveMember, []Effective
 		}
 		files, err := readValidatedLayer(layer)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		if layer.layer == LayerTenant {
 			lockBody, ok := files[memberLocksYML]
 			if ok {
 				locks, err = parseConfigLocks(lockBody)
 				if err != nil {
-					return nil, nil, nil, fmt.Errorf("invalid stored tenant locks: %s", err.Error())
+					return nil, nil, nil, nil, fmt.Errorf("invalid stored tenant locks: %s", err.Error())
 				}
 				delete(files, memberLocksYML)
 			}
@@ -90,18 +94,19 @@ func MergeConfigBundles(in LayerBundles) ([]byte, []EffectiveMember, []Effective
 	}
 
 	members := effectiveConfigMembers(selected)
+	orphans := collectEffectiveProfileAgentOrphans(selectedMemberContents(selected))
 	if in.Tenant == nil && in.User == nil && in.Role == nil {
 		if in.Default != nil {
-			return in.Default, members, dropped, nil
+			return in.Default, members, dropped, orphans, nil
 		}
 		bundle, err := writeConfigBundle(nil)
-		return bundle, members, dropped, err
+		return bundle, members, dropped, orphans, err
 	}
 	bundle, err := writeEffectiveConfigBundle(selected, dropped)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return bundle, members, dropped, nil
+	return bundle, members, dropped, orphans, nil
 }
 
 func readValidatedLayer(layer configLayerBundle) (map[string][]byte, error) {
@@ -156,6 +161,13 @@ func effectiveConfigMembers(selected map[string]configMember) []EffectiveMember 
 	sortEffectiveMembers(members)
 	return members
 }
+func selectedMemberContents(selected map[string]configMember) map[string][]byte {
+	files := make(map[string][]byte, len(selected))
+	for path, member := range selected {
+		files[path] = member.content
+	}
+	return files
+}
 
 func writeEffectiveConfigBundle(selected map[string]configMember, dropped []EffectiveMember) ([]byte, error) {
 	if len(selected) > maxFileCount {
@@ -167,17 +179,14 @@ func writeEffectiveConfigBundle(selected map[string]configMember, dropped []Effe
 	}
 	sort.Strings(paths)
 	entries := make([]configBundleEntry, 0, len(paths))
-	var contentBytes int64
 	for _, path := range paths {
-		content := selected[path].content
-		if int64(len(content)) > maxDecompressedBytes-contentBytes {
-			return nil, fmt.Errorf("%w: effective bundle exceeds decompressed size cap of %d bytes", ErrInvalidArgument, maxDecompressedBytes)
-		}
-		contentBytes += int64(len(content))
-		entries = append(entries, configBundleEntry{name: path, content: content})
+		entries = append(entries, configBundleEntry{name: path, content: selected[path].content})
 	}
 	sortEffectiveMembers(dropped)
-	bundle, err := writeConfigBundle(entries)
+	bundle, err := writeConfigBundleWithLimit(entries, maxDecompressedBytes)
+	if errors.Is(err, errConfigBundleTooLarge) {
+		return nil, fmt.Errorf("%w: effective bundle exceeds decompressed size cap of %d bytes", ErrInvalidArgument, maxDecompressedBytes)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("write merged config bundle: %w", err)
 	}
@@ -219,9 +228,34 @@ type configBundleEntry struct {
 }
 
 func writeConfigBundle(entries []configBundleEntry) ([]byte, error) {
+	return writeConfigBundleWithLimit(entries, 0)
+}
+
+var errConfigBundleTooLarge = errors.New("serialized config bundle exceeds limit")
+
+type limitedWriter struct {
+	w   io.Writer
+	n   int64
+	max int64
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.max > 0 && (w.n > w.max || int64(len(p)) > w.max-w.n) {
+		return 0, errConfigBundleTooLarge
+	}
+	n, err := w.w.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+func writeConfigBundleWithLimit(entries []configBundleEntry, maxBytes int64) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
-	tarWriter := tar.NewWriter(gz)
+	var tarOutput io.Writer = gz
+	if maxBytes > 0 {
+		tarOutput = &limitedWriter{w: gz, max: maxBytes}
+	}
+	tarWriter := tar.NewWriter(tarOutput)
 	for _, entry := range entries {
 		header := &tar.Header{
 			Name:     entry.name,
@@ -278,11 +312,7 @@ func warnDroppedConfigMembers(ctx context.Context, dropped []EffectiveMember) {
 		slog.WarnContext(ctx, "tenant config lock dropped stored overlay member", "layer", member.Layer, "path", member.Path)
 	}
 }
-func warnEffectiveProfileAgentOrphans(ctx context.Context, bundle []byte) {
-	files, err := readConfigBundleMembers(bundle)
-	if err != nil {
-		return
-	}
+func collectEffectiveProfileAgentOrphans(files map[string][]byte) []profileAgentOrphan {
 	agentNames := make(map[string]struct{})
 	for path, body := range files {
 		parts := strings.Split(path, "/")
@@ -292,6 +322,7 @@ func warnEffectiveProfileAgentOrphans(ctx context.Context, bundle []byte) {
 			}
 		}
 	}
+	var orphans []profileAgentOrphan
 	for path, body := range files {
 		parts := strings.Split(path, "/")
 		if len(parts) != 3 || parts[0] != topDirProfiles || parts[2] != memberProfileYML {
@@ -311,8 +342,15 @@ func warnEffectiveProfileAgentOrphans(ctx context.Context, bundle []byte) {
 		}
 		for name := range agents {
 			if _, ok := agentNames[name]; !ok {
-				slog.WarnContext(ctx, "effective config profile references missing agent", "profile", parts[1], "agent", name)
+				orphans = append(orphans, profileAgentOrphan{profile: parts[1], agent: name})
 			}
 		}
+	}
+	return orphans
+}
+
+func warnEffectiveProfileAgentOrphans(ctx context.Context, orphans []profileAgentOrphan) {
+	for _, orphan := range orphans {
+		slog.WarnContext(ctx, "effective config profile references missing agent", "profile", orphan.profile, "agent", orphan.agent)
 	}
 }

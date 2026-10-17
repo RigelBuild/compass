@@ -4,10 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -93,7 +91,12 @@ func TestValidateMCPMemberOverlayShapeAndCredentials(t *testing.T) {
 		{name: "literal env rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"env":{"TOKEN":"literal value"}}}}`, wantErr: true},
 		{name: "env name accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"env":{"TOKEN":"API_TOKEN"}}}}`},
 		{name: "command indirection accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"env":{"TOKEN":"!command"}}}}`},
-		{name: "userinfo in token URL rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"auth":{"tokenUrl":"https://user:pass@host/token"}}}}`, wantErr: true},
+		{name: "credential password query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?password=x"}}}`, wantErr: true},
+		{name: "credential sig query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?sig=x"}}}`, wantErr: true},
+		{name: "credential pwd query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?pwd=x"}}}`, wantErr: true},
+		{name: "special scheme URL token query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https:host/?token=x"}}}`, wantErr: true},
+		{name: "special scheme auth tokenUrl password query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"auth":{"tokenUrl":"HTTPS:host/?password=x"}}}}`, wantErr: true},
+		{name: "special scheme args sig query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"args":["https:host/?sig=x"]}}}`, wantErr: true},
 		{name: "token query in URL rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?token=x"}}}`, wantErr: true},
 		{name: "key suffix query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?monkey=x"}}}`, wantErr: true},
 		{name: "secret suffix query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?xSecretHint=x"}}}`, wantErr: true},
@@ -122,9 +125,9 @@ func TestExtensionManifestIdentity(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "root index derives extension directory",
-			manifest: map[string][]byte{"foo": []byte(`{"omp":{"extensions":["index.ts"]}}`)},
-			members:  map[string]bool{"extensions/foo/package.json": true, "extensions/foo/index.ts": true},
+			name:     "dot slash root entry resolves",
+			manifest: map[string][]byte{"foo": []byte(`{"omp":{"extensions":["./entry.js"]}}`)},
+			members:  map[string]bool{"extensions/foo/package.json": true, "extensions/foo/entry.js": true},
 		},
 		{
 			name:     "nested src index derives src and mismatches extension ID",
@@ -291,12 +294,27 @@ func TestConfigLocksAcceptMCPMembersAndPromptPrefixes(t *testing.T) {
 		t.Fatalf("non-slash directory lock error = %v, want ErrInvalidArgument", err)
 	}
 }
+func TestMergeConfigBundlesEnforcesSerializedCap(t *testing.T) {
+	content := strings.Repeat("x", 32<<20)
+	defaultBundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tarEntry{name: "skills/default/file", content: content})
+	tenantBundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tarEntry{name: "skills/tenant/file", content: content})
+	if err := validateStoredConfigBundle(defaultBundle, LayerDefault); err != nil {
+		t.Fatalf("validate stored default bundle: %v", err)
+	}
+	if err := validateStoredConfigBundle(tenantBundle, LayerTenant); err != nil {
+		t.Fatalf("validate stored tenant bundle: %v", err)
+	}
+	if _, _, _, _, err := MergeConfigBundles(LayerBundles{Default: defaultBundle, Tenant: tenantBundle}); err == nil {
+		t.Fatal("merged tar stream over decompressed cap was accepted")
+	}
+}
+
 func TestMergeConfigBundlesEnforcesEffectiveCaps(t *testing.T) {
 	t.Run("merged content size", func(t *testing.T) {
 		bundle := func(name, content string) []byte {
 			return buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tarEntry{name: name, content: content})
 		}
-		_, _, _, err := MergeConfigBundles(LayerBundles{
+		_, _, _, _, err := MergeConfigBundles(LayerBundles{
 			Default: bundle("skills/default/file", strings.Repeat("d", 40<<20)),
 			Tenant:  bundle("skills/tenant/file", strings.Repeat("t", 30<<20)),
 		})
@@ -312,7 +330,7 @@ func TestMergeConfigBundlesEnforcesEffectiveCaps(t *testing.T) {
 			}
 			return buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), entries...)
 		}
-		_, _, _, err := MergeConfigBundles(LayerBundles{
+		_, _, _, _, err := MergeConfigBundles(LayerBundles{
 			Default: makeBundle("d", 3000),
 			Tenant:  makeBundle("t", 3000),
 		})
@@ -320,27 +338,4 @@ func TestMergeConfigBundlesEnforcesEffectiveCaps(t *testing.T) {
 			t.Fatal("merged file count above the effective cap was accepted")
 		}
 	})
-}
-
-func TestEffectiveProfileAgentOrphansAreWarned(t *testing.T) {
-	bundle, _, _, err := MergeConfigBundles(LayerBundles{
-		Default: buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
-			tarEntry{name: "agents/impl.md", content: "---\nname: impl\n---\n"},
-			tarEntry{name: "profiles/default/profile.yml", content: "models:\n  agents:\n    impl: selector\n"},
-		),
-		User: buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
-			tarEntry{name: "agents/impl.md", content: "---\nname: replacement\n---\n"},
-		),
-	})
-	if err != nil {
-		t.Fatalf("MergeConfigBundles: %v", err)
-	}
-	var log bytes.Buffer
-	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	defer slog.SetDefault(oldLogger)
-	warnEffectiveProfileAgentOrphans(context.Background(), bundle)
-	if !strings.Contains(log.String(), "effective config profile references missing agent") || !strings.Contains(log.String(), "agent=impl") {
-		t.Fatalf("orphan warning = %q, want warning naming missing agent impl", log.String())
-	}
 }

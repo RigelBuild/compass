@@ -394,17 +394,16 @@ func sortedKeys(set map[string]bool) []string {
 	return out
 }
 
-// validateAndHashConfigBundle is the security-critical store door: a SINGLE streamed
-// pass over the gzip tarball that validates every member and accumulates the canonical
-// content hash (length-prefixed over (name, content) pairs in name order, metadata
-// excluded), returning %w-wrapped ErrInvalidArgument on the first violation. It also
-// returns each profile's profile.yml body keyed by profile <name>.
+// configMemberContent is one regular file collected during bundle validation.
 type configMemberContent struct {
 	name    string
 	parts   []string
 	content []byte
 }
 
+// validateAndHashConfigBundle is the store door for config bundles. It validates
+// the decompressed tar stream, lints the collected members, then hashes their
+// canonical names and contents. It also returns profile bodies keyed by name.
 func validateAndHashConfigBundle(bundle []byte, layer ConfigLayer) (string, map[string][]byte, error) {
 	caps, err := capsForLayer(layer)
 	if err != nil {
@@ -955,11 +954,24 @@ func validateMCPArgs(value any, path, member string) error {
 }
 
 func isHTTPURL(value string) bool {
-	lower := strings.ToLower(value)
-	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+	u, err := url.Parse(value)
+	if err != nil || u == nil {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")
 }
 
 func validateCredentialFreeMCPURL(value, path, member string) error {
+	if colon := strings.IndexByte(value, ':'); colon >= 0 {
+		scheme, rest := value[:colon], value[colon+1:]
+		if strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https") {
+			if !strings.HasPrefix(rest, "//") {
+				value = strings.ToLower(scheme) + "://" + strings.TrimLeft(rest, "/")
+			} else {
+				value = strings.ToLower(scheme) + ":" + rest
+			}
+		}
+	}
 	u, err := url.Parse(value)
 	if err != nil {
 		return fmt.Errorf("%w: MCP member %q has an unparseable URL at %s", ErrInvalidArgument, member, path)
@@ -977,6 +989,9 @@ func extensionIDFromPath(p string) string {
 	parts := strings.Split(p, "/")
 	if len(parts) < 3 || parts[0] != topDirExtensions {
 		return ""
+	}
+	if len(parts) == 3 {
+		return parts[1]
 	}
 	base := parts[len(parts)-1]
 	if base == "index.ts" || base == "index.js" {
@@ -1017,8 +1032,9 @@ func lintExtensionManifests(manifests map[string][]byte, members map[string]bool
 			if strings.HasPrefix(entry, "/") || strings.Contains(entry, "\\") {
 				return fmt.Errorf("%w: extension %q has unsafe manifest path %q", ErrInvalidArgument, id, entry)
 			}
-			cleaned := path.Clean(entry)
-			if cleaned != entry || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+			normalized := strings.TrimPrefix(entry, "./")
+			cleaned := path.Clean(normalized)
+			if cleaned != normalized || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 				return fmt.Errorf("%w: extension %q has unsafe manifest path %q", ErrInvalidArgument, id, entry)
 			}
 			candidate := "extensions/" + id + "/" + cleaned
@@ -1464,11 +1480,17 @@ func rejectCredentialURL(owner any, key, joined, path string) error {
 	if s == "" {
 		return nil
 	}
+	if colon := strings.IndexByte(s, ':'); colon >= 0 {
+		scheme, rest := s[:colon], s[colon+1:]
+		if strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https") {
+			s = strings.ToLower(scheme) + ":" + rest
+		}
+	}
 	u, err := url.Parse(s)
 	if err != nil {
 		return fmt.Errorf("%w: models member %q sets %s.%s to an unparseable URL", ErrInvalidArgument, joined, path, key)
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Fragment != "" {
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Fragment != "" {
 		return fmt.Errorf("%w: models member %q sets %s.%s to a URL that is not absolute http(s) without a fragment", ErrInvalidArgument, joined, path, key)
 	}
 	if u.User != nil {
@@ -1514,7 +1536,7 @@ func credentialMCPQueryParam(rawQuery string) (string, error) {
 		if _, err := url.QueryUnescape(value); err != nil {
 			return "", err
 		}
-		if strings.Contains(strings.ToLower(name), "key") || strings.Contains(strings.ToLower(name), "token") || strings.Contains(strings.ToLower(name), "secret") || strings.Contains(strings.ToLower(name), "auth") {
+		if isCredentialQueryName(name) || strings.Contains(strings.ToLower(name), "key") || strings.Contains(strings.ToLower(name), "token") || strings.Contains(strings.ToLower(name), "secret") || strings.Contains(strings.ToLower(name), "auth") {
 			return name, nil
 		}
 	}
