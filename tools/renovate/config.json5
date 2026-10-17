@@ -680,6 +680,19 @@
       allowedVersions: "/^v?3\\.0\\./",
     },
     {
+      // First-party gate pins skip the soak; renovate-preflight runs with the
+      // Renovate App token, so it keeps the soak.
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["workspaces.catalog"],
+      matchPackageNames: ["@types/bun", "bun-types", "@rigelbuild/ref-gate"],
+      minimumReleaseAge: null,
+    },
+    {
+      matchPackageNames: ["@rigelbuild/solid-*"],
+      matchFileNames: ["apps/ui/package.json"],
+      minimumReleaseAge: null,
+    },
+    {
       // ── bunfig soak exemption for the bun types packages ──
       // bunfig.toml `minimumReleaseAgeExcludes` exempts `@types/bun` and `bun-types`
       // from the 5-day cooldown because the types track the nix-pinned bun runtime

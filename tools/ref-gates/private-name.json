@@ -1,0 +1,29 @@
+{
+	"prefilter": {
+		"ere": "orion|sealed",
+		"ignoreCase": true
+	},
+	"patterns": [
+		{ "source": "\\borion\\b", "flags": "i" },
+		{ "source": "\\bsealed/[a-z]", "flags": "i" },
+		{
+			"source": "\\bsealed\\s+[\\w.-]+(?:/[\\w.-]+)*\\.(?:ts|tsx|js|jsx|go|nix|md|json5?|ya?ml|toml|sh|py|rs|lock)\\b",
+			"flags": "i"
+		},
+		{ "source": "\\bsealed-(?:repo|monorepo|docs|private)\\b", "flags": "i" },
+		{ "source": "\\bsealed's\\b", "flags": "i" },
+		{
+			"source": "\\bsealed (repo|monorepo|design corpus|platform|convention|PR #)",
+			"flags": "i"
+		}
+	],
+	"ignore": ["orion-ref-gate"],
+	"carveOutPaths": ["bun.lock"],
+	"carveOutPrefixes": [
+		"tools/ref-gates/",
+		"apps/eng-docs/src/content/docs/",
+		"apps/eng-docs/dist/"
+	],
+	"allowlist": {},
+	"remediationDoc": "docs/concepts/self-host-and-managed.md"
+}

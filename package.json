@@ -25,6 +25,8 @@
 			"@opentelemetry/sdk-trace-node": "^2.0.0",
 			"@opentelemetry/sdk-trace-web": "^2.0.0",
 			"@opentelemetry/semantic-conventions": "^1.33.0",
+			"@rigelbuild/ref-gate": "1.0.0",
+			"@rigelbuild/renovate-preflight": "1.0.0",
 			"@types/bun": "^1.4.0",
 			"astro": "^7.1.6",
 			"effect": "^3.22.1",
@@ -43,6 +45,8 @@
 		"seroval-plugins": "1.6.9"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "catalog:"
+		"@biomejs/biome": "catalog:",
+		"@rigelbuild/ref-gate": "catalog:",
+		"@rigelbuild/renovate-preflight": "catalog:"
 	}
 }

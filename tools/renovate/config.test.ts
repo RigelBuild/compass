@@ -1641,17 +1641,11 @@ describe("tools/renovate postgres-stack digest manager (RIG-2774, DL-260)", () =
 });
 
 describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
-	// The catalog-scoped soak-exemption packageRule governs ONLY catalog deps
-	// (matchManagers custom.regex + matchDepTypes workspaces.catalog), so its
-	// matchPackageNames must equal exactly the bunfig `minimumReleaseAgeExcludes`
-	// entries that ARE catalog deps — i.e. the bun-types pair (@types/bun is a
-	// catalog pin; bun-types is its transitive lockstep). Every other bunfig
-	// exclude is a literal npm pin or an `overrides` pin (@tanstack/virtual-core,
-	// the Solid v2 / @tanstack query RC track, the two @rigelbuild/solid-* pins)
-	// outside the catalog manager's reach, so a catalog-scoped rule cannot and
-	// must not list them: a future auto-bump of those still soaks the 5 days.
-	// Deriving the catalog set from the real manifest (not a hard-coded list)
-	// keeps this guard current as the migration track lands and later retires.
+	// The catalog soak-exempt rule must name exactly the bunfig excludes that are
+	// catalog deps; Solid prerelease pins use a separate apps/ui-scoped rule.
+	const firstPartyToolNames = ["@rigelbuild/ref-gate"];
+	// Runs with the Renovate App token in renovate.yml, so it must stay soaked.
+	const tokenBearingPackage = "@rigelbuild/renovate-preflight";
 	const soakRule = cfg.packageRules.find(
 		(r) =>
 			r.minimumReleaseAge === null &&
@@ -1680,7 +1674,7 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 		) as { workspaces?: { catalog?: Record<string, string> } };
 		const catalog = new Set(Object.keys(parsed.workspaces?.catalog ?? {}));
 		catalog.add("bun-types");
-		return bunfigExcludes().filter((e) => catalog.has(e));
+		return bunfigExcludes().filter((name) => catalog.has(name));
 	};
 
 	test("the soak-exemption rule exists (custom.regex catalog, minimumReleaseAge null)", () => {
@@ -1696,10 +1690,65 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 		expect(excludes).toContain("@tanstack/virtual-core");
 		const expected = catalogExcludes();
 		expect(expected).not.toContain("@tanstack/virtual-core");
-		expect(expected.slice().sort()).toEqual(["@types/bun", "bun-types"].sort());
+		expect(expected.slice().sort()).toEqual(
+			["@types/bun", "bun-types", ...firstPartyToolNames].sort(),
+		);
 		expect(soakRule?.matchPackageNames?.slice().sort()).toEqual(
 			expected.slice().sort(),
 		);
+	});
+	test("first-party package pins match Bun excludes and skip Renovate soak", () => {
+		const expected = firstPartyToolNames.slice().sort();
+		expect(
+			bunfigExcludes()
+				.filter((name) => expected.includes(name))
+				.sort(),
+		).toEqual(expected);
+		expect(
+			soakRule?.matchPackageNames
+				?.filter((name) => firstPartyToolNames.includes(name))
+				.sort(),
+		).toEqual(expected);
+	});
+	test("the token-bearing preflight package keeps the release soak", () => {
+		expect(bunfigExcludes()).not.toContain(tokenBearingPackage);
+		// Glob-aware on both axes so a wildcard rule such as "@rigelbuild/*" also trips this.
+		const glob = (value: string) => (pattern: string) =>
+			new Bun.Glob(pattern).match(value);
+		for (const rule of cfg.packageRules) {
+			if (rule.minimumReleaseAge !== null) continue;
+			if (
+				rule.matchFileNames &&
+				!rule.matchFileNames.some(glob("package.json"))
+			)
+				continue;
+			const matches = glob(tokenBearingPackage);
+			expect((rule.matchPackageNames ?? []).filter(matches)).toEqual([]);
+		}
+	});
+	test("RigelBuild git-ref packages bypass the release-age cooldown", () => {
+		const managers =
+			cfg.customManagers?.filter(
+				(manager) =>
+					manager.datasourceTemplate === "git-refs" &&
+					manager.depNameTemplate?.startsWith("RigelBuild/") === true,
+			) ?? [];
+		expect(managers.length).toBeGreaterThan(0);
+		for (const manager of managers) {
+			const rule = cfg.packageRules.find((candidate) =>
+				candidate.matchDepNames?.includes(manager.depNameTemplate ?? ""),
+			);
+			expect(rule?.minimumReleaseAge).toBeNull();
+		}
+	});
+
+	test("Solid fork pins skip cooldown only in the UI manifest", () => {
+		const rule = cfg.packageRules.find(
+			(candidate) =>
+				candidate.matchPackageNames?.includes("@rigelbuild/solid-*") === true,
+		);
+		expect(rule?.minimumReleaseAge).toBeNull();
+		expect(rule?.matchFileNames).toEqual(["apps/ui/package.json"]);
 	});
 });
 
@@ -1745,12 +1794,9 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 		expect(match?.groups?.version).toBe(REVIEWABLE_CUT_VERIFIED_AT);
 	});
 
-	// The preflight step probes with GH_TOKEN but classifies token-PRESENCE off
-	// RENOVATE_TOKEN (tools/renovate-preflight/index.ts) — so the step MUST set
-	// RENOVATE_TOKEN, or index.ts short-circuits to reason="no-token" and exits 1
-	// on every run, failing the job before Renovate starts. Guard the env so that
-	// drop can't silently regress (it shipped green once because nothing covered
-	// the preflight step's env).
+	// The preflight uses GH_TOKEN to probe the repo and RENOVATE_TOKEN for its
+	// token-presence guard. Both env vars must be set or the workflow fails before
+	// Renovate starts. Guard the env so the probe cannot silently regress.
 	test("the preflight step sets RENOVATE_TOKEN in its env", () => {
 		// Slice the preflight step: from its `- name: Preflight …` line to the
 		// next step boundary (`- name:`/`- uses:` at step indent) or EOF.
@@ -1761,6 +1807,17 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 		const endRel = rest.findIndex((l) => /^\s*-\s+(name|uses):/.test(l));
 		const stepBody = (endRel === -1 ? rest : rest.slice(0, endRel)).join("\n");
 		expect(/^\s*RENOVATE_TOKEN:\s*\S/m.test(stepBody)).toBe(true);
+	});
+
+	test("the preflight runs the installed package after a frozen install and before Renovate", () => {
+		const install = workflow.indexOf("bun install --frozen-lockfile");
+		const preflight = workflow.indexOf(
+			"bun node_modules/@rigelbuild/renovate-preflight/index.ts",
+		);
+		const renovate = workflow.search(/^\s*-\s+name:\s*Run Renovate/m);
+		expect(install).toBeGreaterThanOrEqual(0);
+		expect(preflight).toBeGreaterThan(install);
+		expect(renovate).toBeGreaterThan(preflight);
 	});
 });
 

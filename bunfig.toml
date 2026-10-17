@@ -49,4 +49,5 @@ minimumReleaseAgeExcludes = [
   "@rigelbuild/solid-virtual",
   "@tanstack/solid-query",
   "@tanstack/query-core",
+  "@rigelbuild/ref-gate",
 ]

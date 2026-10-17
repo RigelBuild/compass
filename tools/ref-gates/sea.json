@@ -1,0 +1,15 @@
+{
+	"prefilter": {
+		"ere": "SEA-[0-9]+",
+		"ignoreCase": false
+	},
+	"patterns": [{ "source": "\\bSEA-\\d+\\b", "flags": "" }],
+	"ignore": [],
+	"carveOutPaths": ["bun.lock", "CHANGELOG.md"],
+	"carveOutPrefixes": [
+		"tools/ref-gates/",
+		"apps/eng-docs/src/content/docs/",
+		"apps/eng-docs/dist/"
+	],
+	"allowlist": {}
+}
