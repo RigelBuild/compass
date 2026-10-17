@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -261,6 +262,134 @@ func manifestArg(t *testing.T, argv []string) string {
 	return ""
 }
 
+func TestDotenvFilePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		wantPath string
+		wantOK   bool
+	}{
+		{name: "triple slash absolute", provider: "dotenv:///abs/path", wantPath: "/abs/path", wantOK: true},
+		{name: "single slash absolute", provider: "dotenv:/abs/path", wantPath: "/abs/path", wantOK: true},
+		{name: "double slash relative", provider: "dotenv://rel/path", wantPath: "rel/path", wantOK: true},
+		{name: "other scheme", provider: "keyring://"},
+		{name: "bare dotenv defers to the CLI", provider: "dotenv://"},
+		{name: "empty provider"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPath, gotOK := dotenvFilePath(tt.provider)
+			if gotPath != tt.wantPath || gotOK != tt.wantOK {
+				t.Fatalf("dotenvFilePath(%q) = (%q, %v), want (%q, %v)", tt.provider, gotPath, gotOK, tt.wantPath, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestResolveDotenvProviderFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(*testing.T) string
+		wantErr error
+		wantSub string
+	}{
+		{
+			name: "missing file",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return filepath.Join(t.TempDir(), "missing.env")
+			},
+			wantErr: fs.ErrNotExist,
+		},
+		{
+			name: "unreadable file",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				if os.Geteuid() == 0 {
+					t.Skip("root can read files with mode 000")
+				}
+				path := filepath.Join(t.TempDir(), "unreadable.env")
+				if err := os.WriteFile(path, []byte("API_KEY=value\n"), 0o600); err != nil {
+					t.Fatalf("write dotenv file: %v", err)
+				}
+				if err := os.Chmod(path, 0); err != nil {
+					t.Fatalf("chmod dotenv file: %v", err)
+				}
+				return path
+			},
+			wantErr: fs.ErrPermission,
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return t.TempDir()
+			},
+			wantSub: "is a directory",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.setup(t)
+			cli := newFakeCLI(t, `{"API_KEY":"value"}`, "", 0)
+			r := NewSpecResolver(declsNamed("API_KEY"), t.TempDir(), WithProvider("dotenv://"+path), WithCLI(cli.path))
+			_, err := r.Resolve(context.Background(), "test")
+			if err == nil {
+				t.Fatal("Resolve succeeded, want a dotenv path error")
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("Resolve error %q does not name path %q", err, path)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Errorf("Resolve error %v does not wrap %v", err, tt.wantErr)
+			}
+			if tt.wantSub != "" && !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("Resolve error %q does not contain %q", err, tt.wantSub)
+			}
+			_, statErr := os.Stat(filepath.Join(cli.dir, "argv"))
+			if !errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("fake CLI invocation record stat error = %v, want not-exist", statErr)
+			}
+		})
+	}
+}
+
+func TestStatusesDotenvProviderMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.env")
+	cli := newFakeCLI(t, `{"schema_version":1,"secrets":[]}`, "", 0)
+	r := NewSpecResolver(declsNamed("API_KEY"), t.TempDir(), WithProvider("dotenv://"+path), WithCLI(cli.path))
+
+	_, err := r.Statuses(context.Background(), "test")
+	if err == nil {
+		t.Fatal("Statuses succeeded, want a dotenv path error")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("Statuses error %q does not name path %q", err, path)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Statuses error %v does not wrap %v", err, fs.ErrNotExist)
+	}
+	if _, err := os.Stat(filepath.Join(cli.dir, "argv")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("fake CLI invocation record stat error = %v, want not-exist", err)
+	}
+}
+
+func TestResolveDotenvProviderValidFileInvokesCLI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "present.env")
+	if err := os.WriteFile(path, []byte("API_KEY=value\n"), 0o600); err != nil {
+		t.Fatalf("write dotenv file: %v", err)
+	}
+	cli := newFakeCLI(t, `{"API_KEY":"value"}`, "", 0)
+	r := NewSpecResolver(declsNamed("API_KEY"), t.TempDir(), WithProvider("dotenv://"+path), WithCLI(cli.path))
+
+	if _, err := r.Resolve(context.Background(), "test"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cli.dir, "argv")); err != nil {
+		t.Fatalf("fake CLI was not invoked: %v", err)
+	}
+}
+
 func TestSpecResolverArgv(t *testing.T) {
 	const reason = "-starts-with-dash"
 	tests := []struct {
@@ -274,9 +403,9 @@ func TestSpecResolverArgv(t *testing.T) {
 	}{
 		{
 			name: "export with provider",
-			opts: []SpecOption{WithProvider("dotenv:///x.env"), WithProfile("prod")},
+			opts: []SpecOption{WithProvider("keyring://Production"), WithProfile("prod")},
 			call: func(r *SpecResolver) error { _, err := r.Resolve(context.Background(), reason); return err },
-			sub:  "export", provider: "dotenv:///x.env", profile: "prod", tail: "--format=json",
+			sub:  "export", provider: "keyring://Production", profile: "prod", tail: "--format=json",
 		},
 		{
 			name: "export without provider",
