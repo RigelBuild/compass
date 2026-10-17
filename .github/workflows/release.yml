@@ -91,6 +91,10 @@ env:
   # fork image, so unrelated image changes must not trigger this publish.
   GATEWAY_IMAGE_CLOSURE_PATHS: |
     tools/gateway-image/**
+    go/cmd/compass-gen-cert/**
+    go/internal/certgen/**
+    go/go.mod
+    go/go.sum
     .github/workflows/release.yml
   # Same toolchain contract as the devenv shell: moon runs the nix tools on
   # PATH, never a ~/.proto shim, even if a runner image ever ships one.
@@ -1803,7 +1807,8 @@ jobs:
 
   publish-gateway-image:
     name: publish-gateway-image
-    runs-on: ubuntu-latest
+    # passt on noble predates --map-host-loopback, which needs 2024-08-21 or later.
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -1886,6 +1891,18 @@ jobs:
           store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
           if [ -z "$store" ] || [ "$store" = null ]; then
             echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+
+      - name: Put the pinned go toolchain on PATH
+        if: steps.gate.outputs.should_publish == 'true'
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.go | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.go produced no store path" >&2
             exit 1
           fi
           nix build --no-link "$store"

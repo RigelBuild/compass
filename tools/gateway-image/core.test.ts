@@ -6,6 +6,7 @@ import {
 	digestRef,
 	FORK_BRANCH,
 	FORK_REPO,
+	fakeCompassDoorResponse,
 	gatewayBuildArgs,
 	healthzOk,
 	imageConfigEntries,
@@ -234,14 +235,17 @@ describe("secretConfigViolations", () => {
 	const scan = (env: string[], labels: Record<string, string> = {}) =>
 		secretConfigViolations({ env, labels });
 
-	test("passes the allowlisted names the gateway config ships", () => {
+	test("passes the benign names the gateway config ships", () => {
+		expect(scan(["GPG_KEY=A035C8C1", "PATH=/bin"])).toEqual([]);
+	});
+
+	test("flags the removed gateway token file name", () => {
 		expect(
 			scan([
-				"GPG_KEY=A035C8C1",
 				"COMPASS_GATEWAY_TOKEN_FILE=/run/token",
-				"PATH=/bin",
+				"COMPASS_GATEWAY_TOKEN_FILE_2=/x",
 			]),
-		).toEqual([]);
+		).toEqual(["COMPASS_GATEWAY_TOKEN_FILE", "COMPASS_GATEWAY_TOKEN_FILE_2"]);
 	});
 
 	test("still flags a real secret name", () => {
@@ -250,7 +254,7 @@ describe("secretConfigViolations", () => {
 		]);
 	});
 
-	test("allows only an exact allowlist match", () => {
+	test("does not allowlist credential-shaped names", () => {
 		expect(scan(["GPG_KEY_X=1", "COMPASS_GATEWAY_TOKEN_FILE_2=/x"])).toEqual([
 			"GPG_KEY_X",
 			"COMPASS_GATEWAY_TOKEN_FILE_2",
@@ -265,7 +269,7 @@ describe("secretConfigViolations", () => {
 	test("applies the exact-match allowlist to label keys and values", () => {
 		expect(
 			scan([], { GPG_KEY: "x", note: "COMPASS_GATEWAY_TOKEN_FILE" }),
-		).toEqual([]);
+		).toEqual(["note"]);
 		expect(scan([], { GPG_KEY_X: "x" })).toEqual(["GPG_KEY_X"]);
 	});
 
@@ -278,7 +282,7 @@ describe("secretConfigViolations", () => {
 		).toEqual(["org.example.registry-token", "org.example.api.key"]);
 	});
 
-	test("passes every env name of the built gateway image", () => {
+	test("flags the removed token env if it is put back on the image", () => {
 		const env = [
 			"LANG=C.UTF-8",
 			"GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
@@ -295,11 +299,13 @@ describe("secretConfigViolations", () => {
 			"PATH=/opt/bun/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin",
 			"PI_ROOT=/pi",
 			"HOME=/tmp",
-			"COMPASS_GATEWAY_TOKEN_FILE=/run/compass/gateway.token",
 			"COMPASS_GATEWAY_BIND=0.0.0.0:4000",
 			"COMPASS_GATEWAY_DRAIN_MS=20000",
 		];
 		expect(scan(env, { "io.buildah.version": "1.43.2" })).toEqual([]);
+		expect(
+			scan([...env, "COMPASS_GATEWAY_TOKEN_FILE=/run/compass/gateway.token"]),
+		).toEqual(["COMPASS_GATEWAY_TOKEN_FILE"]);
 	});
 
 	test("flags a label whose value names a secret", () => {
@@ -367,5 +373,63 @@ describe("smoke predicates", () => {
 		expect(modelsListOk(200, '{"object":"list","data":[]}')).toBe(true);
 		expect(modelsListOk(401, '{"object":"list"}')).toBe(false);
 		expect(modelsListOk(200, '{"error":"unauthorized"}')).toBe(false);
+	});
+});
+
+describe("fake Compass door", () => {
+	const options = {
+		serviceToken: "service-token",
+		agentToken: "good-agent-token",
+	};
+	const makeRequest = (token: string, serviceToken = options.serviceToken) =>
+		new Request(
+			"https://host.containers.internal/compass.v1.GatewayAuth/VerifyAgentToken",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"Connect-Protocol-Version": "1",
+					Authorization: `Bearer ${serviceToken}`,
+				},
+				body: JSON.stringify({ token }),
+			},
+		);
+
+	test("returns the verified agent and owner", async () => {
+		const response = await fakeCompassDoorResponse(
+			makeRequest(options.agentToken),
+			options,
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			agentAccountId: "agent-smoke",
+			ownerUserId: "owner-smoke",
+		});
+	});
+
+	test("rejects empty and incorrect agent tokens with the verifier contract", async () => {
+		for (const token of ["", "wrong-agent-token"]) {
+			const response = await fakeCompassDoorResponse(
+				makeRequest(token),
+				options,
+			);
+			expect(response.status).toBe(401);
+			expect(await response.json()).toEqual({
+				code: "unauthenticated",
+				message: "invalid agent token",
+			});
+		}
+	});
+
+	test("rejects an invalid service bearer", async () => {
+		const response = await fakeCompassDoorResponse(
+			makeRequest(options.agentToken, "wrong-service-token"),
+			options,
+		);
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({
+			code: "unauthenticated",
+			message: "unauthenticated",
+		});
 	});
 });
