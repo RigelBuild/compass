@@ -411,6 +411,25 @@ func TestTunnelRelay_StreamClosedBeforeDelivery(t *testing.T) {
 	}
 }
 
+// A delivery queued before the relay ends the stream must still be returned.
+func TestTunnelRelay_QueuedDeliverySurvivesStreamEnd(t *testing.T) {
+	relay := newStubRelay(t)
+	sub := subscribeStub(t, relay)
+	relay.publish(t, http.Header{}, []byte(`{"queued":true}`))
+	close(relay.frames)
+	ctx := tunnelCtx(t)
+	select {
+	case <-sub.done:
+	case <-ctx.Done():
+		t.Fatal("relay stream never ended")
+	}
+
+	d, err := sub.next(ctx, func(tunnelDelivery) bool { return true })
+	if err != nil || string(d.body) != `{"queued":true}` {
+		t.Fatalf("next = %q, %v; want the queued delivery", d.body, err)
+	}
+}
+
 func TestTunnelRelay_NoDeliveryBeforeDeadline(t *testing.T) {
 	relay := newStubRelay(t)
 	sub := subscribeStub(t, relay)
