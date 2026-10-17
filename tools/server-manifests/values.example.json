@@ -1,0 +1,35 @@
+{
+	"namespace": "compass",
+	"serverImage": "ghcr.io/example/compass-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	"natsImage": "docker.io/library/nats@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	"initImage": "busybox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	"postgres": {
+		"image": "docker.io/library/postgres@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		"storage": "20Gi",
+		"secretName": "compass-postgres"
+	},
+	"natsStorage": "8Gi",
+	"tlsSecretName": "compass-server-tls",
+	"dsnSecretName": "compass-dsn",
+	"natsSecretName": "compass-nats",
+	"serverSecretsSecretName": "compass-server-secrets",
+	"adminTokenSecretName": "compass-admin-token",
+	"s3SecretName": "compass-s3",
+	"corsAllowedOrigin": "https://console.example.test",
+	"otlpEndpoint": "http://otel.example.test:4318",
+	"external": {
+		"port": 7443,
+		"loadBalancerClass": "example.test/external"
+	},
+	"runnerClusters": [
+		{
+			"name": "local",
+			"issuer": "https://kubernetes.default.svc.cluster.local",
+			"audience": "compass-runner",
+			"namespace": "compass-runners",
+			"serviceAccount": "compass-runner",
+			"maxTokenLifetime": "10m",
+			"jwks": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"example\",\"n\":\"v_DRFFXPuN5E_0evmokNkJOd9vOnAX-oudOpOcjMRWnCTEkZv4ZCedUGJCTtxaLB0Cag3GbYTu0JIk1Qcp6wTiFd3OFZ_2TiKivNYndAi-2qbEwIxwBZFOr-1LQZDJUK40Dt2CV_3-y_NpXG1bsdj1daUaBD1EhSlGespnszq67klxOKPC-pk3EF9ZL6NIOzUbVsorWxuUuWrC0FCZwCA47DkrEEXraDIehrLfsfrtyZLvb4StZPX2q9hXKwh_5BbWUfBe7Y6QRy13VT5KuTGfZavLKP8hcx_bsB_SU_u-94JekLO6Mhj4_iO7ZMAfnSJuU-v64gNIhFZ0fRX5Yw3w\",\"e\":\"AQAB\"}]}"
+		}
+	]
+}

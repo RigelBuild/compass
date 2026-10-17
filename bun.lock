@@ -305,6 +305,17 @@
         "typescript": "catalog:",
       },
     },
+    "tools/runner-manifests": {
+      "name": "@compass/runner-manifests",
+      "bin": {
+        "runner-manifests-render": "./render.ts",
+      },
+      "devDependencies": {
+        "@marcbachmann/cel-js": "8.0.0",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/server-image": {
       "name": "@compass/server-image",
       "bin": {
@@ -315,13 +326,12 @@
         "typescript": "catalog:",
       },
     },
-    "tools/runner-manifests": {
-      "name": "@compass/runner-manifests",
+    "tools/server-manifests": {
+      "name": "@compass/server-manifests",
       "bin": {
-        "runner-manifests-render": "./render.ts",
+        "server-manifests-render": "./render.ts",
       },
       "devDependencies": {
-        "@marcbachmann/cel-js": "8.0.0",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
       },
@@ -594,6 +604,10 @@
     "@compass/runner-image": ["@compass/runner-image@workspace:tools/runner-image"],
 
     "@compass/runner-manifests": ["@compass/runner-manifests@workspace:tools/runner-manifests"],
+
+    "@compass/server-image": ["@compass/server-image@workspace:tools/server-image"],
+
+    "@compass/server-manifests": ["@compass/server-manifests@workspace:tools/server-manifests"],
 
     "@compass/sql-migration-gate": ["@compass/sql-migration-gate@workspace:tools/sql-migration-gate"],
 

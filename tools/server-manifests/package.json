@@ -1,0 +1,14 @@
+{
+	"name": "@compass/server-manifests",
+	"private": true,
+	"type": "module",
+	"description": "Render operator-configured Kubernetes manifests for compass-server and its data services.",
+	"module": "render.ts",
+	"bin": {
+		"server-manifests-render": "./render.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

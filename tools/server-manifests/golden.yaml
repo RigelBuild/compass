@@ -1,0 +1,433 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: compass-server
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compass-server-runner-clusters
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+data:
+  clusters.yaml: "{clusters: [{name: local,issuer: https://kubernetes.default.svc.cluster.local,namespace: compass-runners,serviceAccount: compass-runner,audience: compass-runner,maxTokenLifetime: 10m,jwksFile: /etc/compass/runner-clusters/local.jwks.json}]}"
+  local.jwks.json: "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"example\",\"n\":\"v_DRFFXPuN5E_0evmokNkJOd9vOnAX-oudOpOcjMRWnCTEkZv4ZCedUGJCTtxaLB0Cag3GbYTu0JIk1Qcp6wTiFd3OFZ_2TiKivNYndAi-2qbEwIxwBZFOr-1LQZDJUK40Dt2CV_3-y_NpXG1bsdj1daUaBD1EhSlGespnszq67klxOKPC-pk3EF9ZL6NIOzUbVsorWxuUuWrC0FCZwCA47DkrEEXraDIehrLfsfrtyZLvb4StZPX2q9hXKwh_5BbWUfBe7Y6QRy13VT5KuTGfZavLKP8hcx_bsB_SU_u-94JekLO6Mhj4_iO7ZMAfnSJuU-v64gNIhFZ0fRX5Yw3w\",\"e\":\"AQAB\"}]}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compass-server
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: compass-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: compass-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: compass-server
+      initContainers:
+        - name: init-admin-token
+          image: busybox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - "-c"
+            - mkdir -p /run/compass/bootstrap /run/compass/xdg-state && cp /var/run/compass/admin-token/token /run/compass/bootstrap/admin-token && chmod 0600 /run/compass/bootstrap/admin-token
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: compass-run
+              mountPath: /run/compass
+            - name: admin-token
+              mountPath: /var/run/compass/admin-token
+              readOnly: true
+      containers:
+        - name: compass-server
+          image: ghcr.io/example/compass-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--listen"
+            - 0.0.0.0:50052
+            - "--tls-cert"
+            - /etc/compass/tls/tls.crt
+            - "--tls-key"
+            - /etc/compass/tls/tls.key
+            - "--state-dir"
+            - /run/compass/state
+            - "--socket"
+            - /run/compass/state/server.sock
+            - "--admin-token-file"
+            - /run/compass/bootstrap/admin-token
+            - "--runner-clusters"
+            - /etc/compass/runner-clusters/clusters.yaml
+            - "--secret-provider"
+            - dotenv:///etc/compass/secrets/server.env
+            - "--cors-allowed-origin"
+            - https://console.example.test
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: https
+              containerPort: 50052
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 50052
+              scheme: HTTPS
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 50052
+              scheme: HTTPS
+            periodSeconds: 5
+          volumeMounts:
+            - name: compass-run
+              mountPath: /run/compass
+            - name: tls
+              mountPath: /etc/compass/tls
+              readOnly: true
+            - name: server-secrets
+              mountPath: /etc/compass/secrets
+              readOnly: true
+            - name: runner-clusters
+              mountPath: /etc/compass/runner-clusters
+              readOnly: true
+          env:
+            - name: COMPASS_DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: compass-dsn
+                  key: dsn
+            - name: COMPASS_NATS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: compass-nats
+                  key: url
+            - name: XDG_STATE_HOME
+              value: /run/compass/xdg-state
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel.example.test:4318
+          envFrom:
+            - secretRef:
+                name: compass-s3
+      volumes:
+        - name: compass-run
+          emptyDir: {}
+        - name: tls
+          secret:
+            secretName: compass-server-tls
+        - name: server-secrets
+          secret:
+            secretName: compass-server-secrets
+            items:
+              - key: server.env
+                path: server.env
+        - name: admin-token
+          secret:
+            secretName: compass-admin-token
+            defaultMode: 288
+        - name: runner-clusters
+          configMap:
+            name: compass-server-runner-clusters
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compass-server
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: compass-server
+  ports:
+    - name: https
+      port: 443
+      targetPort: 50052
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compass-server-external
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: compass-server
+  ports:
+    - name: https
+      port: 7443
+      targetPort: 50052
+      protocol: TCP
+  loadBalancerClass: example.test/external
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compass-nats-config
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+data:
+  nats.conf: "host: \"0.0.0.0\"\nport: 4222\n\nhttp: \"0.0.0.0:8222\"\n\njetstream {\n  store_dir: \"/var/lib/nats\"\n  sync_interval: \"100ms\"\n}\n\nauthorization {\n  user: compass\n  password: $NATS_PASSWORD\n}\n"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: compass-nats
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  serviceName: compass-nats
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: compass-nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: compass-nats
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: compass-nats
+          image: docker.io/library/nats@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          args:
+            - "--config"
+            - /etc/nats/nats.conf
+          ports:
+            - name: client
+              containerPort: 4222
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: compass-nats
+                  key: password
+          volumeMounts:
+            - name: nats-config
+              mountPath: /etc/nats
+              readOnly: true
+            - name: nats-data
+              mountPath: /var/lib/nats
+      volumes:
+        - name: nats-config
+          configMap:
+            name: compass-nats-config
+  volumeClaimTemplates:
+    - metadata:
+        name: nats-data
+        labels:
+          app.kubernetes.io/part-of: compass
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compass-nats
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: compass-nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: compass-postgres
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  serviceName: compass-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: compass-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: compass-postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: compass-postgres
+          image: docker.io/library/postgres@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: POSTGRES_USER
+              value: compass
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: compass-postgres
+                  key: password
+            - name: POSTGRES_INITDB_ARGS
+              value: "--auth=scram-sha-256"
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: scram-sha-256
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+            - name: postgres-tmp
+              mountPath: /tmp
+      volumes:
+        - name: postgres-run
+          emptyDir: {}
+        - name: postgres-tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app.kubernetes.io/part-of: compass
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compass-postgres
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: compass-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: compass-nats-ingress
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: compass-nats
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: compass-server
+      ports:
+        - protocol: TCP
+          port: 4222
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: compass-postgres-ingress
+  namespace: compass
+  labels:
+    app.kubernetes.io/part-of: compass
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: compass-postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: compass-server
+      ports:
+        - protocol: TCP
+          port: 5432
