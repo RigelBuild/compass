@@ -16,6 +16,8 @@ import {
 	selectGoSuites,
 } from "./go-impact.ts";
 
+import { generate, outputLines } from "./index.ts";
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const goDir = join(repoRoot, "go");
 const allSuites: readonly GoSuite[] = ["pgtest", "microvm", "e2e"];
@@ -24,7 +26,12 @@ function suiteSelection(
 	roots: readonly string[],
 	reason = "none",
 ): SuiteSelection {
-	return { run: roots.length > 0, reason, roots };
+	return {
+		run: roots.length > 0,
+		reason,
+		roots,
+		requiresSecretspec: false,
+	};
 }
 
 const fixtureGraph: GoGraph = {
@@ -70,8 +77,12 @@ const fixtureGraph: GoGraph = {
 		},
 		microvm: {
 			"internal/microvmtest": ["internal/microvmtest"],
-			"internal/runner": ["internal/runner", "internal/runtime"],
-			"internal/runtime": ["internal/runtime"],
+			"internal/runner": [
+				"internal/runner",
+				"internal/runtime",
+				"internal/secrets",
+			],
+			"internal/runtime": ["internal/runtime", "internal/secrets"],
 			"internal/runtime/microvm": ["internal/runtime/microvm"],
 		},
 		e2e: {
@@ -168,6 +179,30 @@ beforeAll(async () => {
 	liveGraph = await loadGoGraph(goDir);
 }, LIVE_TIMEOUT_MS);
 
+type GoSelections = Record<GoSuite, SuiteSelection>;
+
+function generatedPackageLines(
+	goSelection: GoSelections,
+	event: "pull_request" | "push" | "schedule",
+): string[] {
+	return outputLines(
+		generate({
+			projects: [
+				{ id: "ci-matrix", tags: ["ci-group.bun"], ciTarget: "ci-matrix:ci" },
+			],
+			affectedIds: [],
+			changedPaths: [],
+			goSelection,
+			event,
+		}),
+	);
+}
+
+function emittedPackages(lines: readonly string[], key: string): unknown {
+	const line = lines.find((entry) => entry.startsWith(`${key}=`));
+	return JSON.parse(line?.slice(key.length + 1) ?? "null");
+}
+
 describe("Go suite selection", () => {
 	test("a server-only change selects only the pgtest server root", () => {
 		const selected = select(["go/server/service_test.go"]);
@@ -223,15 +258,14 @@ describe("Go suite selection", () => {
 	});
 
 	test.each(["push", "schedule"] as const)(
-		"%s selects every test root",
+		"%s selects every test root and derives secretspec from the closure",
 		(event) => {
 			const selected = select([], { event });
 			for (const suite of allSuites) {
-				expect(selected[suite].run).toBe(true);
-				expect(selected[suite].roots).toEqual(
-					suite === "e2e"
-						? [...E2E_ROOTS].sort()
-						: Object.keys(fixtureGraph.closure[suite]).sort(),
+				expect(selected[suite].requiresSecretspec).toBe(
+					selected[suite].roots.some((root) =>
+						fixtureGraph.closure[suite][root]?.includes("internal/secrets"),
+					),
 				);
 			}
 		},
@@ -261,6 +295,7 @@ describe("Go suite selection", () => {
 				"internal/usage",
 				"server",
 			],
+			requiresSecretspec: true,
 		});
 	});
 
@@ -278,6 +313,25 @@ describe("Go suite selection", () => {
 		});
 		expect(selected.microvm.run).toBe(true);
 		expect(selected.microvm.reason).toBe("wide: compass-guest-image");
+	});
+	test("microVM secretspec requirement follows selected dependency closures", () => {
+		const microvmtest = select([
+			"go/internal/microvmtest/canary_microvm_test.go",
+		]);
+		expect(microvmtest.microvm.roots).toEqual(["internal/microvmtest"]);
+		expect(microvmtest.microvm.requiresSecretspec).toBe(false);
+
+		const runtime = select(["go/internal/secrets/resolver.go"]);
+		expect(runtime.microvm.roots).toEqual([
+			"internal/runner",
+			"internal/runtime",
+		]);
+		expect(runtime.microvm.requiresSecretspec).toBe(true);
+
+		const onlyRuntime = select([
+			"go/internal/runtime/contract_microvm_test.go",
+		]);
+		expect(onlyRuntime.microvm.requiresSecretspec).toBe(true);
 	});
 });
 
@@ -364,6 +418,41 @@ describe("Go graph discovered from the module", () => {
 		},
 		LIVE_TIMEOUT_MS,
 	);
+});
+
+describe("generated package selections", () => {
+	test("push emits all live roots; server-only PR emits only server", () => {
+		const push = generatedPackageLines(select([], { event: "push" }), "push");
+		expect(emittedPackages(push, "pgtest_packages")).toEqual(
+			Object.keys(liveGraph.closure.pgtest)
+				.sort()
+				.map((root) => `./${root}`),
+		);
+		expect(emittedPackages(push, "microvm_packages")).toEqual(
+			Object.keys(liveGraph.closure.microvm)
+				.sort()
+				.map((root) => `./${root}`),
+		);
+		expect(emittedPackages(push, "pgtest_packages")).toHaveLength(13);
+		expect(emittedPackages(push, "microvm_packages")).toHaveLength(4);
+
+		const server = generatedPackageLines(
+			select(["go/server/service_test.go"]),
+			"pull_request",
+		);
+		expect(emittedPackages(server, "pgtest_packages")).toEqual(["./server"]);
+	});
+
+	test("running full-sweep outputs contain package roots", () => {
+		for (const event of ["push", "schedule"] as const) {
+			const selected = select([], { event });
+			const lines = generatedPackageLines(selected, event);
+			for (const suite of ["pgtest", "microvm"] as const) {
+				expect(selected[suite].run).toBe(true);
+				expect(emittedPackages(lines, `${suite}_packages`)).not.toEqual([]);
+			}
+		}
+	});
 });
 
 describe("gate constants and path mapping", () => {

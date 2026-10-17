@@ -173,8 +173,11 @@ jobs:
       # backstop lives in the generator, not here.
       matrix: ${{ steps.gen.outputs.matrix }}
       pgtest_affected: ${{ steps.gen.outputs.pgtest_affected }}
+      pgtest_packages: ${{ steps.gen.outputs.pgtest_packages }}
       e2e_affected: ${{ steps.gen.outputs.e2e_affected }}
       microvm_affected: ${{ steps.gen.outputs.microvm_affected }}
+      microvm_packages: ${{ steps.gen.outputs.microvm_packages }}
+      microvm_requires_secretspec: ${{ steps.gen.outputs.microvm_requires_secretspec }}
       forge_affected: ${{ steps.gen.outputs.forge_affected }}
       gtk4_affected: ${{ steps.gen.outputs.gtk4_affected }}
       darwin_affected: ${{ steps.gen.outputs.darwin_affected }}
@@ -781,6 +784,7 @@ jobs:
           # The PgBouncer service above; the pooled-reuse case creates its own
           # database and routes to it through this pooler.
           COMPASS_TEST_POOLER_DSN: postgres://postgres:compass-test@127.0.0.1:6432/compass?sslmode=disable
+          PGTEST_PACKAGES: ${{ join(fromJSON(needs.setup.outputs.pgtest_packages), ' ') }}
           CGO_ENABLED: '1'
           # The harness SKIPS when it can reach no database — correct for a
           # container-less sandbox, but in CI the service Postgres above is
@@ -798,54 +802,19 @@ jobs:
         # wedged test panics mid-run and the panic, not the failure, is the story.
         # internal/store alone runs 11-15m on shared runners, so 15m was too tight.
         run: |
+          [ -n "$PGTEST_PACKAGES" ] || { echo "::error::selected pgtest package list is empty"; exit 1; }
+          read -r -a packages <<<"$PGTEST_PACKAGES"
           rc=0
-          go test -tags pgtest -race -v -timeout 25m ./... >/tmp/pgtest.log 2>&1 || rc=$?
+          go test -tags pgtest -race -v -timeout 25m "${packages[@]}" >/tmp/pgtest.log 2>&1 || rc=$?
           cat /tmp/pgtest.log
           exit "$rc"
 
       - name: Assert the real-Postgres suites ran rather than skipped
         working-directory: go
-        # The harness SKIPS (never fails) when it can find no database — correct
-        # for a container-less sandbox, and a silent no-op here. This step exists
-        # to run those assertions, so a skip is a failure of its whole purpose and
-        # must be loud.
-        #
-        # Both halves are derived from source rather than hardcoded, because a
-        # guard that drifts out of step with what it guards passes silently:
-        #   - the skip text is read from pgshare.go (the shared acquisition core
-        #     pgtest delegates to), so rewording it cannot leave
-        #   - the package list is the set that actually calls RequireDSN, so the
-        #     count means "the real-Postgres packages ran". Counting every
-        #     `--- PASS` in the module would be inert: the module has hundreds of
-        #     tests that touch no database, so the total stays high even if every
-        #     database suite vanished.
-        run: |
-          skip=$(sed -n 's/.*t\.Skip("\(no COMPASS_TEST_DATABASE_DSN[^"]*\)").*/\1/p' \
-            internal/pgshare/pgshare.go)
-          if [ -z "$skip" ]; then
-            echo "::error::could not read the skip message out of internal/pgshare/pgshare.go — this guard has drifted from the harness and is no longer checking anything"
-            exit 1
-          fi
-          if grep -qF "$skip" /tmp/pgtest.log; then
-            echo "::error::pgtest harness skipped — the service Postgres was not reached, so nothing was asserted"
-            grep -nF "$skip" /tmp/pgtest.log | head
-            exit 1
-          fi
-          pkgs=$({ grep -rl 'pgtest\.RequireDSN' --include='*.go' . || true; } \
-            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
-          if [ -z "$pkgs" ]; then
-            echo "::error::no package calls pgtest.RequireDSN — the harness moved and this guard is vacuous"
-            exit 1
-          fi
-          rc=0
-          for pkg in $pkgs; do
-            if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/$pkg[[:space:]]" /tmp/pgtest.log; then
-              echo "::error::real-Postgres package '$pkg' did not report ok — it failed, skipped, or never ran"
-              rc=1
-            fi
-          done
-          echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
-          exit "$rc"
+        env:
+          PGTEST_PACKAGES: ${{ join(fromJSON(needs.setup.outputs.pgtest_packages), ' ') }}
+        # Check the skip text and selected roots that call RequireDSN.
+        run: bun run ../tools/ci-matrix/suite-assertions.ts pgtest /tmp/pgtest.log
 
       - name: Put the dev shell's nixpkgs tools on PATH (for sqlc vet)
         # The Real-Postgres suite above needs only `go`, so this job skips the
@@ -1035,36 +1004,11 @@ jobs:
       - name: microVM suites
         working-directory: go
         env:
-          # Turns microvmtest.Require's no-KVM SKIP into a hard failure: the KVM
-          # leg is mandatory here, so a skip would silently pass the suite without
-          # exercising anything (the pgtest/COMPASS_REQUIRE_LIVE posture,
-          # go/internal/microvmtest/microvmtest.go).
+          MICROVM_PACKAGES: ${{ join(fromJSON(needs.setup.outputs.microvm_packages), ' ') }}
+          MICROVM_REQUIRES_SECRETSPEC: ${{ needs.setup.outputs.microvm_requires_secretspec }}
+          # Turns microvmtest.Require's no-KVM skip into a hard failure.
           COMPASS_REQUIRE_MICROVM: '1'
           CGO_ENABLED: '1'
-        # Realize E3's guest-image attrs and put the E1 VMM binaries on PATH, then
-        # run the tagged suite. Both nix builds substitute their heavy inputs from
-        # the caches configured above (extra-substituters); the guest kernel is an
-        # unmodified pinned nixpkgs kernel, substituted free from cache.nixos.org.
-        #
-        # working-directory is `go`, so the guest-image build uses an absolute
-        # -f $GITHUB_WORKSPACE/guest-image/default.nix rather than a brittle
-        # ../guest-image relative path.
-        #
-        # The VMM stack (cloud-hypervisor, virtiofsd, passt) is Linux-only and so
-        # lives OUTSIDE devenv.nix's parsed `packages` literal — the parity gate
-        # does NOT install it. It is realized out-of-band here from its own pinned
-        # helper, the chromium-e2e pattern above: read each out-path's bin/ into
-        # $GITHUB_PATH so the test processes resolve them (via exec.LookPath in
-        # microvmtest.Require). A $GITHUB_PATH append only affects SUBSEQUENT
-        # steps, so this must precede the `go test` below — hence a separate step
-        # would work too, but keeping the realize+run together documents the pair.
-        #
-        # -v so the guard below can read per-package outcomes. The redirect (not a
-        # pipe to tee) is deliberate: a pipeline's exit status is its LAST
-        # command's, so `go test ... | tee` returns tee's 0 and a real failure is
-        # silently discarded. Capture, replay the log, then exit on go test's own
-        # status. `|| rc=$?` because the step runs under `bash -e`, which would
-        # otherwise abort before the log is ever printed.
         run: |
           guest=$(nix build --no-link --print-out-paths \
             -f "$GITHUB_WORKSPACE/guest-image/default.nix" \
@@ -1089,68 +1033,29 @@ jobs:
           done
           export PATH
 
-          # secretspec: the CLI the Go secrets READ path spawns by name
-          # (internal/secrets' `defaultCLI`). The `go test` below is an UNSCOPED
-          # `./...`, so it walks internal/secrets too — a build tag selects which
-          # FILES compile, not which PACKAGES `./...` visits, and
-          # resolver_test.go carries no tag. Anything here that boots the real
-          # resolver needs the binary as much as the moon and pgtest lanes do.
-          # Same out-of-band helper and the
-          # same in-process `export PATH` as the VMM trio above: the consumer is
-          # this very step, which a $GITHUB_PATH append alone would not reach.
-          # Absolute -f for the working-directory reason documented above.
-          secretspec=$(nix build --no-link --print-out-paths \
-            -f "$GITHUB_WORKSPACE/tools/toolchain/secretspec-env.nix" secretspec)
-          echo "$secretspec/bin" >>"$GITHUB_PATH"
-          PATH="$secretspec/bin:$PATH"
-          export PATH
+          # The old ./... selection pulled in internal/secrets unconditionally;
+          # only selected roots whose graph closure includes it need this CLI.
+          if [ "$MICROVM_REQUIRES_SECRETSPEC" = "true" ]; then
+            secretspec=$(nix build --no-link --print-out-paths \
+              -f "$GITHUB_WORKSPACE/tools/toolchain/secretspec-env.nix" secretspec)
+            echo "$secretspec/bin" >>"$GITHUB_PATH"
+            PATH="$secretspec/bin:$PATH"
+            export PATH
+          fi
 
+          [ -n "$MICROVM_PACKAGES" ] || { echo "::error::selected microVM package list is empty"; exit 1; }
+          read -r -a packages <<<"$MICROVM_PACKAGES"
           rc=0
-          go test -tags microvm -race -v -timeout 15m ./... >/tmp/microvm.log 2>&1 || rc=$?
+          go test -tags microvm -race -v -timeout 15m "${packages[@]}" >/tmp/microvm.log 2>&1 || rc=$?
           cat /tmp/microvm.log
           exit "$rc"
 
       - name: Assert the microVM suites ran rather than skipped
         working-directory: go
-        # microvmtest.Require SKIPS (never fails) when /dev/kvm is not openable —
-        # correct for a KVM-less box, and a silent no-op here. This step exists to
-        # run those assertions KVM-backed, so a skip is a failure of its whole
-        # purpose and must be loud (the pgtest guard's exact shape).
-        #
-        # Both halves are derived from source rather than hardcoded, because a
-        # guard that drifts out of step with what it guards passes silently:
-        #   - the skip text is read from microvmtest.go, so rewording it cannot
-        #     leave this grep matching nothing and reporting success;
-        #   - the package list is the set that actually calls microvmtest.Require,
-        #     so the count means "the microVM packages ran". grep reads file text
-        #     regardless of build tags, so it finds the tagged canary too.
-        run: |
-          skip=$(sed -n 's/.*t\.Skip("\(\/dev\/kvm is not openable[^"]*\)").*/\1/p' \
-            internal/microvmtest/microvmtest.go)
-          if [ -z "$skip" ]; then
-            echo "::error::could not read the skip message out of internal/microvmtest/microvmtest.go — this guard has drifted from the harness and is no longer checking anything"
-            exit 1
-          fi
-          if grep -qF "$skip" /tmp/microvm.log; then
-            echo "::error::microvmtest harness skipped — /dev/kvm was not openable, so nothing was asserted"
-            grep -nF "$skip" /tmp/microvm.log | head
-            exit 1
-          fi
-          pkgs=$({ grep -rl 'microvmtest\.Require' --include='*.go' . || true; } \
-            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
-          if [ -z "$pkgs" ]; then
-            echo "::error::no package calls microvmtest.Require — the harness moved and this guard is vacuous"
-            exit 1
-          fi
-          rc=0
-          for pkg in $pkgs; do
-            if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/$pkg[[:space:]]" /tmp/microvm.log; then
-              echo "::error::microVM package '$pkg' did not report ok — it failed, skipped, or never ran"
-              rc=1
-            fi
-          done
-          echo "microvm: checked $(printf '%s\n' "$pkgs" | wc -l) KVM-backed packages"
-          exit "$rc"
+        env:
+          MICROVM_PACKAGES: ${{ join(fromJSON(needs.setup.outputs.microvm_packages), ' ') }}
+        # Check the skip text and selected roots that call microvmtest.Require.
+        run: bun run ../tools/ci-matrix/suite-assertions.ts microvm /tmp/microvm.log
 
       - name: Save the Go module cache
         # Never on workflow_dispatch: a `pr` dispatch runs PR code under main's cache scope.

@@ -17,6 +17,7 @@ export type SuiteSelection = {
 	run: boolean;
 	reason: string;
 	roots: readonly string[];
+	requiresSecretspec: boolean;
 };
 
 export const GATE_PATHS: readonly string[] = [
@@ -68,12 +69,37 @@ function allRoots(suite: GoSuite, graph: GoGraph): string[] {
 	return Object.keys(graph.closure[suite]).sort();
 }
 
+function requiresSecretspec(
+	suite: GoSuite,
+	roots: readonly string[],
+	graph: GoGraph,
+): boolean {
+	return roots.some((root) =>
+		graph.closure[suite][root]?.includes("internal/secrets"),
+	);
+}
+
+function selectedSuite(
+	suite: GoSuite,
+	graph: GoGraph,
+	selection: Omit<SuiteSelection, "requiresSecretspec">,
+): SuiteSelection {
+	return {
+		...selection,
+		requiresSecretspec: requiresSecretspec(suite, selection.roots, graph),
+	};
+}
+
 function wideSelection(
 	suite: GoSuite,
 	graph: GoGraph,
 	reason: string,
 ): SuiteSelection {
-	return { run: true, reason, roots: allRoots(suite, graph) };
+	return selectedSuite(suite, graph, {
+		run: true,
+		reason,
+		roots: allRoots(suite, graph),
+	});
 }
 
 /** Changed paths that do not map to a Go package. */
@@ -126,13 +152,18 @@ function selectSuite(
 				.filter((pkg) => closure.includes(pkg))
 				.map((pkg) => ({ root, pkg })),
 	);
-	if (hits.length === 0) return { run: false, reason: "none", roots: [] };
+	if (hits.length === 0)
+		return selectedSuite(suite, input.graph, {
+			run: false,
+			reason: "none",
+			roots: [],
+		});
 	const reason = `closure: ${[...new Set(hits.map((hit) => hit.pkg))].sort().join(", ")}`;
 	const roots =
 		suite === "e2e"
 			? [...E2E_ROOTS].sort()
 			: [...new Set(hits.map((hit) => hit.root))].sort();
-	return { run: true, reason, roots };
+	return selectedSuite(suite, input.graph, { run: true, reason, roots });
 }
 
 function gateChange(changedPaths: readonly string[]): string | undefined {
