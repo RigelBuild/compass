@@ -63,6 +63,8 @@ projects:
   # The Runner manifest renderer and projected-token admission policy. Registered
   # so its render behavior suite and typecheck run in the Moon CI sweep.
   runner-manifests: 'tools/runner-manifests'
+  # The Server, data-service, and NetworkPolicy manifest renderer.
+  server-manifests: 'tools/server-manifests'
   # The agent-image pin the microVM guest rootfs derives from. Registered so
   # its typecheck + pure-core unit tests ride the CI sweep — that suite is what
   # catches a provenance or layer-order drift, and moon discovers projects only
