@@ -63,7 +63,7 @@
       # reference darwin/windows-only files a vendor-tree build fails on;
       # proxyVendor touches only compiled packages. vendorHash pins the whole
       # module graph (matches guestd's); recompute with lib.fakeHash on a go.sum move.
-      vendorHash = "sha256-n9QWmWnm56us5fpZqEUh8DZpkuN9LqyGcMQS3ATIG1g=";
+      vendorHash = "sha256-G6X5L63seWWC7iduVH56K6Y3aQG+cdPZkfxC4WHYURs=";
     in
     {
       packages = forAllSystems (
