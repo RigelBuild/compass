@@ -10,6 +10,14 @@ import {
 
 const digest = (name: string) =>
 	`ghcr.io/example/${name}@sha256:${"a".repeat(64)}`;
+// A real RSA public key: the Server refuses JWKS entries without key material.
+const TEST_JWK = {
+	kty: "RSA",
+	kid: "test",
+	n: "v_DRFFXPuN5E_0evmokNkJOd9vOnAX-oudOpOcjMRWnCTEkZv4ZCedUGJCTtxaLB0Cag3GbYTu0JIk1Qcp6wTiFd3OFZ_2TiKivNYndAi-2qbEwIxwBZFOr-1LQZDJUK40Dt2CV_3-y_NpXG1bsdj1daUaBD1EhSlGespnszq67klxOKPC-pk3EF9ZL6NIOzUbVsorWxuUuWrC0FCZwCA47DkrEEXraDIehrLfsfrtyZLvb4StZPX2q9hXKwh_5BbWUfBe7Y6QRy13VT5KuTGfZavLKP8hcx_bsB_SU_u-94JekLO6Mhj4_iO7ZMAfnSJuU-v64gNIhFZ0fRX5Yw3w",
+	e: "AQAB",
+};
+
 const values: ServerDeployValues = {
 	namespace: "compass",
 	serverImage: digest("compass-server"),
@@ -28,7 +36,7 @@ const values: ServerDeployValues = {
 			namespace: "compass-runners",
 			serviceAccount: "compass-runner",
 			maxTokenLifetime: "10m",
-			jwks: JSON.stringify({ keys: [{ kty: "RSA", kid: "test" }] }),
+			jwks: JSON.stringify({ keys: [TEST_JWK] }),
 		},
 	],
 };
@@ -611,6 +619,26 @@ describe("renderServerManifests", () => {
 		expect(() => rejectCluster({ jwks: JSON.stringify({ keys: {} }) })).toThrow(
 			"runnerClusters[0].jwks",
 		);
+		expect(() => rejectCluster({ jwks: JSON.stringify({ keys: [] }) })).toThrow(
+			"usable public key",
+		);
+		expect(() =>
+			rejectCluster({
+				jwks: JSON.stringify({ keys: [{ kty: "RSA", kid: "no-material" }] }),
+			}),
+		).toThrow("usable public key");
+		expect(() =>
+			rejectCluster({
+				jwks: JSON.stringify({ keys: [{ kty: "oct", k: "c2VjcmV0" }] }),
+			}),
+		).toThrow("usable public key");
+		expect(() =>
+			rejectCluster({
+				jwks: JSON.stringify({
+					keys: [{ kty: "RSA", n: "AQAB", e: "AQAB", d: "AQAB" }],
+				}),
+			}),
+		).toThrow("usable public key");
 		expect(() => rejectCluster({ name: "Invalid_Name" })).toThrow(
 			"runnerClusters[0].name",
 		);

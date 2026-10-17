@@ -56,6 +56,10 @@ export function assertServerImageDigest(ref: string): void {
 	}
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function objectValue(value: unknown, name: string): Record<string, unknown> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new Error(`${name} must be an object`);
@@ -160,6 +164,27 @@ function parseGoDurationNanos(duration: string, field: string): bigint {
 	return nanos;
 }
 
+const EC_CURVES = new Set(["P-256", "P-384", "P-521"]);
+
+// Mirrors the Server's JWKS loader, which drops private, symmetric and
+// incomplete keys and refuses to start when none remain.
+function isUsablePublicJWK(key: unknown): boolean {
+	if (!isPlainObject(key)) return false;
+	const has = (name: string) =>
+		typeof key[name] === "string" && key[name] !== "";
+	if (key.d !== undefined) return false;
+	switch (key.kty) {
+		case "RSA":
+			return has("n") && has("e");
+		case "EC":
+			return EC_CURVES.has(String(key.crv)) && has("x") && has("y");
+		case "OKP":
+			return key.crv === "Ed25519" && has("x");
+		default:
+			return false;
+	}
+}
+
 function validateRunnerCluster(
 	cluster: RunnerClusterValues,
 	index: number,
@@ -187,6 +212,9 @@ function validateRunnerCluster(
 		const jwks = objectValue(jwksValue, `${field}.jwks`);
 		if (!Array.isArray(jwks.keys)) {
 			throw new Error(`${field}.jwks must be valid JSON with a keys array`);
+		}
+		if (!jwks.keys.some(isUsablePublicJWK)) {
+			throw new Error(`${field}.jwks holds no usable public key`);
 		}
 	}
 	if (cluster.maxTokenLifetime !== undefined) {

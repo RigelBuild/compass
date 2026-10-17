@@ -29,7 +29,7 @@
 			"namespace": "compass-runners",
 			"serviceAccount": "compass-runner",
 			"maxTokenLifetime": "10m",
-			"jwks": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"example\"}]}"
+			"jwks": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"example\",\"n\":\"v_DRFFXPuN5E_0evmokNkJOd9vOnAX-oudOpOcjMRWnCTEkZv4ZCedUGJCTtxaLB0Cag3GbYTu0JIk1Qcp6wTiFd3OFZ_2TiKivNYndAi-2qbEwIxwBZFOr-1LQZDJUK40Dt2CV_3-y_NpXG1bsdj1daUaBD1EhSlGespnszq67klxOKPC-pk3EF9ZL6NIOzUbVsorWxuUuWrC0FCZwCA47DkrEEXraDIehrLfsfrtyZLvb4StZPX2q9hXKwh_5BbWUfBe7Y6QRy13VT5KuTGfZavLKP8hcx_bsB_SU_u-94JekLO6Mhj4_iO7ZMAfnSJuU-v64gNIhFZ0fRX5Yw3w\",\"e\":\"AQAB\"}]}"
 		}
 	]
 }
