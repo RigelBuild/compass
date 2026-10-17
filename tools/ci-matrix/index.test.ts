@@ -286,6 +286,24 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(true);
 	});
 
+	test("forgeAffected on a webhook ingress or tunnel-leg change", () => {
+		for (const path of [
+			"go/server/github_webhook.go",
+			"go/server/linear_webhook.go",
+			"go/server/webhook_tunnel_live_test.go",
+		]) {
+			expect(
+				generate(prInput({ affectedIds: [], changedPaths: [path] }))
+					.forgeAffected,
+			).toBe(true);
+		}
+		expect(
+			generate(
+				prInput({ affectedIds: [], changedPaths: ["go/server/forge.go"] }),
+			).forgeAffected,
+		).toBe(false);
+	});
+
 	test("forgeAffected NOT triggered by a ci.yml-only PR (RIG-2909)", () => {
 		// The live oracle is the expensive extra verification on top of the
 		// untagged golden-replay battery; a PR that only touches this workflow
