@@ -29,11 +29,10 @@ func (rt redactURL) RoundTrip(req *http.Request) (*http.Response, error) {
 	redacted := *req.URL
 	redacted.User = nil // otelhttp strips userinfo too; keep that when overwriting url.full
 	query := redacted.Query()
-	for key, values := range query {
+	for _, values := range query {
 		for i := range values {
 			values[i] = "REDACTED"
 		}
-		query[key] = values
 	}
 	redacted.RawQuery = query.Encode()
 	trace.SpanFromContext(req.Context()).SetAttributes(semconv.URLFull(redacted.String()))
