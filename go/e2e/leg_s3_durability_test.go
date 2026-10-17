@@ -270,23 +270,44 @@ func waitHistoryContains(t *testing.T, ctx context.Context, f *Fixture, st *stor
 	}
 }
 
-// assertSessionEndCoversTail requires the session_end segment to end at the PG tail's last row; the dead agent adds none.
-func assertSessionEndCoversTail(t *testing.T, ctx context.Context, dsn, sessionID string) {
+// assertSessionEndCoversTail requires the session_end object to span the PG tail. A valve pass in flight at
+// teardown can still prune the oldest rows, so the current tail must be a suffix of the segment, not equal to it.
+func assertSessionEndCoversTail(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID string) {
 	t.Helper()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgxpool.New(ctx, f.DSN())
 	if err != nil {
 		t.Fatalf("open session_end pool: %v", err)
 	}
 	defer pool.Close()
-	var segMax, tailMax int64
-	if err := pool.QueryRow(ctx, `SELECT max(max_entry_seq) FROM agent_session_archive_segments WHERE session_id=$1 AND kind='session_end'`, sessionID).Scan(&segMax); err != nil {
-		t.Fatalf("session_end range: %v", err)
+	var key string
+	var segMin, segMax int64
+	if err := pool.QueryRow(ctx, `SELECT object_key, min_entry_seq, max_entry_seq FROM agent_session_archive_segments WHERE session_id=$1 AND kind='session_end' ORDER BY max_entry_seq DESC LIMIT 1`, sessionID).Scan(&key, &segMin, &segMax); err != nil {
+		t.Fatalf("session_end segment: %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT max(entry_seq) FROM agent_session_transcript_entries WHERE session_id=$1`, sessionID).Scan(&tailMax); err != nil {
-		t.Fatalf("PG tail max: %v", err)
+	obj, err := garageS3Client(t, f.garage).GetObject(ctx, f.garage.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("GetObject(%q): %v", key, err)
 	}
-	if segMax != tailMax {
-		t.Fatalf("session_end segment ends at entry %d, PG tail ends at %d", segMax, tailMax)
+	body, err := io.ReadAll(obj)
+	_ = obj.Close()
+	if err != nil {
+		t.Fatalf("read session_end segment %q: %v", key, err)
+	}
+	tail, err := st.SessionTranscript(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("SessionTranscript: %v", err)
+	}
+	tailMin, tailMax := int64(tail[0].EntrySeq), int64(tail[len(tail)-1].EntrySeq)
+	if segMin > tailMin || segMax != tailMax {
+		t.Fatalf("session_end segment spans [%d..%d], PG tail spans [%d..%d]", segMin, segMax, tailMin, tailMax)
+	}
+	// The segment body is its entries joined by newlines; one entry can itself span several lines.
+	want := make([]string, 0, len(tail))
+	for _, entry := range tail {
+		want = append(want, entry.EntryJSON)
+	}
+	if !strings.HasSuffix(string(body), strings.Join(want, "\n")) {
+		t.Fatalf("session_end segment does not end with the %d PG tail entries [%d..%d]", len(tail), tailMin, tailMax)
 	}
 }
 
@@ -488,7 +509,7 @@ func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 	}
 	waitSessionErrored(t, ctx, f, sessionID)
 	waitSegmentKind(t, ctx, f.DSN(), sessionID, "session_end")
-	assertSessionEndCoversTail(t, ctx, f.DSN(), sessionID)
+	assertSessionEndCoversTail(t, ctx, f, st, sessionID)
 	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
 	if segmentCountByKind(t, ctx, f.DSN(), sessionID, "superseded") != 0 {
 		t.Fatal("detected-end archive pruned the tail as superseded")
