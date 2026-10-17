@@ -689,4 +689,148 @@ describe("ask forge mirroring", () => {
 			fake.close();
 		}
 	});
+
+	test("replacing an ask drops its mirror ref and comment URL", async () => {
+		const fake = createFakeComms(snapshot());
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const ref = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!ref) throw new Error("ask mirror ref input did not render");
+			expect(ref.value).toBe("rigelbuild/compass#12");
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+			expect(container.querySelector(".mirror-result")).not.toBeNull();
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: wireAskMessage({
+							id: "m-ask",
+							topicId: TOPIC,
+							authorAccountId: CALLER,
+							askId: "ask-2",
+							questionIds: ["q-1"],
+							ref: "rigelbuild/compass#13",
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			flush();
+			expect(container.querySelector(".mirror-result")).toBeNull();
+			expect(
+				container.querySelector<HTMLInputElement>(
+					'input[aria-label="Issue or PR ref"]',
+				),
+			).toBeNull();
+			const newOpen = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!newOpen)
+				throw new Error("replacement ask mirror control did not render");
+			fireEvent.click(newOpen);
+			flush();
+			const nextRef = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!nextRef) throw new Error("replacement ask ref input did not render");
+			expect(nextRef.value).toBe("rigelbuild/compass#13");
+		} finally {
+			fake.close();
+		}
+	});
+
+	test("renders an unsafe comment URL as inert mirrored text", async () => {
+		const fake = createFakeComms(snapshot());
+		fake.setMirrorCommentUrl("javascript:alert(1)");
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+			expect(container.querySelector(".mirror-result")?.textContent).toBe(
+				"Mirrored",
+			);
+			expect(
+				container.querySelector('a[href="javascript:alert(1)"]'),
+			).toBeNull();
+		} finally {
+			fake.close();
+		}
+	});
+
+	test("ignores a mirror completion after its ask is replaced", async () => {
+		const fake = createFakeComms(snapshot());
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const ref = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!ref) throw new Error("ask mirror ref input did not render");
+			fireEvent.input(ref, { target: { value: "owner/repo#23" } });
+			flush();
+			const gate = fake.holdNextMirror();
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await Promise.resolve();
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: wireAskMessage({
+							id: "m-ask",
+							topicId: TOPIC,
+							authorAccountId: CALLER,
+							askId: "ask-2",
+							questionIds: ["q-1"],
+							ref: "rigelbuild/compass#13",
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			gate.resolve("https://github.com/owner/repo/issues/23#issuecomment-2");
+			await settled();
+			flush();
+			expect(container.querySelector(".mirror-result")).toBeNull();
+			expect(
+				container.querySelector<HTMLInputElement>(
+					'input[aria-label="Issue or PR ref"]',
+				),
+			).toBeNull();
+		} finally {
+			fake.close();
+		}
+	});
 });

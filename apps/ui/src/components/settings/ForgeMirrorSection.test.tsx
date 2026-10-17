@@ -110,4 +110,32 @@ describe("ForgeMirrorSection", () => {
 			unmount();
 		}
 	});
+	test("disables a pending write and uses the server-returned mode", async () => {
+		const fake = createFakeCompass({
+			mirrorSettings: [setting],
+			canEditMirrorSettings: true,
+		});
+		const gate = fake.holdNextMirrorSetting();
+		const { container, unmount } = await mountSettings({
+			compass: fake.client,
+		});
+		try {
+			const select = mirrorSelect(container);
+			if (!select) throw new Error("mirror setting select did not render");
+			fireEvent.change(select, {
+				target: { value: String(ForgeMirrorMode.AUTO) },
+			});
+			flush();
+			expect(select.disabled).toBe(true);
+			expect(select.value).toBe(String(ForgeMirrorMode.MANUAL));
+
+			gate.resolve(ForgeMirrorMode.OFF);
+			await settle();
+			const settledSelect = mirrorSelect(container);
+			expect(settledSelect?.disabled).toBe(false);
+			expect(settledSelect?.value).toBe(String(ForgeMirrorMode.OFF));
+		} finally {
+			unmount();
+		}
+	});
 });

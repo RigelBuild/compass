@@ -46,6 +46,9 @@ export interface RecordedAskResponse {
 	}>;
 }
 
+export interface MirrorGate {
+	readonly resolve: (url: string) => void;
+}
 export interface FakeComms {
 	readonly client: CommsClient;
 	/** Every PostMessage the UI issued, in order. */
@@ -60,6 +63,8 @@ export interface FakeComms {
 		readonly channelId: string;
 	}>;
 	failNextMirror: (error: Error) => void;
+	setMirrorCommentUrl: (url: string) => void;
+	readonly holdNextMirror: () => MirrorGate;
 	/** Whether a SubscribeComms stream is currently live. The observable for the
 	 *  store's teardown contract: after the owner is disposed this goes false,
 	 *  because the driver's abort ends the generator. */
@@ -128,6 +133,9 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 	let askFailure: Error | undefined;
 	const mirrors: FakeComms["mirrors"] = [];
 	let mirrorFailure: Error | undefined;
+	let mirrorResult: Promise<string> | undefined;
+	let mirrorCommentUrl =
+		"https://github.com/owner/repo/issues/12#issuecomment-1";
 	let roster = snapshot.roster ?? [];
 	// A held-in-flight RespondToAsk: the promise the RPC parks on until the
 	// test's gate settles it. One at a time — the store issues at most one
@@ -325,9 +333,12 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 				mirrorFailure = undefined;
 				throw error;
 			}
-			return {
-				commentUrl: "https://github.com/owner/repo/issues/12#issuecomment-1",
-			};
+			if (mirrorResult) {
+				const result = mirrorResult;
+				mirrorResult = undefined;
+				return { commentUrl: await result };
+			}
+			return { commentUrl: mirrorCommentUrl };
 		},
 	};
 
@@ -341,6 +352,17 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		mirrors,
 		failNextMirror: (error) => {
 			mirrorFailure = error;
+		},
+		setMirrorCommentUrl: (url) => {
+			mirrorCommentUrl = url;
+		},
+		holdNextMirror: () => {
+			let resolve!: (url: string) => void;
+			const result = new Promise<string>((done) => {
+				resolve = done;
+			});
+			mirrorResult = result;
+			return { resolve };
 		},
 		isStreaming: () => streaming,
 		emit: (payload, seq) =>

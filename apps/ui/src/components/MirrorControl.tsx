@@ -1,5 +1,12 @@
-import { type Component, createSignal, Show } from "solid-js";
+import {
+	type Component,
+	createEffect,
+	createSignal,
+	onCleanup,
+	Show,
+} from "solid-js";
 import { useStore } from "../context";
+import { safeHref } from "../safe-url";
 import type { MirrorToForgeSource } from "../store";
 
 /** The "Mirror to issue" control on an ask or topic: an inline ref field (no
@@ -16,21 +23,60 @@ export const MirrorControl: Component<{
 	const [busy, setBusy] = createSignal(false);
 	const [error, setError] = createSignal<string>();
 	const [url, setUrl] = createSignal<string>();
+	const sourceKey = () => {
+		const source = props.source;
+		return source.case === "ask"
+			? `${props.channelId}:ask:${source.askId}`
+			: `${props.channelId}:topic:${source.topicId}`;
+	};
+	let generation = 0;
+	let alive = true;
+	createEffect(sourceKey, (key, previous) => {
+		if (previous !== undefined && key !== previous) {
+			generation += 1;
+			setOpen(false);
+			setRef("");
+			setBusy(false);
+			setError(undefined);
+			setUrl(undefined);
+		}
+	});
+	onCleanup(() => {
+		alive = false;
+		generation += 1;
+	});
+	const isCurrent = (mine: number, key: string) =>
+		alive && mine === generation && key === sourceKey();
+	const completeMirror = async (
+		mine: number,
+		key: string,
+		channelId: string,
+		source: MirrorToForgeSource,
+		issueRef: string,
+	) => {
+		try {
+			const commentUrl = await store.mirrorToForge(channelId, issueRef, source);
+			if (isCurrent(mine, key)) setUrl(commentUrl);
+		} catch (cause) {
+			if (isCurrent(mine, key)) {
+				setError(cause instanceof Error ? cause.message : String(cause));
+			}
+		} finally {
+			if (isCurrent(mine, key)) setBusy(false);
+		}
+	};
 	const submit = async (event: SubmitEvent) => {
 		event.preventDefault();
 		if (busy()) return;
+		const mine = ++generation;
+		const key = sourceKey();
+		const channelId = props.channelId;
+		const source = props.source;
+		const issueRef = ref().trim();
 		setBusy(true);
 		setError(undefined);
 		setUrl(undefined);
-		try {
-			setUrl(
-				await store.mirrorToForge(props.channelId, ref().trim(), props.source),
-			);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setBusy(false);
-		}
+		await completeMirror(mine, key, channelId, source, issueRef);
 	};
 	return (
 		<div class="mirror-control">
@@ -69,14 +115,17 @@ export const MirrorControl: Component<{
 					</span>
 				)}
 			</Show>
-			<Show when={url()}>
+			<Show when={safeHref(url())}>
 				{(target) => (
 					<span class="mirror-result">
-						<a href={target()} target="_blank" rel="noreferrer">
+						<a href={target()} target="_blank" rel="noreferrer noopener">
 							View comment
 						</a>
 					</span>
 				)}
+			</Show>
+			<Show when={url() && !safeHref(url())}>
+				<span class="mirror-result">Mirrored</span>
 			</Show>
 		</div>
 	);

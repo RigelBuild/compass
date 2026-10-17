@@ -1447,22 +1447,22 @@
 	display: flex;
 	align-items: center;
 	flex-wrap: wrap;
-	gap: 8px;
+	gap: var(--cx-space-2);
 }
 
 .mirror-form {
 	display: flex;
 	align-items: end;
 	flex-wrap: wrap;
-	gap: 8px;
+	gap: var(--cx-space-2);
 }
 
 .mirror-form label {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
+	gap: var(--cx-space-1);
 	color: var(--cx-text-dim);
-	font-size: 11px;
+	font-size: var(--cx-text-xs);
 }
 
 .mirror-form .cx-input {
@@ -1471,11 +1471,11 @@
 
 .mirror-error {
 	color: var(--cx-error);
-	font-size: 12px;
+	font-size: var(--cx-text-sm);
 }
 
 .mirror-result {
-	font-size: 12px;
+	font-size: var(--cx-text-sm);
 }
 
 /* Fallback for a message block whose kind this UI doesn't render (a newer

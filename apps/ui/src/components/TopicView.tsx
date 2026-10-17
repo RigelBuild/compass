@@ -75,10 +75,14 @@ export const TopicView: Component = () => {
 							</Show>
 							<Show when={channel()}>
 								{(chan) => (
-									<MirrorControl
-										channelId={chan().id}
-										source={{ case: "topic", topicId: t().id }}
-									/>
+									<Show when={t().id} keyed>
+										{(_topicId) => (
+											<MirrorControl
+												channelId={chan().id}
+												source={{ case: "topic", topicId: t().id }}
+											/>
+										)}
+									</Show>
 								)}
 							</Show>
 						</header>

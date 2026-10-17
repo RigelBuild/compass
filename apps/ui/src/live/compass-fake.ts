@@ -78,6 +78,10 @@ export interface RecordedSkip {
 	readonly sessionId: string;
 }
 
+export interface MirrorSettingGate {
+	readonly response: Promise<ForgeMirrorModeValue>;
+	readonly resolve: (mode: ForgeMirrorModeValue) => void;
+}
 export interface FakeCompass {
 	readonly client: CompassClient;
 	readonly mirrorSettingWrites: Array<{
@@ -90,7 +94,8 @@ export interface FakeCompass {
 		readonly repo: string;
 		readonly mode: ForgeMirrorModeValue;
 	}>;
-	failNextMirrorSetting: (error: Error) => void;
+	readonly failNextMirrorSetting: (error: Error) => void;
+	readonly holdNextMirrorSetting: () => MirrorSettingGate;
 	/** Every StopAgentSession the UI issued, in order. */
 	readonly stops: RecordedStop[];
 	/** Reject the next StopAgentSession with `error` (one-shot) — the
@@ -168,6 +173,7 @@ export function createFakeCompass(opts?: {
 		repo: string;
 		mode: ForgeMirrorModeValue;
 	}> = [];
+	let pendingMirrorSetting: MirrorSettingGate | undefined;
 	let mirrorSettingFailure: Error | undefined;
 	let stopFailure: Error | undefined;
 	const skips: RecordedSkip[] = [];
@@ -231,6 +237,17 @@ export function createFakeCompass(opts?: {
 			);
 			if (index < 0)
 				throw new Error("setting does not name an enabled coordinate");
+			const gate = pendingMirrorSetting;
+			pendingMirrorSetting = undefined;
+			if (gate) {
+				const responseMode = await gate.response;
+				mirrorSettings[index] = {
+					...setting,
+					mode: responseMode,
+					forge: { ...setting.forge },
+				};
+				return { setting: mirrorSettings[index] };
+			}
 			mirrorSettings[index] = { ...setting, forge: { ...setting.forge } };
 			return { setting };
 		},
@@ -333,12 +350,21 @@ export function createFakeCompass(opts?: {
 		failNextMirrorSetting: (error) => {
 			mirrorSettingFailure = error;
 		},
-		skips,
-		failNextSkip: (error) => {
-			skipFailure = error;
+		holdNextMirrorSetting: () => {
+			let resolve!: (mode: ForgeMirrorModeValue) => void;
+			const response = new Promise<ForgeMirrorModeValue>((done) => {
+				resolve = done;
+			});
+			const gate = { response, resolve };
+			pendingMirrorSetting = gate;
+			return gate;
 		},
 		failNextStop: (error) => {
 			stopFailure = error;
+		},
+		skips,
+		failNextSkip: (error) => {
+			skipFailure = error;
 		},
 		serverInfo,
 		failNextProbe: (error) => {

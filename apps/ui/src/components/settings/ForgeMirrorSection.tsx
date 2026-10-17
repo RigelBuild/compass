@@ -1,5 +1,12 @@
 import { ForgeMirrorMode, ForgeProvider } from "@compass/client";
-import { type Component, createMemo, createSignal, For, Show } from "solid-js";
+import {
+	type Component,
+	createMemo,
+	createSignal,
+	createUniqueId,
+	For,
+	Show,
+} from "solid-js";
 import { useStore } from "../../context";
 import type { ForgeMirrorModeValue } from "../../store";
 import { SettingsRow } from "./SettingsRow";
@@ -22,12 +29,18 @@ export const ForgeMirrorSection: Component = () => {
 		const state = store.forgeMirrorSettings();
 		return state.status === "error" ? state : undefined;
 	});
-	const [selectedModes, setSelectedModes] = createSignal(
-		new Map<string, ForgeMirrorModeValue>(),
-	);
+	const uid = createUniqueId();
 	const [errors, setErrors] = createSignal<Record<string, string>>({});
+	const [pending, setPending] = createSignal<ReadonlySet<string>>(new Set());
 	const keyOf = (setting: { provider: number; host: string; repo: string }) =>
 		`${setting.provider}:${setting.host}:${setting.repo}`;
+	const modeFor = (key: string, fallback: ForgeMirrorModeValue) => {
+		const current = store.forgeMirrorSettings();
+		return current.status === "ready"
+			? (current.settings.find((setting) => keyOf(setting) === key)?.mode ??
+					fallback)
+			: fallback;
+	};
 
 	const changeMode = async (
 		setting: {
@@ -39,12 +52,13 @@ export const ForgeMirrorSection: Component = () => {
 		mode: ForgeMirrorModeValue,
 	) => {
 		const key = keyOf(setting);
+		if (pending().has(key)) return;
 		setErrors((previous) => {
 			const next = { ...previous };
 			delete next[key];
 			return next;
 		});
-		setSelectedModes((previous) => new Map(previous).set(key, mode));
+		setPending((previous) => new Set(previous).add(key));
 		try {
 			await store.setForgeMirrorSetting({
 				provider: setting.provider,
@@ -53,18 +67,26 @@ export const ForgeMirrorSection: Component = () => {
 				mode,
 			});
 		} catch (error) {
-			setSelectedModes((previous) => new Map(previous).set(key, setting.mode));
 			setErrors((previous) => ({
 				...previous,
 				[key]: error instanceof Error ? error.message : String(error),
 			}));
+		} finally {
+			setPending((previous) => {
+				const next = new Set(previous);
+				next.delete(key);
+				return next;
+			});
 		}
 	};
 
 	return (
-		<section class="settings-content" aria-labelledby="forge-mirror-title">
+		<section
+			class="settings-content"
+			aria-labelledby={`${uid}-forge-mirror-title`}
+		>
 			<header class="settings-content-head">
-				<h2 class="settings-heading" id="forge-mirror-title">
+				<h2 class="settings-heading" id={`${uid}-forge-mirror-title`}>
 					Issue mirroring
 				</h2>
 				<p class="settings-description">
@@ -100,10 +122,8 @@ export const ForgeMirrorSection: Component = () => {
 													id={id}
 													class="cx-select"
 													aria-label={`${providerLabel[setting.provider] ?? "Forge"} · ${setting.host}/${setting.repo}`}
-													value={String(
-														selectedModes().get(key) ?? setting.mode,
-													)}
-													disabled={!state().canEdit}
+													value={String(modeFor(key, setting.mode))}
+													disabled={!state().canEdit || pending().has(key)}
 													onChange={(event) => {
 														const mode = Number(event.currentTarget.value);
 														if (

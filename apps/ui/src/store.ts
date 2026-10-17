@@ -658,7 +658,7 @@ export interface AppStore {
 	modelRegistry: Accessor<ModelRegistryState>;
 	/** Tenant mirror settings for every enabled forge coordinate. */
 	forgeMirrorSettings: Accessor<ForgeMirrorSettingsState>;
-	/** Set one coordinate mode. On refusal the visible selection stays unchanged. */
+	/** Set one coordinate mode from the server-confirmed response. */
 	setForgeMirrorSetting: (
 		setting: Omit<ForgeMirrorSetting, "mode"> & { mode: ForgeMirrorModeValue },
 	) => Promise<void>;
@@ -2119,22 +2119,32 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				"cannot set forge mirror mode: this store has no Compass client",
 			);
 		}
-		await options.compass.setForgeMirrorSetting({
+		const response = await options.compass.setForgeMirrorSetting({
 			setting: {
 				forge: { provider: setting.provider, host: setting.host },
 				repo: setting.repo,
 				mode: setting.mode,
 			},
 		});
+		const saved = response.setting;
+		if (!saved?.forge || !isForgeMirrorModeValue(saved.mode)) {
+			throw new Error("server returned an invalid forge mirror setting");
+		}
+		const confirmed: ForgeMirrorSetting = {
+			provider: saved.forge.provider,
+			host: saved.forge.host,
+			repo: saved.repo,
+			mode: saved.mode,
+		};
 		const state = forgeMirrorSettings();
 		if (state.status === "ready") {
 			setForgeMirrorSettingsState({
 				...state,
 				settings: state.settings.map((previous) =>
-					previous.provider === setting.provider &&
-					previous.host === setting.host &&
-					previous.repo === setting.repo
-						? { ...previous, mode: setting.mode }
+					previous.provider === confirmed.provider &&
+					previous.host === confirmed.host &&
+					previous.repo === confirmed.repo
+						? confirmed
 						: previous,
 				),
 			});

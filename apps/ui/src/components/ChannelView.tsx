@@ -211,11 +211,15 @@ const AskBlock: Component<{ messageId: string; topicId: string; ask: Ask }> = (
 			</Show>
 			<Show when={askChannelId()}>
 				{(channelId) => (
-					<MirrorControl
-						channelId={channelId()}
-						source={{ case: "ask", askId: ask().askId }}
-						initialRef={ask().ref}
-					/>
+					<Show when={ask().askId} keyed>
+						{(_askId) => (
+							<MirrorControl
+								channelId={channelId()}
+								source={{ case: "ask", askId: ask().askId }}
+								initialRef={ask().ref}
+							/>
+						)}
+					</Show>
 				)}
 			</Show>
 		</div>
