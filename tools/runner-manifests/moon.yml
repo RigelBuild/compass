@@ -12,3 +12,8 @@ tasks:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', 'seccomp/*.json', '/runner-image/Dockerfile']
+  # The CI matrix runs only `:ci` targets.
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
