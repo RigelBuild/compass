@@ -35,26 +35,30 @@ WITH up AS (
  LIMIT 1;
 
 -- name: SetIssueState :execrows
-UPDATE issues SET state = $2 WHERE id = $1;
+-- A same-state write keeps state_changed_at: only a real column move stamps it.
+UPDATE issues
+   SET state_changed_at = CASE WHEN state = $2 THEN state_changed_at ELSE now() END,
+       state = $2
+ WHERE id = $1;
 
 -- name: GetIssue :one
 SELECT id, forge_provider, forge_host, repo, number,
        title, body, forge_state, url, forge_account, labels, agent_handle,
-       forge_updated_at, state, priority, assignee, summary, branch
+       forge_updated_at, state, priority, assignee, summary, branch, state_changed_at
 FROM issues
 WHERE id = $1;
 
 -- name: ListIssues :many
 SELECT id, forge_provider, forge_host, repo, number,
        title, body, forge_state, url, forge_account, labels, agent_handle,
-       forge_updated_at, state, priority, assignee, summary, branch
+       forge_updated_at, state, priority, assignee, summary, branch, state_changed_at
 FROM issues
 ORDER BY id;
 
 -- name: SearchIssues :many
 SELECT id, forge_provider, forge_host, repo, number,
        title, body, forge_state, url, forge_account, labels, agent_handle,
-       forge_updated_at, state, priority, assignee, summary, branch
+       forge_updated_at, state, priority, assignee, summary, branch, state_changed_at
 FROM issues
 WHERE search_tsv @@ websearch_to_tsquery('english', $1)
 ORDER BY ts_rank('{0.1,0.2,0.4,1.0}'::real[], search_tsv, websearch_to_tsquery('english', $1)) DESC, number DESC

@@ -1255,6 +1255,9 @@ message Issue {
   string branch = 16;           // the working head branch NAME (may exist before any PR)
   repeated PullRequest prs = 17; // every PR opened for this issue; empty before the first
   TrackerRef tracker = 18;      // the tracker projection target (DL-032); unset when unlinked
+  // When the server last moved `state` (unset until the first transition). The
+  // UI marks a card that changed column recently as advancing.
+  google.protobuf.Timestamp state_changed_at = 20;
 }
 
 // A Compass pull request: the forge PR's fields plus the Compass agent

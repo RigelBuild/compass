@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import {
 	AgentSessionState,
 	AgentSessionStatusSchema,
@@ -387,6 +388,53 @@ describe("runEventStream (RIG-1729 read driver)", () => {
 			const a = latest.find((i) => i.id === "a");
 			expect(a?.title).toBe("first-v2");
 			expect(a?.state).toBe("in_progress");
+		} finally {
+			abort.abort();
+			await run;
+		}
+	});
+
+	test("maps state stamps into the browser clock from the fresh boundary frame", async () => {
+		// The server clock runs 90s ahead. The boundary frame is minted now; the
+		// replayed issue event was published an hour ago and keeps that time.
+		const skew = 90_000;
+		const serverNow = Date.now() + skew;
+		const boundary = create(SubscribeEventsResponseSchema, {
+			seq: 0n,
+			atUnixMs: BigInt(serverNow),
+			instanceEpoch: 7n,
+		});
+		const recent = issueResp(1n, "recent", {
+			state: IssueState.IN_REVIEW,
+			stateChangedAt: timestampFromMs(serverNow - 10_000),
+		});
+		const replayed = issueResp(2n, "old", {
+			state: IssueState.IN_REVIEW,
+			stateChangedAt: timestampFromMs(serverNow - 3_600_000),
+		});
+		replayed.atUnixMs = BigInt(serverNow - 3_600_000);
+		const client = createCompassClient(
+			scriptedTransport([boundary, recent, replayed], { catchUp: [] }),
+		);
+		const abort = new AbortController();
+		let latest: DomainIssue[] = [];
+		const run = runEventStream({
+			client,
+			onIssues: (issues) => {
+				latest = issues;
+			},
+			signal: abort.signal,
+		});
+		try {
+			await drainUntil(() => latest.length === 2);
+			const age = (id: string) =>
+				Date.now() -
+				(latest.find((i) => i.id === id)?.stateChangedAtUnixMs ?? 0);
+			// Without the offset the recent stamp would read 80s in the future.
+			expect(age("recent")).toBeGreaterThanOrEqual(9_000);
+			expect(age("recent")).toBeLessThan(12_000);
+			// A replayed event's old time must not recalibrate the clock.
+			expect(age("old")).toBeGreaterThan(3_500_000);
 		} finally {
 			abort.abort();
 			await run;

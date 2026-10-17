@@ -220,8 +220,8 @@ and a PRs view.
   title, and a footer with the `@assignee` and a diff `+add / −del`.
 - **PRs view rows** carry the PR's own facts — the CI badge, the review badge, and
   a `resolved/total threads` count — distinct from the issue's.
-- **One advancing card** carries the chase-light (the `advancing` flag) as it
-  crosses a column: work in motion.
+- **Advancing cards** carry the chase-light (the `advancing` flag) as they
+  cross a column: work in motion.
 
 **Composition.** Cells are `.cx-card` on the panel tier; selection is
 `--cx-bg-selected` plus the accent left rule, never a raised background. Lane
@@ -233,7 +233,10 @@ review badge is
 `.cx-badge[data-status="review-approved | review-changes | review-pending"]` on
 `--cx-review-*`; the issue cross-link is a `.cx-chip`. The advancing card carries
 the chase-light in the blue flow color as it crosses a column boundary; it is not
-a state pulse.
+a state pulse. A card is advancing for 60 seconds after the server moves its
+lifecycle state (`Issue.state_changed_at`), and only while it is on the board.
+An advancing card's aria-label ends in ", advancing", so screen readers hear the
+move as well.
 
 **Focus and keyboard.** The board is the main-view focus zone and a
 two-dimensional roving-tabindex grid: arrow keys move a card cursor across lanes

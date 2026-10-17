@@ -656,12 +656,9 @@
 	padding: 9px 10px;
 }
 
-/* The one card mid-advance (G10; D2): a border in the blue flow color plus a
-   chase-light bar sweeping through it — work crossing a column boundary, never
-   a state pulse. Board-scoped like the F3 layout so it can never paint a
-   non-board .cx-card. Ships DORMANT: no live data sets data-advancing yet (the
-   Issue model carries no transition timestamp), so this waits on a future store
-   accessor. Consumes existing motion tokens only — no coined duration/easing. */
+/* A card that just changed column (Bridge sets data-advancing): blue border plus
+   a chase-light sweep — work crossing a column, never a state pulse. Board-scoped
+   so it never paints a non-board .cx-card; existing motion tokens only. */
 .bridge-cell > .cx-card[data-advancing="1"] {
 	/* When a card is both selected and advancing this rule (2 classes + 1 attr)
 	   intentionally outranks .cx-card[data-selected] (1 class + 1 attr) on the

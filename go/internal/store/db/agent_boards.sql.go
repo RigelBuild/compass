@@ -200,7 +200,7 @@ WITH want AS (
 )
 SELECT i.id, i.forge_provider, i.forge_host, i.repo, i.number,
        i.title, i.body, i.forge_state, i.url, i.forge_account, i.labels, i.agent_handle,
-       i.forge_updated_at, i.state, i.priority, i.assignee, i.summary, i.branch
+       i.forge_updated_at, i.state, i.priority, i.assignee, i.summary, i.branch, i.state_changed_at
   FROM issues i
   JOIN want w ON i.forge_provider = w.provider AND i.forge_host = w.host
              AND (CASE WHEN i.forge_provider = 1 THEN lower(i.repo) ELSE i.repo END) = w.repo
@@ -234,6 +234,7 @@ type IssuesByCoordsRow struct {
 	Assignee       string
 	Summary        string
 	Branch         string
+	StateChangedAt pgtype.Timestamptz
 }
 
 func (q *Queries) IssuesByCoords(ctx context.Context, arg IssuesByCoordsParams) ([]IssuesByCoordsRow, error) {
@@ -269,6 +270,7 @@ func (q *Queries) IssuesByCoords(ctx context.Context, arg IssuesByCoordsParams) 
 			&i.Assignee,
 			&i.Summary,
 			&i.Branch,
+			&i.StateChangedAt,
 		); err != nil {
 			return nil, err
 		}

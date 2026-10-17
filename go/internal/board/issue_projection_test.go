@@ -23,23 +23,24 @@ import (
 // left nil (their producing slices own them).
 func TestIssueToProtoMapsForgeAndMachinery(t *testing.T) {
 	si := store.Issue{
-		ID:            "iss-1",
-		ForgeProvider: store.ForgeProviderGitHub,
-		ForgeHost:     "github.com",
-		Repo:          "RigelBuild/compass",
-		Number:        42,
-		Title:         "a bug",
-		Body:          "it broke",
-		ForgeState:    "open",
-		URL:           "https://github.com/RigelBuild/compass/issues/42",
-		ForgeAccount:  "octocat",
-		Labels:        []string{"bug", "p1"},
-		AgentHandle:   "agent-smith",
-		State:         store.IssueStateInProgress,
-		Priority:      "high",
-		Assignee:      "agent-1",
-		Summary:       "working it",
-		Branch:        "fix/42",
+		ID:             "iss-1",
+		ForgeProvider:  store.ForgeProviderGitHub,
+		ForgeHost:      "github.com",
+		Repo:           "RigelBuild/compass",
+		Number:         42,
+		Title:          "a bug",
+		Body:           "it broke",
+		ForgeState:     "open",
+		URL:            "https://github.com/RigelBuild/compass/issues/42",
+		ForgeAccount:   "octocat",
+		Labels:         []string{"bug", "p1"},
+		AgentHandle:    "agent-smith",
+		State:          store.IssueStateInProgress,
+		Priority:       "high",
+		Assignee:       "agent-1",
+		Summary:        "working it",
+		Branch:         "fix/42",
+		StateChangedAt: time.Date(2026, 10, 17, 9, 30, 0, 0, time.UTC),
 	}
 
 	got := issueToProto(si)
@@ -80,6 +81,9 @@ func TestIssueToProtoMapsForgeAndMachinery(t *testing.T) {
 	if got.GetPrs() != nil {
 		t.Errorf("prs = %v, want nil (its slice owns it)", got.GetPrs())
 	}
+	if !got.GetStateChangedAt().AsTime().Equal(si.StateChangedAt) {
+		t.Errorf("state_changed_at = %v, want %v", got.GetStateChangedAt(), si.StateChangedAt)
+	}
 }
 
 // TestIssueToProtoEmptyLabelsAndHumanAuthor pins the empty->nil contract on the
@@ -98,6 +102,9 @@ func TestIssueToProtoEmptyLabelsAndHumanAuthor(t *testing.T) {
 	}
 	if got.GetAgent() != nil {
 		t.Errorf("agent = %v, want nil for a human author", got.GetAgent())
+	}
+	if got.GetStateChangedAt() != nil {
+		t.Errorf("state_changed_at = %v, want unset before any transition", got.GetStateChangedAt())
 	}
 }
 

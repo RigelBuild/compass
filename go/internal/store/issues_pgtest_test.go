@@ -193,6 +193,73 @@ func TestSetIssueStateRoundTrips(t *testing.T) {
 	}
 }
 
+// A column move stamps state_changed_at; a same-state write and a forge re-poll
+// keep it, so a card advances only when its lifecycle state really changed.
+func TestSetIssueStateStampsStateChangedAtOnlyOnChange(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	id, err := s.UpsertIssueForgeFields(ctx, forgeFields(1))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	fresh, err := s.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !fresh.StateChangedAt.IsZero() {
+		t.Fatalf("StateChangedAt before any transition = %v, want zero", fresh.StateChangedAt)
+	}
+
+	before := time.Now().Add(-time.Minute)
+	if err := s.SetIssueState(ctx, id, IssueStateInProgress); err != nil {
+		t.Fatalf("SetIssueState: %v", err)
+	}
+	moved, err := s.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if moved.StateChangedAt.Before(before) {
+		t.Fatalf("StateChangedAt after a move = %v, want a fresh stamp", moved.StateChangedAt)
+	}
+
+	if err := s.SetIssueState(ctx, id, IssueStateInProgress); err != nil {
+		t.Fatalf("SetIssueState same state: %v", err)
+	}
+	if _, err := s.UpsertIssueForgeFields(ctx, forgeFields(1)); err != nil {
+		t.Fatalf("re-poll upsert: %v", err)
+	}
+	kept, err := s.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !kept.StateChangedAt.Equal(moved.StateChangedAt) {
+		t.Fatalf("StateChangedAt after same-state write and re-poll = %v, want %v", kept.StateChangedAt, moved.StateChangedAt)
+	}
+
+	// Rehydrate (ListIssues), search and board-ref reads each map their own row
+	// type; every one must carry the stamp.
+	listed, err := s.ListIssues(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("ListIssues = %d rows, err %v; want 1", len(listed), err)
+	}
+	found, err := s.SearchIssues(ctx, "bug", 10)
+	if err != nil || len(found) != 1 {
+		t.Fatalf("SearchIssues = %d rows, err %v; want 1", len(found), err)
+	}
+	byCoord, err := s.IssuesByCoords(ctx, []ForgeCoord{{
+		Provider: ForgeProviderGitHub, Host: "github.com", Repo: "RigelBuild/compass", Number: 1,
+	}})
+	if err != nil || len(byCoord) != 1 {
+		t.Fatalf("IssuesByCoords = %d rows, err %v; want 1", len(byCoord), err)
+	}
+	for name, got := range map[string]Issue{"ListIssues": listed[0], "SearchIssues": found[0], "IssuesByCoords": byCoord[0]} {
+		if !got.StateChangedAt.Equal(moved.StateChangedAt) {
+			t.Errorf("%s StateChangedAt = %v, want %v", name, got.StateChangedAt, moved.StateChangedAt)
+		}
+	}
+}
+
 func TestSetIssueStateUnknownID(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

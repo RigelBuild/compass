@@ -1,12 +1,27 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, jest, spyOn, test } from "bun:test";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
+import {
+	create,
+	ForgeProvider,
+	IssueSchema,
+	IssueState,
+} from "@compass/client";
 import { createRouter, memoryHistory } from "@solidjs/router";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { createRoot, flush as flushSync } from "solid-js";
 import App from "../App";
-import { backlogIssues, prBoardRows, prCount } from "../board";
+import {
+	ADVANCING_WINDOW_MS,
+	backlogIssues,
+	prBoardRows,
+	prCount,
+} from "../board";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
-import { FIXTURE_REF_LINK_RULES } from "../live/compass-fake";
+import {
+	createFakeCompass,
+	FIXTURE_REF_LINK_RULES,
+} from "../live/compass-fake";
 import { appRoutes } from "../routes";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
@@ -1165,5 +1180,137 @@ describe("Bridge empty board (T5, RIG-2130)", () => {
 		);
 		expect(container.querySelector(".bridge-grid")).toBeNull();
 		expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(0);
+	});
+});
+
+// The advancing card: a fresh column change sets data-advancing and appends
+// ", advancing" to the card's aria-label, which overrides the card content for
+// screen readers. A change outside the window does neither.
+describe("Bridge advancing card", () => {
+	function mountWithStamps(stamps: Record<string, number>): HTMLElement {
+		const { container } = render(() => {
+			const store = createAppStore({
+				queryClient: testQueryClient(),
+				initialIssues: STUB_ISSUES.map((issue) =>
+					issue.id in stamps
+						? { ...issue, stateChangedAtUnixMs: stamps[issue.id] }
+						: issue,
+				),
+			});
+			return (
+				<StoreContext value={store}>
+					<ViewContext value={store.focusedView()}>
+						<Bridge />
+					</ViewContext>
+				</StoreContext>
+			);
+		});
+		return container;
+	}
+
+	test("a fresh column change marks the card and its label", () => {
+		const now = Date.now();
+		const container = mountWithStamps({
+			"ws-1022": now,
+			"ws-1085": now - 10 * ADVANCING_WINDOW_MS,
+		});
+		const fresh = cardByLabel(container, "Issue RIG-1022, advancing");
+		expect(fresh?.getAttribute("data-advancing")).toBe("1");
+		const stale = cardByLabel(container, "Issue RIG-1085");
+		expect(stale).not.toBeNull();
+		expect(stale?.hasAttribute("data-advancing")).toBe(false);
+		expect(
+			container.querySelectorAll('.bridge-grid .cx-card[data-advancing="1"]'),
+		).toHaveLength(1);
+	});
+
+	// Timer counts are relative to the same board with no stamps, so unrelated
+	// app timers cannot move them.
+	function baselineTimers(): number {
+		mountWithStamps({});
+		const count = jest.getTimerCount();
+		cleanup();
+		return count;
+	}
+
+	test("the cue ends at the window boundary without a poll", () => {
+		jest.useFakeTimers();
+		try {
+			jest.setSystemTime(new Date(5_000_000));
+			const base = baselineTimers();
+			const container = mountWithStamps({ "ws-1022": 5_000_000 - 1_000 });
+			expect(
+				cardByLabel(container, "Issue RIG-1022, advancing"),
+			).not.toBeNull();
+			// One extra timer, armed for the expiry: no polling interval.
+			expect(jest.getTimerCount()).toBe(base + 1);
+			jest.advanceTimersByTime(ADVANCING_WINDOW_MS - 1_001);
+			flushSync();
+			expect(
+				cardByLabel(container, "Issue RIG-1022, advancing"),
+			).not.toBeNull();
+			jest.advanceTimersByTime(1);
+			flushSync();
+			const card = cardByLabel(container, "Issue RIG-1022");
+			expect(card?.hasAttribute("data-advancing")).toBe(false);
+			expect(jest.getTimerCount()).toBe(base);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("unmounting clears the pending expiry timer", () => {
+		jest.useFakeTimers();
+		try {
+			jest.setSystemTime(new Date(5_000_000));
+			const base = baselineTimers();
+			mountWithStamps({ "ws-1022": 5_000_000 });
+			expect(jest.getTimerCount()).toBe(base + 1);
+			cleanup();
+			expect(jest.getTimerCount()).toBe(base);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("a live issue upsert with a fresh stamp marks the card after mount", async () => {
+		const compass = createFakeCompass();
+		let store!: AppStore;
+		const { container } = render(() => {
+			store = createAppStore({
+				queryClient: testQueryClient(),
+				compass: compass.client,
+			});
+			return (
+				<StoreContext value={store}>
+					<ViewContext value={store.focusedView()}>
+						<Bridge />
+					</ViewContext>
+				</StoreContext>
+			);
+		});
+		const now = Date.now();
+		compass.pushIssue(
+			create(IssueSchema, {
+				id: "live-1",
+				forge: { provider: ForgeProvider.GITHUB, host: "github.com" },
+				repo: "RigelBuild/compass",
+				number: 4242,
+				state: IssueState.IN_REVIEW,
+				// A swimlane card needs an agent row; reuse a fixture agent.
+				assignee: "acc-compass-ui",
+				stateChangedAt: timestampFromMs(now),
+			}),
+			now,
+		);
+		for (let i = 0; i < 200 && store.issues()[0]?.id !== "live-1"; i++) {
+			await Promise.resolve();
+			flushSync();
+		}
+		const card = cardByLabel(
+			container,
+			"Issue RigelBuild/compass#4242, advancing",
+		);
+		expect(card?.getAttribute("data-advancing")).toBe("1");
 	});
 });

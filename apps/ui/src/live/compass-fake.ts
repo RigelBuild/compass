@@ -136,6 +136,9 @@ export interface FakeCompass {
 	/** Emit a resyncRequired on the SubscribeEvents stream: the store clears its
 	 *  session map and the events driver cold-starts. */
 	pushResync: () => void;
+	/** Emit an issue upsert on the SubscribeEvents stream, stamped with the
+	 *  server's wall time `atUnixMs`. */
+	pushIssue: (issue: BoardIssue, atUnixMs: number) => void;
 	/** Queue one SubscribeAgentSession frame for `sessionId`. Delivered to the
 	 *  open subscription, else held for the next one. */
 	pushSessionFrame: (
@@ -402,6 +405,17 @@ export function createFakeCompass(opts?: {
 					seq: 0n,
 					instanceEpoch: 1n,
 					payload: { case: "resyncRequired", value: {} },
+				}),
+			);
+		},
+		pushIssue: (issue, atUnixMs) => {
+			eventSeq++;
+			events.push(
+				create(SubscribeEventsResponseSchema, {
+					seq: eventSeq,
+					atUnixMs: BigInt(atUnixMs),
+					instanceEpoch: 1n,
+					payload: { case: "issue", value: issue },
 				}),
 			);
 		},

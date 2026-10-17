@@ -80,7 +80,7 @@ func execOnDSN(t *testing.T, dsn, sql string) {
 }
 
 // applyV1Only migrates the empty schema at dsn to v1 through the runner's own
-// steps. With 0001 the only migration, that is the full schema.
+// steps; Open applies any later migrations.
 func applyV1Only(t *testing.T, dsn string) {
 	t.Helper()
 	ctx := t.Context()

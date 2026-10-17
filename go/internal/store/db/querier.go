@@ -731,6 +731,7 @@ type Querier interface {
 	SetActivity(ctx context.Context, arg SetActivityParams) error
 	SetForgeRepoMergeQueue(ctx context.Context, arg SetForgeRepoMergeQueueParams) (int64, error)
 	SetForgeRepoSubscriptionEnabled(ctx context.Context, arg SetForgeRepoSubscriptionEnabledParams) (int64, error)
+	// A same-state write keeps state_changed_at: only a real column move stamps it.
 	SetIssueState(ctx context.Context, arg SetIssueStateParams) (int64, error)
 	SetPullRequestMergeQueue(ctx context.Context, arg SetPullRequestMergeQueueParams) (bool, error)
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error

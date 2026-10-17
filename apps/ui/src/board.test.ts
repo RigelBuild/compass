@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
 	ACTIVE_STATES,
+	ADVANCING_WINDOW_MS,
 	activeIssues,
 	agentIssueChip,
 	backlogIssues,
 	boardAgents,
 	cellItems,
 	isActiveState,
+	isAdvancing,
 	isBacklogState,
 	laneTotal,
+	nextAdvancingExpiry,
 	prBoardGroups,
 	prBoardRows,
 	prCount,
@@ -225,6 +228,48 @@ describe("cellItems", () => {
 			"b1",
 			"a2",
 		]);
+	});
+});
+
+describe("isAdvancing / nextAdvancingExpiry", () => {
+	const now = 1_000_000_000;
+	const moved = (id: string, ago: number, state: IssueState = "in_review") =>
+		ws({ id, state, stateChangedAtUnixMs: now - ago });
+
+	test("a card advances only inside the window after its column change", () => {
+		expect(isAdvancing(moved("fresh", 0), now)).toBe(true);
+		expect(isAdvancing(moved("edge", ADVANCING_WINDOW_MS - 1), now)).toBe(true);
+		expect(isAdvancing(moved("old", ADVANCING_WINDOW_MS), now)).toBe(false);
+		expect(isAdvancing(ws({ id: "never", state: "in_review" }), now)).toBe(
+			false,
+		);
+	});
+
+	test("a stamp ahead of the clock advances only within one window", () => {
+		expect(isAdvancing(moved("skew", -5_000), now)).toBe(true);
+		expect(isAdvancing(moved("future", -ADVANCING_WINDOW_MS), now)).toBe(false);
+		expect(
+			nextAdvancingExpiry([moved("future", -10 * ADVANCING_WINDOW_MS)], now),
+		).toBe(null);
+	});
+
+	test("a card that moved off the board does not advance", () => {
+		expect(isAdvancing(moved("archived", 0, "archived"), now)).toBe(false);
+		expect(isAdvancing(moved("backlog", 0, "backlog"), now)).toBe(false);
+	});
+
+	test("the next expiry is the earliest advancing card's window end", () => {
+		const list = [
+			moved("a", 10_000),
+			moved("b", 40_000),
+			moved("old", ADVANCING_WINDOW_MS + 1),
+		];
+		expect(nextAdvancingExpiry(list, now)).toBe(
+			now - 40_000 + ADVANCING_WINDOW_MS,
+		);
+		expect(nextAdvancingExpiry([moved("old", ADVANCING_WINDOW_MS)], now)).toBe(
+			null,
+		);
 	});
 });
 

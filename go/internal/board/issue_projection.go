@@ -13,6 +13,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // IssueProjection is the Server-authoritative board issue projection: the
@@ -227,6 +228,9 @@ func issueToProto(si store.Issue) *compassv1.Issue {
 	}
 	if si.AgentHandle != "" {
 		out.Agent = &compassv1.AgentAttribution{AgentHandle: si.AgentHandle}
+	}
+	if !si.StateChangedAt.IsZero() {
+		out.StateChangedAt = timestamppb.New(si.StateChangedAt)
 	}
 	return out
 }

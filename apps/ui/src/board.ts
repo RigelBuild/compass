@@ -86,6 +86,35 @@ export function cellItems(
 	);
 }
 
+/** How long a card stays advancing after it changes column. Long enough to be
+ *  seen on a glance at the board, short enough that one move reads as motion. */
+export const ADVANCING_WINDOW_MS = 60_000;
+
+/** Whether an issue changed column within the advancing window of `nowMs`.
+ *  Expects stamps in the browser clock (the event stream maps and clamps them);
+ *  any stamp further ahead than one window is ignored rather than pinned. */
+export function isAdvancing(issue: Issue, nowMs: number): boolean {
+	const at = issue.stateChangedAtUnixMs;
+	if (at === undefined || !isActiveState(issue.state)) return false;
+	return Math.abs(nowMs - at) < ADVANCING_WINDOW_MS;
+}
+
+/** When the next advancing card stops advancing, or null when none is. The
+ *  board re-reads the clock then, so the chase-light ends without a poll. */
+export function nextAdvancingExpiry(
+	all: readonly Issue[],
+	nowMs: number,
+): number | null {
+	let next: number | null = null;
+	for (const issue of all) {
+		const at = issue.stateChangedAtUnixMs;
+		if (at === undefined || !isAdvancing(issue, nowMs)) continue;
+		const end = at + ADVANCING_WINDOW_MS;
+		if (next === null || end < next) next = end;
+	}
+	return next;
+}
+
 /** The count in a board column across all agents (the lane-head badge). */
 export function laneTotal(all: readonly Issue[], state: IssueState): number {
 	return all.filter((w) => w.state === state).length;

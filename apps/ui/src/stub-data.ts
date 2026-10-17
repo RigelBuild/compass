@@ -252,6 +252,9 @@ export interface Issue {
 	prs: PullRequest[];
 	/** The linked tracker issue (D2), if any — the projection target. */
 	tracker?: TrackerRef;
+	/** When the server last moved `state` (Unix ms); unset before the first
+	 *  transition. Drives the board's advancing card. */
+	stateChangedAtUnixMs?: number;
 	/** Fixture-side commit-history side-channel for the VCS pane, carved out to
 	 *  a future repo/worktree surface (DL-071 §Global constraints); NOT a
 	 *  canonical field. */
