@@ -415,8 +415,7 @@ jobs:
       - name: Put the Go analysis battery on PATH
         if: matrix.run == 'true' && matrix.group == 'go'
         # golangci-lint/govulncheck/go-licenses/nilaway, rebuilt with the dev
-        # shell's go toolchain. No cache holds them, so only the go leg, which
-        # runs them, builds them.
+        # shell's go toolchain; no cache holds them, so only the go leg builds them.
         run: |
           stores=$(nix eval --json -f tools/toolchain/gate-tools.nix goAnalysis \
             | jq -r '.[].store')

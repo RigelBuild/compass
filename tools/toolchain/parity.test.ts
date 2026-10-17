@@ -211,11 +211,22 @@ describe("parity.ts TOOLCHAIN_PARITY_SCOPE", () => {
 		expect(res.output).toContain("MISMATCH     rumdl");
 	});
 
-	test("unset scope still checks the battery", async () => {
-		const res = await runParity(goodPath.filter((d) => !battery(d)));
-		expect(res.exitCode).toBe(1);
-		expect(res.output).not.toContain("out of scope");
-	});
+	// The go leg gets an explicitly empty value from the workflow expression.
+	const unsetOrEmpty: Record<string, string>[] = [
+		{},
+		{ TOOLCHAIN_PARITY_SCOPE: "" },
+	];
+	for (const env of unsetOrEmpty) {
+		test(`scope ${JSON.stringify(env)} still checks the battery`, async () => {
+			const res = await runParity(
+				goodPath.filter((d) => !battery(d)),
+				[],
+				env,
+			);
+			expect(res.exitCode).toBe(1);
+			expect(res.output).not.toContain("out of scope");
+		});
+	}
 
 	for (const value of ["full", "Core", "go"]) {
 		test(`refuses unknown scope ${value}`, async () => {
