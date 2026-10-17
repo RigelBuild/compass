@@ -228,18 +228,29 @@ func TestS3ObjectStoreWrapTransport(t *testing.T) {
 		t.Fatalf("parsing test server URL: %v", err)
 	}
 
-	transport := &countingRoundTripper{inner: http.DefaultTransport}
+	var (
+		received  http.RoundTripper
+		transport = &countingRoundTripper{}
+	)
 	objectStore, err := NewS3ObjectStore(S3Config{
 		Endpoint: endpoint.Host,
 		Bucket:   "archive",
 		Region:   "us-east-1",
 		UseTLS:   false,
-		WrapTransport: func(http.RoundTripper) http.RoundTripper {
+		WrapTransport: func(base http.RoundTripper) http.RoundTripper {
+			received = base
+			transport.inner = base
 			return transport
 		},
 	})
 	if err != nil {
 		t.Fatalf("constructing S3 object store: %v", err)
+	}
+	if received == nil {
+		t.Fatal("WrapTransport received nil, want MinIO's default transport")
+	}
+	if transport.inner != received {
+		t.Fatal("counting transport does not wrap the transport received by WrapTransport")
 	}
 	if err := objectStore.PutSegment(t.Context(), "sessions/s1/1-1.jsonl", []byte("{}")); err != nil {
 		t.Fatalf("PutSegment: %v", err)

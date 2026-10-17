@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -30,6 +31,9 @@ func installHTTPTransportRecorder(t *testing.T) (*tracetest.SpanRecorder, trace.
 }
 
 func TestHTTPTransportRecordsRedactedSpan(t *testing.T) {
+	previousPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(previousPropagator) })
 	recorder, tracer := installHTTPTransportRecorder(t)
 	var traceparent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,14 +86,17 @@ func TestHTTPTransportRecordsRedactedSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing recorded url.full: %v", err)
 	}
+	if parsed.User != nil {
+		t.Errorf("url.full userinfo = %q, want none", parsed.User)
+	}
 	if parsed.Query().Get("token") != "REDACTED" || parsed.Query().Get("page") != "REDACTED" {
 		t.Errorf("url.full = %q, want query values redacted", gotURL)
 	}
 	if parsed.Path != "/v" {
 		t.Errorf("url.full path = %q, want /v", parsed.Path)
 	}
-	if strings.Contains(gotURL, "s3cret") || strings.Contains(gotURL, "page=2") || strings.Contains(gotURL, "pw") {
-		t.Errorf("url.full contains a query value or userinfo: %q", gotURL)
+	if strings.Contains(gotURL, "s3cret") || strings.Contains(gotURL, "page=2") {
+		t.Errorf("url.full contains an unredacted query value: %q", gotURL)
 	}
 }
 
