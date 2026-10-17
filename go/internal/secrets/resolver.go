@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec" //nolint:depguard // secrets read seam: spawns the secretspec CLI by name (G204 site justified below)
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -318,6 +320,25 @@ func (r *SpecResolver) cliArgs(sub, manifestPath, profile, reason string, extra 
 // callers must never log it or put it in an error. stderr is discarded for the
 // same reason: diagnostics quote provider source lines.
 func (r *SpecResolver) run(ctx context.Context, args []string) ([]byte, error) {
+	if path, ok := dotenvFilePath(r.provider, r.stateDir); ok {
+		//nolint:gosec // dotenv URI is operator configuration, not user-controlled input.
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("secrets: dotenv provider file %s: %w", path, err)
+		}
+		info, statErr := file.Stat()
+		closeErr := file.Close()
+		if statErr != nil {
+			return nil, fmt.Errorf("secrets: dotenv provider file %s: %w", path, statErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("secrets: dotenv provider file %s: %w", path, closeErr)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("secrets: dotenv provider file %s: is a directory", path)
+		}
+	}
+
 	//nolint:gosec // G204: r.cli is the operator-pinned secretspec binary and args is an argv slice handed straight to exec (no shell); each variable is one joined --flag=value token, so none can add an argv element.
 	cmd := exec.CommandContext(ctx, r.cli, args...)
 	// An ambient scope would silently retarget the export; flags cover the rest.
@@ -377,4 +398,27 @@ func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclara
 		return "", fmt.Errorf("secrets: close manifest: %w", err)
 	}
 	return f.Name(), nil
+}
+
+// dotenvFilePath returns the local file a dotenv provider URI names, in the
+// three forms secretspec accepts. A relative path resolves against baseDir,
+// the manifest's directory, as the CLI does. A bare "dotenv://" or a leading
+// "~" component leaves the file choice to the CLI. The scheme match is exact
+// because secretspec rejects other casings.
+func dotenvFilePath(provider, baseDir string) (string, bool) {
+	if !strings.HasPrefix(provider, "dotenv:") {
+		return "", false
+	}
+	parsed, err := url.Parse(provider)
+	if err != nil {
+		return "", false
+	}
+	path := parsed.Host + parsed.Path
+	if path == "" || path == "~" || strings.HasPrefix(path, "~/") {
+		return "", false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
+	}
+	return path, true
 }
