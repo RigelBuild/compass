@@ -40,8 +40,7 @@ least `600s`.
 If the Server fails at boot with `resolve master key: ... exit status 1`, check
 the `server.env` Secret key and the `/etc/compass/secrets/server.env` mount
 first. The Server discards secretspec's stderr because it can quote secret
-values, so a malformed file shows no detail. Newer Server builds name a missing
-or unreadable file in the error.
+values, so the error carries no detail about the file.
 
 NATS uses the R1 file JetStream settings with a PVC-backed store and requires
 the `password` key to match the NATS config authorization user. The optional
