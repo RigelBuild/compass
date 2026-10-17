@@ -265,7 +265,8 @@ park, republish the raw payload to `compass.dlq.comms` and then
 - Headers on the parked message: `Compass-Original-Subject` (the concrete
   subject delivered, including for a wildcard `SubscribeKind` consumer, so it
   names the tenant), `Compass-Park-Reason` (the error), and `traceparent` (the
-  publisher's W3C trace context), so an operator needs no log correlation.
+  publisher's W3C trace context, present only when the publish carried one), so
+  an operator needs no log correlation.
 
 ### Advisory park: messages the server dropped
 

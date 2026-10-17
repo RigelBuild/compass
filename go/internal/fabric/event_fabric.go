@@ -468,9 +468,10 @@ func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error
 // stops redelivering it.
 //
 // The payload goes out verbatim over CORE NATS, with the original subject, the
-// reason, and the publisher's traceparent in headers. Core rather than JetStream
-// because the DLQ is a diagnostic tap, not a recovery path — recovery is always
-// the Postgres row — and because the DLQ publish would otherwise need its own DLQ.
+// reason, and the publisher's traceparent (when it had one) in headers. Core
+// rather than JetStream because the DLQ is a diagnostic tap, not a recovery
+// path — recovery is always the Postgres row — and because the DLQ publish
+// would otherwise need its own DLQ.
 //
 // Term is issued even if the DLQ publish fails: leaving a poison message
 // redelivering forever is the worse failure, and the reason is logged either
