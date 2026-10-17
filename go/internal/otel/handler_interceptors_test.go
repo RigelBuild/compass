@@ -65,7 +65,7 @@ func TestHandlerInterceptorsMountsSpanAndTraceResponseBeforeRest(t *testing.T) {
 		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
 			restSawSpan = trace.SpanFromContext(ctx).SpanContext().IsValid()
 			info, _ := connect.CallInfoForServerContext(ctx)
-			restSawEmptyTraceResponse = info.ResponseHeader().Get("traceresponse") == ""
+			restSawEmptyTraceResponse = info.ResponseHeader().Get(traceResponseHeader) == ""
 			return next(ctx, spec, stream)
 		}
 	})
@@ -93,7 +93,7 @@ func TestHandlerInterceptorsMountsSpanAndTraceResponseBeforeRest(t *testing.T) {
 	if !restSawEmptyTraceResponse {
 		t.Fatal("traceresponse was set before the rest interceptor returned")
 	}
-	if got := clientInfo.ResponseHeader().Get("traceresponse"); got == "" {
+	if got := clientInfo.ResponseHeader().Get(traceResponseHeader); got == "" {
 		t.Fatal("traceresponse header is empty")
 	}
 	spans := exporter.GetSpans()
