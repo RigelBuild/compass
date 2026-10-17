@@ -703,12 +703,9 @@ type SessionsResponse_SecretsVersion struct {
 }
 
 type SessionsResponse_ConfigVersion struct {
-	// config_version (tag 9): the Server nudges the fleet that the config bundle
-	// changed; the Runner re-fetches it via FetchAgentConfig and Reloads live
-	// agents. Fleet-wide, with no per-account key or payload. Signal-only — like
-	// secrets_version, it is NOT request_id-correlated and has NO SessionsRequest
-	// result variant: it is a notification, not a command. Sibling to
-	// secrets_version (tag 8).
+	// config_version (tag 9): payload-free nudge that the fleet config changed;
+	// the Runner re-fetches via FetchAgentConfig. Like secrets_version, it has no
+	// request_id and no result variant.
 	ConfigVersion *ConfigVersion `protobuf:"bytes,9,opt,name=config_version,json=configVersion,proto3,oneof"`
 }
 
