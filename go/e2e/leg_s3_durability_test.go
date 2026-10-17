@@ -245,7 +245,8 @@ func waitArchiveContains(t *testing.T, ctx context.Context, f *Fixture, sessionI
 // waitHistoryContains polls until want is in the PG tail or an S3 segment; the valve may move it before the poll.
 func waitHistoryContains(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(transcriptPollBudget)
+	ctx, cancel := context.WithTimeout(ctx, transcriptPollBudget)
+	defer cancel()
 	ticker := time.NewTicker(transcriptPollInterval)
 	defer ticker.Stop()
 	for {
@@ -261,14 +262,31 @@ func waitHistoryContains(t *testing.T, ctx context.Context, f *Fixture, st *stor
 		if archiveContains(t, ctx, f, sessionID, want) {
 			return
 		}
-		if !time.Now().Before(deadline) {
-			t.Fatalf("%q was not committed to the transcript within %s", want, transcriptPollBudget)
-		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("waiting for transcript commit: %v", ctx.Err())
+			t.Fatalf("%q was not committed to the transcript within %s: %v", want, transcriptPollBudget, ctx.Err())
 		case <-ticker.C:
 		}
+	}
+}
+
+// assertSessionEndCoversTail requires the session_end segment to end at the PG tail's last row; the dead agent adds none.
+func assertSessionEndCoversTail(t *testing.T, ctx context.Context, dsn, sessionID string) {
+	t.Helper()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open session_end pool: %v", err)
+	}
+	defer pool.Close()
+	var segMax, tailMax int64
+	if err := pool.QueryRow(ctx, `SELECT max(max_entry_seq) FROM agent_session_archive_segments WHERE session_id=$1 AND kind='session_end'`, sessionID).Scan(&segMax); err != nil {
+		t.Fatalf("session_end range: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT max(entry_seq) FROM agent_session_transcript_entries WHERE session_id=$1`, sessionID).Scan(&tailMax); err != nil {
+		t.Fatalf("PG tail max: %v", err)
+	}
+	if segMax != tailMax {
+		t.Fatalf("session_end segment ends at entry %d, PG tail ends at %d", segMax, tailMax)
 	}
 }
 
@@ -470,6 +488,7 @@ func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 	}
 	waitSessionErrored(t, ctx, f, sessionID)
 	waitSegmentKind(t, ctx, f.DSN(), sessionID, "session_end")
+	assertSessionEndCoversTail(t, ctx, f.DSN(), sessionID)
 	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
 	if segmentCountByKind(t, ctx, f.DSN(), sessionID, "superseded") != 0 {
 		t.Fatal("detected-end archive pruned the tail as superseded")
