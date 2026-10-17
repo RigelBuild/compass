@@ -11,7 +11,8 @@
 // is a gate nobody debugs.
 
 // Exit 0 = every pinned tool matched; 1 = at least one mismatched or could not be
-// checked. Unverifiable is a failure, never a skip.
+// checked. Unverifiable is a failure, never a skip, except the Go battery under
+// TOOLCHAIN_PARITY_SCOPE=core, which CI sets on legs that never run it.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
@@ -129,15 +130,26 @@ if (process.argv.includes("--print-nix-attrs")) {
 	process.exit(0);
 }
 
+// TOOLCHAIN_PARITY_SCOPE=core: the CI legs that never run the Go battery skip it,
+// the one named exception to "unverifiable is a failure". Anything else is a typo.
+const scope = process.env.TOOLCHAIN_PARITY_SCOPE ?? "";
+if (scope !== "" && scope !== "core") {
+	console.error(
+		`toolchain parity: TOOLCHAIN_PARITY_SCOPE=${scope} is not a scope; use core or leave it unset.`,
+	);
+	process.exit(1);
+}
+const checkGoAnalysis = scope === "";
+
 // An empty `langs`, `goAnalysis` or `meissa` identity set means gate-tools.nix's
 // shape moved out from under the gate, the same false-green risk as above.
 const langs = nixClosedSet("langs");
-const goAnalysis = nixClosedSet("goAnalysis");
+const goAnalysis = checkGoAnalysis ? nixClosedSet("goAnalysis") : {};
 const meissa = nixClosedSet("meissa");
 
 if (
 	Object.keys(langs).length === 0 ||
-	Object.keys(goAnalysis).length === 0 ||
+	(checkGoAnalysis && Object.keys(goAnalysis).length === 0) ||
 	Object.keys(meissa).length === 0
 ) {
 	console.error(
@@ -188,6 +200,9 @@ for (const [name, identity] of Object.entries(langs)) {
 }
 
 // The Go analysis battery, rebuilt with the dev shell's go-overlay toolchain.
+if (!checkGoAnalysis) {
+	console.log("out of scope: goAnalysis (TOOLCHAIN_PARITY_SCOPE=core)");
+}
 for (const [name, identity] of Object.entries(goAnalysis)) {
 	verdicts.push(
 		...storePathVerdicts(
