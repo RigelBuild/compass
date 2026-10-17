@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec" //nolint:depguard // secrets read seam: spawns the secretspec CLI by name (G204 site justified below)
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -319,7 +320,7 @@ func (r *SpecResolver) cliArgs(sub, manifestPath, profile, reason string, extra 
 // callers must never log it or put it in an error. stderr is discarded for the
 // same reason: diagnostics quote provider source lines.
 func (r *SpecResolver) run(ctx context.Context, args []string) ([]byte, error) {
-	if path, ok := dotenvFilePath(r.provider); ok {
+	if path, ok := dotenvFilePath(r.provider, r.stateDir); ok {
 		//nolint:gosec // dotenv URI is operator configuration, not user-controlled input.
 		file, err := os.Open(path)
 		if err != nil {
@@ -400,13 +401,20 @@ func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclara
 }
 
 // dotenvFilePath returns the local file a dotenv provider URI names, in the
-// three forms secretspec accepts; a relative path resolves against the cwd as
-// the CLI does. A bare "dotenv://" leaves the file choice to the CLI.
-func dotenvFilePath(provider string) (string, bool) {
+// three forms secretspec accepts. A relative path resolves against baseDir,
+// the manifest's directory, as the CLI does. A bare "dotenv://" or a "~" path
+// leaves the file choice to the CLI.
+func dotenvFilePath(provider, baseDir string) (string, bool) {
 	parsed, err := url.Parse(provider)
 	if err != nil || !strings.EqualFold(parsed.Scheme, "dotenv") {
 		return "", false
 	}
 	path := parsed.Host + parsed.Path
-	return path, path != ""
+	if path == "" || strings.HasPrefix(path, "~") {
+		return "", false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
+	}
+	return path, true
 }

@@ -271,18 +271,33 @@ func TestDotenvFilePath(t *testing.T) {
 	}{
 		{name: "triple slash absolute", provider: "dotenv:///abs/path", wantPath: "/abs/path", wantOK: true},
 		{name: "single slash absolute", provider: "dotenv:/abs/path", wantPath: "/abs/path", wantOK: true},
-		{name: "double slash relative", provider: "dotenv://rel/path", wantPath: "rel/path", wantOK: true},
+		{name: "double slash relative joins the manifest dir", provider: "dotenv://rel/path", wantPath: "/state/rel/path", wantOK: true},
+		{name: "home path defers to the CLI", provider: "dotenv://~/x.env"},
 		{name: "other scheme", provider: "keyring://"},
 		{name: "bare dotenv defers to the CLI", provider: "dotenv://"},
 		{name: "empty provider"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotPath, gotOK := dotenvFilePath(tt.provider)
+			gotPath, gotOK := dotenvFilePath(tt.provider, "/state")
 			if gotPath != tt.wantPath || gotOK != tt.wantOK {
 				t.Fatalf("dotenvFilePath(%q) = (%q, %v), want (%q, %v)", tt.provider, gotPath, gotOK, tt.wantPath, tt.wantOK)
 			}
 		})
+	}
+}
+
+// secretspec resolves a relative dotenv path against the manifest's directory
+// (stateDir), not the cwd; the check must look at the same file.
+func TestResolveDotenvRelativeToStateDir(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "rel.env"), []byte("API_KEY=value\n"), 0o600); err != nil {
+		t.Fatalf("write dotenv file: %v", err)
+	}
+	cli := newFakeCLI(t, `{"API_KEY":"value"}`, "", 0)
+	r := NewSpecResolver(declsNamed("API_KEY"), stateDir, WithProvider("dotenv://rel.env"), WithCLI(cli.path))
+	if _, err := r.Resolve(context.Background(), "test"); err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
 }
 
