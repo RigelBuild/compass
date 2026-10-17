@@ -7,7 +7,44 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const agentConfigOverlay = `-- name: AgentConfigOverlay :one
+SELECT version, bundle FROM agent_config_overlays
+WHERE tenant_id = $1 AND owner_user_id IS NOT DISTINCT FROM NULLIF($2, '') AND role = $3
+`
+
+type AgentConfigOverlayParams struct {
+	TenantID string
+	Column2  interface{}
+	Role     string
+}
+
+type AgentConfigOverlayRow struct {
+	Version string
+	Bundle  []byte
+}
+
+func (q *Queries) AgentConfigOverlay(ctx context.Context, arg AgentConfigOverlayParams) (AgentConfigOverlayRow, error) {
+	row := q.db.QueryRow(ctx, agentConfigOverlay, arg.TenantID, arg.Column2, arg.Role)
+	var i AgentConfigOverlayRow
+	err := row.Scan(&i.Version, &i.Bundle)
+	return i, err
+}
+
+const agentConfigOverlayLocks = `-- name: AgentConfigOverlayLocks :one
+SELECT bundle FROM agent_config_overlays
+WHERE tenant_id = $1 AND owner_user_id IS NULL AND role = ''
+`
+
+func (q *Queries) AgentConfigOverlayLocks(ctx context.Context, tenantID string) ([]byte, error) {
+	row := q.db.QueryRow(ctx, agentConfigOverlayLocks, tenantID)
+	var bundle []byte
+	err := row.Scan(&bundle)
+	return bundle, err
+}
 
 const currentAgentConfig = `-- name: CurrentAgentConfig :one
 SELECT version, bundle FROM agent_config_bundle WHERE singleton = TRUE
@@ -34,6 +71,129 @@ func (q *Queries) DeleteAgentConfig(ctx context.Context) error {
 	return err
 }
 
+const deleteAgentConfigOwnedOverlay = `-- name: DeleteAgentConfigOwnedOverlay :execrows
+DELETE FROM agent_config_overlays WHERE tenant_id = $1 AND owner_user_id = $2 AND role = $3
+`
+
+type DeleteAgentConfigOwnedOverlayParams struct {
+	TenantID    string
+	OwnerUserID pgtype.Text
+	Role        string
+}
+
+func (q *Queries) DeleteAgentConfigOwnedOverlay(ctx context.Context, arg DeleteAgentConfigOwnedOverlayParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAgentConfigOwnedOverlay, arg.TenantID, arg.OwnerUserID, arg.Role)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteAgentConfigTenantOverlay = `-- name: DeleteAgentConfigTenantOverlay :execrows
+DELETE FROM agent_config_overlays WHERE tenant_id = $1 AND owner_user_id IS NULL
+`
+
+func (q *Queries) DeleteAgentConfigTenantOverlay(ctx context.Context, tenantID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAgentConfigTenantOverlay, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const effectiveAgentConfigLayerVersions = `-- name: EffectiveAgentConfigLayerVersions :one
+SELECT COALESCE((SELECT version::text FROM agent_config_bundle WHERE singleton), '')::text AS default_version,
+	COALESCE((SELECT o.version::text FROM agent_config_overlays o
+				 WHERE o.tenant_id = $2 AND o.owner_user_id IS NULL AND o.role = ''), '')::text AS tenant_version,
+	COALESCE((SELECT o.version::text FROM agent_config_overlays o
+				 WHERE o.tenant_id = $2 AND o.owner_user_id = a.owner_user_id AND o.role = ''), '')::text AS user_version,
+	COALESCE((SELECT o.version::text FROM agent_config_overlays o
+				 WHERE o.tenant_id = $2 AND o.owner_user_id = a.owner_user_id AND o.role = a.role AND a.role IN ('supervisor', 'owner', 'manager')), '')::text AS role_version
+FROM agent_accounts a
+JOIN accounts ac ON ac.id = a.account_id
+WHERE a.account_id = $1 AND ac.tenant_id = $2
+`
+
+type EffectiveAgentConfigLayerVersionsParams struct {
+	AccountID string
+	TenantID  string
+}
+
+type EffectiveAgentConfigLayerVersionsRow struct {
+	DefaultVersion string
+	TenantVersion  string
+	UserVersion    string
+	RoleVersion    string
+}
+
+func (q *Queries) EffectiveAgentConfigLayerVersions(ctx context.Context, arg EffectiveAgentConfigLayerVersionsParams) (EffectiveAgentConfigLayerVersionsRow, error) {
+	row := q.db.QueryRow(ctx, effectiveAgentConfigLayerVersions, arg.AccountID, arg.TenantID)
+	var i EffectiveAgentConfigLayerVersionsRow
+	err := row.Scan(
+		&i.DefaultVersion,
+		&i.TenantVersion,
+		&i.UserVersion,
+		&i.RoleVersion,
+	)
+	return i, err
+}
+
+const effectiveAgentConfigLayers = `-- name: EffectiveAgentConfigLayers :many
+WITH target_agent AS (
+    SELECT aa.account_id, aa.owner_user_id, aa.role
+    FROM agent_accounts aa
+    JOIN accounts a ON a.id = aa.account_id
+    WHERE aa.account_id = $1 AND a.tenant_id = $2
+), config_rows AS (
+    SELECT 1::smallint AS layer, c.version, c.bundle
+    FROM target_agent ta CROSS JOIN agent_config_bundle c
+    WHERE c.singleton
+    UNION ALL
+    SELECT CASE WHEN o.owner_user_id IS NULL THEN 2 WHEN o.role = '' THEN 3 ELSE 4 END::smallint AS layer,
+           o.version, o.bundle
+    FROM target_agent ta
+	JOIN agent_config_overlays o ON o.tenant_id = $2
+	  AND (o.owner_user_id IS NULL OR (o.owner_user_id = ta.owner_user_id AND (o.role = '' OR (ta.role IN ('supervisor', 'owner', 'manager') AND o.role = ta.role))))
+)
+SELECT layer, version, bundle FROM config_rows
+UNION ALL
+SELECT 0::smallint AS layer, ''::text AS version, ''::bytea AS bundle
+FROM target_agent
+WHERE NOT EXISTS (SELECT 1 FROM config_rows)
+ORDER BY layer
+`
+
+type EffectiveAgentConfigLayersParams struct {
+	AccountID string
+	TenantID  string
+}
+
+type EffectiveAgentConfigLayersRow struct {
+	Layer   int16
+	Version string
+	Bundle  []byte
+}
+
+func (q *Queries) EffectiveAgentConfigLayers(ctx context.Context, arg EffectiveAgentConfigLayersParams) ([]EffectiveAgentConfigLayersRow, error) {
+	rows, err := q.db.Query(ctx, effectiveAgentConfigLayers, arg.AccountID, arg.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []EffectiveAgentConfigLayersRow
+	for rows.Next() {
+		var i EffectiveAgentConfigLayersRow
+		if err := rows.Scan(&i.Layer, &i.Version, &i.Bundle); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const putAgentConfig = `-- name: PutAgentConfig :exec
 
 INSERT INTO agent_config_bundle (singleton, version, bundle)
@@ -54,5 +214,61 @@ type PutAgentConfigParams struct {
 // bundle is a fleet-wide singleton row (singleton = TRUE).
 func (q *Queries) PutAgentConfig(ctx context.Context, arg PutAgentConfigParams) error {
 	_, err := q.db.Exec(ctx, putAgentConfig, arg.Version, arg.Bundle)
+	return err
+}
+
+const putAgentConfigOverlay = `-- name: PutAgentConfigOverlay :exec
+INSERT INTO agent_config_overlays (tenant_id, owner_user_id, role, version, bundle, declared_by)
+VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6)
+ON CONFLICT (tenant_id) WHERE owner_user_id IS NULL
+DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle, declared_by = EXCLUDED.declared_by
+`
+
+type PutAgentConfigOverlayParams struct {
+	TenantID   string
+	Column2    interface{}
+	Role       string
+	Version    string
+	Bundle     []byte
+	DeclaredBy string
+}
+
+func (q *Queries) PutAgentConfigOverlay(ctx context.Context, arg PutAgentConfigOverlayParams) error {
+	_, err := q.db.Exec(ctx, putAgentConfigOverlay,
+		arg.TenantID,
+		arg.Column2,
+		arg.Role,
+		arg.Version,
+		arg.Bundle,
+		arg.DeclaredBy,
+	)
+	return err
+}
+
+const putOwnedAgentConfigOverlay = `-- name: PutOwnedAgentConfigOverlay :exec
+INSERT INTO agent_config_overlays (tenant_id, owner_user_id, role, version, bundle, declared_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (tenant_id, owner_user_id, role) WHERE owner_user_id IS NOT NULL
+DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle, declared_by = EXCLUDED.declared_by
+`
+
+type PutOwnedAgentConfigOverlayParams struct {
+	TenantID    string
+	OwnerUserID pgtype.Text
+	Role        string
+	Version     string
+	Bundle      []byte
+	DeclaredBy  string
+}
+
+func (q *Queries) PutOwnedAgentConfigOverlay(ctx context.Context, arg PutOwnedAgentConfigOverlayParams) error {
+	_, err := q.db.Exec(ctx, putOwnedAgentConfigOverlay,
+		arg.TenantID,
+		arg.OwnerUserID,
+		arg.Role,
+		arg.Version,
+		arg.Bundle,
+		arg.DeclaredBy,
+	)
 	return err
 }

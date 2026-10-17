@@ -52,18 +52,12 @@ const (
 	memberProfileYML = "profile.yml"
 )
 
-// maxBundleFileCount and maxBundleContentBytes are a fail-fast client-side check
-// so a too-large bundle is rejected here with a named cap rather than as an
-// opaque server InvalidArgument. The file-count cap equals the store door's
-// maxFileCount (internal/store/agent_config.go). The byte cap is an APPROXIMATE
-// lower-bound on the door's maxDecompressedBytes: the client sums member file
-// content only, while the door bounds the whole decompressed tar stream
-// (content + 512-byte headers + block padding + trailer), so a bundle just
-// under this cap can still be rejected at the door. The door is authoritative;
-// this check only shortens the common failure path.
+// maxBundleFileCount and maxBundleContentBytes match the store door's default
+// layer caps. The server also bounds total decompressed tar bytes, so the
+// content-byte check is only an early lower-cost rejection.
 const (
-	maxBundleFileCount          = 4096
-	maxBundleContentBytes int64 = 64 << 20 // 64 MiB
+	maxBundleFileCount          = 2560
+	maxBundleContentBytes int64 = 48 << 20
 )
 
 // bundleTopDirs is the whitelisted set of top-level directories a member may
@@ -313,8 +307,8 @@ func validateMemberGrammar(parts []string, name string, content []byte) error {
 		return validateYAMLMapping(name, content)
 	default:
 		// skills/ or extensions/: the <name> second component must match.
-		if len(parts) < 2 {
-			return fmt.Errorf("bundle member %q must live under %s/<name>", name, parts[0])
+		if len(parts) < 3 {
+			return fmt.Errorf("bundle member %q must be a file under %s/<name>/", name, parts[0])
 		}
 		if !bundleNamePattern.MatchString(parts[1]) {
 			return fmt.Errorf("bundle member name %q must match %s", parts[1], bundleNamePattern.String())

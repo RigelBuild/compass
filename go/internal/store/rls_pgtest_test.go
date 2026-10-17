@@ -640,6 +640,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 		"topics", "messages", "channel_pins", "secrets", "gateway_credentials",
 		"agent_sessions", "agent_placements", "session_bindings",
 		"agent_session_transcript_entries", "agent_session_archive_segments",
+		"agent_config_overlays",
 		"agent_delivery_cursors", "owed_mentions", "agent_activity",
 		"agent_forge_subscriptions", "forge_authored_artifacts", "agent_session_blobs",
 		"agent_boards", "agent_board_tasks",

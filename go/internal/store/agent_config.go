@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -56,6 +57,8 @@ const (
 	// memberProfileYML is the ONLY filename admitted under profiles/<name>/ —
 	// the profile is exactly profiles/<name>/profile.yml (RIG-2968 T1).
 	memberProfileYML = "profile.yml"
+	memberLocksYML   = "locks.yml"
+	jsonNull         = "null"
 )
 
 // configBundleTopDirs is the whitelist as a set, for the O(1) membership check in
@@ -80,36 +83,49 @@ var configNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // block for the tolerant line-scan fallback in agentDefFrontmatterName, used
 // when a strict whole-block YAML parse fails because a SIBLING field is a
 // YAML-ambiguous scalar. Anchored; the first match wins.
-var frontmatterNamePattern = regexp.MustCompile(`^name:\s*(.*)$`)
-
-const (
-	// maxDecompressedBytes caps the DECOMPRESSED size of a config bundle, enforced
-	// DURING gunzip (cappedReader) so a gzip bomb is aborted mid-stream. 64 MiB is
-	// generous over realistic material while bounding a single Put's memory and row.
-	maxDecompressedBytes int64 = 64 << 20 // 64 MiB
-	// maxFileCount caps the regular-file member count, enforced during the streamed
-	// read, so a bundle of millions of tiny files cannot exhaust memory/handles.
-	maxFileCount = 4096
+var (
+	frontmatterNamePattern = regexp.MustCompile(`^name:\s*(.*)$`)
+	envIndirectionPattern  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
-// errBundleTooLarge is returned through the tar/gzip read stack the moment the
-// decompressed byte cap is exceeded. It wraps ErrInvalidArgument so the door's
-// caller sees a field error, and is a distinct sentinel so the read loop can
-// recognize it via errors.Is after tar propagates it.
+const (
+	maxDecompressedBytes int64 = 64 << 20
+	maxFileCount               = 4096
+)
+
+type layerCaps struct {
+	bytes int64
+	files int
+}
+
+var (
+	defaultLayerCaps = layerCaps{bytes: 48 << 20, files: 2560}
+	overlayLayerCaps = layerCaps{bytes: 4 << 20, files: 512}
+)
+
 var errBundleTooLarge = fmt.Errorf("%w: bundle exceeds decompressed size cap of %d bytes", ErrInvalidArgument, maxDecompressedBytes)
+
+func bundleSizeError(limit int64) error {
+	return fmt.Errorf("%w: bundle exceeds layer content cap of %d bytes", ErrInvalidArgument, limit)
+}
 
 // cappedReader bounds the total bytes read from an underlying reader, returning
 // errBundleTooLarge once the cap is crossed. Wrapping the gunzip (DECOMPRESSED)
 // stream is the gzip-bomb defense regardless of how small the compressed input is.
 type cappedReader struct {
-	r io.Reader
-	n int64
+	r   io.Reader
+	n   int64
+	max int64
 }
 
 func (c *cappedReader) Read(p []byte) (int, error) {
 	nn, err := c.r.Read(p)
 	c.n += int64(nn)
-	if c.n > maxDecompressedBytes {
+	limit := c.max
+	if limit == 0 {
+		limit = maxDecompressedBytes
+	}
+	if c.n > limit {
 		return nn, errBundleTooLarge
 	}
 	return nn, err
@@ -139,13 +155,10 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	if actor == "" {
 		return "", fmt.Errorf("%w: config-bundle writer account id is required", ErrInvalidArgument)
 	}
-	version, profiles, err := validateAndHashConfigBundle(bundle)
+	version, profiles, err := validateAndHashConfigBundle(bundle, LayerDefault)
 	if err != nil {
 		return "", err
 	}
-	// Reverse orphan guard (design.md §P2): a profile pinning a model stable name absent
-	// from the current registry (and not an escape-hatch selector) fails closed here
-	// rather than publishing a stranded reference. See checkBundleProfileRefsAgainstRegistry.
 	if err := s.checkBundleProfileRefsAgainstRegistry(ctx, profiles); err != nil {
 		return "", err
 	}
@@ -158,12 +171,9 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	return version, nil
 }
 
-// ValidateConfigBundle validates a config bundle against the store door's grammar and
-// returns its canonical content version without touching the database. Exported so a
-// bundle producer (the operator CLI builder) can prove its output against the real door
-// in tests, closing the builder/door drift gap.
+// ValidateConfigBundle validates a default config bundle and returns its canonical content version.
 func ValidateConfigBundle(bundle []byte) (version string, err error) {
-	version, _, err = validateAndHashConfigBundle(bundle)
+	version, _, err = validateAndHashConfigBundle(bundle, LayerDefault)
 	return version, err
 }
 
@@ -263,7 +273,8 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 			}
 			return AgentConfigInfoResult{}, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
 		}
-		parts, err := configMemberParts(hdr.Name)
+		name := canonicalConfigPath(hdr.Name)
+		parts, err := configMemberParts(name)
 		if err != nil {
 			return AgentConfigInfoResult{}, err
 		}
@@ -343,7 +354,7 @@ func configBundleProfileBodies(bundle []byte) (map[string][]byte, error) {
 			}
 			return nil, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
 		}
-		parts, err := configMemberParts(hdr.Name)
+		parts, err := configMemberParts(canonicalConfigPath(hdr.Name))
 		if err != nil {
 			return nil, err
 		}
@@ -383,161 +394,367 @@ func sortedKeys(set map[string]bool) []string {
 	return out
 }
 
-// validateAndHashConfigBundle is the security-critical store door: a SINGLE streamed
-// pass over the gzip tarball that validates every member and accumulates the canonical
-// content hash (length-prefixed over (name, content) pairs in name order, metadata
-// excluded), returning %w-wrapped ErrInvalidArgument on the first violation. It also
-// returns each profile's profile.yml body keyed by profile <name>.
-func validateAndHashConfigBundle(bundle []byte) (version string, profiles map[string][]byte, err error) {
+// configMemberContent is one regular file collected during bundle validation.
+type configMemberContent struct {
+	name    string
+	parts   []string
+	content []byte
+}
+
+// validateAndHashConfigBundle is the store door for config bundles. It validates
+// the decompressed tar stream, lints the collected members, then hashes their
+// canonical names and contents. It also returns profile bodies keyed by name.
+func validateAndHashConfigBundle(bundle []byte, layer ConfigLayer) (string, map[string][]byte, error) {
+	caps, err := capsForLayer(layer)
+	if err != nil {
+		return "", nil, err
+	}
 	gz, err := gzip.NewReader(bytes.NewReader(bundle))
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: bundle is not a valid gzip stream: %w", ErrInvalidArgument, err)
 	}
-	// Read-only gunzip: Close only releases the decompressor, so its error is
-	// not actionable here (nothing was written to flush).
 	defer func() { _ = gz.Close() }()
 
-	type member struct {
-		name    string
-		parts   []string // configMemberParts(name): the cross-member lints read this, never the raw name
-		content []byte
+	members, err := readAndValidateConfigMembers(gz, layer, caps)
+	if err != nil {
+		return "", nil, err
 	}
-	var members []member
-	fileCount := 0
-	// seen tracks regular-member names to reject duplicates at the door (M1);
-	// see the dedup comment in the loop for why version-stability requires it.
-	seen := make(map[string]bool)
+	profiles, err := lintConfigMembers(members)
+	if err != nil {
+		return "", nil, err
+	}
+	return hashConfigMembers(members), profiles, nil
+}
 
-	tr := tar.NewReader(&cappedReader{r: gz})
+func readAndValidateConfigMembers(gz io.Reader, layer ConfigLayer, caps layerCaps) ([]configMemberContent, error) {
+	members := make([]configMemberContent, 0)
+	seen := make(map[string]bool)
+	var contentBytes int64
+	tr := tar.NewReader(&cappedReader{r: gz, max: maxDecompressedBytes})
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			break
+			return members, nil
 		}
 		if err != nil {
 			if errors.Is(err, errBundleTooLarge) {
-				return "", nil, errBundleTooLarge
+				return nil, errBundleTooLarge
 			}
-			return "", nil, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
+			return nil, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
 		}
-
-		// Reject the escape-vector typeflags outright. A symlink and a hardlink are
-		// DISTINCT escapes; both can point outside the materialized config dir, so both
-		// are refused before any path analysis.
-		switch hdr.Typeflag {
-		case tar.TypeSymlink:
-			return "", nil, fmt.Errorf("%w: bundle member %q is a symlink (not allowed)", ErrInvalidArgument, hdr.Name)
-		case tar.TypeLink:
-			return "", nil, fmt.Errorf("%w: bundle member %q is a hardlink (not allowed)", ErrInvalidArgument, hdr.Name)
+		if err := validateConfigHeaderType(hdr); err != nil {
+			return nil, err
 		}
-
-		parts, err := configMemberParts(hdr.Name)
+		name := canonicalConfigPath(hdr.Name)
+		parts, err := configMemberParts(name)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
-
-		// The member typeflag must resolve to a regular file or a directory — an explicit
-		// ALLOWLIST. A directory is skipped; a contiguous-file member is a regular file.
-		// Every other typeflag is REJECTED: it would ride into the persisted bytes yet
-		// feed nothing to the version hash, so bundles could share a version but differ (M2).
+		if err := validateConfigHeaderPath(parts, hdr.Typeflag, layer); err != nil {
+			return nil, err
+		}
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
-		if !hdr.FileInfo().Mode().IsRegular() {
-			return "", nil, fmt.Errorf("%w: bundle member %q has unsupported typeflag %d (only regular files and directories are allowed)", ErrInvalidArgument, hdr.Name, hdr.Typeflag)
+		hdr.Name = name
+		if err := validateConfigFileLimits(hdr, caps, &contentBytes, seen, len(members)+1); err != nil {
+			return nil, err
 		}
-
-		// Reject duplicate regular-member names at the door (M1). Tar permits duplicates,
-		// so two members at one path would leave equal-keyed entries an unstable sort
-		// cannot normalize — the same bundle re-packed could hash differently. Only
-		// regular files are tracked; a duplicate dir feeds no content and is harmless.
-		if seen[hdr.Name] {
-			return "", nil, fmt.Errorf("%w: bundle contains duplicate member %q", ErrInvalidArgument, hdr.Name)
-		}
-		seen[hdr.Name] = true
-
-		// Count-before-read (L1): enforce the file-count cap before reading the body, so
-		// the (maxFileCount+1)th body is never read into memory.
-		fileCount++
-		if fileCount > maxFileCount {
-			return "", nil, fmt.Errorf("%w: bundle exceeds file-count cap of %d files", ErrInvalidArgument, maxFileCount)
-		}
-
-		content, err := validateRegularMember(parts, tr)
+		content, err := validateRegularMember(parts, name, tr)
 		if err != nil {
 			if errors.Is(err, errBundleTooLarge) {
-				return "", nil, errBundleTooLarge
+				return nil, errBundleTooLarge
 			}
-			return "", nil, err
+			return nil, err
 		}
-		members = append(members, member{name: hdr.Name, parts: parts, content: content})
+		members = append(members, configMemberContent{name: name, parts: parts, content: content})
 	}
+}
 
-	// Cross-member profile lint (RIG-2968 T1). The models.agents key lint is CROSS-MEMBER
-	// — each key must match the frontmatter name: of an agents/*.md def in the SAME bundle
-	// — so it runs here over the collected set, reading only collected bytes (no
-	// re-decompress) and never feeding the hash.
+func validateConfigHeaderType(hdr *tar.Header) error {
+	switch hdr.Typeflag {
+	case tar.TypeSymlink:
+		return fmt.Errorf("%w: bundle member %q is a symlink (not allowed)", ErrInvalidArgument, hdr.Name)
+	case tar.TypeLink:
+		return fmt.Errorf("%w: bundle member %q is a hardlink (not allowed)", ErrInvalidArgument, hdr.Name)
+	case tar.TypeDir, tar.TypeReg:
+		return nil
+	default:
+		return fmt.Errorf("%w: bundle member %q has unsupported typeflag %d (only regular files and directories are allowed)", ErrInvalidArgument, hdr.Name, hdr.Typeflag)
+	}
+}
+
+func validateConfigHeaderPath(parts []string, kind byte, layer ConfigLayer) error {
+	return validateConfigMemberPath(parts, kind, layer)
+}
+
+// validateConfigMemberPath is shared by the upload door, stored-row validator,
+// and lock parser so each applies one layer-aware path grammar.
+func validateConfigMemberPath(parts []string, kind byte, layer ConfigLayer) error {
+	if len(parts) == 1 && parts[0] == memberLocksYML {
+		if kind != tar.TypeReg || layer != LayerTenant {
+			return fmt.Errorf("%w: %s is allowed only as a tenant regular file", ErrInvalidArgument, memberLocksYML)
+		}
+		return nil
+	}
+	if kind == tar.TypeDir {
+		return configDirectoryPathAllowed(parts, layer)
+	}
+	joined := strings.Join(parts, "/")
+	if len(parts) == 1 && (parts[0] == memberAgentsMD || parts[0] == memberModels) {
+		return nil
+	}
+	if len(parts) < 2 || !configBundleTopDirs[parts[0]] {
+		return fmt.Errorf("%w: bundle member %q is not under an admitted config directory", ErrInvalidArgument, joined)
+	}
+	if parts[len(parts)-1] == memberLocksYML {
+		return fmt.Errorf("%w: %s is allowed only at the bundle root in the tenant layer", ErrInvalidArgument, memberLocksYML)
+	}
+	if parts[0] == topDirProfiles && layer != LayerDefault {
+		return fmt.Errorf("%w: profiles/ is allowed only in the default layer", ErrInvalidArgument)
+	}
+	if parts[0] == topDirSkills || parts[0] == topDirExtensions {
+		if len(parts) < 3 || !configNamePattern.MatchString(parts[1]) || (len(parts) > 3 && !validNestedConfigDir(parts[2:len(parts)-1])) {
+			return fmt.Errorf("%w: %s member %q must be a file under %s/<name>/", ErrInvalidArgument, parts[0], joined, parts[0])
+		}
+		return nil
+	}
+	return validateStoredMemberPathGrammar(parts, layer)
+}
+
+func validateStoredMemberPathGrammar(parts []string, layer ConfigLayer) error {
+	if len(parts) == 1 {
+		if parts[0] == memberAgentsMD || parts[0] == memberModels {
+			return nil
+		}
+		return fmt.Errorf("%w: stored top-level file %q is not admitted", ErrInvalidArgument, parts[0])
+	}
+	switch parts[0] {
+	case topDirSettings:
+		if strings.Join(parts, "/") == settingsMember {
+			return nil
+		}
+	case topDirRules:
+		if len(parts) == 2 && validateFlatNamedMember(parts[0], parts[1], strings.Join(parts, "/"), ".md", ".mdc") == nil {
+			return nil
+		}
+	case topDirAgents:
+		if len(parts) == 2 && validateFlatNamedMember(parts[0], parts[1], strings.Join(parts, "/"), ".md") == nil {
+			return nil
+		}
+	case topDirPrompts:
+		if len(parts) == 3 && parts[2] == memberSystemMD && configNamePattern.MatchString(parts[1]) {
+			return nil
+		}
+	case topDirProfiles:
+		if layer == LayerDefault && len(parts) == 3 && parts[2] == memberProfileYML && configNamePattern.MatchString(parts[1]) {
+			return nil
+		}
+	case topDirMCP:
+		if len(parts) == 2 {
+			base, ok := strings.CutSuffix(parts[1], ".json")
+			if ok && configNamePattern.MatchString(base) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: stored member %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
+}
+
+func storedDirectoryPathAllowed(parts []string, layer ConfigLayer) error {
+	return validateConfigMemberPath(parts, tar.TypeDir, layer)
+}
+
+func storedMemberPathAllowed(parts []string, layer ConfigLayer) error {
+	return validateConfigMemberPath(parts, tar.TypeReg, layer)
+}
+
+func configDirectoryPathAllowed(parts []string, layer ConfigLayer) error {
+	if len(parts) == 1 {
+		if parts[0] == memberLocksYML || !configBundleTopDirs[parts[0]] {
+			return fmt.Errorf("%w: bundle directory %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
+		}
+		if parts[0] == topDirProfiles && layer != LayerDefault {
+			return fmt.Errorf("%w: profiles/ is allowed only in the default layer", ErrInvalidArgument)
+		}
+		return nil
+	}
+	if len(parts) == 2 && (parts[0] == topDirSkills || parts[0] == topDirExtensions) && configNamePattern.MatchString(parts[1]) {
+		return nil
+	}
+	if len(parts) == 2 && parts[0] == topDirProfiles && layer == LayerDefault && configNamePattern.MatchString(parts[1]) {
+		return nil
+	}
+	if len(parts) == 2 && parts[0] == topDirPrompts && configNamePattern.MatchString(parts[1]) {
+		return nil
+	}
+	if len(parts) > 2 && (parts[0] == topDirSkills || parts[0] == topDirExtensions) && configNamePattern.MatchString(parts[1]) && validNestedConfigDir(parts[2:]) {
+		return nil
+	}
+	return fmt.Errorf("%w: bundle directory %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
+}
+
+func validNestedConfigDir(parts []string) bool {
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, `/\\`) {
+			return false
+		}
+	}
+	return len(parts) > 0
+}
+
+func validateConfigFileLimits(hdr *tar.Header, caps layerCaps, contentBytes *int64, seen map[string]bool, fileCount int) error {
+	if fileCount > caps.files {
+		return fmt.Errorf("%w: bundle exceeds file-count cap of %d files", ErrInvalidArgument, caps.files)
+	}
+	if seen[hdr.Name] {
+		return fmt.Errorf("%w: bundle contains duplicate member %q", ErrInvalidArgument, hdr.Name)
+	}
+	seen[hdr.Name] = true
+	if hdr.Size < 0 || hdr.Size > caps.bytes-*contentBytes {
+		return bundleSizeError(caps.bytes)
+	}
+	*contentBytes += hdr.Size
+	return nil
+}
+
+func lintConfigMembers(members []configMemberContent) (map[string][]byte, error) {
 	agentDefNames := make(map[string]bool)
-	profiles = make(map[string][]byte)
-	for _, m := range members {
-		parts := m.parts
+	profiles := make(map[string][]byte)
+	manifestBodies := make(map[string][]byte)
+	memberPaths := make(map[string]bool, len(members))
+	for _, member := range members {
+		memberPaths[member.name] = true
 		switch {
-		case len(parts) == 2 && parts[0] == topDirAgents:
-			if name := agentDefFrontmatterName(m.content); name != "" {
+		case len(member.parts) == 2 && member.parts[0] == topDirAgents:
+			if name := agentDefFrontmatterName(member.content); name != "" {
 				agentDefNames[name] = true
 			}
-		case len(parts) == 3 && parts[0] == topDirProfiles && parts[2] == memberProfileYML:
-			profiles[parts[1]] = m.content
+		case len(member.parts) == 3 && member.parts[0] == topDirProfiles && member.parts[2] == memberProfileYML:
+			profiles[member.parts[1]] = member.content
+		case len(member.parts) == 3 && member.parts[0] == topDirExtensions && member.parts[2] == "package.json":
+			manifestBodies[member.parts[1]] = member.content
 		}
 	}
 	if err := lintProfileAgentKeys(profiles, agentDefNames); err != nil {
-		return "", nil, err
+		return nil, err
 	}
+	if err := lintExtensionManifests(manifestBodies, memberPaths); err != nil {
+		return nil, err
+	}
+	return profiles, nil
+}
 
-	// Sort by name. Duplicate regular names are rejected above, so keys are unique and
-	// this ordering is total — sort stability is moot.
+func hashConfigMembers(members []configMemberContent) string {
 	sort.Slice(members, func(i, j int) bool { return members[i].name < members[j].name })
-
 	h := sha256.New()
 	var lenBuf [8]byte
 	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(members)))
-	h.Write(lenBuf[:])
-	for _, m := range members {
-		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(m.name)))
-		h.Write(lenBuf[:])
-		h.Write([]byte(m.name))
-		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(m.content)))
-		h.Write(lenBuf[:])
-		h.Write(m.content)
+	_, _ = h.Write(lenBuf[:])
+	for _, member := range members {
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(member.name)))
+		_, _ = h.Write(lenBuf[:])
+		_, _ = h.Write([]byte(member.name))
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(member.content)))
+		_, _ = h.Write(lenBuf[:])
+		_, _ = h.Write(member.content)
 	}
-	return hex.EncodeToString(h.Sum(nil)), profiles, nil
+	return hex.EncodeToString(h.Sum(nil))
 }
 
-// configMemberParts validates a member path for escapes and the top-dir whitelist,
+func validateStoredConfigBundle(bundle []byte, layer ConfigLayer) error {
+	if layer < LayerDefault || layer > LayerRole {
+		return fmt.Errorf("unknown stored config layer %d", layer)
+	}
+	caps := layerCaps{bytes: maxDecompressedBytes, files: maxFileCount}
+	gz, err := gzip.NewReader(bytes.NewReader(bundle))
+	if err != nil {
+		return fmt.Errorf("invalid gzip stream: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	decompressed := &cappedReader{r: gz, max: maxDecompressedBytes}
+	tr := tar.NewReader(decompressed)
+	fileCount := 0
+	var contentBytes int64
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			if _, err := io.Copy(io.Discard, decompressed); err != nil {
+				return err
+			}
+			if err := gz.Close(); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeDir {
+			return fmt.Errorf("stored member %q has disallowed type %d", hdr.Name, hdr.Typeflag)
+		}
+		parts, err := configMemberParts(canonicalConfigPath(hdr.Name))
+		if err != nil {
+			return err
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			if err := storedDirectoryPathAllowed(parts, layer); err != nil {
+				return err
+			}
+			continue
+		}
+		fileCount++
+		if fileCount > caps.files {
+			return fmt.Errorf("stored bundle exceeds file-count cap %d", caps.files)
+		}
+		if err := storedMemberPathAllowed(parts, layer); err != nil {
+			return err
+		}
+		if hdr.Size < 0 || hdr.Size > caps.bytes-contentBytes {
+			return fmt.Errorf("stored bundle exceeds layer content cap %d", caps.bytes)
+		}
+		contentBytes += hdr.Size
+		if _, err := io.CopyN(io.Discard, tr, hdr.Size); err != nil {
+			return err
+		}
+	}
+}
+
+func capsForLayer(layer ConfigLayer) (layerCaps, error) {
+	switch layer {
+	case LayerDefault:
+		return defaultLayerCaps, nil
+	case LayerTenant, LayerUser, LayerRole:
+		return overlayLayerCaps, nil
+	default:
+		return layerCaps{}, fmt.Errorf("%w: unknown config layer %d", ErrInvalidArgument, layer)
+	}
+}
+
+// configMemberParts validates a member path for escapes and the top-dir allowlist,
 // returning its cleaned path components. It rejects an absolute path, the empty/root
-// path, and any "", ".", or ".." component, then requires the top-level part to be a
-// whitelisted top dir or (for a single component) an admitted top-level filename.
+// path, and any "", ".", or ".." component.
 func configMemberParts(name string) ([]string, error) {
 	if strings.HasPrefix(name, "/") {
 		return nil, fmt.Errorf("%w: bundle member %q is an absolute path", ErrInvalidArgument, name)
 	}
-	trimmed := strings.TrimSuffix(name, "/")
-	if trimmed == "" {
+	if name == "" {
 		return nil, fmt.Errorf("%w: bundle member has an empty path", ErrInvalidArgument)
 	}
-	parts := strings.Split(trimmed, "/")
+	parts := strings.Split(name, "/")
 	for _, p := range parts {
 		if p == "" || p == "." || p == ".." {
 			return nil, fmt.Errorf("%w: bundle member %q has an illegal path component %q", ErrInvalidArgument, name, p)
 		}
 	}
-	// A single-component path is a top-level member: admit only the two exact
-	// filenames (or a directory named one of the top dirs — handled below).
+	if len(parts) == 1 && parts[0] == memberLocksYML {
+		return parts, nil
+	}
 	if len(parts) == 1 && (parts[0] == memberAgentsMD || parts[0] == memberModels) {
 		return parts, nil
 	}
 	if !configBundleTopDirs[parts[0]] {
-		return nil, fmt.Errorf("%w: bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/ and is not a top-level %s or %s", ErrInvalidArgument, name, memberAgentsMD, memberModels)
+		return nil, fmt.Errorf("%w: bundle member %q is not under an admitted config directory or top-level member", ErrInvalidArgument, name)
 	}
 	return parts, nil
 }
@@ -546,8 +763,17 @@ func configMemberParts(name string) ([]string, error) {
 // (bounded by the enclosing cappedReader), returning it for the hash. mcp/*.json parses
 // as JSON; settings/config.yml and models.yml as credential-free YAML mappings; the rest
 // are name-grammar-checked prose. The read propagates errBundleTooLarge on cap crossing.
-func validateRegularMember(parts []string, r io.Reader) ([]byte, error) {
-	joined := strings.Join(parts, "/")
+func validateRegularMember(parts []string, joined string, r io.Reader) ([]byte, error) {
+	if len(parts) == 1 && parts[0] == memberLocksYML {
+		content, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := parseConfigLocks(content); err != nil {
+			return nil, err
+		}
+		return content, nil
+	}
 	switch parts[0] {
 	case topDirMCP:
 		return validateMCPMember(parts, joined, r)
@@ -570,63 +796,272 @@ func validateRegularMember(parts []string, r io.Reader) ([]byte, error) {
 		}
 		return io.ReadAll(r)
 	case topDirPrompts:
-		// Exactly prompts/<role>/SYSTEM.md: three components, grammar-valid
-		// <role>, filename exactly SYSTEM.md. Stricter than skills/extensions
-		// (which admit arbitrary depth under <name>), so it needs its own case
-		// rather than the fall-through below.
-		if len(parts) != 3 || parts[2] != memberSystemMD {
+		if len(parts) != 3 || parts[2] != memberSystemMD || !configNamePattern.MatchString(parts[1]) {
 			return nil, fmt.Errorf("%w: prompts member %q must be prompts/<role>/%s", ErrInvalidArgument, joined, memberSystemMD)
-		}
-		if !configNamePattern.MatchString(parts[1]) {
-			return nil, fmt.Errorf("%w: prompts role name %q must match %s", ErrInvalidArgument, parts[1], configNamePattern.String())
 		}
 		return io.ReadAll(r)
 	case topDirProfiles:
 		return validateProfileMember(parts, joined, r)
 	}
-
-	// Top-level single-component files (configMemberParts admits only the two
-	// exact names).
 	if len(parts) == 1 {
 		switch parts[0] {
 		case memberAgentsMD:
-			return io.ReadAll(r) // prose, no content validation beyond the read
+			return io.ReadAll(r)
 		case memberModels:
 			return validateModelsMember(joined, r)
 		}
 	}
-
-	// skills/ or extensions/: the <name> segment must match the grammar; deeper
-	// components have already passed the escape check in configMemberParts.
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("%w: bundle member %q must live under %s/<name>", ErrInvalidArgument, joined, parts[0])
-	}
-	if !configNamePattern.MatchString(parts[1]) {
-		return nil, fmt.Errorf("%w: bundle member name %q must match %s", ErrInvalidArgument, parts[1], configNamePattern.String())
+	if len(parts) < 2 || !configNamePattern.MatchString(parts[1]) {
+		return nil, fmt.Errorf("%w: bundle member name in %q must match %s", ErrInvalidArgument, joined, configNamePattern.String())
 	}
 	return io.ReadAll(r)
 }
 
-// validateMCPMember validates mcp/<name>.json (grammar-valid <name>, JSON body).
+// validateMCPMember validates mcp/<name>.json and enforces path identity.
 func validateMCPMember(parts []string, joined string, r io.Reader) ([]byte, error) {
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("%w: mcp member %q must be mcp/<name>.json", ErrInvalidArgument, joined)
 	}
 	base, ok := strings.CutSuffix(parts[1], ".json")
-	if !ok {
-		return nil, fmt.Errorf("%w: mcp member %q must be a .json file", ErrInvalidArgument, joined)
-	}
-	if !configNamePattern.MatchString(base) {
-		return nil, fmt.Errorf("%w: mcp member name %q must match %s", ErrInvalidArgument, base, configNamePattern.String())
+	if !ok || !configNamePattern.MatchString(base) {
+		return nil, fmt.Errorf("%w: mcp member %q must use a valid .json server name", ErrInvalidArgument, joined)
 	}
 	content, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	if !json.Valid(content) {
-		return nil, fmt.Errorf("%w: mcp member %q is not valid JSON", ErrInvalidArgument, joined)
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(content, &root); err != nil || root == nil {
+		return nil, fmt.Errorf("%w: mcp member %q must be a JSON object", ErrInvalidArgument, joined)
+	}
+	serversRaw, ok := root["mcpServers"]
+	if !ok || string(serversRaw) == jsonNull {
+		return nil, fmt.Errorf("%w: mcp member %q mcpServers must be an object", ErrInvalidArgument, joined)
+	}
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(serversRaw, &servers); err != nil || servers == nil {
+		return nil, fmt.Errorf("%w: mcp member %q mcpServers must be an object", ErrInvalidArgument, joined)
+	}
+	if len(servers) > 1 || len(servers) == 1 && servers[base] == nil {
+		return nil, fmt.Errorf("%w: mcp member %q must contain only server %q", ErrInvalidArgument, joined, base)
+	}
+	if len(servers) == 1 {
+		var server map[string]any
+		if err := json.Unmarshal(servers[base], &server); err != nil || server == nil {
+			return nil, fmt.Errorf("%w: MCP server %q must be an object", ErrInvalidArgument, base)
+		}
+	}
+	var document map[string]any
+	if err := json.Unmarshal(content, &document); err != nil {
+		return nil, fmt.Errorf("%w: mcp member %q must be an object", ErrInvalidArgument, joined)
+	}
+	if err := rejectCredentialMCP(document, joined); err != nil {
+		return nil, err
 	}
 	return content, nil
+}
+func rejectCredentialMCP(doc map[string]any, joined string) error {
+	return walkCredentialMCP(doc, "", joined)
+}
+
+func walkCredentialMCP(value any, path, member string) error {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			childPath := path + "." + key
+			handled, err := validateCredentialMCPField(key, child, childPath, member)
+			if err != nil {
+				return err
+			}
+			if handled {
+				continue
+			}
+			if err := walkCredentialMCP(child, childPath, member); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, child := range node {
+			if err := walkCredentialMCP(child, fmt.Sprintf("%s[%d]", path, i), member); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCredentialMCPField(key string, value any, path, member string) (bool, error) {
+	switch strings.ToLower(key) {
+	case "clientsecret", "envpolicy", "headerpolicy":
+		return true, fmt.Errorf("%w: MCP member %q contains forbidden field %s", ErrInvalidArgument, member, path)
+	case "env", "headers":
+		return true, validateMCPIndirections(value, path, member)
+	case "url", "tokenurl":
+		return true, validateMCPURL(value, path, member)
+	case "args":
+		return true, validateMCPArgs(value, path, member)
+	default:
+		return false, nil
+	}
+}
+
+func validateMCPIndirections(value any, path, member string) error {
+	values, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%w: MCP member %q field %s must be an object", ErrInvalidArgument, member, path)
+	}
+	for name, raw := range values {
+		text, ok := raw.(string)
+		if !ok || (!strings.HasPrefix(text, "!") && !envIndirectionPattern.MatchString(text)) {
+			return fmt.Errorf("%w: MCP member %q field %s.%s must use an environment indirection", ErrInvalidArgument, member, path, name)
+		}
+	}
+	return nil
+}
+
+func validateMCPURL(value any, path, member string) error {
+	text, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%w: MCP member %q URL field %s must be a string", ErrInvalidArgument, member, path)
+	}
+	if isHTTPURL(text) {
+		return validateCredentialFreeMCPURL(text, path, member)
+	}
+	return nil
+}
+
+func validateMCPArgs(value any, path, member string) error {
+	args, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%w: MCP member %q args must be a list", ErrInvalidArgument, member)
+	}
+	for i, raw := range args {
+		text, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(strings.ToLower(text), "exaapikey=") {
+			return fmt.Errorf("%w: MCP member %q args contains an API key", ErrInvalidArgument, member)
+		}
+		if isHTTPURL(text) {
+			argPath := fmt.Sprintf("%s[%d]", path, i)
+			if err := validateCredentialFreeMCPURL(text, argPath, member); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isHTTPURL detects an http(s) URL after the C0-control/space trim WHATWG applies.
+func isHTTPURL(value string) bool {
+	scheme, _, ok := strings.Cut(trimURLSpace(value), ":")
+	return ok && (strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https"))
+}
+
+func trimURLSpace(value string) string {
+	return strings.TrimFunc(value, func(r rune) bool { return r <= ' ' })
+}
+
+func validateCredentialFreeMCPURL(value, path, member string) error {
+	normalized, authority, rawAuthority, isHTTP := normalizeCredentialMCPURL(trimURLSpace(value))
+	if isHTTP && (strings.Contains(authority, "@") || strings.Contains(rawAuthority, "@")) {
+		return fmt.Errorf("%w: MCP member %q has URL userinfo at %s", ErrInvalidArgument, member, path)
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return fmt.Errorf("%w: MCP member %q has an unparseable URL at %s", ErrInvalidArgument, member, path)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: MCP member %q has URL userinfo at %s", ErrInvalidArgument, member, path)
+	}
+	if name, err := credentialMCPQueryParam(u.RawQuery); err != nil || name != "" {
+		return fmt.Errorf("%w: MCP member %q has a credential query at %s", ErrInvalidArgument, member, path)
+	}
+	return nil
+}
+
+func normalizeCredentialMCPURL(value string) (normalized, authority, rawAuthority string, isHTTP bool) {
+	scheme, rest, ok := strings.Cut(value, ":")
+	if !ok {
+		return value, "", "", false
+	}
+	isHTTP = strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https")
+	if !isHTTP {
+		return value, "", "", false
+	}
+	normalizedRest := strings.ReplaceAll(rest, "\\", "/")
+	if !strings.HasPrefix(normalizedRest, "//") {
+		normalizedRest = "//" + strings.TrimLeft(normalizedRest, "/")
+	}
+	normalized = strings.ToLower(scheme) + ":" + normalizedRest
+	authority = strings.TrimPrefix(normalizedRest, "//")
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+	rawAuthority = strings.TrimLeft(rest, "/")
+	if end := strings.IndexAny(rawAuthority, "/?#"); end >= 0 {
+		rawAuthority = rawAuthority[:end]
+	}
+	return normalized, authority, rawAuthority, true
+}
+
+func extensionIDFromPath(p string) string {
+	parts := strings.Split(p, "/")
+	if len(parts) < 3 || parts[0] != topDirExtensions {
+		return ""
+	}
+	base := parts[len(parts)-1]
+	if base == "index.ts" || base == "index.js" {
+		return parts[len(parts)-2]
+	}
+	if !strings.HasSuffix(base, ".ts") && !strings.HasSuffix(base, ".js") {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(base, ".ts"), ".js")
+}
+
+func lintExtensionManifests(manifests map[string][]byte, members map[string]bool) error {
+	for member := range members {
+		parts := strings.Split(member, "/")
+		if len(parts) == 2 && parts[0] == topDirExtensions {
+			return fmt.Errorf("%w: extension must be a directory member, got %q", ErrInvalidArgument, member)
+		}
+	}
+	for id, body := range manifests {
+		var manifest struct {
+			OMP *struct {
+				Extensions []string `json:"extensions"`
+			} `json:"omp"`
+			PI *struct {
+				Extensions []string `json:"extensions"`
+			} `json:"pi"`
+		}
+		if err := json.Unmarshal(body, &manifest); err != nil {
+			continue
+		}
+		var entries []string
+		if manifest.OMP != nil {
+			entries = manifest.OMP.Extensions
+		} else if manifest.PI != nil {
+			entries = manifest.PI.Extensions
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry, "/") || strings.Contains(entry, "\\") {
+				return fmt.Errorf("%w: extension %q has unsafe manifest path %q", ErrInvalidArgument, id, entry)
+			}
+			normalized := strings.TrimPrefix(entry, "./")
+			cleaned := path.Clean(normalized)
+			if cleaned != normalized || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+				return fmt.Errorf("%w: extension %q has unsafe manifest path %q", ErrInvalidArgument, id, entry)
+			}
+			candidate := "extensions/" + id + "/" + cleaned
+			if !members[candidate] || extensionIDFromPath(candidate) != id {
+				return fmt.Errorf("%w: extension %q manifest entry %q does not resolve to its directory identity", ErrInvalidArgument, id, entry)
+			}
+		}
+	}
+	return nil
 }
 
 // validateSettingsMember validates the settings/config.yml member: yml-only
@@ -1028,13 +1463,6 @@ func rejectCredentialOwner(owner any, joined, path string) error {
 // remoteCompactionURLKeys are the remoteCompaction members the SDK dials as URLs.
 var remoteCompactionURLKeys = []string{"endpoint", "v2Endpoint", "streamingEndpoint"}
 
-// credentialQueryExact and credentialQuerySuffixes judge a query parameter name
-// lowercased with every non-alphanumeric rune removed.
-var (
-	credentialQueryExact    = map[string]bool{"auth": true, "authorization": true, "sig": true, "pwd": true, "passwd": true}
-	credentialQuerySuffixes = []string{"key", "token", "secret", "password", "signature", "credential"}
-)
-
 // rejectCredentialURLs refuses a literal credential embedded in owner's baseUrl or
 // remoteCompaction endpoints. URL fields bypass env indirection, so any value is literal.
 func rejectCredentialURLs(owner any, joined, path string) error {
@@ -1070,11 +1498,17 @@ func rejectCredentialURL(owner any, key, joined, path string) error {
 	if s == "" {
 		return nil
 	}
+	if colon := strings.IndexByte(s, ':'); colon >= 0 {
+		scheme, rest := s[:colon], s[colon+1:]
+		if strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https") {
+			s = strings.ToLower(scheme) + ":" + rest
+		}
+	}
 	u, err := url.Parse(s)
 	if err != nil {
 		return fmt.Errorf("%w: models member %q sets %s.%s to an unparseable URL", ErrInvalidArgument, joined, path, key)
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Fragment != "" {
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Fragment != "" {
 		return fmt.Errorf("%w: models member %q sets %s.%s to a URL that is not absolute http(s) without a fragment", ErrInvalidArgument, joined, path, key)
 	}
 	if u.User != nil {
@@ -1109,6 +1543,29 @@ func credentialQueryParam(rawQuery string) (string, error) {
 	}
 	return "", nil
 }
+
+func credentialMCPQueryParam(rawQuery string) (string, error) {
+	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		rawName, value, _ := strings.Cut(pair, "=")
+		name, err := url.QueryUnescape(rawName)
+		if err != nil {
+			return "", err
+		}
+		if _, err := url.QueryUnescape(value); err != nil {
+			return "", err
+		}
+		if isCredentialQueryName(name) || strings.Contains(strings.ToLower(name), "key") || strings.Contains(strings.ToLower(name), "token") || strings.Contains(strings.ToLower(name), "secret") || strings.Contains(strings.ToLower(name), "auth") {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// credentialQueryExact and credentialQuerySuffixes judge names after punctuation is removed.
+var (
+	credentialQueryExact    = map[string]bool{"auth": true, "authorization": true, "sig": true, "pwd": true, "passwd": true}
+	credentialQuerySuffixes = []string{"key", "token", "secret", "password", "signature", "credential"}
+)
 
 func isCredentialQueryName(name string) bool {
 	norm := strings.Map(func(r rune) rune {
@@ -1152,11 +1609,6 @@ func rejectCredentialHeaders(owner any, joined, path string) error {
 	}
 	return nil
 }
-
-// envIndirectionPattern matches a bare env-var name — the syntactic form the SDK
-// treats as an env reference (resolveConfigValue: env-name-first). A value that
-// matches is indirection (passes); anything else is a pinned literal.
-var envIndirectionPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // isEnvIndirection reports whether a header value is an env reference (or a `!command`)
 // rather than a pinned literal secret, mirroring the SDK's resolveConfigValue: a leading

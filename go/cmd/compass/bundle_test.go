@@ -46,7 +46,7 @@ func TestBuildBundleValidDir(t *testing.T) {
 		"skills/alpha/SKILL.md":     "# alpha",
 		"skills/alpha/ref/notes.md": "notes",
 		"extensions/beta/main.go":   "package beta",
-		"mcp/gamma.json":            `{"ok":true}`,
+		"mcp/gamma.json":            `{"mcpServers":{"gamma":{"command":"gamma-mcp"}}}`,
 	})
 
 	bundle, err := buildBundle(root)
@@ -236,6 +236,17 @@ func TestBundleCaps(t *testing.T) {
 		t.Errorf("byte-cap error %q does not name the content limit", err)
 	}
 }
+func TestBundleCapsMatchStoreDoorDefaults(t *testing.T) {
+	if maxBundleFileCount != 2560 || maxBundleContentBytes != 48<<20 {
+		t.Fatalf("client bundle caps = (%d files, %d bytes), want store defaults (2560, %d)", maxBundleFileCount, maxBundleContentBytes, int64(48<<20))
+	}
+	if err := validateMemberGrammar([]string{"skills", "alpha"}, "skills/alpha", nil); err == nil {
+		t.Fatal("two-component skill path accepted; door requires a file under skills/<name>/")
+	}
+	if err := validateMemberGrammar([]string{"extensions", "alpha"}, "extensions/alpha", nil); err == nil {
+		t.Fatal("two-component extension path accepted; door requires a file under extensions/<name>/")
+	}
+}
 
 // TestBuildBundleDoorParity is the REAL door-parity check: it builds a valid
 // bundle and feeds the bytes through the exported store door validator
@@ -246,7 +257,7 @@ func TestBuildBundleDoorParity(t *testing.T) {
 		"skills/alpha/SKILL.md":        "# alpha",
 		"skills/alpha/ref/notes.md":    "notes",
 		"extensions/beta/main.go":      "package beta",
-		"mcp/gamma.json":               `{"ok":true}`,
+		"mcp/gamma.json":               `{"mcpServers":{"gamma":{"command":"gamma-mcp"}}}`,
 		"settings/config.yml":          "autoCompact: true\n",
 		"rules/delta.md":               "# delta rule",
 		"rules/epsilon.mdc":            "# epsilon rule",
