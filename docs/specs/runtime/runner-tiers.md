@@ -8,16 +8,16 @@ spec cites; this spec states only the standing strategy.
 
 Two records carry the why:
 
-- [Runner adoption strategy](../../designs/infra/runtime/compass-runner-adoption-strategy/design.md)
+- [Runner adoption strategy](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/runtime/compass-runner-adoption-strategy/design.md)
   — the trust-model split ruling (DL-325) and its execution plan.
-- [Host runtime tier](../../designs/infra/runtime/compass-host-runtime-tier/design.md)
+- [Host runtime tier](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/runtime/compass-host-runtime-tier/design.md)
   — the host tier's design record (the third tier).
 
 ## The trust-model axis
 
 **The security boundary follows the trust model, not the deployment
 uniformly.** That is the ruled axis
-([DL-325](../../designs/decisions/infra/DL-325.md): "The runner end state splits by
+([DL-325](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/decisions/infra/DL-325.md): "The runner end state splits by
 trust model (RIG-3070): untrusted multi-tenant operation requires the microVM
 hardware boundary (KVM, unchanged); self-host single-tenant deployments keep
 podman as a permanent, supported entry tier requiring no `/dev/kvm`, with
@@ -32,7 +32,7 @@ untrusted tenant to isolate from — so the boundary strength is the operator's
 choice, graded across three tiers.
 
 One doctrine governs what every tier's boundary is *for*
-([DL-024](../../designs/decisions/meta/DL-024.md): "Each agent runs in a per-agent
+([DL-024](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/decisions/meta/DL-024.md): "Each agent runs in a per-agent
 container on the Runner for blast-radius isolation, not credential
 avoidance"). No tier withholds credentials from the agent — secrets are
 materialized into the agent's environment on every tier. What varies across

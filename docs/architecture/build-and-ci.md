@@ -155,8 +155,8 @@ Skipping what it cannot verify would make its green mean nothing.
 The `compass-agent` runtime image (the base every agent workstream runs in) is
 published to GHCR by the unified `release.yml` lane, separate from the gate
 above. For the full design see the frozen record
-`docs/designs/infra/release/compass-unified-release-lane/design.md` (the earlier
-`docs/designs/infra/ci/compass-agent-image-publish/design.md` records the
+`RigelBuild/docs:docs/designs/compass/infra/release/compass-unified-release-lane/design.md` (the earlier
+`RigelBuild/docs:docs/designs/compass/infra/ci/compass-agent-image-publish/design.md` records the
 original image-publish rationale); the durable operational shape is here.
 
 **Ref and tags.** The image is `ghcr.io/rigelbuild/compass-agent`. Every
@@ -284,7 +284,7 @@ blocks merge, like every other build in CI.
 ## Release assets and install channels
 
 The frozen record
-`docs/designs/infra/release/compass-distribution/design.md` defines the
+`RigelBuild/docs:docs/designs/compass/infra/release/compass-distribution/design.md` defines the
 distribution surface. This section lists what is live.
 
 **The Release.** `release-pr` cuts the `vX.Y.Z` tag and creates the GitHub

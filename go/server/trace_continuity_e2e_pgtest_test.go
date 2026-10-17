@@ -2,7 +2,7 @@
 
 package server
 
-// T6 of docs/designs/observability/compass-server-runner-otel/design.md: the
+// T6 of RigelBuild/docs:docs/designs/compass/observability/compass-server-runner-otel/design.md: the
 // end-to-end ONE TURN, ONE TRACE proof over the shipped comms door. Load-bearing
 // ordering: install the span exporter before any door/wire (otelconnect captures
 // the global tracer provider once at NewInterceptor); see the helper docs below.

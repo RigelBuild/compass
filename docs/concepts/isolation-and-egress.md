@@ -29,9 +29,9 @@ single-tenant self-host may run podman as a permanent entry tier, with the
 microVM recommended. Selecting the microVM on a box without KVM fails at
 startup; there is no silent fallback to a container. The microVM Runner backend
 is designed in
-[`microvm-runner.md`](../designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md)
+[`microvm-runner.md`](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/runtime/compass-elastic-session-runtime/microvm-runner.md)
 (RIG-2394), and the runner split in
-[`compass-runner-adoption-strategy`](../designs/infra/runtime/compass-runner-adoption-strategy/design.md).
+[`compass-runner-adoption-strategy`](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/runtime/compass-runner-adoption-strategy/design.md).
 
 ## Default-deny egress: the agent reaches only what it is allowed to
 

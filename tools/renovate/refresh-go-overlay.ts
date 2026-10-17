@@ -17,7 +17,7 @@
 //      path CI uses) — a .version selector is eval-only; a still-too-old overlay
 //      fails HERE. Assert evaluated === the go.nix target.
 
-// Design: docs/designs/repo/compass-renovate-migration.md. Invoked by the go
+// Design: RigelBuild/docs:docs/designs/compass/repo/compass-renovate-migration.md. Invoked by the go
 // packageRule (config.json5), allowlisted in bot-config.json5. Requires nix +
 // devenv + bun + network (the workflow provisions nix and the vendored devenv
 // shim; no ambient devenv on compass CI).

@@ -116,7 +116,7 @@ type WorkloadSpec struct {
 	// UID is the container uid the invoking host user is mapped to via
 	// --userns=keep-id:uid=,gid= — the baked agent uid the image bakes /nix and
 	// $HOME as (the T1/T2 baked-agent-uid invariant; see
-	// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md).
+	// RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-arbitrary-uid/design.md).
 	UID uint32
 	// Egress is the default-deny egress policy for this container. The podman
 	// backend IGNORES this field: createArgs is untouched (the podman argv stays
@@ -521,7 +521,7 @@ func createArgs(spec WorkloadSpec) []string {
 // minUsernsRemapMajor / minUsernsRemapMinor are the podman version floor for
 // the --userns=keep-id:uid=,gid= remap Create relies on: keep-id:uid= is a
 // podman 4.3+ option
-// (docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md §(b)). There is
+// (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-arbitrary-uid/design.md §(b)). There is
 // no --uidmap fallback below it — the floor is hard.
 const (
 	minUsernsRemapMajor = 4

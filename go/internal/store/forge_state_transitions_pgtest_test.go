@@ -3,7 +3,7 @@
 package store
 
 // Real-Postgres contracts for the agent-driven state-transition memo (design
-// docs/designs/server/compass-forge-state-transition/design.md §Actor
+// RigelBuild/docs:docs/designs/compass/server/compass-forge-state-transition/design.md §Actor
 // attribution): the coordinate-keyed upsert (latest transition wins), the
 // single-statement clear-and-return consume (a memo attributes at most one
 // event, so a second consume finds nothing), the freshness bound, and the miss

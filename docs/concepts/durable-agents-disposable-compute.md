@@ -92,9 +92,9 @@ egress](./isolation-and-egress.md)), not a change to what persists.
 The native app runs a local podman-backed stack in embedded mode for onboarding
 and connects to an always-on stack in client mode (ledger DL-319). The microVM
 Runner backend itself is designed in
-[`microvm-runner.md`](../designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md)
+[`microvm-runner.md`](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/runtime/compass-elastic-session-runtime/microvm-runner.md)
 (RIG-2394), under the hosted-platform end-state record
-[`compass-elastic-session-runtime`](../designs/infra/runtime/compass-elastic-session-runtime/design.md)
+[`compass-elastic-session-runtime`](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/runtime/compass-elastic-session-runtime/design.md)
 (RIG-1717).
 
 ## Why this split is the design, not an accident

@@ -148,7 +148,7 @@ type stubStreamingRuntime struct {
 	stopGate    chan struct{}                   // when non-nil, Stop blocks on it (after recording) — test-controlled teardown parking
 	stopEntered chan runtime.WorkloadID         // when non-nil, Stop sends id after recording, before parking — a real "reached Stop" event for a test to gate on
 	callsByID   map[runtime.WorkloadID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
-	execGate    chan struct{}                   // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md)
+	execGate    chan struct{}                   // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-concurrent-dispatch/design.md)
 	execEntered chan runtime.WorkloadID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
 	execErr     error                           // when set, ExecStreaming fails before starting the child
 	created     []runtime.WorkloadSpec

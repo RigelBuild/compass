@@ -9,7 +9,7 @@ Until the gateway resolver ships, the Server stores the registry but requests
 do not yet route through it.
 
 The design is in
-[stable-name routing](../designs/platform/compass-stable-name-routing/design.md).
+[stable-name routing](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/platform/compass-stable-name-routing/design.md).
 
 ## Day-1 defaults
 

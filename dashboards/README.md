@@ -7,7 +7,7 @@ Grafana dashboard JSON that renders signals the shipped `compass-agent` emits
 today. They ship as JSON only — there is **no provisioning automation** (no
 datasource YAML, no docker-compose, no `grafana.ini`) by design, per decision
 D3/T5 of the record
-[`docs/designs/observability/compass-observability-architecture/design.md`](../docs/designs/observability/compass-observability-architecture/design.md).
+[`RigelBuild/docs:docs/designs/compass/observability/compass-observability-architecture/design.md`](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/observability/compass-observability-architecture/design.md).
 Import is the operator's one manual step.
 
 Each dashboard declares its datasource as a templating variable

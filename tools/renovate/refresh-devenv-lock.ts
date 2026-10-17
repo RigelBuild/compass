@@ -9,7 +9,7 @@
 // A custom.regex manager surfaces the fork rev as a git-refs digest. This task
 // self-gates, relocks each changed scope in its own cwd, and fails fast.
 
-// Design: docs/designs/repo/compass-renovate-devenv-fork-group/design.md.
+// Design: RigelBuild/docs:docs/designs/compass/repo/compass-renovate-devenv-fork-group/design.md.
 // The single fork rule invokes this task; each scope uses its own pinned devenv.
 
 // That nix run needs the runner's nix.conf naming the devenv + cachix

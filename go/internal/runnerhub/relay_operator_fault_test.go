@@ -21,7 +21,7 @@ import (
 // the error text. This drives the mapping through the REAL router/relay wiring
 // rather than the pure runnerErrorToConnect function, so the plumbing that ties
 // the Runner's error result to the client-facing Connect code is what is proven.
-// See docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
+// See RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
 func TestProvisionRelaySurfacesOperatorFaultAsFailedPrecondition(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)

@@ -28,9 +28,10 @@ built on top of it, out of tree.
 
 ## What this means for a design in this repo
 
-- **The core is the product you design here.** A design record under
-  `docs/designs/` designs a change to the self-hosted core. Its code citations
-  resolve against this repo; its tasks land here.
+- **The core is the product you design here.** A Compass design record (in
+  `RigelBuild/docs` under `docs/designs/compass/`) designs a change to the
+  self-hosted core. Its code citations resolve against this repo; its tasks
+  land here.
 - **Managed control-plane concerns are out of scope for this repo — name them,
   then defer.** Tenant orchestration, billing, cross-tenant analytics, the
   hosted control surface, and multi-tenant scheduling are managed-plane
@@ -80,17 +81,17 @@ built on top of it, out of tree.
 - **Public URL is per-deployment.** Managed is `compass.rigel.build`; a
   self-hosted deploy sets its own. The core reads a public-base-URL config value
   (flag + env), never a hardcoded host — see
-  [`compass-linear-agent-responder`](../designs/server/compass-linear-agent-responder/design.md).
+  [`compass-linear-agent-responder`](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/server/compass-linear-agent-responder/design.md).
 - **Bundled dependencies default on, with a clean external opt-out.** The
   self-hosted stack bundles its postgres by default and exposes
   `--database-external`; the managed tier supplies its own. Future bundled deps
   follow the same "bundle-by-default, opt-out for managed" shape — see
-  [`compass-distribution`](../designs/infra/release/compass-distribution/design.md).
+  [`compass-distribution`](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/release/compass-distribution/design.md).
 
 ## Canonical statement
 
 The load-bearing architectural framing lives in the runtime record,
-[`compass-elastic-session-runtime` §"OSS core and managed service"](../designs/infra/runtime/compass-elastic-session-runtime/design.md):
+[`compass-elastic-session-runtime` §"OSS core and managed service"](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/infra/runtime/compass-elastic-session-runtime/design.md):
 "Compass ships as two products over one shared core." This concept doc lifts
 that framing to always-on orientation so every agent holds it before designing,
 not only the ones who read that record.

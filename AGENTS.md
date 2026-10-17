@@ -69,9 +69,11 @@ and in CI.
 This is a pre-GA, greenfield prototype. Interfaces are **not** frozen —
 reimagine them freely when a better shape presents itself; describe the current
 contract as what it *is* today, never as a bar on new design. The one
-change-controlled artifact is a **merged design record** under `docs/designs/`:
-a merged record is amended by adding a new record, not rewritten in place. The
-record is change-controlled; the interface it describes is fair game.
+change-controlled artifact is a **merged design record**. Compass records live
+in [`RigelBuild/docs`](https://github.com/RigelBuild/docs) under
+`docs/designs/compass/`, not in this repo. A merged record is amended by adding
+a new record, not rewritten in place. The record is change-controlled; the
+interface it describes is fair game.
 
 ## Tests
 

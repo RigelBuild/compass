@@ -93,7 +93,7 @@ const (
 // auth layer (T4) depends on. A resolved token carries its kind, so a door can
 // reject a cross-kind token (a Runner token on CompassService/CommsService, an
 // account token on RunnerService). Sealed to exactly these three
-// (docs/designs/server/compass-service-subject-principal.md).
+// (RigelBuild/docs:docs/designs/compass/server/compass-service-subject-principal.md).
 type SubjectKind int32
 
 const (
@@ -441,7 +441,7 @@ type AskAnswerBlock struct {
 
 // Ask is a structured question set the agent posts and, at the turn level,
 // chooses whether to block on (see
-// docs/designs/agent/compass-ask-typed-derivation.md; the earlier
+// RigelBuild/docs:docs/designs/compass/agent/compass-ask-typed-derivation.md; the earlier
 // single-question shape is superseded — one Ask now carries N AskQuestions,
 // answered atomically in one RespondToAsk). AskID is minted once on append.
 type Ask struct {

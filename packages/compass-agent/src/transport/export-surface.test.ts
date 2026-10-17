@@ -1,8 +1,8 @@
 // The export-surface containment test: the rule of the parent adoption
-// record (docs/designs/repo/compass-agent-effect-adoption/design.md, Global
+// record (RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-adoption/design.md, Global
 // Constraints — "the public `.d.ts` stays free of the `effect` package") made
 // mechanical, extended by this record
-// (docs/designs/repo/compass-agent-effect-otel/design.md, O1a) to cover
+// (RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-otel/design.md, O1a) to cover
 // `@effect/opentelemetry` and `@opentelemetry/*` now that the OTel layer lives
 // inside src/transport/.
 //
