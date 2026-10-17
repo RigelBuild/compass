@@ -8,7 +8,8 @@
   // Dependabot's per-bump storm.
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: [
-    "config:recommended",
+    // Shared Rigel base: config:recommended, dashboard, rebase, 5-day cooldown.
+    "github>RigelBuild/meissa//tools/renovate/preset.json5",
     // Pin any un-pinned workflow `uses:` to a commit SHA on sight — see the
     // github-actions manager rationale below; going beyond Dependabot (which
     // only maintained EXISTING pins), this pins NEW actions too.
