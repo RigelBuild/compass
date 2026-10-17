@@ -404,6 +404,26 @@ function moon(args: readonly string[], stdin?: string): string {
 	return result.stdout.toString();
 }
 
+async function moonAsync(
+	args: readonly string[],
+	stdin: string,
+): Promise<string> {
+	const proc = Bun.spawn(["moon", ...args], {
+		cwd: repoRoot,
+		stdin: Buffer.from(stdin),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0)
+		throw new Error(`moon ${args.join(" ")} exited ${exitCode}: ${stderr}`);
+	return stdout;
+}
+
 function taskProjectDir(target: string): string {
 	const separator = target.indexOf(":");
 	if (separator < 1) throw new Error(`invalid Moon task target ${target}`);
@@ -480,9 +500,9 @@ function sampleFiles(inputs: readonly MoonInput[]): string[] {
 	return [...samples].sort();
 }
 
-function affectedTasks(file: string): Set<string> {
+async function affectedTasks(file: string): Promise<Set<string>> {
 	const payload: unknown = JSON.parse(
-		moon(["query", "tasks", "--affected"], `${file}\n`),
+		await moonAsync(["query", "tasks", "--affected"], `${file}\n`),
 	);
 	if (
 		typeof payload !== "object" ||
@@ -518,14 +538,17 @@ function affectedTasks(file: string): Set<string> {
 	return new Set(Object.keys(tasks));
 }
 
-function ownerInputCovered(suite: GoSuite, file: string): boolean {
+async function ownerInputCovered(
+	suite: GoSuite,
+	file: string,
+): Promise<boolean> {
 	const isGoPath =
 		file.startsWith("go/") &&
 		liveGraph.packages.some(
 			(pkg) => file === `go/${pkg}` || file.startsWith(`go/${pkg}/`),
 		);
 	if (isGoPath) return true;
-	const residueTasks = affectedTasks(file);
+	const residueTasks = await affectedTasks(file);
 	return selectGoSuites({
 		event: "pull_request",
 		changedPaths: [file],
@@ -637,12 +660,15 @@ async function findTaggedFixtureEscapes(): Promise<string[]> {
 describe("owner-task input coverage", () => {
 	test(
 		"each sampled owner-task input maps to Go or widens its suite",
-		() => {
-			for (const { suite, file } of ownerInputSamples()) {
-				expect(ownerInputCovered(suite, file), `${file} is uncovered`).toBe(
-					true,
-				);
-			}
+		async () => {
+			const samples = ownerInputSamples();
+			const covered = await Promise.all(
+				samples.map(({ suite, file }) => ownerInputCovered(suite, file)),
+			);
+			const uncovered = samples
+				.filter((_, i) => !covered[i])
+				.map(({ file }) => file);
+			expect(uncovered).toEqual([]);
 		},
 		LIVE_TIMEOUT_MS,
 	);
