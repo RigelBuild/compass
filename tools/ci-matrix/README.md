@@ -1,8 +1,8 @@
 # ci-matrix
 
 Builds the GitHub Actions concern matrix from Moon's project list, CI-group
-tags, and affected-project results. It also emits flags for the special CI
-legs, so workflow YAML does not need a separate project list.
+tags, and affected-project results. It emits special-leg flags and JSON package
+root arrays for the pgtest and microVM CI legs.
 
 ## Run
 

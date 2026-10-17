@@ -56,7 +56,10 @@ export type GenOutput = {
 	/** ONE entry per group EXISTING in the workspace, sorted by group name */
 	matrix: MatrixEntry[];
 	pgtestAffected: boolean;
+	pgtestPackages: string[];
 	microvmAffected: boolean;
+	microvmPackages: string[];
+	microvmRequiresSecretspec: boolean;
 	e2eAffected: boolean;
 	forgeAffected: boolean;
 	gtk4Affected: boolean;
@@ -254,8 +257,16 @@ function affectedFlags(
 	};
 }
 
-/** Translate the affected closure + tags into the concern matrix + flags. */
+/** Translate selections into the concern matrix and special-leg outputs. */
 export function generate(input: GenInput): GenOutput {
+	for (const suite of ["pgtest", "microvm"] as const) {
+		if (
+			input.goSelection[suite].run &&
+			input.goSelection[suite].roots.length === 0
+		) {
+			throw new Error(`${suite} selection is running with no roots`);
+		}
+	}
 	const { groupOf, groupUniverse, projectById } = groupByProject(
 		input.projects,
 	);
@@ -268,6 +279,9 @@ export function generate(input: GenInput): GenOutput {
 	return {
 		matrix: matrixForGroups(groupUniverse, taskTargets),
 		...affectedFlags(input),
+		pgtestPackages: input.goSelection.pgtest.roots.map((root) => `./${root}`),
+		microvmPackages: input.goSelection.microvm.roots.map((root) => `./${root}`),
+		microvmRequiresSecretspec: input.goSelection.microvm.requiresSecretspec,
 	};
 }
 
@@ -360,18 +374,17 @@ export function unionAffectedIds(
 /**
  * The `$GITHUB_OUTPUT` lines, one per key the `setup` job publishes.
  *
- * Every `*_affected` flag is required: `ci.yml`'s rollup accepts a skipped
- * work job only when its paired flag reads exactly `false`, so an omitted key
- * arrives as the empty string and reds the rollup with `result=skipped,
- * affected flag=`. That is fail-closed, but it fails on the *next* PR rather
- * than on the change that dropped the key, so the set is built here and
- * asserted in the tests rather than inlined at the callsite.
+ * Every `*_affected` flag is required. Package values remain JSON arrays for
+ * GitHub Actions' `fromJSON` consumer.
  */
 export function outputLines(out: GenOutput): string[] {
 	return [
 		`matrix=${JSON.stringify(out.matrix)}`,
 		`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
+		`pgtest_packages=${JSON.stringify(out.pgtestPackages)}`,
 		`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
+		`microvm_packages=${JSON.stringify(out.microvmPackages)}`,
+		`microvm_requires_secretspec=${out.microvmRequiresSecretspec ? "true" : "false"}`,
 		`e2e_affected=${out.e2eAffected ? "true" : "false"}`,
 		`forge_affected=${out.forgeAffected ? "true" : "false"}`,
 		`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,

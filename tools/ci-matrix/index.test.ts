@@ -32,21 +32,25 @@ function testSelection(
 	input: Pick<GenInput, "event" | "affectedIds">,
 ): GenInput["goSelection"] {
 	const full = input.event === "push" || input.event === "schedule";
+	const pgtestRun = full || input.affectedIds.includes("compass-go");
+	const microvmRun =
+		full ||
+		input.affectedIds.includes("compass-go") ||
+		input.affectedIds.includes("compass-guest-image");
 	return {
 		pgtest: {
-			run: full || input.affectedIds.includes("compass-go"),
+			run: pgtestRun,
 			reason: "none",
-			roots: [],
+			roots: pgtestRun ? ["server"] : [],
+			requiresSecretspec: false,
 		},
 		microvm: {
-			run:
-				full ||
-				input.affectedIds.includes("compass-go") ||
-				input.affectedIds.includes("compass-guest-image"),
+			run: microvmRun,
 			reason: "none",
-			roots: [],
+			roots: microvmRun ? ["internal/runtime"] : [],
+			requiresSecretspec: microvmRun,
 		},
-		e2e: { run: full, reason: "none", roots: [] },
+		e2e: { run: full, reason: "none", roots: [], requiresSecretspec: false },
 	};
 }
 
@@ -54,7 +58,6 @@ function generate(input: Omit<GenInput, "goSelection">): GenOutput {
 	return generateCore({ ...input, goSelection: testSelection(input) });
 }
 
-/** A grouped project with a `ci` task target derived from its id. */
 function proj(id: string, group: string): ProjectInput {
 	return { id, tags: [`ci-group.${group}`], ciTarget: `${id}:ci` };
 }
@@ -747,7 +750,10 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 	const REQUIRED_KEYS = [
 		"matrix",
 		"pgtest_affected",
+		"pgtest_packages",
 		"microvm_affected",
+		"microvm_packages",
+		"microvm_requires_secretspec",
 		"e2e_affected",
 		"forge_affected",
 		"gtk4_affected",
@@ -778,9 +784,81 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 			const [key, ...rest] = line.split("=");
 			const value = rest.join("=");
 			expect(value).not.toBe("");
-			if (key !== "matrix") {
+			if (key === "matrix") continue;
+			if (key === "pgtest_packages" || key === "microvm_packages") {
+				expect(JSON.parse(value)).toBeArray();
+			} else {
 				expect(["true", "false"]).toContain(value);
 			}
+		}
+	});
+	test("emits JSON package arrays from selected roots", () => {
+		const selected = generateCore({
+			...prInput({ affectedIds: [] }),
+			goSelection: {
+				pgtest: {
+					run: true,
+					reason: "closure: server",
+					roots: ["server"],
+					requiresSecretspec: false,
+				},
+				microvm: {
+					run: true,
+					reason: "closure: internal/runtime",
+					roots: ["internal/runtime"],
+					requiresSecretspec: true,
+				},
+				e2e: {
+					run: false,
+					reason: "none",
+					roots: [],
+					requiresSecretspec: false,
+				},
+			},
+		});
+		const lines = outputLines(selected);
+		expect(lines).toContain('pgtest_packages=["./server"]');
+		expect(lines).toContain('microvm_packages=["./internal/runtime"]');
+		expect(lines).toContain("microvm_requires_secretspec=true");
+		for (const key of ["pgtest_packages", "microvm_packages"] as const) {
+			const line = lines.find((item) => item.startsWith(`${key}=`));
+			expect(line).toBeDefined();
+			const value = line?.slice(`${key}=`.length);
+			expect(JSON.parse(value ?? "null")).toEqual(
+				key === "pgtest_packages" ? ["./server"] : ["./internal/runtime"],
+			);
+		}
+	});
+
+	test("package selections are each one JSON string-array record", () => {
+		const lines = linesFor();
+		for (const key of ["pgtest_packages", "microvm_packages"] as const) {
+			const matches = lines.filter((line) => line.startsWith(`${key}=`));
+			expect(matches).toHaveLength(1);
+			expect(
+				JSON.parse(matches[0]?.slice(key.length + 1) ?? "null"),
+			).toBeArray();
+		}
+	});
+
+	test("rejects a running selection without roots", () => {
+		const empty = {
+			run: false,
+			reason: "none",
+			roots: [],
+			requiresSecretspec: false,
+		};
+		for (const suite of ["pgtest", "microvm"] as const) {
+			expect(() =>
+				generateCore({
+					...prInput({ affectedIds: [] }),
+					goSelection: {
+						pgtest: suite === "pgtest" ? { ...empty, run: true } : empty,
+						microvm: suite === "microvm" ? { ...empty, run: true } : empty,
+						e2e: empty,
+					},
+				}),
+			).toThrow(`${suite} selection is running with no roots`);
 		}
 	});
 
@@ -821,8 +899,14 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 			run: true,
 			reason: "closure: server",
 			roots: ["server"],
+			requiresSecretspec: false,
 		};
-		const skipped = { run: false, reason: "none", roots: [] };
+		const skipped = {
+			run: false,
+			reason: "none",
+			roots: [],
+			requiresSecretspec: false,
+		};
 		for (const suite of ["pgtest", "microvm", "e2e"] as const) {
 			const lines = outputLines(
 				generateCore({
