@@ -81,7 +81,7 @@ type TokenSource struct {
 // production callers pass only the credentials and tests inject both.
 func NewTokenSource(clientID, clientSecret string, doer httpDoer, tokenURL string) *TokenSource {
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = http.DefaultClient //nolint:forbidigo // test-only fallback; production passes tracedHTTPClient
 	}
 	if tokenURL == "" {
 		tokenURL = linearOAuthTokenURL
@@ -212,7 +212,7 @@ type graphQLClient struct {
 // http.DefaultClient and graphQLURL to the Linear GraphQL endpoint when zero.
 func NewClient(tokens *TokenSource, doer httpDoer, graphQLURL string) Client {
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = http.DefaultClient //nolint:forbidigo // test-only fallback; production passes tracedHTTPClient
 	}
 	if graphQLURL == "" {
 		graphQLURL = linearGraphQLURL

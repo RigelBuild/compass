@@ -174,7 +174,7 @@ func httpClientFor(cfg connConfig) (connecthttp.HTTPClient, error) {
 	if cfg.caPath != "" {
 		return runner.NewCATrustClient(cfg.caPath)
 	}
-	return http.DefaultClient, nil
+	return http.DefaultClient, nil //nolint:forbidigo // the CLI has no provider; tracing is disabled by design
 }
 
 // newClient constructs the CompassService client for the resolved connection,
