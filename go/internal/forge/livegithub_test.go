@@ -44,6 +44,10 @@ const liveSkipMessage = "live github oracle: LIVEGITHUB_* credentials unset; ski
 // which gate independently on LINEAR_FORGE (co-equal provider, separate creds).
 const liveLinearSkipMessage = "live linear oracle: LINEAR_FORGE credential unset; skipping the live-contract suite"
 
+// liveLinearAssigneeSkipMessage is the STABLE skip string for the self-delegate
+// create legs; the CI guard greps it, so a missing assignee secret goes red.
+const liveLinearAssigneeSkipMessage = "live linear oracle: LINEAR_FORGE_ASSIGNEE unset; skipping the self-delegate create leg"
+
 // liveUpdateSkipMessage is the STABLE skip string for the regeneration lane:
 // TestLiveUpdateFixtures runs ONLY under -update (it rewrites committed
 // fixtures), so a bare tagged run skips it cleanly with this one-line literal.
@@ -67,6 +71,8 @@ const (
 
 	envLinear = "LINEAR_FORGE"      // test-only Linear token (dedicated test team; app-actor mint)
 	envTeam   = "LINEAR_FORGE_TEAM" // test team key; no default (dead "SEA" dropped)
+	// envAssignee is a human Linear user id; the self-delegate create always assigns one.
+	envAssignee = "LINEAR_FORGE_ASSIGNEE"
 )
 
 // requireLive reads the GitHub App credential set for both identities and
@@ -142,6 +148,18 @@ func requireLinear(t *testing.T) (token *fakeTokenSource, team string) {
 		t.Skip(liveLinearSkipMessage)
 	}
 	return &fakeTokenSource{token: tok}, team
+}
+
+// requireLinearAssignee extends requireLinear with the human assignee id the
+// self-delegate create sets; it skips with its own stable message when unset.
+func requireLinearAssignee(t *testing.T) (token *fakeTokenSource, team, assignee string) {
+	t.Helper()
+	token, team = requireLinear(t)
+	assignee = os.Getenv(envAssignee)
+	if assignee == "" {
+		t.Skip(liveLinearAssigneeSkipMessage)
+	}
+	return token, team, assignee
 }
 
 // liveGitHub builds a real GitHub client against github.com for the given
@@ -890,6 +908,44 @@ func linearDirectGraphQL(ctx context.Context, ts TokenSource, query string, vari
 		return fmt.Errorf("decode Linear GraphQL data: %w", err)
 	}
 	return nil
+}
+
+// TestLiveLinearCreateIssueSelfDelegate drives the provider's always-assign
+// shape and reads both slots back raw: delegate is the app, assignee the human.
+func TestLiveLinearCreateIssueSelfDelegate(t *testing.T) {
+	ts, team, assignee := requireLinearAssignee(t)
+	ctx, cancel := liveCtx(t)
+	defer cancel()
+	ln := liveLinear(ts)
+
+	got, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{
+			Title: "compass-live-delegate-" + newRunID(), DelegateSelf: true, Assignee: assignee,
+		})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, got.Number) })
+
+	appID, ok := ln.appUserID()
+	if !ok {
+		t.Fatal("provider has no app-user id after a create; the actor probe did not pass")
+	}
+	if appID == assignee {
+		t.Fatalf("assignee %q is the app user; LINEAR_FORGE_ASSIGNEE must be a human", assignee)
+	}
+	id, err := ln.resolveIssueID(ctx, team, got.Number)
+	if err != nil {
+		t.Fatalf("resolve issue id: %v", err)
+	}
+	slots := liveReadLinearSlots(ctx, t, ts, id)
+	if slots.Delegate == nil || slots.Delegate.ID != appID {
+		t.Errorf("delegate = %+v, want app user %q", slots.Delegate, appID)
+	}
+	if slots.Assignee == nil || slots.Assignee.ID != assignee {
+		t.Errorf("assignee = %+v, want %q", slots.Assignee, assignee)
+	}
 }
 
 // TestLiveLinearCommentOnIssue comments on a freshly-created Linear issue and
@@ -2052,6 +2108,22 @@ func linearCreateReadSpecs() []captureSpec {
 				}
 				return fixtureRequest{Op: "comment_on_issue", Repo: team, Number: issue.Number,
 					Input: &fixtureInput{Body: body}}
+			}},
+		{provider: providerLinear, name: "create_issue_self_delegate", prelude: 2,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team, assignee := requireLinearAssignee(t)
+				ctx, cancel := liveCtx(t)
+				defer cancel()
+				ln := recordingLinear(ts, rt)
+				in := CreateIssue{Title: "compass-live-delegate-" + newRunID(), Body: "stamped body", DelegateSelf: true, Assignee: assignee}
+				got, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
+				if err != nil {
+					t.Fatalf("CreateIssue: %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, got.Number) })
+				return fixtureRequest{Op: "create_issue", Repo: team,
+					Input: &fixtureInput{Title: in.Title, Body: in.Body, DelegateSelf: true, Assignee: in.Assignee}}
 			}},
 	}
 }

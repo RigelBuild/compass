@@ -1,0 +1,74 @@
+{
+	"name": "create_issue_self_delegate",
+	"request": {
+		"op": "create_issue",
+		"repo": "TEST",
+		"input": {
+			"title": "canonical title",
+			"body": "canonical body",
+			"delegateSelf": true,
+			"assignee": "canonical-id"
+		},
+		"method": "POST",
+		"path": "/graphql",
+		"headers": {
+			"Content-Type": "application/json",
+			"Accept": "application/json"
+		},
+		"body": {
+			"query": "mutation CompassIssueCreate($input: IssueCreateInput!) {\n  issueCreate(input: $input) {\n    issue { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  id\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n  delegate { id displayName }\n  assignee { id displayName }\n}",
+			"variables": {
+				"input": {
+					"teamId": "canonical-id",
+					"title": "canonical title",
+					"description": "canonical body",
+					"createAsUser": "Compass",
+					"displayIconUrl": "https://compass.rigel.build/assets/compass-app.png",
+					"assigneeId": "canonical-id",
+					"delegateId": "canonical-id"
+				}
+			}
+		}
+	},
+	"response": {
+		"prelude": [
+			{
+				"status": 200,
+				"body": { "data": { "teams": { "nodes": [{ "id": "canonical-id" }] } } }
+			},
+			{
+				"status": 200,
+				"body": { "data": { "viewer": { "id": "canonical-id", "app": true } } }
+			}
+		],
+		"status": 200,
+		"body": {
+			"data": {
+				"issueCreate": {
+					"issue": {
+						"number": 42,
+						"title": "canonical title",
+						"description": "canonical body",
+						"url": "https://example.invalid/canonical",
+						"state": { "name": "Todo", "type": "unstarted" },
+						"labels": { "nodes": [] },
+						"creator": null,
+						"delegate": { "id": "canonical-id", "displayName": "octocat" },
+						"assignee": { "id": "canonical-id", "displayName": "octocat" },
+						"updatedAt": "2026-08-01T12:30:00Z"
+					}
+				}
+			}
+		},
+		"want": {
+			"Number": 42,
+			"Title": "canonical title",
+			"Body": "canonical body",
+			"State": "open",
+			"URL": "https://example.invalid/canonical",
+			"ForgeAccount": "",
+			"Labels": [],
+			"UpdatedAt": "2026-08-01T12:30:00Z"
+		}
+	}
+}

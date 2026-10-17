@@ -85,6 +85,8 @@ type fixtureInput struct {
 	State         string   `json:"state,omitempty"`         // transition: the portable "open"|"closed" target
 	CloseReason   string   `json:"closeReason,omitempty"`   // transition: the GitHub-issue refinement
 	WorkflowState string   `json:"workflowState,omitempty"` // transition: the Linear refinement (state NAME)
+	DelegateSelf  bool     `json:"delegateSelf,omitempty"`  // create: the Linear self-delegate refinement
+	Assignee      string   `json:"assignee,omitempty"`      // create: the Linear assignee user id
 }
 
 // fixtureFilter is the list_issues narrowing.
@@ -320,7 +322,10 @@ func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTok
 		l := newTestLinear(rt, ts, slog.New(&capturingHandler{}))
 		switch req.Op {
 		case "create_issue":
-			return l.CreateIssue(ctx, req.Repo, CreateIssue{Title: in.Title, Body: in.Body, Labels: in.Labels})
+			return l.CreateIssue(ctx, req.Repo, CreateIssue{
+				Title: in.Title, Body: in.Body, Labels: in.Labels,
+				DelegateSelf: in.DelegateSelf, Assignee: in.Assignee,
+			})
 		case "comment_on_issue":
 			return l.CommentOnIssue(ctx, req.Repo, req.Number, in.Body, "")
 		case "get_issue":
