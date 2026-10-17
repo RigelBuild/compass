@@ -1,9 +1,15 @@
-export const SETTINGS_SECTIONS = ["general", "appearance", "models"] as const;
+export const SETTINGS_SECTIONS = [
+	"general",
+	"appearance",
+	"models",
+	"issue-mirroring",
+] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {
 	general: "General",
 	appearance: "Appearance",
 	models: "Models",
+	"issue-mirroring": "Issue mirroring",
 };
 
 export type RouteMatch =

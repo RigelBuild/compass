@@ -34,7 +34,9 @@ function stubDeps(
 		closeTab: (tabId: string) => void;
 		focusPane: (pane: "first" | "second") => void;
 		startTour: () => void;
-		navigateSettings: (section: "general" | "appearance" | "models") => void;
+		navigateSettings: (
+			section: "general" | "appearance" | "models" | "issue-mirroring",
+		) => void;
 	}> = {},
 ) {
 	return {

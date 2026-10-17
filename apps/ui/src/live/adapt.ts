@@ -478,6 +478,7 @@ export function adaptAsk(w: WireAsk): Ask {
 		askId: w.askId,
 		questions: w.questions.map(adaptAskQuestion),
 		answered: w.answered,
+		ref: w.ref || undefined,
 	};
 }
 

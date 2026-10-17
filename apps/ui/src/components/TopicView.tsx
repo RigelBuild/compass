@@ -4,6 +4,7 @@ import { useStore } from "../context";
 import { useView } from "../view-scope";
 import { Composer } from "./ChannelView";
 import { MessageStream } from "./MessageStream";
+import { MirrorControl } from "./MirrorControl";
 
 /** The topic message view — one topic's messages, chronological, with the
  *  composer pinned at the bottom (the two-level Zulip model's leaf). Reached by
@@ -71,6 +72,18 @@ export const TopicView: Component = () => {
 							<span class="conv-name">{t().name}</span>
 							<Show when={channel()}>
 								{(chan) => <span class="conv-topic">in {chan().name}</span>}
+							</Show>
+							<Show when={channel()}>
+								{(chan) => (
+									<Show when={t().id} keyed>
+										{(_topicId) => (
+											<MirrorControl
+												channelId={chan().id}
+												source={{ case: "topic", topicId: t().id }}
+											/>
+										)}
+									</Show>
+								)}
 							</Show>
 						</header>
 						<div class="conv-body-row">

@@ -1,4 +1,3 @@
-import type { RefLinkRule } from "./refs/grammar";
 // The Compass ADE UI's central state store: one store owns all cross-component
 // state (view, selection, open panes, sidebar collapse). Components read it via the
 // AppStore context and never hold copies, so selection stays coherent across shell.
@@ -12,6 +11,9 @@ import {
 	type CommsClient,
 	type CompassClient,
 	CompassService,
+	ConnectError,
+	ForgeMirrorMode,
+	type ForgeProvider,
 	type GetModelRegistryResponse,
 	TourOutcome,
 	type Transport,
@@ -71,6 +73,7 @@ import {
 	type ReduceMotion,
 	saveReduceMotion,
 } from "./preferences";
+import type { RefLinkRule } from "./refs/grammar";
 import { joinAgents } from "./roster";
 import type {
 	AgentSession,
@@ -187,6 +190,40 @@ export interface RepoClone {
 	currentBranch: string;
 }
 
+/** A stored mode; UNSPECIFIED never reaches the UI (the server rejects it). */
+export type ForgeMirrorModeValue =
+	| ForgeMirrorMode.OFF
+	| ForgeMirrorMode.MANUAL
+	| ForgeMirrorMode.AUTO;
+
+export interface ForgeMirrorSetting {
+	readonly provider: ForgeProvider;
+	readonly host: string;
+	readonly repo: string;
+	readonly mode: ForgeMirrorModeValue;
+}
+
+export type ForgeMirrorSettingsState =
+	| { readonly status: "offline" }
+	| { readonly status: "pending" }
+	| { readonly status: "error"; readonly message: string }
+	| {
+			readonly status: "ready";
+			readonly canEdit: boolean;
+			readonly settings: readonly ForgeMirrorSetting[];
+	  };
+
+export type MirrorToForgeSource =
+	| { readonly case: "ask"; readonly askId: string }
+	| { readonly case: "topic"; readonly topicId: string };
+
+function isForgeMirrorModeValue(mode: number): mode is ForgeMirrorModeValue {
+	return (
+		mode === ForgeMirrorMode.OFF ||
+		mode === ForgeMirrorMode.MANUAL ||
+		mode === ForgeMirrorMode.AUTO
+	);
+}
 /** A candidate in a stable name's chain; order is its fallback order. */
 export interface ModelRegistryCandidate {
 	readonly provider: string;
@@ -619,6 +656,18 @@ export interface AppStore {
 	trackerConfig: Accessor<TrackerConfig>;
 	/** Read-only fleet model registry state. */
 	modelRegistry: Accessor<ModelRegistryState>;
+	/** Tenant mirror settings for every enabled forge coordinate. */
+	forgeMirrorSettings: Accessor<ForgeMirrorSettingsState>;
+	/** Set one coordinate mode from the server-confirmed response. */
+	setForgeMirrorSetting: (
+		setting: Omit<ForgeMirrorSetting, "mode"> & { mode: ForgeMirrorModeValue },
+	) => Promise<void>;
+	/** Mirror an ask or topic through the user-only CommsService RPC. */
+	mirrorToForge: (
+		channelId: string,
+		ref: string,
+		source: MirrorToForgeSource,
+	) => Promise<string>;
 }
 
 /** What `createAppStore` is handed at boot. The network clients and seeds are
@@ -1250,6 +1299,44 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				return { status: "pending" };
 			})
 		: () => ({ status: "offline" });
+	const [forgeMirrorSettings, setForgeMirrorSettingsState] =
+		createSignal<ForgeMirrorSettingsState>(
+			options.compass ? { status: "pending" } : { status: "offline" },
+		);
+	if (options.compass) {
+		let disposed = false;
+		if (getOwner()) onCleanup(() => (disposed = true));
+		void options.compass
+			.listForgeMirrorSettings({})
+			.then((data) => {
+				const settings = data.settings.map((setting) => {
+					if (!setting.forge || !isForgeMirrorModeValue(setting.mode)) {
+						throw new Error("server returned an invalid forge mirror setting");
+					}
+					return {
+						provider: setting.forge.provider,
+						host: setting.forge.host,
+						repo: setting.repo,
+						mode: setting.mode,
+					};
+				});
+				if (!disposed) {
+					setForgeMirrorSettingsState({
+						status: "ready",
+						canEdit: data.canEdit,
+						settings,
+					});
+				}
+			})
+			.catch((error: unknown) => {
+				if (!disposed) {
+					setForgeMirrorSettingsState({
+						status: "error",
+						message: ConnectError.from(error).message,
+					});
+				}
+			});
+	}
 
 	// The fixture queue uses the fixed tracker config through its seam.
 	const seam = createFixtureTrackerSeam(DEFAULT_TRACKER_CONFIG);
@@ -2024,6 +2111,65 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// as the user staged it — still honest, unsent, retryable.
 		sendAsk(messageId, ask);
 	};
+	const setForgeMirrorSetting = async (
+		setting: Omit<ForgeMirrorSetting, "mode"> & { mode: ForgeMirrorModeValue },
+	): Promise<void> => {
+		if (!options.compass) {
+			throw new Error(
+				"cannot set forge mirror mode: this store has no Compass client",
+			);
+		}
+		const response = await options.compass.setForgeMirrorSetting({
+			setting: {
+				forge: { provider: setting.provider, host: setting.host },
+				repo: setting.repo,
+				mode: setting.mode,
+			},
+		});
+		const saved = response.setting;
+		if (!saved?.forge || !isForgeMirrorModeValue(saved.mode)) {
+			throw new Error("server returned an invalid forge mirror setting");
+		}
+		const confirmed: ForgeMirrorSetting = {
+			provider: saved.forge.provider,
+			host: saved.forge.host,
+			repo: saved.repo,
+			mode: saved.mode,
+		};
+		// Functional update: two confirmations resolving before a flush would
+		// otherwise both read the committed value and drop one another.
+		setForgeMirrorSettingsState((state) =>
+			state.status === "ready"
+				? {
+						...state,
+						settings: state.settings.map((previous) =>
+							previous.provider === confirmed.provider &&
+							previous.host === confirmed.host &&
+							previous.repo === confirmed.repo
+								? confirmed
+								: previous,
+						),
+					}
+				: state,
+		);
+	};
+	const mirrorToForge = async (
+		channelId: string,
+		ref: string,
+		source: MirrorToForgeSource,
+	): Promise<string> => {
+		if (!options.comms) {
+			throw new Error("cannot mirror to forge: this store has no Comms client");
+		}
+		const response = await options.comms.mirrorToForge({
+			ref,
+			askId: source.case === "ask" ? source.askId : "",
+			topicId: source.case === "topic" ? source.topicId : "",
+			messageIds: [],
+			channelId,
+		});
+		return response.commentUrl;
+	};
 	// The one write path: PostMessage with the channel `container`, `topic` oneof, one
 	// text block and a fresh clientRequestId (server dedups a retried key). NOTHING is
 	// inserted locally — SubscribeComms echoes it and upsertMessage dedups by id, so it
@@ -2588,6 +2734,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		assignedIssues,
 		trackerConfig: () => DEFAULT_TRACKER_CONFIG,
 		modelRegistry,
+		forgeMirrorSettings,
+		setForgeMirrorSetting,
+		mirrorToForge,
 		connectQueryDeps: options.transport
 			? { transport: options.transport, queryClient: options.queryClient }
 			: undefined,

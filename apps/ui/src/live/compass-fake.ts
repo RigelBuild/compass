@@ -1,9 +1,3 @@
-// A hand-written CompassClient double for driving the store's agent-lifecycle and
-// boot-probe paths without a server — StopAgentSession (recorded verbatim) and
-// GetServerInfo (the boot probe). Models the ONE behaviour a permissive double hides:
-// a Runner-backed RPC answers `Unavailable` with no RunnerHub. Also scripts the
-// session-status and SubscribeAgentSession streams. Sibling of comms-fake.ts. Dev/test-only.
-
 import {
 	type AgentSessionFrame,
 	AgentSessionFrameSchema,
@@ -12,12 +6,14 @@ import {
 	type Issue as BoardIssue,
 	type CompassClient,
 	create,
+	type ForgeProvider,
 	type SubscribeEventsRequest,
 	type SubscribeEventsResponse,
 	SubscribeEventsResponseSchema,
 	type SessionEvent as WireSessionEvent,
 } from "@compass/client";
 import type { RefLinkRule } from "../refs/grammar";
+import type { ForgeMirrorModeValue } from "../store";
 
 /** The fixture targets served by GetRefLinkRules and used by offline UI boot. */
 export const FIXTURE_REF_LINK_RULES: readonly RefLinkRule[] = [
@@ -82,8 +78,24 @@ export interface RecordedSkip {
 	readonly sessionId: string;
 }
 
+export interface MirrorSettingGate {
+	readonly response: Promise<ForgeMirrorModeValue>;
+	readonly resolve: (mode: ForgeMirrorModeValue) => void;
+}
 export interface FakeCompass {
 	readonly client: CompassClient;
+	readonly mirrorSettingWrites: Array<{
+		readonly forge: { readonly provider: ForgeProvider; readonly host: string };
+		readonly repo: string;
+		readonly mode: ForgeMirrorModeValue;
+	}>;
+	readonly mirrorSettings: Array<{
+		readonly forge: { readonly provider: ForgeProvider; readonly host: string };
+		readonly repo: string;
+		readonly mode: ForgeMirrorModeValue;
+	}>;
+	readonly failNextMirrorSetting: (error: Error) => void;
+	readonly holdNextMirrorSetting: () => MirrorSettingGate;
 	/** Every StopAgentSession the UI issued, in order. */
 	readonly stops: RecordedStop[];
 	/** Reject the next StopAgentSession with `error` (one-shot) — the
@@ -143,8 +155,26 @@ export interface FakeCompass {
 export function createFakeCompass(opts?: {
 	readonly events?: readonly SubscribeEventsResponse[];
 	readonly board?: readonly BoardIssue[];
+	readonly mirrorSettings?: readonly {
+		readonly forge: { readonly provider: ForgeProvider; readonly host: string };
+		readonly repo: string;
+		readonly mode: ForgeMirrorModeValue;
+	}[];
+	readonly canEditMirrorSettings?: boolean;
 }): FakeCompass {
 	const stops: RecordedStop[] = [];
+	const mirrorSettings = (opts?.mirrorSettings ?? []).map((setting) => ({
+		forge: { ...setting.forge },
+		repo: setting.repo,
+		mode: setting.mode,
+	}));
+	const mirrorSettingWrites: Array<{
+		forge: { provider: ForgeProvider; host: string };
+		repo: string;
+		mode: ForgeMirrorModeValue;
+	}> = [];
+	let pendingMirrorSetting: MirrorSettingGate | undefined;
+	let mirrorSettingFailure: Error | undefined;
 	let stopFailure: Error | undefined;
 	const skips: RecordedSkip[] = [];
 	let skipFailure: Error | undefined;
@@ -177,6 +207,50 @@ export function createFakeCompass(opts?: {
 		| undefined;
 
 	const client = {
+		listForgeMirrorSettings: async () => ({
+			settings: mirrorSettings.map((setting) => ({
+				...setting,
+				forge: { ...setting.forge },
+			})),
+			canEdit: opts?.canEditMirrorSettings ?? false,
+		}),
+		setForgeMirrorSetting: async (req: {
+			setting?: {
+				forge?: { provider: ForgeProvider; host: string };
+				repo: string;
+				mode: ForgeMirrorModeValue;
+			};
+		}) => {
+			const setting = req.setting;
+			if (!setting?.forge) throw new Error("forge and setting are required");
+			mirrorSettingWrites.push({ ...setting, forge: { ...setting.forge } });
+			if (mirrorSettingFailure) {
+				const error = mirrorSettingFailure;
+				mirrorSettingFailure = undefined;
+				throw error;
+			}
+			const index = mirrorSettings.findIndex(
+				(candidate) =>
+					candidate.forge.provider === setting.forge?.provider &&
+					candidate.forge.host === setting.forge?.host &&
+					candidate.repo === setting.repo,
+			);
+			if (index < 0)
+				throw new Error("setting does not name an enabled coordinate");
+			const gate = pendingMirrorSetting;
+			pendingMirrorSetting = undefined;
+			if (gate) {
+				const responseMode = await gate.response;
+				mirrorSettings[index] = {
+					...setting,
+					mode: responseMode,
+					forge: { ...setting.forge },
+				};
+				return { setting: mirrorSettings[index] };
+			}
+			mirrorSettings[index] = { ...setting, forge: { ...setting.forge } };
+			return { setting };
+		},
 		stopAgentSession: async (req: { sessionId: string }) => {
 			stops.push({ sessionId: req.sessionId });
 			if (stopFailure) {
@@ -271,12 +345,26 @@ export function createFakeCompass(opts?: {
 		// mirroring comms-fake.ts's.
 		client: client as unknown as CompassClient,
 		stops,
-		skips,
-		failNextSkip: (error) => {
-			skipFailure = error;
+		mirrorSettingWrites,
+		mirrorSettings,
+		failNextMirrorSetting: (error) => {
+			mirrorSettingFailure = error;
+		},
+		holdNextMirrorSetting: () => {
+			let resolve!: (mode: ForgeMirrorModeValue) => void;
+			const response = new Promise<ForgeMirrorModeValue>((done) => {
+				resolve = done;
+			});
+			const gate = { response, resolve };
+			pendingMirrorSetting = gate;
+			return gate;
 		},
 		failNextStop: (error) => {
 			stopFailure = error;
+		},
+		skips,
+		failNextSkip: (error) => {
+			skipFailure = error;
 		},
 		serverInfo,
 		failNextProbe: (error) => {

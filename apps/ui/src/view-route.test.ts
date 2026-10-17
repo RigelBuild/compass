@@ -37,6 +37,11 @@ const routes: { name: string; path: string; match: RouteMatch }[] = [
 		path: "/settings/models",
 		match: { view: "settings", section: "models" },
 	},
+	{
+		name: "settings issue mirroring",
+		path: "/settings/issue-mirroring",
+		match: { view: "settings", section: "issue-mirroring" },
+	},
 ];
 
 describe("view routes", () => {

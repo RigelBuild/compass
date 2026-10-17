@@ -46,12 +46,25 @@ export interface RecordedAskResponse {
 	}>;
 }
 
+export interface MirrorGate {
+	readonly resolve: (url: string) => void;
+}
 export interface FakeComms {
 	readonly client: CommsClient;
 	/** Every PostMessage the UI issued, in order. */
 	readonly posts: RecordedPost[];
 	/** Every RespondToAsk the UI issued, in order. */
 	readonly askResponses: RecordedAskResponse[];
+	readonly mirrors: Array<{
+		readonly ref: string;
+		readonly askId: string;
+		readonly topicId: string;
+		readonly messageIds: string[];
+		readonly channelId: string;
+	}>;
+	failNextMirror: (error: Error) => void;
+	setMirrorCommentUrl: (url: string) => void;
+	readonly holdNextMirror: () => MirrorGate;
 	/** Whether a SubscribeComms stream is currently live. The observable for the
 	 *  store's teardown contract: after the owner is disposed this goes false,
 	 *  because the driver's abort ends the generator. */
@@ -118,6 +131,11 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 	const askResponses: RecordedAskResponse[] = [];
 	let postFailure: Error | undefined;
 	let askFailure: Error | undefined;
+	const mirrors: FakeComms["mirrors"] = [];
+	let mirrorFailure: Error | undefined;
+	let mirrorResult: Promise<string> | undefined;
+	let mirrorCommentUrl =
+		"https://github.com/owner/repo/issues/12#issuecomment-1";
 	let roster = snapshot.roster ?? [];
 	// A held-in-flight RespondToAsk: the promise the RPC parks on until the
 	// test's gate settles it. One at a time — the store issues at most one
@@ -302,6 +320,26 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 			});
 			return {};
 		},
+		mirrorToForge: async (req: {
+			ref: string;
+			askId: string;
+			topicId: string;
+			messageIds: string[];
+			channelId: string;
+		}) => {
+			mirrors.push({ ...req, messageIds: [...req.messageIds] });
+			if (mirrorFailure) {
+				const error = mirrorFailure;
+				mirrorFailure = undefined;
+				throw error;
+			}
+			if (mirrorResult) {
+				const result = mirrorResult;
+				mirrorResult = undefined;
+				return { commentUrl: await result };
+			}
+			return { commentUrl: mirrorCommentUrl };
+		},
 	};
 
 	return {
@@ -311,6 +349,21 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		client: client as unknown as CommsClient,
 		posts,
 		askResponses,
+		mirrors,
+		failNextMirror: (error) => {
+			mirrorFailure = error;
+		},
+		setMirrorCommentUrl: (url) => {
+			mirrorCommentUrl = url;
+		},
+		holdNextMirror: () => {
+			let resolve!: (url: string) => void;
+			const result = new Promise<string>((done) => {
+				resolve = done;
+			});
+			mirrorResult = result;
+			return { resolve };
+		},
 		isStreaming: () => streaming,
 		emit: (payload, seq) =>
 			new Promise<void>((resolve) => {
@@ -475,6 +528,7 @@ export function wireAskMessage(opts: {
 	authorAccountId: string;
 	askId: string;
 	questionIds: readonly string[];
+	ref?: string;
 	chosen?: Readonly<Record<string, readonly string[]>>;
 	answered?: boolean;
 	freeText?: readonly string[];
@@ -505,6 +559,7 @@ export function wireAskMessage(opts: {
 					value: create(AskSchema, {
 						askId: opts.askId,
 						answered: opts.answered ?? hasChosen,
+						ref: opts.ref ?? "",
 						questions: opts.questionIds.map((questionId) =>
 							create(AskQuestionSchema, {
 								questionId,

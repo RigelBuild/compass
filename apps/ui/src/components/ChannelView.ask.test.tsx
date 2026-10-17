@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import { StoreContext } from "../context";
 import {
 	createFakeComms,
@@ -49,6 +50,7 @@ const snapshot = () => ({
 				authorAccountId: CALLER,
 				askId: "ask-1",
 				questionIds: ["q-1", "q-2"],
+				ref: "rigelbuild/compass#12",
 			}),
 		],
 	},
@@ -96,6 +98,9 @@ const submitControl = (c: HTMLElement) =>
 	c.querySelector<HTMLButtonElement>(".block-ask .ask-submit");
 const askErrorText = (c: HTMLElement) =>
 	c.querySelector(".block-ask .ask-error")?.textContent;
+// The topic header has its own mirror control, so scope to the ask block.
+const askResult = (c: HTMLElement) =>
+	c.querySelector(".block-ask .mirror-result")?.textContent ?? "";
 
 describe("multi-question ask (live RespondToAsk gate)", () => {
 	// From the DOM: a click on the first question's option records locally and
@@ -618,6 +623,215 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 			const submit = submitControl(container);
 			if (!submit) throw new Error("submit control did not render");
 			expect(submit.disabled).toBe(true);
+		} finally {
+			fake.close();
+		}
+	});
+});
+
+describe("ask forge mirroring", () => {
+	test("prefills the ask ref, mirrors its channel ask, and shows the comment URL", async () => {
+		const fake = createFakeComms(snapshot());
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const ref = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!ref) throw new Error("ask mirror ref input did not render");
+			expect(ref.value).toBe("rigelbuild/compass#12");
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+
+			expect(fake.mirrors).toEqual([
+				{
+					ref: "rigelbuild/compass#12",
+					askId: "ask-1",
+					topicId: "",
+					messageIds: [],
+					channelId: CHANNEL,
+				},
+			]);
+			expect(
+				container.querySelector<HTMLAnchorElement>(
+					".block-ask .mirror-result a",
+				)?.href,
+			).toBe("https://github.com/owner/repo/issues/12#issuecomment-1");
+		} finally {
+			fake.close();
+		}
+	});
+
+	test("shows a refused ask mirror error inline", async () => {
+		const fake = createFakeComms(snapshot());
+		fake.failNextMirror(new Error("target is not enabled"));
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+
+			expect(container.querySelector(".mirror-error")?.textContent).toBe(
+				"target is not enabled",
+			);
+		} finally {
+			fake.close();
+		}
+	});
+
+	test("replacing an ask drops its mirror ref and comment URL", async () => {
+		const fake = createFakeComms(snapshot());
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const ref = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!ref) throw new Error("ask mirror ref input did not render");
+			expect(ref.value).toBe("rigelbuild/compass#12");
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+			expect(askResult(container)).not.toBe("");
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: wireAskMessage({
+							id: "m-ask",
+							topicId: TOPIC,
+							authorAccountId: CALLER,
+							askId: "ask-2",
+							questionIds: ["q-1"],
+							ref: "rigelbuild/compass#13",
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			flush();
+			expect(askResult(container)).toBe("");
+			expect(
+				container.querySelector<HTMLInputElement>(
+					'input[aria-label="Issue or PR ref"]',
+				),
+			).toBeNull();
+			const newOpen = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!newOpen)
+				throw new Error("replacement ask mirror control did not render");
+			fireEvent.click(newOpen);
+			flush();
+			const nextRef = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!nextRef) throw new Error("replacement ask ref input did not render");
+			expect(nextRef.value).toBe("rigelbuild/compass#13");
+		} finally {
+			fake.close();
+		}
+	});
+
+	test("renders an unsafe comment URL as inert mirrored text", async () => {
+		const fake = createFakeComms(snapshot());
+		fake.setMirrorCommentUrl("javascript:alert(1)");
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await settled();
+			expect(askResult(container)).toBe("Mirrored");
+			expect(
+				container.querySelector('a[href="javascript:alert(1)"]'),
+			).toBeNull();
+		} finally {
+			fake.close();
+		}
+	});
+
+	test("ignores a mirror completion after its ask is replaced", async () => {
+		const fake = createFakeComms(snapshot());
+		const { container, settled } = await mountAsk(fake);
+		try {
+			const open = container.querySelector<HTMLButtonElement>(
+				'.block-ask button[aria-label="Mirror to issue"]',
+			);
+			if (!open) throw new Error("ask mirror control did not render");
+			fireEvent.click(open);
+			flush();
+			const ref = container.querySelector<HTMLInputElement>(
+				'input[aria-label="Issue or PR ref"]',
+			);
+			if (!ref) throw new Error("ask mirror ref input did not render");
+			fireEvent.input(ref, { target: { value: "owner/repo#23" } });
+			flush();
+			const gate = fake.holdNextMirror();
+			const submit =
+				container.querySelector<HTMLButtonElement>(".mirror-submit");
+			if (!submit) throw new Error("ask mirror submit did not render");
+			fireEvent.click(submit);
+			await Promise.resolve();
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: wireAskMessage({
+							id: "m-ask",
+							topicId: TOPIC,
+							authorAccountId: CALLER,
+							askId: "ask-2",
+							questionIds: ["q-1"],
+							ref: "rigelbuild/compass#13",
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			gate.resolve("https://github.com/owner/repo/issues/23#issuecomment-2");
+			await settled();
+			flush();
+			expect(askResult(container)).toBe("");
+			expect(
+				container.querySelector<HTMLInputElement>(
+					'input[aria-label="Issue or PR ref"]',
+				),
+			).toBeNull();
 		} finally {
 			fake.close();
 		}

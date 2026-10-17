@@ -35,6 +35,7 @@ import "../design/components/button.css";
 import "../design/components/input.css";
 import { useView } from "../view-scope";
 import { MarkdownText } from "./MarkdownText";
+import { MirrorControl } from "./MirrorControl";
 
 /** UTC HH:MM for a message timestamp — deterministic, locale-independent (the
  *  fixture pins atUnixMs to a fixed clock; formatting to local time would make
@@ -53,10 +54,9 @@ function hhmm(atUnixMs: number): string {
  *  is the only send path, and unanswered questions ship blank (its copy
  *  says so). Once the ask is SETTLED — our respond issued, or the server's
  *  `answered` flag set by whoever answered first — every control locks. */
-const AskBlock: Component<{
-	messageId: string;
-	ask: Ask;
-}> = (props) => {
+const AskBlock: Component<{ messageId: string; topicId: string; ask: Ask }> = (
+	props,
+) => {
 	const store = useStore();
 	const ask = () => props.ask;
 	const chosen = (q: AskQuestion, optionId: string) =>
@@ -97,6 +97,8 @@ const AskBlock: Component<{
 	// The submit control is the only send path, so it drives `disabled`, not
 	// visibility: a live ask always shows it, enabled once anything is answered.
 	const canSubmit = () => answeredCount() > 0;
+	const askChannelId = () =>
+		store.topics().find((item) => item.id === props.topicId)?.channelId;
 
 	return (
 		// The settled look tracks SETTLEMENT, not locked questions: a fully-picked
@@ -207,6 +209,19 @@ const AskBlock: Component<{
 					</span>
 				)}
 			</Show>
+			<Show when={askChannelId()}>
+				{(channelId) => (
+					<Show when={ask().askId} keyed>
+						{(_askId) => (
+							<MirrorControl
+								channelId={channelId()}
+								source={{ case: "ask", askId: ask().askId }}
+								initialRef={ask().ref}
+							/>
+						)}
+					</Show>
+				)}
+			</Show>
 		</div>
 	);
 };
@@ -217,6 +232,7 @@ const AskBlock: Component<{
  *  session observation panel. */
 const Block: Component<{
 	messageId: string;
+	topicId: string;
 	block: ConvBlock;
 	byHandle: Map<string, Account>;
 }> = (props) => (
@@ -227,7 +243,11 @@ const Block: Component<{
 		}
 	>
 		{(askBlock) => (
-			<AskBlock messageId={props.messageId} ask={askBlock().ask} />
+			<AskBlock
+				messageId={props.messageId}
+				topicId={props.topicId}
+				ask={askBlock().ask}
+			/>
 		)}
 	</Show>
 );
@@ -274,6 +294,7 @@ export const MessageRow: Component<{
 				{(block) => (
 					<Block
 						messageId={props.msg.id}
+						topicId={props.msg.topicId}
 						block={block()}
 						byHandle={props.byHandle}
 					/>
