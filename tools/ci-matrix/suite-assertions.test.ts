@@ -44,6 +44,11 @@ describe("assertSuiteResults", () => {
 		expect(result.failures).toContain("pgtest: selected package list is empty");
 	});
 
+	test("fails when no package calls the harness", () => {
+		const result = assertSuiteResults({ ...base, callerPackages: [] });
+		expect(result.failures).toContain("pgtest: no package calls the harness");
+	});
+
 	test("fails when a selected caller did not report ok", () => {
 		const result = assertSuiteResults({
 			...base,

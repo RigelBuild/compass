@@ -75,6 +75,9 @@ export function assertSuiteResults(input: {
 	if (input.selectedPackages.length === 0) {
 		failures.push(`${input.suite}: selected package list is empty`);
 	}
+	if (input.callerPackages.length === 0) {
+		failures.push(`${input.suite}: no package calls the harness`);
+	}
 	if (
 		input.skipMessage !== "" &&
 		input.testOutput.includes(input.skipMessage)
