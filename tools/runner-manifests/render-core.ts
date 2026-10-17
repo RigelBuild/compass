@@ -5,6 +5,7 @@ const RUNNER_NAME = "compass-runner";
 const SESSION_MOUNT_PATH = "/var/lib/compass/sessions";
 const RUNTIME_MOUNT_PATH = "/run/compass";
 const RUNNER_TOKEN_PATH = "/var/run/secrets/compass/runner/token";
+const SERVER_CA_MOUNT_PATH = "/etc/compass/server-ca";
 const DEFAULT_TOKEN_LIFETIME_SECONDS = 600;
 const DEFAULT_ADMISSION_CONTROLLERS = [
 	"system:serviceaccount:kube-system:daemon-set-controller",
@@ -43,6 +44,12 @@ export interface RunnerDeployValues {
 	maxUnavailable: number;
 	perSessionReapSeconds: number;
 	priorityClassValue: number;
+	// Hosts agents may reach; absent means default-deny.
+	egressAllow?: readonly string[];
+	// The Server's CA when it is not under a public root; exactly one source.
+	serverCA?:
+		| { configMapName: string; secretName?: undefined; key: string }
+		| { secretName: string; configMapName?: undefined; key: string };
 }
 
 type ValidatedRunnerDeployValues = Omit<
@@ -115,6 +122,55 @@ function assertNamespace(namespace: string): void {
 		!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)
 	) {
 		throw new Error("namespace must be a DNS label");
+	}
+}
+
+// Mirrors the Runner's isValidHost: a DNS name, or a bare IP literal with no
+// zone. Hosts land in a root firewall script, so anything else is refused.
+function isValidEgressHost(host: string): boolean {
+	if (host.length === 0 || host.length > 253) return false;
+	if (host.includes(":")) {
+		if (host.includes("%") || host.includes("[") || host.includes("]"))
+			return false;
+		try {
+			return new URL(`http://[${host}]/`).hostname.startsWith("[");
+		} catch {
+			return false;
+		}
+	}
+	return /^[A-Za-z0-9._-]+$/.test(host);
+}
+
+function assertEgressAllow(hosts: readonly string[] | undefined): void {
+	for (const host of hosts ?? []) {
+		if (!isValidEgressHost(host)) {
+			throw new Error(
+				`egressAllow host ${JSON.stringify(host)} must be a DNS name or IP literal`,
+			);
+		}
+	}
+}
+
+function assertServerCA(ca: RunnerDeployValues["serverCA"]): void {
+	if (ca === undefined) return;
+	const sources = [ca.configMapName, ca.secretName].filter(
+		(name) => name !== undefined,
+	);
+	if (sources.length !== 1) {
+		throw new Error(
+			"serverCA needs exactly one of configMapName or secretName",
+		);
+	}
+	const [name] = sources;
+	if (
+		name === undefined ||
+		name.length > 253 ||
+		!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(name)
+	) {
+		throw new Error("serverCA source must be a Kubernetes object name");
+	}
+	if (!/^[A-Za-z0-9._-]+$/.test(ca.key) || ca.key === "." || ca.key === "..") {
+		throw new Error("serverCA.key must be a plain file name");
 	}
 }
 
@@ -203,6 +259,8 @@ function validateValues(values: ValidatedRunnerDeployValues): void {
 	assertResourceName(values.kvmResourceName);
 	validateTokenLifetimes(values);
 	validateAdmissionNames(values.admission);
+	assertEgressAllow(values.egressAllow);
+	assertServerCA(values.serverCA);
 	assertNonEmpty("seccompProfilePath", values.seccompProfilePath);
 	if (
 		values.seccompProfilePath.startsWith("/") ||
@@ -391,9 +449,43 @@ export function parseRunnerDeployValues(
 			"priorityClassValue",
 			"priorityClassValue",
 		),
+		egressAllow: egressAllowValue(root.egressAllow),
+		serverCA: serverCAValue(root.serverCA),
 	};
 	validateValues(values);
 	return values;
+}
+
+function egressAllowValue(value: unknown): readonly string[] | undefined {
+	if (value === undefined) return undefined;
+	if (
+		!Array.isArray(value) ||
+		!value.every((item) => typeof item === "string")
+	) {
+		throw new Error("egressAllow must be an array of strings");
+	}
+	return value;
+}
+
+function serverCAValue(value: unknown): RunnerDeployValues["serverCA"] {
+	if (value === undefined) return undefined;
+	const record = objectValue(value, "serverCA");
+	const key = stringValue(record, "key", "serverCA.key");
+	const configMapName =
+		record.configMapName === undefined
+			? undefined
+			: stringValue(record, "configMapName", "serverCA.configMapName");
+	const secretName =
+		record.secretName === undefined
+			? undefined
+			: stringValue(record, "secretName", "serverCA.secretName");
+	if (configMapName !== undefined && secretName === undefined) {
+		return { configMapName, key };
+	}
+	if (secretName !== undefined && configMapName === undefined) {
+		return { secretName, key };
+	}
+	throw new Error("serverCA needs exactly one of configMapName or secretName");
 }
 
 export function renderRunnerManifests(
@@ -405,6 +497,26 @@ export function renderRunnerManifests(
 		values.sessionCapacity * values.guestMemoryMiB + values.runnerOverheadMiB;
 	const cpuRequest = values.sessionCapacity * values.guestCpus;
 	const runtimePath = `${RUNTIME_MOUNT_PATH}/microvm`;
+	const ca = values.serverCA;
+	const egress = values.egressAllow ?? [];
+	// The Runner splits one --egress-allow value on ","; none means default-deny.
+	const egressArgs =
+		egress.length > 0 ? { args: ["--egress-allow", egress.join(",")] } : {};
+	const items = ca === undefined ? [] : [{ key: ca.key, path: ca.key }];
+	const caVolume =
+		ca === undefined
+			? []
+			: [
+					ca.configMapName === undefined
+						? {
+								name: "server-ca",
+								secret: { secretName: ca.secretName, items },
+							}
+						: {
+								name: "server-ca",
+								configMap: { name: ca.configMapName, items },
+							},
+				];
 
 	return [
 		{
@@ -463,6 +575,7 @@ export function renderRunnerManifests(
 								name: RUNNER_NAME,
 								image: values.image,
 								imagePullPolicy: "IfNotPresent",
+								...egressArgs,
 								securityContext: {
 									runAsNonRoot: true,
 									runAsUser: RUNNER_UID,
@@ -495,6 +608,15 @@ export function renderRunnerManifests(
 										mountPath: "/var/run/secrets/compass/runner",
 										readOnly: true,
 									},
+									...(ca === undefined
+										? []
+										: [
+												{
+													name: "server-ca",
+													mountPath: SERVER_CA_MOUNT_PATH,
+													readOnly: true,
+												},
+											]),
 								],
 								// No liveness probe: a pid-1 restart tears down all node sessions.
 								env: [
@@ -517,6 +639,14 @@ export function renderRunnerManifests(
 										value: String(values.guestCpus),
 									},
 									{ name: "COMPASS_MICROVM_QUOTA_REQUIRED", value: "true" },
+									...(ca === undefined
+										? []
+										: [
+												{
+													name: "COMPASS_RUNNER_CA",
+													value: `${SERVER_CA_MOUNT_PATH}/${ca.key}`,
+												},
+											]),
 								],
 							},
 						],
@@ -549,6 +679,7 @@ export function renderRunnerManifests(
 									],
 								},
 							},
+							...caVolume,
 						],
 					},
 				},
