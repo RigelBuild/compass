@@ -78,6 +78,7 @@ func tunnelSubscribe(ctx context.Context, relay, channel string) (*tunnelSub, er
 	case <-ready:
 		return sub, nil
 	case <-sub.done:
+		sub.close()
 		return nil, sub.err
 	case <-ctx.Done():
 		sub.close()
@@ -180,6 +181,9 @@ func parseTunnelFrame(frame []byte) (*tunnelDelivery, bool, error) {
 // next returns the first delivery match accepts, skipping others (a shared
 // testbed fires deliveries for other runs too).
 func (s *tunnelSub) next(ctx context.Context, match func(tunnelDelivery) bool) (tunnelDelivery, error) {
+	deadline := func() error {
+		return fmt.Errorf("webhook relay %s: no matching delivery before deadline: %w", s.relay, ctx.Err())
+	}
 	for {
 		select {
 		case d := <-s.deliveries:
@@ -187,9 +191,23 @@ func (s *tunnelSub) next(ctx context.Context, match func(tunnelDelivery) bool) (
 				return d, nil
 			}
 		case <-s.done:
-			return tunnelDelivery{}, s.err
+			// The stream shares ctx, so a deadline also breaks it; report the deadline.
+			if ctx.Err() != nil {
+				return tunnelDelivery{}, deadline()
+			}
+			// Deliveries queued before the stream ended still count.
+			for {
+				select {
+				case d := <-s.deliveries:
+					if match(d) {
+						return d, nil
+					}
+				default:
+					return tunnelDelivery{}, s.err
+				}
+			}
 		case <-ctx.Done():
-			return tunnelDelivery{}, fmt.Errorf("webhook relay %s: no matching delivery before deadline: %w", s.relay, ctx.Err())
+			return tunnelDelivery{}, deadline()
 		}
 	}
 }
@@ -367,13 +385,17 @@ func TestTunnelRelay_CloseUnblocksSaturatedReader(t *testing.T) {
 	for range cap(sub.deliveries) + 1 {
 		relay.publish(t, http.Header{}, []byte(`{}`))
 	}
+	ctx := tunnelCtx(t)
 	for len(sub.deliveries) < cap(sub.deliveries) {
+		if ctx.Err() != nil {
+			t.Fatalf("delivery queue never filled: %d of %d", len(sub.deliveries), cap(sub.deliveries))
+		}
 		runtime.Gosched()
 	}
 	sub.close()
 	select {
 	case <-sub.done:
-	case <-tunnelCtx(t).Done():
+	case <-ctx.Done():
 		t.Fatal("reader goroutine still running after close")
 	}
 }

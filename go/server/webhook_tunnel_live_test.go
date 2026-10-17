@@ -157,17 +157,24 @@ func (s *staticLiveToken) Invalidate()                           {}
 // archiveLiveLinear archives the leg's issue; issueArchive accepts an identifier.
 func archiveLiveLinear(t *testing.T, token, ident string) {
 	t.Helper()
-	q := fmt.Sprintf(`{"query":"mutation { issueArchive(id: %q) { success } }"}`, ident)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.linear.app/graphql", bytes.NewBufferString(q))
+	q, err := json.Marshal(map[string]any{
+		"query":     "mutation($id: String!) { issueArchive(id: $id) { success } }",
+		"variables": map[string]string{"id": ident},
+	})
 	if err != nil {
-		t.Logf("teardown: archive %s: %v", ident, err)
+		t.Errorf("teardown: archive %s: %v", ident, err)
+		return
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.linear.app/graphql", bytes.NewReader(q))
+	if err != nil {
+		t.Errorf("teardown: archive %s: %v", ident, err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Logf("teardown: archive %s: %v", ident, err)
+		t.Errorf("teardown: archive %s: %v", ident, err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -183,6 +190,6 @@ func archiveLiveLinear(t *testing.T, token, ident string) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || resp.StatusCode != http.StatusOK ||
 		len(out.Errors) > 0 || !out.Data.IssueArchive.Success {
-		t.Logf("teardown: archive %s: HTTP %d, errors %v, decode %v", ident, resp.StatusCode, out.Errors, err)
+		t.Errorf("teardown: archive %s: HTTP %d, errors %v, decode %v", ident, resp.StatusCode, out.Errors, err)
 	}
 }
