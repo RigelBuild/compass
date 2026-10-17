@@ -680,6 +680,23 @@
       allowedVersions: "/^v?3\\.0\\./",
     },
     {
+      // First-party package pins do not use the third-party release soak.
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["workspaces.catalog"],
+      matchPackageNames: [
+        "@types/bun",
+        "bun-types",
+        "@rigelbuild/ref-gate",
+        "@rigelbuild/renovate-preflight",
+      ],
+      minimumReleaseAge: null,
+    },
+    {
+      matchPackageNames: ["@rigelbuild/solid-*"],
+      matchFileNames: ["apps/ui/package.json"],
+      minimumReleaseAge: null,
+    },
+    {
       // ── bunfig soak exemption for the bun types packages ──
       // bunfig.toml `minimumReleaseAgeExcludes` exempts `@types/bun` and `bun-types`
       // from the 5-day cooldown because the types track the nix-pinned bun runtime

@@ -299,11 +299,8 @@ function parseProjects(json: string): ProjectInput[] {
  *
  * `projects --affected` walks the PROJECT graph — a project is affected when
  * its own sources or a project it `dependsOn` changed — and never consults a
- * project's cross-tree task `inputs`. A gate whose subject lives in other
- * projects' trees is therefore invisible to it: `orion-ref-gate`'s `check`
- * task declares a workspace-root recursive input glob so it scans the whole
- * repo, yet it is not selected unless its own handful of files change, so a
- * PR can introduce exactly what the gate exists to catch and never run it.
+ * project's cross-tree task `inputs`. `ref-gates` uses workspace-root inputs, so
+ * only `tasks --affected` selects it when other files change.
  *
  * `tasks --affected` intersects the PR's changed files with each task's real
  * `inputs`, so it sees those gates. The two closures are genuinely different

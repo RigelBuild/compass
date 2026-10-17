@@ -587,13 +587,13 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 	test("returns the project ids that have affected tasks", () => {
 		const json = JSON.stringify({
 			tasks: {
-				"orion-ref-gate": { check: {} },
+				"ref-gates": { sea: {} },
 				"compass-go": { test: {} },
 			},
 		});
 		expect(parseTaskAffectedIds(json).sort()).toEqual([
 			"compass-go",
-			"orion-ref-gate",
+			"ref-gates",
 		]);
 	});
 
@@ -619,21 +619,18 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 
 	test("a task id containing a colon throws", () => {
 		expect(() =>
-			parseTaskAffectedIds(
-				JSON.stringify({ tasks: { "orion-ref-gate:check": {} } }),
-			),
-		).toThrow("orion-ref-gate:check");
+			parseTaskAffectedIds(JSON.stringify({ tasks: { "ref-gates:sea": {} } })),
+		).toThrow("ref-gates:sea");
 	});
 
 	test("a task-only project joins the closure a project walk would miss", () => {
-		// The defect this closes: a gate whose subject lives in other projects'
-		// trees is absent from `projects --affected`, so unioning the two
-		// closures is what puts its `ci` target in the matrix.
+		// The shared gate scans trees owned by other projects, so its task-level
+		// closure must join the project walk to select the aggregate target.
 		const projects = workspace();
-		const gate = proj("orion-ref-gate", "bun");
+		const gate = proj("ref-gates", "bun");
 		const projectWalk = ["compass-go"];
 		const taskLevel = parseTaskAffectedIds(
-			JSON.stringify({ tasks: { "orion-ref-gate": { check: {} } } }),
+			JSON.stringify({ tasks: { "ref-gates": { sea: {} } } }),
 		);
 		const union = unionAffectedIds(
 			projectWalk,
@@ -655,7 +652,7 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 			event: "pull_request",
 		});
 		const bun = out.matrix.find((l) => l.group === "bun");
-		expect(bun?.targets).toContain("orion-ref-gate:ci");
+		expect(bun?.targets).toContain("ref-gates:ci");
 
 		// Control: without the task-level half the gate is absent, so the
 		// assertion above is defending the union and not the fixture.
@@ -667,7 +664,7 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 		});
 		expect(
 			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
-		).not.toContain("orion-ref-gate:ci");
+		).not.toContain("ref-gates:ci");
 	});
 
 	test("a bundle declaring another project's tree joins the closure", () => {

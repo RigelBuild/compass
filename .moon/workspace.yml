@@ -95,18 +95,8 @@ projects:
   # (RIG-1405). Separate from compass-proto because its subject is the plugin
   # rather than the schema.
   stamp-gate: 'tools/stamp-gate'
-  # The orion-ref-gate boundary gate (RIG-2489): fail-closed scan that the PUBLIC
-  # compass repo carries no out-of-tree reference the managed boundary forbids.
-  # Registered here so its check + typecheck + unit test run
-  # in the moon-driven CI sweep — unregistered, moon never discovers it and the
-  # boundary re-rots uncaught.
-  orion-ref-gate: 'tools/orion-ref-gate'
-  # The sea-ref-gate boundary gate (RIG-2804): fail-closed scan that the compass
-  # tree carries no retired SEA-NNN issue ref (the Linear team key is RIG,
-  # numbers preserved 1:1). Sibling to orion-ref-gate; registered here so its
-  # check + typecheck + unit test run in the moon-driven CI sweep — unregistered,
-  # moon never discovers it and the flipped boundary re-rots uncaught.
-  sea-ref-gate: 'tools/sea-ref-gate'
+  # Shared reference-gate configs keep both boundary checks discoverable.
+  ref-gates: 'tools/ref-gates'
   # The cx-token consumption gate: scans apps/ui/src CSS for raw hex, --rigel-*
   # primitives, and literal duration/easing values banned outside tokens.css
   # (D2/D9 consumption rule; RIG-1812). The mark file's --rigel-purple is the one
@@ -151,11 +141,6 @@ projects:
   # silently inert (moon discovers projects only from this map) and the config
   # drift it fences ships uncaught.
   renovate: 'tools/renovate'
-  # The Renovate preflight probe:
-  # checks the minted App token can see the repo before `bunx renovate` runs,
-  # failing fast with a named diagnosis instead of Renovate's opaque
-  # platform-unknown-error. Registered so its own typecheck + unit test gate.
-  renovate-preflight: 'tools/renovate-preflight'
   # The forge live-oracle Linear token mint (RIG-2423): mints a per-run Linear
   # OAuth app-actor token from the custodied client_credentials pair for the
   # live-contract oracle's Linear legs (client_credentials tokens expire ~30d

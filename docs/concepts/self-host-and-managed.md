@@ -67,7 +67,7 @@ built on top of it, out of tree.
   own it; if it is only true because another document said so, it does not
   belong in a public record. A reader must never be told that the real
   justification is elsewhere.
-- **What is not enforceable.** `moon run orion-ref-gate:check` fails closed on
+- **What is not enforceable.** `moon run ref-gates:private-name` fails closed on
   the literal repo name, and that is the whole of the automation. The
   place-pointer and authority-citation bans are **deliberately not gated**:
   the phrasings are open-ended, and a phrase-list gate over this corpus is

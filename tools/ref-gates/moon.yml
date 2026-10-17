@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# Shared ref-gate package, configured once per public boundary.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+# Code-free: no test files, so skip the inherited bun test task.
+workspace:
+  inheritedTasks:
+    exclude: ['test']
+
+tasks:
+  sea:
+    command: 'GATE_ROOT=. bun node_modules/@rigelbuild/ref-gate/index.ts --config tools/ref-gates/sea.json'
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs: ['/**/*', '/tools/ref-gates/sea.json']
+  private-name:
+    command: 'GATE_ROOT=. bun node_modules/@rigelbuild/ref-gate/index.ts --config tools/ref-gates/private-name.json'
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs: ['/**/*', '/tools/ref-gates/private-name.json']
+  check:
+    deps: ['sea', 'private-name']
+    options:
+      cache: false
+  ci:
+    deps: ['check']
+    options:
+      cache: false

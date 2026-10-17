@@ -1644,14 +1644,15 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 	// The catalog-scoped soak-exemption packageRule governs ONLY catalog deps
 	// (matchManagers custom.regex + matchDepTypes workspaces.catalog), so its
 	// matchPackageNames must equal exactly the bunfig `minimumReleaseAgeExcludes`
-	// entries that ARE catalog deps — i.e. the bun-types pair (@types/bun is a
-	// catalog pin; bun-types is its transitive lockstep). Every other bunfig
-	// exclude is a literal npm pin or an `overrides` pin (@tanstack/virtual-core,
-	// the Solid v2 / @tanstack query RC track, the two @rigelbuild/solid-* pins)
-	// outside the catalog manager's reach, so a catalog-scoped rule cannot and
-	// must not list them: a future auto-bump of those still soaks the 5 days.
+	// entries that ARE catalog deps — i.e. bun-types plus first-party tool pins.
+	// Solid prerelease pins are outside the catalog manager and use a separate
+	// apps/ui-scoped rule, so they do not appear in this package-name set.
 	// Deriving the catalog set from the real manifest (not a hard-coded list)
 	// keeps this guard current as the migration track lands and later retires.
+	const firstPartyToolNames = [
+		"@rigelbuild/ref-gate",
+		"@rigelbuild/renovate-preflight",
+	];
 	const soakRule = cfg.packageRules.find(
 		(r) =>
 			r.minimumReleaseAge === null &&
@@ -1680,7 +1681,7 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 		) as { workspaces?: { catalog?: Record<string, string> } };
 		const catalog = new Set(Object.keys(parsed.workspaces?.catalog ?? {}));
 		catalog.add("bun-types");
-		return bunfigExcludes().filter((e) => catalog.has(e));
+		return bunfigExcludes().filter((name) => catalog.has(name));
 	};
 
 	test("the soak-exemption rule exists (custom.regex catalog, minimumReleaseAge null)", () => {
@@ -1696,10 +1697,49 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 		expect(excludes).toContain("@tanstack/virtual-core");
 		const expected = catalogExcludes();
 		expect(expected).not.toContain("@tanstack/virtual-core");
-		expect(expected.slice().sort()).toEqual(["@types/bun", "bun-types"].sort());
+		expect(expected.slice().sort()).toEqual(
+			["@types/bun", "bun-types", ...firstPartyToolNames].sort(),
+		);
 		expect(soakRule?.matchPackageNames?.slice().sort()).toEqual(
 			expected.slice().sort(),
 		);
+	});
+	test("first-party package pins match Bun excludes and skip Renovate soak", () => {
+		const expected = firstPartyToolNames.slice().sort();
+		expect(
+			bunfigExcludes()
+				.filter((name) => expected.includes(name))
+				.sort(),
+		).toEqual(expected);
+		expect(
+			soakRule?.matchPackageNames
+				?.filter((name) => firstPartyToolNames.includes(name))
+				.sort(),
+		).toEqual(expected);
+	});
+	test("RigelBuild git-ref packages bypass the release-age cooldown", () => {
+		const managers =
+			cfg.customManagers?.filter(
+				(manager) =>
+					manager.datasourceTemplate === "git-refs" &&
+					manager.depNameTemplate?.startsWith("RigelBuild/") === true,
+			) ?? [];
+		expect(managers.length).toBeGreaterThan(0);
+		for (const manager of managers) {
+			const rule = cfg.packageRules.find((candidate) =>
+				candidate.matchDepNames?.includes(manager.depNameTemplate ?? ""),
+			);
+			expect(rule?.minimumReleaseAge).toBeNull();
+		}
+	});
+
+	test("Solid fork pins skip cooldown only in the UI manifest", () => {
+		const rule = cfg.packageRules.find(
+			(candidate) =>
+				candidate.matchPackageNames?.includes("@rigelbuild/solid-*") === true,
+		);
+		expect(rule?.minimumReleaseAge).toBeNull();
+		expect(rule?.matchFileNames).toEqual(["apps/ui/package.json"]);
 	});
 });
 
@@ -1745,12 +1785,9 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 		expect(match?.groups?.version).toBe(REVIEWABLE_CUT_VERIFIED_AT);
 	});
 
-	// The preflight step probes with GH_TOKEN but classifies token-PRESENCE off
-	// RENOVATE_TOKEN (tools/renovate-preflight/index.ts) — so the step MUST set
-	// RENOVATE_TOKEN, or index.ts short-circuits to reason="no-token" and exits 1
-	// on every run, failing the job before Renovate starts. Guard the env so that
-	// drop can't silently regress (it shipped green once because nothing covered
-	// the preflight step's env).
+	// The preflight uses GH_TOKEN to probe the repo and RENOVATE_TOKEN for its
+	// token-presence guard. Both env vars must be set or the workflow fails before
+	// Renovate starts. Guard the env so the probe cannot silently regress.
 	test("the preflight step sets RENOVATE_TOKEN in its env", () => {
 		// Slice the preflight step: from its `- name: Preflight …` line to the
 		// next step boundary (`- name:`/`- uses:` at step indent) or EOF.

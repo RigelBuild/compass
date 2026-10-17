@@ -6,6 +6,8 @@
       "name": "@compass/workspace",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
+        "@rigelbuild/ref-gate": "catalog:",
+        "@rigelbuild/renovate-preflight": "catalog:",
       },
     },
     "apps/eng-docs": {
@@ -268,16 +270,6 @@
         "typescript": "catalog:",
       },
     },
-    "tools/orion-ref-gate": {
-      "name": "@compass/orion-ref-gate",
-      "bin": {
-        "orion-ref-gate": "./index.ts",
-      },
-      "devDependencies": {
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
     "tools/release-notes": {
       "name": "@compass/release-notes",
       "bin": {
@@ -290,16 +282,6 @@
     },
     "tools/renovate": {
       "name": "@compass/renovate",
-      "devDependencies": {
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
-    "tools/renovate-preflight": {
-      "name": "@compass/renovate-preflight",
-      "bin": {
-        "renovate-preflight": "./index.ts",
-      },
       "devDependencies": {
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -322,16 +304,6 @@
       },
       "devDependencies": {
         "@marcbachmann/cel-js": "8.0.0",
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
-    "tools/sea-ref-gate": {
-      "name": "@compass/sea-ref-gate",
-      "bin": {
-        "sea-ref-gate": "./index.ts",
-      },
-      "devDependencies": {
         "@types/bun": "catalog:",
         "typescript": "catalog:",
       },
@@ -386,6 +358,8 @@
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/sdk-trace-web": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.33.0",
+    "@rigelbuild/ref-gate": "1.0.0",
+    "@rigelbuild/renovate-preflight": "1.0.0",
     "@types/bun": "^1.4.0",
     "astro": "^7.1.6",
     "effect": "^3.22.1",
@@ -572,6 +546,7 @@
     "@compass/compass-app-dev": ["@compass/compass-app-dev@workspace:tools/compass-app-dev"],
 
     "@compass/cx-token-gate": ["@compass/cx-token-gate@workspace:tools/cx-token-gate"],
+
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 
     "@compass/font-coverage-gate": ["@compass/font-coverage-gate@workspace:tools/font-coverage-gate"],
@@ -592,19 +567,13 @@
 
     "@compass/operator-cli-check": ["@compass/operator-cli-check@workspace:tools/operator-cli-check"],
 
-    "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
-
     "@compass/release-notes": ["@compass/release-notes@workspace:tools/release-notes"],
 
     "@compass/renovate": ["@compass/renovate@workspace:tools/renovate"],
 
-    "@compass/renovate-preflight": ["@compass/renovate-preflight@workspace:tools/renovate-preflight"],
-
     "@compass/runner-image": ["@compass/runner-image@workspace:tools/runner-image"],
 
     "@compass/runner-manifests": ["@compass/runner-manifests@workspace:tools/runner-manifests"],
-
-    "@compass/sea-ref-gate": ["@compass/sea-ref-gate@workspace:tools/sea-ref-gate"],
 
     "@compass/sql-migration-gate": ["@compass/sql-migration-gate@workspace:tools/sql-migration-gate"],
 
@@ -969,6 +938,10 @@
     "@protobufjs/utf8": ["@protobufjs/utf8@1.1.2", "", {}, "sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug=="],
 
     "@puppeteer/browsers": ["@puppeteer/browsers@3.0.6", "", { "dependencies": { "modern-tar": "^0.7.6", "yargs": "^18.0.0" }, "peerDependencies": { "proxy-agent": ">=8.0.1", "yauzl": "^2.10.0 || ^3.4.0" }, "optionalPeers": ["proxy-agent", "yauzl"], "bin": { "browsers": "lib/main-cli.js" } }, "sha512-B/gKoqlFkzhvzsI6jo9K1cZz9o5ypviVv/xu8CwA4grZzyVwN+XfkT+tu8T1zrauuEXv6VhS2oGX+6NL95WcKA=="],
+
+    "@rigelbuild/ref-gate": ["@rigelbuild/ref-gate@1.0.0", "", { "bin": { "ref-gate": "index.ts" } }, "sha512-ZWq24B8dYrCzC0O/QjLIFL9PhbBSjaDdJ6ZOvYyVk2IzY+icK9jDdwAgne9Ylg7UqgA2ywgUjWuBtbr7kko/tg=="],
+
+    "@rigelbuild/renovate-preflight": ["@rigelbuild/renovate-preflight@1.0.0", "", { "bin": { "renovate-preflight": "index.ts" } }, "sha512-xeN4AZMU05JRhyq595gmuaG54We31vQyX1np/SA+dnb041xsW8n6WD/mtVipEvicX95WuSAfd/upFxIL8foV9Q=="],
 
     "@rigelbuild/solid-markdown": ["@rigelbuild/solid-markdown@3.0.0-rc.0", "", { "dependencies": { "devlop": "^1.1.0", "hast-util-to-jsx-runtime": "^2.3.6", "html-url-attributes": "^3.0.1", "remark-parse": "^11.0.0", "remark-rehype": "^11.1.2", "unified": "^11.0.5", "unist-util-visit": "^5.1.0", "vfile": "^6.0.3" }, "peerDependencies": { "@solidjs/web": "^2.0.0-rc.0", "solid-js": "^2.0.0-rc.0" } }, "sha512-jCo2Hjb0Hj67mVvYGt8Ra3l/4s+p7KnHPF+9Vm8Py/p2HbskiwAc57cSFssn6sBbizqBbZfqR6B6trG38pBhaw=="],
 
