@@ -15,7 +15,7 @@ import (
 	"maps"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -341,14 +341,14 @@ func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID s
 // accountForRunnerSessionError preserves whether a binding miss was verifiable.
 func (h *Hub) accountForRunnerSessionError(ctx context.Context, runnerID, sessionID string) (store.AccountID, error) {
 	if runnerID == "" {
-		return "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound)
+		return "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound.Error()).WithCause(errSessionUnbound)
 	}
 	binding, state := h.lookupSessionBinding(ctx, sessionID)
 	switch {
 	case state == bindingUnverifiable:
-		return "", connect.NewError(connect.CodeUnavailable, errSessionBindingUnverifiable)
+		return "", connect.NewError(connect.CodeUnavailable, errSessionBindingUnverifiable.Error()).WithCause(errSessionBindingUnverifiable)
 	case state != bindingFound || binding.runnerID != runnerID:
-		return "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound)
+		return "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound.Error()).WithCause(errSessionUnbound)
 	default:
 		return binding.account, nil
 	}
@@ -634,7 +634,7 @@ func (h *Hub) RelayCommsCall(
 	req *compassv1internal.RelayCommsCallRequest,
 ) (*compassv1internal.RelayCommsCallResponse, error) {
 	if h.comms == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable.Error()).WithCause(errCommsUnavailable)
 	}
 	ctx, account, err := h.runnerSessionAccountError(ctx, runnerID, req.GetSessionId())
 	if err != nil {
@@ -690,7 +690,7 @@ func (h *Hub) CommitConversationFrame(
 	transcripts := h.transcripts
 	h.mu.Unlock()
 	if transcripts == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable.Error()).WithCause(errTranscriptsUnavailable)
 	}
 	sessionID := req.GetSessionId()
 	ctx, _, err := h.runnerSessionAccountError(ctx, runnerID, sessionID)
@@ -728,7 +728,7 @@ func (h *Hub) commitFrame(
 	if oneof == nil {
 		return connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: durable frame has no transcript_entry variant set"),
+			"runnerhub: durable frame has no transcript_entry variant set",
 		)
 	}
 	switch f := oneof.(type) {
@@ -743,7 +743,7 @@ func (h *Hub) commitFrame(
 	default:
 		return connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: durable frame has no transcript_entry variant set"),
+			"runnerhub: durable frame has no transcript_entry variant set",
 		)
 	}
 }
@@ -757,11 +757,11 @@ func transcriptCommitError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, store.ErrInvalidArgument):
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	case errors.Is(err, store.ErrConflict):
-		return connect.NewError(connect.CodeAlreadyExists, err)
+		return connect.NewError(connect.CodeAlreadyExists, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 }
 
@@ -826,7 +826,7 @@ func (h *Hub) executeCall(
 	if oneof == nil {
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: comms call has no recognized variant set (post/list/list_topics/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)"),
+			"runnerhub: comms call has no recognized variant set (post/list/list_topics/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)",
 		)
 	}
 	switch c := oneof.(type) {
@@ -935,7 +935,7 @@ func (h *Hub) executeCall(
 	default:
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: comms call has no recognized variant set (post/list/list_topics/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm/update_board/boards)"),
+			"runnerhub: comms call has no recognized variant set (post/list/list_topics/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm/update_board/boards)",
 		)
 	}
 }
@@ -1017,10 +1017,10 @@ func (h *Hub) runnerSessionAccountError(ctx context.Context, runnerID, sessionID
 			code := bindingTenantCode(err)
 			if code == connect.CodeFailedPrecondition {
 				h.logBindingTenantError(ctx, runnerID, sessionID, err)
-				return ctx, "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound)
+				return ctx, "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound.Error()).WithCause(errSessionUnbound)
 			}
 			h.logBindingTenantError(ctx, runnerID, sessionID, err)
-			return ctx, "", connect.NewError(connect.CodeUnavailable, errSessionBindingUnverifiable)
+			return ctx, "", connect.NewError(connect.CodeUnavailable, errSessionBindingUnverifiable.Error()).WithCause(errSessionBindingUnverifiable)
 		}
 		ctx = store.WithTenant(ctx, tenant)
 	}

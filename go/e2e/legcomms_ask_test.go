@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -245,13 +243,13 @@ func TestCommsAskRoundTripThroughAgentLoop(t *testing.T) {
 func (f *Fixture) RespondToAsk(ctx context.Context, askID, questionID, chosenOptionID string) error {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := f.Comms().RespondToAsk(rctx, connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := f.Comms().RespondToAsk(rctx, &compassv1.RespondToAskRequest{
 		AskId: askID,
 		Answers: []*compassv1.AskQuestionAnswer{{
 			QuestionId:      questionID,
 			ChosenOptionIds: []string{chosenOptionID},
 		}},
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("RespondToAsk RPC: %w", err)
 	}
 	return nil

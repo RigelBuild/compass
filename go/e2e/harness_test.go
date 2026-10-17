@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/stack"
@@ -62,11 +62,11 @@ func TestHarnessCore(t *testing.T) {
 	{
 		rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 		defer cancel()
-		resp, err := f.Compass().GetServerInfo(rctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+		resp, err := f.Compass().GetServerInfo(rctx, &compassv1.GetServerInfoRequest{})
 		if err != nil {
 			t.Fatalf("authed CompassService.GetServerInfo: %v", err)
 		}
-		if resp.Msg.GetVersion() == "" {
+		if resp.GetVersion() == "" {
 			t.Fatal("GetServerInfo returned an empty version")
 		}
 	}
@@ -77,7 +77,7 @@ func TestHarnessCore(t *testing.T) {
 	{
 		rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 		defer cancel()
-		if _, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{})); err != nil {
+		if _, err := f.Comms().ListAccounts(rctx, &compassv1.ListAccountsRequest{}); err != nil {
 			t.Fatalf("authed CommsService.ListAccounts: %v", err)
 		}
 	}
@@ -92,7 +92,7 @@ func TestHarnessCore(t *testing.T) {
 		}
 		rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 		defer cancel()
-		_, err = unauthed.GetServerInfo(rctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+		_, err = unauthed.GetServerInfo(rctx, &compassv1.GetServerInfoRequest{})
 		if err == nil {
 			t.Fatal("unauthenticated GetServerInfo succeeded; the network door is not enforcing auth")
 		}

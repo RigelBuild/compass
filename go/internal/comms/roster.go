@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
@@ -231,7 +231,7 @@ func (c *Comms) treeForScope(
 		return tree, nil
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("comms: unknown roster scope"))
+			"comms: unknown roster scope")
 	}
 }
 

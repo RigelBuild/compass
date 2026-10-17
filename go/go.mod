@@ -15,9 +15,8 @@ module github.com/RigelBuild/compass/go
 go 1.26.0
 
 require (
-	connectrpc.com/connect v1.21.0
+	connectrpc.com/connect v1.21.0 // indirect
 	connectrpc.com/cors v0.1.0
-	connectrpc.com/grpchealth v1.5.0
 	connectrpc.com/otelconnect v0.12.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/go-jose/go-jose/v4 v4.1.5
@@ -51,10 +50,13 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-require golang.org/x/sys v0.49.0
+require (
+	connectrpc.com/connect/v2 v2.0.1
+	connectrpc.com/grpchealth/v2 v2.0.0
+	golang.org/x/sys v0.49.0
+)
 
 require (
-	connectrpc.com/connect/v2 v2.0.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -113,3 +115,5 @@ require (
 	google.golang.org/grpc v1.83.2 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
+
+tool connectrpc.com/connect/v2/cmd/protoc-gen-connect-go

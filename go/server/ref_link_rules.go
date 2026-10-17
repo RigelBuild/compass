@@ -7,8 +7,6 @@ import (
 	"log/slog"
 	"slices"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -116,11 +114,11 @@ func (s *refLinkRuleSource) rules(ctx context.Context) []*compassv1.RefLinkRule 
 // GetRefLinkRules returns link templates for the forges configured on this server.
 func (s *service) GetRefLinkRules(
 	ctx context.Context,
-	_ *connect.Request[compassv1.GetRefLinkRulesRequest],
-) (*connect.Response[compassv1.GetRefLinkRulesResponse], error) {
+	_ *compassv1.GetRefLinkRulesRequest,
+) (*compassv1.GetRefLinkRulesResponse, error) {
 	rules := []*compassv1.RefLinkRule{}
 	if s.refLinkRules != nil {
 		rules = s.refLinkRules.rules(ctx)
 	}
-	return connect.NewResponse(&compassv1.GetRefLinkRulesResponse{Rules: rules}), nil
+	return &compassv1.GetRefLinkRulesResponse{Rules: rules}, nil
 }

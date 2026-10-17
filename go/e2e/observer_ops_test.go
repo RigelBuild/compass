@@ -22,7 +22,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
@@ -104,12 +104,12 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 	}
 	listCtx, cancelList := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelList()
-	listResp, err := observerComms.ListChannels(listCtx, connect.NewRequest(&compassv1.ListChannelsRequest{}))
+	listResp, err := observerComms.ListChannels(listCtx, &compassv1.ListChannelsRequest{})
 	if err != nil {
 		t.Fatalf("observer ListChannels over the real door: %v", err)
 	}
-	visible := make(map[string]bool, len(listResp.Msg.GetChannels()))
-	for _, ch := range listResp.Msg.GetChannels() {
+	visible := make(map[string]bool, len(listResp.GetChannels()))
+	for _, ch := range listResp.GetChannels() {
 		visible[ch.GetId()] = true
 	}
 	// The POSITIVE canary first: both of the observer's own channels are present.
@@ -137,9 +137,9 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 	// negative-visibility assertion vacuous.
 	denyCtx, cancelDeny := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelDeny()
-	_, err = observerCompass.IssueToken(denyCtx, connect.NewRequest(&compassv1.IssueTokenRequest{
+	_, err = observerCompass.IssueToken(denyCtx, &compassv1.IssueTokenRequest{
 		AccountHandle: "t1-observer-owner",
-	}))
+	})
 	if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
 		t.Fatalf("observer bearer on the adminOnly IssueToken = %v, want CodePermissionDenied (the observer must NOT be the admin)", code)
 	}

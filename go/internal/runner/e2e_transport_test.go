@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -60,36 +60,36 @@ type recordingRelay struct {
 // — these transport tests do not exercise secret delivery, they only need Start
 // to get past the materialize step.
 func (r *recordingRelay) FetchSecrets(
-	context.Context, *connect.Request[compassv1internal.FetchSecretsRequest],
-) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
-	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{}), nil
+	context.Context, *compassv1internal.FetchSecretsRequest,
+) (*compassv1internal.FetchSecretsResponse, error) {
+	return &compassv1internal.FetchSecretsResponse{}, nil
 }
 
 // BindLifetime accepts and records the resume bind Start makes before the agent
 // runs.
 func (r *recordingRelay) BindLifetime(
-	_ context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest],
-) (*connect.Response[compassv1internal.BindLifetimeResponse], error) {
+	_ context.Context, req *compassv1internal.BindLifetimeRequest,
+) (*compassv1internal.BindLifetimeResponse, error) {
 	r.mu.Lock()
-	r.binds = append(r.binds, req.Msg)
+	r.binds = append(r.binds, req)
 	r.mu.Unlock()
-	return connect.NewResponse(&compassv1internal.BindLifetimeResponse{}), nil
+	return &compassv1internal.BindLifetimeResponse{}, nil
 }
 
 // FetchAgentConfig serves the unconfigured-fleet bundle so Provision's config
 // materialize succeeds — these transport tests do not exercise config delivery.
 func (r *recordingRelay) FetchAgentConfig(
-	_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest],
-	stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse],
+	_ context.Context, _ *compassv1internal.FetchAgentConfigRequest,
+	stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream,
 ) error {
 	return sendEmptyAgentConfig(stream)
 }
 
 func (r *recordingRelay) RelayCommsCall(
-	ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest],
-) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {
+	ctx context.Context, req *compassv1internal.RelayCommsCallRequest,
+) (*compassv1internal.RelayCommsCallResponse, error) {
 	r.mu.Lock()
-	r.received = append(r.received, req.Msg)
+	r.received = append(r.received, req)
 	r.mu.Unlock()
 
 	if r.started != nil {
@@ -97,38 +97,38 @@ func (r *recordingRelay) RelayCommsCall(
 		select {
 		case <-r.release:
 		case <-ctx.Done():
-			return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
+			return nil, connect.NewError(connect.CodeCanceled, ctx.Err().Error())
 		}
 	}
 
-	call := req.Msg.GetCall()
-	return connect.NewResponse(&compassv1internal.RelayCommsCallResponse{
+	call := req.GetCall()
+	return &compassv1internal.RelayCommsCallResponse{
 		Result: &compassv1internal.CommsCallResult{
 			CallId: call.GetCallId(),
 			Result: &compassv1internal.CommsCallResult_Post{
 				Post: &compassv1.PostMessageResponse{Message: &compassv1.Message{Id: "msg-" + call.GetCallId()}},
 			},
 		},
-	}), nil
+	}, nil
 }
 
 func (r *recordingRelay) RelayBoardCall(
-	_ context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest],
-) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
+	_ context.Context, req *compassv1internal.RelayBoardCallRequest,
+) (*compassv1internal.RelayBoardCallResponse, error) {
 	r.mu.Lock()
-	r.boardReceived = append(r.boardReceived, req.Msg)
+	r.boardReceived = append(r.boardReceived, req)
 	r.mu.Unlock()
 
-	return connect.NewResponse(&compassv1internal.RelayBoardCallResponse{
+	return &compassv1internal.RelayBoardCallResponse{
 		Result: &compassv1internal.BoardCallResult{
-			CallId: req.Msg.GetCall().GetCallId(),
+			CallId: req.GetCall().GetCallId(),
 			Result: &compassv1internal.BoardCallResult_SetIssueState{
 				SetIssueState: &compassv1internal.SetIssueStateResponse{
 					Issue: &compassv1.Issue{Id: "iss-board", State: compassv1.IssueState_ISSUE_STATE_DONE},
 				},
 			},
 		},
-	}), nil
+	}, nil
 }
 
 func (r *recordingRelay) boardSnapshot() []*compassv1internal.RelayBoardCallRequest {
@@ -210,14 +210,14 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	callCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	resp, err := client.Comms(callCtx, &compassv1internal.CommsCallRequest{
 		CallId: "tc-1",
 		Call: &compassv1internal.CommsCallRequest_Post{
 			Post: &compassv1.PostMessageRequest{
 				Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "chan-1"},
 			},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Comms over the socket = %v, want the round-trip result", err)
 	}
@@ -232,13 +232,13 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	if id := got[0].GetCall().GetCallId(); id != "tc-1" {
 		t.Fatalf("relayed call id = %q, want the agent's %q (verbatim forward)", id, "tc-1")
 	}
-	if resp.Msg.GetCallId() != "tc-1" {
-		t.Fatalf("result call id = %q, want %q (the Server result flowed back)", resp.Msg.GetCallId(), "tc-1")
+	if resp.GetCallId() != "tc-1" {
+		t.Fatalf("result call id = %q, want %q (the Server result flowed back)", resp.GetCallId(), "tc-1")
 	}
-	if mid := resp.Msg.GetPost().GetMessage().GetId(); mid != "msg-tc-1" {
+	if mid := resp.GetPost().GetMessage().GetId(); mid != "msg-tc-1" {
 		t.Fatalf("result payload message id = %q, want the canned %q", mid, "msg-tc-1")
 	}
-	boardResp, err := client.Board(callCtx, connect.NewRequest(&compassv1internal.BoardCallRequest{
+	boardResp, err := client.Board(callCtx, &compassv1internal.BoardCallRequest{
 		CallId: "tb-1",
 		Call: &compassv1internal.BoardCallRequest_SetIssueState{
 			SetIssueState: &compassv1internal.SetIssueStateRequest{
@@ -246,7 +246,7 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 				State:   compassv1.IssueState_ISSUE_STATE_DONE,
 			},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Board over the socket = %v, want the round-trip result", err)
 	}
@@ -257,8 +257,8 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	if gotBoard[0].GetCall().GetCallId() != "tb-1" {
 		t.Fatalf("relayed Board call id = %q, want tb-1", gotBoard[0].GetCall().GetCallId())
 	}
-	if boardResp.Msg.GetCallId() != "tb-1" {
-		t.Fatalf("Board result call id = %q, want tb-1", boardResp.Msg.GetCallId())
+	if boardResp.GetCallId() != "tb-1" {
+		t.Fatalf("Board result call id = %q, want tb-1", boardResp.GetCallId())
 	}
 }
 
@@ -279,7 +279,7 @@ func TestE2EFailClosedBeforeStart(t *testing.T) {
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	callCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	_, err = client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "tc-2"}))
+	_, err = client.Comms(callCtx, &compassv1internal.CommsCallRequest{CallId: "tc-2"})
 	if err == nil {
 		t.Fatal("Comms before Start = nil, want CodeFailedPrecondition (no session bound)")
 	}
@@ -323,7 +323,7 @@ func TestE2EInFlightCallForceClosedAtTeardown(t *testing.T) {
 
 	callErr := make(chan error, 1)
 	go func() {
-		_, err := client.Comms(context.Background(), connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "tc-3"}))
+		_, err := client.Comms(context.Background(), &compassv1internal.CommsCallRequest{CallId: "tc-3"})
 		callErr <- err
 	}()
 
@@ -390,22 +390,24 @@ func TestFreshStartSendsReplayCompleteFirst(t *testing.T) {
 	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	stream, err := runnertest.DialAgentSocket(t, listenerPath(t, h, name)).Control(subCtx,
-		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		&compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
 	}
 	defer func() { _ = stream.Close() }()
 
-	if !stream.Receive() {
-		t.Fatalf("no first op reached the agent (stream err %v): fresh Start did not send replay_complete", stream.Err())
+	first, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no first op reached the agent: fresh Start did not send replay_complete: %v", err)
 	}
-	if stream.Msg().GetReplayComplete() == nil {
-		t.Fatalf("first op = %v, want replay_complete first on a fresh start", stream.Msg())
+	if first.GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete first on a fresh start", first)
 	}
-	if !stream.Receive() {
-		t.Fatalf("no second op reached the agent (stream err %v): sentinel did not follow replay_complete", stream.Err())
+	second, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no second op reached the agent: sentinel did not follow replay_complete: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "after-barrier" {
+	if input := second.GetPrompt().GetInput(); input != "after-barrier" {
 		t.Fatalf("second op input = %q, want the sentinel %q (ordinary ops follow the barrier lift)", input, "after-barrier")
 	}
 }
@@ -452,22 +454,24 @@ func TestResumeStartSendsReplayCompleteFirst(t *testing.T) {
 	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	stream, err := runnertest.DialAgentSocket(t, listenerPath(t, h, name)).Control(subCtx,
-		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		&compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
 	}
 	defer func() { _ = stream.Close() }()
 
-	if !stream.Receive() {
-		t.Fatalf("no first op reached the agent (stream err %v): resume Start did not send replay_complete", stream.Err())
+	first, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no first op reached the agent: resume Start did not send replay_complete: %v", err)
 	}
-	if stream.Msg().GetReplayComplete() == nil {
-		t.Fatalf("first op = %v, want replay_complete first on a resume start", stream.Msg())
+	if first.GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete first on a resume start", first)
 	}
-	if !stream.Receive() {
-		t.Fatalf("no second op reached the agent (stream err %v): sentinel did not follow replay_complete", stream.Err())
+	second, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no second op reached the agent: sentinel did not follow replay_complete: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "after-barrier" {
+	if input := second.GetPrompt().GetInput(); input != "after-barrier" {
 		t.Fatalf("second op input = %q, want the sentinel %q (ordinary ops follow the barrier lift)", input, "after-barrier")
 	}
 }

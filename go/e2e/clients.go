@@ -12,7 +12,8 @@ package e2e
 import (
 	"context"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/runner"
@@ -26,32 +27,18 @@ type (
 	commsServiceClient   = compassv1connect.CommsServiceClient
 )
 
-// bearerToken stamps the admin bearer credential on every outbound RPC (unary
-// and streaming) so the Server's network door authenticates it. It mirrors the
-// CLI's client interceptor (cmd/compass/client.go:28-53); replicated rather than
-// imported because that one lives in package main. Streaming is stamped too so a
-// future streaming RPC cannot silently go out unauthenticated.
-type bearerToken struct {
-	token string
-}
-
-func (b *bearerToken) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		req.Header().Set("Authorization", "Bearer "+b.token)
-		return next(ctx, req)
+// bearerToken stamps the admin bearer credential on every outbound RPC.
+func bearerToken(token string) connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "bearer token: no client call info")
+			}
+			info.RequestHeader().Set("Authorization", "Bearer "+token)
+			return next(ctx, spec)
+		}
 	}
-}
-
-func (b *bearerToken) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		conn := next(ctx, spec)
-		conn.RequestHeader().Set("Authorization", "Bearer "+b.token)
-		return conn
-	}
-}
-
-func (b *bearerToken) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }
 
 // newAuthedClients dials the stack's loopback TLS network door with the state
@@ -66,9 +53,14 @@ func newAuthedClients(caPath, serverURL, adminToken string) (compassv1connect.Co
 	if err != nil {
 		return nil, nil, err
 	}
-	ic := connect.WithInterceptors(&bearerToken{token: adminToken})
-	compass := compassv1connect.NewCompassServiceClient(httpClient, serverURL, ic)
-	comms := compassv1connect.NewCommsServiceClient(httpClient, serverURL, ic)
+	compass := compassv1connect.NewCompassServiceClient(connect.NewClient(
+		connecthttp.NewTransport(httpClient, serverURL, connecthttp.WithReadMaxBytes(0)),
+		bearerToken(adminToken),
+	))
+	comms := compassv1connect.NewCommsServiceClient(connect.NewClient(
+		connecthttp.NewTransport(httpClient, serverURL, connecthttp.WithReadMaxBytes(0)),
+		bearerToken(adminToken),
+	))
 	return compass, comms, nil
 }
 
@@ -81,5 +73,7 @@ func newUnauthedCompassClient(caPath, serverURL string) (compassv1connect.Compas
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewCompassServiceClient(httpClient, serverURL), nil
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(
+		connecthttp.NewTransport(httpClient, serverURL, connecthttp.WithReadMaxBytes(0)),
+	)), nil
 }

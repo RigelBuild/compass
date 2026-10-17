@@ -18,8 +18,6 @@ import (
 	"slices"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -43,15 +41,15 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 	// The coordination channel, created through the handler by the owner, with
 	// the supervisor and both workers as founding members. (The owner is a
 	// founding member by construction — expandOwnerMembership adds the actor.)
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name:          "coordination",
 		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{supervisor.Handle, workerA.Handle, workerB.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(coordination): %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	// The two assignments share the word "implement" (the audit query) and
 	// carry a target-unique word each ("parser" / "serializer") so a search can
@@ -63,16 +61,16 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 
 	// The supervisor posts each assignment as a channel message, authored as the
 	// supervisor account.
-	postedA, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignA}}}}))
+	postedA, err := svc.PostMessage(WithActor(ctx, supervisor.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignA}}}})
 	if err != nil {
 		t.Fatalf("PostMessage(assign A): %v", err)
 	}
-	postedB, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignB}}}}))
+	postedB, err := svc.PostMessage(WithActor(ctx, supervisor.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignB}}}})
 	if err != nil {
 		t.Fatalf("PostMessage(assign B): %v", err)
 	}
-	if postedA.Msg.GetMessage().GetId() == postedB.Msg.GetMessage().GetId() {
-		t.Fatalf("the two assignments share message id %q; they must be distinct posts", postedA.Msg.GetMessage().GetId())
+	if postedA.GetMessage().GetId() == postedB.GetMessage().GetId() {
+		t.Fatalf("the two assignments share message id %q; they must be distinct posts", postedA.GetMessage().GetId())
 	}
 
 	// Delivery: each worker, as a channel member, reads the assignment history
@@ -86,13 +84,13 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 		{"worker-a", workerA.ID},
 		{"worker-b", workerB.ID},
 	} {
-		listed, err := svc.ListMessages(WithActor(ctx, worker.id), connect.NewRequest(&compassv1.ListMessagesRequest{
+		listed, err := svc.ListMessages(WithActor(ctx, worker.id), &compassv1.ListMessagesRequest{
 			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: chID},
-		}))
+		})
 		if err != nil {
 			t.Fatalf("ListMessages(%s): %v", worker.name, err)
 		}
-		texts := assignmentTexts(listed.Msg.GetMessages(), string(supervisor.ID))
+		texts := assignmentTexts(listed.GetMessages(), string(supervisor.ID))
 		if !texts[assignA] {
 			t.Fatalf("%s did not receive assignment A from the supervisor; got supervisor texts %v", worker.name, texts)
 		}
@@ -103,17 +101,17 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 
 	// Audit (design.md:1604): the owner searches the common word and finds BOTH
 	// assignment messages — all coordination is auditable via SearchMessages.
-	auditHits, err := svc.SearchMessages(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SearchMessagesRequest{
+	auditHits, err := svc.SearchMessages(WithActor(ctx, owner.ID), &compassv1.SearchMessagesRequest{
 		Query: "implement",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("SearchMessages(owner, common word): %v", err)
 	}
-	if got := len(auditHits.Msg.GetMessages()); got != 2 {
+	if got := len(auditHits.GetMessages()); got != 2 {
 		t.Fatalf("audit search found %d messages, want both assignments (2)", got)
 	}
 	foundBySupervisor := 0
-	for _, m := range auditHits.Msg.GetMessages() {
+	for _, m := range auditHits.GetMessages() {
 		if m.GetAuthorAccountId() == string(supervisor.ID) {
 			foundBySupervisor++
 		}
@@ -125,17 +123,17 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 	// Per-assignment distinctness: a target-unique word returns exactly its one
 	// assignment — so the two posts are genuinely separate, not one text that
 	// happened to match twice.
-	distinctA, err := svc.SearchMessages(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SearchMessagesRequest{
+	distinctA, err := svc.SearchMessages(WithActor(ctx, owner.ID), &compassv1.SearchMessagesRequest{
 		Query: "parser",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("SearchMessages(owner, parser): %v", err)
 	}
-	if got := len(distinctA.Msg.GetMessages()); got != 1 {
+	if got := len(distinctA.GetMessages()); got != 1 {
 		t.Fatalf("search for the A-only word found %d messages, want exactly assignment A (1)", got)
 	}
-	if id := distinctA.Msg.GetMessages()[0].GetId(); id != postedA.Msg.GetMessage().GetId() {
-		t.Fatalf("A-only search matched message %q, want the posted assignment A %q", id, postedA.Msg.GetMessage().GetId())
+	if id := distinctA.GetMessages()[0].GetId(); id != postedA.GetMessage().GetId() {
+		t.Fatalf("A-only search matched message %q, want the posted assignment A %q", id, postedA.GetMessage().GetId())
 	}
 
 	// Visibility scoping (D9): an outsider account — a second human, not a member
@@ -143,13 +141,13 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 	// audit trail is scoped to the caller's visible set; coordination never leaks
 	// past the channel's membership.
 	outsider := mustUser(t, st, "outsider")
-	outsiderHits, err := svc.SearchMessages(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.SearchMessagesRequest{
+	outsiderHits, err := svc.SearchMessages(WithActor(ctx, outsider.ID), &compassv1.SearchMessagesRequest{
 		Query: "implement",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("SearchMessages(outsider): %v", err)
 	}
-	if got := len(outsiderHits.Msg.GetMessages()); got != 0 {
+	if got := len(outsiderHits.GetMessages()); got != 0 {
 		t.Fatalf("an outsider audited %d coordination messages in a channel it cannot see, want 0", got)
 	}
 }
@@ -190,15 +188,15 @@ func TestSupervisorPerTopicThreadIsolation(t *testing.T) {
 		handles[i] = workers[i].Handle
 	}
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name:          "coordination",
 		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: append([]string{supervisor.Handle}, handles...),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(coordination): %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	// One topic per worker; capture the server-assigned topic id so the later
 	// ListMessages scopes by id, not by re-resolving a name.
@@ -216,33 +214,33 @@ func TestSupervisorPerTopicThreadIsolation(t *testing.T) {
 	for r := range rounds {
 		for i := range workers {
 			text := fmt.Sprintf("assignment for worker %d round %d", i+1, r+1)
-			posted, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+			posted, err := svc.PostMessage(WithActor(ctx, supervisor.ID), &compassv1.PostMessageRequest{
 				Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: chID},
 				Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: topicNames[i]},
 				CreateTopic: true,
 				Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
-			}))
+			})
 			if err != nil {
 				t.Fatalf("PostMessage(worker %d round %d): %v", i+1, r+1, err)
 			}
 			if topicIDs[i] == "" {
-				topicIDs[i] = posted.Msg.GetMessage().GetTopicId()
+				topicIDs[i] = posted.GetMessage().GetTopicId()
 			}
 			wantTexts[i] = append(wantTexts[i], text)
 		}
 	}
 
 	for i, w := range workers {
-		listed, err := svc.ListMessages(WithActor(ctx, w.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+		listed, err := svc.ListMessages(WithActor(ctx, w.ID), &compassv1.ListMessagesRequest{
 			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: chID},
 			TopicId:   topicIDs[i],
-		}))
+		})
 		if err != nil {
 			t.Fatalf("ListMessages(worker %d, topic-scoped): %v", i+1, err)
 		}
 		// ListMessages pages newest-first (messages.sql.go ORDER BY seq DESC), so
 		// reverse the expected thread to send order for the equality check.
-		got := textsInOrder(listed.Msg.GetMessages())
+		got := textsInOrder(listed.GetMessages())
 		want := reversed(wantTexts[i])
 		// mutation: a topic filter that leaks another worker's post (or drops the
 		// TopicId clause) reddens this — the thread would carry a foreign or extra
@@ -265,39 +263,39 @@ func TestSupervisorUpwardReportKeepsAuthor(t *testing.T) {
 	supervisor := mustAgent(t, st, owner.ID, "supervisor")
 	worker := mustAgent(t, st, owner.ID, "worker-1")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name:          "coordination",
 		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{supervisor.Handle, worker.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(coordination): %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	const report = "worker-1 report: parser landed"
-	posted, err := svc.PostMessage(WithActor(ctx, worker.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	posted, err := svc.PostMessage(WithActor(ctx, worker.ID), &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: chID},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "topic-1"},
 		CreateTopic: true,
 		Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: report}}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostMessage(worker report): %v", err)
 	}
-	topicID := posted.Msg.GetMessage().GetTopicId()
+	topicID := posted.GetMessage().GetTopicId()
 
-	listed, err := svc.ListMessages(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	listed, err := svc.ListMessages(WithActor(ctx, supervisor.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: chID},
 		TopicId:   topicID,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages(supervisor, report topic): %v", err)
 	}
-	if got := len(listed.Msg.GetMessages()); got != 1 {
+	if got := len(listed.GetMessages()); got != 1 {
 		t.Fatalf("report topic carries %d messages, want the single report (1)", got)
 	}
-	msg := listed.Msg.GetMessages()[0]
+	msg := listed.GetMessages()[0]
 	// mutation: PostMessage stamping the actor wrong (e.g. the channel owner or a
 	// hardcoded supervisor) reddens this — a report must be attributed to the
 	// worker that authored it, or the audit trail lies about who reported.
@@ -322,51 +320,51 @@ func TestSupervisorAuditScopedAtFourWorkers(t *testing.T) {
 		handles[i] = mustAgent(t, st, owner.ID, fmt.Sprintf("worker-%d", i+1)).Handle
 	}
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name:          "coordination",
 		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: append([]string{supervisor.Handle}, handles...),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(coordination): %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	// One assignment per worker, all sharing the audit word "dispatch".
 	for i := range handles {
-		if _, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		if _, err := svc.PostMessage(WithActor(ctx, supervisor.ID), &compassv1.PostMessageRequest{
 			Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: chID},
 			Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: fmt.Sprintf("topic-%d", i+1)},
 			CreateTopic: true,
 			Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: fmt.Sprintf("dispatch task %d", i+1)}}},
-		})); err != nil {
+		}); err != nil {
 			t.Fatalf("PostMessage(assign %d): %v", i+1, err)
 		}
 	}
 
-	auditHits, err := svc.SearchMessages(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SearchMessagesRequest{
+	auditHits, err := svc.SearchMessages(WithActor(ctx, owner.ID), &compassv1.SearchMessagesRequest{
 		Query: "dispatch",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("SearchMessages(owner): %v", err)
 	}
 	// mutation: a search that under-scopes the owner's authorized view drops
 	// coordination traffic the owner is entitled to audit.
-	if got := len(auditHits.Msg.GetMessages()); got != len(handles) {
+	if got := len(auditHits.GetMessages()); got != len(handles) {
 		t.Fatalf("owner audit found %d messages, want all four assignments (%d)", got, len(handles))
 	}
 
 	outsider := mustUser(t, st, "outsider")
-	outsiderHits, err := svc.SearchMessages(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.SearchMessagesRequest{
+	outsiderHits, err := svc.SearchMessages(WithActor(ctx, outsider.ID), &compassv1.SearchMessagesRequest{
 		Query: "dispatch",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("SearchMessages(outsider): %v", err)
 	}
 	// mutation: a search that scopes by the query alone instead of the caller's
 	// membership turns the audit into an existence oracle — a non-member would
 	// learn the coordination traffic exists. Must be exactly zero.
-	if got := len(outsiderHits.Msg.GetMessages()); got != 0 {
+	if got := len(outsiderHits.GetMessages()); got != 0 {
 		t.Fatalf("outsider audited %d messages in a channel it cannot see, want 0", got)
 	}
 }

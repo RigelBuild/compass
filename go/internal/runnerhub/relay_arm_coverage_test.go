@@ -4,11 +4,10 @@ package runnerhub
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -79,7 +78,7 @@ func TestRelayCommsPinDispatchesAsBoundAccount(t *testing.T) {
 // rendered as a CommsCallError while RelayCommsCall itself remains successful.
 func TestRelayCommsPinToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.pinErr = connect.NewError(connect.CodePermissionDenied, errors.New("pin denied"))
+	comms.pinErr = connect.NewError(connect.CodePermissionDenied, "pin denied")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPin("sess-1", "tc-pin-err", &compassv1.UpdatePinnedBoardRequest{ChannelId: "ch-1"}))

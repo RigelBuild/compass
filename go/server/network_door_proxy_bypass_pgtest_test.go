@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -75,11 +75,11 @@ func TestNetworkDoorProxyHeadersGrantNoIdentity(t *testing.T) {
 	// Authorization header, optionally adding the forged proxy headers, and
 	// returns the client-visible connect.Error.
 	call := func(withForged bool) *connect.Error {
-		req := connect.NewRequest(&compassv1.GetServerInfoRequest{})
+		ctx := t.Context()
 		if withForged {
-			applyHeaders(req.Header(), forgedProxyHeaders("admin"))
+			ctx = clientContextWithHeaders(ctx, forgedProxyHeaders("admin"))
 		}
-		_, err := client.GetServerInfo(t.Context(), req)
+		_, err := client.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 		ce, ok := errors.AsType[*connect.Error](err)
 		if !ok {
 			t.Fatalf("expected a connect.Error rejection, got %v", err)
@@ -136,19 +136,19 @@ func TestNetworkDoorProxyHeadersDoNotElevate(t *testing.T) {
 	forged := forgedProxyHeaders("admin")
 
 	t.Run("non-admin bearer + forged admin headers still PermissionDenied on adminOnly RPC", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "admin"})
-		req.Header().Set("Authorization", "Bearer "+memberTok)
-		applyHeaders(req.Header(), forged)
-		if _, err := client.IssueToken(t.Context(), req); connect.CodeOf(err) != connect.CodePermissionDenied {
+		headers := http.Header{"Authorization": {"Bearer " + memberTok}}
+		applyHeaders(headers, forged)
+		ctx := clientContextWithHeaders(t.Context(), headers)
+		if _, err := client.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: "admin"}); connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatalf("non-admin bearer + forged admin headers on IssueToken = %v, want CodePermissionDenied — the headers must not elevate", connect.CodeOf(err))
 		}
 	})
 
 	t.Run("same non-admin bearer succeeds on open RPC", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.GetServerInfoRequest{})
-		req.Header().Set("Authorization", "Bearer "+memberTok)
-		applyHeaders(req.Header(), forged)
-		if _, err := client.GetServerInfo(t.Context(), req); err != nil {
+		headers := http.Header{"Authorization": {"Bearer " + memberTok}}
+		applyHeaders(headers, forged)
+		ctx := clientContextWithHeaders(t.Context(), headers)
+		if _, err := client.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{}); err != nil {
 			t.Fatalf("non-admin bearer on the open GetServerInfo RPC: %v — the token itself must be valid", err)
 		}
 	})
@@ -188,13 +188,12 @@ func TestNetworkDoorProxyHeadersAreInertForAdmin(t *testing.T) {
 	// wrongly requiring header/bearer agreement. The assertion is on success reaching
 	// the handler, identical with and without the forged headers.
 	issue := func(withForged bool) error {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "admin"})
-		req.Header().Set("Authorization", "Bearer "+adminTok)
+		headers := http.Header{"Authorization": {"Bearer " + adminTok}}
 		if withForged {
-			applyHeaders(req.Header(), forgedProxyHeaders("member"))
+			applyHeaders(headers, forgedProxyHeaders("member"))
 		}
-		resp, err := client.IssueToken(t.Context(), req)
-		if err == nil && resp.Msg.GetToken() == "" {
+		resp, err := client.IssueToken(clientContextWithHeaders(t.Context(), headers), &compassv1.IssueTokenRequest{AccountHandle: "admin"})
+		if err == nil && resp.GetToken() == "" {
 			t.Fatal("IssueToken cleared the gate but returned an empty token")
 		}
 		return err
@@ -239,13 +238,14 @@ func TestNetworkDoorProxyHeadersGrantNoIdentityStreaming(t *testing.T) {
 	// the client-visible connect.Error. A rejected stream surfaces its terminal error
 	// on the first Receive (the interceptor returns before the handler runs).
 	open := func(withForged bool) *connect.Error {
-		req := connect.NewRequest(&compassv1.SubscribeEventsRequest{SinceSeq: 0})
+		headers := http.Header{}
 		if withForged {
-			applyHeaders(req.Header(), forgedProxyHeaders("admin"))
+			applyHeaders(headers, forgedProxyHeaders("admin"))
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 		defer cancel()
-		stream, err := client.SubscribeEvents(ctx, req)
+		ctx = clientContextWithHeaders(ctx, headers)
+		stream, err := client.SubscribeEvents(ctx, &compassv1.SubscribeEventsRequest{SinceSeq: 0})
 		if err != nil {
 			ce, ok := errors.AsType[*connect.Error](err)
 			if !ok {
@@ -254,12 +254,13 @@ func TestNetworkDoorProxyHeadersGrantNoIdentityStreaming(t *testing.T) {
 			return ce
 		}
 		defer func() { _ = stream.Close() }()
-		if recvStreamOrTimeout(t, stream) {
-			t.Fatalf("a rejected stream delivered an event: %+v", stream.Msg())
+		msg, err := recvStreamOrTimeout(t, stream)
+		if err == nil {
+			t.Fatalf("a rejected stream delivered an event: %+v", msg)
 		}
-		ce, ok := errors.AsType[*connect.Error](stream.Err())
+		ce, ok := errors.AsType[*connect.Error](err)
 		if !ok {
-			t.Fatalf("expected a connect.Error rejection, got %v", stream.Err())
+			t.Fatalf("expected a connect.Error rejection, got %v", err)
 		}
 		return ce
 	}
@@ -311,11 +312,9 @@ func TestNetworkDoorSmuggledSecondAuthorizationDoesNotElevate(t *testing.T) {
 	svc := newService("proxy-smuggle", bus, st, nil, nil, nil, nil)
 	client := networkDoorHandler(t, svc, st, admin)
 
-	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "admin"})
-	req.Header().Set("Authorization", "Bearer "+memberTok)
-	req.Header().Add("Authorization", "Bearer "+adminTok)
-
-	_, err = client.IssueToken(t.Context(), req)
+	headers := http.Header{"Authorization": {"Bearer " + memberTok, "Bearer " + adminTok}}
+	ctx := clientContextWithHeaders(t.Context(), headers)
+	_, err = client.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: "admin"})
 	if err == nil {
 		t.Fatal("smuggled second admin Authorization elevated the caller: IssueToken succeeded — the door honored the appended admin header")
 	}

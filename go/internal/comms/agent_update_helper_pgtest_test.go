@@ -10,7 +10,7 @@ import (
 	"context"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -66,7 +66,7 @@ func reconcileUpdateAskIDs(ctx context.Context, c *Comms, actor store.AccountID,
 			// is unanswerable, a NON-empty one is the forgery the POST path strips (a
 			// shared ask_id matches multiple rows). Reject here.
 			return connect.NewError(connect.CodeInvalidArgument,
-				surplusAskError{block: i})
+				surplusAskError{block: i}.Error())
 		}
 		stored := storedAskIDs[askIdx]
 		switch {
@@ -74,7 +74,7 @@ func reconcileUpdateAskIDs(ctx context.Context, c *Comms, actor store.AccountID,
 			ask.AskID = stored
 		case ask.AskID != stored:
 			return connect.NewError(connect.CodeInvalidArgument,
-				askIDMismatchError{block: i, wire: ask.AskID, stored: stored})
+				askIDMismatchError{block: i, wire: ask.AskID, stored: stored}.Error())
 		}
 		askIdx++
 	}
@@ -90,13 +90,13 @@ func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBloc
 		switch body := b.GetBlock().(type) {
 		case *compassv1.MessageBlock_Text:
 			if body == nil {
-				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock.Error()).WithCause(errEmptyBlock)
 			}
 			text := body.Text
 			out = append(out, store.MessageBlock{Text: &text})
 		case *compassv1.MessageBlock_Ask:
 			if body == nil {
-				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock.Error()).WithCause(errEmptyBlock)
 			}
 			ask, err := askFromWire(body.Ask, "")
 			if err != nil {
@@ -105,10 +105,10 @@ func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBloc
 			ask.AskID = body.Ask.GetAskId()
 			out = append(out, store.MessageBlock{Ask: ask})
 		case *compassv1.MessageBlock_AskAnswer:
-			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock)
+			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock.Error()).WithCause(errServerOwnedBlock)
 		default:
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errEmptyBlock)
+				errEmptyBlock.Error()).WithCause(errEmptyBlock)
 		}
 	}
 	return out, nil

@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+
 	"strings"
 	"testing"
 	"time"
-
-	"connectrpc.com/connect"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -361,12 +360,12 @@ func waitSessionErrored(t *testing.T, ctx context.Context, f *Fixture, sessionID
 	defer ticker.Stop()
 	for {
 		probeCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
-		resp, err := f.Compass().GetAgentStatus(probeCtx, connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: sessionID}))
+		resp, err := f.Compass().GetAgentStatus(probeCtx, &compassv1.GetAgentStatusRequest{SessionId: sessionID})
 		cancel()
 		if err != nil {
 			t.Fatalf("get agent status: %v", err)
 		}
-		statuses := resp.Msg.GetStatuses()
+		statuses := resp.GetStatuses()
 		if len(statuses) == 1 && statuses[0].GetState() == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 			return
 		}

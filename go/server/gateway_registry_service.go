@@ -7,7 +7,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -37,41 +37,41 @@ func newGatewayRegistryService(registry gatewayRegistryReader, log *slog.Logger)
 
 func (s *gatewayRegistryService) GetGatewayModelRegistry(
 	ctx context.Context,
-	_ *connect.Request[compassv1internal.GetGatewayModelRegistryRequest],
-) (*connect.Response[compassv1internal.GetGatewayModelRegistryResponse], error) {
+	_ *compassv1internal.GetGatewayModelRegistryRequest,
+) (*compassv1internal.GetGatewayModelRegistryResponse, error) {
 	if err := s.requireGatewaySubject(ctx); err != nil {
 		return nil, err
 	}
 	version, registry, err := s.registry.GatewayModelRegistry(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "gateway model registry read failed", "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errGatewayRegistryUnavailable)
+		return nil, connect.NewError(connect.CodeInternal, errGatewayRegistryUnavailable.Error()).WithCause(errGatewayRegistryUnavailable)
 	}
-	return connect.NewResponse(&compassv1internal.GetGatewayModelRegistryResponse{
+	return &compassv1internal.GetGatewayModelRegistryResponse{
 		Version:  version,
 		Registry: registryToProto(registry),
-	}), nil
+	}, nil
 }
 
 func (s *gatewayRegistryService) GetGatewayModelRegistryVersion(
 	ctx context.Context,
-	_ *connect.Request[compassv1internal.GetGatewayModelRegistryVersionRequest],
-) (*connect.Response[compassv1internal.GetGatewayModelRegistryVersionResponse], error) {
+	_ *compassv1internal.GetGatewayModelRegistryVersionRequest,
+) (*compassv1internal.GetGatewayModelRegistryVersionResponse, error) {
 	if err := s.requireGatewaySubject(ctx); err != nil {
 		return nil, err
 	}
 	version, err := s.registry.ModelRegistryVersion(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "gateway model registry version read failed", "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errGatewayRegistryUnavailable)
+		return nil, connect.NewError(connect.CodeInternal, errGatewayRegistryUnavailable.Error()).WithCause(errGatewayRegistryUnavailable)
 	}
-	return connect.NewResponse(&compassv1internal.GetGatewayModelRegistryVersionResponse{Version: version}), nil
+	return &compassv1internal.GetGatewayModelRegistryVersionResponse{Version: version}, nil
 }
 
 func (s *gatewayRegistryService) requireGatewaySubject(ctx context.Context) error {
 	subject, ok := auth.ServiceSubjectFrom(ctx)
 	if !ok || subject.Kind != store.SubjectService || subject.ID != auth.LLMGatewayServiceID {
-		return connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))
+		return connect.NewError(connect.CodeUnauthenticated, "unauthenticated")
 	}
 	return nil
 }

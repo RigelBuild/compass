@@ -7,12 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -42,16 +43,16 @@ type gatewayRegistryContextCapture struct {
 	ctx context.Context
 }
 
-func (c *gatewayRegistryContextCapture) handle(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+func (c *gatewayRegistryContextCapture) handle(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
 	c.ctx = ctx
-	return connect.NewResponse(&compassv1internal.GetGatewayModelRegistryResponse{}), nil
+	return nil
 }
 
 func gatewayRegistryServiceContext(t *testing.T, subject store.Subject) context.Context {
 	t.Helper()
 	const token = "gateway-registry-test-token"
-	request := connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{})
-	request.Header().Set("Authorization", "Bearer "+token)
+	info := &connect.CallInfo{}
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	interceptor := auth.ServiceBearerInterceptor(func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		if presented != token || want != store.SubjectService {
 			t.Fatalf("service resolver args = (%q, %v), want gateway token and SubjectService", presented, want)
@@ -59,8 +60,10 @@ func gatewayRegistryServiceContext(t *testing.T, subject store.Subject) context.
 		return subject, nil
 	}, subject.ID)
 	var capture gatewayRegistryContextCapture
-	_, err := interceptor(capture.handle)(t.Context(), request)
-	if err != nil {
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: compassv1internalconnect.GatewayRegistryGetGatewayModelRegistryProcedure}
+	server := connect.NewServer(interceptor)
+	server.Register(connect.Method{Spec: spec, Handler: capture.handle})
+	if err := server.Call(t.Context(), spec.Procedure, info, testServerStream{}); err != nil {
 		t.Fatalf("authenticate service context: %v", err)
 	}
 	return capture.ctx
@@ -77,11 +80,11 @@ func TestGatewayRegistryServiceRequiresGatewayServiceSubject(t *testing.T) {
 		{name: "different service", ctx: otherServiceCtx},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := svc.GetGatewayModelRegistry(tt.ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{}))
+			_, err := svc.GetGatewayModelRegistry(tt.ctx, &compassv1internal.GetGatewayModelRegistryRequest{})
 			if connect.CodeOf(err) != connect.CodeUnauthenticated {
 				t.Fatalf("GetGatewayModelRegistry error = %v, want Unauthenticated", err)
 			}
-			_, err = svc.GetGatewayModelRegistryVersion(tt.ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryVersionRequest{}))
+			_, err = svc.GetGatewayModelRegistryVersion(tt.ctx, &compassv1internal.GetGatewayModelRegistryVersionRequest{})
 			if connect.CodeOf(err) != connect.CodeUnauthenticated {
 				t.Fatalf("GetGatewayModelRegistryVersion error = %v, want Unauthenticated", err)
 			}
@@ -93,19 +96,19 @@ func TestGatewayRegistryServiceUnconfiguredReads(t *testing.T) {
 	st := &fakeGatewayRegistryStore{currentErr: store.ErrNotFound}
 	svc := newGatewayRegistryUnitService(st)
 	ctx := gatewayRegistryServiceContext(t, store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID})
-	response, err := svc.GetGatewayModelRegistry(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{}))
+	response, err := svc.GetGatewayModelRegistry(ctx, &compassv1internal.GetGatewayModelRegistryRequest{})
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistry: %v", err)
 	}
-	if response.Msg.GetVersion() != 0 || !proto.Equal(response.Msg.GetRegistry(), &compassv1.ModelRegistry{Entries: map[string]*compassv1.ModelRegistryEntry{}}) {
-		t.Fatalf("unconfigured registry response = %v, want version 0 and empty registry", response.Msg)
+	if response.GetVersion() != 0 || !proto.Equal(response.GetRegistry(), &compassv1.ModelRegistry{Entries: map[string]*compassv1.ModelRegistryEntry{}}) {
+		t.Fatalf("unconfigured registry response = %v, want version 0 and empty registry", response)
 	}
-	version, err := svc.GetGatewayModelRegistryVersion(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryVersionRequest{}))
+	version, err := svc.GetGatewayModelRegistryVersion(ctx, &compassv1internal.GetGatewayModelRegistryVersionRequest{})
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistryVersion: %v", err)
 	}
-	if version.Msg.GetVersion() != 0 {
-		t.Fatalf("unconfigured version = %d, want 0", version.Msg.GetVersion())
+	if version.GetVersion() != 0 {
+		t.Fatalf("unconfigured version = %d, want 0", version.GetVersion())
 	}
 }
 
@@ -114,11 +117,11 @@ func TestGatewayRegistryServiceMapsStoreErrors(t *testing.T) {
 	st := &fakeGatewayRegistryStore{currentErr: storeErr, versionErr: storeErr}
 	svc := newGatewayRegistryUnitService(st)
 	ctx := gatewayRegistryServiceContext(t, store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID})
-	_, err := svc.GetGatewayModelRegistry(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{}))
+	_, err := svc.GetGatewayModelRegistry(ctx, &compassv1internal.GetGatewayModelRegistryRequest{})
 	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), storeErr.Error()) {
 		t.Fatalf("GetGatewayModelRegistry error = %v, want generic Internal", err)
 	}
-	_, err = svc.GetGatewayModelRegistryVersion(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryVersionRequest{}))
+	_, err = svc.GetGatewayModelRegistryVersion(ctx, &compassv1internal.GetGatewayModelRegistryVersionRequest{})
 	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), storeErr.Error()) {
 		t.Fatalf("GetGatewayModelRegistryVersion error = %v, want generic Internal", err)
 	}
@@ -128,16 +131,16 @@ func TestGatewayRegistryServiceReturnsTombstoneVersion(t *testing.T) {
 	st := &fakeGatewayRegistryStore{version: 2, registry: store.ModelRegistry{}}
 	svc := newGatewayRegistryUnitService(st)
 	ctx := gatewayRegistryServiceContext(t, store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID})
-	full, err := svc.GetGatewayModelRegistry(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{}))
+	full, err := svc.GetGatewayModelRegistry(ctx, &compassv1internal.GetGatewayModelRegistryRequest{})
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistry: %v", err)
 	}
-	version, err := svc.GetGatewayModelRegistryVersion(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryVersionRequest{}))
+	version, err := svc.GetGatewayModelRegistryVersion(ctx, &compassv1internal.GetGatewayModelRegistryVersionRequest{})
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistryVersion: %v", err)
 	}
-	if full.Msg.GetVersion() != 2 || full.Msg.GetVersion() != version.Msg.GetVersion() || len(full.Msg.GetRegistry().GetEntries()) != 0 {
-		t.Fatalf("tombstone reads = (%v, %d), want empty registry and matching version 2", full.Msg, version.Msg.GetVersion())
+	if full.GetVersion() != 2 || full.GetVersion() != version.GetVersion() || len(full.GetRegistry().GetEntries()) != 0 {
+		t.Fatalf("tombstone reads = (%v, %d), want empty registry and matching version 2", full, version.GetVersion())
 	}
 }
 
@@ -152,7 +155,7 @@ func TestGatewayRegistryServiceReturnsConfiguredRegistry(t *testing.T) {
 	st := &fakeGatewayRegistryStore{version: 9, registry: registry}
 	svc := newGatewayRegistryUnitService(st)
 	ctx := gatewayRegistryServiceContext(t, store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID})
-	response, err := svc.GetGatewayModelRegistry(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryRequest{}))
+	response, err := svc.GetGatewayModelRegistry(ctx, &compassv1internal.GetGatewayModelRegistryRequest{})
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistry: %v", err)
 	}
@@ -163,14 +166,14 @@ func TestGatewayRegistryServiceReturnsConfiguredRegistry(t *testing.T) {
 			Metadata:    &compassv1.ModelMetadata{ContextWindow: 200000, InputCostMicroUsd: 15, OutputCostMicroUsd: 75, Api: "anthropic-messages"},
 		},
 	}}
-	if response.Msg.GetVersion() != 9 || !proto.Equal(response.Msg.GetRegistry(), want) {
-		t.Fatalf("registry response = %v, want version 9 and payload %v", response.Msg, want)
+	if response.GetVersion() != 9 || !proto.Equal(response.GetRegistry(), want) {
+		t.Fatalf("registry response = %v, want version 9 and payload %v", response, want)
 	}
-	version, err := svc.GetGatewayModelRegistryVersion(ctx, connect.NewRequest(&compassv1internal.GetGatewayModelRegistryVersionRequest{}))
+	version, err := svc.GetGatewayModelRegistryVersion(ctx, &compassv1internal.GetGatewayModelRegistryVersionRequest{})
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistryVersion: %v", err)
 	}
-	if version.Msg.GetVersion() != 9 {
-		t.Fatalf("version-only response = %d, want 9", version.Msg.GetVersion())
+	if version.GetVersion() != 9 {
+		t.Fatalf("version-only response = %d, want 9", version.GetVersion())
 	}
 }

@@ -15,8 +15,6 @@ import (
 	"io"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
@@ -52,9 +50,9 @@ var errConfigStreamNoVersion = errors.New("FetchAgentConfig stream ended before 
 // every later frame a chunk. A version frame arriving after a chunk, or a stream
 // that ends before any version frame, is a contract skew and errors.
 func (l *ServerLink) FetchAgentConfig(ctx context.Context, ifVersion string) (AgentConfigBundle, error) {
-	stream, err := l.client.FetchAgentConfig(ctx, connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{
+	stream, err := l.client.FetchAgentConfig(ctx, &compassv1internal.FetchAgentConfigRequest{
 		IfVersion: ifVersion,
-	}))
+	})
 	if err != nil {
 		return AgentConfigBundle{}, fmt.Errorf("fetching agent config: %w", err)
 	}
@@ -66,8 +64,14 @@ func (l *ServerLink) FetchAgentConfig(ctx context.Context, ifVersion string) (Ag
 		bundle     AgentConfigBundle
 		gotVersion bool
 	)
-	for stream.Receive() {
-		frameVariant := stream.Msg().GetFrame()
+	var streamErr error
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			streamErr = err
+			break
+		}
+		frameVariant := msg.GetFrame()
 		if frameVariant == nil {
 			// A frame with no variant set — the same contract skew as an
 			// unrecognized variant; reject it identically.
@@ -90,7 +94,10 @@ func (l *ServerLink) FetchAgentConfig(ctx context.Context, ifVersion string) (Ag
 			return AgentConfigBundle{}, errors.New("FetchAgentConfig stream sent an unrecognized frame variant")
 		}
 	}
-	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+	if errors.Is(streamErr, io.EOF) {
+		streamErr = nil
+	}
+	if err := streamErr; err != nil && !errors.Is(err, io.EOF) {
 		return AgentConfigBundle{}, fmt.Errorf("receiving agent config stream: %w", err)
 	}
 	if !gotVersion {
@@ -121,11 +128,11 @@ type SessionBlobFetch struct {
 func (l *ServerLink) FetchSessionBlobs(ctx context.Context, containerName, sessionID string, sha256s []string) (result SessionBlobFetch, err error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, resumeBlobFetchTimeout)
 	defer cancel()
-	stream, err := l.client.FetchSessionBlobs(fetchCtx, connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{
+	stream, err := l.client.FetchSessionBlobs(fetchCtx, &compassv1internal.FetchSessionBlobsRequest{
 		ContainerName: containerName,
 		SessionId:     sessionID,
 		Sha256:        sha256s,
-	}))
+	})
 	if err != nil {
 		return SessionBlobFetch{}, fmt.Errorf("fetching session blobs: %w", err)
 	}
@@ -154,8 +161,14 @@ func (l *ServerLink) FetchSessionBlobs(ctx context.Context, containerName, sessi
 		}
 		result.Blobs = append(result.Blobs, SessionBlob{SHA256: got, Data: data})
 	}
-	for stream.Receive() {
-		frameVariant := stream.Msg().GetFrame()
+	var streamErr error
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			streamErr = err
+			break
+		}
+		frameVariant := msg.GetFrame()
 		if frameVariant == nil {
 			return SessionBlobFetch{}, errors.New("FetchSessionBlobs stream sent an unrecognized frame variant")
 		}
@@ -194,8 +207,11 @@ func (l *ServerLink) FetchSessionBlobs(ctx context.Context, containerName, sessi
 			return SessionBlobFetch{}, errors.New("FetchSessionBlobs stream sent an unrecognized frame variant")
 		}
 	}
+	if errors.Is(streamErr, io.EOF) {
+		streamErr = nil
+	}
 	finish()
-	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+	if err := streamErr; err != nil && !errors.Is(err, io.EOF) {
 		return SessionBlobFetch{}, fmt.Errorf("receiving session blobs stream: %w", err)
 	}
 	return result, nil

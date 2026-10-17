@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/refs"
@@ -36,10 +36,10 @@ func (c *Comms) UpdateBoardAsAccount(
 		return nil, errNoActor
 	}
 	if req == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("board update request is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "board update request is required")
 	}
 	if req.GetHalt() != nil && req.GetClearHalt() {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("board update cannot set and clear halt together"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "board update cannot set and clear halt together")
 	}
 	patch, err := boardPatchFromWire(req)
 	if err != nil {
@@ -50,7 +50,7 @@ func (c *Comms) UpdateBoardAsAccount(
 		return nil, edgeError(err)
 	}
 	if !account.IsAgent() {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only an agent can update its board"))
+		return nil, connect.NewError(connect.CodePermissionDenied, "only an agent can update its board")
 	}
 	row, err := c.store.ApplyBoardPatch(ctx, caller, patch)
 	if err != nil {
@@ -91,10 +91,10 @@ func (c *Comms) UpdateBoardAsAccount(
 
 func boardPatchFromWire(req *compassv1.UpdateAgentBoardRequest) (store.BoardPatch, error) {
 	if len(req.GetUpsertTasks()) > store.MaxBoardTasks {
-		return store.BoardPatch{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board task patch count exceeds maximum of %d", store.MaxBoardTasks))
+		return store.BoardPatch{}, connect.Errorf(connect.CodeInvalidArgument, "board task patch count exceeds maximum of %d", store.MaxBoardTasks)
 	}
 	if len(req.GetRemoveTaskKeys()) > store.MaxBoardTasks {
-		return store.BoardPatch{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board task removal count exceeds maximum of %d", store.MaxBoardTasks))
+		return store.BoardPatch{}, connect.Errorf(connect.CodeInvalidArgument, "board task removal count exceeds maximum of %d", store.MaxBoardTasks)
 	}
 	for _, key := range req.GetRemoveTaskKeys() {
 		if err := validateBoardWireString("board task key", key, store.MaxBoardTaskKeyChars); err != nil {
@@ -119,7 +119,7 @@ func boardPatchFromWire(req *compassv1.UpdateAgentBoardRequest) (store.BoardPatc
 	patch.Upsert = make([]store.BoardTaskPatch, 0, len(req.GetUpsertTasks()))
 	for _, task := range req.GetUpsertTasks() {
 		if task == nil {
-			return store.BoardPatch{}, connect.NewError(connect.CodeInvalidArgument, errors.New("board task patch is required"))
+			return store.BoardPatch{}, connect.NewError(connect.CodeInvalidArgument, "board task patch is required")
 		}
 		row, err := boardTaskPatchFromWire(task)
 		if err != nil {
@@ -138,7 +138,7 @@ func boardTaskPatchFromWire(task *compassv1.BoardTaskPatch) (store.BoardTaskPatc
 	if task.State != nil {
 		value, valid := boardTaskStateToStore(task.GetState())
 		if !valid {
-			return store.BoardTaskPatch{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board task %q has invalid state %d", task.GetKey(), task.GetState()))
+			return store.BoardTaskPatch{}, connect.Errorf(connect.CodeInvalidArgument, "board task %q has invalid state %d", task.GetKey(), task.GetState())
 		}
 		state = &value
 	}
@@ -157,7 +157,7 @@ func boardTaskPatchFromWire(task *compassv1.BoardTaskPatch) (store.BoardTaskPatc
 				return store.BoardTaskPatch{}, err
 			}
 			wrappedErr := fmt.Errorf("encode board waiting entries: %w", err)
-			return store.BoardTaskPatch{}, connect.NewError(connect.CodeInvalidArgument, wrappedErr)
+			return store.BoardTaskPatch{}, connect.NewError(connect.CodeInvalidArgument, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 		row.Waiting = &encoded
 	}
@@ -179,13 +179,13 @@ func validateBoardTaskPatchWire(task *compassv1.BoardTaskPatch) error {
 		}
 	}
 	if task.GetRefs() != nil && len(task.GetRefs().GetValues()) > store.MaxBoardRefs {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board task %q ref count exceeds maximum of %d", task.GetKey(), store.MaxBoardRefs))
+		return connect.Errorf(connect.CodeInvalidArgument, "board task %q ref count exceeds maximum of %d", task.GetKey(), store.MaxBoardRefs)
 	}
 	if task.GetWaiting() != nil && len(task.GetWaiting().GetValues()) > store.MaxBoardWaiting {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board task %q waiting entry count exceeds maximum of %d", task.GetKey(), store.MaxBoardWaiting))
+		return connect.Errorf(connect.CodeInvalidArgument, "board task %q waiting entry count exceeds maximum of %d", task.GetKey(), store.MaxBoardWaiting)
 	}
 	if len(task.GetUpsertSubagents()) > store.MaxBoardSubagents {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board task %q subagent count exceeds maximum of %d", task.GetKey(), store.MaxBoardSubagents))
+		return connect.Errorf(connect.CodeInvalidArgument, "board task %q subagent count exceeds maximum of %d", task.GetKey(), store.MaxBoardSubagents)
 	}
 	return validateBoardSubagentsWire(task.GetUpsertSubagents())
 }
@@ -220,7 +220,7 @@ func boardSubagentsFromWire(subagents []*compassv1.BoardSubagent) ([]byte, error
 	encoded, err := json.Marshal(subagents)
 	if err != nil {
 		wrappedErr := fmt.Errorf("encode board subagents: %w", err)
-		return nil, connect.NewError(connect.CodeInvalidArgument, wrappedErr)
+		return nil, connect.NewError(connect.CodeInvalidArgument, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return encoded, nil
 }
@@ -228,7 +228,7 @@ func boardSubagentsFromWire(subagents []*compassv1.BoardSubagent) ([]byte, error
 func boardTaskRefsFromWire(task *compassv1.BoardTaskPatch, row *store.BoardTaskPatch) error {
 	if task.PrimaryRef != nil {
 		if strings.ContainsRune(task.GetPrimaryRef(), '\x00') {
-			return connect.NewError(connect.CodeInvalidArgument, errors.New("board primary ref contains a NUL character"))
+			return connect.NewError(connect.CodeInvalidArgument, "board primary ref contains a NUL character")
 		}
 		value, err := canonicalOptionalRef(task.GetPrimaryRef())
 		if err != nil {
@@ -242,7 +242,7 @@ func boardTaskRefsFromWire(task *compassv1.BoardTaskPatch, row *store.BoardTaskP
 	values := make([]string, 0, len(task.GetRefs().GetValues()))
 	for _, value := range task.GetRefs().GetValues() {
 		if strings.ContainsRune(value, '\x00') {
-			return connect.NewError(connect.CodeInvalidArgument, errors.New("board task ref contains a NUL character"))
+			return connect.NewError(connect.CodeInvalidArgument, "board task ref contains a NUL character")
 		}
 		canonical, err := canonicalRef(value)
 		if err != nil {
@@ -323,7 +323,7 @@ func canonicalRef(value string) (string, error) {
 	ref, err := refs.Parse(value)
 	if err != nil {
 		wrappedErr := fmt.Errorf("invalid board ref %q: %w", value, err)
-		return "", connect.NewError(connect.CodeInvalidArgument, wrappedErr)
+		return "", connect.NewError(connect.CodeInvalidArgument, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return ref.String(), nil
 }
@@ -331,11 +331,11 @@ func canonicalRef(value string) (string, error) {
 // validateBoardFilterText rejects NUL before filter text reaches Postgres.
 func validateBoardFilterText(req *compassv1.ListAgentBoardsRequest) error {
 	if strings.ContainsRune(req.GetQuery(), '\x00') || strings.ContainsRune(req.GetRef(), '\x00') {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("board filter contains a NUL character"))
+		return connect.NewError(connect.CodeInvalidArgument, "board filter contains a NUL character")
 	}
 	for _, handle := range req.GetAgentHandles() {
 		if strings.ContainsRune(handle, '\x00') {
-			return connect.NewError(connect.CodeInvalidArgument, errors.New("board filter contains a NUL character"))
+			return connect.NewError(connect.CodeInvalidArgument, "board filter contains a NUL character")
 		}
 	}
 	return nil
@@ -343,17 +343,17 @@ func validateBoardFilterText(req *compassv1.ListAgentBoardsRequest) error {
 
 func validateBoardWireString(field, value string, maxChars int) error {
 	if strings.ContainsRune(value, '\x00') {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s contains a NUL character", field))
+		return connect.Errorf(connect.CodeInvalidArgument, "%s contains a NUL character", field)
 	}
 	if utf8.RuneCountInString(value) > maxChars {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s exceeds maximum of %d characters", field, maxChars))
+		return connect.Errorf(connect.CodeInvalidArgument, "%s exceeds maximum of %d characters", field, maxChars)
 	}
 	return nil
 }
 
 func marshalBoardWaiting(values []*compassv1.BoardWaiting) ([]byte, error) {
 	if len(values) > store.MaxBoardWaiting {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board task waiting entry count exceeds maximum of %d", store.MaxBoardWaiting))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "board task waiting entry count exceeds maximum of %d", store.MaxBoardWaiting)
 	}
 	type waitingEntry struct {
 		On          string   `json:"on"`
@@ -365,13 +365,13 @@ func marshalBoardWaiting(values []*compassv1.BoardWaiting) ([]byte, error) {
 	encoded := make([]waitingEntry, len(values))
 	for i, value := range values {
 		if value == nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("board waiting entry is required"))
+			return nil, connect.NewError(connect.CodeInvalidArgument, "board waiting entry is required")
 		}
 		if len(value.GetBlocks()) > store.MaxBoardRefs {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board waiting block count exceeds maximum of %d", store.MaxBoardRefs))
+			return nil, connect.Errorf(connect.CodeInvalidArgument, "board waiting block count exceeds maximum of %d", store.MaxBoardRefs)
 		}
 		if value.GetOn() < compassv1.BoardWaitingOn_BOARD_WAITING_ON_OPERATOR || value.GetOn() > compassv1.BoardWaitingOn_BOARD_WAITING_ON_EXTERNAL {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("board waiting entry has invalid on value"))
+			return nil, connect.NewError(connect.CodeInvalidArgument, "board waiting entry has invalid on value")
 		}
 		if err := validateBoardWireString("waiting agent_handle", value.GetAgentHandle(), store.MaxBoardHandleChars); err != nil {
 			return nil, err
@@ -437,19 +437,19 @@ func (c *Comms) ListBoardsAsAccount(
 		req = &compassv1.ListAgentBoardsRequest{}
 	}
 	if len(req.GetAgentHandles()) > store.MaxBoardSearchAgents {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("board agent handle count exceeds maximum of %d", store.MaxBoardSearchAgents))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "board agent handle count exceeds maximum of %d", store.MaxBoardSearchAgents)
 	}
 	if err := validateBoardFilterText(req); err != nil {
 		return nil, err
 	}
 	if req.GetState() != compassv1.BoardTaskState_BOARD_TASK_STATE_UNSPECIFIED && boardStateFilter(req.GetState()) < 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid board state filter %d", req.GetState()))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "invalid board state filter %d", req.GetState())
 	}
 	if req.GetWaitingOn() != compassv1.BoardWaitingOn_BOARD_WAITING_ON_UNSPECIFIED && boardWaitingFilter(req.GetWaitingOn()) < 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid board waiting_on filter %d", req.GetWaitingOn()))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "invalid board waiting_on filter %d", req.GetWaitingOn())
 	}
 	if req.GetHalt() != compassv1.BoardHaltKind_BOARD_HALT_KIND_UNSPECIFIED && boardHaltFilter(req.GetHalt()) < 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid board halt filter %d", req.GetHalt()))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "invalid board halt filter %d", req.GetHalt())
 	}
 	handleSet := make(map[string]struct{}, min(len(req.GetAgentHandles()), store.MaxBoardSearchAgents))
 	handles := make([]string, 0, min(len(req.GetAgentHandles()), store.MaxBoardSearchAgents))
@@ -567,16 +567,16 @@ func boardLimit(limit uint32) int {
 // ListAgentBoards adapts the RPC request to the account-scoped board read.
 func (c *Comms) ListAgentBoards(
 	ctx context.Context,
-	req *connect.Request[compassv1.ListAgentBoardsRequest],
-) (*connect.Response[compassv1.ListAgentBoardsResponse], error) {
+	req *compassv1.ListAgentBoardsRequest,
+) (*compassv1.ListAgentBoardsResponse, error) {
 	if req == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("board list request is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "board list request is required")
 	}
-	response, err := c.ListBoardsAsAccount(ctx, c.actorFromContext(ctx), req.Msg)
+	response, err := c.ListBoardsAsAccount(ctx, c.actorFromContext(ctx), req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(response), nil
+	return response, nil
 }
 
 // boardVisible uses the same account clip as RosterAsAccount.
@@ -728,14 +728,14 @@ func haltToWire(halt store.BoardHalt) *compassv1.BoardHalt {
 func haltFromWire(halt *compassv1.BoardHalt) (store.BoardHalt, error) {
 	kind := halt.GetKind()
 	if kind <= compassv1.BoardHaltKind_BOARD_HALT_KIND_UNSPECIFIED || kind > compassv1.BoardHaltKind_BOARD_HALT_KIND_AWAITING_USER {
-		return store.BoardHalt{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid board halt kind %d", kind))
+		return store.BoardHalt{}, connect.Errorf(connect.CodeInvalidArgument, "invalid board halt kind %d", kind)
 	}
 	if err := validateBoardWireString("board halt reason", halt.GetReason(), store.MaxBoardHaltReasonChars); err != nil {
 		return store.BoardHalt{}, err
 	}
 	ref := halt.GetRef()
 	if strings.ContainsRune(ref, '\x00') {
-		return store.BoardHalt{}, connect.NewError(connect.CodeInvalidArgument, errors.New("board halt ref contains a NUL character"))
+		return store.BoardHalt{}, connect.NewError(connect.CodeInvalidArgument, "board halt ref contains a NUL character")
 	}
 	if ref != "" {
 		canonical, err := canonicalRef(ref)

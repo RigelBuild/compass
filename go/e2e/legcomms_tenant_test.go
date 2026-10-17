@@ -31,9 +31,10 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 // The two tenants, their agents, and the two channels. Handles obey the account
@@ -245,15 +246,15 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 	t.Helper()
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := comms.CreateAgent(rctx, connect.NewRequest(&compassv1.CreateAgentRequest{
+	resp, err := comms.CreateAgent(rctx, &compassv1.CreateAgentRequest{
 		Handle:      handle,
 		DisplayName: displayName,
 		Role:        "manager",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateAgent(%s) as the owning tenant: %v", handle, err)
 	}
-	account := resp.Msg.GetAccount()
+	account := resp.GetAccount()
 	id := account.GetId()
 	if id == "" {
 		t.Fatalf("CreateAgent(%s) returned an empty account id", handle)
@@ -281,7 +282,7 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 // derived one — the shape AwaitDelivery uses (comms_ops.go:132) and for the
 // same reason: a server that registers the subscriber but never sends the
 // boundary frame fails legibly here instead of blocking to the go-test timeout.
-func awaitSubscriptionLive(ctx context.Context, t *testing.T, stream *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse]) {
+func awaitSubscriptionLive(ctx context.Context, t *testing.T, stream compassv1connect.CommsServiceSubscribeCommsClientStream) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -294,11 +295,12 @@ func awaitSubscriptionLive(ctx context.Context, t *testing.T, stream *connect.Se
 	// helper has already returned on the ctx deadline.
 	out := make(chan frame, 1)
 	go func() {
-		if !stream.Receive() {
-			out <- frame{err: fmt.Errorf("subscription ended before its leading control frame: %w", stream.Err())}
+		got, err := stream.Receive()
+		if err != nil {
+			out <- frame{err: fmt.Errorf("subscription ended before its leading control frame: %w", err)}
 			return
 		}
-		out <- frame{payload: stream.Msg().GetPayload()}
+		out <- frame{payload: got.GetPayload()}
 	}()
 
 	select {
@@ -329,10 +331,10 @@ func openDMRejection(ctx context.Context, t *testing.T, comms commsServiceClient
 	t.Helper()
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := comms.OpenDM(rctx, connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peerHandle}))
+	resp, err := comms.OpenDM(rctx, &compassv1.OpenDMRequest{PeerHandle: peerHandle})
 	if err == nil {
 		t.Fatalf("OpenDM(peer %q) succeeded and opened channel %q, want a NOT_FOUND rejection",
-			peerHandle, resp.Msg.GetChannel().GetId())
+			peerHandle, resp.GetChannel().GetId())
 	}
 	return connect.CodeOf(err), rejectionMessage(t, peerHandle, err)
 }

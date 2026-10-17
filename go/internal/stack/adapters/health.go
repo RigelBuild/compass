@@ -7,7 +7,8 @@ import (
 	"net"
 	"net/http"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -45,14 +46,15 @@ func (p *HealthProber) Probe(ctx context.Context, socketPath string) (stack.Serv
 	}
 	defer transport.CloseIdleConnections()
 
-	client := compassv1connect.NewCompassServiceClient(&http.Client{Transport: transport}, "http://unix")
-	resp, err := client.GetServerInfo(ctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	httpClient := connecthttp.HTTPClient(&http.Client{Transport: transport})
+	client := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://unix", connecthttp.WithReadMaxBytes(0))))
+	resp, err := client.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		return stack.ServerInfo{}, err
 	}
-	enrolledRunners := make([]stack.EnrolledRunner, 0, len(resp.Msg.GetEnrolledRunners()))
-	for _, runner := range resp.Msg.GetEnrolledRunners() {
+	enrolledRunners := make([]stack.EnrolledRunner, 0, len(resp.GetEnrolledRunners()))
+	for _, runner := range resp.GetEnrolledRunners() {
 		enrolledRunners = append(enrolledRunners, stack.EnrolledRunner{ID: runner.GetId(), Enrollment: runner.GetEnrollment()})
 	}
-	return stack.ServerInfo{Version: resp.Msg.GetVersion(), EnrolledRunners: enrolledRunners}, nil
+	return stack.ServerInfo{Version: resp.GetVersion(), EnrolledRunners: enrolledRunners}, nil
 }

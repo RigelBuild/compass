@@ -4,14 +4,12 @@ package e2e
 
 import (
 	"context"
-	"strings"
-	"testing"
-
-	"connectrpc.com/connect"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
+	"strings"
+	"testing"
 )
 
 // Every fixture here takes WithForgeStub: the server declares the forge secrets
@@ -65,7 +63,7 @@ func TestLegS3ArchiveRestartResume(t *testing.T) {
 		if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, reply); err != nil {
 			t.Fatalf("awaitTranscriptPersisted: %v", err)
 		}
-		if _, err := f.Compass().StopAgentSession(ctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{SessionId: sessionID})); err != nil {
+		if _, err := f.Compass().StopAgentSession(ctx, &compassv1.StopAgentSessionRequest{SessionId: sessionID}); err != nil {
 			t.Fatalf("StopAgentSession: %v", err)
 		}
 		assertArchived(ctx, t, f, sessionID)
@@ -117,7 +115,7 @@ func runS3Resume(t *testing.T, ctx context.Context, wholeStack bool) {
 		t.Fatalf("first turn: %v", err)
 	}
 	// Stop archives the pre-restart history as a session_end segment.
-	if _, err := f.Compass().StopAgentSession(ctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{SessionId: sessionID})); err != nil {
+	if _, err := f.Compass().StopAgentSession(ctx, &compassv1.StopAgentSessionRequest{SessionId: sessionID}); err != nil {
 		t.Fatalf("StopAgentSession: %v", err)
 	}
 	if err := f.RemoveWorkspace(ctx, container, "s3-resume-teardown"); err != nil {

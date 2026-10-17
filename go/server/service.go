@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -143,20 +143,20 @@ func newService(version string, bus *events.Bus[busPayload], st *store.Store, hu
 // the same container_name rather than provisioning a second container.
 func (s *service) ProvisionAgentWorkspace(
 	ctx context.Context,
-	req *connect.Request[compassv1.ProvisionAgentWorkspaceRequest],
-) (*connect.Response[compassv1.ProvisionAgentWorkspaceResponse], error) {
+	req *compassv1.ProvisionAgentWorkspaceRequest,
+) (*compassv1.ProvisionAgentWorkspaceResponse, error) {
 	if s.hub == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
-	acc, err := resolveQualifiedAgent(ctx, s.store, req.Msg.GetAgentHandle())
+	acc, err := resolveQualifiedAgent(ctx, s.store, req.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.provisionAgent(ctx, acc, req.Msg)
+	resp, err := s.provisionAgent(ctx, acc, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // StartAgentSession brings the first-party agent in a provisioned container
@@ -169,25 +169,25 @@ func (s *service) ProvisionAgentWorkspace(
 // Runner door, where a lifecycle RPC is Unavailable rather than a panic.
 func (s *service) StartAgentSession(
 	ctx context.Context,
-	req *connect.Request[compassv1.StartAgentSessionRequest],
-) (*connect.Response[compassv1.StartAgentSessionResponse], error) {
+	req *compassv1.StartAgentSessionRequest,
+) (*compassv1.StartAgentSessionResponse, error) {
 	if s.hub == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
 	// The resume branch: a non-empty resume_session_id relays through the resume
 	// handoff (authz-gate, bind lifetime, reconstruct body, attach to the INTERNAL
 	// envelope), all BEFORE any Runner call. A resume REUSES the logical id as the
 	// live id, so its ownership row already exists and was already authorized — it
 	// does NOT re-record ownership. A fresh start mints a new id and records below.
-	if resumeID := req.Msg.GetResumeSessionId(); resumeID != "" {
-		resp, err := s.startResumeSession(ctx, resumeID, req.Msg)
+	if resumeID := req.GetResumeSessionId(); resumeID != "" {
+		resp, err := s.startResumeSession(ctx, resumeID, req)
 		if err != nil {
 			return nil, err
 		}
-		return connect.NewResponse(resp), nil
+		return resp, nil
 	}
 
-	resp, err := s.hub.Start(ctx, "", req.Msg)
+	resp, err := s.hub.Start(ctx, "", req)
 	if err != nil {
 		return nil, err
 	}
@@ -195,16 +195,16 @@ func (s *service) StartAgentSession(
 	// session_id -> agent_account_id, from the placement recorded at Provision (a
 	// durable read, correct across restart). Either store step can fail AFTER the
 	// Runner started, and unlike Provision this does NOT self-heal, so we tear it down.
-	agentAccountID, err := s.store.AgentForContainer(ctx, req.Msg.GetContainerName())
+	agentAccountID, err := s.store.AgentForContainer(ctx, req.GetContainerName())
 	if err != nil {
-		return nil, s.abandonStartedSession(ctx, req.Msg.GetContainerName(), resp.GetSessionId(),
+		return nil, s.abandonStartedSession(ctx, req.GetContainerName(), resp.GetSessionId(),
 			fmt.Errorf("resolving agent for container: %w", err))
 	}
 	if err := s.store.RecordAgentSession(ctx, resp.GetSessionId(), agentAccountID); err != nil {
-		return nil, s.abandonStartedSession(ctx, req.Msg.GetContainerName(), resp.GetSessionId(),
+		return nil, s.abandonStartedSession(ctx, req.GetContainerName(), resp.GetSessionId(),
 			fmt.Errorf("recording agent session ownership: %w", err))
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // StopAgentSession deliberately kills the in-container agent and releases the
@@ -213,55 +213,55 @@ func (s *service) StartAgentSession(
 // the Runner returns success for a session it no longer holds.
 func (s *service) StopAgentSession(
 	ctx context.Context,
-	req *connect.Request[compassv1.StopAgentSessionRequest],
-) (*connect.Response[compassv1.StopAgentSessionResponse], error) {
+	req *compassv1.StopAgentSessionRequest,
+) (*compassv1.StopAgentSessionResponse, error) {
 	if s.hub == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
-	resp, err := s.hub.Stop(ctx, "", req.Msg)
+	resp, err := s.hub.Stop(ctx, "", req)
 	if err != nil {
 		return nil, err
 	}
 	// BEST-EFFORT: the Stop relay already killed the agent, so a flush failure must
 	// never convert a successful Stop into a failure.
-	archiveSessionEnd(ctx, s.store, req.Msg.GetSessionId())
-	return connect.NewResponse(resp), nil
+	archiveSessionEnd(ctx, s.store, req.GetSessionId())
+	return resp, nil
 }
 
 // SkipBatchWindow fires the agent's pending idle batch immediately. The owner
 // or an admin must authorize before the control is relayed.
 func (s *service) SkipBatchWindow(
 	ctx context.Context,
-	req *connect.Request[compassv1.SkipBatchWindowRequest],
-) (*connect.Response[compassv1.SkipBatchWindowResponse], error) {
+	req *compassv1.SkipBatchWindowRequest,
+) (*compassv1.SkipBatchWindowResponse, error) {
 	if s.hub == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
 	caller, ok := auth.CallerFrom(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
-	sessionID := req.Msg.GetSessionId()
+	sessionID := req.GetSessionId()
 	if sessionID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("session_id is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "session_id is required")
 	}
 	if err := s.store.RequireAgentSessionOwner(ctx, caller, sessionID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", sessionID))
+			return nil, connect.Errorf(connect.CodeNotFound, "agent session %q", sessionID)
 		}
 		if errors.Is(err, store.ErrInvalidArgument) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if err := s.hub.DispatchControl(ctx, sessionID, &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_StartNow{
 			StartNow: &compassv1internal.StartNowControl{},
 		},
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&compassv1.SkipBatchWindowResponse{}), nil
+	return &compassv1.SkipBatchWindowResponse{}, nil
 }
 
 // ReloadAgentSession tears down the current agent exec and starts a fresh one
@@ -269,16 +269,16 @@ func (s *service) SkipBatchWindow(
 // continuous — relayed to the owning Runner, which owns the teardown-then-start.
 func (s *service) ReloadAgentSession(
 	ctx context.Context,
-	req *connect.Request[compassv1.ReloadAgentSessionRequest],
-) (*connect.Response[compassv1.ReloadAgentSessionResponse], error) {
+	req *compassv1.ReloadAgentSessionRequest,
+) (*compassv1.ReloadAgentSessionResponse, error) {
 	if s.hub == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
-	resp, err := s.hub.Reload(ctx, "", req.Msg)
+	resp, err := s.hub.Reload(ctx, "", req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // RemoveAgentWorkspace tears down a provisioned per-agent container — the
@@ -294,20 +294,20 @@ func (s *service) ReloadAgentSession(
 // is Unavailable rather than a panic.
 func (s *service) RemoveAgentWorkspace(
 	ctx context.Context,
-	req *connect.Request[compassv1.RemoveAgentWorkspaceRequest],
-) (*connect.Response[compassv1.RemoveAgentWorkspaceResponse], error) {
+	req *compassv1.RemoveAgentWorkspaceRequest,
+) (*compassv1.RemoveAgentWorkspaceResponse, error) {
 	if s.hub == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
-	resp, err := s.hub.Remove(ctx, req.Msg.GetClientRequestId(), req.Msg)
+	resp, err := s.hub.Remove(ctx, req.GetClientRequestId(), req)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.DeleteAgentPlacement(ctx, req.Msg.GetContainerName()); err != nil {
+	if err := s.store.DeleteAgentPlacement(ctx, req.GetContainerName()); err != nil {
 		wrappedErr := fmt.Errorf("releasing agent placement: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // GetAgentStatus returns the Bridge board's snapshot of agent-session state: one
@@ -317,16 +317,16 @@ func (s *service) RemoveAgentWorkspace(
 // panicking.
 func (s *service) GetAgentStatus(
 	_ context.Context,
-	req *connect.Request[compassv1.GetAgentStatusRequest],
-) (*connect.Response[compassv1.GetAgentStatusResponse], error) {
+	req *compassv1.GetAgentStatusRequest,
+) (*compassv1.GetAgentStatusResponse, error) {
 	enrolled := s.hub != nil && s.hub.RunnerEnrolled()
 	if s.board == nil {
-		return connect.NewResponse(&compassv1.GetAgentStatusResponse{RunnerEnrolled: &enrolled}), nil
+		return &compassv1.GetAgentStatusResponse{RunnerEnrolled: &enrolled}, nil
 	}
-	return connect.NewResponse(&compassv1.GetAgentStatusResponse{
-		Statuses:       s.board.Snapshot(req.Msg.GetSessionId()),
+	return &compassv1.GetAgentStatusResponse{
+		Statuses:       s.board.Snapshot(req.GetSessionId()),
 		RunnerEnrolled: &enrolled,
-	}), nil
+	}, nil
 }
 
 // ListBoardIssues returns the whole issue board (all states incl. ARCHIVED,
@@ -338,51 +338,51 @@ func (s *service) GetAgentStatus(
 // builds one) answers empty rather than panicking, mirroring GetAgentStatus.
 func (s *service) ListBoardIssues(
 	_ context.Context,
-	_ *connect.Request[compassv1.ListBoardIssuesRequest],
-) (*connect.Response[compassv1.ListBoardIssuesResponse], error) {
+	_ *compassv1.ListBoardIssuesRequest,
+) (*compassv1.ListBoardIssuesResponse, error) {
 	if s.issueBrd == nil {
-		return connect.NewResponse(&compassv1.ListBoardIssuesResponse{}), nil
+		return &compassv1.ListBoardIssuesResponse{}, nil
 	}
-	return connect.NewResponse(&compassv1.ListBoardIssuesResponse{
+	return &compassv1.ListBoardIssuesResponse{
 		Issues: s.issueBrd.Snapshot(),
-	}), nil
+	}, nil
 }
 
 // SearchIssues searches the tenant-scoped board corpus and returns wire issues
 // in relevance order. Empty queries are rejected by the store as invalid.
 func (s *service) SearchIssues(
 	ctx context.Context,
-	req *connect.Request[compassv1.SearchIssuesRequest],
-) (*connect.Response[compassv1.SearchIssuesResponse], error) {
-	issues, err := s.store.SearchIssues(ctx, req.Msg.GetQuery(), req.Msg.GetLimit())
+	req *compassv1.SearchIssuesRequest,
+) (*compassv1.SearchIssuesResponse, error) {
+	issues, err := s.store.SearchIssues(ctx, req.GetQuery(), req.GetLimit())
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidArgument) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	out, err := s.issueBrd.IssueToProtoWithPrs(ctx, issues...)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&compassv1.SearchIssuesResponse{Issues: out}), nil
+	return &compassv1.SearchIssuesResponse{Issues: out}, nil
 }
 
 // GetServerInfo is the connect-time liveness, version, and Runner enrollment probe.
 func (s *service) GetServerInfo(
 	_ context.Context,
-	_ *connect.Request[compassv1.GetServerInfoRequest],
-) (*connect.Response[compassv1.GetServerInfoResponse], error) {
+	_ *compassv1.GetServerInfoRequest,
+) (*compassv1.GetServerInfoResponse, error) {
 	var enrolledRunners []*compassv1.EnrolledRunner
 	if s.hub != nil {
 		enrolledRunners = s.hub.EnrolledRunners()
 	}
-	return connect.NewResponse(&compassv1.GetServerInfoResponse{
+	return &compassv1.GetServerInfoResponse{
 		Version:         s.version,
 		ApiVersion:      apiVersion,
 		Rev:             s.rev,
 		EnrolledRunners: enrolledRunners,
-	}), nil
+	}, nil
 }
 
 // WhoAmI reflects the caller's own account id, resolved server-side from its
@@ -393,13 +393,13 @@ func (s *service) GetServerInfo(
 // doors must attach one): fail closed with Unauthenticated.
 func (s *service) WhoAmI(
 	ctx context.Context,
-	_ *connect.Request[compassv1.WhoAmIRequest],
-) (*connect.Response[compassv1.WhoAmIResponse], error) {
+	_ *compassv1.WhoAmIRequest,
+) (*compassv1.WhoAmIResponse, error) {
 	caller, ok := auth.CallerFrom(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
-	return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: string(caller)}), nil
+	return &compassv1.WhoAmIResponse{AccountId: string(caller)}, nil
 }
 
 // IssueToken mints a bearer token for an existing account. On the network door it
@@ -412,12 +412,12 @@ func (s *service) WhoAmI(
 // `owner/agent` handle; the token store retains only the token's hash.
 func (s *service) IssueToken(
 	ctx context.Context,
-	req *connect.Request[compassv1.IssueTokenRequest],
-) (*connect.Response[compassv1.IssueTokenResponse], error) {
-	raw := req.Msg.GetAccountHandle()
+	req *compassv1.IssueTokenRequest,
+) (*compassv1.IssueTokenResponse, error) {
+	raw := req.GetAccountHandle()
 	if raw == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("account_handle is required"))
+			"account_handle is required")
 	}
 	// The admin door is not visibility-scoped (no D9 clip): the admin may name any account.
 	var acc store.Account
@@ -435,29 +435,29 @@ func (s *service) IssueToken(
 	// server-internal sender, never a token subject. Refuse here rather than
 	// relying on the admin gate alone — defense in depth on the token-minting door.
 	if acc.System != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("account %q is the system account and cannot be issued a token", raw))
+		return nil, connect.Errorf(connect.CodePermissionDenied,
+			"account %q is the system account and cannot be issued a token", raw)
 	}
 	token, err := auth.IssueAccountToken(ctx, s.store, id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&compassv1.IssueTokenResponse{Token: token}), nil
+	return &compassv1.IssueTokenResponse{Token: token}, nil
 }
 
 // RenameAccount changes an account's handle through the admin-only operator door.
 func (s *service) RenameAccount(
 	ctx context.Context,
-	req *connect.Request[compassv1.RenameAccountRequest],
-) (*connect.Response[compassv1.RenameAccountResponse], error) {
-	raw := req.Msg.GetAccountHandle()
-	newHandle := req.Msg.GetNewHandle()
+	req *compassv1.RenameAccountRequest,
+) (*compassv1.RenameAccountResponse, error) {
+	raw := req.GetAccountHandle()
+	newHandle := req.GetNewHandle()
 	if raw == "" || newHandle == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("account_handle and new_handle are required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "account_handle and new_handle are required")
 	}
 	qh := store.ParseQualifiedHandle(raw)
 	if qh.Malformed() {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("account_handle has invalid qualified-handle syntax"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "account_handle has invalid qualified-handle syntax")
 	}
 	var acc store.Account
 	var err error
@@ -470,25 +470,25 @@ func (s *service) RenameAccount(
 		return nil, err
 	}
 	if acc.System != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("account %q is the system account and cannot be renamed", raw))
+		return nil, connect.Errorf(connect.CodePermissionDenied,
+			"account %q is the system account and cannot be renamed", raw)
 	}
 
 	if acc.ID == s.adminID || isAdminRootSupervisor(acc, s.adminID) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("account %q is a protected bootstrap account", raw))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"account %q is a protected bootstrap account", raw)
 	}
 	renamed, rekeyedChannels, err := s.store.RenameHandle(ctx, acc.ID, newHandle)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrInvalidArgument):
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		case errors.Is(err, store.ErrConflict):
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+			return nil, connect.NewError(connect.CodeAlreadyExists, err.Error()).WithCause(err)
 		case errors.Is(err, store.ErrNotFound):
-			return nil, connect.NewError(connect.CodeNotFound, err)
+			return nil, connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
 		default:
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 	}
 	if s.accountRenamer != nil {
@@ -498,14 +498,14 @@ func (s *service) RenameAccount(
 	if renamed.Agent != nil {
 		owner, err := s.store.GetAccount(ctx, renamed.Agent.OwnerUserID)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		handle = owner.Handle + "/" + renamed.Handle
 	}
-	return connect.NewResponse(&compassv1.RenameAccountResponse{
+	return &compassv1.RenameAccountResponse{
 		AccountId: string(renamed.ID),
 		Handle:    handle,
-	}), nil
+	}, nil
 }
 
 // RevokeToken withdraws a bearer token by its presented plaintext (network door,
@@ -518,21 +518,21 @@ func (s *service) RenameAccount(
 // returns nil), so a repeat revoke is not an error.
 func (s *service) RevokeToken(
 	ctx context.Context,
-	req *connect.Request[compassv1.RevokeTokenRequest],
-) (*connect.Response[compassv1.RevokeTokenResponse], error) {
-	token := req.Msg.GetToken()
+	req *compassv1.RevokeTokenRequest,
+) (*compassv1.RevokeTokenResponse, error) {
+	token := req.GetToken()
 	if token == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("token is required"))
+			"token is required")
 	}
 	if err := auth.RevokeToken(ctx, s.store, token); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound,
-				errors.New("no such token"))
+				"no such token")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&compassv1.RevokeTokenResponse{}), nil
+	return &compassv1.RevokeTokenResponse{}, nil
 }
 
 // SubscribeEvents snapshots the event ring then tails live updates until the
@@ -545,18 +545,18 @@ func (s *service) RevokeToken(
 // held-open stream end on server shutdown.
 func (s *service) SubscribeEvents(
 	ctx context.Context,
-	req *connect.Request[compassv1.SubscribeEventsRequest],
-	stream *connect.ServerStream[compassv1.SubscribeEventsResponse],
+	req *compassv1.SubscribeEventsRequest,
+	stream compassv1connect.CompassServiceSubscribeEventsServerStream,
 ) error {
 	ctx = otel.WithoutSpan(ctx)
-	sub, err := s.bus.Subscribe(req.Msg.GetSinceSeq(), req.Msg.GetInstanceEpoch())
+	sub, err := s.bus.Subscribe(req.GetSinceSeq(), req.GetInstanceEpoch())
 	if err != nil {
 		if errors.Is(err, events.ErrBufferUnderflow) {
 			// Cursor can't be served gap-free: answer with a single terminal
 			// ResyncRequired so the client re-snapshots at sinceSeq = 0.
 			return stream.Send(resyncRequired(s.bus.InstanceEpoch()))
 		}
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Free the fan-out slot on every exit path (client hang-up, lag, shutdown,
 	// send error) rather than leaking it until an overrun or bus close. Safe
@@ -566,7 +566,7 @@ func (s *service) SubscribeEvents(
 	// before the tail: the ordering marker a client pairs with a ListBoardIssues
 	// read (register -> boundary -> tail, gap-free). The board is unversioned in v1
 	// so the boundary carries snapshot_seq=0; the client unions the read id-keyed.
-	if req.Msg.GetSinceSeq() == 0 {
+	if req.GetSinceSeq() == 0 {
 		if err := stream.Send(snapshotBoundary(s.bus.InstanceEpoch())); err != nil {
 			return err
 		}
@@ -591,27 +591,27 @@ func (s *service) SubscribeEvents(
 // disconnects, the session ends, or the subscriber lags past its buffer.
 func (s *service) SubscribeAgentSession(
 	ctx context.Context,
-	req *connect.Request[compassv1.SubscribeAgentSessionRequest],
-	stream *connect.ServerStream[compassv1.AgentSessionFrame],
+	req *compassv1.SubscribeAgentSessionRequest,
+	stream compassv1connect.CompassServiceSubscribeAgentSessionServerStream,
 ) error {
 	ctx = otel.WithoutSpan(ctx)
 	if s.tail == nil {
-		return connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+		return connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
 	caller, ok := auth.CallerFrom(ctx)
 	if !ok {
 		// No caller in context is a door wiring bug (an interceptor must attach
 		// one on both doors); fail closed rather than stream unauthorized.
-		return connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+		return connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
-	sessionID := req.Msg.GetSessionId()
+	sessionID := req.GetSessionId()
 	if err := s.store.RequireAgentSessionSubscriber(ctx, caller, sessionID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Unknown session OR non-member — indistinguishable by contract, so
 			// the caller cannot tell "exists but forbidden" from "does not exist".
-			return connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", sessionID))
+			return connect.Errorf(connect.CodeNotFound, "agent session %q", sessionID)
 		}
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	sub := s.tail.subscribe(sessionID)
 	// Free the fan-out slot on every exit path (client hang-up, session end,
@@ -675,7 +675,7 @@ func (s *service) provisionAgent(
 	// recovery reads to name agents stranded by a Runner restart.
 	if err := s.store.RecordAgentPlacement(ctx, acc.ID, runnerID, resp.GetContainerName()); err != nil {
 		wrappedErr := fmt.Errorf("recording agent placement: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return resp, nil
 }
@@ -701,7 +701,7 @@ func resolveQualifiedAgent(ctx context.Context, st *store.Store, raw string) (st
 // handleNotFound is the admin door's single miss for a submitted handle. It
 // names the handle as sent and never a resolved id.
 func handleNotFound(raw string) error {
-	return connect.NewError(connect.CodeNotFound, fmt.Errorf("no account with handle %q", raw))
+	return connect.Errorf(connect.CodeNotFound, "no account with handle %q", raw)
 }
 
 // handleLookupError maps a store resolver error: a miss or a malformed segment
@@ -711,7 +711,7 @@ func handleLookupError(raw string, err error) error {
 		return handleNotFound(raw)
 	}
 	wrappedErr := fmt.Errorf("resolving handle %q: %w", raw, err)
-	return connect.NewError(connect.CodeInternal, wrappedErr)
+	return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 }
 
 // startResumeSession is the resume leg of StartAgentSession (T6, RIG-1667). It
@@ -735,16 +735,16 @@ func (s *service) startResumeSession(
 	if !ok {
 		// No caller in context is a door-wiring bug (an interceptor must attach
 		// one on both doors); fail closed rather than resume unauthorized.
-		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
 	if err := s.store.RequireAgentSessionSubscriber(ctx, caller, resumeSessionID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Unknown session OR non-member — indistinguishable by contract, so
 			// the caller cannot tell "exists but forbidden" from "does not exist".
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", resumeSessionID))
+			return nil, connect.Errorf(connect.CodeNotFound, "agent session %q", resumeSessionID)
 		}
 		wrappedErr := fmt.Errorf("authorizing resume: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	body, err := s.hub.ReconstructSessionBody(ctx, resumeSessionID)
 	if err != nil {
@@ -782,7 +782,7 @@ func (s *service) abandonStartedSession(ctx context.Context, containerName, sess
 			"session_id", sessionID, "container_name", containerName, "cause", cause)
 	}
 	wrappedErr := fmt.Errorf("%w (started session %q was rolled back)", cause, sessionID)
-	return connect.NewError(connect.CodeInternal, wrappedErr)
+	return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 }
 
 // forward drains the replay snapshot (oldest first), then forwards the live tail
@@ -793,7 +793,7 @@ func (s *service) abandonStartedSession(ctx context.Context, containerName, sess
 func forward(
 	ctx context.Context,
 	sub events.Subscription[busPayload],
-	stream *connect.ServerStream[compassv1.SubscribeEventsResponse],
+	stream compassv1connect.CompassServiceSubscribeEventsServerStream,
 ) error {
 	for _, event := range sub.Replay {
 		select {
@@ -802,7 +802,8 @@ func forward(
 		default:
 		}
 		if err := stream.Send(toResponse(event)); err != nil {
-			return nil //nolint:nilerr // client hung up mid-replay: ending the stream cleanly on a send error IS the contract, so the non-nil send error is intentionally not propagated
+			slog.DebugContext(ctx, "event stream replay send stopped", "err", err)
+			return nil // The client hung up mid-replay; ending the stream cleanly is the contract.
 		}
 	}
 
@@ -815,7 +816,9 @@ func forward(
 				// Live closed: an overrun (emit terminal resync) vs a clean bus
 				// shutdown (end silently).
 				if sub.Lagged() {
-					_ = stream.Send(resyncRequired(sub.Epoch))
+					if err := stream.Send(resyncRequired(sub.Epoch)); err != nil {
+						slog.DebugContext(ctx, "event stream resync send stopped", "err", err)
+					}
 				}
 				return nil
 			}

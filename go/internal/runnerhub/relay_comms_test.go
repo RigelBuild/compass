@@ -22,7 +22,7 @@ import (
 	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -188,7 +188,7 @@ func TestRunnerRelayBindingErrorContractAcrossLegs(t *testing.T) {
 					t.Fatalf("binding error = %v, want %s", err, wantCode)
 				}
 				if wantCode == connect.CodeFailedPrecondition {
-					wantMessage := connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound).Error()
+					wantMessage := connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound.Error()).Error()
 					if got := err.Error(); got != wantMessage {
 						t.Fatalf("binding message = %q, want shared message %q", got, wantMessage)
 					}
@@ -336,7 +336,7 @@ func TestRelayCommsCallHappyListTopicsForwardsUnderBoundAccount(t *testing.T) {
 // so this test fails.
 func TestRelayCommsCallListToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.listErr = connect.NewError(connect.CodePermissionDenied, errors.New("list denied"))
+	comms.listErr = connect.NewError(connect.CodePermissionDenied, "list denied")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayList("sess-1", "tc-list-err", &compassv1.ListMessagesRequest{
@@ -365,7 +365,7 @@ func TestRelayCommsCallListToolErrorIsInBandNotStreamError(t *testing.T) {
 // nil so the RelayCommsCall stream is not torn down.
 func TestRelayCommsCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.postErr = connect.NewError(connect.CodeNotFound, errors.New("channel not found"))
+	comms.postErr = connect.NewError(connect.CodeNotFound, "channel not found")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-3", &compassv1.PostMessageRequest{

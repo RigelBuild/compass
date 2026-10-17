@@ -3,13 +3,13 @@
 package e2e
 
 import (
+	"connectrpc.com/connect/v2"
 	"context"
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 const (
@@ -36,9 +36,9 @@ func registerPeeringFixtureOptions() {
 	)
 }
 
-type commsStream = *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse]
+type commsStream = compassv1connect.CommsServiceSubscribeCommsClientStream
 
-type sessionTail = *connect.ServerStreamForClient[compassv1.AgentSessionFrame]
+type sessionTail = compassv1connect.CompassServiceSubscribeAgentSessionClientStream
 
 // peerAgent is one T5 agent. Agents 1 and 2 run sessions; 3 and 4 never do.
 type peerAgent struct {
@@ -86,12 +86,12 @@ func TestCommsPeerLifecycleTransport(t *testing.T) {
 	s.assertPeeredRoom()
 
 	rctx, cancel := context.WithTimeout(s.ctx, rpcTimeout)
-	revoked, err := s.o1.comms.RevokePeer(rctx, connect.NewRequest(&compassv1.RevokePeerRequest{PeerHandle: t5Owner2Handle}))
+	revoked, err := s.o1.comms.RevokePeer(rctx, &compassv1.RevokePeerRequest{PeerHandle: t5Owner2Handle})
 	cancel()
 	if err != nil {
 		t.Fatalf("RevokePeer(owner 2): %v", err)
 	}
-	if !revoked.Msg.GetDeleted() {
+	if !revoked.GetDeleted() {
 		t.Fatal("RevokePeer(owner 2) returned deleted=false")
 	}
 	s.assertRejectedLikeUnknown("revoked co-member", s.a1, s.peerHandle)
@@ -173,9 +173,9 @@ func (s *peeringScene) addMember(client commsServiceClient, handle string) {
 	s.t.Helper()
 	rctx, cancel := context.WithTimeout(s.ctx, rpcTimeout)
 	defer cancel()
-	_, err := client.UpdateChannelMembers(rctx, connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	_, err := client.UpdateChannelMembers(rctx, &compassv1.UpdateChannelMembersRequest{
 		ChannelId: s.room, AddMemberHandles: []string{handle}, SubscribeHandles: []string{handle},
-	}))
+	})
 	if err != nil {
 		s.t.Fatalf("UpdateChannelMembers(add %s): %v", handle, err)
 	}
@@ -219,22 +219,22 @@ func (s *peeringScene) approve(owner peerOwner, peer string, want compassv1.Peer
 	s.t.Helper()
 	rctx, cancel := context.WithTimeout(s.ctx, rpcTimeout)
 	defer cancel()
-	resp, err := owner.comms.ApprovePeer(rctx, connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: peer}))
+	resp, err := owner.comms.ApprovePeer(rctx, &compassv1.ApprovePeerRequest{PeerHandle: peer})
 	if err != nil {
 		s.t.Fatalf("ApprovePeer(%s): %v", peer, err)
 	}
-	if got := resp.Msg.GetPeering().GetState(); got != want {
+	if got := resp.GetPeering().GetState(); got != want {
 		s.t.Fatalf("ApprovePeer(%s) state = %v, want %v", peer, got, want)
 	}
 }
 
 func (s *peeringScene) openDM(a peerAgent) string {
 	s.t.Helper()
-	dm, err := a.comms.OpenDM(s.ctx, connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: s.peerHandle}))
+	dm, err := a.comms.OpenDM(s.ctx, &compassv1.OpenDMRequest{PeerHandle: s.peerHandle})
 	if err != nil {
 		s.t.Fatalf("OpenDM(%s, mutually peered): %v", s.peerHandle, err)
 	}
-	return dm.Msg.GetChannel().GetId()
+	return dm.GetChannel().GetId()
 }
 
 // assertPeeredDM opens agent 1's DM with agent 2 and proves delivery and history.
@@ -246,14 +246,14 @@ func (s *peeringScene) assertPeeredDM() {
 	s.observe("owner 2 DM", s.o2.stream, msgID, s.a1.id)
 	s.settle("agent 1 DM", s.o1, s.a1)
 	s.assertDelivered("agent 2 DM", s.a2.tail, msgID)
-	list, err := s.a2.comms.ListMessages(s.ctx, connect.NewRequest(&compassv1.ListMessagesRequest{
+	list, err := s.a2.comms.ListMessages(s.ctx, &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: dmID},
 		Limit:     20,
-	}))
+	})
 	if err != nil {
 		s.t.Fatalf("agent 2 ListMessages(DM): %v", err)
 	}
-	for _, msg := range list.Msg.GetMessages() {
+	for _, msg := range list.GetMessages() {
 		if msg.GetId() == msgID && firstBlockText(msg) == body {
 			return
 		}

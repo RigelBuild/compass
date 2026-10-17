@@ -7,10 +7,11 @@ import (
 	"slices"
 	"sync"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
@@ -246,7 +247,7 @@ func (p *controlProducer) Retire(sessionID string) {
 func (p *controlProducer) Restart(sessionID string, first *compassv1internal.AgentControl) error {
 	stamped, ok := proto.Clone(first).(*compassv1internal.AgentControl)
 	if !ok {
-		return connect.NewError(connect.CodeInternal, errCloneFailed)
+		return connect.NewError(connect.CodeInternal, errCloneFailed.Error()).WithCause(errCloneFailed)
 	}
 	p.mu.Lock()
 	s, ok := p.sessions[sessionID]
@@ -256,7 +257,7 @@ func (p *controlProducer) Restart(sessionID string, first *compassv1internal.Age
 	epoch := p.lastEpoch
 	p.mu.Unlock()
 	if !ok {
-		return connect.NewError(connect.CodeNotFound, errNoBoundSession)
+		return connect.NewError(connect.CodeNotFound, errNoBoundSession.Error()).WithCause(errNoBoundSession)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -276,7 +277,7 @@ func (p *controlProducer) Restart(sessionID string, first *compassv1internal.Age
 		}
 		op, ok := proto.Clone(r.op).(*compassv1internal.AgentControl)
 		if !ok {
-			return connect.NewError(connect.CodeInternal, errCloneFailed)
+			return connect.NewError(connect.CodeInternal, errCloneFailed.Error()).WithCause(errCloneFailed)
 		}
 		seq := uint64(len(ops) + 1)
 		op.ControlSeq = seq
@@ -550,7 +551,7 @@ func (p *controlProducer) setAfterResolve(hook func()) {
 // that clears the gate is retained like any other.
 func (p *controlProducer) send(sessionID string, op *compassv1internal.AgentControl, requireLive bool) error {
 	if !representable(op) {
-		return connect.NewError(connect.CodeInvalidArgument, errEmptyControlVariant)
+		return connect.NewError(connect.CodeInvalidArgument, errEmptyControlVariant.Error()).WithCause(errEmptyControlVariant)
 	}
 
 	// Clone before stamping: the producer owns what it retains. Stamping the caller's
@@ -559,12 +560,12 @@ func (p *controlProducer) send(sessionID string, op *compassv1internal.AgentCont
 	// leave both retention entries behind a single message carrying only the last seq.
 	stamped, ok := proto.Clone(op).(*compassv1internal.AgentControl)
 	if !ok {
-		return connect.NewError(connect.CodeInternal, errCloneFailed)
+		return connect.NewError(connect.CodeInternal, errCloneFailed.Error()).WithCause(errCloneFailed)
 	}
 
 	s, ok := p.existingSession(sessionID)
 	if !ok {
-		return connect.NewError(connect.CodeNotFound, errNoBoundSession)
+		return connect.NewError(connect.CodeNotFound, errNoBoundSession.Error()).WithCause(errNoBoundSession)
 	}
 	s.mu.Lock()
 	if requireLive && !s.live {
@@ -577,7 +578,7 @@ func (p *controlProducer) send(sessionID string, op *compassv1internal.AgentCont
 	// permanent wedge. Whoever defines TranscriptReplay's payload must bound admission here.
 	if len(s.ops) >= maxRetainedOps && !replayPath(stamped) {
 		s.mu.Unlock()
-		return connect.NewError(connect.CodeResourceExhausted, errRetentionFull)
+		return connect.NewError(connect.CodeResourceExhausted, errRetentionFull.Error()).WithCause(errRetentionFull)
 	}
 
 	s.nextSeq++
@@ -664,7 +665,7 @@ func (p *controlProducer) serve(ctx context.Context, sessionID string, sink cont
 	if !ok {
 		// The Runner never bound this id, or already retired it. Minting one here can't tell
 		// those apart, and nothing would retire what this created. Refuse honestly.
-		return connect.NewError(connect.CodeNotFound, errNoBoundSession)
+		return connect.NewError(connect.CodeNotFound, errNoBoundSession.Error()).WithCause(errNoBoundSession)
 	}
 
 	// Captured once, under the producer lock, so the drainer never races a concurrent write
@@ -683,7 +684,7 @@ func (p *controlProducer) serve(ctx context.Context, sessionID string, sink cont
 	// nothing retires again and park a drainer on a closed wake — the serve-vs-Retire leak.
 	if s.retired {
 		s.mu.Unlock()
-		return connect.NewError(connect.CodeNotFound, errNoBoundSession)
+		return connect.NewError(connect.CodeNotFound, errNoBoundSession.Error()).WithCause(errNoBoundSession)
 	}
 	s.sub++
 	mine := s.sub
@@ -781,17 +782,17 @@ func (p *controlProducer) serve(ctx context.Context, sessionID string, sink cont
 // the control lane.
 func (g *Gateway) Control(
 	ctx context.Context,
-	_ *connect.Request[compassv1internal.ControlSubscribeRequest],
-	stream *connect.ServerStream[compassv1internal.AgentControl],
+	_ *compassv1internal.ControlSubscribeRequest,
+	stream compassv1internalconnect.AgentGatewayControlServerStream,
 ) error {
 	ctx = otelx.WithoutSpan(ctx)
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return connect.NewError(connect.CodeFailedPrecondition, errNoSessionForContainer)
+		return connect.NewError(connect.CodeFailedPrecondition, errNoSessionForContainer.Error()).WithCause(errNoSessionForContainer)
 	}
 	lane, ok := g.control.(controlLane)
 	if !ok {
-		return connect.NewError(connect.CodeUnimplemented, errNoControlLane)
+		return connect.NewError(connect.CodeUnimplemented, errNoControlLane.Error()).WithCause(errNoControlLane)
 	}
 	return lane.serve(ctx, sessionID, stream)
 }

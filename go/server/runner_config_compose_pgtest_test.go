@@ -12,12 +12,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
+	"io"
 	"math/rand/v2"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -89,7 +92,7 @@ func buildValidConfigBundle(t *testing.T) []byte {
 // carry the tarball in receive order, and chunkFrames counts the chunk frames so
 // a caller can assert the bundle actually streamed in more than one. Fails on a
 // chunk before the version frame.
-func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compassv1internal.FetchAgentConfigResponse]) (string, []byte, int) {
+func drainConfigStream(t *testing.T, stream compassv1internalconnect.RunnerServiceFetchAgentConfigClientStream) (string, []byte, int) {
 	t.Helper()
 	var (
 		version     string
@@ -97,21 +100,25 @@ func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compa
 		bundle      []byte
 		chunkFrames int
 	)
-	for stream.Receive() {
-		switch frame := stream.Msg().GetFrame().(type) {
+	for {
+		frame, err := stream.Receive()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("FetchAgentConfig stream: %v", err)
+		}
+		switch payload := frame.GetFrame().(type) {
 		case *compassv1internal.FetchAgentConfigResponse_Version:
-			version = frame.Version
+			version = payload.Version
 			gotVersion = true
 		case *compassv1internal.FetchAgentConfigResponse_Chunk:
 			if !gotVersion {
 				t.Fatal("received a chunk frame before the version frame")
 			}
 			chunkFrames++
-			bundle = append(bundle, frame.Chunk...)
+			bundle = append(bundle, payload.Chunk...)
 		}
-	}
-	if err := stream.Err(); err != nil {
-		t.Fatalf("FetchAgentConfig stream: %v", err)
 	}
 	return version, bundle, chunkFrames
 }
@@ -167,14 +174,15 @@ func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 	waitServing(t, socketPath)
 
 	httpClient := newTLSRunnerHTTPClient(t, pool)
-	client := compassv1internalconnect.NewRunnerServiceClient(
+	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, "https://"+addr,
-		connect.WithInterceptors(runnerBearer(token)),
-	)
+		connecthttp.WithReadMaxBytes(0),
+	), runnerBearer(token).ClientInterceptor,
+	))
 
 	fctx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	stream, err := client.FetchAgentConfig(fctx, connect.NewRequest(&compassv1internal.FetchAgentConfigRequest{}))
+	stream, err := client.FetchAgentConfig(fctx, &compassv1internal.FetchAgentConfigRequest{})
 	if err != nil {
 		t.Fatalf("FetchAgentConfig open: %v", err)
 	}

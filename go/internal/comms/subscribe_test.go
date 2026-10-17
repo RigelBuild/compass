@@ -15,7 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -72,13 +73,14 @@ func newStreamHarness(t *testing.T) streamHarness {
 	}
 	svc := NewComms(t.Context(), st, bus, nil, admin.ID)
 
-	path, handler := compassv1connect.NewCommsServiceHandler(svc)
+	server := connect.NewServer()
+	compassv1connect.RegisterCommsServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewServer(withActorHeader(mux))
 	t.Cleanup(srv.Close)
 
-	client := compassv1connect.NewCommsServiceClient(srv.Client(), srv.URL)
+	client := compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(srv.Client(), srv.URL, connecthttp.WithReadMaxBytes(0))))
 	return streamHarness{svc: svc, store: st, bus: bus, client: client}
 }
 
@@ -105,21 +107,23 @@ func subscribeFirst(t *testing.T, h streamHarness, actor store.AccountID, req *c
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	out := make(chan firstEvent, 1)
-	connectReq := connect.NewRequest(req)
+	connectReq := req
+	connectCtx, info := connect.NewClientContext(ctx)
 	if actor != "" {
-		connectReq.Header().Set(commsTestActorHeader, string(actor))
+		info.RequestHeader().Set(commsTestActorHeader, string(actor))
 	}
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, connectReq)
+		stream, err := h.client.SubscribeComms(connectCtx, connectReq)
 		if err != nil {
 			out <- firstEvent{err: err}
 			return
 		}
-		if !stream.Receive() {
-			out <- firstEvent{err: stream.Err()}
+		msg, err := stream.Receive()
+		if err != nil {
+			out <- firstEvent{err: err}
 			return
 		}
-		out <- firstEvent{msg: stream.Msg()}
+		out <- firstEvent{msg: msg}
 	}()
 	return out
 }
@@ -138,31 +142,34 @@ func firstEventAfterBoundary(t *testing.T, h streamHarness, actor store.AccountI
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	connectReq := req
+	connectCtx, info := connect.NewClientContext(ctx)
 	out := make(chan firstEvent, 1)
-	connectReq := connect.NewRequest(req)
 	if actor != "" {
-		connectReq.Header().Set(commsTestActorHeader, string(actor))
+		info.RequestHeader().Set(commsTestActorHeader, string(actor))
 	}
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, connectReq)
+		stream, err := h.client.SubscribeComms(connectCtx, connectReq)
 		if err != nil {
 			out <- firstEvent{err: err}
 			return
 		}
-		if !stream.Receive() {
-			out <- firstEvent{err: stream.Err()}
+		boundary, err := stream.Receive()
+		if err != nil {
+			out <- firstEvent{err: err}
 			return
 		}
-		if boundary := stream.Msg(); boundary.GetSeq() != 0 || boundary.GetPayload() != nil {
+		if boundary.GetSeq() != 0 || boundary.GetPayload() != nil {
 			t.Errorf("first frame = seq %d payload %T, want the snapshot-boundary frame (seq 0, no payload)", boundary.GetSeq(), boundary.GetPayload())
 			out <- firstEvent{err: fmt.Errorf("first frame was not the snapshot boundary: seq %d payload %T", boundary.GetSeq(), boundary.GetPayload())}
 			return
 		}
-		if !stream.Receive() {
-			out <- firstEvent{err: stream.Err()}
+		msg, err := stream.Receive()
+		if err != nil {
+			out <- firstEvent{err: err}
 			return
 		}
-		out <- firstEvent{msg: stream.Msg()}
+		out <- firstEvent{msg: msg}
 	}()
 	return out
 }
@@ -203,7 +210,7 @@ func TestSubscribeCommsSnapshotBoundaryFirstFrame(t *testing.T) {
 		}
 		const k = 2
 		for i := range k {
-			if _, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "seeded"}}}})); err != nil {
+			if _, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "seeded"}}}}); err != nil {
 				t.Fatalf("PostMessage(%d): %v", i, err)
 			}
 		}
@@ -291,11 +298,11 @@ func TestSubscribeCommsPostDeliversMessagePosted(t *testing.T) {
 	// subscribe not block the post.
 	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, TurnSequence: 11, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello stream"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, TurnSequence: 11, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello stream"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	wantID := posted.Msg.GetMessage().GetId()
+	wantID := posted.GetMessage().GetId()
 
 	got := awaitFirst(t, events)
 	mp := got.GetMessagePosted()
@@ -371,7 +378,7 @@ func TestSubscribeCommsAgentPresenceSharedChannelScoping(t *testing.T) {
 	}
 	strangerEvents := firstEventAfterBoundary(t, h, stranger.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 	h.bus.Publish(t.Context(), presence)
-	posted, err := h.svc.PostMessage(WithActor(ctx, stranger.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(strangerCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible to me"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, stranger.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(strangerCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible to me"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage(stranger): %v", err)
 	}
@@ -379,7 +386,7 @@ func TestSubscribeCommsAgentPresenceSharedChannelScoping(t *testing.T) {
 	if first.GetAgentPresenceChanged() != nil {
 		t.Fatalf("stranger received AgentPresenceChanged for an agent it shares no channel with; want it filtered")
 	}
-	if mp := first.GetMessagePosted(); mp == nil || mp.GetMessage().GetId() != posted.Msg.GetMessage().GetId() {
+	if mp := first.GetMessagePosted(); mp == nil || mp.GetMessage().GetId() != posted.GetMessage().GetId() {
 		t.Fatalf("stranger first event = %T, want its own MessagePosted (the presence must have been filtered, not delayed)", first.GetPayload())
 	}
 }
@@ -408,11 +415,11 @@ func TestPostMessageIdempotentRetrySuppressesDuplicatePublish(t *testing.T) {
 	// Live path: subscribe concurrently (half-duplex), then the first post
 	// delivers exactly one MessagePosted to the member.
 	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	first, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "only once"}}}, ClientRequestId: "req-dup"}))
+	first, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "only once"}}}, ClientRequestId: "req-dup"})
 	if err != nil {
 		t.Fatalf("PostMessage(first): %v", err)
 	}
-	wantID := first.Msg.GetMessage().GetId()
+	wantID := first.GetMessage().GetId()
 	got := awaitFirst(t, events)
 	if mp := got.GetMessagePosted(); mp == nil || mp.GetMessage().GetId() != wantID {
 		t.Fatalf("first live event = %+v, want MessagePosted for %q", got.GetPayload(), wantID)
@@ -420,11 +427,11 @@ func TestPostMessageIdempotentRetrySuppressesDuplicatePublish(t *testing.T) {
 
 	// The retry with the SAME id returns the already-stored message (dedup), not
 	// a fresh one — the store deduped and the handler must not re-publish.
-	retry, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "different body, same id"}}}, ClientRequestId: "req-dup"}))
+	retry, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "different body, same id"}}}, ClientRequestId: "req-dup"})
 	if err != nil {
 		t.Fatalf("PostMessage(retry): %v", err)
 	}
-	if got := retry.Msg.GetMessage().GetId(); got != wantID {
+	if got := retry.GetMessage().GetId(); got != wantID {
 		t.Fatalf("retry returned message id %q, want the stored %q", got, wantID)
 	}
 
@@ -457,24 +464,24 @@ func TestPostMessageWriteThrough(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "durable and fanned"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "durable and fanned"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	if got := posted.Msg.GetMessage().GetAuthorHandle(); got != poster.Handle {
+	if got := posted.GetMessage().GetAuthorHandle(); got != poster.Handle {
 		t.Fatalf("posted message author handle = %q, want %q", got, poster.Handle)
 	}
-	wantID := posted.Msg.GetMessage().GetId()
+	wantID := posted.GetMessage().GetId()
 
 	// Write-through means BOTH sides observe one post: the store row is durable
 	// (read as the poster, a member — the store scopes to the actor)...
-	listed, err := h.svc.ListMessages(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	listed, err := h.svc.ListMessages(WithActor(ctx, poster.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
-	if msgs := listed.Msg.GetMessages(); len(msgs) != 1 || msgs[0].GetId() != wantID {
+	if msgs := listed.GetMessages(); len(msgs) != 1 || msgs[0].GetId() != wantID {
 		t.Fatalf("store rows = %+v, want exactly the posted message %q", msgs, wantID)
 	} else if msgs[0].GetAuthorHandle() != poster.Handle {
 		t.Fatalf("listed message author handle = %q, want %q", msgs[0].GetAuthorHandle(), poster.Handle)
@@ -500,11 +507,11 @@ func TestSubscribeCommsStaleEpochResyncsAndRedelivers(t *testing.T) {
 	}
 
 	// Post one message so there is a real store row to re-snapshot.
-	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "before restart"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "before restart"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	wantID := posted.Msg.GetMessage().GetId()
+	wantID := posted.GetMessage().GetId()
 
 	// A reconnect carrying a POSITIONED cursor from a prior instance (a stale
 	// epoch) cannot be served gap-free, so the stream delivers a single terminal
@@ -524,13 +531,13 @@ func TestSubscribeCommsStaleEpochResyncsAndRedelivers(t *testing.T) {
 	// The client responds to the resync by re-snapshotting from Postgres via
 	// ListMessages (as the poster, a member): the message appears exactly once,
 	// deduped by id.
-	listed, err := h.svc.ListMessages(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+	listed, err := h.svc.ListMessages(WithActor(ctx, poster.ID), &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("re-snapshot ListMessages: %v", err)
 	}
-	msgs := listed.Msg.GetMessages()
+	msgs := listed.GetMessages()
 	if len(msgs) != 1 {
 		t.Fatalf("re-snapshot returned %d messages, want exactly 1 (deduped)", len(msgs))
 	}

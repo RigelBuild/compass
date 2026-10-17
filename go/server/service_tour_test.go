@@ -8,7 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -29,21 +30,21 @@ func TestTourRPCsWithoutCallerAreUnauthenticated(t *testing.T) {
 		{
 			name: "GetTourState",
 			call: func() error {
-				_, err := client.GetTourState(t.Context(), connect.NewRequest(&compassv1.GetTourStateRequest{}))
+				_, err := client.GetTourState(t.Context(), &compassv1.GetTourStateRequest{})
 				return err
 			},
 		},
 		{
 			name: "ClaimTourStart",
 			call: func() error {
-				_, err := client.ClaimTourStart(t.Context(), connect.NewRequest(&compassv1.ClaimTourStartRequest{StepId: "welcome"}))
+				_, err := client.ClaimTourStart(t.Context(), &compassv1.ClaimTourStartRequest{StepId: "welcome"})
 				return err
 			},
 		},
 		{
 			name: "SetTourState",
 			call: func() error {
-				_, err := client.SetTourState(t.Context(), connect.NewRequest(&compassv1.SetTourStateRequest{Outcome: compassv1.TourOutcome_TOUR_OUTCOME_COMPLETED}))
+				_, err := client.SetTourState(t.Context(), &compassv1.SetTourStateRequest{Outcome: compassv1.TourOutcome_TOUR_OUTCOME_COMPLETED})
 				return err
 			},
 		},
@@ -61,10 +62,10 @@ func TestTourRPCsRejectInvalidInput(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	service := newService("tour-test", bus, nil, nil, nil, nil, nil)
-	path, handler := compassv1connect.NewCompassServiceHandler(service,
-		connect.WithInterceptors(auth.AmbientIdentity("tour-account")))
+	server := connect.NewServer(auth.AmbientIdentity("tour-account"))
+	compassv1connect.RegisterCompassServiceHandler(server, service)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -74,17 +75,17 @@ func TestTourRPCsRejectInvalidInput(t *testing.T) {
 
 	checks := map[string]func() error{
 		"SetTourState UNSPECIFIED": func() error {
-			_, err := client.SetTourState(t.Context(), connect.NewRequest(&compassv1.SetTourStateRequest{}))
+			_, err := client.SetTourState(t.Context(), &compassv1.SetTourStateRequest{})
 			return err
 		},
 		"SetTourState oversized step_id": func() error {
-			_, err := client.SetTourState(t.Context(), connect.NewRequest(&compassv1.SetTourStateRequest{
+			_, err := client.SetTourState(t.Context(), &compassv1.SetTourStateRequest{
 				Outcome: compassv1.TourOutcome_TOUR_OUTCOME_STARTED, StepId: oversized,
-			}))
+			})
 			return err
 		},
 		"ClaimTourStart oversized step_id": func() error {
-			_, err := client.ClaimTourStart(t.Context(), connect.NewRequest(&compassv1.ClaimTourStartRequest{StepId: oversized}))
+			_, err := client.ClaimTourStart(t.Context(), &compassv1.ClaimTourStartRequest{StepId: oversized})
 			return err
 		},
 	}

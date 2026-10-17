@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -325,32 +325,32 @@ type sessionsStartedTestHandler struct {
 	sessions chan struct{}
 }
 
-func (h *sessionsStartedTestHandler) Enroll(ctx context.Context, req *connect.Request[compassv1internal.EnrollRequest]) (*connect.Response[compassv1internal.EnrollResponse], error) {
+func (h *sessionsStartedTestHandler) Enroll(ctx context.Context, req *compassv1internal.EnrollRequest) (*compassv1internal.EnrollResponse, error) {
 	resp, err := h.recordingEnroll.Enroll(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	resp.Msg.RunnerId = "cluster/node"
+	resp.RunnerId = "cluster/node"
 	return resp, nil
 }
 
-func (h *sessionsStartedTestHandler) Sessions(context.Context, *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+func (h *sessionsStartedTestHandler) Sessions(context.Context, compassv1internalconnect.RunnerServiceSessionsServerStream) error {
 	close(h.sessions)
 	return nil
 }
-
 func TestRunStartsSessionsWhenStaleSweepTimesOut(t *testing.T) {
 	prev := staleContainerSweepTimeout
 	staleContainerSweepTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { staleContainerSweepTimeout = prev })
 	handler := &sessionsStartedTestHandler{sessions: make(chan struct{})}
-	path, service := compassv1internalconnect.NewRunnerServiceHandler(handler)
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, handler)
 	mux := http.NewServeMux()
-	mux.Handle(path, service)
-	server := httptest.NewUnstartedServer(mux)
-	server.Config.Protocols = cleartextHTTP2()
-	server.Start()
-	t.Cleanup(server.Close)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	httpServer := httptest.NewUnstartedServer(mux)
+	httpServer.Config.Protocols = cleartextHTTP2()
+	httpServer.Start()
+	t.Cleanup(httpServer.Close)
 
 	engine := &blockingRemoveTestEngine{
 		pipeRuntime: newPipeRuntime(),
@@ -367,7 +367,7 @@ func TestRunStartsSessionsWhenStaleSweepTimesOut(t *testing.T) {
 		defer close(runDone)
 		runErr = Run(ctx, RunnerConfig{
 			RunnerID:   "runner-1",
-			ServerAddr: server.URL,
+			ServerAddr: httpServer.URL,
 			Token:      StaticToken("tok"),
 			Engine:     engine,
 			RuntimeDir: runtimeDir,
@@ -424,10 +424,10 @@ type assignedIdentityRunHandler struct {
 	result chan *compassv1internal.SessionsRequest
 }
 
-func (h *assignedIdentityRunHandler) FetchAgentConfig(_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+func (h *assignedIdentityRunHandler) FetchAgentConfig(_ context.Context, _ *compassv1internal.FetchAgentConfigRequest, stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream) error {
 	return sendEmptyAgentConfig(stream)
 }
-func (h *assignedIdentityRunHandler) Sessions(_ context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+func (h *assignedIdentityRunHandler) Sessions(_ context.Context, stream compassv1internalconnect.RunnerServiceSessionsServerStream) error {
 	for {
 		request, err := stream.Receive()
 		if err != nil {
@@ -477,13 +477,14 @@ func TestRunUsesServerAssignedRunnerIDForSweepAndLabels(t *testing.T) {
 		recordingEnroll: recordingEnroll{assignedRunnerID: "cluster/node"},
 		result:          make(chan *compassv1internal.SessionsRequest, 1),
 	}
-	path, service := compassv1internalconnect.NewRunnerServiceHandler(handler)
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, handler)
 	mux := http.NewServeMux()
-	mux.Handle(path, service)
-	server := httptest.NewUnstartedServer(mux)
-	server.Config.Protocols = cleartextHTTP2()
-	server.Start()
-	t.Cleanup(server.Close)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	httpServer := httptest.NewUnstartedServer(mux)
+	httpServer.Config.Protocols = cleartextHTTP2()
+	httpServer.Start()
+	t.Cleanup(httpServer.Close)
 
 	engine := &assignedIdentityRunEngine{
 		stubStreamingRuntime: newStubStreamingRuntime(t),
@@ -492,7 +493,7 @@ func TestRunUsesServerAssignedRunnerIDForSweepAndLabels(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	err := Run(ctx, RunnerConfig{
-		ServerAddr: server.URL,
+		ServerAddr: httpServer.URL,
 		Token:      NewFileToken(tokenPath, discardLoggerRunner(), time.Now),
 		Engine:     engine,
 		RuntimeDir: shortRuntimeDir(t),

@@ -12,8 +12,6 @@ import (
 	"runtime"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -26,9 +24,9 @@ func startBoundSession(t *testing.T, f placementFixture, ctx context.Context) {
 	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
 		t.Fatalf("RecordAgentPlacement: %v", err)
 	}
-	if _, err := f.client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	if _, err := f.client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: fakeContainer,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("StartAgentSession: %v", err)
 	}
 }
@@ -107,9 +105,9 @@ func TestStopAgentSessionFlushesSessionEndWithoutPruning(t *testing.T) {
 		t.Fatalf("append delta 3: %v", err)
 	}
 
-	if _, err := f.client.StopAgentSession(ctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{
+	if _, err := f.client.StopAgentSession(ctx, &compassv1.StopAgentSessionRequest{
 		SessionId: fakeSessionID,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("StopAgentSession = %v, want success", err)
 	}
 
@@ -142,9 +140,9 @@ func TestStopAgentSessionWithNoTranscriptRowsSucceedsAndArchivesNothing(t *testi
 
 	startBoundSession(t, f, ctx)
 
-	if _, err := f.client.StopAgentSession(ctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{
+	if _, err := f.client.StopAgentSession(ctx, &compassv1.StopAgentSessionRequest{
 		SessionId: fakeSessionID,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("StopAgentSession on a session with no transcript rows = %v, want success", err)
 	}
 

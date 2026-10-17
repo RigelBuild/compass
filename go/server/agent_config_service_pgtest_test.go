@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -79,11 +79,10 @@ func newConfigFixture(t *testing.T) configFixture {
 	}
 }
 
-// authReq wraps a request with the fixture caller's bearer token.
-func authReq[T any](f configFixture, msg *T) *connect.Request[T] {
-	req := connect.NewRequest(msg)
-	req.Header().Set("Authorization", "Bearer "+f.token)
-	return req
+func authReq(f configFixture, ctx context.Context) context.Context {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+f.token)
+	return ctx
 }
 
 // mkConfigBundle gzip-tars a set of (name, content) files for a handler test.
@@ -118,19 +117,19 @@ func TestPutAgentConfigReturnsVersionAndSignals(t *testing.T) {
 	f := newConfigFixture(t)
 	bundle := mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})
 
-	resp, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle}))
+	ctx := authReq(f, context.Background())
+	resp, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: bundle})
 	if err != nil {
 		t.Fatalf("PutAgentConfig: %v", err)
 	}
-	if resp.Msg.GetVersion() == "" {
+	if resp.GetVersion() == "" {
 		t.Fatal("PutAgentConfig returned an empty version")
 	}
 	if len(f.signaler.versions) != 1 {
 		t.Fatalf("signaler saw %d emits, want 1", len(f.signaler.versions))
 	}
-	if f.signaler.versions[0] != resp.Msg.GetVersion() {
-		t.Fatalf("signalled version %q != returned version %q", f.signaler.versions[0], resp.Msg.GetVersion())
+	if f.signaler.versions[0] != resp.GetVersion() {
+		t.Fatalf("signalled version %q != returned version %q", f.signaler.versions[0], resp.GetVersion())
 	}
 }
 
@@ -142,20 +141,20 @@ func TestPutAgentConfigIdempotentRePutDoesNotResignal(t *testing.T) {
 	f := newConfigFixture(t)
 	bundle := mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})
 
-	resp, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle}))
+	ctx := authReq(f, context.Background())
+	resp, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: bundle})
 	if err != nil {
 		t.Fatalf("PutAgentConfig (first): %v", err)
 	}
-	v := resp.Msg.GetVersion()
+	v := resp.GetVersion()
 
-	resp2, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle}))
+	ctx = authReq(f, context.Background())
+	resp2, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: bundle})
 	if err != nil {
 		t.Fatalf("PutAgentConfig (re-Put): %v", err)
 	}
-	if resp2.Msg.GetVersion() != v {
-		t.Fatalf("re-Put version %q != first version %q", resp2.Msg.GetVersion(), v)
+	if resp2.GetVersion() != v {
+		t.Fatalf("re-Put version %q != first version %q", resp2.GetVersion(), v)
 	}
 	if len(f.signaler.versions) != 1 {
 		t.Fatalf("signaler saw %d emits after an identical re-Put, want 1", len(f.signaler.versions))
@@ -170,19 +169,19 @@ func TestPutAgentConfigIdempotentRePutDoesNotResignal(t *testing.T) {
 func TestPutAgentConfigChangedContentResignals(t *testing.T) {
 	f := newConfigFixture(t)
 
-	respA, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})}))
+	ctx := authReq(f, context.Background())
+	respA, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})})
 	if err != nil {
 		t.Fatalf("PutAgentConfig (A): %v", err)
 	}
-	v1 := respA.Msg.GetVersion()
+	v1 := respA.GetVersion()
 
-	respB, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review v2"})}))
+	ctx = authReq(f, context.Background())
+	respB, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review v2"})})
 	if err != nil {
 		t.Fatalf("PutAgentConfig (B): %v", err)
 	}
-	v2 := respB.Msg.GetVersion()
+	v2 := respB.GetVersion()
 
 	if v2 == v1 {
 		t.Fatalf("changed content yielded the same version %q — expected a new one", v2)
@@ -199,8 +198,8 @@ func TestPutAgentConfigChangedContentResignals(t *testing.T) {
 // door (not a gzip tarball) is CodeInvalidArgument, and no signal fires.
 func TestPutAgentConfigInvalidBundleIsInvalidArgument(t *testing.T) {
 	f := newConfigFixture(t)
-	_, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: []byte("not a gzip tarball")}))
+	ctx := authReq(f, context.Background())
+	_, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: []byte("not a gzip tarball")})
 	if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
 		t.Fatalf("invalid bundle code = %v, want InvalidArgument", code)
 	}
@@ -213,16 +212,16 @@ func TestPutAgentConfigInvalidBundleIsInvalidArgument(t *testing.T) {
 // empty-but-valid response (empty version, empty name lists), never an error.
 func TestGetAgentConfigInfoUnconfiguredIsEmpty(t *testing.T) {
 	f := newConfigFixture(t)
-	resp, err := f.client.GetAgentConfigInfo(context.Background(),
-		authReq(f, &compassv1.GetAgentConfigInfoRequest{}))
+	ctx := authReq(f, context.Background())
+	resp, err := f.client.GetAgentConfigInfo(ctx, &compassv1.GetAgentConfigInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetAgentConfigInfo on unconfigured fleet: %v", err)
 	}
-	if resp.Msg.GetVersion() != "" ||
-		len(resp.Msg.GetSkills()) != 0 ||
-		len(resp.Msg.GetExtensions()) != 0 ||
-		len(resp.Msg.GetMcpServers()) != 0 {
-		t.Fatalf("unconfigured info = %+v, want all-empty", resp.Msg)
+	if resp.GetVersion() != "" ||
+		len(resp.GetSkills()) != 0 ||
+		len(resp.GetExtensions()) != 0 ||
+		len(resp.GetMcpServers()) != 0 {
+		t.Fatalf("unconfigured info = %+v, want all-empty", resp)
 	}
 }
 
@@ -238,30 +237,30 @@ func TestGetAgentConfigInfoReturnsBucketedNames(t *testing.T) {
 		"prompts/supervisor/SYSTEM.md": "# supervisor",
 		"prompts/owner/SYSTEM.md":      "# owner",
 	})
-	put, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle}))
+	ctx := authReq(f, context.Background())
+	put, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: bundle})
 	if err != nil {
 		t.Fatalf("PutAgentConfig: %v", err)
 	}
 
-	resp, err := f.client.GetAgentConfigInfo(context.Background(),
-		authReq(f, &compassv1.GetAgentConfigInfoRequest{}))
+	ctx = authReq(f, context.Background())
+	resp, err := f.client.GetAgentConfigInfo(ctx, &compassv1.GetAgentConfigInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetAgentConfigInfo: %v", err)
 	}
-	if resp.Msg.GetVersion() != put.Msg.GetVersion() {
-		t.Errorf("info version %q != put version %q", resp.Msg.GetVersion(), put.Msg.GetVersion())
+	if resp.GetVersion() != put.GetVersion() {
+		t.Errorf("info version %q != put version %q", resp.GetVersion(), put.GetVersion())
 	}
-	if got := join(resp.Msg.GetSkills()); got != "review,triage" {
+	if got := join(resp.GetSkills()); got != "review,triage" {
 		t.Errorf("skills = %q, want review,triage", got)
 	}
-	if got := join(resp.Msg.GetExtensions()); got != "cotal" {
+	if got := join(resp.GetExtensions()); got != "cotal" {
 		t.Errorf("extensions = %q, want cotal", got)
 	}
-	if got := join(resp.Msg.GetMcpServers()); got != "linear" {
+	if got := join(resp.GetMcpServers()); got != "linear" {
 		t.Errorf("mcp_servers = %q, want linear", got)
 	}
-	if got := join(resp.Msg.GetPrompts()); got != "owner,supervisor" {
+	if got := join(resp.GetPrompts()); got != "owner,supervisor" {
 		t.Errorf("prompts = %q, want owner,supervisor", got)
 	}
 }
@@ -271,13 +270,13 @@ func TestGetAgentConfigInfoReturnsBucketedNames(t *testing.T) {
 func TestDeleteAgentConfigClearsAndSignalsEmpty(t *testing.T) {
 	f := newConfigFixture(t)
 	bundle := mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})
-	if _, err := f.client.PutAgentConfig(context.Background(),
-		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle})); err != nil {
+	ctx := authReq(f, context.Background())
+	if _, err := f.client.PutAgentConfig(ctx, &compassv1.PutAgentConfigRequest{Bundle: bundle}); err != nil {
 		t.Fatalf("PutAgentConfig: %v", err)
 	}
 
-	if _, err := f.client.DeleteAgentConfig(context.Background(),
-		authReq(f, &compassv1.DeleteAgentConfigRequest{})); err != nil {
+	ctx = authReq(f, context.Background())
+	if _, err := f.client.DeleteAgentConfig(ctx, &compassv1.DeleteAgentConfigRequest{}); err != nil {
 		t.Fatalf("DeleteAgentConfig: %v", err)
 	}
 	// The Put emitted the content version; the Delete emitted the empty marker.
@@ -288,13 +287,13 @@ func TestDeleteAgentConfigClearsAndSignalsEmpty(t *testing.T) {
 		t.Fatalf("delete emitted version %q, want the empty cleared-marker", last)
 	}
 
-	resp, err := f.client.GetAgentConfigInfo(context.Background(),
-		authReq(f, &compassv1.GetAgentConfigInfoRequest{}))
+	ctx = authReq(f, context.Background())
+	resp, err := f.client.GetAgentConfigInfo(ctx, &compassv1.GetAgentConfigInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetAgentConfigInfo after delete: %v", err)
 	}
-	if resp.Msg.GetVersion() != "" || len(resp.Msg.GetSkills()) != 0 {
-		t.Fatalf("info after delete = %+v, want empty", resp.Msg)
+	if resp.GetVersion() != "" || len(resp.GetSkills()) != 0 {
+		t.Fatalf("info after delete = %+v, want empty", resp)
 	}
 }
 
@@ -323,23 +322,24 @@ func TestAgentConfigWriteRPCsDenyNonAdminToken(t *testing.T) {
 	client := networkDoorHandler(t, svc, st, admin)
 
 	t.Run("PutAgentConfig as non-admin is PermissionDenied", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.PutAgentConfigRequest{
-			Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"}),
-		})
-		req.Header().Set("Authorization", "Bearer "+memberTok)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		if _, err := client.PutAgentConfig(ctx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
+		rpcCtx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+memberTok)
+		req := &compassv1.PutAgentConfigRequest{
+			Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"}),
+		}
+		if _, err := client.PutAgentConfig(rpcCtx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatalf("non-admin token on PutAgentConfig = %v, want CodePermissionDenied", connect.CodeOf(err))
 		}
 	})
-
 	t.Run("DeleteAgentConfig as non-admin is PermissionDenied", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.DeleteAgentConfigRequest{})
-		req.Header().Set("Authorization", "Bearer "+memberTok)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		if _, err := client.DeleteAgentConfig(ctx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
+		rpcCtx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+memberTok)
+		req := &compassv1.DeleteAgentConfigRequest{}
+		if _, err := client.DeleteAgentConfig(rpcCtx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatalf("non-admin token on DeleteAgentConfig = %v, want CodePermissionDenied", connect.CodeOf(err))
 		}
 	})

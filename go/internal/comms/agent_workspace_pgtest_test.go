@@ -9,8 +9,6 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
@@ -22,13 +20,13 @@ func TestOpenAgentWorkspaceByHandleOpensOwnAgent(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "worker")
 
-	resp, err := svc.OpenAgentWorkspace(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.OpenAgentWorkspaceRequest{
+	resp, err := svc.OpenAgentWorkspace(WithActor(ctx, owner.ID), &compassv1.OpenAgentWorkspaceRequest{
 		AgentHandle: "worker",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("OpenAgentWorkspace: %v", err)
 	}
-	ws := resp.Msg.GetWorkspace()
+	ws := resp.GetWorkspace()
 	if ws.GetId() == "" {
 		t.Fatal("OpenAgentWorkspace returned an empty workspace id")
 	}
@@ -48,9 +46,9 @@ func TestOpenAgentWorkspaceForeignTargetIndistinguishableFromUnknown(t *testing.
 	stranger := mustUser(t, st, "stranger")
 
 	for _, handle := range []string{"owner/worker", "owner/ghost", "nobody/worker", "worker"} {
-		_, err := svc.OpenAgentWorkspace(WithActor(ctx, stranger.ID), connect.NewRequest(&compassv1.OpenAgentWorkspaceRequest{
+		_, err := svc.OpenAgentWorkspace(WithActor(ctx, stranger.ID), &compassv1.OpenAgentWorkspaceRequest{
 			AgentHandle: handle,
-		}))
+		})
 		connectNotFoundFor(t, err, handle, "OpenAgentWorkspace("+handle+")")
 	}
 }

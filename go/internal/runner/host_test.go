@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -169,7 +169,7 @@ func TestReprovisionOfLaunchedNameIsRejectedUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, errors.New("config fetch down")))
+	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, "config fetch down"))
 	creates := countCreates(engine.callsSnapshot())
 
 	_, err = host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
@@ -529,7 +529,7 @@ func TestProvisionConfigMaterializeErrorAborts(t *testing.T) {
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	pub := newCapturePublish()
-	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, errors.New("config fetch down")))
+	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, "config fetch down"))
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner())
@@ -561,7 +561,7 @@ func TestProvisionToleratesNoConfigSurface(t *testing.T) {
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	pub := newCapturePublish()
-	pub.setConfigErr(connect.NewError(connect.CodeFailedPrecondition, errors.New("no config store wired")))
+	pub.setConfigErr(connect.NewError(connect.CodeFailedPrecondition, "no config store wired"))
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner())
@@ -1797,7 +1797,7 @@ func TestStartAgentExecCarriesNoEnvFile(t *testing.T) {
 func TestStartToleratesNoSecretsSurface(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
 	host, engine, pub := newHostFixtureWithPublish(t, specs)
-	pub.setFetchErr(connect.NewError(connect.CodeFailedPrecondition, errors.New("no secret resolver wired")))
+	pub.setFetchErr(connect.NewError(connect.CodeFailedPrecondition, "no secret resolver wired"))
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
@@ -1831,7 +1831,7 @@ func TestStartFailsClosedOnFetchError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			specs := &fakeSpecBuilder{spec: liveSpec()}
 			host, engine, pub := newHostFixtureWithPublish(t, specs)
-			pub.setFetchErr(connect.NewError(tc.code, errors.New(tc.name)))
+			pub.setFetchErr(connect.NewError(tc.code, tc.name))
 			ctx := context.Background()
 
 			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
@@ -2202,7 +2202,7 @@ func TestStartFreshNeverFetchesSessionBlobs(t *testing.T) {
 func TestStartContinuesWhenSessionBlobFetchIsUnavailable(t *testing.T) {
 	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	pub := newCapturePublish()
-	pub.blobErr = connect.NewError(connect.CodeUnavailable, errors.New("blob fetch unavailable"))
+	pub.blobErr = connect.NewError(connect.CodeUnavailable, "blob fetch unavailable")
 	engine := newRecordingExecRuntime(t)
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)

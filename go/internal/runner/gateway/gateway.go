@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"sync"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
@@ -80,7 +82,7 @@ type SessionForContainer interface {
 // The Runner is a pure forwarder — it sends the session_id it structurally owns
 // and the agent's request verbatim, and asserts no account.
 type CommsRelay interface {
-	RelayCommsCall(ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest]) (*connect.Response[compassv1internal.RelayCommsCallResponse], error)
+	RelayCommsCall(ctx context.Context, req *compassv1internal.RelayCommsCallRequest) (*compassv1internal.RelayCommsCallResponse, error)
 }
 
 // LifecycleRelay forwards one agent-initiated lifecycle call (spawn/despawn a
@@ -90,7 +92,7 @@ type CommsRelay interface {
 // client satisfies it; a test supplies a fake. The Runner sends the session_id
 // it structurally owns and the agent's call verbatim, and asserts no account.
 type LifecycleRelay interface {
-	RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error)
+	RelayLifecycleCall(ctx context.Context, req *compassv1internal.RelayLifecycleCallRequest) (*compassv1internal.RelayLifecycleCallResponse, error)
 }
 
 // ForgeRelay forwards one agent-initiated forge call (create/comment/get/list an
@@ -101,18 +103,18 @@ type LifecycleRelay interface {
 // the session_id it structurally owns and the agent's call verbatim, and asserts
 // no account.
 type ForgeRelay interface {
-	RelayForgeCall(ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest]) (*connect.Response[compassv1internal.RelayForgeCallResponse], error)
+	RelayForgeCall(ctx context.Context, req *compassv1internal.RelayForgeCallRequest) (*compassv1internal.RelayForgeCallResponse, error)
 }
 
 // BoardRelay forwards an agent board call to the Server under its bound session.
 // The Runner sends the call verbatim and asserts no actor.
 type BoardRelay interface {
-	RelayBoardCall(ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest]) (*connect.Response[compassv1internal.RelayBoardCallResponse], error)
+	RelayBoardCall(ctx context.Context, req *compassv1internal.RelayBoardCallRequest) (*compassv1internal.RelayBoardCallResponse, error)
 }
 
 // SessionBlobRelay forwards one content-addressed blob under a bound session.
 type SessionBlobRelay interface {
-	RelaySessionBlob(ctx context.Context, req *connect.Request[compassv1internal.RelaySessionBlobRequest]) (*connect.Response[compassv1internal.RelaySessionBlobResponse], error)
+	RelaySessionBlob(ctx context.Context, req *compassv1internal.RelaySessionBlobRequest) (*compassv1internal.RelaySessionBlobResponse, error)
 }
 
 // ConversationCommitter is the narrow slice of the generated RunnerServiceClient
@@ -122,7 +124,7 @@ type SessionBlobRelay interface {
 // structurally owns and the agent's frame verbatim, preserving every status unchanged.
 // It resolves no account.
 type ConversationCommitter interface {
-	CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error)
+	CommitConversationFrame(ctx context.Context, req *compassv1internal.CommitConversationFrameRequest) (*compassv1internal.CommitConversationFrameResponse, error)
 }
 
 // Gateway implements compassv1internalconnect.AgentGatewayHandler for one
@@ -290,7 +292,7 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // container starts; the returned listener's Close tears the socket down at
 // container teardown.
 func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketListener, error) {
-	ic, err := newAgentGatewayInterceptor()
+	ic, err := otelconnect.NewServerInterceptor()
 	if err != nil {
 		return nil, fmt.Errorf("otel: connect interceptor: %w", err)
 	}
@@ -309,10 +311,10 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 	// SetControlRouter's concurrency note.
 	control := newControlProducer()
 	g.SetControlRouter(control)
-	mux.Handle(compassv1internalconnect.NewAgentGatewayHandler(
-		g,
-		agentGatewayHandlerOptions(ic)...,
-	))
+	server := connect.NewServer(otelx.HandlerInterceptors(ic))
+	compassv1internalconnect.RegisterAgentGatewayHandler(server, g)
+	connecthttp.Mount(mux, server, agentGatewayHandlerOptions()...)
+
 	l, err := listenAgentSocket(ctx, path, mux, socketCancel)
 	if err != nil {
 		socketCancel()
@@ -335,25 +337,25 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 // (Server unreachable) surfaces as a Connect error, which the agent renders as
 // an in-band tool error too.
 func (g *Gateway) Comms(
-	ctx context.Context, req *connect.Request[compassv1internal.CommsCallRequest],
-) (*connect.Response[compassv1internal.CommsCallResult], error) {
+	ctx context.Context, req *compassv1internal.CommsCallRequest,
+) (*compassv1internal.CommsCallResult, error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForContainer)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForContainer.Error()).WithCause(errNoSessionForContainer)
 	}
 
-	resp, err := g.relay.RelayCommsCall(ctx, connect.NewRequest(&compassv1internal.RelayCommsCallRequest{
+	resp, err := g.relay.RelayCommsCall(ctx, &compassv1internal.RelayCommsCallRequest{
 		SessionId: sessionID,
-		Call:      req.Msg,
-	}))
+		Call:      req,
+	})
 	if err != nil {
-		return nil, err
+		return nil, relayedError(err)
 	}
-	result := resp.Msg.GetResult()
+	result := resp.GetResult()
 	if result == nil {
-		return nil, connect.NewError(connect.CodeInternal, errNilRelayResult)
+		return nil, connect.NewError(connect.CodeInternal, errNilRelayResult.Error()).WithCause(errNilRelayResult)
 	}
-	return connect.NewResponse(result), nil
+	return result, nil
 }
 
 // maxSessionBlobBytes leaves one MiB of envelope headroom below the gateway read cap.
@@ -361,24 +363,24 @@ const maxSessionBlobBytes = agentmsg.MaxSessionBlobBytes
 
 // PutSessionBlob forwards an image blob under the session bound to this container.
 func (g *Gateway) PutSessionBlob(
-	ctx context.Context, req *connect.Request[compassv1internal.PutSessionBlobRequest],
-) (*connect.Response[compassv1internal.PutSessionBlobResponse], error) {
+	ctx context.Context, req *compassv1internal.PutSessionBlobRequest,
+) (*compassv1internal.PutSessionBlobResponse, error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForBoard)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForBoard.Error()).WithCause(errNoSessionForBoard)
 	}
-	if len(req.Msg.GetData()) > maxSessionBlobBytes {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("gateway: session blob exceeds %d bytes", maxSessionBlobBytes))
+	if len(req.GetData()) > maxSessionBlobBytes {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "gateway: session blob exceeds %d bytes", maxSessionBlobBytes)
 	}
 	if g.sessionBlobs == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("gateway: session blob relay is not configured"))
+		return nil, connect.NewError(connect.CodeUnavailable, "gateway: session blob relay is not configured")
 	}
-	_, err := g.sessionBlobs.RelaySessionBlob(ctx, connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{
+	_, err := g.sessionBlobs.RelaySessionBlob(ctx, &compassv1internal.RelaySessionBlobRequest{
 		SessionId: sessionID,
-		Blob:      req.Msg,
-	}))
+		Blob:      req,
+	})
 	if err != nil {
-		return nil, err
+		return nil, relayedError(err)
 	}
-	return connect.NewResponse(&compassv1internal.PutSessionBlobResponse{}), nil
+	return &compassv1internal.PutSessionBlobResponse{}, nil
 }

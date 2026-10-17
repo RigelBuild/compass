@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -19,9 +19,9 @@ var (
 // ApprovePeer records the calling user's approval of another user.
 func (c *Comms) ApprovePeer(
 	ctx context.Context,
-	req *connect.Request[compassv1.ApprovePeerRequest],
-) (*connect.Response[compassv1.ApprovePeerResponse], error) {
-	actor, peer, err := c.resolvePeerPair(ctx, req.Msg.GetPeerHandle())
+	req *compassv1.ApprovePeerRequest,
+) (*compassv1.ApprovePeerResponse, error) {
+	actor, peer, err := c.resolvePeerPair(ctx, req.GetPeerHandle())
 	if err != nil {
 		return nil, err
 	}
@@ -33,16 +33,16 @@ func (c *Comms) ApprovePeer(
 		return nil, err
 	}
 	p := store.Peering{PeerID: peer.ID, Handle: peer.Handle, State: state}
-	return connect.NewResponse(&compassv1.ApprovePeerResponse{Peering: peeringToWire(p)}), nil
+	return &compassv1.ApprovePeerResponse{Peering: peeringToWire(p)}, nil
 }
 
 // RevokePeer withdraws the calling user's approval; deleted is false when none
 // existed, so a revoke by a reclaimed handle is visible rather than silent.
 func (c *Comms) RevokePeer(
 	ctx context.Context,
-	req *connect.Request[compassv1.RevokePeerRequest],
-) (*connect.Response[compassv1.RevokePeerResponse], error) {
-	actor, peer, err := c.resolvePeerPair(ctx, req.Msg.GetPeerHandle())
+	req *compassv1.RevokePeerRequest,
+) (*compassv1.RevokePeerResponse, error) {
+	actor, peer, err := c.resolvePeerPair(ctx, req.GetPeerHandle())
 	if err != nil {
 		return nil, err
 	}
@@ -50,14 +50,14 @@ func (c *Comms) RevokePeer(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	return connect.NewResponse(&compassv1.RevokePeerResponse{Deleted: deleted}), nil
+	return &compassv1.RevokePeerResponse{Deleted: deleted}, nil
 }
 
 // ListPeers lists the calling user's peerings in every state.
 func (c *Comms) ListPeers(
 	ctx context.Context,
-	_ *connect.Request[compassv1.ListPeersRequest],
-) (*connect.Response[compassv1.ListPeersResponse], error) {
+	_ *compassv1.ListPeersRequest,
+) (*compassv1.ListPeersResponse, error) {
 	actor, err := c.requireUserActor(ctx)
 	if err != nil {
 		return nil, err
@@ -70,7 +70,7 @@ func (c *Comms) ListPeers(
 	for i, peer := range peers {
 		out[i] = peeringToWire(peer)
 	}
-	return connect.NewResponse(&compassv1.ListPeersResponse{Peerings: out}), nil
+	return &compassv1.ListPeersResponse{Peerings: out}, nil
 }
 
 // requireUserActor returns the caller when it is a user; agents do not manage peering.
@@ -81,7 +81,7 @@ func (c *Comms) requireUserActor(ctx context.Context) (store.AccountID, error) {
 		return "", edgeError(err)
 	}
 	if acc.User == nil {
-		return "", connect.NewError(connect.CodePermissionDenied, errPeerUserRequired)
+		return "", connect.NewError(connect.CodePermissionDenied, errPeerUserRequired.Error()).WithCause(errPeerUserRequired)
 	}
 	return actor, nil
 }
@@ -101,7 +101,7 @@ func (c *Comms) resolvePeerPair(ctx context.Context, handle string) (store.Accou
 		return "", store.Account{}, edgeError(notFoundHandle(store.ErrNotFound, handle))
 	}
 	if peer.ID == actor {
-		return "", store.Account{}, connect.NewError(connect.CodeInvalidArgument, errPeerSelf)
+		return "", store.Account{}, connect.NewError(connect.CodeInvalidArgument, errPeerSelf.Error()).WithCause(errPeerSelf)
 	}
 	return actor, peer, nil
 }
@@ -111,7 +111,7 @@ func (c *Comms) resolvePeerPair(ctx context.Context, handle string) (store.Accou
 // the caller revoked mid-call and the approve is reported aborted.
 func approvedState(state store.PeeringState, err error) (store.PeeringState, error) {
 	if errors.Is(err, store.ErrNotFound) || (err == nil && state == store.PeeringPendingIncoming) {
-		return 0, connect.NewError(connect.CodeAborted, errPeerRevokedDuringApprove)
+		return 0, connect.NewError(connect.CodeAborted, errPeerRevokedDuringApprove.Error()).WithCause(errPeerRevokedDuringApprove)
 	}
 	if err != nil {
 		return 0, edgeError(err)

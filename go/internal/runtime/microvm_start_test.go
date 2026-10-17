@@ -23,8 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
+	"connectrpc.com/connect/v2"
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
@@ -81,29 +80,29 @@ type fakeGuestClient struct {
 	provErr     error
 }
 
-func (c *fakeGuestClient) Provision(_ context.Context, req *connect.Request[compassv1.ProvisionRequest]) (*connect.Response[compassv1.ProvisionResponse], error) {
+func (c *fakeGuestClient) Provision(_ context.Context, req *compassv1.ProvisionRequest) (*compassv1.ProvisionResponse, error) {
 	c.mu.Lock()
-	c.provisioned = req.Msg
+	c.provisioned = req
 	c.mu.Unlock()
 	if c.provErr != nil {
 		return nil, c.provErr
 	}
-	return connect.NewResponse(&compassv1.ProvisionResponse{}), nil
+	return &compassv1.ProvisionResponse{}, nil
 }
 
-func (c *fakeGuestClient) Health(context.Context, *connect.Request[compassv1.HealthRequest]) (*connect.Response[compassv1.HealthResponse], error) {
+func (c *fakeGuestClient) Health(context.Context, *compassv1.HealthRequest) (*compassv1.HealthResponse, error) {
 	return nil, errors.New("fakeGuestClient: Health not used on the hermetic Start path")
 }
 
-func (c *fakeGuestClient) Exec(context.Context, *connect.Request[compassv1.ExecRequest]) (*connect.Response[compassv1.ExecResponse], error) {
+func (c *fakeGuestClient) Exec(context.Context, *compassv1.ExecRequest) (*compassv1.ExecResponse, error) {
 	return nil, errors.New("fakeGuestClient: Exec not used on the hermetic Start path")
 }
 
-func (c *fakeGuestClient) ExecStream(context.Context) *connect.BidiStreamForClient[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse] {
-	return nil
+func (c *fakeGuestClient) ExecStream(context.Context) (compassv1internalconnect.GuestControlExecStreamClientStream, error) {
+	return compassv1internalconnect.GuestControlExecStreamClientStream{}, nil
 }
 
-func (c *fakeGuestClient) Signal(context.Context, *connect.Request[compassv1.SignalRequest]) (*connect.Response[compassv1.SignalResponse], error) {
+func (c *fakeGuestClient) Signal(context.Context, *compassv1.SignalRequest) (*compassv1.SignalResponse, error) {
 	return nil, errors.New("fakeGuestClient: Signal not used on the hermetic Start path")
 }
 
@@ -219,7 +218,7 @@ func TestStartDeliversScriptVerbatim(t *testing.T) {
 // fake handle's Shutdown is called (the fail-closed teardown, §(b)/(d)) — the VM
 // booted by launchFunc must not be left running when the arm/provision fails.
 func TestStartProvisionErrorFailsAndTearsDown(t *testing.T) {
-	provErr := connect.NewError(connect.CodeInternal, errors.New("arm failed"))
+	provErr := connect.NewError(connect.CodeInternal, "arm failed")
 	spec := WorkloadSpec{Name: "agent-1", UID: 1000}
 	m, id, vm, _ := seamStart(t, spec, provErr)
 

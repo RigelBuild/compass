@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
 // Runner control producer tests: Control stream, ControlSender, retention +
@@ -1228,7 +1229,7 @@ func TestControlAckOnlyRouterRefusesSubscription(t *testing.T) {
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: boundSessions()})
 
 	err := g.Control(context.Background(),
-		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}), nil)
+		&compassv1internal.ControlSubscribeRequest{}, compassv1internalconnect.AgentGatewayControlServerStream{})
 	if err == nil {
 		t.Fatal("Control against an ack-only router = nil, want CodeUnimplemented (a stream nothing can write to must be refused, not accepted)")
 	}

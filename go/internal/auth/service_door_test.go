@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
-	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -54,19 +54,21 @@ func TestServiceBearerInterceptor(t *testing.T) {
 				wantKind = want
 				return tt.subject, tt.resolveErr
 			}
-			next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			next := func(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
 				subj, ok := ServiceSubjectFrom(ctx)
 				if !ok || subj != tt.subject {
 					t.Fatalf("ServiceSubjectFrom() = (%+v, %v), want (%+v, true)", subj, ok, tt.subject)
 				}
-				return connect.NewResponse(&compassv1.GetServerInfoResponse{}), nil
+				return nil
 			}
 			interceptor := ServiceBearerInterceptor(resolve, tt.allow...)
-			request := connect.NewRequest(&compassv1.GetServerInfoRequest{})
+			info := &connect.CallInfo{}
 			if tt.header != "" {
-				request.Header().Set("Authorization", tt.header)
+				info.RequestHeader().Set("Authorization", tt.header)
 			}
-			_, err := interceptor(next)(ctx, request)
+			spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: compassv1connect.CompassServiceGetServerInfoProcedure}
+			err := runServerCall(interceptor, ctx, spec, info, next)
+
 			if tt.wantReason == "" {
 				if err != nil {
 					t.Fatalf("valid service token rejected: %v", err)

@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -52,19 +52,19 @@ func TestHandleLookupStoreFaultIsInternal(t *testing.T) {
 
 	calls := map[string]func() error{
 		"SpawnAgent admin/atlas": func() error {
-			_, err := svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: "admin/atlas"}))
+			_, err := svc.SpawnAgent(ctx, &compassv1.SpawnAgentRequest{AgentHandle: "admin/atlas"})
 			return err
 		},
 		"ProvisionAgentWorkspace admin/atlas": func() error {
-			_, err := svc.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/atlas"}))
+			_, err := svc.ProvisionAgentWorkspace(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/atlas"})
 			return err
 		},
 		"IssueToken admin/atlas": func() error {
-			_, err := svc.IssueToken(ctx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "admin/atlas"}))
+			_, err := svc.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: "admin/atlas"})
 			return err
 		},
 		"IssueToken admin": func() error {
-			_, err := svc.IssueToken(ctx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "admin"}))
+			_, err := svc.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: "admin"})
 			return err
 		},
 	}

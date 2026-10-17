@@ -13,7 +13,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -32,24 +33,23 @@ const testRunnerID = "runner-1"
 // a Runner attaches: the hub accepts an unbound session's frames only from it.
 func enrollHub(t *testing.T, hub *runnerhub.Hub) {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	resolve := func(context.Context, string, store.SubjectKind) (store.Subject, error) {
 		return store.Subject{Kind: store.SubjectRunner, ID: testRunnerID}, nil
 	}
-	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	runnerhub.Mount(mux, hub, resolve, nil, nil, otelIC)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = runnertest.CleartextH2()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	client := compassv1internalconnect.NewRunnerServiceClient(runnertest.H2CClient(t), srv.URL)
-	req := connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: testRunnerID})
-	req.Header().Set("Authorization", "Bearer runner-tok")
-	if _, err := client.Enroll(context.Background(), req); err != nil {
+	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(runnertest.H2CClient(t), srv.URL, connecthttp.WithReadMaxBytes(0))))
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer runner-tok")
+	if _, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: testRunnerID}); err != nil {
 		t.Fatalf("Enroll: %v", err)
 	}
 }

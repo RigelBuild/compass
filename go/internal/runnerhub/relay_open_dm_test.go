@@ -10,10 +10,9 @@ package runnerhub
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -71,7 +70,7 @@ func TestRelayCommsCallOpenDMArmForwardsUnderBoundAccount(t *testing.T) {
 // collapse an unknown/cross-owner peer gets.
 func TestRelayCommsCallOpenDMToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.openDMErr = connect.NewError(connect.CodeNotFound, errors.New("handle \"peer\" not found"))
+	comms.openDMErr = connect.NewError(connect.CodeNotFound, "handle \"peer\" not found")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayOpenDM("sess-1", "tc-dm-err", &compassv1.OpenDMRequest{PeerHandle: "peer"}))

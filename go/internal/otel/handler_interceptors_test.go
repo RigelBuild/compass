@@ -6,7 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -54,43 +55,45 @@ func TestHandlerInterceptorsMountsSpanAndTraceResponseBeforeRest(t *testing.T) {
 			t.Errorf("shutdown tracer provider: %v", err)
 		}
 	})
-	ic, err := otelconnect.NewInterceptor()
+	ic, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	var restSawSpan bool
 	var restSawEmptyTraceResponse bool
-	rest := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+	rest := connect.ServerInterceptor(func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
 			restSawSpan = trace.SpanFromContext(ctx).SpanContext().IsValid()
-			resp, err := next(ctx, req)
-			if resp != nil {
-				restSawEmptyTraceResponse = resp.Header().Get("traceresponse") == ""
-			}
-			return resp, err
+			info, _ := connect.CallInfoForServerContext(ctx)
+			restSawEmptyTraceResponse = info.ResponseHeader().Get("traceresponse") == ""
+			return next(ctx, spec, stream)
 		}
 	})
-	handler := connect.NewUnaryHandler("/test.Service/Call", func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
-		return connect.NewResponse(&emptypb.Empty{}), nil
-	}, HandlerInterceptors(ic, rest))
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: "/test.Service/Call"}
+	server := connect.NewServer(HandlerInterceptors(ic, rest))
+	server.Register(connect.Method{Spec: spec, Handler: func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+		if err := stream.Receive(&emptypb.Empty{}); err != nil {
+			return err
+		}
+		return stream.Send(&emptypb.Empty{})
+	}})
 	mux := http.NewServeMux()
-	mux.Handle("/test.Service/Call", handler)
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
+	connecthttp.Mount(mux, server)
+	httpServer := httptest.NewServer(mux)
+	t.Cleanup(httpServer.Close)
 
-	client := connect.NewClient[emptypb.Empty, emptypb.Empty](server.Client(), server.URL+"/test.Service/Call")
-	response, err := client.CallUnary(t.Context(), connect.NewRequest(&emptypb.Empty{}))
-	if err != nil {
+	client := connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL))
+	ctx, clientInfo := connect.NewClientContext(t.Context())
+	if err := client.CallUnary(ctx, spec, &emptypb.Empty{}, &emptypb.Empty{}); err != nil {
 		t.Fatalf("CallUnary: %v", err)
 	}
 	if !restSawSpan {
 		t.Fatal("caller interceptor did not run inside the server span")
 	}
 	if !restSawEmptyTraceResponse {
-		t.Fatal("traceresponse set before the caller interceptor returned")
+		t.Fatal("traceresponse was set before the rest interceptor returned")
 	}
-	// The outer trace-response interceptor adds this header after rest returns.
-	if got := response.Header().Get("traceresponse"); got == "" {
+	if got := clientInfo.ResponseHeader().Get("traceresponse"); got == "" {
 		t.Fatal("traceresponse header is empty")
 	}
 	spans := exporter.GetSpans()

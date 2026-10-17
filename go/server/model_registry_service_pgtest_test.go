@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -35,24 +35,26 @@ func TestPutModelRegistryPersistsAndReadsBack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	putResp, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+	ctx = authReq(f, ctx)
+	putResp, err := f.client.PutModelRegistry(ctx, &compassv1.PutModelRegistryRequest{
 		Registry: wireReg1("opus"), ExpectedVersion: 0,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PutModelRegistry: %v", err)
 	}
-	if putResp.Msg.GetVersion() != 1 {
-		t.Fatalf("seed version = %d, want 1", putResp.Msg.GetVersion())
+	if putResp.GetVersion() != 1 {
+		t.Fatalf("seed version = %d, want 1", putResp.GetVersion())
 	}
-	getResp, err := f.client.GetModelRegistry(ctx, authReq(f, &compassv1.GetModelRegistryRequest{}))
+	ctx = authReq(f, ctx)
+	getResp, err := f.client.GetModelRegistry(ctx, &compassv1.GetModelRegistryRequest{})
 	if err != nil {
 		t.Fatalf("GetModelRegistry: %v", err)
 	}
-	if getResp.Msg.GetVersion() != 1 {
-		t.Errorf("read version = %d, want 1", getResp.Msg.GetVersion())
+	if getResp.GetVersion() != 1 {
+		t.Errorf("read version = %d, want 1", getResp.GetVersion())
 	}
-	if _, ok := getResp.Msg.GetRegistry().GetEntries()["opus"]; !ok {
-		t.Errorf("read registry missing 'opus': %+v", getResp.Msg.GetRegistry())
+	if _, ok := getResp.GetRegistry().GetEntries()["opus"]; !ok {
+		t.Errorf("read registry missing 'opus': %+v", getResp.GetRegistry())
 	}
 }
 
@@ -63,14 +65,14 @@ func TestGetModelRegistryUnconfiguredIsEmpty(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	resp, err := f.client.GetModelRegistry(ctx, authReq(f, &compassv1.GetModelRegistryRequest{}))
+	resp, err := f.client.GetModelRegistry(authReq(f, ctx), &compassv1.GetModelRegistryRequest{})
 	if err != nil {
 		t.Fatalf("GetModelRegistry on unconfigured fleet: %v", err)
 	}
-	if resp.Msg.GetVersion() != 0 {
-		t.Errorf("unconfigured version = %d, want 0", resp.Msg.GetVersion())
+	if resp.GetVersion() != 0 {
+		t.Errorf("unconfigured version = %d, want 0", resp.GetVersion())
 	}
-	if n := len(resp.Msg.GetRegistry().GetEntries()); n != 0 {
+	if n := len(resp.GetRegistry().GetEntries()); n != 0 {
 		t.Errorf("unconfigured registry has %d entries, want 0", n)
 	}
 }
@@ -82,27 +84,27 @@ func TestPutModelRegistryVersionBumpObservableViaGet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	v1, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+	v1, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
 		Registry: wireReg1("opus"), ExpectedVersion: 0,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	v2, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("sonnet"), ExpectedVersion: v1.Msg.GetVersion(),
-	}))
+	v2, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
+		Registry: wireReg1("sonnet"), ExpectedVersion: v1.GetVersion(),
+	})
 	if err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	if v2.Msg.GetVersion() != v1.Msg.GetVersion()+1 {
-		t.Fatalf("replace version = %d, want %d", v2.Msg.GetVersion(), v1.Msg.GetVersion()+1)
+	if v2.GetVersion() != v1.GetVersion()+1 {
+		t.Fatalf("replace version = %d, want %d", v2.GetVersion(), v1.GetVersion()+1)
 	}
-	getResp, err := f.client.GetModelRegistry(ctx, authReq(f, &compassv1.GetModelRegistryRequest{}))
+	getResp, err := f.client.GetModelRegistry(authReq(f, ctx), &compassv1.GetModelRegistryRequest{})
 	if err != nil {
 		t.Fatalf("GetModelRegistry: %v", err)
 	}
-	if getResp.Msg.GetVersion() != v2.Msg.GetVersion() {
-		t.Errorf("Get version = %d, want %d", getResp.Msg.GetVersion(), v2.Msg.GetVersion())
+	if getResp.GetVersion() != v2.GetVersion() {
+		t.Errorf("Get version = %d, want %d", getResp.GetVersion(), v2.GetVersion())
 	}
 }
 
@@ -113,21 +115,21 @@ func TestPutModelRegistryStaleVersionIsAborted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	v1, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+	v1, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
 		Registry: wireReg1("opus"), ExpectedVersion: 0,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("sonnet"), ExpectedVersion: v1.Msg.GetVersion(),
-	})); err != nil {
+	if _, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
+		Registry: wireReg1("sonnet"), ExpectedVersion: v1.GetVersion(),
+	}); err != nil {
 		t.Fatalf("first replace: %v", err)
 	}
 	// Reuse the now-stale v1 version.
-	_, err = f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("haiku"), ExpectedVersion: v1.Msg.GetVersion(),
-	}))
+	_, err = f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
+		Registry: wireReg1("haiku"), ExpectedVersion: v1.GetVersion(),
+	})
 	if connect.CodeOf(err) != connect.CodeAborted {
 		t.Fatalf("stale version = %v, want CodeAborted", connect.CodeOf(err))
 	}
@@ -143,9 +145,9 @@ func TestPutModelRegistryMalformedIsInvalidArgument(t *testing.T) {
 	bad := &compassv1.ModelRegistry{Entries: map[string]*compassv1.ModelRegistryEntry{
 		"opus": {DisplayName: "Opus", Candidates: nil}, // no candidates
 	}}
-	_, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+	_, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
 		Registry: bad, ExpectedVersion: 0,
-	}))
+	})
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("malformed payload = %v, want CodeInvalidArgument", connect.CodeOf(err))
 	}
@@ -160,23 +162,23 @@ func TestPutModelRegistryOrphaningRemovalIsInvalidArgument(t *testing.T) {
 
 	// Seed a registry holding "opus" FIRST — the reverse bundle-door lint rejects
 	// publishing a profile that pins a name absent from the registry.
-	v1, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+	v1, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
 		Registry: wireReg1("opus"), ExpectedVersion: 0,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Publish a config bundle whose profile pins "opus".
-	if _, err := f.client.PutAgentConfig(ctx, authReq(f, &compassv1.PutAgentConfigRequest{
+	if _, err := f.client.PutAgentConfig(authReq(f, ctx), &compassv1.PutAgentConfigRequest{
 		Bundle: mkConfigBundle(t, map[string]string{
 			"profiles/candidate/profile.yml": "models:\n  manager: opus\n",
 		}),
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("PutAgentConfig: %v", err)
 	}
-	_, err = f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
-		Registry: wireReg1("sonnet"), ExpectedVersion: v1.Msg.GetVersion(), // drops "opus"
-	}))
+	_, err = f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
+		Registry: wireReg1("sonnet"), ExpectedVersion: v1.GetVersion(), // drops "opus"
+	})
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("orphaning removal = %v, want CodeInvalidArgument", connect.CodeOf(err))
 	}
@@ -202,9 +204,9 @@ func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	client := networkDoorHandler(t, svc, st, admin)
 
 	t.Run("PutModelRegistry as non-admin is PermissionDenied", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.PutModelRegistryRequest{Registry: wireReg1("opus")})
-		req.Header().Set("Authorization", "Bearer "+memberTok)
-		cctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		req := &compassv1.PutModelRegistryRequest{Registry: wireReg1("opus")}
+		cctx, cancel := context.WithTimeout(ctx, testTimeout)
+		cctx = clientContextWithBearer(cctx, "Bearer "+memberTok)
 		defer cancel()
 		if _, err := client.PutModelRegistry(cctx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatalf("non-admin PutModelRegistry = %v, want CodePermissionDenied", connect.CodeOf(err))
@@ -212,9 +214,9 @@ func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	})
 
 	t.Run("DeleteModelRegistry as non-admin is PermissionDenied", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.DeleteModelRegistryRequest{})
-		req.Header().Set("Authorization", "Bearer "+memberTok)
-		cctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		req := &compassv1.DeleteModelRegistryRequest{}
+		cctx, cancel := context.WithTimeout(ctx, testTimeout)
+		cctx = clientContextWithBearer(cctx, "Bearer "+memberTok)
 		defer cancel()
 		if _, err := client.DeleteModelRegistry(cctx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatalf("non-admin DeleteModelRegistry = %v, want CodePermissionDenied", connect.CodeOf(err))
@@ -222,9 +224,9 @@ func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	})
 
 	t.Run("GetModelRegistry as non-admin is admitted (open)", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.GetModelRegistryRequest{})
-		req.Header().Set("Authorization", "Bearer "+memberTok)
-		cctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		req := &compassv1.GetModelRegistryRequest{}
+		cctx, cancel := context.WithTimeout(ctx, testTimeout)
+		cctx = clientContextWithBearer(cctx, "Bearer "+memberTok)
 		defer cancel()
 		if _, err := client.GetModelRegistry(cctx, req); err != nil {
 			t.Fatalf("non-admin GetModelRegistry = %v, want admitted", err)
@@ -256,18 +258,18 @@ func TestPutModelRegistryMetadataRoundTripViaRPC(t *testing.T) {
 		},
 	}
 	reg := &compassv1.ModelRegistry{Entries: map[string]*compassv1.ModelRegistryEntry{"opus": want}}
-	if _, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+	if _, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
 		Registry: reg, ExpectedVersion: 0,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("PutModelRegistry: %v", err)
 	}
-	getResp, err := f.client.GetModelRegistry(ctx, authReq(f, &compassv1.GetModelRegistryRequest{}))
+	getResp, err := f.client.GetModelRegistry(authReq(f, ctx), &compassv1.GetModelRegistryRequest{})
 	if err != nil {
 		t.Fatalf("GetModelRegistry: %v", err)
 	}
-	got, ok := getResp.Msg.GetRegistry().GetEntries()["opus"]
+	got, ok := getResp.GetRegistry().GetEntries()["opus"]
 	if !ok {
-		t.Fatalf("read registry missing 'opus': %+v", getResp.Msg.GetRegistry())
+		t.Fatalf("read registry missing 'opus': %+v", getResp.GetRegistry())
 	}
 	md := got.GetMetadata()
 	if md.GetContextWindow() != 200000 {
@@ -307,38 +309,38 @@ func TestDeleteModelRegistryClearsAndOrphaningIsInvalidArgument(t *testing.T) {
 
 	t.Run("clear on seeded registry succeeds and Get reports version 0", func(t *testing.T) {
 		f := newConfigFixture(t)
-		if _, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+		if _, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
 			Registry: wireReg1("opus"), ExpectedVersion: 0,
-		})); err != nil {
+		}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		if _, err := f.client.DeleteModelRegistry(ctx, authReq(f, &compassv1.DeleteModelRegistryRequest{})); err != nil {
+		if _, err := f.client.DeleteModelRegistry(authReq(f, ctx), &compassv1.DeleteModelRegistryRequest{}); err != nil {
 			t.Fatalf("DeleteModelRegistry: %v", err)
 		}
-		getResp, err := f.client.GetModelRegistry(ctx, authReq(f, &compassv1.GetModelRegistryRequest{}))
+		getResp, err := f.client.GetModelRegistry(authReq(f, ctx), &compassv1.GetModelRegistryRequest{})
 		if err != nil {
 			t.Fatalf("GetModelRegistry after clear: %v", err)
 		}
-		if getResp.Msg.GetVersion() != 0 {
-			t.Fatalf("version after clear = %d, want 0", getResp.Msg.GetVersion())
+		if getResp.GetVersion() != 0 {
+			t.Fatalf("version after clear = %d, want 0", getResp.GetVersion())
 		}
 	})
 
 	t.Run("clear stranding a published profile pin is CodeInvalidArgument", func(t *testing.T) {
 		f := newConfigFixture(t)
-		if _, err := f.client.PutModelRegistry(ctx, authReq(f, &compassv1.PutModelRegistryRequest{
+		if _, err := f.client.PutModelRegistry(authReq(f, ctx), &compassv1.PutModelRegistryRequest{
 			Registry: wireReg1("opus"), ExpectedVersion: 0,
-		})); err != nil {
+		}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		if _, err := f.client.PutAgentConfig(ctx, authReq(f, &compassv1.PutAgentConfigRequest{
+		if _, err := f.client.PutAgentConfig(authReq(f, ctx), &compassv1.PutAgentConfigRequest{
 			Bundle: mkConfigBundle(t, map[string]string{
 				"profiles/candidate/profile.yml": "models:\n  manager: opus\n",
 			}),
-		})); err != nil {
+		}); err != nil {
 			t.Fatalf("publish pinning profile: %v", err)
 		}
-		_, err := f.client.DeleteModelRegistry(ctx, authReq(f, &compassv1.DeleteModelRegistryRequest{}))
+		_, err := f.client.DeleteModelRegistry(authReq(f, ctx), &compassv1.DeleteModelRegistryRequest{})
 		if connect.CodeOf(err) != connect.CodeInvalidArgument {
 			t.Fatalf("orphaning clear = %v, want CodeInvalidArgument", connect.CodeOf(err))
 		}

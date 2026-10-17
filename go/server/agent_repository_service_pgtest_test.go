@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -94,7 +95,7 @@ func newAgentRepositoryFixture(t *testing.T) agentRepositoryFixture {
 	broker.host = "github.com"
 	svc := newAgentRepositoryService(st, broker, signaler)
 	url := newAgentRepositoryH2CServer(t, svc, st, admin.ID)
-	client := compassv1connect.NewAgentRepositoryServiceClient(newAgentRepositoryH2CClient(t), url)
+	client := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), url, connecthttp.WithReadMaxBytes(0))))
 	return agentRepositoryFixture{
 		client: client, store: st, dsn: dsn, admin: admin.ID, owner: owner.ID,
 		outsider: outsider.ID, agent: agent.ID,
@@ -105,20 +106,21 @@ func newAgentRepositoryFixture(t *testing.T) agentRepositoryFixture {
 
 func newAgentRepositoryH2CServer(t *testing.T, svc compassv1connect.AgentRepositoryServiceHandler, st *store.Store, admin store.AccountID) string {
 	t.Helper()
-	path, handler := compassv1connect.NewAgentRepositoryServiceHandler(svc,
-		connect.WithInterceptors(auth.BearerInterceptor(st), auth.NewAdminGate(admin)))
+	server := connect.NewServer(auth.BearerInterceptor(st), auth.NewAdminGate(admin))
+	compassv1connect.RegisterAgentRepositoryServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewUnstartedServer(mux)
-	server.Config.Protocols = cleartextHTTP2()
-	server.Start()
-	t.Cleanup(server.Close)
-	return server.URL
+	connecthttp.Mount(mux, server)
+	httpServer := httptest.NewUnstartedServer(mux)
+	httpServer.Config.Protocols = cleartextHTTP2()
+	httpServer.Start()
+	t.Cleanup(httpServer.Close)
+	return httpServer.URL
 }
 
-func withAgentRepositoryToken[T any](token string, req *connect.Request[T]) *connect.Request[T] {
-	req.Header().Set("Authorization", "Bearer "+token)
-	return req
+func withAgentRepositoryToken(ctx context.Context, token string) context.Context {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return ctx
 }
 
 func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id string) store.TenantID {
@@ -142,19 +144,22 @@ func newAgentRepositoryH2CClient(t *testing.T) *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-func grantAgentRepository(client compassv1connect.AgentRepositoryServiceClient, ctx context.Context, token, handle, repository string) (*connect.Response[compassv1.GrantAgentRepositoryResponse], error) {
-	return client.GrantAgentRepository(ctx, withAgentRepositoryToken(token,
-		connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: handle, Repository: repository})))
+func grantAgentRepository(client compassv1connect.AgentRepositoryServiceClient, ctx context.Context, token, handle, repository string) (*compassv1.GrantAgentRepositoryResponse, error) {
+	ctx = withAgentRepositoryToken(ctx, token)
+	return client.GrantAgentRepository(ctx,
+		&compassv1.GrantAgentRepositoryRequest{AgentHandle: handle, Repository: repository})
 }
 
-func revokeAgentRepository(client compassv1connect.AgentRepositoryServiceClient, ctx context.Context, token, handle, repository string) (*connect.Response[compassv1.RevokeAgentRepositoryResponse], error) {
-	return client.RevokeAgentRepository(ctx, withAgentRepositoryToken(token,
-		connect.NewRequest(&compassv1.RevokeAgentRepositoryRequest{AgentHandle: handle, Repository: repository})))
+func revokeAgentRepository(client compassv1connect.AgentRepositoryServiceClient, ctx context.Context, token, handle, repository string) (*compassv1.RevokeAgentRepositoryResponse, error) {
+	ctx = withAgentRepositoryToken(ctx, token)
+	return client.RevokeAgentRepository(ctx,
+		&compassv1.RevokeAgentRepositoryRequest{AgentHandle: handle, Repository: repository})
 }
 
-func listAgentRepositories(client compassv1connect.AgentRepositoryServiceClient, ctx context.Context, token, handle string) (*connect.Response[compassv1.ListAgentRepositoriesResponse], error) {
-	return client.ListAgentRepositories(ctx, withAgentRepositoryToken(token,
-		connect.NewRequest(&compassv1.ListAgentRepositoriesRequest{AgentHandle: handle})))
+func listAgentRepositories(client compassv1connect.AgentRepositoryServiceClient, ctx context.Context, token, handle string) (*compassv1.ListAgentRepositoriesResponse, error) {
+	ctx = withAgentRepositoryToken(ctx, token)
+	return client.ListAgentRepositories(ctx,
+		&compassv1.ListAgentRepositoriesRequest{AgentHandle: handle})
 }
 
 func TestBuildDoorsMountsAgentRepositoryServiceWithDoorIdentity(t *testing.T) {
@@ -167,7 +172,7 @@ func TestBuildDoorsMountsAgentRepositoryServiceWithDoorIdentity(t *testing.T) {
 func assertSocketDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoors) {
 	t.Helper()
 	client := newHandlerAgentRepositoryClient(t, doors.uds.Handler)
-	_, err := client.GrantAgentRepository(ctx, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/socket"}))
+	_, err := client.GrantAgentRepository(ctx, &compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/socket"})
 	if err != nil {
 		t.Fatalf("socket ambient grant: %v", err)
 	}
@@ -176,7 +181,7 @@ func assertSocketDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoo
 func assertDevDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoors) {
 	t.Helper()
 	client := newHandlerAgentRepositoryClient(t, doors.dev.Handler)
-	_, err := client.GrantAgentRepository(ctx, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/dev"}))
+	_, err := client.GrantAgentRepository(ctx, &compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/dev"})
 	if err != nil {
 		t.Fatalf("dev ambient grant: %v", err)
 	}
@@ -185,12 +190,14 @@ func assertDevDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoors)
 func assertNetworkDoorIdentity(t *testing.T, ctx context.Context, doors *serveDoors, adminToken, ownerToken string) {
 	t.Helper()
 	client := newHandlerAgentRepositoryClient(t, doors.net.Handler)
-	grant := withAgentRepositoryToken(adminToken, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/network"}))
-	if _, err := client.GrantAgentRepository(ctx, grant); err != nil {
+	grantCtx := withAgentRepositoryToken(ctx, adminToken)
+	grant := &compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/network"}
+	if _, err := client.GrantAgentRepository(grantCtx, grant); err != nil {
 		t.Fatalf("network bearer owner grant: %v", err)
 	}
-	foreign := withAgentRepositoryToken(ownerToken, connect.NewRequest(&compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/foreign"}))
-	if _, err := client.GrantAgentRepository(ctx, foreign); connect.CodeOf(err) != connect.CodeNotFound {
+	foreignCtx := withAgentRepositoryToken(ctx, ownerToken)
+	foreign := &compassv1.GrantAgentRepositoryRequest{AgentHandle: "repo-door-admin/repo-admin-worker", Repository: "admin/foreign"}
+	if _, err := client.GrantAgentRepository(foreignCtx, foreign); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("network non-owner grant code = %v (%v), want NotFound", connect.CodeOf(err), err)
 	}
 }
@@ -199,25 +206,26 @@ func newHandlerAgentRepositoryClient(t *testing.T, handler http.Handler) compass
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return compassv1connect.NewAgentRepositoryServiceClient(server.Client(), server.URL)
+	return compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 }
+
 func TestAgentRepositoryServiceOwnerResolvesAndNormalizes(t *testing.T) {
 	f := newAgentRepositoryFixture(t)
 	ctx := context.Background()
 
 	added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "Owner/WorkStream")
-	if err != nil || !added.Msg.GetAdded() {
+	if err != nil || !added.GetAdded() {
 		t.Fatalf("bare grant = (%v, %v), want added", added, err)
 	}
 	if !slices.Equal(f.signaler.accounts, []store.AccountID{f.agent}) {
 		t.Fatalf("signals = %v, want one signal for target agent %q", f.signaler.accounts, f.agent)
 	}
 	listed, err := listAgentRepositories(f.client, ctx, f.ownerToken, "repo-owner/worker")
-	if err != nil || !slices.Equal(listed.Msg.GetRepositories(), []string{"owner/workstream"}) {
+	if err != nil || !slices.Equal(listed.GetRepositories(), []string{"owner/workstream"}) {
 		t.Fatalf("qualified list = (%v, %v), want [owner/workstream]", listed, err)
 	}
 	repeated, err := grantAgentRepository(f.client, ctx, f.ownerToken, "repo-owner/worker", "OWNER/WORKSTREAM")
-	if err != nil || repeated.Msg.GetAdded() {
+	if err != nil || repeated.GetAdded() {
 		t.Fatalf("repeat grant = (%v, %v), want added=false", repeated, err)
 	}
 	if len(f.signaler.accounts) != 1 {
@@ -297,7 +305,7 @@ func TestAgentRepositoryServiceAgentCanOnlyListItself(t *testing.T) {
 		t.Fatalf("GrantAgentRepository: %v", err)
 	}
 	listed, err := listAgentRepositories(f.client, ctx, f.agentToken, "")
-	if err != nil || !slices.Equal(listed.Msg.GetRepositories(), []string{"owner/workstream"}) {
+	if err != nil || !slices.Equal(listed.GetRepositories(), []string{"owner/workstream"}) {
 		t.Fatalf("agent self-list = (%v, %v), want its own row", listed, err)
 	}
 	if _, err := grantAgentRepository(f.client, ctx, f.agentToken, "worker", "owner/other"); connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -319,7 +327,7 @@ func TestAgentRepositoryServiceOrgCheck(t *testing.T) {
 	ctx := context.Background()
 
 	added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "OWNER/WORKSTREAM")
-	if err != nil || !added.Msg.GetAdded() {
+	if err != nil || !added.GetAdded() {
 		t.Fatalf("grant in same org = (%v, %v), want added", added, err)
 	}
 	if _, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "another/rejected"); connect.CodeOf(err) != connect.CodeFailedPrecondition {
@@ -334,10 +342,10 @@ func TestAgentRepositoryServiceOrgCheck(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GrantForgeScope(owner wildcard): %v", err)
 	}
-	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "owner/another"); err != nil || !added.Msg.GetAdded() {
+	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "owner/another"); err != nil || !added.GetAdded() {
 		t.Fatalf("grant within exact org under owner wildcard = (%v, %v), want added", added, err)
 	}
-	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "another/repository"); err != nil || !added.Msg.GetAdded() {
+	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "another/repository"); err != nil || !added.GetAdded() {
 		t.Fatalf("grant across org under owner wildcard = (%v, %v), want added", added, err)
 	}
 	if _, err := f.store.GrantAgentForgeScope(ctx, store.ForgeScope{
@@ -345,7 +353,7 @@ func TestAgentRepositoryServiceOrgCheck(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GrantAgentForgeScope(mixed org): %v", err)
 	}
-	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "fourth/repository"); err != nil || !added.Msg.GetAdded() {
+	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "fourth/repository"); err != nil || !added.GetAdded() {
 		t.Fatalf("grant across existing exact orgs under owner wildcard = (%v, %v), want added", added, err)
 	}
 
@@ -361,7 +369,7 @@ func TestAgentRepositoryServiceOrgCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAccountToken(empty owner): %v", err)
 	}
-	if added, err := grantAgentRepository(f.client, ctx, emptyToken, "repo-empty-agent", "other-org/repository"); err != nil || !added.Msg.GetAdded() {
+	if added, err := grantAgentRepository(f.client, ctx, emptyToken, "repo-empty-agent", "other-org/repository"); err != nil || !added.GetAdded() {
 		t.Fatalf("grant with empty effective scope = (%v, %v), want added", added, err)
 	}
 	emptyRows, err := f.store.ListAgentForgeScopeRepos(ctx, emptyAgent.ID, store.ForgeProviderGitHub, "github.com")
@@ -402,14 +410,14 @@ func TestAgentRepositoryServiceRevokeSignalsOnlyOnChange(t *testing.T) {
 	}
 	before := len(f.signaler.accounts)
 	removed, err := revokeAgentRepository(f.client, ctx, f.ownerToken, "worker", "OWNER/WORKSTREAM")
-	if err != nil || !removed.Msg.GetRemoved() {
+	if err != nil || !removed.GetRemoved() {
 		t.Fatalf("revoke = (%v, %v), want removed", removed, err)
 	}
 	if len(f.signaler.accounts) != before+1 || f.signaler.accounts[len(f.signaler.accounts)-1] != f.agent {
 		t.Fatalf("signals after revoke = %v, want one signal for %q", f.signaler.accounts, f.agent)
 	}
 	missing, err := revokeAgentRepository(f.client, ctx, f.ownerToken, "worker", "owner/workstream")
-	if err != nil || missing.Msg.GetRemoved() {
+	if err != nil || missing.GetRemoved() {
 		t.Fatalf("repeat revoke = (%v, %v), want removed=false", missing, err)
 	}
 	if len(f.signaler.accounts) != before+1 {
@@ -456,14 +464,14 @@ func TestAgentRepositoryServiceRequiresCallerAndApp(t *testing.T) {
 	ctx := context.Background()
 	noAuthURL := newAgentRepositoryH2CServer(t,
 		newAgentRepositoryService(f.store, &gitCredentialBroker{host: "github.com"}, nil), f.store, f.admin)
-	noAuthClient := compassv1connect.NewAgentRepositoryServiceClient(newAgentRepositoryH2CClient(t), noAuthURL)
+	noAuthClient := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), noAuthURL, connecthttp.WithReadMaxBytes(0))))
 	_, err := grantAgentRepository(noAuthClient, ctx, "", "missing", "bad")
 	if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
 		t.Fatalf("grant without caller code = %v (%v), want Unauthenticated", got, err)
 	}
 
 	nilURL := newAgentRepositoryH2CServer(t, newAgentRepositoryService(f.store, nil, nil), f.store, f.admin)
-	nilClient := compassv1connect.NewAgentRepositoryServiceClient(newAgentRepositoryH2CClient(t), nilURL)
+	nilClient := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), nilURL, connecthttp.WithReadMaxBytes(0))))
 	_, err = grantAgentRepository(nilClient, ctx, f.ownerToken, "missing", "bad")
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("grant without app code = %v (%v), want FailedPrecondition", got, err)

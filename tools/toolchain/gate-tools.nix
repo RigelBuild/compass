@@ -6,10 +6,10 @@
 # `packages = with pkgs; [ … ]` list, never hand-listed here: adding a dev-shell
 # tool extends CI and the gate with no edit to this file.
 #
-# Outputs, one per consumer:
-#   env      a symlink tree of every nixpkgs tool plus Meissa's linters; CI
-#            prepends its bin/ to PATH. The only way CI obtains buf/biome/rumdl/…
-#            at the pinned version — no `setup-*` action could match a nix pin.
+#   env      a symlink tree of every nixpkgs tool, the Connect plugin built from
+#            Compass's Go module graph, and Meissa's linters; CI prepends its bin/
+#            to PATH. The only way CI obtains buf/biome/rumdl/… at the pinned
+#            version — no `setup-*` action could match a nix pin.
 #   identity attr -> { version, store, bins }. `store` is the derivation path the
 #            parity gate compares against; `bins` names the binaries to probe
 #            (the attr name often differs from the command). The field is `store`,
@@ -55,6 +55,8 @@ let
   # shell uses, passed the same goToolchain so CI and the dev shell resolve one
   # store path per tool. Covered by the `goAnalysis` verdict, not the parsed attrs.
   goAnalysisTools = import ./go-analysis.nix { inherit pkgs goToolchain; };
+  # Built from Compass's Go module graph and included in the CI tool environment.
+  protocGenConnectGo = import ./protoc-gen-connect-go.nix { inherit pkgs goToolchain; };
 
   # Command names a derivation exposes. Dot-prefixed entries are nix wrapper
   # internals, never on PATH as commands.
@@ -80,7 +82,10 @@ in
 {
   env = pkgs.buildEnv {
     name = "compass-gate-tools";
-    paths = map (a: pkgs.${a}) attrs ++ builtins.attrValues meissaTools;
+    paths =
+      map (a: pkgs.${a}) attrs
+      ++ builtins.attrValues meissaTools
+      ++ [ protocGenConnectGo ];
   };
 
   identity = builtins.listToAttrs (map

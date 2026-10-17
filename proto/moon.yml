@@ -2,10 +2,10 @@
 # The compass.v1 contract schema. It owns the schema (compass/v1/*.proto) and
 # the single buf codegen pipeline - one schema, per-language clients fanned out
 # and checked in: connect-es TS in compass-client and protoc-gen-go/connect-go
-# Go in the go module, both drift-gated. buf and all its plugins (protoc-gen-es,
-# protoc-gen-go, protoc-gen-connect-go) come from the devenv toolchain on PATH,
-# resolved from immutable nix store paths, so codegen depends on no
-# package-install state.
+# Go in the go module, both drift-gated. buf, protoc, protoc-gen-es and
+# protoc-gen-go come from the devenv toolchain's pinned nixpkgs;
+# protoc-gen-connect-go is built from Compass's go/ module graph. All resolve
+# from immutable nix store paths, so codegen depends on no package-install state.
 #
 # Language-neutral (no crate, no language toolchain of its own): tagged `oss`
 # for the import boundary. The Rust backend that once co-owned this schema was
@@ -37,13 +37,13 @@ tasks:
     # spoken only between our binaries (buf.gen.agent-ts.yaml → the agent's
     # packages/compass-agent/src/gen, and buf.gen.internal-go.yaml → go/internal/gen
     # for BOTH agent.proto and runner.proto — one lane because they share that
-    # output tree and buf's clean:true wipes it per invocation). Every plugin
-    # comes from the same place as buf itself: protoc-gen-es and protoc-gen-go/
-    # protoc-gen-connect-go are all on the devenv PATH, resolved from immutable
-    # store paths. Codegen therefore depends on no package-install state, and no
-    # concurrent writer can tear a plugin mid-exec. The task runs from the
-    # workspace root, which is the compass root, so the templates' relative outs
-    # land in-tree.
+    # output tree and buf's clean:true wipes it per invocation). protoc-gen-es and
+    # protoc-gen-go are on the devenv PATH from pinned nixpkgs;
+    # protoc-gen-connect-go is built from Compass's go/ graph, so its version
+    # follows go.mod's tool entry. All use immutable store paths, so codegen
+    # depends on no package-install state and no concurrent writer can tear a
+    # plugin mid-exec. The task runs from the workspace root, which is the
+    # compass root, so the templates' relative outs land in-tree.
     # The TS internal lane needs --include-imports
     # (protoc-gen-es has no import-path mapping, so it regenerates the imported
     # payload types byte-identically); the Go internal lane must NOT (its M-mappings

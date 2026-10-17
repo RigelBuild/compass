@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
@@ -34,9 +36,10 @@ func timeAfter() <-chan time.Time { return time.After(testTimeout) }
 // Unix socket. It returns the base URL; the server is torn down via t.Cleanup.
 func newH2CTestServer(t *testing.T, svc *service) string {
 	t.Helper()
-	path, handler := compassv1connect.NewCompassServiceHandler(svc)
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -53,7 +56,7 @@ func newH2CClient(t *testing.T, baseURL string) compassv1connect.CompassServiceC
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1connect.NewCompassServiceClient(&http.Client{Transport: tr}, baseURL)
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // h2cTransport is a stdlib HTTP transport that speaks prior-knowledge cleartext
@@ -68,3 +71,9 @@ func h2cTransport(dial func(ctx context.Context, network, addr string) (net.Conn
 		DialContext: dial,
 	}
 }
+
+type testServerStream struct{}
+
+func (testServerStream) Receive(any) error  { return nil }
+func (testServerStream) SendHeaders() error { return nil }
+func (testServerStream) Send(any) error     { return nil }

@@ -31,7 +31,8 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
@@ -1090,7 +1091,7 @@ func buildDoors(
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
 	// empty, so mounted unconditionally. otelconnect goes FIRST so the span
 	// envelopes the security-critical interceptors.
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
 		return serveDoors{}, fmt.Errorf("otel: rpc interceptor: %w", err)
 	}
@@ -1109,63 +1110,55 @@ func buildDoors(
 
 	// CommsService rides the socket + dev doors and the network shared chain with
 	// no auth pair of its own here: comms attributes every RPC to the bootstrap admin.
-	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc,
-		otel.HandlerInterceptors(otelIC), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	ambient := []connect.ServerInterceptor{auth.AmbientIdentity(adminID)}
+	commsServer := connect.NewServer(otel.HandlerInterceptors(otelIC))
+	compassv1connect.RegisterCommsServiceHandler(commsServer, commsSvc)
 	// Shipped door: the Unix socket serves native gRPC, gRPC-Web, and Connect off
 	// one connect-go handler. No CORS: same-origin. The 0600 socket is the credential,
 	// so each service mounts the ambient-identity pair (the bootstrap admin, a user).
-	ambient := []connect.Interceptor{auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)}
-	socketPath, socketHandler := compassv1connect.NewCompassServiceHandler(svc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(compassServiceMaxReadBytes))
-	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-	agentRepositoryPath, agentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-	usageSocketPath, usageSocketHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-		otel.HandlerInterceptors(otelIC, ambient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	socketServer := connect.NewServer(otel.HandlerInterceptors(otelIC, ambient...))
+	compassv1connect.RegisterCompassServiceHandler(socketServer, svc)
+	secretsSocketServer := connect.NewServer(otel.HandlerInterceptors(otelIC, ambient...))
+	compassv1connect.RegisterSecretsServiceHandler(secretsSocketServer, secretsSvc)
+	agentRepositoryServer := connect.NewServer(otel.HandlerInterceptors(otelIC, ambient...))
+	compassv1connect.RegisterAgentRepositoryServiceHandler(agentRepositoryServer, agentRepositorySvc)
+	usageSocketServer := connect.NewServer(otel.HandlerInterceptors(otelIC, ambient...))
+	compassv1connect.RegisterUsageServiceHandler(usageSocketServer, usageSvc)
 	udsMux := http.NewServeMux()
-	udsMux.Handle(socketPath, socketHandler)
-	udsMux.Handle(commsPath, commsHandler)
-	udsMux.Handle(secretsSocketPath, secretsSocketHandler)
-	udsMux.Handle(usageSocketPath, usageSocketHandler)
-	udsMux.Handle(agentRepositoryPath, agentRepositoryHandler)
+	connecthttp.Mount(udsMux, socketServer, connecthttp.WithReadMaxBytes(compassServiceMaxReadBytes))
+	connecthttp.Mount(udsMux, commsServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	connecthttp.Mount(udsMux, secretsSocketServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	connecthttp.Mount(udsMux, usageSocketServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	connecthttp.Mount(udsMux, agentRepositoryServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	health.mount(udsMux)
 	udsServer := newLocalDoorServer(udsMux, localDoorHeaderTimeout, localDoorIdleTimeout)
-
 	// Dev-only browser door: the same services with permissive CORS on the
-	// loopback listener, off unless DevHTTP is passed. Interceptor ORDER is
-	// security-critical: AdminGate runs BEFORE the ambient pair so adminOnly RPCs
-	// (IssueToken) fail-close; reversing it would ADMIT IssueToken on this door.
+	// loopback listener, off unless DevHTTP is passed. AdminGate must precede
+	// ambient identity so adminOnly RPCs fail closed.
 	var devServer *http.Server
 	if devListener != nil {
-		// The gate classifies SecretsService's procedures authenticatedOpen, so it passes
-		// them; the ambient pair then attaches the admin for the user-only write authz.
-		devAmbient := []connect.Interceptor{auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)}
-		devPath, devHandler := compassv1connect.NewCompassServiceHandler(svc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(compassServiceMaxReadBytes))
-		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-		devAgentRepositoryPath, devAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-		devUsagePath, devUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-			otel.HandlerInterceptors(otelIC, devAmbient...), connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		devAmbient := []connect.ServerInterceptor{auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID)}
+		compassDevServer := connect.NewServer(otel.HandlerInterceptors(otelIC, devAmbient...))
+		compassv1connect.RegisterCompassServiceHandler(compassDevServer, svc)
+		devSecretsServer := connect.NewServer(otel.HandlerInterceptors(otelIC, devAmbient...))
+		compassv1connect.RegisterSecretsServiceHandler(devSecretsServer, secretsSvc)
+		devAgentRepositoryServer := connect.NewServer(otel.HandlerInterceptors(otelIC, devAmbient...))
+		compassv1connect.RegisterAgentRepositoryServiceHandler(devAgentRepositoryServer, agentRepositorySvc)
+		devUsageServer := connect.NewServer(otel.HandlerInterceptors(otelIC, devAmbient...))
+		compassv1connect.RegisterUsageServiceHandler(devUsageServer, usageSvc)
 		devMux := http.NewServeMux()
-		devMux.Handle(devPath, devHandler)
-		devMux.Handle(commsPath, commsHandler)
-		devMux.Handle(devSecretsPath, devSecretsHandler)
-		devMux.Handle(devUsagePath, devUsageHandler)
-		devMux.Handle(devAgentRepositoryPath, devAgentRepositoryHandler)
+		connecthttp.Mount(devMux, compassDevServer, connecthttp.WithReadMaxBytes(compassServiceMaxReadBytes))
+		connecthttp.Mount(devMux, commsServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		connecthttp.Mount(devMux, devSecretsServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		connecthttp.Mount(devMux, devUsageServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		connecthttp.Mount(devMux, devAgentRepositoryServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 		health.mount(devMux)
 		devServer = newLocalDoorServer(devCORS().Handler(devMux), localDoorHeaderTimeout, localDoorIdleTimeout)
 	}
-
-	// The Linear half: notify lane, session responder, and the webhook feeding both.
-	// serverResolver: the webhook secret is a SERVER secret (the net door keeps CONTAINER).
 	linear, err := buildLinearWiring(ctx, cfg, st, hub, commsSvc, serverResolver, adminID, linearBridgeID, linearTokens)
 	if err != nil {
 		return serveDoors{}, err
 	}
-
 	// Authenticated network door, built only when --listen is given. It mints and
 	// writes the bootstrap token 0600 under the state dir and mounts CompassService
 	// + CommsService behind bearer + admin-gate, the RunnerService door, and — when

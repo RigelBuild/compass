@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
@@ -511,7 +511,9 @@ func (s *forgeService) DriveAgent(ctx context.Context, agent store.AccountID) {
 }
 
 func (s *forgeService) MirrorAsUser(ctx context.Context, account store.Account, req *compassv1.MirrorToForgeRequest) (string, error) {
-	fail := func(code connect.Code, err error) (string, error) { return "", connect.NewError(code, err) }
+	fail := func(code connect.Code, err error) (string, error) {
+		return "", connect.NewError(code, err.Error()).WithCause(err)
+	}
 	if req == nil {
 		return fail(connect.CodeInvalidArgument, errors.New("mirror request is required"))
 	}
@@ -569,7 +571,7 @@ type resolvedMirrorMessages struct {
 
 func (s *forgeService) resolveMirrorMessages(ctx context.Context, actor store.AccountID, channelID, channelName, topicID string, messageIDs []string) (resolvedMirrorMessages, error) {
 	if (topicID == "") == (len(messageIDs) == 0) || len(messageIDs) > 50 {
-		return resolvedMirrorMessages{}, connect.NewError(connect.CodeInvalidArgument, errors.New("exactly one topic_id or 1 to 50 message ids are required"))
+		return resolvedMirrorMessages{}, connect.NewError(connect.CodeInvalidArgument, "exactly one topic_id or 1 to 50 message ids are required")
 	}
 	if topicID != "" {
 		topics, err := s.mirrorStoreDB.ListTopics(ctx, string(actor), channelID, true)
@@ -599,13 +601,13 @@ func (s *forgeService) resolveMirrorMessages(ctx context.Context, actor store.Ac
 			link := mirror.Link{Channel: channelName, Topic: topic.Name, URL: topicLinkFor(s.publicURL, channelID, topic.ID)}
 			return resolvedMirrorMessages{sourceKey: topic.ID, messages: messages, link: link, note: note}, nil
 		}
-		return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
+		return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound.Error()).WithCause(store.ErrNotFound)
 	}
 	ids := append([]string(nil), messageIDs...)
 	slices.Sort(ids)
 	for i, id := range ids {
 		if id == "" || i > 0 && id == ids[i-1] {
-			return resolvedMirrorMessages{}, connect.NewError(connect.CodeInvalidArgument, errors.New("message ids must be non-empty and unique"))
+			return resolvedMirrorMessages{}, connect.NewError(connect.CodeInvalidArgument, "message ids must be non-empty and unique")
 		}
 	}
 	hash := sha256.Sum256([]byte(strings.Join(ids, "\n")))
@@ -613,7 +615,7 @@ func (s *forgeService) resolveMirrorMessages(ctx context.Context, actor store.Ac
 	for _, id := range ids {
 		messageChannel, err := s.mirrorStoreDB.MessageChannel(ctx, id)
 		if errors.Is(err, store.ErrNotFound) || err == nil && messageChannel != store.ChannelID(channelID) {
-			return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
+			return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound.Error()).WithCause(store.ErrNotFound)
 		}
 		if err != nil {
 			return resolvedMirrorMessages{}, mirrorStoreError(err)
@@ -629,7 +631,7 @@ func (s *forgeService) resolveMirrorMessages(ctx context.Context, actor store.Ac
 		return resolvedMirrorMessages{}, mirrorStoreError(err)
 	}
 	if !member {
-		return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound)
+		return resolvedMirrorMessages{}, connect.NewError(connect.CodeNotFound, store.ErrNotFound.Error()).WithCause(store.ErrNotFound)
 	}
 	sort.Slice(messages, func(i, j int) bool {
 		if messages[i].At.Equal(messages[j].At) {
@@ -739,7 +741,7 @@ func (s *forgeService) clickDrive(ctx context.Context, row store.ForgeMirrorRow,
 		return fail(mirrorFailureCode(result.err), result.err)
 	}
 	if result.err != nil {
-		return "", connect.NewError(connect.CodeInternal, result.err)
+		return "", connect.NewError(connect.CodeInternal, result.err.Error()).WithCause(result.err)
 	}
 	if result.row.State != 2 {
 		return fail(connect.CodeUnavailable, errors.New("mirror row was not delivered"))
@@ -859,16 +861,16 @@ func parseConnectCode(code string) connect.Code {
 func mirrorStoreError(err error) error {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return connect.NewError(connect.CodeNotFound, err)
+		return connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
 	case errors.Is(err, store.ErrInvalidArgument):
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	case errors.Is(err, store.ErrPermissionDenied):
-		return connect.NewError(connect.CodePermissionDenied, err)
+		return connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
 	case errors.Is(err, store.ErrFailedPrecondition):
-		return connect.NewError(connect.CodeFailedPrecondition, err)
+		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	case errors.Is(err, store.ErrConflict):
-		return connect.NewError(connect.CodeAlreadyExists, err)
+		return connect.NewError(connect.CodeAlreadyExists, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 }

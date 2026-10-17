@@ -12,8 +12,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/grpchealth"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/grpchealth/v2"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
@@ -73,7 +74,7 @@ func TestServeHealthOnEveryDoor(t *testing.T) {
 
 func checkHealthDoor(t *testing.T, door healthDoorClient) {
 	t.Helper()
-	healthClient := grpchealth.NewClient(door.client, door.url, connect.WithGRPC())
+	healthClient := grpchealth.NewClient(connect.NewClient(connecthttp.NewTransport(door.client, door.url, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 	response, err := healthClient.Check(t.Context(), &grpchealth.CheckRequest{})
 	if err != nil {
 		t.Fatalf("token-less Health Check: %v", err)
@@ -83,8 +84,8 @@ func checkHealthDoor(t *testing.T, door healthDoorClient) {
 	}
 
 	if door.name == "network" {
-		client := compassv1connect.NewCompassServiceClient(door.client, door.url, connect.WithGRPC())
-		_, err := client.GetServerInfo(t.Context(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+		client := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(door.client, door.url, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+		_, err := client.GetServerInfo(t.Context(), &compassv1.GetServerInfoRequest{})
 		if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
 			t.Fatalf("token-less GetServerInfo error = %v, want Unauthenticated", err)
 		}

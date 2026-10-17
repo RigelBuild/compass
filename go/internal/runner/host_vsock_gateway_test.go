@@ -21,8 +21,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -155,12 +153,12 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 	client := runnertest.DialAgentSocket(t, gotPath)
 	callCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	resp, err := client.Comms(callCtx, &compassv1internal.CommsCallRequest{
 		CallId: "vc-1",
 		Call: &compassv1internal.CommsCallRequest_Post{
 			Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "chan-1"}},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Comms over the vsock-suffixed socket = %v, want the round-trip result", err)
 	}
@@ -168,10 +166,10 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 	if len(got) != 1 || got[0].GetSessionId() != sessionID {
 		t.Fatalf("relayed calls = %+v, want exactly one carrying session id %q", got, sessionID)
 	}
-	if resp.Msg.GetCallId() != "vc-1" {
-		t.Fatalf("result call id = %q, want vc-1", resp.Msg.GetCallId())
+	if resp.GetCallId() != "vc-1" {
+		t.Fatalf("result call id = %q, want vc-1", resp.GetCallId())
 	}
-	boardResp, err := client.Board(callCtx, connect.NewRequest(&compassv1internal.BoardCallRequest{
+	boardResp, err := client.Board(callCtx, &compassv1internal.BoardCallRequest{
 		CallId: "vb-1",
 		Call: &compassv1internal.BoardCallRequest_SetIssueState{
 			SetIssueState: &compassv1internal.SetIssueStateRequest{
@@ -179,7 +177,7 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 				State:   compassv1.IssueState_ISSUE_STATE_DONE,
 			},
 		},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("Board over the vsock-suffixed socket = %v, want the round-trip result", err)
 	}
@@ -190,8 +188,8 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 	if gotBoard[0].GetCall().GetCallId() != "vb-1" {
 		t.Fatalf("relayed Board call id = %q, want vb-1", gotBoard[0].GetCall().GetCallId())
 	}
-	if boardResp.Msg.GetCallId() != "vb-1" {
-		t.Fatalf("Board result call id = %q, want vb-1", boardResp.Msg.GetCallId())
+	if boardResp.GetCallId() != "vb-1" {
+		t.Fatalf("Board result call id = %q, want vb-1", boardResp.GetCallId())
 	}
 }
 

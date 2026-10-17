@@ -11,7 +11,7 @@ import (
 	"context"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -38,31 +38,31 @@ var errNilForgeResult = errors.New("gateway: relay returned no forge result")
 // failure (Server unreachable) surfaces as a Connect error, which the agent
 // renders as an in-band tool error too. Mirrors Lifecycle exactly.
 func (g *Gateway) Forge(
-	ctx context.Context, req *connect.Request[compassv1internal.ForgeCallRequest],
-) (*connect.Response[compassv1internal.ForgeCallResult], error) {
+	ctx context.Context, req *compassv1internal.ForgeCallRequest,
+) (*compassv1internal.ForgeCallResult, error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	// An empty session id is unbound too: the resolver must never hand back a
 	// live binding to the empty session, but treat "" as unbound rather than
 	// forward it — the handler promises never to relay an empty session id.
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForForge)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForForge.Error()).WithCause(errNoSessionForForge)
 	}
 
-	resp, err := g.forge.RelayForgeCall(ctx, connect.NewRequest(&compassv1internal.RelayForgeCallRequest{
+	resp, err := g.forge.RelayForgeCall(ctx, &compassv1internal.RelayForgeCallRequest{
 		SessionId: sessionID,
-		Call:      req.Msg,
-	}))
+		Call:      req,
+	})
 	if err != nil {
-		// A transport failure on the Runner->Server leg. Surfaced as a Connect
-		// error the agent renders in-band; the turn is not torn down.
-		return nil, err
+		// A transport failure on the Runner->Server leg. Surface the upstream
+		// status and message as a local gateway verdict.
+		return nil, relayedError(err)
 	}
 	// A well-formed RelayForgeCallResponse always carries a result; a nil result
 	// is a malformed Server response, surfaced as a Connect error (never a
 	// success wrapping a nil Msg the agent would deref).
-	result := resp.Msg.GetResult()
+	result := resp.GetResult()
 	if result == nil {
-		return nil, connect.NewError(connect.CodeInternal, errNilForgeResult)
+		return nil, connect.NewError(connect.CodeInternal, errNilForgeResult.Error()).WithCause(errNilForgeResult)
 	}
-	return connect.NewResponse(result), nil
+	return result, nil
 }

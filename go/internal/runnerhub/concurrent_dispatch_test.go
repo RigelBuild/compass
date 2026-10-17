@@ -28,10 +28,9 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -46,14 +45,17 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	t.Cleanup(cancel)
 
-	if _, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"})); err != nil {
+	if _, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: "runner-1"}); err != nil {
 		t.Fatalf("Enroll = %v, want success", err)
 	}
 
 	// Open the Sessions stream; the Runner-side loop echoes each Start command's
 	// request id back as a correlated session id, so a dispatch completes iff its
 	// own result returned — and returned carrying its own id in the payload.
-	stream := client.Sessions(ctx)
+	stream, err := client.Sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	loopErr := make(chan error, 1)
 	go echoSessionsLoop(stream, loopErr)
 
@@ -106,7 +108,7 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 	}
 
 	// Clean teardown: close the stream and confirm the runner loop saw EOF.
-	if err := stream.CloseRequest(); err != nil {
+	if err := stream.CloseSend(); err != nil {
 		t.Fatalf("CloseRequest = %v", err)
 	}
 	if err := recvLoopErr(t, loopErr); err != nil {
@@ -119,7 +121,7 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 // not sent until the client's first Send), then it drains every command the
 // Server pushes and answers each Start with a session id encoding the command's
 // request id, so the dispatcher can prove per-call correlation of the payload.
-func echoSessionsLoop(stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse], done chan<- error) {
+func echoSessionsLoop(stream compassv1internalconnect.RunnerServiceSessionsClientStream, done chan<- error) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		done <- err
 		return

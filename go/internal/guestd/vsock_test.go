@@ -14,7 +14,8 @@ import (
 	"net/http"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -38,13 +39,21 @@ func TestServeHandshakeHealthOverH2C(t *testing.T) {
 	protocols.SetUnencryptedHTTP2(true)
 	h2cClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
 
-	client := compassv1internalconnect.NewGuestControlClient(h2cClient, "http://"+ln.Addr().String())
-	resp, err := client.Health(t.Context(), connect.NewRequest(&compassv1internal.HealthRequest{}))
+	client := compassv1internalconnect.NewGuestControlClient(
+		connect.NewClient(
+			connecthttp.NewTransport(
+				h2cClient,
+				"http://"+ln.Addr().String(),
+				connecthttp.WithReadMaxBytes(0),
+			),
+		),
+	)
+	resp, err := client.Health(t.Context(), &compassv1internal.HealthRequest{})
 	if err != nil {
 		t.Fatalf("Health call over h2c: %v", err)
 	}
 
-	msg := resp.Msg
+	msg := resp
 	if msg.GetGuestdVersion() != "v-test" {
 		t.Fatalf("GuestdVersion = %q, want v-test", msg.GetGuestdVersion())
 	}

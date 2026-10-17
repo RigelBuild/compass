@@ -29,71 +29,154 @@
 package compassv1internalconnect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// RunnerServiceName is the fully-qualified name of the RunnerService service.
 	RunnerServiceName = "compass.v1.RunnerService"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// RunnerServiceEnrollProcedure is the fully-qualified name of the RunnerService's Enroll RPC.
+	// RunnerServiceEnrollProcedure is the procedure name of the RunnerService's Enroll RPC.
 	RunnerServiceEnrollProcedure = "/compass.v1.RunnerService/Enroll"
-	// RunnerServiceSessionsProcedure is the fully-qualified name of the RunnerService's Sessions RPC.
+	// RunnerServiceSessionsProcedure is the procedure name of the RunnerService's Sessions RPC.
 	RunnerServiceSessionsProcedure = "/compass.v1.RunnerService/Sessions"
-	// RunnerServicePublishEventsProcedure is the fully-qualified name of the RunnerService's
-	// PublishEvents RPC.
+	// RunnerServicePublishEventsProcedure is the procedure name of the RunnerService's PublishEvents
+	// RPC.
 	RunnerServicePublishEventsProcedure = "/compass.v1.RunnerService/PublishEvents"
-	// RunnerServiceRelayCommsCallProcedure is the fully-qualified name of the RunnerService's
-	// RelayCommsCall RPC.
+	// RunnerServiceRelayCommsCallProcedure is the procedure name of the RunnerService's RelayCommsCall
+	// RPC.
 	RunnerServiceRelayCommsCallProcedure = "/compass.v1.RunnerService/RelayCommsCall"
-	// RunnerServiceRelayLifecycleCallProcedure is the fully-qualified name of the RunnerService's
+	// RunnerServiceRelayLifecycleCallProcedure is the procedure name of the RunnerService's
 	// RelayLifecycleCall RPC.
 	RunnerServiceRelayLifecycleCallProcedure = "/compass.v1.RunnerService/RelayLifecycleCall"
-	// RunnerServiceRelayForgeCallProcedure is the fully-qualified name of the RunnerService's
-	// RelayForgeCall RPC.
+	// RunnerServiceRelayForgeCallProcedure is the procedure name of the RunnerService's RelayForgeCall
+	// RPC.
 	RunnerServiceRelayForgeCallProcedure = "/compass.v1.RunnerService/RelayForgeCall"
-	// RunnerServiceRelayBoardCallProcedure is the fully-qualified name of the RunnerService's
-	// RelayBoardCall RPC.
+	// RunnerServiceRelayBoardCallProcedure is the procedure name of the RunnerService's RelayBoardCall
+	// RPC.
 	RunnerServiceRelayBoardCallProcedure = "/compass.v1.RunnerService/RelayBoardCall"
-	// RunnerServiceCommitConversationFrameProcedure is the fully-qualified name of the RunnerService's
+	// RunnerServiceCommitConversationFrameProcedure is the procedure name of the RunnerService's
 	// CommitConversationFrame RPC.
 	RunnerServiceCommitConversationFrameProcedure = "/compass.v1.RunnerService/CommitConversationFrame"
-	// RunnerServiceFetchSecretsProcedure is the fully-qualified name of the RunnerService's
-	// FetchSecrets RPC.
+	// RunnerServiceFetchSecretsProcedure is the procedure name of the RunnerService's FetchSecrets RPC.
 	RunnerServiceFetchSecretsProcedure = "/compass.v1.RunnerService/FetchSecrets"
-	// RunnerServiceBindLifetimeProcedure is the fully-qualified name of the RunnerService's
-	// BindLifetime RPC.
+	// RunnerServiceBindLifetimeProcedure is the procedure name of the RunnerService's BindLifetime RPC.
 	RunnerServiceBindLifetimeProcedure = "/compass.v1.RunnerService/BindLifetime"
-	// RunnerServiceFetchAgentConfigProcedure is the fully-qualified name of the RunnerService's
+	// RunnerServiceFetchAgentConfigProcedure is the procedure name of the RunnerService's
 	// FetchAgentConfig RPC.
 	RunnerServiceFetchAgentConfigProcedure = "/compass.v1.RunnerService/FetchAgentConfig"
-	// RunnerServiceRelaySessionBlobProcedure is the fully-qualified name of the RunnerService's
+	// RunnerServiceRelaySessionBlobProcedure is the procedure name of the RunnerService's
 	// RelaySessionBlob RPC.
 	RunnerServiceRelaySessionBlobProcedure = "/compass.v1.RunnerService/RelaySessionBlob"
-	// RunnerServiceFetchSessionBlobsProcedure is the fully-qualified name of the RunnerService's
+	// RunnerServiceFetchSessionBlobsProcedure is the procedure name of the RunnerService's
 	// FetchSessionBlobs RPC.
 	RunnerServiceFetchSessionBlobsProcedure = "/compass.v1.RunnerService/FetchSessionBlobs"
+)
+
+var (
+	runnerServiceEnrollSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("Enroll"),
+			Procedure:  RunnerServiceEnrollProcedure,
+		}
+	})
+	runnerServiceSessionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeBidi,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("Sessions"),
+			Procedure:  RunnerServiceSessionsProcedure,
+		}
+	})
+	runnerServicePublishEventsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeClient,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("PublishEvents"),
+			Procedure:  RunnerServicePublishEventsProcedure,
+		}
+	})
+	runnerServiceRelayCommsCallSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("RelayCommsCall"),
+			Procedure:  RunnerServiceRelayCommsCallProcedure,
+		}
+	})
+	runnerServiceRelayLifecycleCallSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("RelayLifecycleCall"),
+			Procedure:  RunnerServiceRelayLifecycleCallProcedure,
+		}
+	})
+	runnerServiceRelayForgeCallSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("RelayForgeCall"),
+			Procedure:  RunnerServiceRelayForgeCallProcedure,
+		}
+	})
+	runnerServiceRelayBoardCallSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("RelayBoardCall"),
+			Procedure:  RunnerServiceRelayBoardCallProcedure,
+		}
+	})
+	runnerServiceCommitConversationFrameSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("CommitConversationFrame"),
+			Procedure:  RunnerServiceCommitConversationFrameProcedure,
+		}
+	})
+	runnerServiceFetchSecretsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("FetchSecrets"),
+			Procedure:  RunnerServiceFetchSecretsProcedure,
+		}
+	})
+	runnerServiceBindLifetimeSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("BindLifetime"),
+			Procedure:  RunnerServiceBindLifetimeProcedure,
+		}
+	})
+	runnerServiceFetchAgentConfigSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("FetchAgentConfig"),
+			Procedure:  RunnerServiceFetchAgentConfigProcedure,
+		}
+	})
+	runnerServiceRelaySessionBlobSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("RelaySessionBlob"),
+			Procedure:  RunnerServiceRelaySessionBlobProcedure,
+		}
+	})
+	runnerServiceFetchSessionBlobsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods().ByName("FetchSessionBlobs"),
+			Procedure:  RunnerServiceFetchSessionBlobsProcedure,
+		}
+	})
 )
 
 // RunnerServiceClient is a client for the compass.v1.RunnerService service.
@@ -105,7 +188,7 @@ type RunnerServiceClient interface {
 	// the two mandatory cross-door rejection tests). Duplicate enrollment
 	// re-attaches the same Runner rather than
 	// registering a second (single-Runner MVP, OQ6).
-	Enroll(context.Context, *connect.Request[v1.EnrollRequest]) (*connect.Response[v1.EnrollResponse], error)
+	Enroll(context.Context, *v1.EnrollRequest) (*v1.EnrollResponse, error)
 	// Sessions (bidi, Runner-opened): the session-command relay. Because the
 	// Runner is the gRPC client, its REQUEST stream carries command *results*
 	// upward and the Server's RESPONSE stream pushes session *commands* downward
@@ -114,7 +197,7 @@ type RunnerServiceClient interface {
 	// its result carry a shared `request_id` (OQ6): a command retried after a
 	// timeout reuses its id so the Runner dedupes it to the original result — no
 	// duplicate container, no spurious ALREADY_RUNNING.
-	Sessions(context.Context) *connect.BidiStreamForClient[v1.SessionsRequest, v1.SessionsResponse]
+	Sessions(context.Context) (RunnerServiceSessionsClientStream, error)
 	// PublishEvents (client-stream, Runner->Server): the Runner relays each agent
 	// stdout frame upward. The stream is Runner-sequenced (seq assigned at the
 	// Runner, not at Server publish) so in-transit loss is detectable as a gap
@@ -122,28 +205,28 @@ type RunnerServiceClient interface {
 	// This is the sole path Runner events take into the Server; the
 	// RunnerHub.Deliver seam behind it is where a future brokered transport would
 	// substitute, nothing else (design.md:1347-1352).
-	PublishEvents(context.Context) *connect.ClientStreamForClient[v1.PublishEventsRequest, v1.PublishEventsResponse]
+	PublishEvents(context.Context) (RunnerServicePublishEventsClientStream, error)
 	// RelayCommsCall forwards one agent-initiated comms call under the account
 	// resolved from the Server's session binding. Unknown and foreign-Runner
 	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
 	// The Runner sends the session_id it structurally owns and asserts no account.
 	// The request cannot express RespondToAsk, so agents cannot answer asks.
-	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
+	RelayCommsCall(context.Context, *v1.RelayCommsCallRequest) (*v1.RelayCommsCallResponse, error)
 	// RelayLifecycleCall forwards one agent-initiated lifecycle call under the
 	// account resolved from the Server's session binding. Unknown and foreign-
 	// Runner sessions share FailedPrecondition; unverifiable bindings return
 	// Unavailable. Spawn and despawn authority is resolved for that account.
-	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
+	RelayLifecycleCall(context.Context, *v1.RelayLifecycleCallRequest) (*v1.RelayLifecycleCallResponse, error)
 	// RelayForgeCall forwards one agent-initiated forge call under the account
 	// resolved from the Server's session binding and stamps its owner header.
 	// Unknown and foreign-Runner sessions share FailedPrecondition; unverifiable
 	// bindings return Unavailable. Reads use the projection/store, not a live
 	// forge proxy.
-	RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error)
+	RelayForgeCall(context.Context, *v1.RelayForgeCallRequest) (*v1.RelayForgeCallResponse, error)
 	// RelayBoardCall forwards one agent-initiated board call under the account
 	// resolved from the Server's session binding. Unknown and foreign-Runner
 	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
-	RelayBoardCall(context.Context, *connect.Request[v1.RelayBoardCallRequest]) (*connect.Response[v1.RelayBoardCallResponse], error)
+	RelayBoardCall(context.Context, *v1.RelayBoardCallRequest) (*v1.RelayBoardCallResponse, error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
 	// the DURABLE counterpart to PublishEvents: conversation_posted /
@@ -166,21 +249,21 @@ type RunnerServiceClient interface {
 	//
 	// Additive to the dial-out shape (the Runner still initiates; the
 	// Server gains no inbound route), same justification as RelayCommsCall.
-	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
+	CommitConversationFrame(context.Context, *v1.CommitConversationFrameRequest) (*v1.CommitConversationFrameResponse, error)
 	// FetchSecrets (unary, Runner->Server): the Runner fetches the full resolved
 	// secret set for one session to materialize into the agent container (RIG-1327
 	// T4). Inject-all: no name filter, no per-agent grants (the filter is the
 	// named future per-agent-scoping seam). The response is no-log: a logging
 	// interceptor must never dump resolved values. Additive to the dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
-	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
+	FetchSecrets(context.Context, *v1.FetchSecretsRequest) (*v1.FetchSecretsResponse, error)
 	// BindLifetime (unary, Runner->Server): snapshot a session's transcript
 	// rebase base for a new lifetime. The Runner calls it under the container
 	// lock for a resume or a Reload, after accepting and before the agent runs,
 	// so a refused resume never moves a live session's base. Authorized on the
 	// container->account binding recorded at Provision; an unbound container, a
 	// session of another account, and an unknown session are all PermissionDenied.
-	BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error)
+	BindLifetime(context.Context, *v1.BindLifetimeRequest) (*v1.BindLifetimeResponse, error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision
 	// (RIG-1568 T3/T4). Server-streaming so the bundle is never bounded by the
@@ -195,192 +278,132 @@ type RunnerServiceClient interface {
 	// rejected). An unconfigured fleet returns a version frame with an empty
 	// version and no chunks, never an error. Additive to the dial-out shape
 	// (the Runner still initiates; the Server gains no inbound route).
-	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest]) (*connect.ServerStreamForClient[v1.FetchAgentConfigResponse], error)
+	FetchAgentConfig(context.Context, *v1.FetchAgentConfigRequest) (RunnerServiceFetchAgentConfigClientStream, error)
 	// RelaySessionBlob forwards an agent's PutSessionBlob for the session bound
 	// to its container. Unknown and foreign-Runner sessions share
 	// FailedPrecondition; unverifiable bindings return Unavailable. Missing
 	// blob object storage returns Unimplemented.
-	RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error)
+	RelaySessionBlob(context.Context, *v1.RelaySessionBlobRequest) (*v1.RelaySessionBlobResponse, error)
 	// FetchSessionBlobs (server-streaming, Runner->Server): on resume, fetch the
 	// blobs a resume body references. Each blob is a header frame then chunk
 	// frames; a header with absent set means the Server confirmed it is not stored.
 	// Missing blob object storage returns Unimplemented; binding failures do not
 	// confirm absence and must leave resume references unchanged.
-	FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest]) (*connect.ServerStreamForClient[v1.FetchSessionBlobsResponse], error)
+	FetchSessionBlobs(context.Context, *v1.FetchSessionBlobsRequest) (RunnerServiceFetchSessionBlobsClientStream, error)
 }
 
-// NewRunnerServiceClient constructs a client for the compass.v1.RunnerService service. By default,
-// it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and
-// sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC()
-// or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) RunnerServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	runnerServiceMethods := v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods()
-	return &runnerServiceClient{
-		enroll: connect.NewClient[v1.EnrollRequest, v1.EnrollResponse](
-			httpClient,
-			baseURL+RunnerServiceEnrollProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("Enroll")),
-			connect.WithClientOptions(opts...),
-		),
-		sessions: connect.NewClient[v1.SessionsRequest, v1.SessionsResponse](
-			httpClient,
-			baseURL+RunnerServiceSessionsProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("Sessions")),
-			connect.WithClientOptions(opts...),
-		),
-		publishEvents: connect.NewClient[v1.PublishEventsRequest, v1.PublishEventsResponse](
-			httpClient,
-			baseURL+RunnerServicePublishEventsProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("PublishEvents")),
-			connect.WithClientOptions(opts...),
-		),
-		relayCommsCall: connect.NewClient[v1.RelayCommsCallRequest, v1.RelayCommsCallResponse](
-			httpClient,
-			baseURL+RunnerServiceRelayCommsCallProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("RelayCommsCall")),
-			connect.WithClientOptions(opts...),
-		),
-		relayLifecycleCall: connect.NewClient[v1.RelayLifecycleCallRequest, v1.RelayLifecycleCallResponse](
-			httpClient,
-			baseURL+RunnerServiceRelayLifecycleCallProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("RelayLifecycleCall")),
-			connect.WithClientOptions(opts...),
-		),
-		relayForgeCall: connect.NewClient[v1.RelayForgeCallRequest, v1.RelayForgeCallResponse](
-			httpClient,
-			baseURL+RunnerServiceRelayForgeCallProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("RelayForgeCall")),
-			connect.WithClientOptions(opts...),
-		),
-		relayBoardCall: connect.NewClient[v1.RelayBoardCallRequest, v1.RelayBoardCallResponse](
-			httpClient,
-			baseURL+RunnerServiceRelayBoardCallProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("RelayBoardCall")),
-			connect.WithClientOptions(opts...),
-		),
-		commitConversationFrame: connect.NewClient[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse](
-			httpClient,
-			baseURL+RunnerServiceCommitConversationFrameProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("CommitConversationFrame")),
-			connect.WithClientOptions(opts...),
-		),
-		fetchSecrets: connect.NewClient[v1.FetchSecretsRequest, v1.FetchSecretsResponse](
-			httpClient,
-			baseURL+RunnerServiceFetchSecretsProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
-			connect.WithClientOptions(opts...),
-		),
-		bindLifetime: connect.NewClient[v1.BindLifetimeRequest, v1.BindLifetimeResponse](
-			httpClient,
-			baseURL+RunnerServiceBindLifetimeProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("BindLifetime")),
-			connect.WithClientOptions(opts...),
-		),
-		fetchAgentConfig: connect.NewClient[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse](
-			httpClient,
-			baseURL+RunnerServiceFetchAgentConfigProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("FetchAgentConfig")),
-			connect.WithClientOptions(opts...),
-		),
-		relaySessionBlob: connect.NewClient[v1.RelaySessionBlobRequest, v1.RelaySessionBlobResponse](
-			httpClient,
-			baseURL+RunnerServiceRelaySessionBlobProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("RelaySessionBlob")),
-			connect.WithClientOptions(opts...),
-		),
-		fetchSessionBlobs: connect.NewClient[v1.FetchSessionBlobsRequest, v1.FetchSessionBlobsResponse](
-			httpClient,
-			baseURL+RunnerServiceFetchSessionBlobsProcedure,
-			connect.WithSchema(runnerServiceMethods.ByName("FetchSessionBlobs")),
-			connect.WithClientOptions(opts...),
-		),
+// NewRunnerServiceClient constructs a client for the compass.v1.RunnerService service. Multiple
+// service clients may share a single connect.Client.
+func NewRunnerServiceClient(client *connect.Client) RunnerServiceClient {
+	return &runnerServiceClient{client: client}
+}
+
+// RunnerServiceSessionsClientStream is the client stream for the RunnerService's Sessions RPC.
+type RunnerServiceSessionsClientStream struct {
+	stream connect.ClientStream
+}
+
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s RunnerServiceSessionsClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a request message to the server.
+func (s RunnerServiceSessionsClientStream) Send(req *v1.SessionsRequest) error {
+	return s.stream.Send(req)
+}
+
+// CloseSend closes the request side of the stream.
+func (s RunnerServiceSessionsClientStream) CloseSend() error {
+	return s.stream.CloseSend()
+}
+
+// Receive returns the next response message from the server.
+func (s RunnerServiceSessionsClientStream) Receive() (*v1.SessionsResponse, error) {
+	var res v1.SessionsResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
 	}
+	return &res, nil
 }
 
-// runnerServiceClient implements RunnerServiceClient.
-type runnerServiceClient struct {
-	enroll                  *connect.Client[v1.EnrollRequest, v1.EnrollResponse]
-	sessions                *connect.Client[v1.SessionsRequest, v1.SessionsResponse]
-	publishEvents           *connect.Client[v1.PublishEventsRequest, v1.PublishEventsResponse]
-	relayCommsCall          *connect.Client[v1.RelayCommsCallRequest, v1.RelayCommsCallResponse]
-	relayLifecycleCall      *connect.Client[v1.RelayLifecycleCallRequest, v1.RelayLifecycleCallResponse]
-	relayForgeCall          *connect.Client[v1.RelayForgeCallRequest, v1.RelayForgeCallResponse]
-	relayBoardCall          *connect.Client[v1.RelayBoardCallRequest, v1.RelayBoardCallResponse]
-	commitConversationFrame *connect.Client[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse]
-	fetchSecrets            *connect.Client[v1.FetchSecretsRequest, v1.FetchSecretsResponse]
-	bindLifetime            *connect.Client[v1.BindLifetimeRequest, v1.BindLifetimeResponse]
-	fetchAgentConfig        *connect.Client[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse]
-	relaySessionBlob        *connect.Client[v1.RelaySessionBlobRequest, v1.RelaySessionBlobResponse]
-	fetchSessionBlobs       *connect.Client[v1.FetchSessionBlobsRequest, v1.FetchSessionBlobsResponse]
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s RunnerServiceSessionsClientStream) Close() error {
+	return s.stream.Close()
 }
 
-// Enroll calls compass.v1.RunnerService.Enroll.
-func (c *runnerServiceClient) Enroll(ctx context.Context, req *connect.Request[v1.EnrollRequest]) (*connect.Response[v1.EnrollResponse], error) {
-	return c.enroll.CallUnary(ctx, req)
+// RunnerServicePublishEventsClientStream is the client stream for the RunnerService's PublishEvents
+// RPC.
+type RunnerServicePublishEventsClientStream struct {
+	stream connect.ClientStream
 }
 
-// Sessions calls compass.v1.RunnerService.Sessions.
-func (c *runnerServiceClient) Sessions(ctx context.Context) *connect.BidiStreamForClient[v1.SessionsRequest, v1.SessionsResponse] {
-	return c.sessions.CallBidiStream(ctx)
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s RunnerServicePublishEventsClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
 }
 
-// PublishEvents calls compass.v1.RunnerService.PublishEvents.
-func (c *runnerServiceClient) PublishEvents(ctx context.Context) *connect.ClientStreamForClient[v1.PublishEventsRequest, v1.PublishEventsResponse] {
-	return c.publishEvents.CallClientStream(ctx)
+// Send sends a request message to the server.
+func (s RunnerServicePublishEventsClientStream) Send(req *v1.PublishEventsRequest) error {
+	return s.stream.Send(req)
 }
 
-// RelayCommsCall calls compass.v1.RunnerService.RelayCommsCall.
-func (c *runnerServiceClient) RelayCommsCall(ctx context.Context, req *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error) {
-	return c.relayCommsCall.CallUnary(ctx, req)
+// CloseAndReceive closes the request side of the stream and returns the single response message. It
+// reads the stream to completion to release its resources.
+func (s RunnerServicePublishEventsClientStream) CloseAndReceive() (*v1.PublishEventsResponse, error) {
+	if err := s.stream.CloseSend(); err != nil {
+		return nil, err
+	}
+	var res v1.PublishEventsResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
-// RelayLifecycleCall calls compass.v1.RunnerService.RelayLifecycleCall.
-func (c *runnerServiceClient) RelayLifecycleCall(ctx context.Context, req *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error) {
-	return c.relayLifecycleCall.CallUnary(ctx, req)
+// RunnerServiceFetchAgentConfigClientStream is the client stream for the RunnerService's
+// FetchAgentConfig RPC.
+type RunnerServiceFetchAgentConfigClientStream struct {
+	stream connect.ClientStream
 }
 
-// RelayForgeCall calls compass.v1.RunnerService.RelayForgeCall.
-func (c *runnerServiceClient) RelayForgeCall(ctx context.Context, req *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error) {
-	return c.relayForgeCall.CallUnary(ctx, req)
+// Receive returns the next response message from the server.
+func (s RunnerServiceFetchAgentConfigClientStream) Receive() (*v1.FetchAgentConfigResponse, error) {
+	var res v1.FetchAgentConfigResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
-// RelayBoardCall calls compass.v1.RunnerService.RelayBoardCall.
-func (c *runnerServiceClient) RelayBoardCall(ctx context.Context, req *connect.Request[v1.RelayBoardCallRequest]) (*connect.Response[v1.RelayBoardCallResponse], error) {
-	return c.relayBoardCall.CallUnary(ctx, req)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s RunnerServiceFetchAgentConfigClientStream) Close() error {
+	return s.stream.Close()
 }
 
-// CommitConversationFrame calls compass.v1.RunnerService.CommitConversationFrame.
-func (c *runnerServiceClient) CommitConversationFrame(ctx context.Context, req *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {
-	return c.commitConversationFrame.CallUnary(ctx, req)
+// RunnerServiceFetchSessionBlobsClientStream is the client stream for the RunnerService's
+// FetchSessionBlobs RPC.
+type RunnerServiceFetchSessionBlobsClientStream struct {
+	stream connect.ClientStream
 }
 
-// FetchSecrets calls compass.v1.RunnerService.FetchSecrets.
-func (c *runnerServiceClient) FetchSecrets(ctx context.Context, req *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
-	return c.fetchSecrets.CallUnary(ctx, req)
+// Receive returns the next response message from the server.
+func (s RunnerServiceFetchSessionBlobsClientStream) Receive() (*v1.FetchSessionBlobsResponse, error) {
+	var res v1.FetchSessionBlobsResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
-// BindLifetime calls compass.v1.RunnerService.BindLifetime.
-func (c *runnerServiceClient) BindLifetime(ctx context.Context, req *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error) {
-	return c.bindLifetime.CallUnary(ctx, req)
-}
-
-// FetchAgentConfig calls compass.v1.RunnerService.FetchAgentConfig.
-func (c *runnerServiceClient) FetchAgentConfig(ctx context.Context, req *connect.Request[v1.FetchAgentConfigRequest]) (*connect.ServerStreamForClient[v1.FetchAgentConfigResponse], error) {
-	return c.fetchAgentConfig.CallServerStream(ctx, req)
-}
-
-// RelaySessionBlob calls compass.v1.RunnerService.RelaySessionBlob.
-func (c *runnerServiceClient) RelaySessionBlob(ctx context.Context, req *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error) {
-	return c.relaySessionBlob.CallUnary(ctx, req)
-}
-
-// FetchSessionBlobs calls compass.v1.RunnerService.FetchSessionBlobs.
-func (c *runnerServiceClient) FetchSessionBlobs(ctx context.Context, req *connect.Request[v1.FetchSessionBlobsRequest]) (*connect.ServerStreamForClient[v1.FetchSessionBlobsResponse], error) {
-	return c.fetchSessionBlobs.CallServerStream(ctx, req)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s RunnerServiceFetchSessionBlobsClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // RunnerServiceHandler is an implementation of the compass.v1.RunnerService service.
@@ -392,7 +415,7 @@ type RunnerServiceHandler interface {
 	// the two mandatory cross-door rejection tests). Duplicate enrollment
 	// re-attaches the same Runner rather than
 	// registering a second (single-Runner MVP, OQ6).
-	Enroll(context.Context, *connect.Request[v1.EnrollRequest]) (*connect.Response[v1.EnrollResponse], error)
+	Enroll(context.Context, *v1.EnrollRequest) (*v1.EnrollResponse, error)
 	// Sessions (bidi, Runner-opened): the session-command relay. Because the
 	// Runner is the gRPC client, its REQUEST stream carries command *results*
 	// upward and the Server's RESPONSE stream pushes session *commands* downward
@@ -401,7 +424,7 @@ type RunnerServiceHandler interface {
 	// its result carry a shared `request_id` (OQ6): a command retried after a
 	// timeout reuses its id so the Runner dedupes it to the original result — no
 	// duplicate container, no spurious ALREADY_RUNNING.
-	Sessions(context.Context, *connect.BidiStream[v1.SessionsRequest, v1.SessionsResponse]) error
+	Sessions(context.Context, RunnerServiceSessionsServerStream) error
 	// PublishEvents (client-stream, Runner->Server): the Runner relays each agent
 	// stdout frame upward. The stream is Runner-sequenced (seq assigned at the
 	// Runner, not at Server publish) so in-transit loss is detectable as a gap
@@ -409,28 +432,28 @@ type RunnerServiceHandler interface {
 	// This is the sole path Runner events take into the Server; the
 	// RunnerHub.Deliver seam behind it is where a future brokered transport would
 	// substitute, nothing else (design.md:1347-1352).
-	PublishEvents(context.Context, *connect.ClientStream[v1.PublishEventsRequest]) (*connect.Response[v1.PublishEventsResponse], error)
+	PublishEvents(context.Context, RunnerServicePublishEventsServerStream) (*v1.PublishEventsResponse, error)
 	// RelayCommsCall forwards one agent-initiated comms call under the account
 	// resolved from the Server's session binding. Unknown and foreign-Runner
 	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
 	// The Runner sends the session_id it structurally owns and asserts no account.
 	// The request cannot express RespondToAsk, so agents cannot answer asks.
-	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
+	RelayCommsCall(context.Context, *v1.RelayCommsCallRequest) (*v1.RelayCommsCallResponse, error)
 	// RelayLifecycleCall forwards one agent-initiated lifecycle call under the
 	// account resolved from the Server's session binding. Unknown and foreign-
 	// Runner sessions share FailedPrecondition; unverifiable bindings return
 	// Unavailable. Spawn and despawn authority is resolved for that account.
-	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
+	RelayLifecycleCall(context.Context, *v1.RelayLifecycleCallRequest) (*v1.RelayLifecycleCallResponse, error)
 	// RelayForgeCall forwards one agent-initiated forge call under the account
 	// resolved from the Server's session binding and stamps its owner header.
 	// Unknown and foreign-Runner sessions share FailedPrecondition; unverifiable
 	// bindings return Unavailable. Reads use the projection/store, not a live
 	// forge proxy.
-	RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error)
+	RelayForgeCall(context.Context, *v1.RelayForgeCallRequest) (*v1.RelayForgeCallResponse, error)
 	// RelayBoardCall forwards one agent-initiated board call under the account
 	// resolved from the Server's session binding. Unknown and foreign-Runner
 	// sessions share FailedPrecondition; unverifiable bindings return Unavailable.
-	RelayBoardCall(context.Context, *connect.Request[v1.RelayBoardCallRequest]) (*connect.Response[v1.RelayBoardCallResponse], error)
+	RelayBoardCall(context.Context, *v1.RelayBoardCallRequest) (*v1.RelayBoardCallResponse, error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
 	// the DURABLE counterpart to PublishEvents: conversation_posted /
@@ -453,21 +476,21 @@ type RunnerServiceHandler interface {
 	//
 	// Additive to the dial-out shape (the Runner still initiates; the
 	// Server gains no inbound route), same justification as RelayCommsCall.
-	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
+	CommitConversationFrame(context.Context, *v1.CommitConversationFrameRequest) (*v1.CommitConversationFrameResponse, error)
 	// FetchSecrets (unary, Runner->Server): the Runner fetches the full resolved
 	// secret set for one session to materialize into the agent container (RIG-1327
 	// T4). Inject-all: no name filter, no per-agent grants (the filter is the
 	// named future per-agent-scoping seam). The response is no-log: a logging
 	// interceptor must never dump resolved values. Additive to the dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
-	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
+	FetchSecrets(context.Context, *v1.FetchSecretsRequest) (*v1.FetchSecretsResponse, error)
 	// BindLifetime (unary, Runner->Server): snapshot a session's transcript
 	// rebase base for a new lifetime. The Runner calls it under the container
 	// lock for a resume or a Reload, after accepting and before the agent runs,
 	// so a refused resume never moves a live session's base. Authorized on the
 	// container->account binding recorded at Provision; an unbound container, a
 	// session of another account, and an unknown session are all PermissionDenied.
-	BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error)
+	BindLifetime(context.Context, *v1.BindLifetimeRequest) (*v1.BindLifetimeResponse, error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision
 	// (RIG-1568 T3/T4). Server-streaming so the bundle is never bounded by the
@@ -482,190 +505,409 @@ type RunnerServiceHandler interface {
 	// rejected). An unconfigured fleet returns a version frame with an empty
 	// version and no chunks, never an error. Additive to the dial-out shape
 	// (the Runner still initiates; the Server gains no inbound route).
-	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error
+	FetchAgentConfig(context.Context, *v1.FetchAgentConfigRequest, RunnerServiceFetchAgentConfigServerStream) error
 	// RelaySessionBlob forwards an agent's PutSessionBlob for the session bound
 	// to its container. Unknown and foreign-Runner sessions share
 	// FailedPrecondition; unverifiable bindings return Unavailable. Missing
 	// blob object storage returns Unimplemented.
-	RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error)
+	RelaySessionBlob(context.Context, *v1.RelaySessionBlobRequest) (*v1.RelaySessionBlobResponse, error)
 	// FetchSessionBlobs (server-streaming, Runner->Server): on resume, fetch the
 	// blobs a resume body references. Each blob is a header frame then chunk
 	// frames; a header with absent set means the Server confirmed it is not stored.
 	// Missing blob object storage returns Unimplemented; binding failures do not
 	// confirm absence and must leave resume references unchanged.
-	FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest], *connect.ServerStream[v1.FetchSessionBlobsResponse]) error
+	FetchSessionBlobs(context.Context, *v1.FetchSessionBlobsRequest, RunnerServiceFetchSessionBlobsServerStream) error
 }
 
-// NewRunnerServiceHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	runnerServiceMethods := v1.File_compass_v1_runner_proto.Services().ByName("RunnerService").Methods()
-	runnerServiceEnrollHandler := connect.NewUnaryHandler(
-		RunnerServiceEnrollProcedure,
-		svc.Enroll,
-		connect.WithSchema(runnerServiceMethods.ByName("Enroll")),
-		connect.WithHandlerOptions(opts...),
+// RegisterRunnerServiceHandler registers svc as the compass.v1.RunnerService implementation on
+// server.
+func RegisterRunnerServiceHandler(server *connect.Server, svc RunnerServiceHandler) {
+	adapter := runnerServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: runnerServiceEnrollSpec(), Handler: adapter.enroll},
+		connect.Method{Spec: runnerServiceSessionsSpec(), Handler: adapter.sessions},
+		connect.Method{Spec: runnerServicePublishEventsSpec(), Handler: adapter.publishEvents},
+		connect.Method{Spec: runnerServiceRelayCommsCallSpec(), Handler: adapter.relayCommsCall},
+		connect.Method{Spec: runnerServiceRelayLifecycleCallSpec(), Handler: adapter.relayLifecycleCall},
+		connect.Method{Spec: runnerServiceRelayForgeCallSpec(), Handler: adapter.relayForgeCall},
+		connect.Method{Spec: runnerServiceRelayBoardCallSpec(), Handler: adapter.relayBoardCall},
+		connect.Method{Spec: runnerServiceCommitConversationFrameSpec(), Handler: adapter.commitConversationFrame},
+		connect.Method{Spec: runnerServiceFetchSecretsSpec(), Handler: adapter.fetchSecrets},
+		connect.Method{Spec: runnerServiceBindLifetimeSpec(), Handler: adapter.bindLifetime},
+		connect.Method{Spec: runnerServiceFetchAgentConfigSpec(), Handler: adapter.fetchAgentConfig},
+		connect.Method{Spec: runnerServiceRelaySessionBlobSpec(), Handler: adapter.relaySessionBlob},
+		connect.Method{Spec: runnerServiceFetchSessionBlobsSpec(), Handler: adapter.fetchSessionBlobs},
 	)
-	runnerServiceSessionsHandler := connect.NewBidiStreamHandler(
-		RunnerServiceSessionsProcedure,
-		svc.Sessions,
-		connect.WithSchema(runnerServiceMethods.ByName("Sessions")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServicePublishEventsHandler := connect.NewClientStreamHandler(
-		RunnerServicePublishEventsProcedure,
-		svc.PublishEvents,
-		connect.WithSchema(runnerServiceMethods.ByName("PublishEvents")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceRelayCommsCallHandler := connect.NewUnaryHandler(
-		RunnerServiceRelayCommsCallProcedure,
-		svc.RelayCommsCall,
-		connect.WithSchema(runnerServiceMethods.ByName("RelayCommsCall")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceRelayLifecycleCallHandler := connect.NewUnaryHandler(
-		RunnerServiceRelayLifecycleCallProcedure,
-		svc.RelayLifecycleCall,
-		connect.WithSchema(runnerServiceMethods.ByName("RelayLifecycleCall")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceRelayForgeCallHandler := connect.NewUnaryHandler(
-		RunnerServiceRelayForgeCallProcedure,
-		svc.RelayForgeCall,
-		connect.WithSchema(runnerServiceMethods.ByName("RelayForgeCall")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceRelayBoardCallHandler := connect.NewUnaryHandler(
-		RunnerServiceRelayBoardCallProcedure,
-		svc.RelayBoardCall,
-		connect.WithSchema(runnerServiceMethods.ByName("RelayBoardCall")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceCommitConversationFrameHandler := connect.NewUnaryHandler(
-		RunnerServiceCommitConversationFrameProcedure,
-		svc.CommitConversationFrame,
-		connect.WithSchema(runnerServiceMethods.ByName("CommitConversationFrame")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceFetchSecretsHandler := connect.NewUnaryHandler(
-		RunnerServiceFetchSecretsProcedure,
-		svc.FetchSecrets,
-		connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceBindLifetimeHandler := connect.NewUnaryHandler(
-		RunnerServiceBindLifetimeProcedure,
-		svc.BindLifetime,
-		connect.WithSchema(runnerServiceMethods.ByName("BindLifetime")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceFetchAgentConfigHandler := connect.NewServerStreamHandler(
-		RunnerServiceFetchAgentConfigProcedure,
-		svc.FetchAgentConfig,
-		connect.WithSchema(runnerServiceMethods.ByName("FetchAgentConfig")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceRelaySessionBlobHandler := connect.NewUnaryHandler(
-		RunnerServiceRelaySessionBlobProcedure,
-		svc.RelaySessionBlob,
-		connect.WithSchema(runnerServiceMethods.ByName("RelaySessionBlob")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runnerServiceFetchSessionBlobsHandler := connect.NewServerStreamHandler(
-		RunnerServiceFetchSessionBlobsProcedure,
-		svc.FetchSessionBlobs,
-		connect.WithSchema(runnerServiceMethods.ByName("FetchSessionBlobs")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.RunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case RunnerServiceEnrollProcedure:
-			runnerServiceEnrollHandler.ServeHTTP(w, r)
-		case RunnerServiceSessionsProcedure:
-			runnerServiceSessionsHandler.ServeHTTP(w, r)
-		case RunnerServicePublishEventsProcedure:
-			runnerServicePublishEventsHandler.ServeHTTP(w, r)
-		case RunnerServiceRelayCommsCallProcedure:
-			runnerServiceRelayCommsCallHandler.ServeHTTP(w, r)
-		case RunnerServiceRelayLifecycleCallProcedure:
-			runnerServiceRelayLifecycleCallHandler.ServeHTTP(w, r)
-		case RunnerServiceRelayForgeCallProcedure:
-			runnerServiceRelayForgeCallHandler.ServeHTTP(w, r)
-		case RunnerServiceRelayBoardCallProcedure:
-			runnerServiceRelayBoardCallHandler.ServeHTTP(w, r)
-		case RunnerServiceCommitConversationFrameProcedure:
-			runnerServiceCommitConversationFrameHandler.ServeHTTP(w, r)
-		case RunnerServiceFetchSecretsProcedure:
-			runnerServiceFetchSecretsHandler.ServeHTTP(w, r)
-		case RunnerServiceBindLifetimeProcedure:
-			runnerServiceBindLifetimeHandler.ServeHTTP(w, r)
-		case RunnerServiceFetchAgentConfigProcedure:
-			runnerServiceFetchAgentConfigHandler.ServeHTTP(w, r)
-		case RunnerServiceRelaySessionBlobProcedure:
-			runnerServiceRelaySessionBlobHandler.ServeHTTP(w, r)
-		case RunnerServiceFetchSessionBlobsProcedure:
-			runnerServiceFetchSessionBlobsHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// RunnerServiceSessionsServerStream is the server stream for the RunnerService's Sessions RPC.
+type RunnerServiceSessionsServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s RunnerServiceSessionsServerStream) Receive() (*v1.SessionsRequest, error) {
+	var req v1.SessionsRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s RunnerServiceSessionsServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s RunnerServiceSessionsServerStream) Send(res *v1.SessionsResponse) error {
+	return s.stream.Send(res)
+}
+
+// RunnerServicePublishEventsServerStream is the server stream for the RunnerService's PublishEvents
+// RPC.
+type RunnerServicePublishEventsServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s RunnerServicePublishEventsServerStream) Receive() (*v1.PublishEventsRequest, error) {
+	var req v1.PublishEventsRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// RunnerServiceFetchAgentConfigServerStream is the server stream for the RunnerService's
+// FetchAgentConfig RPC.
+type RunnerServiceFetchAgentConfigServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s RunnerServiceFetchAgentConfigServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s RunnerServiceFetchAgentConfigServerStream) Send(res *v1.FetchAgentConfigResponse) error {
+	return s.stream.Send(res)
+}
+
+// RunnerServiceFetchSessionBlobsServerStream is the server stream for the RunnerService's
+// FetchSessionBlobs RPC.
+type RunnerServiceFetchSessionBlobsServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s RunnerServiceFetchSessionBlobsServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s RunnerServiceFetchSessionBlobsServerStream) Send(res *v1.FetchSessionBlobsResponse) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedRunnerServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedRunnerServiceHandler struct{}
 
-func (UnimplementedRunnerServiceHandler) Enroll(context.Context, *connect.Request[v1.EnrollRequest]) (*connect.Response[v1.EnrollResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.Enroll is not implemented"))
+func (UnimplementedRunnerServiceHandler) Enroll(context.Context, *v1.EnrollRequest) (*v1.EnrollResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.Enroll is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) Sessions(context.Context, *connect.BidiStream[v1.SessionsRequest, v1.SessionsResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.Sessions is not implemented"))
+func (UnimplementedRunnerServiceHandler) Sessions(context.Context, RunnerServiceSessionsServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.Sessions is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) PublishEvents(context.Context, *connect.ClientStream[v1.PublishEventsRequest]) (*connect.Response[v1.PublishEventsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.PublishEvents is not implemented"))
+func (UnimplementedRunnerServiceHandler) PublishEvents(context.Context, RunnerServicePublishEventsServerStream) (*v1.PublishEventsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.PublishEvents is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayCommsCall is not implemented"))
+func (UnimplementedRunnerServiceHandler) RelayCommsCall(context.Context, *v1.RelayCommsCallRequest) (*v1.RelayCommsCallResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.RelayCommsCall is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayLifecycleCall is not implemented"))
+func (UnimplementedRunnerServiceHandler) RelayLifecycleCall(context.Context, *v1.RelayLifecycleCallRequest) (*v1.RelayLifecycleCallResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.RelayLifecycleCall is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayForgeCall is not implemented"))
+func (UnimplementedRunnerServiceHandler) RelayForgeCall(context.Context, *v1.RelayForgeCallRequest) (*v1.RelayForgeCallResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.RelayForgeCall is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) RelayBoardCall(context.Context, *connect.Request[v1.RelayBoardCallRequest]) (*connect.Response[v1.RelayBoardCallResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayBoardCall is not implemented"))
+func (UnimplementedRunnerServiceHandler) RelayBoardCall(context.Context, *v1.RelayBoardCallRequest) (*v1.RelayBoardCallResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.RelayBoardCall is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.CommitConversationFrame is not implemented"))
+func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context, *v1.CommitConversationFrameRequest) (*v1.CommitConversationFrameResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.CommitConversationFrame is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchSecrets is not implemented"))
+func (UnimplementedRunnerServiceHandler) FetchSecrets(context.Context, *v1.FetchSecretsRequest) (*v1.FetchSecretsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.FetchSecrets is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.BindLifetime is not implemented"))
+func (UnimplementedRunnerServiceHandler) BindLifetime(context.Context, *v1.BindLifetimeRequest) (*v1.BindLifetimeResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.BindLifetime is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchAgentConfig is not implemented"))
+func (UnimplementedRunnerServiceHandler) FetchAgentConfig(context.Context, *v1.FetchAgentConfigRequest, RunnerServiceFetchAgentConfigServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.FetchAgentConfig is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelaySessionBlob is not implemented"))
+func (UnimplementedRunnerServiceHandler) RelaySessionBlob(context.Context, *v1.RelaySessionBlobRequest) (*v1.RelaySessionBlobResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.RelaySessionBlob is not implemented")
 }
 
-func (UnimplementedRunnerServiceHandler) FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest], *connect.ServerStream[v1.FetchSessionBlobsResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchSessionBlobs is not implemented"))
+func (UnimplementedRunnerServiceHandler) FetchSessionBlobs(context.Context, *v1.FetchSessionBlobsRequest, RunnerServiceFetchSessionBlobsServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.RunnerService.FetchSessionBlobs is not implemented")
+}
+
+type runnerServiceClient struct {
+	client *connect.Client
+}
+
+func (c *runnerServiceClient) Enroll(ctx context.Context, req *v1.EnrollRequest) (*v1.EnrollResponse, error) {
+	var res v1.EnrollResponse
+	if err := c.client.CallUnary(ctx, runnerServiceEnrollSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) Sessions(ctx context.Context) (RunnerServiceSessionsClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, runnerServiceSessionsSpec())
+	if err != nil {
+		return RunnerServiceSessionsClientStream{}, err
+	}
+	return RunnerServiceSessionsClientStream{stream: stream}, nil
+}
+
+func (c *runnerServiceClient) PublishEvents(ctx context.Context) (RunnerServicePublishEventsClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, runnerServicePublishEventsSpec())
+	if err != nil {
+		return RunnerServicePublishEventsClientStream{}, err
+	}
+	return RunnerServicePublishEventsClientStream{stream: stream}, nil
+}
+
+func (c *runnerServiceClient) RelayCommsCall(ctx context.Context, req *v1.RelayCommsCallRequest) (*v1.RelayCommsCallResponse, error) {
+	var res v1.RelayCommsCallResponse
+	if err := c.client.CallUnary(ctx, runnerServiceRelayCommsCallSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) RelayLifecycleCall(ctx context.Context, req *v1.RelayLifecycleCallRequest) (*v1.RelayLifecycleCallResponse, error) {
+	var res v1.RelayLifecycleCallResponse
+	if err := c.client.CallUnary(ctx, runnerServiceRelayLifecycleCallSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) RelayForgeCall(ctx context.Context, req *v1.RelayForgeCallRequest) (*v1.RelayForgeCallResponse, error) {
+	var res v1.RelayForgeCallResponse
+	if err := c.client.CallUnary(ctx, runnerServiceRelayForgeCallSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) RelayBoardCall(ctx context.Context, req *v1.RelayBoardCallRequest) (*v1.RelayBoardCallResponse, error) {
+	var res v1.RelayBoardCallResponse
+	if err := c.client.CallUnary(ctx, runnerServiceRelayBoardCallSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) CommitConversationFrame(ctx context.Context, req *v1.CommitConversationFrameRequest) (*v1.CommitConversationFrameResponse, error) {
+	var res v1.CommitConversationFrameResponse
+	if err := c.client.CallUnary(ctx, runnerServiceCommitConversationFrameSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) FetchSecrets(ctx context.Context, req *v1.FetchSecretsRequest) (*v1.FetchSecretsResponse, error) {
+	var res v1.FetchSecretsResponse
+	if err := c.client.CallUnary(ctx, runnerServiceFetchSecretsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) BindLifetime(ctx context.Context, req *v1.BindLifetimeRequest) (*v1.BindLifetimeResponse, error) {
+	var res v1.BindLifetimeResponse
+	if err := c.client.CallUnary(ctx, runnerServiceBindLifetimeSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) FetchAgentConfig(ctx context.Context, req *v1.FetchAgentConfigRequest) (RunnerServiceFetchAgentConfigClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, runnerServiceFetchAgentConfigSpec(), req)
+	if err != nil {
+		return RunnerServiceFetchAgentConfigClientStream{}, err
+	}
+	return RunnerServiceFetchAgentConfigClientStream{stream: stream}, nil
+}
+
+func (c *runnerServiceClient) RelaySessionBlob(ctx context.Context, req *v1.RelaySessionBlobRequest) (*v1.RelaySessionBlobResponse, error) {
+	var res v1.RelaySessionBlobResponse
+	if err := c.client.CallUnary(ctx, runnerServiceRelaySessionBlobSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runnerServiceClient) FetchSessionBlobs(ctx context.Context, req *v1.FetchSessionBlobsRequest) (RunnerServiceFetchSessionBlobsClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, runnerServiceFetchSessionBlobsSpec(), req)
+	if err != nil {
+		return RunnerServiceFetchSessionBlobsClientStream{}, err
+	}
+	return RunnerServiceFetchSessionBlobsClientStream{stream: stream}, nil
+}
+
+type runnerServiceHandler struct{ svc RunnerServiceHandler }
+
+func (h runnerServiceHandler) enroll(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.EnrollRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Enroll(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) sessions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	return h.svc.Sessions(ctx, RunnerServiceSessionsServerStream{stream: stream})
+}
+
+func (h runnerServiceHandler) publishEvents(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	res, err := h.svc.PublishEvents(ctx, RunnerServicePublishEventsServerStream{stream: stream})
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) relayCommsCall(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RelayCommsCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RelayCommsCall(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) relayLifecycleCall(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RelayLifecycleCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RelayLifecycleCall(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) relayForgeCall(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RelayForgeCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RelayForgeCall(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) relayBoardCall(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RelayBoardCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RelayBoardCall(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) commitConversationFrame(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CommitConversationFrameRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CommitConversationFrame(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) fetchSecrets(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.FetchSecretsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.FetchSecrets(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) bindLifetime(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.BindLifetimeRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.BindLifetime(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) fetchAgentConfig(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.FetchAgentConfigRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.FetchAgentConfig(ctx, &req, RunnerServiceFetchAgentConfigServerStream{stream: stream})
+}
+
+func (h runnerServiceHandler) relaySessionBlob(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RelaySessionBlobRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RelaySessionBlob(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runnerServiceHandler) fetchSessionBlobs(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.FetchSessionBlobsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.FetchSessionBlobs(ctx, &req, RunnerServiceFetchSessionBlobsServerStream{stream: stream})
 }

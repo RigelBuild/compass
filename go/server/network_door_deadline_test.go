@@ -19,6 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -414,9 +417,10 @@ func launchPost(t *testing.T, client *http.Client, url string, body io.Reader, f
 // procedure path. Torn down in t.Cleanup.
 func startServerStreamDeadlineDoor(t *testing.T, svc *service, timeout time.Duration) string {
 	t.Helper()
-	path, handler := compassv1connect.NewCompassServiceHandler(svc)
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(withBodyReadDeadline(mux, timeout))
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

@@ -5,16 +5,16 @@ package runner
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"go.opentelemetry.io/otel"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -85,8 +85,8 @@ func TestStartAgentDrainLogCarriesNoCallerTrace(t *testing.T) {
 // report fails and logs.
 type failingPublish struct{ *capturePublish }
 
-func (failingPublish) PublishEvents(context.Context, *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnavailable, errors.New("relay down"))
+func (failingPublish) PublishEvents(context.Context, compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnavailable, "relay down")
 }
 
 func TestRetireOnExitLogCarriesNoCallerTrace(t *testing.T) {

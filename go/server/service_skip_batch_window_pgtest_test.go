@@ -5,12 +5,13 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"log/slog"
 	"runtime"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -113,7 +114,6 @@ func newSkipBatchWindowFixture(t *testing.T, liveRunner bool) skipBatchWindowFix
 	svc := newService("test", bus, st, hub, brd, nil, tail)
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(admin.ID),
 	)
 	var runner *recordingRunner
@@ -137,8 +137,9 @@ func skipBatchWindow(t *testing.T, f skipBatchWindowFixture, token, sessionID st
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
-	req := connect.NewRequest(&compassv1.SkipBatchWindowRequest{SessionId: sessionID})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req := &compassv1.SkipBatchWindowRequest{SessionId: sessionID}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	_, err := f.client.SkipBatchWindow(ctx, req)
 	return err
 }
@@ -202,7 +203,7 @@ func TestSkipBatchWindowNotFoundParityDoesNotDispatch(t *testing.T) {
 			if got := connect.CodeOf(err); got != connect.CodeNotFound {
 				t.Fatalf("SkipBatchWindow error = %v, want NotFound", got)
 			}
-			ce, ok := err.(*connect.Error)
+			ce, ok := errors.AsType[*connect.Error](err)
 			if !ok {
 				t.Fatalf("SkipBatchWindow error = %v, want connect.Error", err)
 			}

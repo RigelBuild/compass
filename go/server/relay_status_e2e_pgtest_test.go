@@ -9,7 +9,7 @@ import (
 	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
@@ -32,10 +32,10 @@ func TestAgentGatewayPreservesUpstreamRelayStatus(t *testing.T) {
 	if !ok {
 		t.Fatal("supervisor has no live session")
 	}
-	if _, err := w.supervisorClient.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	if _, err := w.supervisorClient.Comms(ctx, &compassv1internal.CommsCallRequest{
 		CallId: "relay-status-bound",
 		Call:   &compassv1internal.CommsCallRequest_List{List: &compassv1.ListMessagesRequest{}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("Comms on bound supervisor: %v", err)
 	}
 
@@ -44,10 +44,10 @@ func TestAgentGatewayPreservesUpstreamRelayStatus(t *testing.T) {
 	// must preserve that upstream code and message.
 	data := []byte("relay status blob")
 	digest := sha256.Sum256(data)
-	_, unimplementedErr := w.supervisorClient.PutSessionBlob(ctx, connect.NewRequest(&compassv1internal.PutSessionBlobRequest{
+	_, unimplementedErr := w.supervisorClient.PutSessionBlob(ctx, &compassv1internal.PutSessionBlobRequest{
 		Sha256: hex.EncodeToString(digest[:]),
 		Data:   data,
-	}))
+	})
 	assertRelayStatus(t, unimplementedErr, connect.CodeUnimplemented, "store: failed precondition: session blob object store is not configured")
 
 	// Evict the hub's live binding while leaving the agent's socket/session up.
@@ -56,19 +56,19 @@ func TestAgentGatewayPreservesUpstreamRelayStatus(t *testing.T) {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
 	w.hub.OnBindingChange(fabric.BindingChange{SessionID: sessionID})
-	_, failedPreconditionErr := w.supervisorClient.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	_, failedPreconditionErr := w.supervisorClient.Comms(ctx, &compassv1internal.CommsCallRequest{
 		CallId: "relay-status-unbound",
 		Call:   &compassv1internal.CommsCallRequest_List{List: &compassv1.ListMessagesRequest{}},
-	}))
+	})
 	assertRelayStatus(t, failedPreconditionErr, connect.CodeFailedPrecondition, "runnerhub: caller session not bound to an agent account")
 
 	// The request-scoped binding lookup now has a real injected store fault. The
 	// hub cache was evicted above, so the next call must consult this read-through.
 	w.hub.SetSessionBindingStore(unavailableSessionBindingStore{SessionBindingStore: w.store})
-	_, unavailableErr := w.supervisorClient.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+	_, unavailableErr := w.supervisorClient.Comms(ctx, &compassv1internal.CommsCallRequest{
 		CallId: "relay-status-unavailable",
 		Call:   &compassv1internal.CommsCallRequest_List{List: &compassv1.ListMessagesRequest{}},
-	}))
+	})
 	assertRelayStatus(t, unavailableErr, connect.CodeUnavailable, "runnerhub: caller session binding cannot be verified")
 }
 
@@ -88,7 +88,7 @@ func assertRelayStatus(t *testing.T, err error, code connect.Code, message strin
 	if got := connect.CodeOf(err); got != code {
 		t.Fatalf("gateway status code = %s, want %s (error %v)", got, code, err)
 	}
-	want := connect.NewError(code, errors.New(message))
+	want := connect.NewError(code, message)
 	got, ok := errors.AsType[*connect.Error](err)
 	if !ok || got.Message() != want.Message() {
 		t.Fatalf("gateway status message = %q, want %q", err.Error(), want.Error())

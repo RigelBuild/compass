@@ -34,246 +34,319 @@
 package compassv1internalconnect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// GuestControlName is the fully-qualified name of the GuestControl service.
 	GuestControlName = "compass.v1.GuestControl"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// GuestControlHealthProcedure is the fully-qualified name of the GuestControl's Health RPC.
+	// GuestControlHealthProcedure is the procedure name of the GuestControl's Health RPC.
 	GuestControlHealthProcedure = "/compass.v1.GuestControl/Health"
-	// GuestControlExecProcedure is the fully-qualified name of the GuestControl's Exec RPC.
+	// GuestControlExecProcedure is the procedure name of the GuestControl's Exec RPC.
 	GuestControlExecProcedure = "/compass.v1.GuestControl/Exec"
-	// GuestControlExecStreamProcedure is the fully-qualified name of the GuestControl's ExecStream RPC.
+	// GuestControlExecStreamProcedure is the procedure name of the GuestControl's ExecStream RPC.
 	GuestControlExecStreamProcedure = "/compass.v1.GuestControl/ExecStream"
-	// GuestControlSignalProcedure is the fully-qualified name of the GuestControl's Signal RPC.
+	// GuestControlSignalProcedure is the procedure name of the GuestControl's Signal RPC.
 	GuestControlSignalProcedure = "/compass.v1.GuestControl/Signal"
-	// GuestControlProvisionProcedure is the fully-qualified name of the GuestControl's Provision RPC.
+	// GuestControlProvisionProcedure is the procedure name of the GuestControl's Provision RPC.
 	GuestControlProvisionProcedure = "/compass.v1.GuestControl/Provision"
+)
+
+var (
+	guestControlHealthSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_guest_control_proto.Services().ByName("GuestControl").Methods().ByName("Health"),
+			Procedure:  GuestControlHealthProcedure,
+		}
+	})
+	guestControlExecSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_guest_control_proto.Services().ByName("GuestControl").Methods().ByName("Exec"),
+			Procedure:  GuestControlExecProcedure,
+		}
+	})
+	guestControlExecStreamSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeBidi,
+			Schema:     v1.File_compass_v1_guest_control_proto.Services().ByName("GuestControl").Methods().ByName("ExecStream"),
+			Procedure:  GuestControlExecStreamProcedure,
+		}
+	})
+	guestControlSignalSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_guest_control_proto.Services().ByName("GuestControl").Methods().ByName("Signal"),
+			Procedure:  GuestControlSignalProcedure,
+		}
+	})
+	guestControlProvisionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_guest_control_proto.Services().ByName("GuestControl").Methods().ByName("Provision"),
+			Procedure:  GuestControlProvisionProcedure,
+		}
+	})
 )
 
 // GuestControlClient is a client for the compass.v1.GuestControl service.
 type GuestControlClient interface {
-	Health(context.Context, *connect.Request[v1.HealthRequest]) (*connect.Response[v1.HealthResponse], error)
+	Health(context.Context, *v1.HealthRequest) (*v1.HealthResponse, error)
 	// Exec captures one command. A missing program returns 127; a present one
 	// that cannot be invoked (no exec bit, ENOEXEC, execve EACCES/EPERM) returns
 	// 126. A missing or non-directory workdir or missing interpreter is an error.
-	Exec(context.Context, *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error)
+	Exec(context.Context, *v1.ExecRequest) (*v1.ExecResponse, error)
 	// ExecStream: one start frame, stdin, optional half-close. Start failures
 	// follow Exec's 127/126 rule as ExecStarted, stderr, ExecExit; a missing or
 	// non-directory workdir or missing interpreter errors before ExecStarted.
-	ExecStream(context.Context) *connect.BidiStreamForClient[v1.ExecStreamRequest, v1.ExecStreamResponse]
+	ExecStream(context.Context) (GuestControlExecStreamClientStream, error)
 	// Signal delivers a signal to a running exec by exec_id (exec kill rides
 	// here, not ExecStream); an empty exec_id targets the guest itself (graceful
 	// Stop, record §(d)). Signalling an already-exited exec is a no-op success.
-	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	Signal(context.Context, *v1.SignalRequest) (*v1.SignalResponse, error)
 	// Provision transitions the supervisor ready -> provisioned: it records the
 	// session's default exec uid and base env and, when nft_script is non-empty,
 	// arms egress in-guest (V3) — the script runs as guest root before the exec
 	// gate opens, and a failed arm fails Provision with the gate left closed. An
 	// empty nft_script skips the arm (a hermetic test seam). Exec and ExecStream
 	// are refused until Provision succeeds.
-	Provision(context.Context, *connect.Request[v1.ProvisionRequest]) (*connect.Response[v1.ProvisionResponse], error)
+	Provision(context.Context, *v1.ProvisionRequest) (*v1.ProvisionResponse, error)
 }
 
-// NewGuestControlClient constructs a client for the compass.v1.GuestControl service. By default, it
-// uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and sends
-// uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC() or
-// connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewGuestControlClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) GuestControlClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	guestControlMethods := v1.File_compass_v1_guest_control_proto.Services().ByName("GuestControl").Methods()
-	return &guestControlClient{
-		health: connect.NewClient[v1.HealthRequest, v1.HealthResponse](
-			httpClient,
-			baseURL+GuestControlHealthProcedure,
-			connect.WithSchema(guestControlMethods.ByName("Health")),
-			connect.WithClientOptions(opts...),
-		),
-		exec: connect.NewClient[v1.ExecRequest, v1.ExecResponse](
-			httpClient,
-			baseURL+GuestControlExecProcedure,
-			connect.WithSchema(guestControlMethods.ByName("Exec")),
-			connect.WithClientOptions(opts...),
-		),
-		execStream: connect.NewClient[v1.ExecStreamRequest, v1.ExecStreamResponse](
-			httpClient,
-			baseURL+GuestControlExecStreamProcedure,
-			connect.WithSchema(guestControlMethods.ByName("ExecStream")),
-			connect.WithClientOptions(opts...),
-		),
-		signal: connect.NewClient[v1.SignalRequest, v1.SignalResponse](
-			httpClient,
-			baseURL+GuestControlSignalProcedure,
-			connect.WithSchema(guestControlMethods.ByName("Signal")),
-			connect.WithClientOptions(opts...),
-		),
-		provision: connect.NewClient[v1.ProvisionRequest, v1.ProvisionResponse](
-			httpClient,
-			baseURL+GuestControlProvisionProcedure,
-			connect.WithSchema(guestControlMethods.ByName("Provision")),
-			connect.WithClientOptions(opts...),
-		),
+// NewGuestControlClient constructs a client for the compass.v1.GuestControl service. Multiple
+// service clients may share a single connect.Client.
+func NewGuestControlClient(client *connect.Client) GuestControlClient {
+	return &guestControlClient{client: client}
+}
+
+// GuestControlExecStreamClientStream is the client stream for the GuestControl's ExecStream RPC.
+type GuestControlExecStreamClientStream struct {
+	stream connect.ClientStream
+}
+
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s GuestControlExecStreamClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a request message to the server.
+func (s GuestControlExecStreamClientStream) Send(req *v1.ExecStreamRequest) error {
+	return s.stream.Send(req)
+}
+
+// CloseSend closes the request side of the stream.
+func (s GuestControlExecStreamClientStream) CloseSend() error {
+	return s.stream.CloseSend()
+}
+
+// Receive returns the next response message from the server.
+func (s GuestControlExecStreamClientStream) Receive() (*v1.ExecStreamResponse, error) {
+	var res v1.ExecStreamResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
 	}
+	return &res, nil
 }
 
-// guestControlClient implements GuestControlClient.
-type guestControlClient struct {
-	health     *connect.Client[v1.HealthRequest, v1.HealthResponse]
-	exec       *connect.Client[v1.ExecRequest, v1.ExecResponse]
-	execStream *connect.Client[v1.ExecStreamRequest, v1.ExecStreamResponse]
-	signal     *connect.Client[v1.SignalRequest, v1.SignalResponse]
-	provision  *connect.Client[v1.ProvisionRequest, v1.ProvisionResponse]
-}
-
-// Health calls compass.v1.GuestControl.Health.
-func (c *guestControlClient) Health(ctx context.Context, req *connect.Request[v1.HealthRequest]) (*connect.Response[v1.HealthResponse], error) {
-	return c.health.CallUnary(ctx, req)
-}
-
-// Exec calls compass.v1.GuestControl.Exec.
-func (c *guestControlClient) Exec(ctx context.Context, req *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error) {
-	return c.exec.CallUnary(ctx, req)
-}
-
-// ExecStream calls compass.v1.GuestControl.ExecStream.
-func (c *guestControlClient) ExecStream(ctx context.Context) *connect.BidiStreamForClient[v1.ExecStreamRequest, v1.ExecStreamResponse] {
-	return c.execStream.CallBidiStream(ctx)
-}
-
-// Signal calls compass.v1.GuestControl.Signal.
-func (c *guestControlClient) Signal(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
-	return c.signal.CallUnary(ctx, req)
-}
-
-// Provision calls compass.v1.GuestControl.Provision.
-func (c *guestControlClient) Provision(ctx context.Context, req *connect.Request[v1.ProvisionRequest]) (*connect.Response[v1.ProvisionResponse], error) {
-	return c.provision.CallUnary(ctx, req)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s GuestControlExecStreamClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // GuestControlHandler is an implementation of the compass.v1.GuestControl service.
 type GuestControlHandler interface {
-	Health(context.Context, *connect.Request[v1.HealthRequest]) (*connect.Response[v1.HealthResponse], error)
+	Health(context.Context, *v1.HealthRequest) (*v1.HealthResponse, error)
 	// Exec captures one command. A missing program returns 127; a present one
 	// that cannot be invoked (no exec bit, ENOEXEC, execve EACCES/EPERM) returns
 	// 126. A missing or non-directory workdir or missing interpreter is an error.
-	Exec(context.Context, *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error)
+	Exec(context.Context, *v1.ExecRequest) (*v1.ExecResponse, error)
 	// ExecStream: one start frame, stdin, optional half-close. Start failures
 	// follow Exec's 127/126 rule as ExecStarted, stderr, ExecExit; a missing or
 	// non-directory workdir or missing interpreter errors before ExecStarted.
-	ExecStream(context.Context, *connect.BidiStream[v1.ExecStreamRequest, v1.ExecStreamResponse]) error
+	ExecStream(context.Context, GuestControlExecStreamServerStream) error
 	// Signal delivers a signal to a running exec by exec_id (exec kill rides
 	// here, not ExecStream); an empty exec_id targets the guest itself (graceful
 	// Stop, record §(d)). Signalling an already-exited exec is a no-op success.
-	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	Signal(context.Context, *v1.SignalRequest) (*v1.SignalResponse, error)
 	// Provision transitions the supervisor ready -> provisioned: it records the
 	// session's default exec uid and base env and, when nft_script is non-empty,
 	// arms egress in-guest (V3) — the script runs as guest root before the exec
 	// gate opens, and a failed arm fails Provision with the gate left closed. An
 	// empty nft_script skips the arm (a hermetic test seam). Exec and ExecStream
 	// are refused until Provision succeeds.
-	Provision(context.Context, *connect.Request[v1.ProvisionRequest]) (*connect.Response[v1.ProvisionResponse], error)
+	Provision(context.Context, *v1.ProvisionRequest) (*v1.ProvisionResponse, error)
 }
 
-// NewGuestControlHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewGuestControlHandler(svc GuestControlHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	guestControlMethods := v1.File_compass_v1_guest_control_proto.Services().ByName("GuestControl").Methods()
-	guestControlHealthHandler := connect.NewUnaryHandler(
-		GuestControlHealthProcedure,
-		svc.Health,
-		connect.WithSchema(guestControlMethods.ByName("Health")),
-		connect.WithHandlerOptions(opts...),
+// RegisterGuestControlHandler registers svc as the compass.v1.GuestControl implementation on
+// server.
+func RegisterGuestControlHandler(server *connect.Server, svc GuestControlHandler) {
+	adapter := guestControlHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: guestControlHealthSpec(), Handler: adapter.health},
+		connect.Method{Spec: guestControlExecSpec(), Handler: adapter.exec},
+		connect.Method{Spec: guestControlExecStreamSpec(), Handler: adapter.execStream},
+		connect.Method{Spec: guestControlSignalSpec(), Handler: adapter.signal},
+		connect.Method{Spec: guestControlProvisionSpec(), Handler: adapter.provision},
 	)
-	guestControlExecHandler := connect.NewUnaryHandler(
-		GuestControlExecProcedure,
-		svc.Exec,
-		connect.WithSchema(guestControlMethods.ByName("Exec")),
-		connect.WithHandlerOptions(opts...),
-	)
-	guestControlExecStreamHandler := connect.NewBidiStreamHandler(
-		GuestControlExecStreamProcedure,
-		svc.ExecStream,
-		connect.WithSchema(guestControlMethods.ByName("ExecStream")),
-		connect.WithHandlerOptions(opts...),
-	)
-	guestControlSignalHandler := connect.NewUnaryHandler(
-		GuestControlSignalProcedure,
-		svc.Signal,
-		connect.WithSchema(guestControlMethods.ByName("Signal")),
-		connect.WithHandlerOptions(opts...),
-	)
-	guestControlProvisionHandler := connect.NewUnaryHandler(
-		GuestControlProvisionProcedure,
-		svc.Provision,
-		connect.WithSchema(guestControlMethods.ByName("Provision")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.GuestControl/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case GuestControlHealthProcedure:
-			guestControlHealthHandler.ServeHTTP(w, r)
-		case GuestControlExecProcedure:
-			guestControlExecHandler.ServeHTTP(w, r)
-		case GuestControlExecStreamProcedure:
-			guestControlExecStreamHandler.ServeHTTP(w, r)
-		case GuestControlSignalProcedure:
-			guestControlSignalHandler.ServeHTTP(w, r)
-		case GuestControlProvisionProcedure:
-			guestControlProvisionHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// GuestControlExecStreamServerStream is the server stream for the GuestControl's ExecStream RPC.
+type GuestControlExecStreamServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s GuestControlExecStreamServerStream) Receive() (*v1.ExecStreamRequest, error) {
+	var req v1.ExecStreamRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s GuestControlExecStreamServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s GuestControlExecStreamServerStream) Send(res *v1.ExecStreamResponse) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedGuestControlHandler returns CodeUnimplemented from all methods.
 type UnimplementedGuestControlHandler struct{}
 
-func (UnimplementedGuestControlHandler) Health(context.Context, *connect.Request[v1.HealthRequest]) (*connect.Response[v1.HealthResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GuestControl.Health is not implemented"))
+func (UnimplementedGuestControlHandler) Health(context.Context, *v1.HealthRequest) (*v1.HealthResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GuestControl.Health is not implemented")
 }
 
-func (UnimplementedGuestControlHandler) Exec(context.Context, *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GuestControl.Exec is not implemented"))
+func (UnimplementedGuestControlHandler) Exec(context.Context, *v1.ExecRequest) (*v1.ExecResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GuestControl.Exec is not implemented")
 }
 
-func (UnimplementedGuestControlHandler) ExecStream(context.Context, *connect.BidiStream[v1.ExecStreamRequest, v1.ExecStreamResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GuestControl.ExecStream is not implemented"))
+func (UnimplementedGuestControlHandler) ExecStream(context.Context, GuestControlExecStreamServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.GuestControl.ExecStream is not implemented")
 }
 
-func (UnimplementedGuestControlHandler) Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GuestControl.Signal is not implemented"))
+func (UnimplementedGuestControlHandler) Signal(context.Context, *v1.SignalRequest) (*v1.SignalResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GuestControl.Signal is not implemented")
 }
 
-func (UnimplementedGuestControlHandler) Provision(context.Context, *connect.Request[v1.ProvisionRequest]) (*connect.Response[v1.ProvisionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GuestControl.Provision is not implemented"))
+func (UnimplementedGuestControlHandler) Provision(context.Context, *v1.ProvisionRequest) (*v1.ProvisionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GuestControl.Provision is not implemented")
+}
+
+type guestControlClient struct {
+	client *connect.Client
+}
+
+func (c *guestControlClient) Health(ctx context.Context, req *v1.HealthRequest) (*v1.HealthResponse, error) {
+	var res v1.HealthResponse
+	if err := c.client.CallUnary(ctx, guestControlHealthSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *guestControlClient) Exec(ctx context.Context, req *v1.ExecRequest) (*v1.ExecResponse, error) {
+	var res v1.ExecResponse
+	if err := c.client.CallUnary(ctx, guestControlExecSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *guestControlClient) ExecStream(ctx context.Context) (GuestControlExecStreamClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, guestControlExecStreamSpec())
+	if err != nil {
+		return GuestControlExecStreamClientStream{}, err
+	}
+	return GuestControlExecStreamClientStream{stream: stream}, nil
+}
+
+func (c *guestControlClient) Signal(ctx context.Context, req *v1.SignalRequest) (*v1.SignalResponse, error) {
+	var res v1.SignalResponse
+	if err := c.client.CallUnary(ctx, guestControlSignalSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *guestControlClient) Provision(ctx context.Context, req *v1.ProvisionRequest) (*v1.ProvisionResponse, error) {
+	var res v1.ProvisionResponse
+	if err := c.client.CallUnary(ctx, guestControlProvisionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type guestControlHandler struct{ svc GuestControlHandler }
+
+func (h guestControlHandler) health(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.HealthRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Health(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h guestControlHandler) exec(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ExecRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Exec(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h guestControlHandler) execStream(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	return h.svc.ExecStream(ctx, GuestControlExecStreamServerStream{stream: stream})
+}
+
+func (h guestControlHandler) signal(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SignalRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Signal(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h guestControlHandler) provision(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ProvisionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Provision(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
 }

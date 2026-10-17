@@ -17,18 +17,18 @@ package gateway
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
-	"connectrpc.com/connect"
-
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
 // EventRelay is the narrow slice of the generated RunnerServiceClient the
 // publisher needs — just PublishEvents. The real client satisfies it; a test
 // supplies a fake. Mirrors CommsRelay's narrowing of RelayCommsCall.
 type EventRelay interface {
-	PublishEvents(ctx context.Context) *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse]
+	PublishEvents(ctx context.Context) (compassv1internalconnect.RunnerServicePublishEventsClientStream, error)
 }
 
 // SeqCounter is the RunnerSeq allocator shared by every publisher of every
@@ -91,9 +91,9 @@ type sessionPublisher struct {
 	// concurrent Send, and holding it across allocate-and-send makes allocation
 	// order equal emission order. Per-publisher, NOT shared — a close on an outgoing
 	// publisher must not block a forward on its live replacement.
-	mu     sync.Mutex
-	stream *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse]
-
+	mu      sync.Mutex
+	openErr error
+	stream  compassv1internalconnect.RunnerServicePublishEventsClientStream
 	// seq is the Gateway's shared allocator, carried across publishers so the
 	// sequence survives a replacement. Only the counter is shared; its lock is
 	// held just long enough to allocate.
@@ -122,12 +122,17 @@ type sessionPublisher struct {
 // publishers so the sequence never restarts.
 func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *SeqCounter) *sessionPublisher {
 	ctx, cancel := context.WithCancel(ctx)
+	stream, err := relay.PublishEvents(ctx)
+	if err != nil {
+		cancel()
+	}
 	return &sessionPublisher{
 		sessionID: sessionID,
 		seq:       seq,
 		ctx:       ctx,
 		cancel:    cancel,
-		stream:    relay.PublishEvents(ctx),
+		stream:    stream,
+		openErr:   relayedError(err),
 	}
 }
 
@@ -175,13 +180,17 @@ func (p *sessionPublisher) forwardState(frame *compassv1internal.AgentFrame) err
 
 // sendLocked sends one allocated seq and rolls it back on failure. Caller holds mu.
 func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.AgentFrame) error {
+	if p.openErr != nil {
+		p.seq.rollback(seq)
+		return p.openErr
+	}
 	if err := p.stream.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: seq,
 		SessionId: p.sessionID,
 		Frame:     frame,
 	}); err != nil {
 		p.seq.rollback(seq)
-		return err
+		return relayedError(err)
 	}
 	return nil
 }
@@ -190,15 +199,18 @@ func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.Agent
 // relay's CloseAndReceive at EOF (relay.go:168-171). The Publish handler closes
 // its shared stream when the agent's client-stream ends; Runner lifecycle reports
 // close their one-shot streams after forwarding a terminal frame. Returns the
-// ack error (nil on a clean close) so the caller can classify it. Takes only this
-// publisher's own lock, so a slow ack cannot stall another publisher's Send.
+// ack error (nil on a clean close) so the caller can classify it.
 func (p *sessionPublisher) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return p.closeErr
 	}
-	_, p.closeErr = p.stream.CloseAndReceive()
+	if p.openErr != nil {
+		p.closeErr = p.openErr
+	} else {
+		_, p.closeErr = p.stream.CloseAndReceive()
+	}
 	p.closed = true
 	p.cancel()
 	return p.closeErr
@@ -235,11 +247,9 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 	pub := g.pub
 	g.pubMu.Unlock()
 	if stale != nil {
-		// Close the orphan (a stopped session's, or one a lifecycle report
-		// cancelled) to end its upstream stream rather than leak it. Close takes
-		// the orphan's mu, so a straggling forward on it finishes first.
-		// Discarded: the new publisher is installed, so a close error changes nothing.
-		_ = stale.close()
+		if err := stale.close(); err != nil {
+			slog.WarnContext(g.baseCtx, "closing replaced gateway publisher", "session_id", stale.sessionID, "error", err)
+		}
 	}
 	return pub
 }

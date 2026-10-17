@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -24,8 +25,8 @@ type infoService struct {
 	enrolledRunners []*compassv1.EnrolledRunner
 }
 
-func (s *infoService) GetServerInfo(_ context.Context, _ *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error) {
-	return connect.NewResponse(&compassv1.GetServerInfoResponse{Version: s.version, EnrolledRunners: s.enrolledRunners}), nil
+func (s *infoService) GetServerInfo(_ context.Context, _ *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
+	return &compassv1.GetServerInfoResponse{Version: s.version, EnrolledRunners: s.enrolledRunners}, nil
 }
 
 // serveInfo serves GetServerInfo over a temporary Unix socket.
@@ -36,11 +37,12 @@ func serveInfo(t *testing.T, version string, enrolledRunners ...*compassv1.Enrol
 	if err != nil {
 		t.Fatalf("net.Listen unix = %v", err)
 	}
-	mux := http.NewServeMux()
-	path, handler := compassv1connect.NewCompassServiceHandler(&infoService{version: version, enrolledRunners: enrolledRunners})
-	mux.Handle(path, handler)
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
+	mux := http.NewServeMux()
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, &infoService{version: version, enrolledRunners: enrolledRunners})
+	connecthttp.Mount(mux, server)
 	srv := &http.Server{Handler: mux, Protocols: protocols}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() {

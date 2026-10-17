@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
@@ -110,9 +111,9 @@ func newGatewayDoorFixture(t *testing.T) gatewayDoorFixture {
 	if err != nil {
 		t.Fatalf("seed owner Y credential: %v", err)
 	}
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	resolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)
@@ -122,7 +123,7 @@ func newGatewayDoorFixture(t *testing.T) gatewayDoorFixture {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return gatewayDoorFixture{
-		client: compassv1internalconnect.NewGatewayCredentialsClient(http.DefaultClient, server.URL),
+		client: compassv1internalconnect.NewGatewayCredentialsClient(connect.NewClient(connecthttp.NewTransport(http.DefaultClient, server.URL, connecthttp.WithReadMaxBytes(0)))),
 		tokens: tokens, tenantCtx: tenantCtx, agentID: agentX.ID,
 		agentToken: agentToken, accountToken: accountToken,
 		ownCredentialID: ownCredential.ID, foreignCredentialID: foreignCredential.ID,
@@ -146,14 +147,15 @@ func TestGatewayCredentialsDoorServiceBearerAllowlist(t *testing.T) {
 		{name: "account bearer", bearer: f.accountToken, wantCode: connect.CodeUnauthenticated},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken})
-			req.Header().Set("Authorization", "Bearer "+tt.bearer)
+			req := &compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken}
+			ctx, info := connect.NewClientContext(ctx)
+			info.RequestHeader().Set("Authorization", "Bearer "+tt.bearer)
 			response, err := client.ListCredentialPool(ctx, req)
 			if tt.wantOK {
 				if err != nil {
 					t.Fatalf("allowlisted service token rejected: %v", err)
 				}
-				if got := response.Msg.GetCredentials(); len(got) != 1 || got[0].GetId() != f.ownCredentialID || got[0].GetApiKey() != "door-key-x" {
+				if got := response.GetCredentials(); len(got) != 1 || got[0].GetId() != f.ownCredentialID || got[0].GetApiKey() != "door-key-x" {
 					t.Fatalf("pool = %v, want tenant B owner's credential", got)
 				}
 				return
@@ -165,18 +167,20 @@ func TestGatewayCredentialsDoorServiceBearerAllowlist(t *testing.T) {
 	}
 
 	t.Run("agent token is not the service bearer", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken})
-		req.Header().Set("Authorization", "Bearer "+agentToken)
+		req := &compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken}
+		ctx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+agentToken)
 		if _, err := client.ListCredentialPool(ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
 			t.Fatalf("agent token as bearer error = %v, want Unauthenticated", err)
 		}
 	})
 
 	t.Run("owner token cannot access another owner's credential", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1internal.DisableCredentialRequest{
+		req := &compassv1internal.DisableCredentialRequest{
 			Id: f.foreignCredentialID, AgentToken: agentToken, ExpectedVersion: 1,
-		})
-		req.Header().Set("Authorization", "Bearer "+serviceToken)
+		}
+		ctx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+serviceToken)
 		if _, err := client.DisableCredential(ctx, req); connect.CodeOf(err) != connect.CodeNotFound {
 			t.Fatalf("foreign credential error = %v, want NotFound", err)
 		}
@@ -186,8 +190,9 @@ func TestGatewayCredentialsDoorServiceBearerAllowlist(t *testing.T) {
 		t.Fatalf("Revoke gateway token: %v", err)
 	}
 	t.Run("revoked agent token is unauthenticated", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken})
-		req.Header().Set("Authorization", "Bearer "+serviceToken)
+		req := &compassv1internal.ListCredentialPoolRequest{AgentToken: agentToken}
+		ctx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+serviceToken)
 		if _, err := client.ListCredentialPool(ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
 			t.Fatalf("revoked token error = %v, want Unauthenticated", err)
 		}

@@ -30,8 +30,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
@@ -184,17 +182,17 @@ type canaryFakeClient struct {
 	exitCode int32
 }
 
-func (c *canaryFakeClient) Provision(context.Context, *connect.Request[compassv1.ProvisionRequest]) (*connect.Response[compassv1.ProvisionResponse], error) {
-	return connect.NewResponse(&compassv1.ProvisionResponse{}), nil
+func (c *canaryFakeClient) Provision(context.Context, *compassv1.ProvisionRequest) (*compassv1.ProvisionResponse, error) {
+	return &compassv1.ProvisionResponse{}, nil
 }
 
-func (c *canaryFakeClient) Exec(_ context.Context, req *connect.Request[compassv1.ExecRequest]) (*connect.Response[compassv1.ExecResponse], error) {
+func (c *canaryFakeClient) Exec(_ context.Context, req *compassv1.ExecRequest) (*compassv1.ExecResponse, error) {
 	if c.execErr != nil {
 		return nil, c.execErr
 	}
 	// Echo the argument(s) after the command name, mirroring `echo <nonce>`, so
 	// BootCanary's nonce-round-trip check passes — unless stdout overrides it.
-	cmd := req.Msg.GetCommand()
+	cmd := req.GetCommand()
 	var out string
 	if len(cmd) > 1 {
 		out = strings.Join(cmd[1:], " ")
@@ -202,21 +200,21 @@ func (c *canaryFakeClient) Exec(_ context.Context, req *connect.Request[compassv
 	if c.stdout != nil {
 		out = *c.stdout
 	}
-	return connect.NewResponse(&compassv1.ExecResponse{
+	return &compassv1.ExecResponse{
 		Stdout:   []byte(out + "\n"),
 		ExitCode: c.exitCode,
-	}), nil
+	}, nil
 }
 
-func (c *canaryFakeClient) Health(context.Context, *connect.Request[compassv1.HealthRequest]) (*connect.Response[compassv1.HealthResponse], error) {
+func (c *canaryFakeClient) Health(context.Context, *compassv1.HealthRequest) (*compassv1.HealthResponse, error) {
 	return nil, errors.New("canaryFakeClient: Health not used on the canary path")
 }
 
-func (c *canaryFakeClient) ExecStream(context.Context) *connect.BidiStreamForClient[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse] {
-	return nil
+func (c *canaryFakeClient) ExecStream(context.Context) (compassv1internalconnect.GuestControlExecStreamClientStream, error) {
+	return compassv1internalconnect.GuestControlExecStreamClientStream{}, nil
 }
 
-func (c *canaryFakeClient) Signal(context.Context, *connect.Request[compassv1.SignalRequest]) (*connect.Response[compassv1.SignalResponse], error) {
+func (c *canaryFakeClient) Signal(context.Context, *compassv1.SignalRequest) (*compassv1.SignalResponse, error) {
 	return nil, errors.New("canaryFakeClient: Signal not used on the canary path")
 }
 

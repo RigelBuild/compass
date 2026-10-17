@@ -10,7 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -25,7 +26,7 @@ type sessionsResumeServer struct {
 	results    chan *compassv1internal.SessionsRequest
 }
 
-func (s *sessionsResumeServer) Sessions(_ context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+func (s *sessionsResumeServer) Sessions(_ context.Context, stream compassv1internalconnect.RunnerServiceSessionsServerStream) error {
 	if _, err := stream.Receive(); err != nil {
 		return fmt.Errorf("receive Runner bootstrap: %w", err)
 	}
@@ -68,16 +69,17 @@ func TestRunSessionsAcceptsResumeBodyAbove4MiB(t *testing.T) {
 		resumeBody: resumeBody,
 		results:    make(chan *compassv1internal.SessionsRequest, 1),
 	}
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(serverHandler)
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, serverHandler)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewUnstartedServer(mux)
-	server.Config.Protocols = cleartextHTTP2()
-	server.Start()
-	t.Cleanup(server.Close)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	httpServer := httptest.NewUnstartedServer(mux)
+	httpServer.Config.Protocols = cleartextHTTP2()
+	httpServer.Start()
+	t.Cleanup(httpServer.Close)
 
 	link, err := Dial(t.Context(), RunnerConfig{
-		ServerAddr: server.URL,
+		ServerAddr: httpServer.URL,
 		Token:      StaticToken("test-token"),
 		HTTPClient: h2cHTTPClient(t),
 	})

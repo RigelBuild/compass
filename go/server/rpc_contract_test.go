@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -21,9 +21,9 @@ func TestStartAgentSessionNoRunnerOverHTTP(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
-	_, err := client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	_, err := client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: "container-without-runner",
-	}))
+	})
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Fatalf("StartAgentSession code = %v, want Unavailable (error %v)", got, err)
 	}

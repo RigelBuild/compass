@@ -6,10 +6,11 @@ import (
 	"log/slog"
 	"slices"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -32,18 +33,18 @@ const commsResyncSeq uint64 = 0
 // on server shutdown.
 func (c *Comms) SubscribeComms(
 	ctx context.Context,
-	req *connect.Request[compassv1.SubscribeCommsRequest],
-	stream *connect.ServerStream[compassv1.SubscribeCommsResponse],
+	req *compassv1.SubscribeCommsRequest,
+	stream compassv1connect.CommsServiceSubscribeCommsServerStream,
 ) error {
 	ctx = otelx.WithoutSpan(ctx)
-	sub, err := c.bus.Subscribe(req.Msg.GetSinceSeq(), req.Msg.GetInstanceEpoch())
+	sub, err := c.bus.Subscribe(req.GetSinceSeq(), req.GetInstanceEpoch())
 	if err != nil {
 		if errors.Is(err, events.ErrBufferUnderflow) {
 			// Cursor can't be served gap-free: a single terminal resync so the
 			// client re-snapshots at since_seq = 0.
 			return stream.Send(commsResyncRequired(c.bus.InstanceEpoch()))
 		}
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Free the fan-out slot on every exit path (hang-up, lag, shutdown, send
 	// error). Cancel is idempotent, safe after the bus already closed the channel.
@@ -54,10 +55,10 @@ func (c *Comms) SubscribeComms(
 	// store-space snapshot_seq for each catch-up read. Subscribe-first so a message
 	// in this window lands on the live tail. The boundary carries the store head
 	// BEFORE visibility filtering — the count leak is within the threat model (OQ4).
-	if req.Msg.GetSinceSeq() == 0 {
+	if req.GetSinceSeq() == 0 {
 		head, err := c.store.MessagesHeadSeq(ctx)
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		if err := stream.Send(commsSnapshotBoundary(head, sub.Epoch)); err != nil {
 			return nil // client hung up before the first frame: a clean end
@@ -70,7 +71,7 @@ func (c *Comms) SubscribeComms(
 		// the unfiltered event's existence never leaks through an error message.
 		slog.ErrorContext(ctx, "comms stream ended: visibility resolution failed",
 			"actor", actor, "error", err)
-		return connect.NewError(connect.CodeInternal, errStreamVisibility)
+		return connect.NewError(connect.CodeInternal, errStreamVisibility.Error()).WithCause(errStreamVisibility)
 	}
 	return nil
 }
@@ -103,7 +104,7 @@ func forwardComms(
 	actor store.AccountID,
 	vis eventVisibility,
 	sub events.Subscription[*compassv1.SubscribeCommsResponse],
-	stream *connect.ServerStream[compassv1.SubscribeCommsResponse],
+	stream compassv1connect.CommsServiceSubscribeCommsServerStream,
 ) error {
 	// send reports (visErr, ok): visErr is a store fault resolving visibility —
 	// propagate it. ok is false on a clean end (a stream.Send failure or a

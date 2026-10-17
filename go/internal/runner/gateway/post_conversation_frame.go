@@ -13,7 +13,7 @@ package gateway
 import (
 	"context"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -24,36 +24,36 @@ import (
 // bounded schedule regardless of status code.
 func (g *Gateway) PostConversationFrame(
 	ctx context.Context,
-	req *connect.Request[compassv1internal.PostConversationFrameRequest],
-) (*connect.Response[compassv1internal.PostConversationFrameResponse], error) {
+	req *compassv1internal.PostConversationFrameRequest,
+) (*compassv1internal.PostConversationFrameResponse, error) {
 	sessionID, ok := g.sessions.Session(g.containerName)
 	if !ok || sessionID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForConversation)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoSessionForConversation.Error()).WithCause(errNoSessionForConversation)
 	}
 
-	frame := req.Msg.GetFrame()
+	frame := req.GetFrame()
 	if !isConversationFrame(frame) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errNotConversationFrame)
+		return nil, connect.NewError(connect.CodeInvalidArgument, errNotConversationFrame.Error()).WithCause(errNotConversationFrame)
 	}
 
-	key := req.Msg.GetIdempotencyKey()
+	key := req.GetIdempotencyKey()
 	// Advisory fast-path: a key already committed in this process is a retry whose
 	// original commit succeeded — return success without a redundant upstream
 	// commit. An empty key never short-circuits (nothing to dedup on); it still
 	// commits, and the store applies no dedup for an empty key.
 	if key != "" && g.keyCommitted(key) {
-		return connect.NewResponse(&compassv1internal.PostConversationFrameResponse{}), nil
+		return &compassv1internal.PostConversationFrameResponse{}, nil
 	}
 
 	// Commit on THIS request's ctx: the commit is a unary bound to this call
 	// (unlike the Publish stream on baseCtx). The Runner forwards the session_id
 	// and frame verbatim and passes every status unchanged.
-	if _, err := g.committer.CommitConversationFrame(ctx, connect.NewRequest(&compassv1internal.CommitConversationFrameRequest{
+	if _, err := g.committer.CommitConversationFrame(ctx, &compassv1internal.CommitConversationFrameRequest{
 		SessionId:      sessionID,
 		Frame:          frame,
 		IdempotencyKey: key,
-	})); err != nil {
-		return nil, err
+	}); err != nil {
+		return nil, relayedError(err)
 	}
 
 	// The commit was acknowledged. Record the key so a retry whose response was
@@ -62,7 +62,7 @@ func (g *Gateway) PostConversationFrame(
 	if key != "" {
 		g.markKeyCommitted(key)
 	}
-	return connect.NewResponse(&compassv1internal.PostConversationFrameResponse{}), nil
+	return &compassv1internal.PostConversationFrameResponse{}, nil
 }
 
 // isConversationFrame reports whether frame is the durable transcript frame the

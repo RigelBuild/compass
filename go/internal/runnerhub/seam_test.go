@@ -27,10 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -46,17 +45,20 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 	t.Cleanup(cancel)
 
 	// --- Enroll: accepted into the registry, first time reattached=false. ------
-	enrollResp, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	enrollResp, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
 	if err != nil {
 		t.Fatalf("Enroll = %v, want success", err)
 	}
-	if enrollResp.Msg.GetReattached() {
+	if enrollResp.GetReattached() {
 		t.Fatal("first Enroll reattached = true, want false")
 	}
 
 	// --- Sessions: open the bidi stream and run a minimal Runner-side dispatch
 	// loop that answers one Start command with a fixed session id. ---------------
-	stream := client.Sessions(ctx)
+	stream, err := client.Sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	loopErr := make(chan error, 1)
 	go runnerSessionsLoop(stream, loopErr)
 
@@ -85,7 +87,7 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 
 	// Close the Sessions stream and confirm the loop ended cleanly (the request
 	// half saw EOF), so the detach/disconnect path is well-formed.
-	if err := stream.CloseRequest(); err != nil {
+	if err := stream.CloseSend(); err != nil {
 		t.Fatalf("CloseRequest = %v", err)
 	}
 	if err := recvLoopErr(t, loopErr); err != nil {
@@ -101,7 +103,10 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 	// --- PublishEvents: one relayed session trace frame must reach Hub.Deliver
 	// and terminate at the tail sink (the surviving Deliver arm). This is the
 	// event path terminating the wire. ------------------------------------------
-	pub := client.PublishEvents(ctx)
+	pub, err := client.PublishEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := pub.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "sess-wire",
@@ -133,7 +138,10 @@ func TestSeamPublishEventsOpenedBeforeEnrollIsFenced(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	pub := client.PublishEvents(ctx)
+	pub, err := client.PublishEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := pub.Send(&compassv1internal.PublishEventsRequest{RunnerSeq: 1, SessionId: "sess-wire", Frame: sessionTraceFrame("before enroll")}); err != nil {
 		t.Fatalf("PublishEvents.Send = %v", err)
 	}
@@ -149,7 +157,7 @@ func TestSeamPublishEventsOpenedBeforeEnrollIsFenced(t *testing.T) {
 			t.Fatal("pre-enroll frame never reached Deliver")
 		}
 	}
-	if _, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"})); err != nil {
+	if _, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: "runner-1"}); err != nil {
 		t.Fatalf("Enroll = %v, want success", err)
 	}
 	bindSession(hub, "sess-wire")
@@ -184,7 +192,7 @@ type startRoundTrip struct {
 // to open the stream. runner.RunSessions opens its real Sessions stream with the
 // same bootstrap Send (dispatch.go), so this loop mirrors the production client's
 // stream-open, not a test shortcut.
-func runnerSessionsLoop(stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse], done chan<- error) {
+func runnerSessionsLoop(stream compassv1internalconnect.RunnerServiceSessionsClientStream, done chan<- error) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		done <- err
 		return

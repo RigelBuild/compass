@@ -28,7 +28,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -408,14 +409,14 @@ func (s *bridgeService) probe(ctx context.Context, target *bridge.Target, token 
 	}()
 
 	client, serverURL := target.Client()
-	cc := compassv1connect.NewCompassServiceClient(client, serverURL)
-	infoResp, err := cc.GetServerInfo(ctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(client, serverURL, connecthttp.WithReadMaxBytes(0))))
+	infoResp, err := cc.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		kind, message := classifyConnectErr(err)
 		return connectResult{Kind: kind, Message: message}
 	}
-	serverVersion := infoResp.Msg.GetVersion()
-	serverAPIVersion := infoResp.Msg.GetApiVersion()
+	serverVersion := infoResp.GetVersion()
+	serverAPIVersion := infoResp.GetApiVersion()
 	if serverAPIVersion != clientAPIVersion {
 		return connectResult{
 			Kind:          connectKindVersionMismatch,
@@ -425,12 +426,12 @@ func (s *bridgeService) probe(ctx context.Context, target *bridge.Target, token 
 		}
 	}
 
-	whoResp, err := cc.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{}))
+	whoResp, err := cc.WhoAmI(ctx, &compassv1.WhoAmIRequest{})
 	if err != nil {
 		kind, message := classifyConnectErr(err)
 		return connectResult{Kind: kind, Message: message}
 	}
-	accountID := whoResp.Msg.GetAccountId()
+	accountID := whoResp.GetAccountId()
 	if accountID == "" {
 		return connectResult{Kind: connectKindOther, Message: "The server returned an empty account id"}
 	}

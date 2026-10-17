@@ -13,7 +13,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -28,16 +29,23 @@ import (
 // connect's ServerStreamForClient is generic over the message, so the two client
 // streams need separately-typed receive helpers. It never sleeps; the timeout
 // only guards against a wedged handler.
-func recvAgentFrameOrTimeout(t *testing.T, stream *connect.ServerStreamForClient[compassv1.AgentSessionFrame]) bool {
+func receiveAgentFrameOrTimeout(t *testing.T, stream compassv1connect.CompassServiceSubscribeAgentSessionClientStream) (*compassv1.AgentSessionFrame, error) {
 	t.Helper()
-	ch := make(chan bool, 1)
-	go func() { ch <- stream.Receive() }()
+	type receiveResult struct {
+		frame *compassv1.AgentSessionFrame
+		err   error
+	}
+	ch := make(chan receiveResult, 1)
+	go func() {
+		frame, err := stream.Receive()
+		ch <- receiveResult{frame: frame, err: err}
+	}()
 	select {
-	case ok := <-ch:
-		return ok
+	case result := <-ch:
+		return result.frame, result.err
 	case <-timeAfter():
 		t.Fatal("timed out waiting on SubscribeAgentSession stream.Receive()")
-		return false
+		return nil, context.DeadlineExceeded
 	}
 }
 
@@ -50,15 +58,17 @@ func subscribeAgentSessionCode(t *testing.T, client compassv1connect.CompassServ
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	stream, err := client.SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{SessionId: sessionID}))
+	stream, err := client.SubscribeAgentSession(ctx, &compassv1.SubscribeAgentSessionRequest{SessionId: sessionID})
 	if err != nil {
 		return connect.CodeOf(err)
 	}
 	defer func() { _ = stream.Close() }()
-	if recvAgentFrameOrTimeout(t, stream) {
-		t.Fatalf("a rejected SubscribeAgentSession stream delivered a frame: %+v", stream.Msg())
+	if frame, receiveErr := receiveAgentFrameOrTimeout(t, stream); receiveErr == nil {
+		t.Fatalf("a rejected SubscribeAgentSession stream delivered a frame: %+v", frame)
+		return connect.CodeUnknown
+	} else {
+		return connect.CodeOf(receiveErr)
 	}
-	return connect.CodeOf(stream.Err())
 }
 
 // TestSubscribeAgentSessionWithoutTailIsUnavailable pins branch 1
@@ -122,10 +132,10 @@ func TestSkipBatchWindowEarlyFailuresSkipStore(t *testing.T) {
 			svc := newService("test", bus, nil, tc.hub, nil, nil, nil)
 			var url string
 			if tc.caller {
-				path, handler := compassv1connect.NewCompassServiceHandler(svc,
-					connect.WithInterceptors(auth.AmbientIdentity("caller")))
+				server := connect.NewServer(auth.AmbientIdentity("caller"))
+				compassv1connect.RegisterCompassServiceHandler(server, svc)
 				mux := http.NewServeMux()
-				mux.Handle(path, handler)
+				connecthttp.Mount(mux, server)
 				srv := httptest.NewUnstartedServer(mux)
 				srv.Config.Protocols = cleartextHTTP2()
 				srv.Start()
@@ -137,7 +147,7 @@ func TestSkipBatchWindowEarlyFailuresSkipStore(t *testing.T) {
 			client := newH2CClient(t, url)
 			ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 			defer cancel()
-			_, err := client.SkipBatchWindow(ctx, connect.NewRequest(&compassv1.SkipBatchWindowRequest{SessionId: tc.id}))
+			_, err := client.SkipBatchWindow(ctx, &compassv1.SkipBatchWindowRequest{SessionId: tc.id})
 			if got := connect.CodeOf(err); got != tc.want {
 				t.Fatalf("SkipBatchWindow error = %v, want %v", got, tc.want)
 			}

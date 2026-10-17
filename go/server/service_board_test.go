@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -102,14 +102,14 @@ func TestListBoardIssuesReachableEmptyBoard(t *testing.T) {
 	client := newH2CClient(t, url)
 
 	resp, err := client.ListBoardIssues(context.Background(),
-		connect.NewRequest(&compassv1.ListBoardIssuesRequest{}))
+		&compassv1.ListBoardIssuesRequest{})
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeUnimplemented {
 			t.Fatalf("ListBoardIssues = CodeUnimplemented, want a real handler (the 4b wiring is missing)")
 		}
 		t.Fatalf("ListBoardIssues over the open door: %v", err)
 	}
-	if got := resp.Msg.GetIssues(); len(got) != 0 {
+	if got := resp.GetIssues(); len(got) != 0 {
 		t.Fatalf("ListBoardIssues on a nil board = %d issues, want 0", len(got))
 	}
 }
@@ -121,7 +121,7 @@ func TestSearchIssuesRejectsEmptyQuery(t *testing.T) {
 	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
 
-	_, err := client.SearchIssues(context.Background(), connect.NewRequest(&compassv1.SearchIssuesRequest{Query: "   ", Limit: 10}))
+	_, err := client.SearchIssues(context.Background(), &compassv1.SearchIssuesRequest{Query: "   ", Limit: 10})
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("SearchIssues(empty) error = %v, code = %v, want InvalidArgument", err, connect.CodeOf(err))
 	}
@@ -139,17 +139,17 @@ func TestListBoardIssuesIgnoresRequestSnapshotSeqOnNilBoard(t *testing.T) {
 	client := newH2CClient(t, url)
 
 	zero, err := client.ListBoardIssues(context.Background(),
-		connect.NewRequest(&compassv1.ListBoardIssuesRequest{SnapshotSeq: 0}))
+		&compassv1.ListBoardIssuesRequest{SnapshotSeq: 0})
 	if err != nil {
 		t.Fatalf("ListBoardIssues(snapshot_seq=0): %v", err)
 	}
 	nonZero, err := client.ListBoardIssues(context.Background(),
-		connect.NewRequest(&compassv1.ListBoardIssuesRequest{SnapshotSeq: 42}))
+		&compassv1.ListBoardIssuesRequest{SnapshotSeq: 42})
 	if err != nil {
 		t.Fatalf("ListBoardIssues(snapshot_seq=42): %v", err)
 	}
-	if len(zero.Msg.GetIssues()) != len(nonZero.Msg.GetIssues()) {
+	if len(zero.GetIssues()) != len(nonZero.GetIssues()) {
 		t.Fatalf("board differed by request snapshot_seq: seq0 = %d issues, seq42 = %d issues; want identical (field ignored)",
-			len(zero.Msg.GetIssues()), len(nonZero.Msg.GetIssues()))
+			len(zero.GetIssues()), len(nonZero.GetIssues()))
 	}
 }

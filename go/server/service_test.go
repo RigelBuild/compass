@@ -17,7 +17,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -74,11 +75,11 @@ var incompressibleBytes = func() []byte {
 // subscribe opens a SubscribeEvents stream and registers cleanup. The returned
 // context is cancelled on cleanup so the server-side handler unblocks and the
 // bus subscriber is released even if the test leaves the stream open.
-func subscribe(t *testing.T, client compassv1connect.CompassServiceClient, req *compassv1.SubscribeEventsRequest) *connect.ServerStreamForClient[compassv1.SubscribeEventsResponse] {
+func subscribe(t *testing.T, client compassv1connect.CompassServiceClient, req *compassv1.SubscribeEventsRequest) compassv1connect.CompassServiceSubscribeEventsClientStream {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stream, err := client.SubscribeEvents(ctx, connect.NewRequest(req))
+	stream, err := client.SubscribeEvents(ctx, req)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
@@ -88,28 +89,28 @@ func subscribe(t *testing.T, client compassv1connect.CompassServiceClient, req *
 
 // recvOne advances the stream by one message with a deadline safety net, so a
 // handler that never sends fails the test instead of hanging.
-func recvOne(t *testing.T, stream *connect.ServerStreamForClient[compassv1.SubscribeEventsResponse]) *compassv1.SubscribeEventsResponse {
+func recvOne(t *testing.T, stream compassv1connect.CompassServiceSubscribeEventsClientStream) *compassv1.SubscribeEventsResponse {
 	t.Helper()
-	if !recvStreamOrTimeout(t, stream) {
-		t.Fatalf("stream.Receive() = false, want a message; err = %v", stream.Err())
+	msg, err := recvStreamOrTimeout(t, stream)
+	if err != nil {
+		t.Fatalf("stream.Receive() = %v, want a message", err)
 	}
-	return stream.Msg()
+	return msg
 }
 
 func mountInfoRunner(t *testing.T, hub *runnerhub.Hub) string {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := runnerhub.NewMountedHandler(hub, func(_ context.Context, token string, kind store.SubjectKind) (store.Subject, error) {
+	mux := http.NewServeMux()
+	runnerhub.Mount(mux, hub, func(_ context.Context, token string, kind store.SubjectKind) (store.Subject, error) {
 		if token != "runner-token" || kind != store.SubjectRunner {
 			return store.Subject{}, errors.New("invalid test Runner credential")
 		}
 		return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, nil
 	}, nil, nil, otelIC)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -119,23 +120,15 @@ func mountInfoRunner(t *testing.T, hub *runnerhub.Hub) string {
 
 type serverTestBearer struct{ token string }
 
-func (b *serverTestBearer) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		req.Header().Set("Authorization", "Bearer "+b.token)
-		return next(ctx, req)
+func (b *serverTestBearer) ClientInterceptor(next connect.ClientFunc) connect.ClientFunc {
+	return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+		info, ok := connect.CallInfoForClientContext(ctx)
+		if !ok {
+			return nil, errors.New("missing Connect client call info")
+		}
+		info.RequestHeader().Set("Authorization", "Bearer "+b.token)
+		return next(ctx, spec)
 	}
-}
-
-func (b *serverTestBearer) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		conn := next(ctx, spec)
-		conn.RequestHeader().Set("Authorization", "Bearer "+b.token)
-		return conn
-	}
-}
-
-func (b *serverTestBearer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }
 
 func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
@@ -145,11 +138,11 @@ func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 	url := newH2CTestServer(t, newService("9.9.9-test", bus, nil, hub, nil, nil, nil))
 	client := newH2CClient(t, url)
 
-	resp, err := client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	resp, err := client.GetServerInfo(context.Background(), &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo before enroll: %v", err)
 	}
-	if got := resp.Msg.GetEnrolledRunners(); len(got) != 0 {
+	if got := resp.GetEnrolledRunners(); len(got) != 0 {
 		t.Fatalf("EnrolledRunners before enroll = %v, want empty", got)
 	}
 	runnerURL := mountInfoRunner(t, hub)
@@ -158,25 +151,25 @@ func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	runnerClient := compassv1internalconnect.NewRunnerServiceClient(
+	runnerClient := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: tr},
 		runnerURL,
-		connect.WithInterceptors(&serverTestBearer{token: "runner-token"}),
-	)
-	if _, err := runnerClient.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"})); err != nil {
+		connecthttp.WithReadMaxBytes(0),
+	), (&serverTestBearer{token: "runner-token"}).ClientInterceptor))
+	if _, err := runnerClient.Enroll(context.Background(), &compassv1internal.EnrollRequest{RunnerId: "runner-1"}); err != nil {
 		t.Fatalf("RunnerService.Enroll: %v", err)
 	}
-	resp, err = client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	resp, err = client.GetServerInfo(context.Background(), &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo after enroll: %v", err)
 	}
-	if got := resp.Msg.GetEnrolledRunners(); len(got) != 1 || got[0].GetId() != "runner-1" || got[0].GetEnrollment() != 1 {
+	if got := resp.GetEnrolledRunners(); len(got) != 1 || got[0].GetId() != "runner-1" || got[0].GetEnrollment() != 1 {
 		t.Fatalf("EnrolledRunners after enroll = %v, want runner-1 at enrollment 1", got)
 	}
-	if got := resp.Msg.GetVersion(); got != "9.9.9-test" {
+	if got := resp.GetVersion(); got != "9.9.9-test" {
 		t.Fatalf("Version = %q, want %q (the configured build version)", got, "9.9.9-test")
 	}
-	if got := resp.Msg.GetApiVersion(); got != apiVersion {
+	if got := resp.GetApiVersion(); got != apiVersion {
 		t.Fatalf("ApiVersion = %q, want %q", got, apiVersion)
 	}
 }
@@ -279,7 +272,7 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stream, err := client.SubscribeEvents(ctx, connect.NewRequest(&compassv1.SubscribeEventsRequest{SinceSeq: 0}))
+	stream, err := client.SubscribeEvents(ctx, &compassv1.SubscribeEventsRequest{SinceSeq: 0})
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
@@ -309,49 +302,54 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 	// the stream ends cleanly.
 	sawResync := false
 	for {
-		if !recvStreamOrTimeout(t, stream) {
+		msg, err := recvStreamOrTimeout(t, stream)
+		if err != nil {
 			break
 		}
-		msg := stream.Msg()
 		if msg.GetResyncRequired() != nil {
 			if msg.GetSeq() != 0 {
 				t.Fatalf("resync seq = %d, want 0", msg.GetSeq())
 			}
 			sawResync = true
-			// Resync is terminal: nothing follows it.
 			assertStreamEndsClean(t, stream)
 			break
 		}
 	}
 	if !sawResync {
-		t.Fatalf("stream ended without a terminal ResyncRequired; err = %v", stream.Err())
+		t.Fatal("stream ended without a terminal ResyncRequired")
 	}
 }
 
 // assertStreamEndsClean asserts the next Receive returns false with a clean EOF
 // (nil Err) — the stream ended, not errored.
-func assertStreamEndsClean(t *testing.T, stream *connect.ServerStreamForClient[compassv1.SubscribeEventsResponse]) {
+func assertStreamEndsClean(t *testing.T, stream compassv1connect.CompassServiceSubscribeEventsClientStream) {
 	t.Helper()
-	if recvStreamOrTimeout(t, stream) {
-		t.Fatalf("stream delivered another message after the terminal one: %+v", stream.Msg())
+	msg, err := recvStreamOrTimeout(t, stream)
+	if err == nil {
+		t.Fatalf("stream delivered another message after the terminal one: %+v", msg)
 	}
-	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+	if !errors.Is(err, io.EOF) {
 		t.Fatalf("stream ended with error %v, want clean EOF", err)
 	}
 }
 
-// recvStreamOrTimeout runs one Receive with a deadline safety net; returns the
-// ok value. It never sleeps — the timeout only guards against a wedged handler.
-func recvStreamOrTimeout(t *testing.T, stream *connect.ServerStreamForClient[compassv1.SubscribeEventsResponse]) bool {
+func recvStreamOrTimeout(t *testing.T, stream compassv1connect.CompassServiceSubscribeEventsClientStream) (*compassv1.SubscribeEventsResponse, error) {
 	t.Helper()
-	ch := make(chan bool, 1)
-	go func() { ch <- stream.Receive() }()
+	type receiveResult struct {
+		msg *compassv1.SubscribeEventsResponse
+		err error
+	}
+	ch := make(chan receiveResult, 1)
+	go func() {
+		msg, err := stream.Receive()
+		ch <- receiveResult{msg: msg, err: err}
+	}()
 	select {
-	case ok := <-ch:
-		return ok
+	case result := <-ch:
+		return result.msg, result.err
 	case <-timeAfter():
 		t.Fatal("timed out waiting on stream.Receive()")
-		return false
+		return nil, context.DeadlineExceeded
 	}
 }
 
@@ -377,21 +375,21 @@ func TestAgentSessionRPCsWithoutRunnerHubAreUnavailable(t *testing.T) {
 		{
 			name: "StartAgentSession",
 			call: func(ctx context.Context, client compassv1connect.CompassServiceClient) error {
-				_, err := client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{ContainerName: "c1"}))
+				_, err := client.StartAgentSession(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "c1"})
 				return err
 			},
 		},
 		{
 			name: "StopAgentSession",
 			call: func(ctx context.Context, client compassv1connect.CompassServiceClient) error {
-				_, err := client.StopAgentSession(ctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{SessionId: "s1"}))
+				_, err := client.StopAgentSession(ctx, &compassv1.StopAgentSessionRequest{SessionId: "s1"})
 				return err
 			},
 		},
 		{
 			name: "ReloadAgentSession",
 			call: func(ctx context.Context, client compassv1connect.CompassServiceClient) error {
-				_, err := client.ReloadAgentSession(ctx, connect.NewRequest(&compassv1.ReloadAgentSessionRequest{SessionId: "s1"}))
+				_, err := client.ReloadAgentSession(ctx, &compassv1.ReloadAgentSessionRequest{SessionId: "s1"})
 				return err
 			},
 		},

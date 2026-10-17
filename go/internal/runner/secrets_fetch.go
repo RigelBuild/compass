@@ -10,8 +10,6 @@ import (
 	"context"
 	"fmt"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/secrets"
@@ -42,11 +40,11 @@ func (l *ServerLink) FetchSecretsByContainer(ctx context.Context, containerName 
 // fetchSecrets issues the FetchSecrets RPC and maps the wire set to the
 // resolve-surface type. subject names the binding for the error message.
 func (l *ServerLink) fetchSecrets(ctx context.Context, req *compassv1internal.FetchSecretsRequest, subject string) ([]secrets.ResolvedSecret, error) {
-	resp, err := l.client.FetchSecrets(ctx, connect.NewRequest(req))
+	resp, err := l.client.FetchSecrets(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching secrets for %s: %w", subject, err)
 	}
-	wire := resp.Msg.GetSecrets()
+	wire := resp.GetSecrets()
 	out := make([]secrets.ResolvedSecret, 0, len(wire))
 	for _, s := range wire {
 		out = append(out, resolvedSecretFromProto(s))

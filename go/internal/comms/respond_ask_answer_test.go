@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -26,35 +26,38 @@ func twoEventsAfterBoundary(t *testing.T, h streamHarness, actor store.AccountID
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	out := make(chan []*compassv1.SubscribeCommsResponse, 1)
-	connectReq := connect.NewRequest(&compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	connectReq := &compassv1.SubscribeCommsRequest{SinceSeq: 0}
+	connectCtx, info := connect.NewClientContext(ctx)
 	if actor != "" {
-		connectReq.Header().Set(commsTestActorHeader, string(actor))
+		info.RequestHeader().Set(commsTestActorHeader, string(actor))
 	}
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, connectReq)
+		stream, err := h.client.SubscribeComms(connectCtx, connectReq)
 		if err != nil {
 			t.Errorf("SubscribeComms: %v", err)
 			out <- nil
 			return
 		}
-		if !stream.Receive() {
-			t.Errorf("stream closed before boundary: %v", stream.Err())
+		boundary, err := stream.Receive()
+		if err != nil {
+			t.Errorf("stream closed before boundary: %v", err)
 			out <- nil
 			return
 		}
-		if b := stream.Msg(); b.GetSeq() != 0 || b.GetPayload() != nil {
-			t.Errorf("first frame = seq %d payload %T, want boundary", b.GetSeq(), b.GetPayload())
+		if boundary.GetSeq() != 0 || boundary.GetPayload() != nil {
+			t.Errorf("first frame = seq %d payload %T, want boundary", boundary.GetSeq(), boundary.GetPayload())
 			out <- nil
 			return
 		}
 		var got []*compassv1.SubscribeCommsResponse
 		for range 2 {
-			if !stream.Receive() {
-				t.Errorf("stream closed before two events: %v", stream.Err())
+			msg, err := stream.Receive()
+			if err != nil {
+				t.Errorf("stream closed before two events: %v", err)
 				out <- got
 				return
 			}
-			got = append(got, stream.Msg())
+			got = append(got, msg)
 		}
 		out <- got
 	}()
@@ -79,10 +82,10 @@ func TestRespondToAskFansOutMessagePosted(t *testing.T) {
 
 	events := twoEventsAfterBoundary(t, h, agent.ID)
 
-	if _, err := h.svc.RespondToAsk(WithActor(ctx, agent.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := h.svc.RespondToAsk(WithActor(ctx, agent.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 
@@ -137,14 +140,14 @@ func TestPostMessageRejectsAskAnswerBlock(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = h.svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
+	_, err = h.svc.PostMessage(WithActor(ctx, author.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
 		Ask: &compassv1.Ask{
 			AskId:     "ask-1",
 			Answered:  true,
 			Questions: []*compassv1.AskQuestion{{QuestionId: "q1", Question: "?"}},
 		},
 		AskerAccountId: "agent",
-	}}}}}))
+	}}}}})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostMessage with an ask_answer block")
 }
 

@@ -6,12 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -23,15 +25,15 @@ import (
 func (f *Fixture) CreateAgent(ctx context.Context, handle, displayName string) (accountID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Comms().CreateAgent(rctx, connect.NewRequest(&compassv1.CreateAgentRequest{
+	resp, err := f.Comms().CreateAgent(rctx, &compassv1.CreateAgentRequest{
 		Handle:      handle,
 		DisplayName: displayName,
 		Role:        "manager",
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("CreateAgent RPC: %w", err)
 	}
-	return resp.Msg.GetAccount().GetId(), nil
+	return resp.GetAccount().GetId(), nil
 }
 
 // Provision provisions the agent's per-account workspace container over
@@ -45,11 +47,11 @@ func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID stri
 	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: clientRequestID}))
+	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: clientRequestID})
 	if err != nil {
 		return "", fmt.Errorf("ProvisionAgentWorkspace RPC: %w", err)
 	}
-	return resp.Msg.GetContainerName(), nil
+	return resp.GetContainerName(), nil
 }
 
 // StartSession brings the agent in a provisioned container online over
@@ -57,13 +59,13 @@ func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID stri
 func (f *Fixture) StartSession(ctx context.Context, containerName string) (sessionID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().StartAgentSession(rctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	resp, err := f.Compass().StartAgentSession(rctx, &compassv1.StartAgentSessionRequest{
 		ContainerName: containerName,
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("StartAgentSession RPC: %w", err)
 	}
-	return resp.Msg.GetSessionId(), nil
+	return resp.GetSessionId(), nil
 }
 
 // Resume brings the agent in a freshly provisioned container online over
@@ -77,14 +79,14 @@ func (f *Fixture) StartSession(ctx context.Context, containerName string) (sessi
 func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID string) (sessionID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().StartAgentSession(rctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+	resp, err := f.Compass().StartAgentSession(rctx, &compassv1.StartAgentSessionRequest{
 		ContainerName:   containerName,
 		ResumeSessionId: resumeSessionID,
-	}))
+	})
 	if err != nil {
 		return "", fmt.Errorf("StartAgentSession(resume) RPC: %w", err)
 	}
-	return resp.Msg.GetSessionId(), nil
+	return resp.GetSessionId(), nil
 }
 
 // OpenSessionTail opens the session frame stream (SubscribeAgentSession) and
@@ -103,18 +105,18 @@ func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID str
 // keeps ctx alive across the post). The RECEIVE loop is bounded separately in
 // AwaitTurnSettled via its own derived settleTimeout, mirroring how
 // SubscribeComms opens under the caller's ctx and AwaitDelivery bounds the read.
-func (f *Fixture) OpenSessionTail(ctx context.Context, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
+func (f *Fixture) OpenSessionTail(ctx context.Context, sessionID string) (compassv1connect.CompassServiceSubscribeAgentSessionClientStream, error) {
 	return f.OpenSessionTailAs(ctx, f.Compass(), sessionID)
 }
 
 // OpenSessionTailAs opens the tail as client's account, which must be a member
 // of the agent's home channel (another owner's agent is invisible to admin).
-func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceClient, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
-	stream, err := client.SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{
+func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceClient, sessionID string) (compassv1connect.CompassServiceSubscribeAgentSessionClientStream, error) {
+	stream, err := client.SubscribeAgentSession(ctx, &compassv1.SubscribeAgentSessionRequest{
 		SessionId: sessionID,
-	}))
+	})
 	if err != nil {
-		return nil, fmt.Errorf("SubscribeAgentSession RPC: %w", err)
+		return compassv1connect.CompassServiceSubscribeAgentSessionClientStream{}, fmt.Errorf("SubscribeAgentSession RPC: %w", err)
 	}
 	return stream, nil
 }
@@ -138,7 +140,7 @@ func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceCl
 // the derived deadline — the exact shape AwaitDelivery uses to bound a
 // caller-ctx stream. So a wedged stream fails visibly here rather than blocking
 // to the go-test timeout.
-func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerStreamForClient[compassv1.AgentSessionFrame]) error {
+func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream compassv1connect.CompassServiceSubscribeAgentSessionClientStream) error {
 	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 	defer cancel()
 
@@ -148,8 +150,17 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 	out := make(chan error, 1)
 	go func() {
 		workingSeen := false
-		for stream.Receive() {
-			st := stream.Msg().GetState()
+		for {
+			frame, err := stream.Receive()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					out <- errors.New("frame stream ended before reaching a WORKING→READY settle")
+				} else {
+					out <- fmt.Errorf("SubscribeAgentSession stream: %w", err)
+				}
+				return
+			}
+			st := frame.GetState()
 			switch st {
 			case compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING:
 				workingSeen = true
@@ -165,11 +176,6 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 				compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED:
 			}
 		}
-		if err := stream.Err(); err != nil {
-			out <- fmt.Errorf("SubscribeAgentSession stream: %w", err)
-			return
-		}
-		out <- errors.New("frame stream ended before reaching a WORKING→READY settle")
 	}()
 
 	select {
@@ -227,7 +233,7 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 // exclusion — a later sweep-redelivered deliver (settle.go builds a deliverOp for
 // every owed message) is out of window and legitimately unobserved. The method
 // keeps no internal retention; the surface stays exactly this one signature.
-func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.ServerStreamForClient[compassv1.AgentSessionFrame], match func(opKind, messageID string) bool) (opKind string, err error) {
+func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream compassv1connect.CompassServiceSubscribeAgentSessionClientStream, match func(opKind, messageID string) bool) (opKind string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 	defer cancel()
 
@@ -240,8 +246,17 @@ func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.Se
 	// once and exits, no leak past the caller's Close.
 	out := make(chan received, 1)
 	go func() {
-		for stream.Receive() {
-			inj := stream.Msg().GetEvent().GetSessionInjection()
+		for {
+			frame, err := stream.Receive()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					out <- received{err: errors.New("frame stream ended before a matching SessionInjection arrived")}
+				} else {
+					out <- received{err: fmt.Errorf("SubscribeAgentSession stream: %w", err)}
+				}
+				return
+			}
+			inj := frame.GetEvent().GetSessionInjection()
 			if inj == nil {
 				continue
 			}
@@ -252,13 +267,7 @@ func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.Se
 				return
 			}
 		}
-		if err := stream.Err(); err != nil {
-			out <- received{err: fmt.Errorf("SubscribeAgentSession stream: %w", err)}
-			return
-		}
-		out <- received{err: errors.New("frame stream ended before a matching SessionInjection arrived")}
 	}()
-
 	select {
 	case r := <-out:
 		return r.opKind, r.err
@@ -275,10 +284,10 @@ func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.Se
 func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequestID string) error {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := f.Compass().RemoveAgentWorkspace(rctx, connect.NewRequest(&compassv1.RemoveAgentWorkspaceRequest{
+	if _, err := f.Compass().RemoveAgentWorkspace(rctx, &compassv1.RemoveAgentWorkspaceRequest{
 		ContainerName:   containerName,
 		ClientRequestId: clientRequestID,
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("RemoveAgentWorkspace RPC: %w", err)
 	}
 	return nil
@@ -618,9 +627,9 @@ func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (
 	}
 	rctx, cancel := context.WithTimeout(ctx, perProbe)
 	defer cancel()
-	_, err = f.Compass().StopAgentSession(rctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{
+	_, err = f.Compass().StopAgentSession(rctx, &compassv1.StopAgentSessionRequest{
 		SessionId: enrollProbeSessionID,
-	}))
+	})
 	ready, retry, cerr := classifyEnrollProbe(err)
 	if retry {
 		return false, nil

@@ -1,27 +1,16 @@
 package auth
 
-// Shared unary-door scaffolding + the pure header-parse table (RIG-1195 T3),
-// transcribed from crates/compass-daemon/src/auth.rs. Contract: on accept the
-// wrapped handler sees CallerFrom(ctx) == the resolved account; on reject
-// CodeOf(err) is CodeUnauthenticated and the handler never runs.
-
-// The store-backed bearer tests need a live Postgres, so they live in the
-// `pgtest` lane; this default-lane file holds only the store-free spy/assert
-// helpers and the bearerToken parser table. White-box to reach bearerToken.
+// Shared Connect v2 server-call scaffolding and the pure bearerToken parser
+// table. Store-backed bearer tests run in the `pgtest` lane.
 
 import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
-	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
-
-// authHeader is the wire key a real client sets; http.Header canonicalizes it to
-// the same form the door reads.
-const authHeader = "Authorization"
 
 // spyResult records what the wrapped handler observed: whether it ran at all,
 // and the caller CallerFrom returned from the context the interceptor built.
@@ -32,27 +21,27 @@ type spyResult struct {
 	hasCaller bool
 }
 
-// recordingSpy is the "next" UnaryFunc: it records CallerFrom(ctx) and returns a
-// benign response. A door that rejects a request returns before calling this, so
-// spyResult.called staying false proves the handler was gated.
-func recordingSpy(rec *spyResult) connect.UnaryFunc {
-	return func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+// recordingSpy records the caller and tenant observed by a server handler.
+func recordingSpy(rec *spyResult) connect.ServerFunc {
+	return func(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
 		rec.called = true
 		rec.caller, rec.hasCaller = CallerFrom(ctx)
 		rec.tenant, _ = store.TenantFromContext(ctx)
-		return connect.NewResponse(&compassv1.GetServerInfoResponse{}), nil
+		return nil
 	}
 }
 
-// bearerRequest builds a connect request. When value != "" it carries an
-// Authorization header set to value verbatim (so a test drives the raw wire form
-// — scheme, spacing, and all); "" leaves the header absent.
-func bearerRequest(value string) connect.AnyRequest {
-	req := connect.NewRequest(&compassv1.GetServerInfoRequest{})
-	if value != "" {
-		req.Header().Set(authHeader, value)
-	}
-	return req
+// fakeServerStream is an inert stream for direct Server.Call tests.
+type fakeServerStream struct{}
+
+func (fakeServerStream) Receive(any) error  { return nil }
+func (fakeServerStream) SendHeaders() error { return nil }
+func (fakeServerStream) Send(any) error     { return nil }
+
+func runServerCall(interceptor connect.ServerInterceptor, ctx context.Context, spec connect.Spec, info *connect.CallInfo, next connect.ServerFunc) error {
+	server := connect.NewServer(interceptor)
+	server.Register(connect.Method{Spec: spec, Handler: next})
+	return server.Call(ctx, spec.Procedure, info, fakeServerStream{})
 }
 
 // TestBearerTokenParsesTheHeaderBoundary pins the bearerToken parser's guards
@@ -102,53 +91,15 @@ func TestBearerTokenParsesTheHeaderBoundary(t *testing.T) {
 	}
 }
 
-// TestAmbientIdentityThreadsCallerUnary pins the socket door's unary ambient
-// interceptor: it attaches the fixed account to every request with no token, so
-// the wrapped handler reads that account back via CallerFrom. The socket door
-// mounts no bearer interceptor (the 0600 socket mode is the credential), so
-// without this the handler sees no caller and fail-closes. Neutralizing the
-// interceptor to a pass-through (dropping withCaller) reddens hasCaller.
-func TestAmbientIdentityThreadsCallerUnary(t *testing.T) {
+func TestAmbientIdentityThreadsCaller(t *testing.T) {
 	const acct = store.AccountID("ambient-acct")
 	rec := &spyResult{}
-	wrapped := AmbientIdentity(acct)(recordingSpy(rec))
-
-	if _, err := wrapped(context.Background(), bearerRequest("")); err != nil {
-		t.Fatalf("ambient unary door must not error on a token-less request: %v", err)
+	spec := connect.Spec{StreamType: connect.StreamTypeServer, Procedure: "/test.Auth/Stream"}
+	err := runServerCall(AmbientIdentity(acct), context.Background(), spec, &connect.CallInfo{}, recordingSpy(rec))
+	if err != nil {
+		t.Fatalf("ambient door must not error: %v", err)
 	}
-	if !rec.called {
-		t.Fatal("handler did not run: the ambient door must always call next")
-	}
-	if !rec.hasCaller {
-		t.Fatal("CallerFrom(ctx) ok = false: the ambient door must attach a caller")
-	}
-	if rec.caller != acct {
-		t.Fatalf("caller = %q, want %q (the fixed ambient account)", rec.caller, acct)
-	}
-}
-
-// TestAmbientStreamInterceptorThreadsCallerStreaming pins the load-bearing half:
-// AmbientStreamInterceptor's WrapStreamingHandler attaches the same fixed account
-// to a streaming RPC's context, so SubscribeAgentSession (which reads
-// CallerFrom, with no default) sees the ambient caller instead of fail-closing.
-// Deleting the withCaller call in WrapStreamingHandler reddens this
-// (hasCaller == false). fakeStreamConn (admin_gate_test.go) is a store-free
-// StreamingHandlerConn stub; ambient ignores its headers.
-func TestAmbientStreamInterceptorThreadsCallerStreaming(t *testing.T) {
-	const acct = store.AccountID("ambient-stream-acct")
-	rec := &spyResult{}
-	wrapped := AmbientStreamInterceptor(acct).WrapStreamingHandler(recordingStreamHandler(rec))
-
-	if err := wrapped(context.Background(), &fakeStreamConn{}); err != nil {
-		t.Fatalf("ambient stream door must not error on a token-less stream: %v", err)
-	}
-	if !rec.called {
-		t.Fatal("streaming handler did not run: the ambient stream door must always call next")
-	}
-	if !rec.hasCaller {
-		t.Fatal("CallerFrom(ctx) ok = false: the ambient stream door must attach a caller")
-	}
-	if rec.caller != acct {
-		t.Fatalf("caller = %q, want %q (the fixed ambient account on the stream leg)", rec.caller, acct)
+	if !rec.called || !rec.hasCaller || rec.caller != acct {
+		t.Fatalf("handler result = %+v, want caller %q", rec, acct)
 	}
 }

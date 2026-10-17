@@ -8,7 +8,6 @@ import (
 	"io"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -60,22 +59,22 @@ func newPeerCmd() *cobra.Command {
 func runPeerApprove(ctx context.Context, client compassv1connect.CommsServiceClient, handle string, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.ApprovePeer(ctx, connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: handle}))
+	resp, err := client.ApprovePeer(ctx, &compassv1.ApprovePeerRequest{PeerHandle: handle})
 	if err != nil {
 		return fmt.Errorf("approving peer %q: %w", handle, err)
 	}
-	return writePeerLine(out, resp.Msg.GetPeering())
+	return writePeerLine(out, resp.GetPeering())
 }
 
 func runPeerRevoke(ctx context.Context, client compassv1connect.CommsServiceClient, handle string, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.RevokePeer(ctx, connect.NewRequest(&compassv1.RevokePeerRequest{PeerHandle: handle}))
+	resp, err := client.RevokePeer(ctx, &compassv1.RevokePeerRequest{PeerHandle: handle})
 	if err != nil {
 		return fmt.Errorf("revoking peer %q: %w", handle, err)
 	}
 	message := "no approval for " + handle
-	if resp.Msg.GetDeleted() {
+	if resp.GetDeleted() {
 		message = "revoked " + handle
 	}
 	_, err = fmt.Fprintln(out, message)
@@ -85,11 +84,11 @@ func runPeerRevoke(ctx context.Context, client compassv1connect.CommsServiceClie
 func runPeerList(ctx context.Context, client compassv1connect.CommsServiceClient, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.ListPeers(ctx, connect.NewRequest(&compassv1.ListPeersRequest{}))
+	resp, err := client.ListPeers(ctx, &compassv1.ListPeersRequest{})
 	if err != nil {
 		return fmt.Errorf("listing peers: %w", err)
 	}
-	for _, peer := range resp.Msg.GetPeerings() {
+	for _, peer := range resp.GetPeerings() {
 		if err := writePeerLine(out, peer); err != nil {
 			return err
 		}

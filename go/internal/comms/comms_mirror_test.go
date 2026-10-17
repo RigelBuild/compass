@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -76,21 +76,21 @@ func TestCommittedAskMessagesDriveMirrors(t *testing.T) {
 	}
 	driver := mirrorDriverRecorder{calls: make(chan []string, 2)}
 	svc.SetMirrorer(nil, driver)
-	posted, err := svc.PostMessage(WithActor(context.Background(), agent.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	posted, err := svc.PostMessage(WithActor(context.Background(), agent.ID), &compassv1.PostMessageRequest{
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(channel.ID)},
 		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "mirror-asks"}, CreateTopic: true,
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
 			Ref: "RIG-12", Questions: []*compassv1.AskQuestion{{QuestionId: "q1", Question: "Ship?", Options: []*compassv1.AskOption{{Id: "yes", Label: "Yes"}}}},
 		}}}},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	askID := posted.Msg.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
+	askID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
 	assertDrivenAskID(t, driver.calls, askID)
-	if _, err := svc.RespondToAsk(WithActor(context.Background(), owner.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := svc.RespondToAsk(WithActor(context.Background(), owner.ID), &compassv1.RespondToAskRequest{
 		AskId: askID, Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"yes"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 	assertDrivenAskID(t, driver.calls, askID)
@@ -116,24 +116,24 @@ func TestMirrorToForgeIsUserOnlyAndDelegates(t *testing.T) {
 	svc.SetMirrorer(mirrorer, nil)
 	request := &compassv1.MirrorToForgeRequest{Ref: "RIG-12", TopicId: "topic", ChannelId: "channel"}
 
-	_, err := svc.MirrorToForge(WithActor(context.Background(), agent.ID), connect.NewRequest(request))
+	_, err := svc.MirrorToForge(WithActor(context.Background(), agent.ID), request)
 	connectCodeIs(t, err, connect.CodePermissionDenied, "agent MirrorToForge")
 	if mirrorer.req != nil {
 		t.Fatal("MirrorAsUser was called for an agent")
 	}
 
-	response, err := svc.MirrorToForge(WithActor(context.Background(), owner.ID), connect.NewRequest(request))
+	response, err := svc.MirrorToForge(WithActor(context.Background(), owner.ID), request)
 	if err != nil {
 		t.Fatalf("user MirrorToForge: %v", err)
 	}
-	if mirrorer.user != owner.ID || mirrorer.req != request || response.Msg.GetCommentUrl() != "https://forge.example/comment" {
-		t.Fatalf("delegated mirror user=%q request=%p response=%+v", mirrorer.user, mirrorer.req, response.Msg)
+	if mirrorer.user != owner.ID || mirrorer.req != request || response.GetCommentUrl() != "https://forge.example/comment" {
+		t.Fatalf("delegated mirror user=%q request=%p response=%+v", mirrorer.user, mirrorer.req, response)
 	}
 }
 
 func TestMirrorToForgeWithoutMirrorerIsUnimplemented(t *testing.T) {
 	svc, st := newHandler(t)
 	owner := mustUser(t, st, "mirror-edge-unwired")
-	_, err := svc.MirrorToForge(WithActor(context.Background(), owner.ID), connect.NewRequest(&compassv1.MirrorToForgeRequest{}))
+	_, err := svc.MirrorToForge(WithActor(context.Background(), owner.ID), &compassv1.MirrorToForgeRequest{})
 	connectCodeIs(t, err, connect.CodeUnimplemented, "MirrorToForge without a mirrorer")
 }

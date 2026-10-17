@@ -15,7 +15,7 @@ import (
 	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -88,7 +88,7 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 // so this test fails.
 func TestRelayCommsCallRosterArmErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
-	comms.rosterErr = connect.NewError(connect.CodePermissionDenied, errors.New("roster denied"))
+	comms.rosterErr = connect.NewError(connect.CodePermissionDenied, "roster denied")
 	bindLiveSession(hub)
 
 	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayRoster("sess-1", "tc-roster-err", &compassv1.GetRosterRequest{

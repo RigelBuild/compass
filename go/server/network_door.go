@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	connectcors "connectrpc.com/cors"
-	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -291,7 +291,7 @@ func buildNetworkServer(
 	adminID store.AccountID,
 	netTLS *tls.Config,
 	resolver agentSecretResolver,
-	otelIC *otelconnect.Interceptor,
+	otelIC connect.ServerInterceptor,
 	webhookSink ForgeEventSink,
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearWebhookHandler http.Handler,
@@ -327,28 +327,32 @@ func buildNetworkServer(
 	interceptors := otel.HandlerInterceptors(otelIC,
 		otel.NewSessionIDInterceptor(),
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(adminID),
 	)
 	// WithReadMaxBytes caps a single inbound message (M1, defense in depth):
 	// connect-go has NO default cap, so an operator could otherwise stream a huge
 	// Put buffered whole in memory. Sized to PutAgentConfig's 64 MiB bundle plus
 	// wire/framing headroom; 128 MiB. Mirrors the internal doors' posture.
-	netPath, netHandler := compassv1connect.NewCompassServiceHandler(svc, interceptors, connect.WithReadMaxBytes(compassServiceMaxReadBytes))
-	netCommsPath, netCommsHandler := compassv1connect.NewCommsServiceHandler(commsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux := http.NewServeMux()
-	netMux.Handle(netPath, netHandler)
-	netMux.Handle(netCommsPath, netCommsHandler)
+	compassServer := connect.NewServer(interceptors)
+	compassv1connect.RegisterCompassServiceHandler(compassServer, svc)
+	connecthttp.Mount(netMux, compassServer, connecthttp.WithReadMaxBytes(compassServiceMaxReadBytes))
+	commsServer := connect.NewServer(interceptors)
+	compassv1connect.RegisterCommsServiceHandler(commsServer, commsSvc)
+	connecthttp.Mount(netMux, commsServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	// SecretsService rides the same bearer + admin-gate chain: the gate classifies
 	// its 3 procedures authenticatedOpen, so any authenticated account clears it
 	// and the handler enforces the split — user-only writes, user-or-agent list.
-	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-	netMux.Handle(netSecretsPath, netSecretsHandler)
+	secretsServer := connect.NewServer(interceptors)
+	compassv1connect.RegisterSecretsServiceHandler(secretsServer, secretsSvc)
+	connecthttp.Mount(netMux, secretsServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	// UsageService uses the same authenticated chain and applies agent scope in its handler.
-	netUsagePath, netUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-	netMux.Handle(netUsagePath, netUsageHandler)
-	netAgentRepositoryPath, netAgentRepositoryHandler := compassv1connect.NewAgentRepositoryServiceHandler(agentRepositorySvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-	netMux.Handle(netAgentRepositoryPath, netAgentRepositoryHandler)
+	usageServer := connect.NewServer(interceptors)
+	compassv1connect.RegisterUsageServiceHandler(usageServer, usageSvc)
+	connecthttp.Mount(netMux, usageServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	agentRepositoryServer := connect.NewServer(interceptors)
+	compassv1connect.RegisterAgentRepositoryServiceHandler(agentRepositoryServer, agentRepositorySvc)
+	connecthttp.Mount(netMux, agentRepositoryServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	health.mount(netMux)
 
 	// The internal RunnerService door: the surface a Runner dials out to, mounted
@@ -367,8 +371,7 @@ func buildNetworkServer(
 	// *store.Store satisfies AgentConfigStore, so FetchAgentConfig streams whatever
 	// PutAgentConfig last wrote (nil would leave every agent unconfigured). otelIC
 	// is the outermost interceptor (it creates the RelayCommsCall origin span).
-	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st, otelIC)
-	netMux.Handle(runnerPath, runnerHandler)
+	runnerhub.Mount(netMux, hub, runnerResolve, resolver, st, otelIC)
 	mountGatewayServices(netMux, gateway, otelIC, runnerResolve)
 
 	// The internet-facing GitHub App webhook ingress (RIG-2883 T5), mounted only
@@ -435,25 +438,27 @@ func newGatewayServices(st *store.Store, masterKey envelope.Key, keyVersion int1
 func mountGatewayServices(
 	netMux *http.ServeMux,
 	services gatewayServices,
-	otelIC *otelconnect.Interceptor,
+	otelIC connect.ServerInterceptor,
 	runnerResolve runnerhub.TokenResolver,
 ) {
 	if services.credentials == nil && services.registry == nil && services.auth == nil {
 		return
 	}
 	interceptors := otel.HandlerInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID))
-	options := []connect.HandlerOption{interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes)}
 	if services.credentials != nil {
-		path, handler := compassv1internalconnect.NewGatewayCredentialsHandler(services.credentials, options...)
-		netMux.Handle(path, handler)
+		credentialsServer := connect.NewServer(interceptors)
+		compassv1internalconnect.RegisterGatewayCredentialsHandler(credentialsServer, services.credentials)
+		connecthttp.Mount(netMux, credentialsServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	}
 	if services.registry != nil {
-		path, handler := compassv1internalconnect.NewGatewayRegistryHandler(services.registry, options...)
-		netMux.Handle(path, handler)
+		registryServer := connect.NewServer(interceptors)
+		compassv1internalconnect.RegisterGatewayRegistryHandler(registryServer, services.registry)
+		connecthttp.Mount(netMux, registryServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	}
 	if services.auth != nil {
-		path, handler := compassv1internalconnect.NewGatewayAuthHandler(services.auth, interceptors, connect.WithReadMaxBytes(gatewayAuthMaxReadBytes))
-		netMux.Handle(path, handler)
+		authServer := connect.NewServer(interceptors)
+		compassv1internalconnect.RegisterGatewayAuthHandler(authServer, services.auth)
+		connecthttp.Mount(netMux, authServer, connecthttp.WithReadMaxBytes(gatewayAuthMaxReadBytes))
 	}
 }
 

@@ -4,17 +4,15 @@ package auth
 // crates/compass-daemon/src/auth.rs: a non-admin or identity-less caller on an
 // adminOnly procedure is denied and the handler never runs; the admin passes.
 
-// White-box (package auth) to reach unexported classifyProcedure/check/withCaller.
-// connect.Request carries Procedure in an unsettable field, so a hand-built unary
-// request presents an empty path — itself the fail-closed default. Descriptor
-// exhaustiveness lives in classify_exhaustive_test.go; this file spot-checks paths.
+// White-box (package auth) to reach unexported classifyProcedure and check.
+// Descriptor exhaustiveness lives in classify_exhaustive_test.go; this file
+// spot-checks the interceptor and its procedure classifications.
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -41,40 +39,8 @@ func wantPermissionDenied(t *testing.T, err error, what string) {
 	}
 }
 
-// fakeStreamConn is a minimal connect.StreamingHandlerConn whose Spec carries a
-// caller-supplied procedure path, so a streaming test drives the gate with a real
-// named procedure (connect never exposes a way to set the procedure on a unary
-// request in a unit test). Receive/Send are inert; the gate only reads Spec().
-type fakeStreamConn struct {
-	procedure string
-	header    http.Header
-}
-
-func (c *fakeStreamConn) Spec() connect.Spec {
-	return connect.Spec{Procedure: c.procedure, StreamType: connect.StreamTypeServer}
-}
-func (c *fakeStreamConn) Peer() connect.Peer { return connect.Peer{} }
-func (c *fakeStreamConn) Receive(any) error  { return nil }
-func (c *fakeStreamConn) RequestHeader() http.Header {
-	if c.header == nil {
-		c.header = make(http.Header)
-	}
-	return c.header
-}
-func (c *fakeStreamConn) Send(any) error               { return nil }
-func (c *fakeStreamConn) ResponseHeader() http.Header  { return make(http.Header) }
-func (c *fakeStreamConn) ResponseTrailer() http.Header { return make(http.Header) }
-
-// recordingStreamHandler is the streaming "next" handler: it records whether it
-// ran and the caller it saw, so a denied stream (short-circuited before next) is
-// proven by called staying false. Reuses spyResult from interceptor_test.go.
-func recordingStreamHandler(rec *spyResult) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, _ connect.StreamingHandlerConn) error {
-		rec.called = true
-		rec.caller, rec.hasCaller = CallerFrom(ctx)
-		rec.tenant, _ = store.TenantFromContext(ctx)
-		return nil
-	}
+func gateServerCall(interceptor connect.ServerInterceptor, ctx context.Context, procedure string, streamType connect.StreamType, next connect.ServerFunc) error {
+	return runServerCall(interceptor, ctx, connect.Spec{Procedure: procedure, StreamType: streamType}, &connect.CallInfo{}, next)
 }
 
 // TestAdminGateGatesFrozenAdminOnlyRPCs is the gated partition: exactly the five
@@ -85,7 +51,7 @@ func recordingStreamHandler(rec *spyResult) connect.StreamingHandlerFunc {
 // exact row. Mirrors admin_gate_covers_every_frozen_session_rpc +
 // admin_gate_allows_the_admin_on_a_gated_rpc.
 func TestAdminGateGatesFrozenAdminOnlyRPCs(t *testing.T) {
-	gate := NewAdminGate(adminID)
+	interceptor := NewAdminGate(adminID)
 
 	frozen := []struct {
 		name      string
@@ -103,23 +69,20 @@ func TestAdminGateGatesFrozenAdminOnlyRPCs(t *testing.T) {
 
 	for _, tc := range frozen {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := gate.check(withCaller(context.Background(), adminID), tc.procedure); err != nil {
+			err := gateServerCall(interceptor, withCaller(context.Background(), adminID), tc.procedure, connect.StreamTypeUnary, recordingSpy(&spyResult{}))
+			if err != nil {
 				t.Fatalf("%s: the admin must pass the gate, got %v", tc.name, err)
 			}
-			err := gate.check(withCaller(context.Background(), nonAdminID), tc.procedure)
+			err = gateServerCall(interceptor, withCaller(context.Background(), nonAdminID), tc.procedure, connect.StreamTypeUnary, recordingSpy(&spyResult{}))
 			wantPermissionDenied(t, err, tc.name+" for a non-admin")
 		})
 	}
 }
 
-// TestAdminGateDeniesMissingIdentityOnAdminOnlyRPC: BearerInterceptor injects the
-// caller before the gate, but a gated RPC that somehow arrives with no caller in
-// context must never be treated as the admin — it is denied. Mirrors
-// admin_gate_rejects_a_gated_rpc_with_no_identity.
+// TestAdminGateDeniesMissingIdentityOnAdminOnlyRPC verifies a missing caller is
+// denied by the server interceptor.
 func TestAdminGateDeniesMissingIdentityOnAdminOnlyRPC(t *testing.T) {
-	gate := NewAdminGate(adminID)
-
-	err := gate.check(context.Background(), compassv1connect.CompassServiceStartAgentSessionProcedure)
+	err := gateServerCall(NewAdminGate(adminID), context.Background(), compassv1connect.CompassServiceStartAgentSessionProcedure, connect.StreamTypeUnary, recordingSpy(&spyResult{}))
 	wantPermissionDenied(t, err, "an adminOnly RPC with no caller in context")
 }
 
@@ -130,8 +93,7 @@ func TestAdminGateDeniesMissingIdentityOnAdminOnlyRPC(t *testing.T) {
 // and includes the recut additions CreateChannel + UpdateChannelMembers to pin
 // they classify open (not admin-gated).
 func TestAdminGateAllowsAnyAccountOnOpenRPCs(t *testing.T) {
-	gate := NewAdminGate(adminID)
-
+	interceptor := NewAdminGate(adminID)
 	open := []struct {
 		name      string
 		procedure string
@@ -156,7 +118,8 @@ func TestAdminGateAllowsAnyAccountOnOpenRPCs(t *testing.T) {
 
 	for _, tc := range open {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := gate.check(withCaller(context.Background(), nonAdminID), tc.procedure); err != nil {
+			err := gateServerCall(interceptor, withCaller(context.Background(), nonAdminID), tc.procedure, connect.StreamTypeUnary, recordingSpy(&spyResult{}))
+			if err != nil {
 				t.Fatalf("%s: an open RPC must pass for a non-admin, got %v", tc.name, err)
 			}
 		})
@@ -227,99 +190,43 @@ func TestClassifyProcedureClassifiesKnownAndUnknownProcedures(t *testing.T) {
 	}
 }
 
-// TestAdminGateWrapUnaryAllowsAdmin: the unary interceptor invokes the wrapped
-// handler when the gate passes. A hand-built connect request presents an empty
-// procedure (connect exposes no setter), which classifies adminOnly via the
-// fail-closed default — so the admin caller clears it and the handler runs.
-func TestAdminGateWrapUnaryAllowsAdmin(t *testing.T) {
-	gate := NewAdminGate(adminID)
-	rec := &spyResult{}
-
-	wrapped := gate.WrapUnary(recordingSpy(rec))
-	_, err := wrapped(withCaller(context.Background(), adminID), bearerRequest(""))
-	if err != nil {
-		t.Fatalf("the admin must pass the unary gate, got %v", err)
+// TestAdminGateServerInterceptor exercises the Connect v2 interceptor with both
+// unary and server-streaming procedures. A denied call never reaches its handler.
+func TestAdminGateServerInterceptor(t *testing.T) {
+	tests := []struct {
+		name       string
+		procedure  string
+		caller     store.AccountID
+		streamType connect.StreamType
+		wantDeny   bool
+	}{
+		{name: "admin passes admin-only unary", procedure: compassv1connect.CompassServiceStartAgentSessionProcedure, caller: adminID, streamType: connect.StreamTypeUnary},
+		{name: "non-admin denied admin-only unary", procedure: compassv1connect.CompassServiceStartAgentSessionProcedure, caller: nonAdminID, streamType: connect.StreamTypeUnary, wantDeny: true},
+		{name: "open unary passes non-admin", procedure: compassv1connect.CompassServiceGetServerInfoProcedure, caller: nonAdminID, streamType: connect.StreamTypeUnary},
+		{name: "open server stream passes non-admin", procedure: compassv1connect.CompassServiceSubscribeEventsProcedure, caller: nonAdminID, streamType: connect.StreamTypeServer},
+		{name: "unknown procedure fails closed", procedure: "/compass.v1.CompassService/Bogus", caller: nonAdminID, streamType: connect.StreamTypeUnary, wantDeny: true},
 	}
-	if !rec.called {
-		t.Fatal("the wrapped handler must run when the gate passes")
-	}
-	if !rec.hasCaller || rec.caller != adminID {
-		t.Fatalf("the handler sees the admin caller: got %v hasCaller=%v, want %v", rec.caller, rec.hasCaller, adminID)
-	}
-}
-
-// TestAdminGateWrapUnaryDeniesNonAdmin: the unary interceptor short-circuits with
-// CodePermissionDenied and never calls the wrapped handler when the gate rejects.
-// The empty-procedure request classifies adminOnly (fail-closed default), so a
-// non-admin caller is denied — this also proves the default admits nothing as
-// open through the public interceptor surface. Mirrors
-// admin_gate_rejects_a_non_admin_on_a_gated_rpc (handler-never-runs clause).
-func TestAdminGateWrapUnaryDeniesNonAdmin(t *testing.T) {
-	gate := NewAdminGate(adminID)
-	rec := &spyResult{}
-
-	wrapped := gate.WrapUnary(recordingSpy(rec))
-	_, err := wrapped(withCaller(context.Background(), nonAdminID), bearerRequest(""))
-	wantPermissionDenied(t, err, "a non-admin on the unary gate")
-	if rec.called {
-		t.Fatal("the wrapped handler must not run when the gate denies")
-	}
-}
-
-// TestAdminGateWrapStreamingHandlerRunsHandlerForAdmin: the streaming interceptor
-// invokes the wrapped handler for the admin on an adminOnly procedure. The fake
-// conn carries a real named procedure (StartAgentSession), which connect cannot
-// supply on a unary request in a unit test.
-func TestAdminGateWrapStreamingHandlerRunsHandlerForAdmin(t *testing.T) {
-	gate := NewAdminGate(adminID)
-	rec := &spyResult{}
-
-	wrapped := gate.WrapStreamingHandler(recordingStreamHandler(rec))
-	conn := &fakeStreamConn{procedure: compassv1connect.CompassServiceStartAgentSessionProcedure}
-	err := wrapped(withCaller(context.Background(), adminID), conn)
-	if err != nil {
-		t.Fatalf("the admin must pass the streaming gate, got %v", err)
-	}
-	if !rec.called {
-		t.Fatal("the streaming handler must run when the gate passes")
-	}
-	if !rec.hasCaller || rec.caller != adminID {
-		t.Fatalf("the streaming handler sees the admin caller: got %v hasCaller=%v, want %v", rec.caller, rec.hasCaller, adminID)
-	}
-}
-
-// TestAdminGateWrapStreamingHandlerDeniesNonAdmin: the streaming interceptor
-// rejects a non-admin on an adminOnly procedure with CodePermissionDenied before
-// the handler runs. Mirrors admin_gate_rejects_a_non_admin_on_a_gated_rpc for the
-// streaming leg.
-func TestAdminGateWrapStreamingHandlerDeniesNonAdmin(t *testing.T) {
-	gate := NewAdminGate(adminID)
-	rec := &spyResult{}
-
-	wrapped := gate.WrapStreamingHandler(recordingStreamHandler(rec))
-	conn := &fakeStreamConn{procedure: compassv1connect.CompassServiceStartAgentSessionProcedure}
-	err := wrapped(withCaller(context.Background(), nonAdminID), conn)
-	wantPermissionDenied(t, err, "a non-admin on the streaming gate")
-	if rec.called {
-		t.Fatal("the streaming handler must not run when the gate denies")
-	}
-}
-
-// TestAdminGateWrapStreamingHandlerRunsHandlerForOpenRPC: an open streaming
-// procedure (SubscribeEvents) passes the gate for a non-admin, and the handler
-// runs. This is the only integration-shape test that a real open procedure clears
-// the wrapper — a unary request cannot carry one (its empty procedure fail-closes).
-func TestAdminGateWrapStreamingHandlerRunsHandlerForOpenRPC(t *testing.T) {
-	gate := NewAdminGate(adminID)
-	rec := &spyResult{}
-
-	wrapped := gate.WrapStreamingHandler(recordingStreamHandler(rec))
-	conn := &fakeStreamConn{procedure: compassv1connect.CompassServiceSubscribeEventsProcedure}
-	err := wrapped(withCaller(context.Background(), nonAdminID), conn)
-	if err != nil {
-		t.Fatalf("an open streaming RPC must pass for a non-admin, got %v", err)
-	}
-	if !rec.called {
-		t.Fatal("the streaming handler must run on an open RPC")
+	t.Run("missing caller is denied", func(t *testing.T) {
+		err := gateServerCall(NewAdminGate(adminID), t.Context(), compassv1connect.CompassServiceStartAgentSessionProcedure, connect.StreamTypeUnary, recordingSpy(&spyResult{}))
+		wantPermissionDenied(t, err, "admin-only RPC without a caller")
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &spyResult{}
+			err := gateServerCall(NewAdminGate(adminID), withCaller(t.Context(), tt.caller), tt.procedure, tt.streamType, recordingSpy(rec))
+			if tt.wantDeny {
+				wantPermissionDenied(t, err, tt.name)
+				if rec.called {
+					t.Fatal("handler ran for a denied call")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("allowed call returned error: %v", err)
+			}
+			if !rec.called || !rec.hasCaller || rec.caller != tt.caller {
+				t.Fatalf("handler result = %+v, want caller %q", rec, tt.caller)
+			}
+		})
 	}
 }

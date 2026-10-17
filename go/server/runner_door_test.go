@@ -22,7 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
 	jose "github.com/go-jose/go-jose/v4"
 
@@ -125,11 +126,11 @@ func TestRunnerDoorProjectedTokenCodes(t *testing.T) {
 
 	t.Run("valid token enrolls and learns its id", func(t *testing.T) {
 		resp, err := newRunnerDoorClient(t, url, signTestToken(t, key, testClusterIssuer)).
-			Enroll(t.Context(), connect.NewRequest(&compassv1internal.EnrollRequest{}))
+			Enroll(t.Context(), &compassv1internal.EnrollRequest{})
 		if err != nil {
 			t.Fatalf("Enroll = %v, want success", err)
 		}
-		if got := resp.Msg.GetRunnerId(); got != testNodeRunnerID {
+		if got := resp.GetRunnerId(); got != testNodeRunnerID {
 			t.Fatalf("runner_id = %q, want %q", got, testNodeRunnerID)
 		}
 	})
@@ -137,7 +138,7 @@ func TestRunnerDoorProjectedTokenCodes(t *testing.T) {
 	t.Run("bad signature is unauthenticated", func(t *testing.T) {
 		forged := newTestSigningKey(t, "k1") // same kid, different key
 		_, err := newRunnerDoorClient(t, url, signTestToken(t, forged, testClusterIssuer)).
-			Enroll(t.Context(), connect.NewRequest(&compassv1internal.EnrollRequest{}))
+			Enroll(t.Context(), &compassv1internal.EnrollRequest{})
 		if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
 			t.Fatalf("code = %v (%v), want Unauthenticated", got, err)
 		}
@@ -145,7 +146,7 @@ func TestRunnerDoorProjectedTokenCodes(t *testing.T) {
 
 	t.Run("keys unavailable is unavailable", func(t *testing.T) {
 		_, err := newRunnerDoorClient(t, url, signTestToken(t, key, testUnfetchedIssuer)).
-			Enroll(t.Context(), connect.NewRequest(&compassv1internal.EnrollRequest{}))
+			Enroll(t.Context(), &compassv1internal.EnrollRequest{})
 		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 			t.Fatalf("code = %v (%v), want Unavailable", got, err)
 		}
@@ -279,14 +280,13 @@ func signTestTokenAt(t *testing.T, k testSigningKey, iss string, iat time.Time) 
 // mountRunnerDoor serves the RunnerService door over resolve on an h2c test server.
 func mountRunnerDoor(t *testing.T, resolve runnerhub.TokenResolver) string {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	hub := runnerhub.NewHub(nil, nil, nil, slog.Default())
-	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	runnerhub.Mount(mux, hub, resolve, nil, nil, otelIC)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -302,11 +302,16 @@ func newRunnerDoorClient(t *testing.T, baseURL, token string) compassv1internalc
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1internalconnect.NewRunnerServiceClient(&http.Client{Transport: tr}, baseURL,
-		connect.WithInterceptors(connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-			return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-				req.Header().Set("Authorization", "Bearer "+token)
-				return next(ctx, req)
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL,
+		connecthttp.WithReadMaxBytes(0),
+	), connect.ClientInterceptor(func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "runner client: missing call info")
 			}
-		})))
+			info.RequestHeader().Set("Authorization", "Bearer "+token)
+			return next(ctx, spec)
+		}
+	})))
 }

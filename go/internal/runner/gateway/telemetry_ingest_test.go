@@ -31,11 +31,14 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // --- capture upstream (EventRelay) -------------------------------------------
@@ -61,19 +64,27 @@ func newCapturePublish() *capturePublish {
 	}
 }
 
-func (c *capturePublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
-	for stream.Receive() {
-		c.frames <- stream.Msg()
+func (c *capturePublish) PublishEvents(_ context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
+	var streamErr error
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			streamErr = err
+			break
+		}
+		c.frames <- msg
 	}
-	err := stream.Err()
+	if errors.Is(streamErr, io.EOF) {
+		streamErr = nil
+	}
 	select {
 	case c.ended <- struct{}{}:
 	default:
 	}
-	if err != nil {
-		return nil, err
+	if streamErr != nil {
+		return nil, streamErr
 	}
-	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
 // recvFrame reads one captured frame with a fail-fast deadline (testTimeout is a
@@ -114,14 +125,15 @@ func h2cHTTPClient(t *testing.T) *http.Client {
 // NewGateway. Torn down via t.Cleanup.
 func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerServiceHandler) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(svc)
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return compassv1internalconnect.NewRunnerServiceClient(h2cHTTPClient(t), srv.URL)
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(h2cHTTPClient(t), srv.URL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // newClosedRunnerServiceServer mounts a RunnerService handler on an h2c httptest
@@ -131,15 +143,16 @@ func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerSer
 // delivered-or-erred contract must surface — no request-ctx coincidence.
 func newClosedRunnerServiceServer(t *testing.T) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(newCapturePublish())
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, newCapturePublish())
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
 	url := srv.URL
 	srv.Close() // transport dead: the upstream stream cannot be established.
-	return compassv1internalconnect.NewRunnerServiceClient(h2cHTTPClient(t), url)
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(h2cHTTPClient(t), url, connecthttp.WithReadMaxBytes(0))))
 }
 
 // newAgentGatewayServer mounts g's AgentGateway on an h2c httptest server with
@@ -148,14 +161,20 @@ func newClosedRunnerServiceServer(t *testing.T) compassv1internalconnect.RunnerS
 // to Publish and for the real over-limit bound.
 func newAgentGatewayServer(t *testing.T, g *Gateway) compassv1internalconnect.AgentGatewayClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
+
+	ic, err := otelconnect.NewServerInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
+	}
+	server := connect.NewServer(otelx.HandlerInterceptors(ic))
+	compassv1internalconnect.RegisterAgentGatewayHandler(server, g)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, agentGatewayHandlerOptions()...)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return compassv1internalconnect.NewAgentGatewayClient(h2cHTTPClient(t), srv.URL)
+	return compassv1internalconnect.NewAgentGatewayClient(connect.NewClient(connecthttp.NewTransport(h2cHTTPClient(t), srv.URL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // --- frame builders ----------------------------------------------------------
@@ -315,13 +334,13 @@ type fakeCommitter struct {
 	resp *compassv1internal.CommitConversationFrameResponse
 }
 
-func (f *fakeCommitter) CommitConversationFrame(_ context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error) {
+func (f *fakeCommitter) CommitConversationFrame(_ context.Context, req *compassv1internal.CommitConversationFrameRequest) (*compassv1internal.CommitConversationFrameResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, capturedCommit{
-		sessionID:      req.Msg.GetSessionId(),
-		frame:          req.Msg.GetFrame(),
-		idempotencyKey: req.Msg.GetIdempotencyKey(),
+		sessionID:      req.GetSessionId(),
+		frame:          req.GetFrame(),
+		idempotencyKey: req.GetIdempotencyKey(),
 	})
 	if f.err != nil {
 		return nil, f.err
@@ -330,7 +349,7 @@ func (f *fakeCommitter) CommitConversationFrame(_ context.Context, req *connect.
 	if resp == nil {
 		resp = &compassv1internal.CommitConversationFrameResponse{}
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // snapshot returns a copy of the recorded commit calls under the lock.
@@ -361,7 +380,10 @@ func TestPublishOrdersThreeTraceFrames(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 
 	texts := []string{"alpha", "bravo", "charlie"}
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, txt := range texts {
 		if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame(txt)}); err != nil {
 			t.Fatalf("send %q: %v", txt, err)
@@ -403,7 +425,10 @@ func TestPublishSessionStateWaitsForInflightPublish(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 	publishCtx, cancelPublish := context.WithCancel(context.Background())
 	t.Cleanup(cancelPublish)
-	stream := client.Publish(publishCtx)
+	stream, err := client.Publish(publishCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("in-flight")}); err != nil {
 		t.Fatalf("send Publish frame: %v", err)
 	}
@@ -447,7 +472,10 @@ func TestPublishSessionStateSendsAfterPublishWaitContextExpires(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 	publishCtx, cancelPublish := context.WithCancel(context.Background())
 	t.Cleanup(cancelPublish)
-	stream := client.Publish(publishCtx)
+	stream, err := client.Publish(publishCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("in-flight")}); err != nil {
 		t.Fatalf("send Publish frame: %v", err)
 	}
@@ -490,7 +518,10 @@ func TestPublishAfterSessionStateIsRefused(t *testing.T) {
 	}
 	state := capture.recvFrame(t)
 	client := newAgentGatewayServer(t, g)
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The sealed handler may refuse before this Send lands (io.EOF); the code
 	// comes from CloseAndReceive either way.
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil && !errors.Is(err, io.EOF) {
@@ -517,7 +548,10 @@ func TestPublishHandlerOpenedDuringWaitIsRefused(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 	firstCtx, firstCancel := context.WithCancel(context.Background())
 	t.Cleanup(firstCancel)
-	first := client.Publish(firstCtx)
+	first, err := client.Publish(firstCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := first.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("in-flight")}); err != nil {
 		t.Fatalf("send first Publish frame: %v", err)
 	}
@@ -528,7 +562,10 @@ func TestPublishHandlerOpenedDuringWaitIsRefused(t *testing.T) {
 		stateDone <- listener.PublishSessionState(waitCtx, "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
 	}()
 	<-waitCtx.entered
-	second := client.Publish(context.Background())
+	second, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The handler may refuse before this Send lands; connect then returns io.EOF
 	// here and the refusal comes from CloseAndReceive.
 	if err := second.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil && !errors.Is(err, io.EOF) {
@@ -568,7 +605,10 @@ func TestBindSessionReopensPublishAfterSessionState(t *testing.T) {
 	state := capture.recvFrame(t)
 	listener.BindSession("sess-1")
 	client := newAgentGatewayServer(t, g)
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("resumed")}); err != nil {
 		t.Fatalf("send resumed Publish frame: %v", err)
 	}
@@ -613,7 +653,10 @@ func TestSessionStateFollowsFrameAdmittedBeforeDrainTimeout(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 	publishCtx, cancelPublish := context.WithCancel(context.Background())
 	t.Cleanup(cancelPublish)
-	stream := client.Publish(publishCtx)
+	stream, err := client.Publish(publishCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("admitted")}); err != nil {
 		t.Fatalf("send Publish frame: %v", err)
 	}
@@ -659,7 +702,7 @@ type stallFirstPublish struct {
 	frames  chan *compassv1internal.PublishEventsRequest
 }
 
-func (s *stallFirstPublish) PublishEvents(ctx context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+func (s *stallFirstPublish) PublishEvents(ctx context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
 	s.mu.Lock()
 	first := !s.stalled
 	s.stalled = true
@@ -668,13 +711,17 @@ func (s *stallFirstPublish) PublishEvents(ctx context.Context, stream *connect.C
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	for stream.Receive() {
-		s.frames <- stream.Msg()
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		s.frames <- msg
 	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
 // (b) A shared-stream Send stuck past stateSendTimeout must not lose ERRORED:
@@ -732,18 +779,22 @@ type taggedFrame struct {
 	req    *compassv1internal.PublishEventsRequest
 }
 
-func (c *taggedPublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+func (c *taggedPublish) PublishEvents(_ context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
 	c.mu.Lock()
 	c.n++
 	id := c.n
 	c.mu.Unlock()
-	for stream.Receive() {
-		c.frames <- taggedFrame{stream: id, req: stream.Msg()}
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		c.frames <- taggedFrame{stream: id, req: msg}
 	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
 func (c *taggedPublish) recv(t *testing.T) taggedFrame {
@@ -767,7 +818,10 @@ func TestSessionStateUsesSharedStreamAfterDrainTimeout(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 	publishCtx, cancelPublish := context.WithCancel(context.Background())
 	t.Cleanup(cancelPublish)
-	stream := client.Publish(publishCtx)
+	stream, err := client.Publish(publishCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("open")}); err != nil {
 		t.Fatalf("send Publish frame: %v", err)
 	}
@@ -852,13 +906,20 @@ type failingAckPublish struct {
 	streams int
 }
 
-func (f *failingAckPublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+func (f *failingAckPublish) PublishEvents(_ context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
 	f.mu.Lock()
 	f.streams++
 	f.mu.Unlock()
-	for stream.Receive() {
+	for {
+		_, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
 	}
-	return nil, connect.NewError(connect.CodeDataLoss, errors.New("ack refused"))
+	return nil, connect.NewError(connect.CodeDataLoss, "ack refused")
 }
 
 func (f *failingAckPublish) count() int {
@@ -939,10 +1000,10 @@ func TestPostConversationFrameForwardsTranscriptEntry(t *testing.T) {
 	committer := &fakeCommitter{}
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
-	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+	resp, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 		Frame:          transcriptEntryFrame(`{"role":"assistant"}`, true, 7),
 		IdempotencyKey: "key-te",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("PostConversationFrame: %v", err)
 	}
@@ -978,13 +1039,13 @@ func TestPostConversationFrameForwardsTranscriptEntry(t *testing.T) {
 // PostConversationFrame returns commit failures without reporting success. The
 // Runner preserves the status for the caller.
 func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
-	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
+	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, "server unreachable")}
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
-	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+	resp, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("boom"),
 		IdempotencyKey: "key-3",
-	}))
+	})
 	if err == nil {
 		t.Fatal("expected an error when the commit fails, got success")
 	}
@@ -1009,12 +1070,12 @@ func TestPostConversationFrameStatusAndKeyHandling(t *testing.T) {
 		{"unavailable", connect.CodeUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			committer := &fakeCommitter{err: connect.NewError(tc.code, errors.New("commit failed"))}
+			committer := &fakeCommitter{err: connect.NewError(tc.code, "commit failed")}
 			g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
-			_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+			_, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 				Frame:          durableFrame("f"),
 				IdempotencyKey: "retry-key",
-			}))
+			})
 			if got := connect.CodeOf(err); got != tc.code {
 				t.Fatalf("error code = %v, want %v (the Server status passed through unchanged)", got, tc.code)
 			}
@@ -1024,13 +1085,13 @@ func TestPostConversationFrameStatusAndKeyHandling(t *testing.T) {
 		})
 	}
 
-	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("commit failed"))}
+	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, "commit failed")}
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 	post := func() error {
-		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+		_, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 			Frame:          durableFrame("f"),
 			IdempotencyKey: "k",
-		}))
+		})
 		return err
 	}
 
@@ -1078,7 +1139,10 @@ func TestConcurrencyNoFalseGap(t *testing.T) {
 
 	const total = 20
 
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := range total {
 		if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame(fmt.Sprintf("t%d", i))}); err != nil {
 			t.Fatalf("stream send %d: %v", i, err)
@@ -1113,16 +1177,21 @@ type seqSink struct {
 	seen []uint64
 }
 
-func (s *seqSink) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
-	for stream.Receive() {
+func (s *seqSink) PublishEvents(_ context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
+	for {
+		msg, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
 		s.mu.Lock()
-		s.seen = append(s.seen, stream.Msg().GetRunnerSeq())
+		s.seen = append(s.seen, msg.GetRunnerSeq())
 		s.mu.Unlock()
 	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+
+	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
 // seqs returns a copy of what has been recorded so far.
@@ -1252,6 +1321,51 @@ func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 	}
 }
 
+// openFailRelay fails every PublishEvents open, as an unreachable hub does.
+type openFailRelay struct{}
+
+func (openFailRelay) PublishEvents(context.Context) (compassv1internalconnect.RunnerServicePublishEventsClientStream, error) {
+	return compassv1internalconnect.RunnerServicePublishEventsClientStream{}, connect.NewError(connect.CodeUnavailable, "hub unreachable")
+}
+
+// A stream that never opened must not burn a sequence number either; the hub
+// would read the hole as in-transit loss.
+//
+// RED: drop the rollback on the openErr path in sendLocked -> seqs = [1 3].
+func TestFailedStreamOpenDoesNotBurnASequenceNumber(t *testing.T) {
+	sink := &seqSink{}
+	live := newRunnerServiceServer(t, sink)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: live})
+	forward := func(txt string) error {
+		return g.acquirePublisher("sess-1").forward(traceFrame(txt))
+	}
+
+	if err := forward("ok-1"); err != nil {
+		t.Fatalf("first forward = %v, want success", err)
+	}
+	if err := releaseCurrentPublisher(g); err != nil {
+		t.Fatalf("release before the failing open = %v", err)
+	}
+	g.events = openFailRelay{}
+	if err := forward("unopened-2"); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("forward on an unopened stream = %v, want Unavailable", err)
+	}
+	if err := releaseCurrentPublisher(g); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("release of the unopened publisher = %v, want the open error", err)
+	}
+	g.events = live
+	if err := forward("ok-3"); err != nil {
+		t.Fatalf("forward after the failed open = %v, want success", err)
+	}
+	if err := releaseCurrentPublisher(g); err != nil {
+		t.Fatalf("final release = %v", err)
+	}
+
+	if got, want := sink.seqs(), []uint64{1, 2}; !slices.Equal(got, want) {
+		t.Fatalf("delivered RunnerSeq = %v, want %v: the unopened stream burned a number", got, want)
+	}
+}
+
 // A SUPPLEMENTARY race check, not the guard. TestSequenceSurvivesPublisherReplacement
 // above is the deterministic guard for the counter's ownership; this one adds the
 // concurrent case the other sibling explicitly avoids — TestConcurrencyNoFalseGap
@@ -1339,10 +1453,10 @@ func TestPostConversationFrameDedupOnKey(t *testing.T) {
 
 	post := func(key string) {
 		t.Helper()
-		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+		if _, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 			Frame:          durableFrame("dur"),
 			IdempotencyKey: key,
-		})); err != nil {
+		}); err != nil {
 			t.Fatalf("post key=%q: %v", key, err)
 		}
 	}
@@ -1368,10 +1482,10 @@ func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
 	for range 2 {
-		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+		if _, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 			Frame:          durableFrame("dur"),
 			IdempotencyKey: "",
-		})); err != nil {
+		}); err != nil {
 			t.Fatalf("empty-key post: %v", err)
 		}
 	}
@@ -1401,10 +1515,10 @@ func TestPostConversationFrameRejectsNonConversationFrame(t *testing.T) {
 			committer := &fakeCommitter{}
 			g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
-			_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+			_, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 				Frame:          tc.frame,
 				IdempotencyKey: "k",
-			}))
+			})
 			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 				t.Fatalf("PostConversationFrame code = %v, want CodeInvalidArgument", got)
 			}
@@ -1431,19 +1545,19 @@ func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 	committer := &fakeCommitter{}
 
 	g1 := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
-	if _, err := g1.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+	if _, err := g1.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("dur"),
 		IdempotencyKey: "same-key",
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("g1 post: %v", err)
 	}
 
 	// Advisory-set loss: a fresh Gateway with an empty committedKeys map.
 	g2 := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
-	resp, err := g2.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+	resp, err := g2.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("dur"),
 		IdempotencyKey: "same-key",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("g2 re-post: %v", err)
 	}
@@ -1478,7 +1592,10 @@ func TestPublishRoutesAcksToControlRouterNotUpstream(t *testing.T) {
 	g.SetControlRouter(router) // set before serving: not concurrency-safe with a live stream.
 	client := newAgentGatewayServer(t, g)
 
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: controlAckFrame(7, []uint64{9}, 12, 15)}); err != nil {
 		t.Fatalf("send control ack: %v", err)
 	}
@@ -1531,10 +1648,10 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: &fakeSessions{ok: false}, Events: events, Committer: committer})
 	client := newAgentGatewayServer(t, g)
 
-	_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+	_, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("nope"),
 		IdempotencyKey: "k",
-	}))
+	})
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("PostConversationFrame code = %v, want CodeFailedPrecondition", got)
 	}
@@ -1542,7 +1659,10 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 		t.Fatalf("commit calls = %d, want 0: a frame must never commit under an unbound session", n)
 	}
 
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Send may not surface the rejection (flush timing); CloseAndReceive is
 	// authoritative.
 	_ = stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("nope")})
@@ -1570,7 +1690,10 @@ func TestPublishCleanEndClosesUpstreamAndAwaitsAck(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	client := newAgentGatewayServer(t, g)
 
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("x")}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -1605,7 +1728,10 @@ func TestPublishOverLimitFailsStream(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 
 	huge := strings.Repeat("A", maxAgentMessageBytes+1024)
-	stream := client.Publish(context.Background())
+	stream, err := client.Publish(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Send may not surface the read rejection (flush timing); CloseAndReceive is
 	// authoritative.
 	_ = stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame(huge)})
@@ -1694,10 +1820,10 @@ func TestCommittedKeysBounded(t *testing.T) {
 
 	// Eviction is SAFE: a re-post of an evicted key misses the fast-path and
 	// re-commits. The committer records the re-commit under that key.
-	if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+	if _, err := g.PostConversationFrame(context.Background(), &compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("re"),
 		IdempotencyKey: key(0),
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("re-post of evicted key: %v", err)
 	}
 	calls := committer.snapshot()
@@ -1731,8 +1857,15 @@ func newBlockingClosePublish() *blockingClosePublish {
 	}
 }
 
-func (b *blockingClosePublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
-	for stream.Receive() {
+func (b *blockingClosePublish) PublishEvents(_ context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
+	for {
+		_, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
 		// Drain: the frame body is irrelevant here. The loop ends when the client
 		// half-closes its send side (CloseAndReceive), at which point the client
 		// is blocked awaiting this handler's response.
@@ -1744,7 +1877,7 @@ func (b *blockingClosePublish) PublishEvents(_ context.Context, stream *connect.
 	default:
 	}
 	<-b.release
-	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
 // releasePublisher must close the outgoing publisher's upstream stream OUTSIDE

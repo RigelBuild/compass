@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
@@ -95,7 +97,7 @@ func DialAgentSocket(t *testing.T, path string) compassv1internalconnect.AgentGa
 		},
 	}
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1internalconnect.NewAgentGatewayClient(&http.Client{Transport: tr}, "http://unix")
+	return compassv1internalconnect.NewAgentGatewayClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "http://unix", connecthttp.WithReadMaxBytes(0))))
 }
 
 // CleartextH2 returns an http.Protocols that permits HTTP/1 and prior-knowledge

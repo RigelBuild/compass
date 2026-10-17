@@ -19,11 +19,13 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -36,13 +38,13 @@ import (
 // is a universal high-water mark for the replay drain below.
 func mkCanary(t *testing.T, h streamHarness, handle string) string {
 	t.Helper()
-	resp, err := h.svc.CreateUser(context.Background(), connect.NewRequest(&compassv1.CreateUserRequest{
+	resp, err := h.svc.CreateUser(context.Background(), &compassv1.CreateUserRequest{
 		Handle: handle, DisplayName: handle,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("create canary %q: %v", handle, err)
 	}
-	return resp.Msg.GetAccount().GetId()
+	return resp.GetAccount().GetId()
 }
 
 // drainReplayAsActor opens a SubscribeComms stream AS actor (over the
@@ -56,8 +58,9 @@ func drainReplayAsActor(t *testing.T, h streamHarness, actor store.AccountID, ca
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	req := connect.NewRequest(&compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	req.Header().Set(commsTestActorHeader, string(actor))
+	req := &compassv1.SubscribeCommsRequest{SinceSeq: 0}
+	connectCtx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set(commsTestActorHeader, string(actor))
 
 	type result struct {
 		evts []*compassv1.SubscribeCommsResponse
@@ -65,21 +68,30 @@ func drainReplayAsActor(t *testing.T, h streamHarness, actor store.AccountID, ca
 	}
 	out := make(chan result, 1)
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, req)
+		stream, err := h.client.SubscribeComms(connectCtx, req)
 		if err != nil {
 			out <- result{err: err}
 			return
 		}
 		var got []*compassv1.SubscribeCommsResponse
-		for stream.Receive() {
-			m := stream.Msg()
+		var streamErr error
+		for {
+			msg, err := stream.Receive()
+			if err != nil {
+				streamErr = err
+				break
+			}
+			m := msg
 			if ac := m.GetAccountChanged(); ac != nil && ac.GetAccount().GetId() == canaryID {
 				out <- result{evts: got}
 				return
 			}
 			got = append(got, m)
 		}
-		out <- result{err: fmt.Errorf("stream ended before the canary: %w", stream.Err())}
+		if errors.Is(streamErr, io.EOF) {
+			streamErr = nil
+		}
+		out <- result{err: fmt.Errorf("stream ended before the canary: %w", streamErr)}
 	}()
 
 	select {
@@ -181,14 +193,14 @@ func TestSubscribeCommsPrivateMessageLeakBlocked(t *testing.T) {
 	}
 
 	// A posts a plain message (MessagePosted) into a named topic ...
-	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
 	// The private topic both the post and the ask land in: a message carries only
 	// its topic now, so the leak assertion correlates on this topic id (the
 	// channel is resolved through it server-side).
-	privTopic := posted.Msg.GetMessage().GetTopicId()
+	privTopic := posted.GetMessage().GetTopicId()
 	// ... and answers a pending ask so the same channel also emits a
 	// MessageUpdated (the second gated variant). The ask message is seeded
 	// directly in the store (no event needed for it); RespondToAsk through the
@@ -196,10 +208,10 @@ func TestSubscribeCommsPrivateMessageLeakBlocked(t *testing.T) {
 	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: memberA.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-leak")}}, string(priv.ID), store.TopicRef{ID: privTopic}, ""); err != nil {
 		t.Fatalf("AppendMessage(ask): %v", err)
 	}
-	if _, err := h.svc.RespondToAsk(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := h.svc.RespondToAsk(WithActor(ctx, memberA.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-leak",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 
@@ -248,19 +260,19 @@ func TestSubscribeCommsPrivateTopicUpsertedLeakBlocked(t *testing.T) {
 
 	// A posts a message into a named topic, creating the topic (no TopicUpserted
 	// yet — get-or-create does not emit one).
-	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	privTopic := posted.Msg.GetMessage().GetTopicId()
+	privTopic := posted.GetMessage().GetTopicId()
 
 	// A renames the topic (A is the founding member, so store-authorized) — this
 	// is the event under test: UpdateTopic publishes the TopicUpserted.
 	newName := "renamed"
-	if _, err := h.svc.UpdateTopic(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.UpdateTopicRequest{
+	if _, err := h.svc.UpdateTopic(WithActor(ctx, memberA.ID), &compassv1.UpdateTopicRequest{
 		TopicId: privTopic,
 		Name:    &newName,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("UpdateTopic(rename): %v", err)
 	}
 
@@ -300,22 +312,22 @@ func TestSubscribeCommsChannelChangedSharedVisibleToNonMember(t *testing.T) {
 	// A SHARED-grouped channel (kind=CHANNEL): visible to everyone via the group
 	// lattice even without membership. Its ChannelChanged is emitted through the
 	// handler.
-	sharedCh, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	sharedCh, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "announce", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupId: string(sharedGroup.ID),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(shared): %v", err)
 	}
-	sharedID := sharedCh.Msg.GetChannel().GetId()
+	sharedID := sharedCh.GetChannel().GetId()
 
 	// A private ungrouped channel: owner-only, so the viewer cannot see it.
-	privCh, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	privCh, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "private", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(private): %v", err)
 	}
-	privID := privCh.Msg.GetChannel().GetId()
+	privID := privCh.GetChannel().GetId()
 
 	canary := mkCanary(t, h, "canary")
 
@@ -351,21 +363,21 @@ func TestSubscribeCommsAccountChangedDirectoryScoping(t *testing.T) {
 	stranger := mustUser(t, h.store, "stranger") // owns nothing, shares no channel
 
 	// A new human account: globally visible, so both subscribers must receive it.
-	extra, err := h.svc.CreateUser(ctx, connect.NewRequest(&compassv1.CreateUserRequest{Handle: "extra", DisplayName: "Extra"}))
+	extra, err := h.svc.CreateUser(ctx, &compassv1.CreateUserRequest{Handle: "extra", DisplayName: "Extra"})
 	if err != nil {
 		t.Fatalf("CreateUser(extra): %v", err)
 	}
-	extraID := extra.Msg.GetAccount().GetId()
+	extraID := extra.GetAccount().GetId()
 
 	// A new agent owned by agentOwner: owner-scoped, so only the owner may see
 	// its AccountChanged.
-	agent, err := h.svc.CreateAgent(WithActor(ctx, agentOwner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+	agent, err := h.svc.CreateAgent(WithActor(ctx, agentOwner.ID), &compassv1.CreateAgentRequest{
 		Handle: "secret-agent", DisplayName: "Secret", Role: "manager",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
-	agentID := agent.Msg.GetAccount().GetId()
+	agentID := agent.GetAccount().GetId()
 
 	canary := mkCanary(t, h, "canary")
 
@@ -404,21 +416,21 @@ func TestSubscribeCommsRemovedMemberGetsFinalChannelChanged(t *testing.T) {
 
 	// Private channel with owner + `removed` as founding members (emits a create
 	// ChannelChanged with removed_account_ids empty).
-	ch, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	ch, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{removed.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := ch.Msg.GetChannel().GetId()
+	chID := ch.GetChannel().GetId()
 
 	// Owner removes `removed` (emits a ChannelChanged with removed in
 	// removed_account_ids).
-	if _, err := h.svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	if _, err := h.svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 		ChannelId:           chID,
 		RemoveMemberHandles: []string{removed.Handle},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("UpdateChannelMembers(remove): %v", err)
 	}
 
@@ -455,20 +467,20 @@ func TestSubscribeCommsDepartingMemberFinalEventOmitsSameBatchAdd(t *testing.T) 
 	departing := mustUser(t, h.store, "departing")
 	added := mustUser(t, h.store, "added")
 
-	ch, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	ch, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{departing.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := ch.Msg.GetChannel().GetId()
+	chID := ch.GetChannel().GetId()
 
-	if _, err := h.svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	if _, err := h.svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 		ChannelId:           chID,
 		AddMemberHandles:    []string{added.Handle},
 		RemoveMemberHandles: []string{departing.Handle},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("UpdateChannelMembers(add+remove): %v", err)
 	}
 
@@ -511,21 +523,21 @@ func TestSubscribeCommsChannelGroupChangedScoping(t *testing.T) {
 	owner := mustUser(t, h.store, "owner")
 	stranger := mustUser(t, h.store, "stranger")
 
-	sharedGroup, err := h.svc.CreateChannelGroup(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+	sharedGroup, err := h.svc.CreateChannelGroup(WithActor(ctx, owner.ID), &compassv1.CreateChannelGroupRequest{
 		Name: "shared", Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_SHARED,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannelGroup(shared): %v", err)
 	}
-	sharedID := sharedGroup.Msg.GetGroup().GetId()
+	sharedID := sharedGroup.GetGroup().GetId()
 
-	ownerGroup, err := h.svc.CreateChannelGroup(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+	ownerGroup, err := h.svc.CreateChannelGroup(WithActor(ctx, owner.ID), &compassv1.CreateChannelGroupRequest{
 		Name: "owner-only", Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_OWNER,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannelGroup(owner): %v", err)
 	}
-	ownerID := ownerGroup.Msg.GetGroup().GetId()
+	ownerID := ownerGroup.GetGroup().GetId()
 
 	canary := mkCanary(t, h, "canary")
 
@@ -579,18 +591,18 @@ func TestSubscribeCommsPrivateMessageLeakBlockedLiveTail(t *testing.T) {
 	outsiderEvents := firstEventAfterBoundary(t, h, outsiderB.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
 	// The private post: member entitled, non-member not.
-	privPosted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
+	privPosted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage(private): %v", err)
 	}
-	privID := privPosted.Msg.GetMessage().GetId()
+	privID := privPosted.GetMessage().GetId()
 
 	// The canary post into a channel the non-member CAN see: its high-water mark.
-	canaryPosted, err := h.svc.PostMessage(WithActor(ctx, outsiderB.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(canaryCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible canary"}}}}))
+	canaryPosted, err := h.svc.PostMessage(WithActor(ctx, outsiderB.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(canaryCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible canary"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage(canary): %v", err)
 	}
-	canaryID := canaryPosted.Msg.GetMessage().GetId()
+	canaryID := canaryPosted.GetMessage().GetId()
 
 	// The member's live tail delivers the private post as its first event.
 	memberFirst := awaitFirst(t, memberEvents)

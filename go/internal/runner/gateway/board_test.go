@@ -4,10 +4,9 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -24,13 +23,13 @@ type fakeBoardRelay struct {
 }
 
 func (f *fakeBoardRelay) RelayBoardCall(
-	_ context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest],
-) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
-	f.calls = append(f.calls, recordedBoardCall{req: req.Msg})
+	_ context.Context, req *compassv1internal.RelayBoardCallRequest,
+) (*compassv1internal.RelayBoardCallResponse, error) {
+	f.calls = append(f.calls, recordedBoardCall{req: req})
 	if f.err != nil {
 		return nil, f.err
 	}
-	return connect.NewResponse(f.resp), nil
+	return f.resp, nil
 }
 
 func boardSetIssueStateCall() *compassv1internal.BoardCallRequest {
@@ -58,7 +57,7 @@ func TestBoardHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 	relay := &fakeBoardRelay{resp: &compassv1internal.RelayBoardCallResponse{Result: wantResult}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Board: relay})
 
-	resp, err := g.Board(context.Background(), connect.NewRequest(boardSetIssueStateCall()))
+	resp, err := g.Board(context.Background(), boardSetIssueStateCall())
 	if err != nil {
 		t.Fatalf("Board = %v, want success", err)
 	}
@@ -78,8 +77,8 @@ func TestBoardHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 	if got.GetCall().GetSetIssueState().GetState() != compassv1.IssueState_ISSUE_STATE_DONE {
 		t.Fatalf("forwarded state = %v, want ISSUE_STATE_DONE", got.GetCall().GetSetIssueState().GetState())
 	}
-	if resp.Msg.GetCallId() != testCallID || resp.Msg.GetSetIssueState().GetIssue().GetId() != "iss-1" {
-		t.Fatalf("returned result = %+v, want the Server's board result", resp.Msg)
+	if resp.GetCallId() != testCallID || resp.GetSetIssueState().GetIssue().GetId() != "iss-1" {
+		t.Fatalf("returned result = %+v, want the Server's board result", resp)
 	}
 }
 
@@ -96,22 +95,22 @@ func TestBoardInBandErrorPassesThrough(t *testing.T) {
 	}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Board: relay})
 
-	resp, err := g.Board(context.Background(), connect.NewRequest(boardSetIssueStateCall()))
+	resp, err := g.Board(context.Background(), boardSetIssueStateCall())
 	if err != nil {
 		t.Fatalf("Board with an in-band error = %v, want nil Go error", err)
 	}
-	if got := resp.Msg.GetError().GetCode(); got != "not_found" {
+	if got := resp.GetError().GetCode(); got != "not_found" {
 		t.Fatalf("in-band error code = %q, want not_found", got)
 	}
 }
 
 func TestBoardTransportFailurePropagatesConnectError(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
-	wantErr := connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))
+	wantErr := connect.NewError(connect.CodeUnavailable, "server unreachable")
 	relay := &fakeBoardRelay{err: wantErr}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Board: relay})
 
-	resp, err := g.Board(context.Background(), connect.NewRequest(boardSetIssueStateCall()))
+	resp, err := g.Board(context.Background(), boardSetIssueStateCall())
 	if err != wantErr {
 		t.Fatalf("Board error = %v, want the upstream error %v", err, wantErr)
 	}
@@ -128,7 +127,7 @@ func TestBoardNilResultIsInternalError(t *testing.T) {
 	relay := &fakeBoardRelay{resp: &compassv1internal.RelayBoardCallResponse{}}
 	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Board: relay})
 
-	resp, err := g.Board(context.Background(), connect.NewRequest(boardSetIssueStateCall()))
+	resp, err := g.Board(context.Background(), boardSetIssueStateCall())
 	if err == nil {
 		t.Fatal("Board with a nil relay result = nil error, want CodeInternal")
 	}
@@ -149,7 +148,7 @@ func TestBoardUnboundSessionFailsClosedWithoutForwarding(t *testing.T) {
 			relay := &fakeBoardRelay{}
 			g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Board: relay})
 
-			resp, err := g.Board(context.Background(), connect.NewRequest(boardSetIssueStateCall()))
+			resp, err := g.Board(context.Background(), boardSetIssueStateCall())
 			if got := connect.CodeOf(err); err == nil || got != connect.CodeFailedPrecondition {
 				t.Fatalf("unbound Board error = %v (code %v), want FailedPrecondition", err, got)
 			}

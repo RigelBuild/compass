@@ -2,46 +2,87 @@ package otel
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
+	"connectrpc.com/connect/v2"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// HandlerInterceptors is the one interceptor option for a Connect handler mount:
-// ic first (it must be non-nil), then NewTraceResponseInterceptor, then rest in order.
-func HandlerInterceptors(ic *otelconnect.Interceptor, rest ...connect.Interceptor) connect.HandlerOption {
-	interceptors := make([]connect.Interceptor, 0, len(rest)+2)
+// HandlerInterceptors is the one interceptor for a server mount: ic first (it
+// must be non-nil), then NewTraceResponseInterceptor, then rest in order.
+func HandlerInterceptors(ic connect.ServerInterceptor, rest ...connect.ServerInterceptor) connect.ServerInterceptor {
+	interceptors := make([]connect.ServerInterceptor, 0, len(rest)+2)
 	interceptors = append(interceptors, ic, NewTraceResponseInterceptor())
 	interceptors = append(interceptors, rest...)
-	return connect.WithInterceptors(interceptors...)
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		for _, wrap := range slices.Backward(interceptors) {
+			next = wrap(next)
+		}
+		return next
+	}
 }
 
 // traceResponseHeader is the W3C trace-context response header (still a draft;
 // DECIDED by compass-obs to use the standard name + "00-…" grammar anyway).
 const traceResponseHeader = "traceresponse"
 
-// NewTraceResponseInterceptor sets the "traceresponse" response header from the
-// handler span's context on every unary response (the UI/PostHog trace_id
-// source). It is a no-op when there is no active span (no provider installed,
-// or an unsampled/absent span context).
-func NewTraceResponseInterceptor() connect.UnaryInterceptorFunc {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			resp, err := next(ctx, req)
-			if err != nil {
-				return resp, err
+// NewTraceResponseInterceptor sets traceresponse on a successful unary response
+// immediately before its first Send, when the handler span has a valid context.
+func NewTraceResponseInterceptor() connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			if spec.StreamType != connect.StreamTypeUnary {
+				return next(ctx, spec, stream)
 			}
+			info, ok := connect.CallInfoForServerContext(ctx)
 			sc := trace.SpanContextFromContext(ctx)
-			if resp != nil && sc.IsValid() {
-				resp.Header().Set(traceResponseHeader, formatTraceResponse(sc))
+			if !ok || !sc.IsValid() {
+				return next(ctx, spec, stream)
 			}
-			return resp, err
-		})
-	})
+			buffered := &unaryResponseBuffer{stream: stream}
+			if err := next(ctx, spec, buffered); err != nil {
+				return err
+			}
+			if !buffered.sent && !buffered.headers {
+				return nil
+			}
+			info.ResponseHeader().Set(traceResponseHeader, formatTraceResponse(sc))
+			if buffered.headers {
+				if err := stream.SendHeaders(); err != nil {
+					return err
+				}
+			}
+			if buffered.sent {
+				return stream.Send(buffered.response)
+			}
+			return nil
+		}
+	}
+}
+
+type unaryResponseBuffer struct {
+	stream   connect.ServerStream
+	response any
+	sent     bool
+	headers  bool
+}
+
+func (s *unaryResponseBuffer) Receive(msg any) error {
+	return s.stream.Receive(msg)
+}
+
+func (s *unaryResponseBuffer) SendHeaders() error {
+	s.headers = true
+	return nil
+}
+
+func (s *unaryResponseBuffer) Send(msg any) error {
+	s.response = msg
+	s.sent = true
+	return nil
 }
 
 // PostHogSessionHeader is PostHog's own frontend<->backend correlation header,
@@ -63,47 +104,29 @@ const PostHogSessionHeader = "X-POSTHOG-SESSION-ID"
 const maxSessionIDLen = 200
 
 // NewSessionIDInterceptor stamps the PostHog session id from the request's
-// X-POSTHOG-SESSION-ID header onto the handler span as semconv `session.id`
-// (J1, the correlation-key join). It is the INBOUND half of the seam whose
-// outbound half is NewTraceResponseInterceptor: product events carry the OTel
-// trace id, backend spans carry the product session id, and either side can be
-// pivoted to the other by the shared key — without either system holding the
-// other's data, which is what keeps the join billing-safe.
-//
-// It never creates a span. With no provider installed the span is non-recording
-// and SetAttributes is dropped, so the analytics-off path costs one map lookup
-// and adds nothing to the wire.
-func NewSessionIDInterceptor() connect.UnaryInterceptorFunc {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			// Stamped BEFORE the handler runs: a span the handler ends, or one
-			// that errors, must still carry the key, or the failures — the
-			// traces most worth pivoting to from a product funnel — would be
-			// exactly the ones missing it.
-			if id := sessionIDFromHeader(req); id != "" {
-				trace.SpanFromContext(ctx).SetAttributes(semconv.SessionID(id))
+// X-POSTHOG-SESSION-ID header onto the handler span as semconv `session.id`.
+func NewSessionIDInterceptor() connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			if info, ok := connect.CallInfoForServerContext(ctx); ok {
+				if id := sessionIDFromHeader(info.RequestHeader()); id != "" {
+					trace.SpanFromContext(ctx).SetAttributes(semconv.SessionID(id))
+				}
 			}
-			return next(ctx, req)
-		})
-	})
+			return next(ctx, spec, stream)
+		}
+	}
 }
 
 // sessionIDFromHeader extracts a usable session id from the request, or "" when
 // the header is absent, blank, or not worth trusting. Returning "" rather than
-// repairing a bad value is deliberate in every case: a truncated or re-encoded
-// id joins to nothing in PostHog, so it would add span weight while still
-// failing the pivot, and a silent half-key is harder to notice than an absent
-// one.
+// repairing a bad value is deliberate: a truncated or re-encoded id joins to
+// nothing in PostHog, so it would add span weight while still failing the pivot.
 //
-// The UTF-8 check is load-bearing, not hygiene. Go's HTTP parser rejects control
-// bytes but ADMITS high bytes, OTLP span attributes are proto3 strings, and the
-// protobuf marshaller fails the whole ExportTraceServiceRequest on an invalid
-// one — so a single bad header would drop every span batched with it, including
-// other callers'. Since this interceptor deliberately runs ahead of auth, that
-// would be an unauthenticated observability denial-of-service, surfaced only in
-// the exporter's own logs.
-func sessionIDFromHeader(req connect.AnyRequest) string {
-	id := strings.TrimSpace(req.Header().Get(PostHogSessionHeader))
+// The UTF-8 check is load-bearing: OTLP span attributes are proto3 strings, and
+// one invalid value would drop every span batched with it.
+func sessionIDFromHeader(h *connect.Header) string {
+	id := strings.TrimSpace(h.Get(PostHogSessionHeader))
 	if id == "" || len(id) > maxSessionIDLen || !utf8.ValidString(id) {
 		return ""
 	}

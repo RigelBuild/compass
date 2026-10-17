@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -59,14 +59,14 @@ func TestCreateChannelUnderAgentEmitsAttachedChannel(t *testing.T) {
 		t.Fatalf("subscribe event bus: %v", err)
 	}
 	defer sub.Cancel()
-	created, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "tree-room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		ParentAgentHandle: "anchor", MembershipMode: compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_TREE,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(TREE under anchor): %v", err)
 	}
-	wire := created.Msg.GetChannel()
+	wire := created.GetChannel()
 	if wire.GetParentAgentId() != string(anchor.ID) || wire.GetMembershipMode() != compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_TREE {
 		t.Fatalf("CreateChannel response parent=%q mode=%v; want %q TREE", wire.GetParentAgentId(), wire.GetMembershipMode(), anchor.ID)
 	}
@@ -74,20 +74,20 @@ func TestCreateChannelUnderAgentEmitsAttachedChannel(t *testing.T) {
 	if changed.GetChannel().GetId() != wire.GetId() || changed.GetChannel().GetParentAgentId() != string(anchor.ID) {
 		t.Fatalf("ChannelChanged = %v; want the attached channel %q under %q", changed, wire.GetId(), anchor.ID)
 	}
-	marker, err := h.svc.CreateChannel(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	marker, err := h.svc.CreateChannel(WithActor(ctx, outsider.ID), &compassv1.CreateChannelRequest{
 		Name: "create-marker", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(marker): %v", err)
 	}
-	if n := channelEventsBefore(t, sub.Live, wire.GetId(), marker.Msg.GetChannel().GetId()); n != 1 {
+	if n := channelEventsBefore(t, sub.Live, wire.GetId(), marker.GetChannel().GetId()); n != 1 {
 		t.Fatalf("ChannelChanged events for the created channel = %d; want exactly one", n)
 	}
 
-	if _, err := h.svc.PostMessage(WithActor(ctx, leaf.ID), connect.NewRequest(textPost(wire.GetId(), "from the subtree"))); err != nil {
+	if _, err := h.svc.PostMessage(WithActor(ctx, leaf.ID), textPost(wire.GetId(), "from the subtree")); err != nil {
 		t.Fatalf("PostMessage by subtree agent: %v", err)
 	}
-	_, err = h.svc.PostMessage(WithActor(ctx, outsider.ID), connect.NewRequest(textPost(wire.GetId(), "from outside")))
+	_, err = h.svc.PostMessage(WithActor(ctx, outsider.ID), textPost(wire.GetId(), "from outside"))
 	connectCodeIs(t, err, connect.CodeNotFound, "PostMessage by non-participant")
 }
 
@@ -99,16 +99,16 @@ func TestCreateChannelRejectsUnknownMembershipModeAndForeignAnchor(t *testing.T)
 	other := mustUser(t, st, "mode-other")
 	mustAgent(t, st, other.ID, "foreign")
 
-	_, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	_, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "bad-mode", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		ParentAgentHandle: "anchor", MembershipMode: compassv1.ChannelMembershipMode(7),
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "unknown membership mode")
 
-	_, err = svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	_, err = svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "foreign-anchor", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		ParentAgentHandle: "mode-other/foreign", MembershipMode: compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_TREE,
-	}))
+	})
 	connectNotFoundFor(t, err, "mode-other/foreign", "foreign anchor")
 }
 
@@ -135,13 +135,13 @@ func TestReparentChannelEmitsOneChannelChangedToAdmittedAccounts(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	resp, err := h.svc.ReparentChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+	resp, err := h.svc.ReparentChannel(WithActor(ctx, owner.ID), &compassv1.ReparentChannelRequest{
 		ChannelId: string(channel.ID), NewParentAgentHandle: "to",
-	}))
+	})
 	if err != nil {
 		t.Fatalf("ReparentChannel: %v", err)
 	}
-	if got := resp.Msg.GetChannel().GetParentAgentId(); got != string(to.ID) {
+	if got := resp.GetChannel().GetParentAgentId(); got != string(to.ID) {
 		t.Fatalf("ReparentChannel response parent = %q; want %q", got, to.ID)
 	}
 	changed := awaitFirst(t, ownerEvents).GetChannelChanged()
@@ -151,17 +151,17 @@ func TestReparentChannelEmitsOneChannelChangedToAdmittedAccounts(t *testing.T) {
 
 	// The outsider's own create is a marker: arriving first proves the move
 	// event was filtered rather than merely slow.
-	marker, err := h.svc.CreateChannel(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	marker, err := h.svc.CreateChannel(WithActor(ctx, outsider.ID), &compassv1.CreateChannelRequest{
 		Name: "outsider-marker", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel(marker): %v", err)
 	}
-	if got := awaitFirst(t, outsiderEvents).GetChannelChanged().GetChannel().GetId(); got != marker.Msg.GetChannel().GetId() {
-		t.Fatalf("outsider first event channel = %q; want its marker %q, not the moved channel", got, marker.Msg.GetChannel().GetId())
+	if got := awaitFirst(t, outsiderEvents).GetChannelChanged().GetChannel().GetId(); got != marker.GetChannel().GetId() {
+		t.Fatalf("outsider first event channel = %q; want its marker %q, not the moved channel", got, marker.GetChannel().GetId())
 	}
 
-	if moves := channelEventsBefore(t, sub.Live, string(channel.ID), marker.Msg.GetChannel().GetId()); moves != 1 {
+	if moves := channelEventsBefore(t, sub.Live, string(channel.ID), marker.GetChannel().GetId()); moves != 1 {
 		t.Fatalf("ChannelChanged events for the moved channel = %d; want exactly one", moves)
 	}
 }
@@ -180,17 +180,17 @@ func TestReparentChannelNonParticipantIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	_, err = svc.ReparentChannel(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+	_, err = svc.ReparentChannel(WithActor(ctx, outsider.ID), &compassv1.ReparentChannelRequest{
 		ChannelId: string(channel.ID),
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeNotFound, "non-participant ReparentChannel")
 
 	other := mustUser(t, st, "np-other")
 	mustAgent(t, st, other.ID, "theirs")
 	for _, handle := range []string{"np-other/theirs", "ghost"} {
-		_, err := svc.ReparentChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+		_, err := svc.ReparentChannel(WithActor(ctx, owner.ID), &compassv1.ReparentChannelRequest{
 			ChannelId: string(channel.ID), NewParentAgentHandle: handle,
-		}))
+		})
 		connectNotFoundFor(t, err, handle, "ReparentChannel destination "+handle)
 	}
 }
@@ -214,9 +214,9 @@ func TestReparentChannelDetachNotifiesViewersWhoLoseVisibility(t *testing.T) {
 	}
 
 	events := firstEventAfterBoundary(t, h, viewer.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	if _, err := h.svc.ReparentChannel(WithActor(ctx, anchor.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+	if _, err := h.svc.ReparentChannel(WithActor(ctx, anchor.ID), &compassv1.ReparentChannelRequest{
 		ChannelId: string(channel.ID),
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("ReparentChannel(detach): %v", err)
 	}
 	changed := awaitFirst(t, events).GetChannelChanged()
@@ -249,9 +249,9 @@ func TestReparentChannelCrossOwnerMoveNotifiesOnlyLostViewers(t *testing.T) {
 
 	bystanderEvents := firstEventAfterBoundary(t, h, bystanderX.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 	memberEvents := firstEventAfterBoundary(t, h, memberY.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	if _, err := h.svc.ReparentChannel(WithActor(ctx, memberY.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+	if _, err := h.svc.ReparentChannel(WithActor(ctx, memberY.ID), &compassv1.ReparentChannelRequest{
 		ChannelId: string(channel.ID), NewParentAgentHandle: "membery",
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("ReparentChannel(to Y's agent): %v", err)
 	}
 

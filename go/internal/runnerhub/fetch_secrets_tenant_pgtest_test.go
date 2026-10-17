@@ -6,8 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/envelope"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -64,12 +62,12 @@ func TestFetchSecretsResolvesUnderTheAgentTenant(t *testing.T) {
 	url := newMountedH2CServerWith(t, hub, runnerResolverForFetch().resolve, grantedRepoResolver{st: st, inner: resolver}, nil)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	resp, err := client.FetchSecrets(ctx, connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-b"}))
+	resp, err := client.FetchSecrets(ctx, &compassv1internal.FetchSecretsRequest{ContainerName: "cont-b"})
 	if err != nil {
 		t.Fatalf("FetchSecrets: %v", err)
 	}
 	got := map[string]string{}
-	for _, s := range resp.Msg.GetSecrets() {
+	for _, s := range resp.GetSecrets() {
 		got[s.GetName()] = s.GetValue()
 	}
 	if got["TENANT_B_SECRET"] != "b-value" || got["GRANT"] != "rigelbuild/tenant-b" {

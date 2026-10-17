@@ -8,7 +8,6 @@ import (
 	"io"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -57,11 +56,11 @@ func newServerSecretListCmd() *cobra.Command {
 func runServerSecretList(ctx context.Context, client compassv1connect.SecretsServiceClient, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.ListServerSecrets(ctx, connect.NewRequest(&compassv1.ListServerSecretsRequest{}))
+	resp, err := client.ListServerSecrets(ctx, &compassv1.ListServerSecretsRequest{})
 	if err != nil {
 		return fmt.Errorf("listing server secrets: %w", err)
 	}
-	secrets := resp.Msg.GetServerSecrets()
+	secrets := resp.GetServerSecrets()
 	if len(secrets) == 0 {
 		_, err = fmt.Fprintln(out, "no server secrets declared for this deployment")
 		return err

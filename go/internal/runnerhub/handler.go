@@ -11,11 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
@@ -25,6 +24,22 @@ import (
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+// Mount registers the RunnerService on mux with the Runner-subject bearer
+// interceptor and its historical inbound read limit.
+func Mount(
+	mux connecthttp.ServeMux,
+	hub *Hub,
+	resolve TokenResolver,
+	resolver secretResolver,
+	configStore AgentConfigStore,
+	otelIC connect.ServerInterceptor,
+) {
+	auth := &bearerAuth{resolve: resolve}
+	server := connect.NewServer(otelx.HandlerInterceptors(otelIC, auth.interceptor()))
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, NewHandler(hub, resolver, configStore))
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(runnerMaxReadBytes))
+}
 
 // runnerMaxReadBytes caps one inbound RunnerService message. Each Runner→Server
 // request carries at most one agent message (a relayed call or AgentFrame,
@@ -91,23 +106,23 @@ var _ compassv1internalconnect.RunnerServiceHandler = (*Handler)(nil)
 // runner_id is cross-checked against the token subject: a mismatch is a spoofing
 // attempt, rejected Unauthenticated. A failed durable reap is Unavailable, so the
 // Runner's bounded redial retries it; store detail stays server-side.
-func (h *Handler) Enroll(ctx context.Context, req *connect.Request[compassv1internal.EnrollRequest]) (*connect.Response[compassv1internal.EnrollResponse], error) {
+func (h *Handler) Enroll(ctx context.Context, req *compassv1internal.EnrollRequest) (*compassv1internal.EnrollResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		// No authenticated subject on the context — the interceptor did not run
 		// or rejected. Defense in depth; the interceptor is the primary gate.
 		return nil, errUnauthenticated
 	}
-	if id := req.Msg.GetRunnerId(); id != "" && id != subj.ID {
+	if id := req.GetRunnerId(); id != "" && id != subj.ID {
 		// The declared id must match the authenticated subject — a Runner cannot
 		// enroll under an identity other than its token's.
 		return nil, errUnauthenticated
 	}
-	reattached, err := h.hub.enroll(ctx, subj.ID, subj, req.Msg.GetRuntimeTier(), req.Msg.GetEgressPosture())
+	reattached, err := h.hub.enroll(ctx, subj.ID, subj, req.GetRuntimeTier(), req.GetEgressPosture())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("runner session cleanup is temporarily unavailable"))
+		return nil, connect.NewError(connect.CodeUnavailable, "runner session cleanup is temporarily unavailable")
 	}
-	return connect.NewResponse(&compassv1internal.EnrollResponse{Reattached: reattached, RunnerId: subj.ID}), nil
+	return &compassv1internal.EnrollResponse{Reattached: reattached, RunnerId: subj.ID}, nil
 }
 
 // Sessions binds the attached Runner's command router to this live bidi stream:
@@ -117,7 +132,7 @@ func (h *Handler) Enroll(ctx context.Context, req *connect.Request[compassv1inte
 // commands and the request half carries results — the dial-out inversion. When
 // the stream ends (client hang-up or ctx cancel), the router detaches and every
 // in-flight command fails, feeding the OQ6 disconnect path.
-func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+func (h *Handler) Sessions(ctx context.Context, stream compassv1internalconnect.RunnerServiceSessionsServerStream) error {
 	ctx = otelx.WithoutSpan(ctx)
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
@@ -127,7 +142,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	if err != nil {
 		// A Sessions stream with no enrolled Runner — the Runner must Enroll
 		// before opening Sessions.
-		return connect.NewError(connect.CodeFailedPrecondition, err)
+		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
 
 	router.setSessionUnknown(func(sessionID, traceparent string) {
@@ -167,15 +182,22 @@ const lostSessionTimeout = 30 * time.Second
 // closes the stream, then acks. A Deliver error (a write-through failure) ends
 // the stream with the error so the Runner can retry the relay; a well-formed but
 // unknown frame is not an error (Deliver logs+counts it).
-func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+func (h *Handler) PublishEvents(ctx context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
 	ctx = otelx.WithoutSpan(ctx)
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
 	enrollGen := h.hub.EnrollGeneration()
-	for stream.Receive() {
-		msg := stream.Msg()
+	for {
+		msg2, err2 := stream.Receive()
+		if err2 != nil {
+			if errors.Is(err2, io.EOF) {
+				break
+			}
+			return nil, err2
+		}
+		msg := msg2
 		if err := h.hub.Deliver(ctx, RunnerEvent{
 			RunnerSeq: msg.GetRunnerSeq(),
 			SessionID: msg.GetSessionId(),
@@ -183,69 +205,67 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 			Frame:     msg.GetFrame(),
 			EnrollGen: enrollGen,
 		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+
+	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
 // RelayCommsCall forwards a comms call into the hub under the bound account.
 // Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
-func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest]) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {
+func (h *Handler) RelayCommsCall(ctx context.Context, req *compassv1internal.RelayCommsCallRequest) (*compassv1internal.RelayCommsCallResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayCommsCall(ctx, subj.ID, req.Msg)
+	resp, err := h.hub.RelayCommsCall(ctx, subj.ID, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // RelayLifecycleCall forwards a lifecycle call under the bound account.
 // Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
-func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error) {
+func (h *Handler) RelayLifecycleCall(ctx context.Context, req *compassv1internal.RelayLifecycleCallRequest) (*compassv1internal.RelayLifecycleCallResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayLifecycleCall(ctx, subj.ID, req.Msg)
+	resp, err := h.hub.RelayLifecycleCall(ctx, subj.ID, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // RelayBoardCall forwards a board call under the bound account.
 // Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
-func (h *Handler) RelayBoardCall(ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest]) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
+func (h *Handler) RelayBoardCall(ctx context.Context, req *compassv1internal.RelayBoardCallRequest) (*compassv1internal.RelayBoardCallResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayBoardCall(ctx, subj.ID, req.Msg)
+	resp, err := h.hub.RelayBoardCall(ctx, subj.ID, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // RelayForgeCall forwards a forge call under the bound account.
 // Unbound sessions fail with FailedPrecondition; unverifiable bindings use Unavailable.
-func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest]) (*connect.Response[compassv1internal.RelayForgeCallResponse], error) {
+func (h *Handler) RelayForgeCall(ctx context.Context, req *compassv1internal.RelayForgeCallRequest) (*compassv1internal.RelayForgeCallResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayForgeCall(ctx, subj.ID, req.Msg)
+	resp, err := h.hub.RelayForgeCall(ctx, subj.ID, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // CommitConversationFrame commits an agent-authored frame for the bound session.
@@ -257,30 +277,30 @@ func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compa
 // A non-commit is never committed=false with a nil error — it is always a
 // Connect status error, because the Runner drives at-least-once purely off the
 // Connect code. seq is deferred and shipped as 0.
-func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error) {
+func (h *Handler) CommitConversationFrame(ctx context.Context, req *compassv1internal.CommitConversationFrameRequest) (*compassv1internal.CommitConversationFrameResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.CommitConversationFrame(ctx, subj.ID, req.Msg)
+	resp, err := h.hub.CommitConversationFrame(ctx, subj.ID, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // BindLifetime binds a session's transcript base for a resume or a Reload by the
 // authenticated Runner. The Runner calls it under its container lock after
 // accepting and before the agent runs (Hub.BindLifetime has the authz).
-func (h *Handler) BindLifetime(ctx context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest]) (*connect.Response[compassv1internal.BindLifetimeResponse], error) {
+func (h *Handler) BindLifetime(ctx context.Context, req *compassv1internal.BindLifetimeRequest) (*compassv1internal.BindLifetimeResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
-	if err := h.hub.BindLifetime(ctx, subj.ID, req.Msg.GetContainerName(), req.Msg.GetSessionId()); err != nil {
+	if err := h.hub.BindLifetime(ctx, subj.ID, req.GetContainerName(), req.GetSessionId()); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&compassv1internal.BindLifetimeResponse{}), nil
+	return &compassv1internal.BindLifetimeResponse{}, nil
 }
 
 // FetchSecrets resolves the secret set for a live session (or a provisioned
@@ -299,13 +319,13 @@ func (h *Handler) BindLifetime(ctx context.Context, req *connect.Request[compass
 // NO-LOG posture (record §770-772): the response carries live secret values
 // (ResolvedSecret.value/.version are [debug_redact] on the wire). This handler
 // logs neither the response nor the resolved set.
-func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
+func (h *Handler) FetchSecrets(ctx context.Context, req *compassv1internal.FetchSecretsRequest) (*compassv1internal.FetchSecretsResponse, error) {
 	subject, ok := runnerSubjectFrom(ctx)
 	if !ok {
 		return nil, errUnauthenticated
 	}
 	if h.resolver == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoResolver)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoResolver.Error()).WithCause(errNoResolver)
 	}
 	// Authorize against whichever binding the selector names AND take the agent
 	// account it resolves to — the read is scoped to that agent (A9). A
@@ -313,23 +333,23 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	// session_id authorizes the post-Start rotation re-fetch. A foreign/unknown
 	// selector — or none — is rejected CodePermissionDenied.
 	var agent store.AccountID
-	switch sessionID, containerName := req.Msg.GetSessionId(), req.Msg.GetContainerName(); {
+	switch sessionID, containerName := req.GetSessionId(), req.GetContainerName(); {
 	case sessionID != "" && containerName != "":
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets accepts a session_id or a container_name, not both"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "FetchSecrets accepts a session_id or a container_name, not both")
 	case sessionID != "":
 		account, ok := h.hub.AccountForLiveSession(subject.ID, sessionID)
 		if !ok {
-			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("session %q is not a live session bound to this runner", sessionID))
+			return nil, connect.Errorf(connect.CodePermissionDenied, "session %q is not a live session bound to this runner", sessionID)
 		}
 		agent = account
 	case containerName != "":
 		account, ok := h.hub.AccountForContainer(subject.ID, containerName)
 		if !ok {
-			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("container %q has no provisioned binding on this runner", containerName))
+			return nil, connect.Errorf(connect.CodePermissionDenied, "container %q has no provisioned binding on this runner", containerName)
 		}
 		agent = account
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets requires a session_id or container_name selector"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "FetchSecrets requires a session_id or container_name selector")
 	}
 	tctx, err := h.hub.accountTenantContext(ctx, agent)
 	if err != nil {
@@ -338,13 +358,13 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	resolved, err := h.resolver.ResolveFor(tctx, agent, "runner fetch")
 	if err != nil {
 		wrappedErr := fmt.Errorf("resolving secrets: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	out := make([]*compassv1internal.ResolvedSecret, 0, len(resolved))
 	for _, s := range resolved {
 		out = append(out, resolvedSecretToProto(s))
 	}
-	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: out}), nil
+	return &compassv1internal.FetchSecretsResponse{Secrets: out}, nil
 }
 
 // errNoResolver is the fail-closed cause when FetchSecrets reaches a handler
@@ -380,17 +400,17 @@ var errNoConfigStore = errors.New("runnerhub: no config store wired to serve Fet
 // (store.ErrNotFound) is not an error — it sends a version frame with an empty
 // version and no chunks, so the Runner materializes an empty config dir and
 // provisions anyway.
-func (h *Handler) FetchAgentConfig(ctx context.Context, req *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+func (h *Handler) FetchAgentConfig(ctx context.Context, req *compassv1internal.FetchAgentConfigRequest, stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream) error {
 	if _, ok := runnerSubjectFrom(ctx); !ok {
 		return errUnauthenticated
 	}
 	if h.configStore == nil {
-		return connect.NewError(connect.CodeFailedPrecondition, errNoConfigStore)
+		return connect.NewError(connect.CodeFailedPrecondition, errNoConfigStore.Error()).WithCause(errNoConfigStore)
 	}
 	version, bundle, err := h.configStore.CurrentAgentConfig(ctx)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		wrappedErr := fmt.Errorf("reading current agent config: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	// ErrNotFound → empty version, no bundle: the valid unconfigured state.
 	if errors.Is(err, store.ErrNotFound) {
@@ -406,7 +426,7 @@ func (h *Handler) FetchAgentConfig(ctx context.Context, req *connect.Request[com
 	// version frame, no chunks (the version-only reconnect fetch). A non-empty
 	// version that matches short-circuits; an empty version never "matches" a
 	// held version (the Runner sends if_version empty on a cold fetch).
-	if v := req.Msg.GetIfVersion(); v != "" && v == version {
+	if v := req.GetIfVersion(); v != "" && v == version {
 		return nil
 	}
 	for off := 0; off < len(bundle); off += configChunkBytes {
@@ -421,25 +441,25 @@ func (h *Handler) FetchAgentConfig(ctx context.Context, req *connect.Request[com
 }
 
 // RelaySessionBlob authenticates the Runner context before delegating to the hub.
-func (h *Handler) RelaySessionBlob(ctx context.Context, req *connect.Request[compassv1internal.RelaySessionBlobRequest]) (*connect.Response[compassv1internal.RelaySessionBlobResponse], error) {
+func (h *Handler) RelaySessionBlob(ctx context.Context, req *compassv1internal.RelaySessionBlobRequest) (*compassv1internal.RelaySessionBlobResponse, error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok || subj.Kind != store.SubjectRunner {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelaySessionBlob(ctx, subj.ID, req.Msg)
+	resp, err := h.hub.RelaySessionBlob(ctx, subj.ID, req)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // FetchSessionBlobs authenticates the Runner context before streaming blob frames.
-func (h *Handler) FetchSessionBlobs(ctx context.Context, req *connect.Request[compassv1internal.FetchSessionBlobsRequest], stream *connect.ServerStream[compassv1internal.FetchSessionBlobsResponse]) error {
+func (h *Handler) FetchSessionBlobs(ctx context.Context, req *compassv1internal.FetchSessionBlobsRequest, stream compassv1internalconnect.RunnerServiceFetchSessionBlobsServerStream) error {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok || subj.Kind != store.SubjectRunner {
 		return errUnauthenticated
 	}
-	return h.hub.FetchSessionBlobs(ctx, subj.ID, req.Msg, stream.Send)
+	return h.hub.FetchSessionBlobs(ctx, subj.ID, req, stream.Send)
 }
 
 // resolvedSecretToProto maps a secrets.ResolvedSecret to the wire ResolvedSecret,
@@ -479,31 +499,4 @@ func kindToProto(k secrets.SecretKind) compassv1.SecretKind {
 	default:
 		return compassv1.SecretKind_SECRET_KIND_GENERIC
 	}
-}
-
-// NewMountedHandler builds the RunnerService HTTP handler with the Runner-subject
-// bearer interceptor applied, returning the mount path and handler for serve.go
-// to Handle on the network mux. resolve is the shared credential resolver
-// (auth.ResolveToken with the store closed over); the door authenticates every
-// RPC through it for a SubjectRunner token. resolver is the Server-side secret
-// resolve surface FetchSecrets delegates to; configStore the fleet config-bundle
-// surface FetchAgentConfig delegates to (either may be nil on a server built
-// without that surface).
-//
-// otelIC is mounted outermost so its span envelopes the bearer pair. It must be
-// non-nil: a typed-nil *otelconnect.Interceptor passes connect's nil check and
-// panics on the first RPC.
-func NewMountedHandler(
-	hub *Hub,
-	resolve TokenResolver,
-	resolver secretResolver,
-	configStore AgentConfigStore,
-	otelIC *otelconnect.Interceptor,
-) (string, http.Handler) {
-	auth := &bearerAuth{resolve: resolve}
-	return compassv1internalconnect.NewRunnerServiceHandler(
-		NewHandler(hub, resolver, configStore),
-		otelx.HandlerInterceptors(otelIC, auth.unaryInterceptor(), auth.streamInterceptor()),
-		connect.WithReadMaxBytes(runnerMaxReadBytes),
-	)
 }

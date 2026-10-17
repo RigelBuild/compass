@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -108,19 +108,20 @@ func TestSearchIssuesRoundTripsTenantScopedResults(t *testing.T) {
 	svc := newService("test", bus, st, nil, nil, nil, nil)
 	// Bearer auth does not yet set a tenant on ctx, so arm one here to prove the
 	// handler's store call stays RLS-scoped on the wire path.
-	withTenant := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			return next(store.WithTenant(ctx, tenantBID), req)
+	withTenant := connect.ServerInterceptor(func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			return next(store.WithTenant(ctx, tenantBID), spec, stream)
 		}
 	})
 	client := newH2CClient(t, newH2CTestServerWithInterceptors(t, svc, auth.BearerInterceptor(st), withTenant))
-	request := connect.NewRequest(&compassv1.SearchIssuesRequest{Query: "falcon", Limit: 10})
-	request.Header().Set("Authorization", "Bearer "+token)
-	response, err := client.SearchIssues(ctx, request)
+	request := &compassv1.SearchIssuesRequest{Query: "falcon", Limit: 10}
+	authedCtx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	response, err := client.SearchIssues(authedCtx, request)
 	if err != nil {
 		t.Fatalf("SearchIssues: %v", err)
 	}
-	issues := response.Msg.GetIssues()
+	issues := response.GetIssues()
 	if len(issues) != 1 {
 		t.Fatalf("SearchIssues returned %d issues, want one tenant-visible result", len(issues))
 	}
@@ -131,7 +132,7 @@ func TestSearchIssuesRoundTripsTenantScopedResults(t *testing.T) {
 		t.Fatalf("SearchIssues labels/id = %v/%q, want [Needs-Triage]/%q", issues[0].GetLabels(), issues[0].GetId(), visibleID)
 	}
 	unauthenticated := newH2CClient(t, newH2CTestServerWithInterceptors(t, svc, auth.BearerInterceptor(st)))
-	_, err = unauthenticated.SearchIssues(ctx, connect.NewRequest(&compassv1.SearchIssuesRequest{Query: "falcon", Limit: 10}))
+	_, err = unauthenticated.SearchIssues(ctx, &compassv1.SearchIssuesRequest{Query: "falcon", Limit: 10})
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("SearchIssues without bearer code = %v, want Unauthenticated", connect.CodeOf(err))
 	}
@@ -172,11 +173,11 @@ func TestListBoardIssuesReturnsRehydratedBoard(t *testing.T) {
 	svc := newService("test", bus2, st, nil, nil, reader, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
-	resp, err := client.ListBoardIssues(ctx, connect.NewRequest(&compassv1.ListBoardIssuesRequest{}))
+	resp, err := client.ListBoardIssues(ctx, &compassv1.ListBoardIssuesRequest{})
 	if err != nil {
 		t.Fatalf("ListBoardIssues: %v", err)
 	}
-	got := resp.Msg.GetIssues()
+	got := resp.GetIssues()
 	if len(got) != 2 {
 		t.Fatalf("ListBoardIssues over a rehydrated board = %d issues, want 2", len(got))
 	}
@@ -230,11 +231,11 @@ func TestSubscribeEventsBoundaryThenLiveUpsertUnionsByID(t *testing.T) {
 
 	// The same upsert is now readable via ListBoardIssues (union-by-id closes to
 	// a single entry — the read and the tail agree on the id).
-	resp, err := client.ListBoardIssues(ctx, connect.NewRequest(&compassv1.ListBoardIssuesRequest{}))
+	resp, err := client.ListBoardIssues(ctx, &compassv1.ListBoardIssuesRequest{})
 	if err != nil {
 		t.Fatalf("ListBoardIssues after live upsert: %v", err)
 	}
-	boardIssues := resp.Msg.GetIssues()
+	boardIssues := resp.GetIssues()
 	if len(boardIssues) != 1 || boardIssues[0].GetId() != issue.GetId() {
 		t.Fatalf("board = %d issues, want the single upserted id %q", len(boardIssues), issue.GetId())
 	}

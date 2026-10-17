@@ -9,7 +9,6 @@ import (
 	"io"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -229,14 +228,14 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := client.SetSecret(ctx, connect.NewRequest(&compassv1.SetSecretRequest{
+	if _, err := client.SetSecret(ctx, &compassv1.SetSecretRequest{
 		Name:     args.name,
 		Value:    value,
 		Delivery: delivery,
 		Kind:     kind,
 		Provider: args.provider,
 		Scope:    scope,
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("setting secret %s: %w", args.name, err)
 	}
 	_, err = fmt.Fprintf(out, "set secret %s\n", args.name)
@@ -248,11 +247,11 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 func runSecretList(ctx context.Context, client compassv1connect.SecretsServiceClient, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := client.ListSecrets(ctx, connect.NewRequest(&compassv1.ListSecretsRequest{}))
+	resp, err := client.ListSecrets(ctx, &compassv1.ListSecretsRequest{})
 	if err != nil {
 		return fmt.Errorf("listing secrets: %w", err)
 	}
-	secrets := resp.Msg.GetSecrets()
+	secrets := resp.GetSecrets()
 	if len(secrets) == 0 {
 		_, err = fmt.Fprintln(out, "no secrets declared for this fleet")
 		return err
@@ -321,7 +320,7 @@ func runSecretDelete(ctx context.Context, client compassv1connect.SecretsService
 	}
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := client.DeleteSecret(ctx, connect.NewRequest(&compassv1.DeleteSecretRequest{Name: name, Scope: scope})); err != nil {
+	if _, err := client.DeleteSecret(ctx, &compassv1.DeleteSecretRequest{Name: name, Scope: scope}); err != nil {
 		return fmt.Errorf("deleting secret %s: %w", name, err)
 	}
 	_, err = fmt.Fprintf(out, "deleted secret %s\n", name)

@@ -14,6 +14,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -27,9 +30,10 @@ import (
 // builds the interceptor-wrapped client) end to end against a real dial.
 func enrollServerURL(t *testing.T) string {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(enrollStub{})
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, enrollStub{})
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

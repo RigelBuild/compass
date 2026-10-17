@@ -22,109 +22,281 @@
 package compassv1connect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "github.com/RigelBuild/compass/go/gen/compass/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// CommsServiceName is the fully-qualified name of the CommsService service.
 	CommsServiceName = "compass.v1.CommsService"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// CommsServiceCreateUserProcedure is the fully-qualified name of the CommsService's CreateUser RPC.
+	// CommsServiceCreateUserProcedure is the procedure name of the CommsService's CreateUser RPC.
 	CommsServiceCreateUserProcedure = "/compass.v1.CommsService/CreateUser"
-	// CommsServiceCreateAgentProcedure is the fully-qualified name of the CommsService's CreateAgent
-	// RPC.
+	// CommsServiceCreateAgentProcedure is the procedure name of the CommsService's CreateAgent RPC.
 	CommsServiceCreateAgentProcedure = "/compass.v1.CommsService/CreateAgent"
-	// CommsServiceListAccountsProcedure is the fully-qualified name of the CommsService's ListAccounts
-	// RPC.
+	// CommsServiceListAccountsProcedure is the procedure name of the CommsService's ListAccounts RPC.
 	CommsServiceListAccountsProcedure = "/compass.v1.CommsService/ListAccounts"
-	// CommsServiceCreateChannelGroupProcedure is the fully-qualified name of the CommsService's
+	// CommsServiceCreateChannelGroupProcedure is the procedure name of the CommsService's
 	// CreateChannelGroup RPC.
 	CommsServiceCreateChannelGroupProcedure = "/compass.v1.CommsService/CreateChannelGroup"
-	// CommsServiceListChannelGroupsProcedure is the fully-qualified name of the CommsService's
+	// CommsServiceListChannelGroupsProcedure is the procedure name of the CommsService's
 	// ListChannelGroups RPC.
 	CommsServiceListChannelGroupsProcedure = "/compass.v1.CommsService/ListChannelGroups"
-	// CommsServiceListChannelsProcedure is the fully-qualified name of the CommsService's ListChannels
-	// RPC.
+	// CommsServiceListChannelsProcedure is the procedure name of the CommsService's ListChannels RPC.
 	CommsServiceListChannelsProcedure = "/compass.v1.CommsService/ListChannels"
-	// CommsServiceCreateChannelProcedure is the fully-qualified name of the CommsService's
-	// CreateChannel RPC.
+	// CommsServiceCreateChannelProcedure is the procedure name of the CommsService's CreateChannel RPC.
 	CommsServiceCreateChannelProcedure = "/compass.v1.CommsService/CreateChannel"
-	// CommsServiceUpdateChannelMembersProcedure is the fully-qualified name of the CommsService's
+	// CommsServiceUpdateChannelMembersProcedure is the procedure name of the CommsService's
 	// UpdateChannelMembers RPC.
 	CommsServiceUpdateChannelMembersProcedure = "/compass.v1.CommsService/UpdateChannelMembers"
-	// CommsServiceOpenDMProcedure is the fully-qualified name of the CommsService's OpenDM RPC.
+	// CommsServiceOpenDMProcedure is the procedure name of the CommsService's OpenDM RPC.
 	CommsServiceOpenDMProcedure = "/compass.v1.CommsService/OpenDM"
-	// CommsServiceReparentAgentProcedure is the fully-qualified name of the CommsService's
-	// ReparentAgent RPC.
+	// CommsServiceReparentAgentProcedure is the procedure name of the CommsService's ReparentAgent RPC.
 	CommsServiceReparentAgentProcedure = "/compass.v1.CommsService/ReparentAgent"
-	// CommsServiceReparentChannelProcedure is the fully-qualified name of the CommsService's
-	// ReparentChannel RPC.
+	// CommsServiceReparentChannelProcedure is the procedure name of the CommsService's ReparentChannel
+	// RPC.
 	CommsServiceReparentChannelProcedure = "/compass.v1.CommsService/ReparentChannel"
-	// CommsServiceOpenAgentWorkspaceProcedure is the fully-qualified name of the CommsService's
+	// CommsServiceOpenAgentWorkspaceProcedure is the procedure name of the CommsService's
 	// OpenAgentWorkspace RPC.
 	CommsServiceOpenAgentWorkspaceProcedure = "/compass.v1.CommsService/OpenAgentWorkspace"
-	// CommsServiceListMessagesProcedure is the fully-qualified name of the CommsService's ListMessages
-	// RPC.
+	// CommsServiceListMessagesProcedure is the procedure name of the CommsService's ListMessages RPC.
 	CommsServiceListMessagesProcedure = "/compass.v1.CommsService/ListMessages"
-	// CommsServicePostMessageProcedure is the fully-qualified name of the CommsService's PostMessage
-	// RPC.
+	// CommsServicePostMessageProcedure is the procedure name of the CommsService's PostMessage RPC.
 	CommsServicePostMessageProcedure = "/compass.v1.CommsService/PostMessage"
-	// CommsServiceListTopicsProcedure is the fully-qualified name of the CommsService's ListTopics RPC.
+	// CommsServiceListTopicsProcedure is the procedure name of the CommsService's ListTopics RPC.
 	CommsServiceListTopicsProcedure = "/compass.v1.CommsService/ListTopics"
-	// CommsServiceUpdateTopicProcedure is the fully-qualified name of the CommsService's UpdateTopic
-	// RPC.
+	// CommsServiceUpdateTopicProcedure is the procedure name of the CommsService's UpdateTopic RPC.
 	CommsServiceUpdateTopicProcedure = "/compass.v1.CommsService/UpdateTopic"
-	// CommsServiceRespondToAskProcedure is the fully-qualified name of the CommsService's RespondToAsk
-	// RPC.
+	// CommsServiceRespondToAskProcedure is the procedure name of the CommsService's RespondToAsk RPC.
 	CommsServiceRespondToAskProcedure = "/compass.v1.CommsService/RespondToAsk"
-	// CommsServiceMirrorToForgeProcedure is the fully-qualified name of the CommsService's
-	// MirrorToForge RPC.
+	// CommsServiceMirrorToForgeProcedure is the procedure name of the CommsService's MirrorToForge RPC.
 	CommsServiceMirrorToForgeProcedure = "/compass.v1.CommsService/MirrorToForge"
-	// CommsServiceSearchMessagesProcedure is the fully-qualified name of the CommsService's
-	// SearchMessages RPC.
+	// CommsServiceSearchMessagesProcedure is the procedure name of the CommsService's SearchMessages
+	// RPC.
 	CommsServiceSearchMessagesProcedure = "/compass.v1.CommsService/SearchMessages"
-	// CommsServiceSetChannelPolicyProcedure is the fully-qualified name of the CommsService's
+	// CommsServiceSetChannelPolicyProcedure is the procedure name of the CommsService's
 	// SetChannelPolicy RPC.
 	CommsServiceSetChannelPolicyProcedure = "/compass.v1.CommsService/SetChannelPolicy"
-	// CommsServiceGetRosterProcedure is the fully-qualified name of the CommsService's GetRoster RPC.
+	// CommsServiceGetRosterProcedure is the procedure name of the CommsService's GetRoster RPC.
 	CommsServiceGetRosterProcedure = "/compass.v1.CommsService/GetRoster"
-	// CommsServiceUpdatePinnedBoardProcedure is the fully-qualified name of the CommsService's
+	// CommsServiceUpdatePinnedBoardProcedure is the procedure name of the CommsService's
 	// UpdatePinnedBoard RPC.
 	CommsServiceUpdatePinnedBoardProcedure = "/compass.v1.CommsService/UpdatePinnedBoard"
-	// CommsServiceListAgentBoardsProcedure is the fully-qualified name of the CommsService's
-	// ListAgentBoards RPC.
-	CommsServiceListAgentBoardsProcedure = "/compass.v1.CommsService/ListAgentBoards"
-	// CommsServiceApprovePeerProcedure is the fully-qualified name of the CommsService's ApprovePeer
+	// CommsServiceListAgentBoardsProcedure is the procedure name of the CommsService's ListAgentBoards
 	// RPC.
+	CommsServiceListAgentBoardsProcedure = "/compass.v1.CommsService/ListAgentBoards"
+	// CommsServiceApprovePeerProcedure is the procedure name of the CommsService's ApprovePeer RPC.
 	CommsServiceApprovePeerProcedure = "/compass.v1.CommsService/ApprovePeer"
-	// CommsServiceRevokePeerProcedure is the fully-qualified name of the CommsService's RevokePeer RPC.
+	// CommsServiceRevokePeerProcedure is the procedure name of the CommsService's RevokePeer RPC.
 	CommsServiceRevokePeerProcedure = "/compass.v1.CommsService/RevokePeer"
-	// CommsServiceListPeersProcedure is the fully-qualified name of the CommsService's ListPeers RPC.
+	// CommsServiceListPeersProcedure is the procedure name of the CommsService's ListPeers RPC.
 	CommsServiceListPeersProcedure = "/compass.v1.CommsService/ListPeers"
-	// CommsServiceSubscribeCommsProcedure is the fully-qualified name of the CommsService's
-	// SubscribeComms RPC.
+	// CommsServiceSubscribeCommsProcedure is the procedure name of the CommsService's SubscribeComms
+	// RPC.
 	CommsServiceSubscribeCommsProcedure = "/compass.v1.CommsService/SubscribeComms"
+)
+
+var (
+	commsServiceCreateUserSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("CreateUser"),
+			Procedure:  CommsServiceCreateUserProcedure,
+		}
+	})
+	commsServiceCreateAgentSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("CreateAgent"),
+			Procedure:  CommsServiceCreateAgentProcedure,
+		}
+	})
+	commsServiceListAccountsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ListAccounts"),
+			Procedure:  CommsServiceListAccountsProcedure,
+		}
+	})
+	commsServiceCreateChannelGroupSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("CreateChannelGroup"),
+			Procedure:  CommsServiceCreateChannelGroupProcedure,
+		}
+	})
+	commsServiceListChannelGroupsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ListChannelGroups"),
+			Procedure:  CommsServiceListChannelGroupsProcedure,
+		}
+	})
+	commsServiceListChannelsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ListChannels"),
+			Procedure:  CommsServiceListChannelsProcedure,
+		}
+	})
+	commsServiceCreateChannelSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("CreateChannel"),
+			Procedure:  CommsServiceCreateChannelProcedure,
+		}
+	})
+	commsServiceUpdateChannelMembersSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("UpdateChannelMembers"),
+			Procedure:  CommsServiceUpdateChannelMembersProcedure,
+		}
+	})
+	commsServiceOpenDMSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("OpenDM"),
+			Procedure:  CommsServiceOpenDMProcedure,
+		}
+	})
+	commsServiceReparentAgentSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ReparentAgent"),
+			Procedure:  CommsServiceReparentAgentProcedure,
+		}
+	})
+	commsServiceReparentChannelSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ReparentChannel"),
+			Procedure:  CommsServiceReparentChannelProcedure,
+		}
+	})
+	commsServiceOpenAgentWorkspaceSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("OpenAgentWorkspace"),
+			Procedure:  CommsServiceOpenAgentWorkspaceProcedure,
+		}
+	})
+	commsServiceListMessagesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ListMessages"),
+			Procedure:  CommsServiceListMessagesProcedure,
+		}
+	})
+	commsServicePostMessageSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("PostMessage"),
+			Procedure:  CommsServicePostMessageProcedure,
+		}
+	})
+	commsServiceListTopicsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ListTopics"),
+			Procedure:  CommsServiceListTopicsProcedure,
+		}
+	})
+	commsServiceUpdateTopicSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("UpdateTopic"),
+			Procedure:  CommsServiceUpdateTopicProcedure,
+		}
+	})
+	commsServiceRespondToAskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("RespondToAsk"),
+			Procedure:  CommsServiceRespondToAskProcedure,
+		}
+	})
+	commsServiceMirrorToForgeSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("MirrorToForge"),
+			Procedure:  CommsServiceMirrorToForgeProcedure,
+		}
+	})
+	commsServiceSearchMessagesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("SearchMessages"),
+			Procedure:  CommsServiceSearchMessagesProcedure,
+		}
+	})
+	commsServiceSetChannelPolicySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("SetChannelPolicy"),
+			Procedure:  CommsServiceSetChannelPolicyProcedure,
+		}
+	})
+	commsServiceGetRosterSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("GetRoster"),
+			Procedure:  CommsServiceGetRosterProcedure,
+		}
+	})
+	commsServiceUpdatePinnedBoardSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("UpdatePinnedBoard"),
+			Procedure:  CommsServiceUpdatePinnedBoardProcedure,
+		}
+	})
+	commsServiceListAgentBoardsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ListAgentBoards"),
+			Procedure:  CommsServiceListAgentBoardsProcedure,
+		}
+	})
+	commsServiceApprovePeerSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ApprovePeer"),
+			Procedure:  CommsServiceApprovePeerProcedure,
+		}
+	})
+	commsServiceRevokePeerSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("RevokePeer"),
+			Procedure:  CommsServiceRevokePeerProcedure,
+		}
+	})
+	commsServiceListPeersSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("ListPeers"),
+			Procedure:  CommsServiceListPeersProcedure,
+		}
+	})
+	commsServiceSubscribeCommsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods().ByName("SubscribeComms"),
+			Procedure:  CommsServiceSubscribeCommsProcedure,
+		}
+	})
 )
 
 // CommsServiceClient is a client for the compass.v1.CommsService service.
@@ -132,443 +304,128 @@ type CommsServiceClient interface {
 	// Create a human user account. The new account is a regular member; role
 	// elevation to admin is a separate admin-authorized path (deferred), not a
 	// field a signup can set.
-	CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error)
+	CreateUser(context.Context, *v1.CreateUserRequest) (*v1.CreateUserResponse, error)
 	// Create an agent account owned by the authenticated caller (D9). The owner
 	// is the caller, not a request field — a user creates agents they own. The
 	// request must name a role from the closed Manager taxonomy.
-	CreateAgent(context.Context, *connect.Request[v1.CreateAgentRequest]) (*connect.Response[v1.CreateAgentResponse], error)
+	CreateAgent(context.Context, *v1.CreateAgentRequest) (*v1.CreateAgentResponse, error)
 	// List the accounts visible to the caller.
-	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
+	ListAccounts(context.Context, *v1.ListAccountsRequest) (*v1.ListAccountsResponse, error)
 	// Create a channel group — a namespace node that holds channels and nested
 	// groups and carries the group-level visibility that scopes an owner's space
 	// (D9). Owned by the caller.
-	CreateChannelGroup(context.Context, *connect.Request[v1.CreateChannelGroupRequest]) (*connect.Response[v1.CreateChannelGroupResponse], error)
+	CreateChannelGroup(context.Context, *v1.CreateChannelGroupRequest) (*v1.CreateChannelGroupResponse, error)
 	// List the channel groups visible to the caller.
-	ListChannelGroups(context.Context, *connect.Request[v1.ListChannelGroupsRequest]) (*connect.Response[v1.ListChannelGroupsResponse], error)
+	ListChannelGroups(context.Context, *v1.ListChannelGroupsRequest) (*v1.ListChannelGroupsResponse, error)
 	// List the channels the caller may see.
-	ListChannels(context.Context, *connect.Request[v1.ListChannelsRequest]) (*connect.Response[v1.ListChannelsResponse], error)
+	ListChannels(context.Context, *v1.ListChannelsRequest) (*v1.ListChannelsResponse, error)
 	// Create a channel within a group — caller-authorized against the parent
 	// group. Emits ChannelChanged.
-	CreateChannel(context.Context, *connect.Request[v1.CreateChannelRequest]) (*connect.Response[v1.CreateChannelResponse], error)
+	CreateChannel(context.Context, *v1.CreateChannelRequest) (*v1.CreateChannelResponse, error)
 	// Add or remove channel members and flip a member's subscribe opt-in —
 	// caller-authorized against channel visibility. Emits ChannelChanged. One RPC
 	// covers join, subscribe-toggle, DM-to-channel conversion (convert_channel_name),
 	// and share-replacement.
-	UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error)
+	UpdateChannelMembers(context.Context, *v1.UpdateChannelMembersRequest) (*v1.UpdateChannelMembersResponse, error)
 	// Open (or fetch) a two-party DM between the caller and a peer agent,
 	// addressed by the peer's owner-namespaced handle. Same-owner and mutually
 	// peered owners are allowed; unknown and unpeered peers return NOT_FOUND.
 	// Self-opens are INVALID_ARGUMENT. Emits ChannelChanged on create.
-	OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error)
+	OpenDM(context.Context, *v1.OpenDMRequest) (*v1.OpenDMResponse, error)
 	// Re-parent an agent in the agent tree, or promote it to a root (empty
 	// new_parent_agent_id) — caller-authorized against the agent's owner. The
 	// server validates the move (caller authority, same-owner, no cycle) and
 	// emits AccountChanged; surfaces re-derive the tree from the changed
 	// parent_agent_id with no surface-specific plumbing.
-	ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error)
+	ReparentAgent(context.Context, *v1.ReparentAgentRequest) (*v1.ReparentAgentResponse, error)
 	// Re-anchor a channel under another agent, or detach an EXPLICIT channel to
 	// the tree root (empty new_parent_agent_handle). Moves placement only; the
 	// membership mode never changes EXPLICIT→TREE. Emits ChannelChanged.
-	ReparentChannel(context.Context, *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error)
+	ReparentChannel(context.Context, *v1.ReparentChannelRequest) (*v1.ReparentChannelResponse, error)
 	// Open (or fetch) the caller's agent workspace for an agent — its session
 	// observation surface (D5). Idempotent: created on first open, returned after.
 	// Authorized: the caller must be a member of the agent's channel.
-	OpenAgentWorkspace(context.Context, *connect.Request[v1.OpenAgentWorkspaceRequest]) (*connect.Response[v1.OpenAgentWorkspaceResponse], error)
+	OpenAgentWorkspace(context.Context, *v1.OpenAgentWorkspaceRequest) (*v1.OpenAgentWorkspaceResponse, error)
 	// Page a channel's message history, newest-first. The channel is one the
 	// caller may see.
-	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
+	ListMessages(context.Context, *v1.ListMessagesRequest) (*v1.ListMessagesResponse, error)
 	// Post a message to a channel: a human turn, or a human prompt into an agent's
 	// channel.
-	PostMessage(context.Context, *connect.Request[v1.PostMessageRequest]) (*connect.Response[v1.PostMessageResponse], error)
+	PostMessage(context.Context, *v1.PostMessageRequest) (*v1.PostMessageResponse, error)
 	// List the topics in a channel the caller may see — the topic index the UI's
 	// two-level drill-in renders. Archived topics are included only when asked.
-	ListTopics(context.Context, *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error)
+	ListTopics(context.Context, *v1.ListTopicsRequest) (*v1.ListTopicsResponse, error)
 	// Rename or archive/unarchive a topic (id-stable). A rename to an existing
 	// (case-insensitive) name in the same channel MERGES into that topic (D1).
 	// Emits TopicUpserted.
-	UpdateTopic(context.Context, *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error)
+	UpdateTopic(context.Context, *v1.UpdateTopicRequest) (*v1.UpdateTopicResponse, error)
 	// Answer a pending structured ask (D5). Authorized: the caller must be a
 	// member of the channel the ask belongs to.
-	RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error)
+	RespondToAsk(context.Context, *v1.RespondToAskRequest) (*v1.RespondToAskResponse, error)
 	// Mirror a visible ask, topic, or message set to an allowed forge ref on the
 	// calling user's behalf.
-	MirrorToForge(context.Context, *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error)
+	MirrorToForge(context.Context, *v1.MirrorToForgeRequest) (*v1.MirrorToForgeResponse, error)
 	// Full-text search across the messages the caller may see — the audit/search
 	// property served from the store of record (D1, D12). Results are scoped to
 	// the caller's visible channels regardless of the scope field.
-	SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error)
+	SearchMessages(context.Context, *v1.SearchMessagesRequest) (*v1.SearchMessagesResponse, error)
 	// Set (create-or-update) a channel's post policy, owner, and mandatory-
 	// subscription flag — owner/operator authorized. Emits ChannelChanged. A
 	// mandatory flip seeds delivery cursors transactionally (T4) so it never
 	// mints un-seeded delivery targets.
-	SetChannelPolicy(context.Context, *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error)
+	SetChannelPolicy(context.Context, *v1.SetChannelPolicyRequest) (*v1.SetChannelPolicyResponse, error)
 	// Read a roster of agents around a vantage point: the caller's neighborhood
 	// (parent + siblings + children), its subtree, or an owner's whole set. Joins
 	// the live presence projection with the durable activity string.
-	GetRoster(context.Context, *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error)
+	GetRoster(context.Context, *v1.GetRosterRequest) (*v1.GetRosterResponse, error)
 	// Pin or unpin an EXISTING message on a channel's pinned board (no message
 	// minting; the message must already live in a topic of the channel). A pin
 	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
-	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
+	UpdatePinnedBoard(context.Context, *v1.UpdatePinnedBoardRequest) (*v1.UpdatePinnedBoardResponse, error)
 	// List whole boards for agents the caller can see, optionally filtered.
-	ListAgentBoards(context.Context, *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error)
+	ListAgentBoards(context.Context, *v1.ListAgentBoardsRequest) (*v1.ListAgentBoardsResponse, error)
 	// Approve a user as a peer of the caller (a user account). A peering is
 	// live only when both users have approved each other; until then this is
 	// a pending request. Idempotent. peer_handle is a bare user handle;
 	// unknown, agent, or system handles are NOT_FOUND, self is INVALID_ARGUMENT,
 	// an agent caller is PERMISSION_DENIED.
-	ApprovePeer(context.Context, *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error)
+	ApprovePeer(context.Context, *v1.ApprovePeerRequest) (*v1.ApprovePeerResponse, error)
 	// Withdraw the caller's approval of a user. Idempotent; deleted reports
 	// whether an approval existed. Changes no channel, member, or message.
-	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
+	RevokePeer(context.Context, *v1.RevokePeerRequest) (*v1.RevokePeerResponse, error)
 	// List the caller's peerings: every user with an approval in either direction.
-	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
+	ListPeers(context.Context, *v1.ListPeersRequest) (*v1.ListPeersResponse, error)
 	// The comms event stream, scoped to the caller's visible set, with gap-free
 	// replay-on-join. The sole push path for the comms surface, mirroring
 	// CompassService.SubscribeEvents' seq/epoch replay contract (D1).
-	SubscribeComms(context.Context, *connect.Request[v1.SubscribeCommsRequest]) (*connect.ServerStreamForClient[v1.SubscribeCommsResponse], error)
+	SubscribeComms(context.Context, *v1.SubscribeCommsRequest) (CommsServiceSubscribeCommsClientStream, error)
 }
 
-// NewCommsServiceClient constructs a client for the compass.v1.CommsService service. By default, it
-// uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and sends
-// uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC() or
-// connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) CommsServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	commsServiceMethods := v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods()
-	return &commsServiceClient{
-		createUser: connect.NewClient[v1.CreateUserRequest, v1.CreateUserResponse](
-			httpClient,
-			baseURL+CommsServiceCreateUserProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("CreateUser")),
-			connect.WithClientOptions(opts...),
-		),
-		createAgent: connect.NewClient[v1.CreateAgentRequest, v1.CreateAgentResponse](
-			httpClient,
-			baseURL+CommsServiceCreateAgentProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("CreateAgent")),
-			connect.WithClientOptions(opts...),
-		),
-		listAccounts: connect.NewClient[v1.ListAccountsRequest, v1.ListAccountsResponse](
-			httpClient,
-			baseURL+CommsServiceListAccountsProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ListAccounts")),
-			connect.WithClientOptions(opts...),
-		),
-		createChannelGroup: connect.NewClient[v1.CreateChannelGroupRequest, v1.CreateChannelGroupResponse](
-			httpClient,
-			baseURL+CommsServiceCreateChannelGroupProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("CreateChannelGroup")),
-			connect.WithClientOptions(opts...),
-		),
-		listChannelGroups: connect.NewClient[v1.ListChannelGroupsRequest, v1.ListChannelGroupsResponse](
-			httpClient,
-			baseURL+CommsServiceListChannelGroupsProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ListChannelGroups")),
-			connect.WithClientOptions(opts...),
-		),
-		listChannels: connect.NewClient[v1.ListChannelsRequest, v1.ListChannelsResponse](
-			httpClient,
-			baseURL+CommsServiceListChannelsProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ListChannels")),
-			connect.WithClientOptions(opts...),
-		),
-		createChannel: connect.NewClient[v1.CreateChannelRequest, v1.CreateChannelResponse](
-			httpClient,
-			baseURL+CommsServiceCreateChannelProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("CreateChannel")),
-			connect.WithClientOptions(opts...),
-		),
-		updateChannelMembers: connect.NewClient[v1.UpdateChannelMembersRequest, v1.UpdateChannelMembersResponse](
-			httpClient,
-			baseURL+CommsServiceUpdateChannelMembersProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("UpdateChannelMembers")),
-			connect.WithClientOptions(opts...),
-		),
-		openDM: connect.NewClient[v1.OpenDMRequest, v1.OpenDMResponse](
-			httpClient,
-			baseURL+CommsServiceOpenDMProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("OpenDM")),
-			connect.WithClientOptions(opts...),
-		),
-		reparentAgent: connect.NewClient[v1.ReparentAgentRequest, v1.ReparentAgentResponse](
-			httpClient,
-			baseURL+CommsServiceReparentAgentProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ReparentAgent")),
-			connect.WithClientOptions(opts...),
-		),
-		reparentChannel: connect.NewClient[v1.ReparentChannelRequest, v1.ReparentChannelResponse](
-			httpClient,
-			baseURL+CommsServiceReparentChannelProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ReparentChannel")),
-			connect.WithClientOptions(opts...),
-		),
-		openAgentWorkspace: connect.NewClient[v1.OpenAgentWorkspaceRequest, v1.OpenAgentWorkspaceResponse](
-			httpClient,
-			baseURL+CommsServiceOpenAgentWorkspaceProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("OpenAgentWorkspace")),
-			connect.WithClientOptions(opts...),
-		),
-		listMessages: connect.NewClient[v1.ListMessagesRequest, v1.ListMessagesResponse](
-			httpClient,
-			baseURL+CommsServiceListMessagesProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ListMessages")),
-			connect.WithClientOptions(opts...),
-		),
-		postMessage: connect.NewClient[v1.PostMessageRequest, v1.PostMessageResponse](
-			httpClient,
-			baseURL+CommsServicePostMessageProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("PostMessage")),
-			connect.WithClientOptions(opts...),
-		),
-		listTopics: connect.NewClient[v1.ListTopicsRequest, v1.ListTopicsResponse](
-			httpClient,
-			baseURL+CommsServiceListTopicsProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ListTopics")),
-			connect.WithClientOptions(opts...),
-		),
-		updateTopic: connect.NewClient[v1.UpdateTopicRequest, v1.UpdateTopicResponse](
-			httpClient,
-			baseURL+CommsServiceUpdateTopicProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("UpdateTopic")),
-			connect.WithClientOptions(opts...),
-		),
-		respondToAsk: connect.NewClient[v1.RespondToAskRequest, v1.RespondToAskResponse](
-			httpClient,
-			baseURL+CommsServiceRespondToAskProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("RespondToAsk")),
-			connect.WithClientOptions(opts...),
-		),
-		mirrorToForge: connect.NewClient[v1.MirrorToForgeRequest, v1.MirrorToForgeResponse](
-			httpClient,
-			baseURL+CommsServiceMirrorToForgeProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("MirrorToForge")),
-			connect.WithClientOptions(opts...),
-		),
-		searchMessages: connect.NewClient[v1.SearchMessagesRequest, v1.SearchMessagesResponse](
-			httpClient,
-			baseURL+CommsServiceSearchMessagesProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("SearchMessages")),
-			connect.WithClientOptions(opts...),
-		),
-		setChannelPolicy: connect.NewClient[v1.SetChannelPolicyRequest, v1.SetChannelPolicyResponse](
-			httpClient,
-			baseURL+CommsServiceSetChannelPolicyProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("SetChannelPolicy")),
-			connect.WithClientOptions(opts...),
-		),
-		getRoster: connect.NewClient[v1.GetRosterRequest, v1.GetRosterResponse](
-			httpClient,
-			baseURL+CommsServiceGetRosterProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("GetRoster")),
-			connect.WithClientOptions(opts...),
-		),
-		updatePinnedBoard: connect.NewClient[v1.UpdatePinnedBoardRequest, v1.UpdatePinnedBoardResponse](
-			httpClient,
-			baseURL+CommsServiceUpdatePinnedBoardProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
-			connect.WithClientOptions(opts...),
-		),
-		listAgentBoards: connect.NewClient[v1.ListAgentBoardsRequest, v1.ListAgentBoardsResponse](
-			httpClient,
-			baseURL+CommsServiceListAgentBoardsProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ListAgentBoards")),
-			connect.WithClientOptions(opts...),
-		),
-		approvePeer: connect.NewClient[v1.ApprovePeerRequest, v1.ApprovePeerResponse](
-			httpClient,
-			baseURL+CommsServiceApprovePeerProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ApprovePeer")),
-			connect.WithClientOptions(opts...),
-		),
-		revokePeer: connect.NewClient[v1.RevokePeerRequest, v1.RevokePeerResponse](
-			httpClient,
-			baseURL+CommsServiceRevokePeerProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("RevokePeer")),
-			connect.WithClientOptions(opts...),
-		),
-		listPeers: connect.NewClient[v1.ListPeersRequest, v1.ListPeersResponse](
-			httpClient,
-			baseURL+CommsServiceListPeersProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("ListPeers")),
-			connect.WithClientOptions(opts...),
-		),
-		subscribeComms: connect.NewClient[v1.SubscribeCommsRequest, v1.SubscribeCommsResponse](
-			httpClient,
-			baseURL+CommsServiceSubscribeCommsProcedure,
-			connect.WithSchema(commsServiceMethods.ByName("SubscribeComms")),
-			connect.WithClientOptions(opts...),
-		),
+// NewCommsServiceClient constructs a client for the compass.v1.CommsService service. Multiple
+// service clients may share a single connect.Client.
+func NewCommsServiceClient(client *connect.Client) CommsServiceClient {
+	return &commsServiceClient{client: client}
+}
+
+// CommsServiceSubscribeCommsClientStream is the client stream for the CommsService's SubscribeComms
+// RPC.
+type CommsServiceSubscribeCommsClientStream struct {
+	stream connect.ClientStream
+}
+
+// Receive returns the next response message from the server.
+func (s CommsServiceSubscribeCommsClientStream) Receive() (*v1.SubscribeCommsResponse, error) {
+	var res v1.SubscribeCommsResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
 	}
+	return &res, nil
 }
 
-// commsServiceClient implements CommsServiceClient.
-type commsServiceClient struct {
-	createUser           *connect.Client[v1.CreateUserRequest, v1.CreateUserResponse]
-	createAgent          *connect.Client[v1.CreateAgentRequest, v1.CreateAgentResponse]
-	listAccounts         *connect.Client[v1.ListAccountsRequest, v1.ListAccountsResponse]
-	createChannelGroup   *connect.Client[v1.CreateChannelGroupRequest, v1.CreateChannelGroupResponse]
-	listChannelGroups    *connect.Client[v1.ListChannelGroupsRequest, v1.ListChannelGroupsResponse]
-	listChannels         *connect.Client[v1.ListChannelsRequest, v1.ListChannelsResponse]
-	createChannel        *connect.Client[v1.CreateChannelRequest, v1.CreateChannelResponse]
-	updateChannelMembers *connect.Client[v1.UpdateChannelMembersRequest, v1.UpdateChannelMembersResponse]
-	openDM               *connect.Client[v1.OpenDMRequest, v1.OpenDMResponse]
-	reparentAgent        *connect.Client[v1.ReparentAgentRequest, v1.ReparentAgentResponse]
-	reparentChannel      *connect.Client[v1.ReparentChannelRequest, v1.ReparentChannelResponse]
-	openAgentWorkspace   *connect.Client[v1.OpenAgentWorkspaceRequest, v1.OpenAgentWorkspaceResponse]
-	listMessages         *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
-	postMessage          *connect.Client[v1.PostMessageRequest, v1.PostMessageResponse]
-	listTopics           *connect.Client[v1.ListTopicsRequest, v1.ListTopicsResponse]
-	updateTopic          *connect.Client[v1.UpdateTopicRequest, v1.UpdateTopicResponse]
-	respondToAsk         *connect.Client[v1.RespondToAskRequest, v1.RespondToAskResponse]
-	mirrorToForge        *connect.Client[v1.MirrorToForgeRequest, v1.MirrorToForgeResponse]
-	searchMessages       *connect.Client[v1.SearchMessagesRequest, v1.SearchMessagesResponse]
-	setChannelPolicy     *connect.Client[v1.SetChannelPolicyRequest, v1.SetChannelPolicyResponse]
-	getRoster            *connect.Client[v1.GetRosterRequest, v1.GetRosterResponse]
-	updatePinnedBoard    *connect.Client[v1.UpdatePinnedBoardRequest, v1.UpdatePinnedBoardResponse]
-	listAgentBoards      *connect.Client[v1.ListAgentBoardsRequest, v1.ListAgentBoardsResponse]
-	approvePeer          *connect.Client[v1.ApprovePeerRequest, v1.ApprovePeerResponse]
-	revokePeer           *connect.Client[v1.RevokePeerRequest, v1.RevokePeerResponse]
-	listPeers            *connect.Client[v1.ListPeersRequest, v1.ListPeersResponse]
-	subscribeComms       *connect.Client[v1.SubscribeCommsRequest, v1.SubscribeCommsResponse]
-}
-
-// CreateUser calls compass.v1.CommsService.CreateUser.
-func (c *commsServiceClient) CreateUser(ctx context.Context, req *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error) {
-	return c.createUser.CallUnary(ctx, req)
-}
-
-// CreateAgent calls compass.v1.CommsService.CreateAgent.
-func (c *commsServiceClient) CreateAgent(ctx context.Context, req *connect.Request[v1.CreateAgentRequest]) (*connect.Response[v1.CreateAgentResponse], error) {
-	return c.createAgent.CallUnary(ctx, req)
-}
-
-// ListAccounts calls compass.v1.CommsService.ListAccounts.
-func (c *commsServiceClient) ListAccounts(ctx context.Context, req *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
-	return c.listAccounts.CallUnary(ctx, req)
-}
-
-// CreateChannelGroup calls compass.v1.CommsService.CreateChannelGroup.
-func (c *commsServiceClient) CreateChannelGroup(ctx context.Context, req *connect.Request[v1.CreateChannelGroupRequest]) (*connect.Response[v1.CreateChannelGroupResponse], error) {
-	return c.createChannelGroup.CallUnary(ctx, req)
-}
-
-// ListChannelGroups calls compass.v1.CommsService.ListChannelGroups.
-func (c *commsServiceClient) ListChannelGroups(ctx context.Context, req *connect.Request[v1.ListChannelGroupsRequest]) (*connect.Response[v1.ListChannelGroupsResponse], error) {
-	return c.listChannelGroups.CallUnary(ctx, req)
-}
-
-// ListChannels calls compass.v1.CommsService.ListChannels.
-func (c *commsServiceClient) ListChannels(ctx context.Context, req *connect.Request[v1.ListChannelsRequest]) (*connect.Response[v1.ListChannelsResponse], error) {
-	return c.listChannels.CallUnary(ctx, req)
-}
-
-// CreateChannel calls compass.v1.CommsService.CreateChannel.
-func (c *commsServiceClient) CreateChannel(ctx context.Context, req *connect.Request[v1.CreateChannelRequest]) (*connect.Response[v1.CreateChannelResponse], error) {
-	return c.createChannel.CallUnary(ctx, req)
-}
-
-// UpdateChannelMembers calls compass.v1.CommsService.UpdateChannelMembers.
-func (c *commsServiceClient) UpdateChannelMembers(ctx context.Context, req *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error) {
-	return c.updateChannelMembers.CallUnary(ctx, req)
-}
-
-// OpenDM calls compass.v1.CommsService.OpenDM.
-func (c *commsServiceClient) OpenDM(ctx context.Context, req *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error) {
-	return c.openDM.CallUnary(ctx, req)
-}
-
-// ReparentAgent calls compass.v1.CommsService.ReparentAgent.
-func (c *commsServiceClient) ReparentAgent(ctx context.Context, req *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error) {
-	return c.reparentAgent.CallUnary(ctx, req)
-}
-
-// ReparentChannel calls compass.v1.CommsService.ReparentChannel.
-func (c *commsServiceClient) ReparentChannel(ctx context.Context, req *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error) {
-	return c.reparentChannel.CallUnary(ctx, req)
-}
-
-// OpenAgentWorkspace calls compass.v1.CommsService.OpenAgentWorkspace.
-func (c *commsServiceClient) OpenAgentWorkspace(ctx context.Context, req *connect.Request[v1.OpenAgentWorkspaceRequest]) (*connect.Response[v1.OpenAgentWorkspaceResponse], error) {
-	return c.openAgentWorkspace.CallUnary(ctx, req)
-}
-
-// ListMessages calls compass.v1.CommsService.ListMessages.
-func (c *commsServiceClient) ListMessages(ctx context.Context, req *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
-	return c.listMessages.CallUnary(ctx, req)
-}
-
-// PostMessage calls compass.v1.CommsService.PostMessage.
-func (c *commsServiceClient) PostMessage(ctx context.Context, req *connect.Request[v1.PostMessageRequest]) (*connect.Response[v1.PostMessageResponse], error) {
-	return c.postMessage.CallUnary(ctx, req)
-}
-
-// ListTopics calls compass.v1.CommsService.ListTopics.
-func (c *commsServiceClient) ListTopics(ctx context.Context, req *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error) {
-	return c.listTopics.CallUnary(ctx, req)
-}
-
-// UpdateTopic calls compass.v1.CommsService.UpdateTopic.
-func (c *commsServiceClient) UpdateTopic(ctx context.Context, req *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error) {
-	return c.updateTopic.CallUnary(ctx, req)
-}
-
-// RespondToAsk calls compass.v1.CommsService.RespondToAsk.
-func (c *commsServiceClient) RespondToAsk(ctx context.Context, req *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error) {
-	return c.respondToAsk.CallUnary(ctx, req)
-}
-
-// MirrorToForge calls compass.v1.CommsService.MirrorToForge.
-func (c *commsServiceClient) MirrorToForge(ctx context.Context, req *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error) {
-	return c.mirrorToForge.CallUnary(ctx, req)
-}
-
-// SearchMessages calls compass.v1.CommsService.SearchMessages.
-func (c *commsServiceClient) SearchMessages(ctx context.Context, req *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error) {
-	return c.searchMessages.CallUnary(ctx, req)
-}
-
-// SetChannelPolicy calls compass.v1.CommsService.SetChannelPolicy.
-func (c *commsServiceClient) SetChannelPolicy(ctx context.Context, req *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error) {
-	return c.setChannelPolicy.CallUnary(ctx, req)
-}
-
-// GetRoster calls compass.v1.CommsService.GetRoster.
-func (c *commsServiceClient) GetRoster(ctx context.Context, req *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error) {
-	return c.getRoster.CallUnary(ctx, req)
-}
-
-// UpdatePinnedBoard calls compass.v1.CommsService.UpdatePinnedBoard.
-func (c *commsServiceClient) UpdatePinnedBoard(ctx context.Context, req *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error) {
-	return c.updatePinnedBoard.CallUnary(ctx, req)
-}
-
-// ListAgentBoards calls compass.v1.CommsService.ListAgentBoards.
-func (c *commsServiceClient) ListAgentBoards(ctx context.Context, req *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error) {
-	return c.listAgentBoards.CallUnary(ctx, req)
-}
-
-// ApprovePeer calls compass.v1.CommsService.ApprovePeer.
-func (c *commsServiceClient) ApprovePeer(ctx context.Context, req *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error) {
-	return c.approvePeer.CallUnary(ctx, req)
-}
-
-// RevokePeer calls compass.v1.CommsService.RevokePeer.
-func (c *commsServiceClient) RevokePeer(ctx context.Context, req *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
-	return c.revokePeer.CallUnary(ctx, req)
-}
-
-// ListPeers calls compass.v1.CommsService.ListPeers.
-func (c *commsServiceClient) ListPeers(ctx context.Context, req *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error) {
-	return c.listPeers.CallUnary(ctx, req)
-}
-
-// SubscribeComms calls compass.v1.CommsService.SubscribeComms.
-func (c *commsServiceClient) SubscribeComms(ctx context.Context, req *connect.Request[v1.SubscribeCommsRequest]) (*connect.ServerStreamForClient[v1.SubscribeCommsResponse], error) {
-	return c.subscribeComms.CallServerStream(ctx, req)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s CommsServiceSubscribeCommsClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // CommsServiceHandler is an implementation of the compass.v1.CommsService service.
@@ -576,441 +433,803 @@ type CommsServiceHandler interface {
 	// Create a human user account. The new account is a regular member; role
 	// elevation to admin is a separate admin-authorized path (deferred), not a
 	// field a signup can set.
-	CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error)
+	CreateUser(context.Context, *v1.CreateUserRequest) (*v1.CreateUserResponse, error)
 	// Create an agent account owned by the authenticated caller (D9). The owner
 	// is the caller, not a request field — a user creates agents they own. The
 	// request must name a role from the closed Manager taxonomy.
-	CreateAgent(context.Context, *connect.Request[v1.CreateAgentRequest]) (*connect.Response[v1.CreateAgentResponse], error)
+	CreateAgent(context.Context, *v1.CreateAgentRequest) (*v1.CreateAgentResponse, error)
 	// List the accounts visible to the caller.
-	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
+	ListAccounts(context.Context, *v1.ListAccountsRequest) (*v1.ListAccountsResponse, error)
 	// Create a channel group — a namespace node that holds channels and nested
 	// groups and carries the group-level visibility that scopes an owner's space
 	// (D9). Owned by the caller.
-	CreateChannelGroup(context.Context, *connect.Request[v1.CreateChannelGroupRequest]) (*connect.Response[v1.CreateChannelGroupResponse], error)
+	CreateChannelGroup(context.Context, *v1.CreateChannelGroupRequest) (*v1.CreateChannelGroupResponse, error)
 	// List the channel groups visible to the caller.
-	ListChannelGroups(context.Context, *connect.Request[v1.ListChannelGroupsRequest]) (*connect.Response[v1.ListChannelGroupsResponse], error)
+	ListChannelGroups(context.Context, *v1.ListChannelGroupsRequest) (*v1.ListChannelGroupsResponse, error)
 	// List the channels the caller may see.
-	ListChannels(context.Context, *connect.Request[v1.ListChannelsRequest]) (*connect.Response[v1.ListChannelsResponse], error)
+	ListChannels(context.Context, *v1.ListChannelsRequest) (*v1.ListChannelsResponse, error)
 	// Create a channel within a group — caller-authorized against the parent
 	// group. Emits ChannelChanged.
-	CreateChannel(context.Context, *connect.Request[v1.CreateChannelRequest]) (*connect.Response[v1.CreateChannelResponse], error)
+	CreateChannel(context.Context, *v1.CreateChannelRequest) (*v1.CreateChannelResponse, error)
 	// Add or remove channel members and flip a member's subscribe opt-in —
 	// caller-authorized against channel visibility. Emits ChannelChanged. One RPC
 	// covers join, subscribe-toggle, DM-to-channel conversion (convert_channel_name),
 	// and share-replacement.
-	UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error)
+	UpdateChannelMembers(context.Context, *v1.UpdateChannelMembersRequest) (*v1.UpdateChannelMembersResponse, error)
 	// Open (or fetch) a two-party DM between the caller and a peer agent,
 	// addressed by the peer's owner-namespaced handle. Same-owner and mutually
 	// peered owners are allowed; unknown and unpeered peers return NOT_FOUND.
 	// Self-opens are INVALID_ARGUMENT. Emits ChannelChanged on create.
-	OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error)
+	OpenDM(context.Context, *v1.OpenDMRequest) (*v1.OpenDMResponse, error)
 	// Re-parent an agent in the agent tree, or promote it to a root (empty
 	// new_parent_agent_id) — caller-authorized against the agent's owner. The
 	// server validates the move (caller authority, same-owner, no cycle) and
 	// emits AccountChanged; surfaces re-derive the tree from the changed
 	// parent_agent_id with no surface-specific plumbing.
-	ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error)
+	ReparentAgent(context.Context, *v1.ReparentAgentRequest) (*v1.ReparentAgentResponse, error)
 	// Re-anchor a channel under another agent, or detach an EXPLICIT channel to
 	// the tree root (empty new_parent_agent_handle). Moves placement only; the
 	// membership mode never changes EXPLICIT→TREE. Emits ChannelChanged.
-	ReparentChannel(context.Context, *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error)
+	ReparentChannel(context.Context, *v1.ReparentChannelRequest) (*v1.ReparentChannelResponse, error)
 	// Open (or fetch) the caller's agent workspace for an agent — its session
 	// observation surface (D5). Idempotent: created on first open, returned after.
 	// Authorized: the caller must be a member of the agent's channel.
-	OpenAgentWorkspace(context.Context, *connect.Request[v1.OpenAgentWorkspaceRequest]) (*connect.Response[v1.OpenAgentWorkspaceResponse], error)
+	OpenAgentWorkspace(context.Context, *v1.OpenAgentWorkspaceRequest) (*v1.OpenAgentWorkspaceResponse, error)
 	// Page a channel's message history, newest-first. The channel is one the
 	// caller may see.
-	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
+	ListMessages(context.Context, *v1.ListMessagesRequest) (*v1.ListMessagesResponse, error)
 	// Post a message to a channel: a human turn, or a human prompt into an agent's
 	// channel.
-	PostMessage(context.Context, *connect.Request[v1.PostMessageRequest]) (*connect.Response[v1.PostMessageResponse], error)
+	PostMessage(context.Context, *v1.PostMessageRequest) (*v1.PostMessageResponse, error)
 	// List the topics in a channel the caller may see — the topic index the UI's
 	// two-level drill-in renders. Archived topics are included only when asked.
-	ListTopics(context.Context, *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error)
+	ListTopics(context.Context, *v1.ListTopicsRequest) (*v1.ListTopicsResponse, error)
 	// Rename or archive/unarchive a topic (id-stable). A rename to an existing
 	// (case-insensitive) name in the same channel MERGES into that topic (D1).
 	// Emits TopicUpserted.
-	UpdateTopic(context.Context, *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error)
+	UpdateTopic(context.Context, *v1.UpdateTopicRequest) (*v1.UpdateTopicResponse, error)
 	// Answer a pending structured ask (D5). Authorized: the caller must be a
 	// member of the channel the ask belongs to.
-	RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error)
+	RespondToAsk(context.Context, *v1.RespondToAskRequest) (*v1.RespondToAskResponse, error)
 	// Mirror a visible ask, topic, or message set to an allowed forge ref on the
 	// calling user's behalf.
-	MirrorToForge(context.Context, *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error)
+	MirrorToForge(context.Context, *v1.MirrorToForgeRequest) (*v1.MirrorToForgeResponse, error)
 	// Full-text search across the messages the caller may see — the audit/search
 	// property served from the store of record (D1, D12). Results are scoped to
 	// the caller's visible channels regardless of the scope field.
-	SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error)
+	SearchMessages(context.Context, *v1.SearchMessagesRequest) (*v1.SearchMessagesResponse, error)
 	// Set (create-or-update) a channel's post policy, owner, and mandatory-
 	// subscription flag — owner/operator authorized. Emits ChannelChanged. A
 	// mandatory flip seeds delivery cursors transactionally (T4) so it never
 	// mints un-seeded delivery targets.
-	SetChannelPolicy(context.Context, *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error)
+	SetChannelPolicy(context.Context, *v1.SetChannelPolicyRequest) (*v1.SetChannelPolicyResponse, error)
 	// Read a roster of agents around a vantage point: the caller's neighborhood
 	// (parent + siblings + children), its subtree, or an owner's whole set. Joins
 	// the live presence projection with the durable activity string.
-	GetRoster(context.Context, *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error)
+	GetRoster(context.Context, *v1.GetRosterRequest) (*v1.GetRosterResponse, error)
 	// Pin or unpin an EXISTING message on a channel's pinned board (no message
 	// minting; the message must already live in a topic of the channel). A pin
 	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
-	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
+	UpdatePinnedBoard(context.Context, *v1.UpdatePinnedBoardRequest) (*v1.UpdatePinnedBoardResponse, error)
 	// List whole boards for agents the caller can see, optionally filtered.
-	ListAgentBoards(context.Context, *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error)
+	ListAgentBoards(context.Context, *v1.ListAgentBoardsRequest) (*v1.ListAgentBoardsResponse, error)
 	// Approve a user as a peer of the caller (a user account). A peering is
 	// live only when both users have approved each other; until then this is
 	// a pending request. Idempotent. peer_handle is a bare user handle;
 	// unknown, agent, or system handles are NOT_FOUND, self is INVALID_ARGUMENT,
 	// an agent caller is PERMISSION_DENIED.
-	ApprovePeer(context.Context, *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error)
+	ApprovePeer(context.Context, *v1.ApprovePeerRequest) (*v1.ApprovePeerResponse, error)
 	// Withdraw the caller's approval of a user. Idempotent; deleted reports
 	// whether an approval existed. Changes no channel, member, or message.
-	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
+	RevokePeer(context.Context, *v1.RevokePeerRequest) (*v1.RevokePeerResponse, error)
 	// List the caller's peerings: every user with an approval in either direction.
-	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
+	ListPeers(context.Context, *v1.ListPeersRequest) (*v1.ListPeersResponse, error)
 	// The comms event stream, scoped to the caller's visible set, with gap-free
 	// replay-on-join. The sole push path for the comms surface, mirroring
 	// CompassService.SubscribeEvents' seq/epoch replay contract (D1).
-	SubscribeComms(context.Context, *connect.Request[v1.SubscribeCommsRequest], *connect.ServerStream[v1.SubscribeCommsResponse]) error
+	SubscribeComms(context.Context, *v1.SubscribeCommsRequest, CommsServiceSubscribeCommsServerStream) error
 }
 
-// NewCommsServiceHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	commsServiceMethods := v1.File_compass_v1_comms_proto.Services().ByName("CommsService").Methods()
-	commsServiceCreateUserHandler := connect.NewUnaryHandler(
-		CommsServiceCreateUserProcedure,
-		svc.CreateUser,
-		connect.WithSchema(commsServiceMethods.ByName("CreateUser")),
-		connect.WithHandlerOptions(opts...),
+// RegisterCommsServiceHandler registers svc as the compass.v1.CommsService implementation on
+// server.
+func RegisterCommsServiceHandler(server *connect.Server, svc CommsServiceHandler) {
+	adapter := commsServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: commsServiceCreateUserSpec(), Handler: adapter.createUser},
+		connect.Method{Spec: commsServiceCreateAgentSpec(), Handler: adapter.createAgent},
+		connect.Method{Spec: commsServiceListAccountsSpec(), Handler: adapter.listAccounts},
+		connect.Method{Spec: commsServiceCreateChannelGroupSpec(), Handler: adapter.createChannelGroup},
+		connect.Method{Spec: commsServiceListChannelGroupsSpec(), Handler: adapter.listChannelGroups},
+		connect.Method{Spec: commsServiceListChannelsSpec(), Handler: adapter.listChannels},
+		connect.Method{Spec: commsServiceCreateChannelSpec(), Handler: adapter.createChannel},
+		connect.Method{Spec: commsServiceUpdateChannelMembersSpec(), Handler: adapter.updateChannelMembers},
+		connect.Method{Spec: commsServiceOpenDMSpec(), Handler: adapter.openDM},
+		connect.Method{Spec: commsServiceReparentAgentSpec(), Handler: adapter.reparentAgent},
+		connect.Method{Spec: commsServiceReparentChannelSpec(), Handler: adapter.reparentChannel},
+		connect.Method{Spec: commsServiceOpenAgentWorkspaceSpec(), Handler: adapter.openAgentWorkspace},
+		connect.Method{Spec: commsServiceListMessagesSpec(), Handler: adapter.listMessages},
+		connect.Method{Spec: commsServicePostMessageSpec(), Handler: adapter.postMessage},
+		connect.Method{Spec: commsServiceListTopicsSpec(), Handler: adapter.listTopics},
+		connect.Method{Spec: commsServiceUpdateTopicSpec(), Handler: adapter.updateTopic},
+		connect.Method{Spec: commsServiceRespondToAskSpec(), Handler: adapter.respondToAsk},
+		connect.Method{Spec: commsServiceMirrorToForgeSpec(), Handler: adapter.mirrorToForge},
+		connect.Method{Spec: commsServiceSearchMessagesSpec(), Handler: adapter.searchMessages},
+		connect.Method{Spec: commsServiceSetChannelPolicySpec(), Handler: adapter.setChannelPolicy},
+		connect.Method{Spec: commsServiceGetRosterSpec(), Handler: adapter.getRoster},
+		connect.Method{Spec: commsServiceUpdatePinnedBoardSpec(), Handler: adapter.updatePinnedBoard},
+		connect.Method{Spec: commsServiceListAgentBoardsSpec(), Handler: adapter.listAgentBoards},
+		connect.Method{Spec: commsServiceApprovePeerSpec(), Handler: adapter.approvePeer},
+		connect.Method{Spec: commsServiceRevokePeerSpec(), Handler: adapter.revokePeer},
+		connect.Method{Spec: commsServiceListPeersSpec(), Handler: adapter.listPeers},
+		connect.Method{Spec: commsServiceSubscribeCommsSpec(), Handler: adapter.subscribeComms},
 	)
-	commsServiceCreateAgentHandler := connect.NewUnaryHandler(
-		CommsServiceCreateAgentProcedure,
-		svc.CreateAgent,
-		connect.WithSchema(commsServiceMethods.ByName("CreateAgent")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceListAccountsHandler := connect.NewUnaryHandler(
-		CommsServiceListAccountsProcedure,
-		svc.ListAccounts,
-		connect.WithSchema(commsServiceMethods.ByName("ListAccounts")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceCreateChannelGroupHandler := connect.NewUnaryHandler(
-		CommsServiceCreateChannelGroupProcedure,
-		svc.CreateChannelGroup,
-		connect.WithSchema(commsServiceMethods.ByName("CreateChannelGroup")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceListChannelGroupsHandler := connect.NewUnaryHandler(
-		CommsServiceListChannelGroupsProcedure,
-		svc.ListChannelGroups,
-		connect.WithSchema(commsServiceMethods.ByName("ListChannelGroups")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceListChannelsHandler := connect.NewUnaryHandler(
-		CommsServiceListChannelsProcedure,
-		svc.ListChannels,
-		connect.WithSchema(commsServiceMethods.ByName("ListChannels")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceCreateChannelHandler := connect.NewUnaryHandler(
-		CommsServiceCreateChannelProcedure,
-		svc.CreateChannel,
-		connect.WithSchema(commsServiceMethods.ByName("CreateChannel")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceUpdateChannelMembersHandler := connect.NewUnaryHandler(
-		CommsServiceUpdateChannelMembersProcedure,
-		svc.UpdateChannelMembers,
-		connect.WithSchema(commsServiceMethods.ByName("UpdateChannelMembers")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceOpenDMHandler := connect.NewUnaryHandler(
-		CommsServiceOpenDMProcedure,
-		svc.OpenDM,
-		connect.WithSchema(commsServiceMethods.ByName("OpenDM")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceReparentAgentHandler := connect.NewUnaryHandler(
-		CommsServiceReparentAgentProcedure,
-		svc.ReparentAgent,
-		connect.WithSchema(commsServiceMethods.ByName("ReparentAgent")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceReparentChannelHandler := connect.NewUnaryHandler(
-		CommsServiceReparentChannelProcedure,
-		svc.ReparentChannel,
-		connect.WithSchema(commsServiceMethods.ByName("ReparentChannel")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceOpenAgentWorkspaceHandler := connect.NewUnaryHandler(
-		CommsServiceOpenAgentWorkspaceProcedure,
-		svc.OpenAgentWorkspace,
-		connect.WithSchema(commsServiceMethods.ByName("OpenAgentWorkspace")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceListMessagesHandler := connect.NewUnaryHandler(
-		CommsServiceListMessagesProcedure,
-		svc.ListMessages,
-		connect.WithSchema(commsServiceMethods.ByName("ListMessages")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServicePostMessageHandler := connect.NewUnaryHandler(
-		CommsServicePostMessageProcedure,
-		svc.PostMessage,
-		connect.WithSchema(commsServiceMethods.ByName("PostMessage")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceListTopicsHandler := connect.NewUnaryHandler(
-		CommsServiceListTopicsProcedure,
-		svc.ListTopics,
-		connect.WithSchema(commsServiceMethods.ByName("ListTopics")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceUpdateTopicHandler := connect.NewUnaryHandler(
-		CommsServiceUpdateTopicProcedure,
-		svc.UpdateTopic,
-		connect.WithSchema(commsServiceMethods.ByName("UpdateTopic")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceRespondToAskHandler := connect.NewUnaryHandler(
-		CommsServiceRespondToAskProcedure,
-		svc.RespondToAsk,
-		connect.WithSchema(commsServiceMethods.ByName("RespondToAsk")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceMirrorToForgeHandler := connect.NewUnaryHandler(
-		CommsServiceMirrorToForgeProcedure,
-		svc.MirrorToForge,
-		connect.WithSchema(commsServiceMethods.ByName("MirrorToForge")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceSearchMessagesHandler := connect.NewUnaryHandler(
-		CommsServiceSearchMessagesProcedure,
-		svc.SearchMessages,
-		connect.WithSchema(commsServiceMethods.ByName("SearchMessages")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceSetChannelPolicyHandler := connect.NewUnaryHandler(
-		CommsServiceSetChannelPolicyProcedure,
-		svc.SetChannelPolicy,
-		connect.WithSchema(commsServiceMethods.ByName("SetChannelPolicy")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceGetRosterHandler := connect.NewUnaryHandler(
-		CommsServiceGetRosterProcedure,
-		svc.GetRoster,
-		connect.WithSchema(commsServiceMethods.ByName("GetRoster")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceUpdatePinnedBoardHandler := connect.NewUnaryHandler(
-		CommsServiceUpdatePinnedBoardProcedure,
-		svc.UpdatePinnedBoard,
-		connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceListAgentBoardsHandler := connect.NewUnaryHandler(
-		CommsServiceListAgentBoardsProcedure,
-		svc.ListAgentBoards,
-		connect.WithSchema(commsServiceMethods.ByName("ListAgentBoards")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceApprovePeerHandler := connect.NewUnaryHandler(
-		CommsServiceApprovePeerProcedure,
-		svc.ApprovePeer,
-		connect.WithSchema(commsServiceMethods.ByName("ApprovePeer")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceRevokePeerHandler := connect.NewUnaryHandler(
-		CommsServiceRevokePeerProcedure,
-		svc.RevokePeer,
-		connect.WithSchema(commsServiceMethods.ByName("RevokePeer")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceListPeersHandler := connect.NewUnaryHandler(
-		CommsServiceListPeersProcedure,
-		svc.ListPeers,
-		connect.WithSchema(commsServiceMethods.ByName("ListPeers")),
-		connect.WithHandlerOptions(opts...),
-	)
-	commsServiceSubscribeCommsHandler := connect.NewServerStreamHandler(
-		CommsServiceSubscribeCommsProcedure,
-		svc.SubscribeComms,
-		connect.WithSchema(commsServiceMethods.ByName("SubscribeComms")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.CommsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case CommsServiceCreateUserProcedure:
-			commsServiceCreateUserHandler.ServeHTTP(w, r)
-		case CommsServiceCreateAgentProcedure:
-			commsServiceCreateAgentHandler.ServeHTTP(w, r)
-		case CommsServiceListAccountsProcedure:
-			commsServiceListAccountsHandler.ServeHTTP(w, r)
-		case CommsServiceCreateChannelGroupProcedure:
-			commsServiceCreateChannelGroupHandler.ServeHTTP(w, r)
-		case CommsServiceListChannelGroupsProcedure:
-			commsServiceListChannelGroupsHandler.ServeHTTP(w, r)
-		case CommsServiceListChannelsProcedure:
-			commsServiceListChannelsHandler.ServeHTTP(w, r)
-		case CommsServiceCreateChannelProcedure:
-			commsServiceCreateChannelHandler.ServeHTTP(w, r)
-		case CommsServiceUpdateChannelMembersProcedure:
-			commsServiceUpdateChannelMembersHandler.ServeHTTP(w, r)
-		case CommsServiceOpenDMProcedure:
-			commsServiceOpenDMHandler.ServeHTTP(w, r)
-		case CommsServiceReparentAgentProcedure:
-			commsServiceReparentAgentHandler.ServeHTTP(w, r)
-		case CommsServiceReparentChannelProcedure:
-			commsServiceReparentChannelHandler.ServeHTTP(w, r)
-		case CommsServiceOpenAgentWorkspaceProcedure:
-			commsServiceOpenAgentWorkspaceHandler.ServeHTTP(w, r)
-		case CommsServiceListMessagesProcedure:
-			commsServiceListMessagesHandler.ServeHTTP(w, r)
-		case CommsServicePostMessageProcedure:
-			commsServicePostMessageHandler.ServeHTTP(w, r)
-		case CommsServiceListTopicsProcedure:
-			commsServiceListTopicsHandler.ServeHTTP(w, r)
-		case CommsServiceUpdateTopicProcedure:
-			commsServiceUpdateTopicHandler.ServeHTTP(w, r)
-		case CommsServiceRespondToAskProcedure:
-			commsServiceRespondToAskHandler.ServeHTTP(w, r)
-		case CommsServiceMirrorToForgeProcedure:
-			commsServiceMirrorToForgeHandler.ServeHTTP(w, r)
-		case CommsServiceSearchMessagesProcedure:
-			commsServiceSearchMessagesHandler.ServeHTTP(w, r)
-		case CommsServiceSetChannelPolicyProcedure:
-			commsServiceSetChannelPolicyHandler.ServeHTTP(w, r)
-		case CommsServiceGetRosterProcedure:
-			commsServiceGetRosterHandler.ServeHTTP(w, r)
-		case CommsServiceUpdatePinnedBoardProcedure:
-			commsServiceUpdatePinnedBoardHandler.ServeHTTP(w, r)
-		case CommsServiceListAgentBoardsProcedure:
-			commsServiceListAgentBoardsHandler.ServeHTTP(w, r)
-		case CommsServiceApprovePeerProcedure:
-			commsServiceApprovePeerHandler.ServeHTTP(w, r)
-		case CommsServiceRevokePeerProcedure:
-			commsServiceRevokePeerHandler.ServeHTTP(w, r)
-		case CommsServiceListPeersProcedure:
-			commsServiceListPeersHandler.ServeHTTP(w, r)
-		case CommsServiceSubscribeCommsProcedure:
-			commsServiceSubscribeCommsHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// CommsServiceSubscribeCommsServerStream is the server stream for the CommsService's SubscribeComms
+// RPC.
+type CommsServiceSubscribeCommsServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s CommsServiceSubscribeCommsServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s CommsServiceSubscribeCommsServerStream) Send(res *v1.SubscribeCommsResponse) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedCommsServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedCommsServiceHandler struct{}
 
-func (UnimplementedCommsServiceHandler) CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.CreateUser is not implemented"))
+func (UnimplementedCommsServiceHandler) CreateUser(context.Context, *v1.CreateUserRequest) (*v1.CreateUserResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.CreateUser is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) CreateAgent(context.Context, *connect.Request[v1.CreateAgentRequest]) (*connect.Response[v1.CreateAgentResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.CreateAgent is not implemented"))
+func (UnimplementedCommsServiceHandler) CreateAgent(context.Context, *v1.CreateAgentRequest) (*v1.CreateAgentResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.CreateAgent is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListAccounts is not implemented"))
+func (UnimplementedCommsServiceHandler) ListAccounts(context.Context, *v1.ListAccountsRequest) (*v1.ListAccountsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ListAccounts is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) CreateChannelGroup(context.Context, *connect.Request[v1.CreateChannelGroupRequest]) (*connect.Response[v1.CreateChannelGroupResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.CreateChannelGroup is not implemented"))
+func (UnimplementedCommsServiceHandler) CreateChannelGroup(context.Context, *v1.CreateChannelGroupRequest) (*v1.CreateChannelGroupResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.CreateChannelGroup is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ListChannelGroups(context.Context, *connect.Request[v1.ListChannelGroupsRequest]) (*connect.Response[v1.ListChannelGroupsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListChannelGroups is not implemented"))
+func (UnimplementedCommsServiceHandler) ListChannelGroups(context.Context, *v1.ListChannelGroupsRequest) (*v1.ListChannelGroupsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ListChannelGroups is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ListChannels(context.Context, *connect.Request[v1.ListChannelsRequest]) (*connect.Response[v1.ListChannelsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListChannels is not implemented"))
+func (UnimplementedCommsServiceHandler) ListChannels(context.Context, *v1.ListChannelsRequest) (*v1.ListChannelsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ListChannels is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) CreateChannel(context.Context, *connect.Request[v1.CreateChannelRequest]) (*connect.Response[v1.CreateChannelResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.CreateChannel is not implemented"))
+func (UnimplementedCommsServiceHandler) CreateChannel(context.Context, *v1.CreateChannelRequest) (*v1.CreateChannelResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.CreateChannel is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdateChannelMembers is not implemented"))
+func (UnimplementedCommsServiceHandler) UpdateChannelMembers(context.Context, *v1.UpdateChannelMembersRequest) (*v1.UpdateChannelMembersResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.UpdateChannelMembers is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.OpenDM is not implemented"))
+func (UnimplementedCommsServiceHandler) OpenDM(context.Context, *v1.OpenDMRequest) (*v1.OpenDMResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.OpenDM is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ReparentAgent is not implemented"))
+func (UnimplementedCommsServiceHandler) ReparentAgent(context.Context, *v1.ReparentAgentRequest) (*v1.ReparentAgentResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ReparentAgent is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ReparentChannel(context.Context, *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ReparentChannel is not implemented"))
+func (UnimplementedCommsServiceHandler) ReparentChannel(context.Context, *v1.ReparentChannelRequest) (*v1.ReparentChannelResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ReparentChannel is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) OpenAgentWorkspace(context.Context, *connect.Request[v1.OpenAgentWorkspaceRequest]) (*connect.Response[v1.OpenAgentWorkspaceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.OpenAgentWorkspace is not implemented"))
+func (UnimplementedCommsServiceHandler) OpenAgentWorkspace(context.Context, *v1.OpenAgentWorkspaceRequest) (*v1.OpenAgentWorkspaceResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.OpenAgentWorkspace is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListMessages is not implemented"))
+func (UnimplementedCommsServiceHandler) ListMessages(context.Context, *v1.ListMessagesRequest) (*v1.ListMessagesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ListMessages is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) PostMessage(context.Context, *connect.Request[v1.PostMessageRequest]) (*connect.Response[v1.PostMessageResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.PostMessage is not implemented"))
+func (UnimplementedCommsServiceHandler) PostMessage(context.Context, *v1.PostMessageRequest) (*v1.PostMessageResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.PostMessage is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ListTopics(context.Context, *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListTopics is not implemented"))
+func (UnimplementedCommsServiceHandler) ListTopics(context.Context, *v1.ListTopicsRequest) (*v1.ListTopicsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ListTopics is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) UpdateTopic(context.Context, *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdateTopic is not implemented"))
+func (UnimplementedCommsServiceHandler) UpdateTopic(context.Context, *v1.UpdateTopicRequest) (*v1.UpdateTopicResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.UpdateTopic is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.RespondToAsk is not implemented"))
+func (UnimplementedCommsServiceHandler) RespondToAsk(context.Context, *v1.RespondToAskRequest) (*v1.RespondToAskResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.RespondToAsk is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) MirrorToForge(context.Context, *connect.Request[v1.MirrorToForgeRequest]) (*connect.Response[v1.MirrorToForgeResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.MirrorToForge is not implemented"))
+func (UnimplementedCommsServiceHandler) MirrorToForge(context.Context, *v1.MirrorToForgeRequest) (*v1.MirrorToForgeResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.MirrorToForge is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SearchMessages is not implemented"))
+func (UnimplementedCommsServiceHandler) SearchMessages(context.Context, *v1.SearchMessagesRequest) (*v1.SearchMessagesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.SearchMessages is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) SetChannelPolicy(context.Context, *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SetChannelPolicy is not implemented"))
+func (UnimplementedCommsServiceHandler) SetChannelPolicy(context.Context, *v1.SetChannelPolicyRequest) (*v1.SetChannelPolicyResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.SetChannelPolicy is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) GetRoster(context.Context, *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.GetRoster is not implemented"))
+func (UnimplementedCommsServiceHandler) GetRoster(context.Context, *v1.GetRosterRequest) (*v1.GetRosterResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.GetRoster is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdatePinnedBoard is not implemented"))
+func (UnimplementedCommsServiceHandler) UpdatePinnedBoard(context.Context, *v1.UpdatePinnedBoardRequest) (*v1.UpdatePinnedBoardResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.UpdatePinnedBoard is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ListAgentBoards(context.Context, *connect.Request[v1.ListAgentBoardsRequest]) (*connect.Response[v1.ListAgentBoardsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListAgentBoards is not implemented"))
+func (UnimplementedCommsServiceHandler) ListAgentBoards(context.Context, *v1.ListAgentBoardsRequest) (*v1.ListAgentBoardsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ListAgentBoards is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ApprovePeer(context.Context, *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ApprovePeer is not implemented"))
+func (UnimplementedCommsServiceHandler) ApprovePeer(context.Context, *v1.ApprovePeerRequest) (*v1.ApprovePeerResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ApprovePeer is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.RevokePeer is not implemented"))
+func (UnimplementedCommsServiceHandler) RevokePeer(context.Context, *v1.RevokePeerRequest) (*v1.RevokePeerResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.RevokePeer is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListPeers is not implemented"))
+func (UnimplementedCommsServiceHandler) ListPeers(context.Context, *v1.ListPeersRequest) (*v1.ListPeersResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.ListPeers is not implemented")
 }
 
-func (UnimplementedCommsServiceHandler) SubscribeComms(context.Context, *connect.Request[v1.SubscribeCommsRequest], *connect.ServerStream[v1.SubscribeCommsResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SubscribeComms is not implemented"))
+func (UnimplementedCommsServiceHandler) SubscribeComms(context.Context, *v1.SubscribeCommsRequest, CommsServiceSubscribeCommsServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.CommsService.SubscribeComms is not implemented")
+}
+
+type commsServiceClient struct {
+	client *connect.Client
+}
+
+func (c *commsServiceClient) CreateUser(ctx context.Context, req *v1.CreateUserRequest) (*v1.CreateUserResponse, error) {
+	var res v1.CreateUserResponse
+	if err := c.client.CallUnary(ctx, commsServiceCreateUserSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) CreateAgent(ctx context.Context, req *v1.CreateAgentRequest) (*v1.CreateAgentResponse, error) {
+	var res v1.CreateAgentResponse
+	if err := c.client.CallUnary(ctx, commsServiceCreateAgentSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ListAccounts(ctx context.Context, req *v1.ListAccountsRequest) (*v1.ListAccountsResponse, error) {
+	var res v1.ListAccountsResponse
+	if err := c.client.CallUnary(ctx, commsServiceListAccountsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) CreateChannelGroup(ctx context.Context, req *v1.CreateChannelGroupRequest) (*v1.CreateChannelGroupResponse, error) {
+	var res v1.CreateChannelGroupResponse
+	if err := c.client.CallUnary(ctx, commsServiceCreateChannelGroupSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ListChannelGroups(ctx context.Context, req *v1.ListChannelGroupsRequest) (*v1.ListChannelGroupsResponse, error) {
+	var res v1.ListChannelGroupsResponse
+	if err := c.client.CallUnary(ctx, commsServiceListChannelGroupsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ListChannels(ctx context.Context, req *v1.ListChannelsRequest) (*v1.ListChannelsResponse, error) {
+	var res v1.ListChannelsResponse
+	if err := c.client.CallUnary(ctx, commsServiceListChannelsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) CreateChannel(ctx context.Context, req *v1.CreateChannelRequest) (*v1.CreateChannelResponse, error) {
+	var res v1.CreateChannelResponse
+	if err := c.client.CallUnary(ctx, commsServiceCreateChannelSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) UpdateChannelMembers(ctx context.Context, req *v1.UpdateChannelMembersRequest) (*v1.UpdateChannelMembersResponse, error) {
+	var res v1.UpdateChannelMembersResponse
+	if err := c.client.CallUnary(ctx, commsServiceUpdateChannelMembersSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) OpenDM(ctx context.Context, req *v1.OpenDMRequest) (*v1.OpenDMResponse, error) {
+	var res v1.OpenDMResponse
+	if err := c.client.CallUnary(ctx, commsServiceOpenDMSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ReparentAgent(ctx context.Context, req *v1.ReparentAgentRequest) (*v1.ReparentAgentResponse, error) {
+	var res v1.ReparentAgentResponse
+	if err := c.client.CallUnary(ctx, commsServiceReparentAgentSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ReparentChannel(ctx context.Context, req *v1.ReparentChannelRequest) (*v1.ReparentChannelResponse, error) {
+	var res v1.ReparentChannelResponse
+	if err := c.client.CallUnary(ctx, commsServiceReparentChannelSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) OpenAgentWorkspace(ctx context.Context, req *v1.OpenAgentWorkspaceRequest) (*v1.OpenAgentWorkspaceResponse, error) {
+	var res v1.OpenAgentWorkspaceResponse
+	if err := c.client.CallUnary(ctx, commsServiceOpenAgentWorkspaceSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ListMessages(ctx context.Context, req *v1.ListMessagesRequest) (*v1.ListMessagesResponse, error) {
+	var res v1.ListMessagesResponse
+	if err := c.client.CallUnary(ctx, commsServiceListMessagesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) PostMessage(ctx context.Context, req *v1.PostMessageRequest) (*v1.PostMessageResponse, error) {
+	var res v1.PostMessageResponse
+	if err := c.client.CallUnary(ctx, commsServicePostMessageSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ListTopics(ctx context.Context, req *v1.ListTopicsRequest) (*v1.ListTopicsResponse, error) {
+	var res v1.ListTopicsResponse
+	if err := c.client.CallUnary(ctx, commsServiceListTopicsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) UpdateTopic(ctx context.Context, req *v1.UpdateTopicRequest) (*v1.UpdateTopicResponse, error) {
+	var res v1.UpdateTopicResponse
+	if err := c.client.CallUnary(ctx, commsServiceUpdateTopicSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) RespondToAsk(ctx context.Context, req *v1.RespondToAskRequest) (*v1.RespondToAskResponse, error) {
+	var res v1.RespondToAskResponse
+	if err := c.client.CallUnary(ctx, commsServiceRespondToAskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) MirrorToForge(ctx context.Context, req *v1.MirrorToForgeRequest) (*v1.MirrorToForgeResponse, error) {
+	var res v1.MirrorToForgeResponse
+	if err := c.client.CallUnary(ctx, commsServiceMirrorToForgeSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) SearchMessages(ctx context.Context, req *v1.SearchMessagesRequest) (*v1.SearchMessagesResponse, error) {
+	var res v1.SearchMessagesResponse
+	if err := c.client.CallUnary(ctx, commsServiceSearchMessagesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) SetChannelPolicy(ctx context.Context, req *v1.SetChannelPolicyRequest) (*v1.SetChannelPolicyResponse, error) {
+	var res v1.SetChannelPolicyResponse
+	if err := c.client.CallUnary(ctx, commsServiceSetChannelPolicySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) GetRoster(ctx context.Context, req *v1.GetRosterRequest) (*v1.GetRosterResponse, error) {
+	var res v1.GetRosterResponse
+	if err := c.client.CallUnary(ctx, commsServiceGetRosterSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) UpdatePinnedBoard(ctx context.Context, req *v1.UpdatePinnedBoardRequest) (*v1.UpdatePinnedBoardResponse, error) {
+	var res v1.UpdatePinnedBoardResponse
+	if err := c.client.CallUnary(ctx, commsServiceUpdatePinnedBoardSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ListAgentBoards(ctx context.Context, req *v1.ListAgentBoardsRequest) (*v1.ListAgentBoardsResponse, error) {
+	var res v1.ListAgentBoardsResponse
+	if err := c.client.CallUnary(ctx, commsServiceListAgentBoardsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ApprovePeer(ctx context.Context, req *v1.ApprovePeerRequest) (*v1.ApprovePeerResponse, error) {
+	var res v1.ApprovePeerResponse
+	if err := c.client.CallUnary(ctx, commsServiceApprovePeerSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) RevokePeer(ctx context.Context, req *v1.RevokePeerRequest) (*v1.RevokePeerResponse, error) {
+	var res v1.RevokePeerResponse
+	if err := c.client.CallUnary(ctx, commsServiceRevokePeerSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) ListPeers(ctx context.Context, req *v1.ListPeersRequest) (*v1.ListPeersResponse, error) {
+	var res v1.ListPeersResponse
+	if err := c.client.CallUnary(ctx, commsServiceListPeersSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *commsServiceClient) SubscribeComms(ctx context.Context, req *v1.SubscribeCommsRequest) (CommsServiceSubscribeCommsClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, commsServiceSubscribeCommsSpec(), req)
+	if err != nil {
+		return CommsServiceSubscribeCommsClientStream{}, err
+	}
+	return CommsServiceSubscribeCommsClientStream{stream: stream}, nil
+}
+
+type commsServiceHandler struct{ svc CommsServiceHandler }
+
+func (h commsServiceHandler) createUser(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CreateUserRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CreateUser(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) createAgent(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CreateAgentRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CreateAgent(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) listAccounts(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListAccountsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListAccounts(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) createChannelGroup(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CreateChannelGroupRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CreateChannelGroup(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) listChannelGroups(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListChannelGroupsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListChannelGroups(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) listChannels(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListChannelsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListChannels(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) createChannel(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CreateChannelRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CreateChannel(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) updateChannelMembers(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UpdateChannelMembersRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpdateChannelMembers(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) openDM(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.OpenDMRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.OpenDM(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) reparentAgent(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReparentAgentRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReparentAgent(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) reparentChannel(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReparentChannelRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReparentChannel(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) openAgentWorkspace(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.OpenAgentWorkspaceRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.OpenAgentWorkspace(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) listMessages(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListMessagesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListMessages(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) postMessage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PostMessageRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PostMessage(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) listTopics(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListTopicsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListTopics(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) updateTopic(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UpdateTopicRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpdateTopic(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) respondToAsk(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RespondToAskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RespondToAsk(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) mirrorToForge(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.MirrorToForgeRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.MirrorToForge(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) searchMessages(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SearchMessagesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SearchMessages(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) setChannelPolicy(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SetChannelPolicyRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SetChannelPolicy(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) getRoster(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetRosterRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetRoster(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) updatePinnedBoard(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UpdatePinnedBoardRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpdatePinnedBoard(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) listAgentBoards(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListAgentBoardsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListAgentBoards(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) approvePeer(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ApprovePeerRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ApprovePeer(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) revokePeer(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RevokePeerRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RevokePeer(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) listPeers(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListPeersRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListPeers(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h commsServiceHandler) subscribeComms(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SubscribeCommsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.SubscribeComms(ctx, &req, CommsServiceSubscribeCommsServerStream{stream: stream})
 }

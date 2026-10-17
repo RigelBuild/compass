@@ -13,7 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -25,31 +26,18 @@ import (
 // local door, short enough that a wedged connection fails visibly.
 const rpcTimeout = 60 * time.Second
 
-// bearerToken stamps the admin bearer credential on every outbound RPC (unary
-// and streaming) so the Server door authenticates it (mirrors
-// internal/runner/runner.go:71-94). Streaming is stamped too so a future
-// streaming operator RPC cannot silently go out unauthenticated.
-type bearerToken struct {
-	token string
-}
-
-func (b *bearerToken) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		req.Header().Set("Authorization", "Bearer "+b.token)
-		return next(ctx, req)
+// bearerToken stamps the admin bearer credential on every outbound RPC.
+func bearerToken(token string) connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "bearer token: no client call info")
+			}
+			info.RequestHeader().Set("Authorization", "Bearer "+token)
+			return next(ctx, spec)
+		}
 	}
-}
-
-func (b *bearerToken) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		conn := next(ctx, spec)
-		conn.RequestHeader().Set("Authorization", "Bearer "+b.token)
-		return conn
-	}
-}
-
-func (b *bearerToken) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }
 
 // connConfig is the resolved connection material for one CLI invocation: where
@@ -180,11 +168,9 @@ func trimToken(raw []byte) string {
 	return strings.TrimSpace(string(raw))
 }
 
-// httpClientFor builds the connect.HTTPClient for the resolved connection: a
-// custom-root http.Client when --ca is set (the self-signed dogfood door), else
-// http.DefaultClient (system roots). Both service dialers share it so the TLS
-// trust behaviour is defined once (mirrors internal/runner Dial).
-func httpClientFor(cfg connConfig) (connect.HTTPClient, error) {
+// httpClientFor builds the HTTP client for the resolved connection: a
+// custom-root client when --ca is set, else http.DefaultClient.
+func httpClientFor(cfg connConfig) (connecthttp.HTTPClient, error) {
 	if cfg.caPath != "" {
 		return runner.NewCATrustClient(cfg.caPath)
 	}
@@ -198,10 +184,10 @@ func newClient(cfg connConfig) (compassv1connect.CompassServiceClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewCompassServiceClient(
-		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(
+		connecthttp.NewTransport(httpClient, cfg.serverAddr, connecthttp.WithReadMaxBytes(0)),
+		bearerToken(cfg.token),
+	)), nil
 }
 
 // newSecretsClient constructs the SecretsService client for the resolved
@@ -211,10 +197,10 @@ func newSecretsClient(cfg connConfig) (compassv1connect.SecretsServiceClient, er
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewSecretsServiceClient(
-		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+	return compassv1connect.NewSecretsServiceClient(connect.NewClient(
+		connecthttp.NewTransport(httpClient, cfg.serverAddr, connecthttp.WithReadMaxBytes(0)),
+		bearerToken(cfg.token),
+	)), nil
 }
 
 // dialClient resolves the connection config and builds the client in one step —
@@ -242,10 +228,10 @@ func newAgentRepositoryClient(cfg connConfig) (compassv1connect.AgentRepositoryS
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewAgentRepositoryServiceClient(
-		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+	return compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(
+		connecthttp.NewTransport(httpClient, cfg.serverAddr, connecthttp.WithReadMaxBytes(0)),
+		bearerToken(cfg.token),
+	)), nil
 }
 
 func dialAgentRepositoryClient(cmd *cobra.Command) (compassv1connect.AgentRepositoryServiceClient, error) {
@@ -263,10 +249,10 @@ func newCommsClient(cfg connConfig) (compassv1connect.CommsServiceClient, error)
 	if err != nil {
 		return nil, err
 	}
-	return compassv1connect.NewCommsServiceClient(
-		httpClient, cfg.serverAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.token}),
-	), nil
+	return compassv1connect.NewCommsServiceClient(connect.NewClient(
+		connecthttp.NewTransport(httpClient, cfg.serverAddr, connecthttp.WithReadMaxBytes(0)),
+		bearerToken(cfg.token),
+	)), nil
 }
 
 // dialCommsClient resolves the connection config and builds the CommsService

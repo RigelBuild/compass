@@ -2,14 +2,9 @@
 
 package auth
 
-// Store-backed BearerInterceptor contract tests (RIG-1195 T3), transcribed from
-// crates/compass-daemon/src/auth.rs. BearerInterceptor resolves a token against
-// the Postgres store of record, so these live in the `pgtest` lane.
-
-// Contract: on accept the handler runs and CallerFrom(ctx) is the token's
-// account; on reject the handler never runs and CodeOf(err) is
-// CodeUnauthenticated. The reject matrix collapses every failure class
-// (missing / non-bearer / unknown / revoked / cross-kind) to one code.
+// Store-backed BearerInterceptor contract tests resolve tokens against Postgres.
+// On accept the handler sees the token's account; on reject the handler never
+// runs and every credential failure maps to CodeUnauthenticated.
 
 // withCaller also sets the comms actor; that half is unobservable here and is
 // pinned end-to-end in the server package's comms_actor_pgtest_test.go.
@@ -18,10 +13,11 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -84,16 +80,17 @@ func TestBearerInterceptorSetsCommsActorNotAdminFallback(t *testing.T) {
 	// resolves the member token and threads the caller into the ctx it hands the
 	// handler. The handler (comms) reads the comms actor off that ctx.
 	var ownerID string
-	next := func(hctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		resp, err := commsSvc.CreateChannelGroup(hctx, connect.NewRequest(&compassv1.CreateChannelGroupRequest{Name: "caller-space"}))
+	next := func(hctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
+		resp, err := commsSvc.CreateChannelGroup(hctx, &compassv1.CreateChannelGroupRequest{Name: "caller-space"})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		ownerID = resp.Msg.GetGroup().GetOwnerUserId()
-		return resp, nil
+		ownerID = resp.GetGroup().GetOwnerUserId()
+		return nil
 	}
-	wrapped := BearerInterceptor(st)(next)
-	if _, err := wrapped(ctx, bearerRequest("Bearer "+memberToken)); err != nil {
+	if err := runServerCall(BearerInterceptor(st), ctx,
+		connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: compassv1connect.CommsServiceCreateChannelGroupProcedure},
+		bearerRequest("Bearer "+memberToken), next); err != nil {
 		t.Fatalf("member bearer on CreateChannelGroup: %v", err)
 	}
 
@@ -136,13 +133,9 @@ func TestBearerInterceptorAcceptsSchemeAndSpacingVariants(t *testing.T) {
 	}
 }
 
-// TestBearerInterceptorRejectsBadCredentials is the unary door's rejection
-// matrix: a missing header, a non-bearer scheme, a schemeless bare token, an
-// interior-space token, a well-formed-but-unknown token, a revoked token, and a
-// cross-kind (Runner) token each reject with CodeUnauthenticated and never run
-// the handler. Table-driven so a flipped rejection path reddens exactly the named
-// row. The unknown/revoked/cross-kind rows exercise the store-backed resolver's
-// three sentinels, all of which the door maps to one indistinguishable code.
+// TestBearerInterceptorRejectsBadCredentials pins the bearer door's rejection
+// matrix. Every malformed, unknown, revoked, or cross-kind credential is
+// CodeUnauthenticated and never reaches the handler.
 func TestBearerInterceptorRejectsBadCredentials(t *testing.T) {
 	ctx := context.Background()
 	st, acct, _ := openTestStore(t)
@@ -184,6 +177,67 @@ func TestBearerInterceptorRejectsBadCredentials(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec, err := runInterceptor(BearerInterceptor(st), bearerRequest(tc.header))
 			wantUnauthenticated(t, rec, err, "bearer door: "+tc.name)
+		})
+	}
+}
+
+// TestBearerInterceptorInjectsCallerForAValidStream pins auth on a server-streaming
+// procedure using the same v2 interceptor as unary calls.
+func TestBearerInterceptorInjectsCallerForAValidStream(t *testing.T) {
+	ctx := t.Context()
+	st, acct, _ := openTestStore(t)
+	tenant := st.EffectiveTenant(ctx)
+	token, err := IssueAccountToken(ctx, st, acct)
+	if err != nil {
+		t.Fatalf("IssueAccountToken: %v", err)
+	}
+	rec := &spyResult{}
+	spec := connect.Spec{StreamType: connect.StreamTypeServer, Procedure: compassv1connect.CompassServiceSubscribeEventsProcedure}
+	err = runServerCall(BearerInterceptor(st), ctx, spec, bearerRequest("Bearer "+token), recordingSpy(rec))
+	if err != nil {
+		t.Fatalf("a valid bearer token must be accepted on a server stream: %v", err)
+	}
+	if !rec.called || !rec.hasCaller || rec.caller != acct {
+		t.Fatalf("stream handler result = %+v, want caller %q", rec, acct)
+	}
+	if rec.tenant != tenant {
+		t.Fatalf("stream tenant = %q, want %q", rec.tenant, tenant)
+	}
+}
+
+// TestBearerInterceptorRejectsBadCredentialsOnStream pins rejection before the
+// handler for the v2 interceptor on a server-streaming procedure.
+func TestBearerInterceptorRejectsBadCredentialsOnStream(t *testing.T) {
+	ctx := t.Context()
+	st, acct, _ := openTestStore(t)
+	const unissued = "aW52YWxpZC10b2tlbg"
+	revokedToken, err := IssueAccountToken(ctx, st, acct)
+	if err != nil {
+		t.Fatalf("IssueAccountToken(revoked): %v", err)
+	}
+	if err := st.RevokeToken(ctx, hashToken(revokedToken)); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+	const runnerToken = "cnVubmVyLXRva2Vu"
+	if err := st.PutTokenHash(ctx, hashToken(runnerToken), store.Subject{Kind: store.SubjectRunner, ID: "some-runner"}); err != nil {
+		t.Fatalf("PutTokenHash(runner): %v", err)
+	}
+	cases := []struct {
+		name   string
+		header string
+	}{
+		{name: "missing header"},
+		{name: "non-bearer scheme", header: "Basic " + unissued},
+		{name: "unknown token", header: "Bearer " + unissued},
+		{name: "revoked token", header: "Bearer " + revokedToken},
+		{name: "cross-kind runner token", header: "Bearer " + runnerToken},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &spyResult{}
+			spec := connect.Spec{StreamType: connect.StreamTypeServer, Procedure: compassv1connect.CompassServiceSubscribeEventsProcedure}
+			err := runServerCall(BearerInterceptor(st), ctx, spec, bearerRequest(tc.header), recordingSpy(rec))
+			wantUnauthenticated(t, rec, err, "server-streaming bearer door: "+tc.name)
 		})
 	}
 }

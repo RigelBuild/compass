@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -43,14 +44,13 @@ func TestServeEnrollsProjectedRunnerTokenOverNetworkDoor(t *testing.T) {
 	waitServing(t, socketPath)
 
 	token := signTestTokenAt(t, key, testClusterIssuer, time.Now())
-	client := compassv1internalconnect.NewRunnerServiceClient(newTLSRunnerHTTPClient(t, pool), "https://"+addr)
-	req := connect.NewRequest(&compassv1internal.EnrollRequest{})
-	req.Header().Set("Authorization", "Bearer "+token)
-	resp, err := client.Enroll(t.Context(), req)
+	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(newTLSRunnerHTTPClient(t, pool), "https://"+addr, connecthttp.WithReadMaxBytes(0))))
+	ctx := clientContextWithBearer(t.Context(), "Bearer "+token)
+	resp, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{})
 	if err != nil {
 		t.Fatalf("Enroll with a projected token over the network door: %v", err)
 	}
-	if got := resp.Msg.GetRunnerId(); got != testNodeRunnerID {
+	if got := resp.GetRunnerId(); got != testNodeRunnerID {
 		t.Fatalf("runner_id = %q, want %q", got, testNodeRunnerID)
 	}
 }

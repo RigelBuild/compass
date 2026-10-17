@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
@@ -396,7 +396,7 @@ func (c *Comms) memberUpdatesFromWire(ctx context.Context, caller store.AccountI
 	for i, id := range order {
 		u, ok := byID[id]
 		if !ok || u == nil {
-			return nil, connect.NewError(connect.CodeInternal, errMissingMemberUpdate)
+			return nil, connect.NewError(connect.CodeInternal, errMissingMemberUpdate.Error()).WithCause(errMissingMemberUpdate)
 		}
 		out[i] = *u
 	}
@@ -412,13 +412,13 @@ func blocksFromWire(blocks []*compassv1.MessageBlock, githubHost string) ([]stor
 		switch body := b.GetBlock().(type) {
 		case *compassv1.MessageBlock_Text:
 			if body == nil {
-				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock.Error()).WithCause(errEmptyBlock)
 			}
 			text := body.Text
 			out = append(out, store.MessageBlock{Text: &text})
 		case *compassv1.MessageBlock_Ask:
 			if body == nil {
-				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock.Error()).WithCause(errEmptyBlock)
 			}
 			ask, err := askFromWire(body.Ask, githubHost)
 			if err != nil {
@@ -429,10 +429,10 @@ func blocksFromWire(blocks []*compassv1.MessageBlock, githubHost string) ([]stor
 			// ask_answer is server-owned: constructed only by RespondToAsk. An
 			// inbound one on the POST path is rejected at this edge — the only
 			// layer with caller identity (RIG-2257).
-			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock)
+			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock.Error()).WithCause(errServerOwnedBlock)
 		default:
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errEmptyBlock)
+				errEmptyBlock.Error()).WithCause(errEmptyBlock)
 		}
 	}
 	return out, nil
@@ -452,7 +452,7 @@ func askFromWire(a *compassv1.Ask, githubHost string) (*store.Ask, error) {
 		r, parseErr := refs.Parse(ref)
 		if parseErr != nil {
 			wrappedErr := fmt.Errorf("comms: parse canonical ask ref: %w", parseErr)
-			return nil, connect.NewError(connect.CodeInvalidArgument, wrappedErr)
+			return nil, connect.NewError(connect.CodeInvalidArgument, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 		if r.Kind == refs.KindForge {
 			if githubHost == "" {
@@ -474,7 +474,7 @@ func askRefFromWire(raw string) (string, error) {
 	r, err := refs.Parse(raw)
 	if err != nil {
 		wrappedErr := fmt.Errorf("ask ref: %w", err)
-		return "", connect.NewError(connect.CodeInvalidArgument, wrappedErr)
+		return "", connect.NewError(connect.CodeInvalidArgument, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return r.String(), nil
 }

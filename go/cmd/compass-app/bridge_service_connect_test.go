@@ -28,7 +28,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -90,44 +91,52 @@ func (b *syncBuffer) String() string {
 // row; every other method returns CodeUnimplemented via the embedded base.
 type connectStub struct {
 	compassv1connect.UnimplementedCompassServiceHandler
-	getServerInfo func(context.Context, *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error)
-	whoAmI        func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error)
+	getServerInfo func(context.Context, *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error)
+	whoAmI        func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error)
 	// rec, when set, captures the Authorization header of every probed RPC the
 	// stub serves, so a row can assert the target is armed (success) or disarmed
 	// (failure) by inspecting what the last forwarded request carried.
 	rec *authRecorder
 }
 
-func (s connectStub) GetServerInfo(ctx context.Context, req *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error) {
+func (s connectStub) GetServerInfo(ctx context.Context, req *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
 	if s.rec != nil {
-		s.rec.set(req.Header().Get("Authorization"))
+		info, ok := connect.CallInfoForServerContext(ctx)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInternal, "missing Connect call info")
+		}
+		s.rec.set(info.RequestHeader().Get("Authorization"))
 	}
 	return s.getServerInfo(ctx, req)
 }
 
-func (s connectStub) WhoAmI(ctx context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+func (s connectStub) WhoAmI(ctx context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
 	if s.rec != nil {
-		s.rec.set(req.Header().Get("Authorization"))
+		info, ok := connect.CallInfoForServerContext(ctx)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInternal, "missing Connect call info")
+		}
+		s.rec.set(info.RequestHeader().Get("Authorization"))
 	}
 	return s.whoAmI(ctx, req)
 }
 
 // okServerInfo replies with the app's own API version so the probe passes the
 // version gate.
-func okServerInfo(_ context.Context, _ *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error) {
-	return connect.NewResponse(&compassv1.GetServerInfoResponse{Version: "1.2.3", ApiVersion: clientAPIVersion}), nil
+func okServerInfo(_ context.Context, _ *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
+	return &compassv1.GetServerInfoResponse{Version: "1.2.3", ApiVersion: clientAPIVersion}, nil
 }
 
 // mismatchServerInfo replies with a different API version so the probe fails the
 // exact-match version gate.
-func mismatchServerInfo(_ context.Context, _ *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error) {
-	return connect.NewResponse(&compassv1.GetServerInfoResponse{Version: "9.9.9", ApiVersion: "compass.v2"}), nil
+func mismatchServerInfo(_ context.Context, _ *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
+	return &compassv1.GetServerInfoResponse{Version: "9.9.9", ApiVersion: "compass.v2"}, nil
 }
 
 // emptyAccountWhoAmI replies OK but with an empty account id, which Connect
 // rejects as an invalid identity.
-func emptyAccountWhoAmI(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-	return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: ""}), nil
+func emptyAccountWhoAmI(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+	return &compassv1.WhoAmIResponse{AccountId: ""}, nil
 }
 
 // unavailableServerInfo fails the GetServerInfo probe with a transport-style
@@ -135,14 +144,14 @@ func emptyAccountWhoAmI(_ context.Context, _ *connect.Request[compassv1.WhoAmIRe
 // on the first probe. It exercises the GetServerInfo-error disarm branch
 // (classified `other`) with a target that can still be re-probed to prove the
 // bearer was cleared.
-func unavailableServerInfo(_ context.Context, _ *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error) {
-	return nil, connect.NewError(connect.CodeUnavailable, errors.New("stub: server info unavailable"))
+func unavailableServerInfo(_ context.Context, _ *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
+	return nil, connect.NewError(connect.CodeUnavailable, "stub: server info unavailable")
 }
 
 // unauthWhoAmI is the shared bad-token WhoAmI: it fails closed with
 // CodeUnauthenticated regardless of the bearer.
-func unauthWhoAmI(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-	return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("stub: no caller"))
+func unauthWhoAmI(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+	return nil, connect.NewError(connect.CodeUnauthenticated, "stub: no caller")
 }
 
 // connectTLSStub starts an httptest TLS server serving stub over a real connect
@@ -150,8 +159,9 @@ func unauthWhoAmI(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]
 func connectTLSStub(t *testing.T, stub connectStub) (srv *httptest.Server, certPEM []byte) {
 	t.Helper()
 	mux := http.NewServeMux()
-	path, handler := compassv1connect.NewCompassServiceHandler(stub)
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, stub)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 
 	srv = httptest.NewUnstartedServer(mux)
 	srv.EnableHTTP2 = true
@@ -181,8 +191,8 @@ func connectService(t *testing.T, serverURL string, caPEM []byte) (*bridgeServic
 // a target-wiring toggle, and the expected outcome.
 type connectCase struct {
 	name         string
-	whoAmI       func(*authRecorder) func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error)
-	serverInfo   func(context.Context, *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error)
+	whoAmI       func(*authRecorder) func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error)
+	serverInfo   func(context.Context, *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error)
 	token        string
 	badURL       bool   // point the target at an unreachable URL
 	untrusted    bool   // do not pin the server's cert
@@ -196,21 +206,33 @@ type connectCase struct {
 
 // staticWhoAmI adapts a plain WhoAmI handler into the per-row recorder-taking
 // shape for the rows that ignore the recorder.
-func staticWhoAmI(h func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error)) func(*authRecorder) func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-	return func(*authRecorder) func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+func staticWhoAmI(h func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error)) func(*authRecorder) func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+	return func(*authRecorder) func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
 		return h
 	}
 }
 
 // recordingWhoAmI returns a WhoAmI that records the forwarded Authorization
 // header (so a success row can assert the probe was armed) and replies with id.
-func recordingWhoAmI(id string) func(*authRecorder) func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-	return func(rec *authRecorder) func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return func(_ context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-			rec.set(req.Header().Get("Authorization"))
-			return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: id}), nil
+func recordingWhoAmI(id string) func(*authRecorder) func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+	return func(rec *authRecorder) func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+			info, ok := connect.CallInfoForServerContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "missing Connect call info")
+			}
+			rec.set(info.RequestHeader().Get("Authorization"))
+			return &compassv1.WhoAmIResponse{AccountId: id}, nil
 		}
 	}
+}
+
+func requestAuthorization(ctx context.Context) (string, error) {
+	info, ok := connect.CallInfoForServerContext(ctx)
+	if !ok {
+		return "", connect.NewError(connect.CodeInternal, "missing Connect call info")
+	}
+	return info.RequestHeader().Get("Authorization"), nil
 }
 
 func connectClassificationCases() []connectCase {
@@ -377,10 +399,11 @@ func assertConnectSuccess(t *testing.T, svc *bridgeService, store tokenstore.Sto
 // asserts the success-armed bearer is still injected (SetBearer left armed).
 func assertStillArmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 	t.Helper()
-	cc := compassv1connect.NewCompassServiceClient(svc.conn.Load().target.Client())
+	client, serverURL := svc.conn.Load().target.Client()
+	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(client, serverURL, connecthttp.WithReadMaxBytes(0))))
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
-	if _, err := cc.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{})); err != nil {
+	if _, err := cc.WhoAmI(ctx, &compassv1.WhoAmIRequest{}); err != nil {
 		t.Fatalf("re-probe WhoAmI: %v", err)
 	}
 	if want := "Bearer " + probeToken; rec.get() != want {
@@ -399,10 +422,11 @@ func assertDisarmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 	// still proves what the target injected — the RPC error itself is expected
 	// and ignored; only the recorded header is the assertion.
 	rec.set("<not-probed>")
-	cc := compassv1connect.NewCompassServiceClient(svc.conn.Load().target.Client())
+	client, serverURL := svc.conn.Load().target.Client()
+	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(client, serverURL, connecthttp.WithReadMaxBytes(0))))
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
-	_, _ = cc.GetServerInfo(ctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	_, _ = cc.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 	if got := rec.get(); got != "" {
 		t.Errorf("target left armed after failure: Authorization = %q, want empty", got)
 	}
@@ -426,9 +450,13 @@ func TestClientAPIVersionMatchesServer(t *testing.T) {
 func TestConnectConcurrentIsSerialized(t *testing.T) {
 	// The stub reads the forwarded Authorization and reflects the bearer token
 	// as the account id, so a mismatched (token, accountID) proves interleaving.
-	echoWhoAmI := func(_ context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		bearer := strings.TrimPrefix(req.Header().Get("Authorization"), "Bearer ")
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "acct-for-" + bearer}), nil
+	echoWhoAmI := func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		authorization, err := requestAuthorization(ctx)
+		if err != nil {
+			return nil, err
+		}
+		bearer := strings.TrimPrefix(authorization, "Bearer ")
+		return &compassv1.WhoAmIResponse{AccountId: "acct-for-" + bearer}, nil
 	}
 	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: echoWhoAmI})
 	svc, store := connectService(t, srv.URL, certPEM)
@@ -553,14 +581,21 @@ func setupTLSStub(t *testing.T, rpcReached chan<- struct{}) (*httptest.Server, [
 	t.Helper()
 	stub := connectStub{
 		getServerInfo: okServerInfo,
-		whoAmI: func(_ context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-			if req.Header().Get("Authorization") != "Bearer "+probeToken {
-				return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("stub: no caller"))
+		whoAmI: func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+			authorization, err := requestAuthorization(ctx)
+			if err != nil {
+				return nil, err
 			}
-			return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "setup-account"}), nil
+			if authorization != "Bearer "+probeToken {
+				return nil, connect.NewError(connect.CodeUnauthenticated, "stub: no caller")
+			}
+			return &compassv1.WhoAmIResponse{AccountId: "setup-account"}, nil
 		},
 	}
-	_, connectHandler := compassv1connect.NewCompassServiceHandler(stub)
+	mux := http.NewServeMux()
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, stub)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc-web") {
 			if rpcReached != nil {
@@ -573,7 +608,7 @@ func setupTLSStub(t *testing.T, rpcReached chan<- struct{}) (*httptest.Server, [
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		connectHandler.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r)
 	})
 	srv := httptest.NewUnstartedServer(handler)
 	srv.EnableHTTP2 = true
@@ -655,8 +690,8 @@ func TestConnectServerChoiceSuccessAndRPC(t *testing.T) {
 }
 
 func TestConnectServerChoiceUsesStoredToken(t *testing.T) {
-	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "stored-account"}), nil
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return &compassv1.WhoAmIResponse{AccountId: "stored-account"}, nil
 	}})
 	store := tokenstore.New(t.TempDir())
 	if err := store.Write(srv.URL, probeToken); err != nil {
@@ -723,11 +758,15 @@ func TestConnectServerChoiceValidationFailures(t *testing.T) {
 }
 
 func TestConnectServerChoiceRetriesSameCAPick(t *testing.T) {
-	whoAmI := func(_ context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		if req.Header().Get("Authorization") != "Bearer "+probeToken {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("stub: no caller"))
+	whoAmI := func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		authorization, err := requestAuthorization(ctx)
+		if err != nil {
+			return nil, err
 		}
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "retry-account"}), nil
+		if authorization != "Bearer "+probeToken {
+			return nil, connect.NewError(connect.CodeUnauthenticated, "stub: no caller")
+		}
+		return &compassv1.WhoAmIResponse{AccountId: "retry-account"}, nil
 	}
 	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: whoAmI})
 	store := tokenstore.New(t.TempDir())
@@ -749,8 +788,8 @@ func TestConnectServerChoiceRetriesSameCAPick(t *testing.T) {
 }
 
 func TestConnectServerChoiceAfterDecisionAndPlainConnect(t *testing.T) {
-	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "setup-account"}), nil
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return &compassv1.WhoAmIResponse{AccountId: "setup-account"}, nil
 	}})
 	store := tokenstore.New(t.TempDir())
 	emitter := newFakeEmitter()
@@ -770,8 +809,8 @@ func TestConnectServerChoiceAfterDecisionAndPlainConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, otherPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "other-account"}), nil
+	other, otherPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return &compassv1.WhoAmIResponse{AccountId: "other-account"}, nil
 	}})
 	res := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: other.URL, CARef: picks.add(otherPEM)}})
 	if res.Kind != connectKindOther || res.Message != "Compass is already set up. Quit and reopen it to change this." {
@@ -788,8 +827,8 @@ func TestConnectServerChoiceAfterDecisionAndPlainConnect(t *testing.T) {
 }
 
 func TestConnectServerChoiceRejectedOnConfiguredService(t *testing.T) {
-	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return &compassv1.WhoAmIResponse{AccountId: "account"}, nil
 	}})
 	service, _ := connectService(t, srv.URL, certPEM)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
@@ -801,8 +840,8 @@ func TestConnectServerChoiceRejectedOnConfiguredService(t *testing.T) {
 }
 
 func TestConnectServerChoiceSaveErrorCanRetry(t *testing.T) {
-	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return &compassv1.WhoAmIResponse{AccountId: "account"}, nil
 	}})
 	store := &memoryTokenStore{}
 	fail := true
@@ -841,8 +880,8 @@ func TestConnectServerChoiceSaveErrorCanRetry(t *testing.T) {
 
 func TestConnectServerChoiceTokenStoreFailureDecidesReopen(t *testing.T) {
 	rec := &authRecorder{}
-	srv, certPEM := connectTLSStub(t, connectStub{rec: rec, getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	srv, certPEM := connectTLSStub(t, connectStub{rec: rec, getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return &compassv1.WhoAmIResponse{AccountId: "account"}, nil
 	}})
 	store := failingWriteStore{Store: tokenstore.New(t.TempDir())}
 	frames := newFakeEmitter()
@@ -869,8 +908,8 @@ func TestConnectServerChoiceTokenStoreFailureDecidesReopen(t *testing.T) {
 		t.Fatal("candidate target was not created")
 	}
 	client, serverURL := candidate.Client()
-	cc := compassv1connect.NewCompassServiceClient(client, serverURL)
-	if _, err := cc.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{})); err != nil {
+	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(client, serverURL, connecthttp.WithReadMaxBytes(0))))
+	if _, err := cc.WhoAmI(ctx, &compassv1.WhoAmIRequest{}); err != nil {
 		t.Fatalf("WhoAmI after token-store failure: %v", err)
 	}
 	if got := rec.get(); got != "" {
@@ -891,8 +930,8 @@ func TestConnectServerChoiceTokenStoreFailureDecidesReopen(t *testing.T) {
 }
 
 func TestConnectServerChoiceConfigCreatedAfterChooser(t *testing.T) {
-	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		return &compassv1.WhoAmIResponse{AccountId: "account"}, nil
 	}})
 	store := tokenstore.New(t.TempDir())
 	emitter := &setupDecisionEmitter{}

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -52,14 +52,14 @@ func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, session
 	binder := h.binder
 	h.mu.Unlock()
 	if binder == nil {
-		return connect.NewError(connect.CodeUnavailable, errLifetimeBinderUnavailable)
+		return connect.NewError(connect.CodeUnavailable, errLifetimeBinderUnavailable.Error()).WithCause(errLifetimeBinderUnavailable)
 	}
 	if sessionID == "" {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("BindLifetime requires a session_id"))
+		return connect.NewError(connect.CodeInvalidArgument, "BindLifetime requires a session_id")
 	}
 	account, ok := h.AccountForContainer(runnerID, containerName)
 	if !ok {
-		return connect.NewError(connect.CodePermissionDenied, errBindDenied)
+		return connect.NewError(connect.CodePermissionDenied, errBindDenied.Error()).WithCause(errBindDenied)
 	}
 	tctx, err := h.accountTenantContext(ctx, account)
 	if err != nil {
@@ -67,10 +67,10 @@ func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, session
 	}
 	if _, err := binder.BindLifetime(tctx, sessionID, account); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewError(connect.CodePermissionDenied, errBindDenied)
+			return connect.NewError(connect.CodePermissionDenied, errBindDenied.Error()).WithCause(errBindDenied)
 		}
 		wrappedErr := fmt.Errorf("binding lifetime: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return nil
 }
@@ -82,12 +82,12 @@ func (h *Hub) accountTenantContext(ctx context.Context, account store.AccountID)
 	binder := h.binder
 	h.mu.Unlock()
 	if binder == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errAccountTenantUnavailable)
+		return nil, connect.NewError(connect.CodeUnavailable, errAccountTenantUnavailable.Error()).WithCause(errAccountTenantUnavailable)
 	}
 	tenant, err := binder.AccountTenant(store.WithSystemRole(ctx), account)
 	if err != nil {
 		wrappedErr := fmt.Errorf("resolving account tenant: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return store.WithTenant(store.WithoutSystemRole(ctx), tenant), nil
 }

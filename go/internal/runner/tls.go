@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-
-	"connectrpc.com/connect"
 )
 
 // NewCATrustClient builds an HTTP/2-over-TLS client that trusts exactly the CA
@@ -25,7 +23,7 @@ import (
 // own client shape). RootCAs is set to ONLY the provided CA — the runner trusts
 // that one cert, not the system pool, so a misconfigured or swapped server cert
 // fails the handshake rather than silently trusting a wider set.
-func NewCATrustClient(caPath string) (connect.HTTPClient, error) {
+func NewCATrustClient(caPath string) (*http.Client, error) {
 	pem, err := os.ReadFile(caPath) //nolint:gosec // caPath is an operator-provided CLI flag, the whole point of --ca
 	if err != nil {
 		return nil, fmt.Errorf("reading --ca certificate %q: %w", caPath, err)

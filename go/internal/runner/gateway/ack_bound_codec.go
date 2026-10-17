@@ -1,17 +1,18 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
-	"google.golang.org/protobuf/encoding/protojson"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/connect/v2/connectproto"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
-	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // maxControlAckBytes bounds one frame's encoded ControlAck. Packed repeated uint64
@@ -32,27 +33,22 @@ var errControlAckTooLarge = errors.New("control ack exceeds size bound")
 // run before decode so an oversized ack never allocates its repeated fields.
 type ackBoundCodec struct{}
 
-var _ connect.Codec = ackBoundCodec{}
+var (
+	_                connect.Codec = ackBoundCodec{}
+	binaryProtoCodec               = connectproto.NewBinaryCodec()
+)
 
 func (ackBoundCodec) Name() string { return codecNameProtoBinary }
 
-func (ackBoundCodec) Marshal(message any) ([]byte, error) {
-	m, ok := message.(proto.Message)
-	if !ok {
-		return nil, fmt.Errorf("marshal %T: not a proto message", message)
-	}
-	return proto.Marshal(m)
+func (ackBoundCodec) MarshalWrite(ctx context.Context, dst io.Writer, message any) error {
+	return binaryProtoCodec.MarshalWrite(ctx, dst, message)
 }
 
-func (ackBoundCodec) MarshalAppend(dst []byte, message any) ([]byte, error) {
-	m, ok := message.(proto.Message)
-	if !ok {
-		return nil, fmt.Errorf("marshal %T: not a proto message", message)
+func (ackBoundCodec) UnmarshalRead(_ context.Context, src io.Reader, message any) error {
+	data, err := readAgentMessage(src)
+	if err != nil {
+		return err
 	}
-	return proto.MarshalOptions{}.MarshalAppend(dst, m)
-}
-
-func (ackBoundCodec) Unmarshal(data []byte, message any) error {
 	m, ok := message.(proto.Message)
 	if !ok {
 		return fmt.Errorf("unmarshal into %T: not a proto message", message)
@@ -67,6 +63,21 @@ func (ackBoundCodec) Unmarshal(data []byte, message any) error {
 		return fmt.Errorf("unmarshal into %T: %w", message, err)
 	}
 	return nil
+}
+
+func readAgentMessage(src io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(src, int64(maxAgentMessageBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAgentMessageBytes {
+		return nil, connect.Errorf(
+			connect.CodeResourceExhausted,
+			"message is larger than configured max %d",
+			maxAgentMessageBytes,
+		)
+	}
+	return data, nil
 }
 
 // controlAckBytes sums every encoded ControlAck in a frame request. Proto merges
@@ -106,21 +117,28 @@ func forEachBytesField(b []byte, num protowire.Number, fn func([]byte)) {
 // frameJSONCodec is Connect's protojson codec, except that it refuses the two
 // AgentFrame-carrying requests: protojson would decode an unbounded ack array past
 // the binary pre-scan, and the agent sends frames as binary gRPC only.
-type frameJSONCodec struct{ name string }
+type frameJSONCodec struct {
+	name  string
+	codec *connectproto.JSONCodec
+}
 
 var errJSONUnsupported = errors.New("AgentGateway frame requests accept binary proto only")
 
-func (c frameJSONCodec) Name() string { return c.name }
-
-func (frameJSONCodec) Marshal(message any) ([]byte, error) {
-	m, ok := message.(proto.Message)
-	if !ok {
-		return nil, fmt.Errorf("marshal %T: not a proto message", message)
-	}
-	return protojson.Marshal(m)
+func newFrameJSONCodec(name string) frameJSONCodec {
+	return frameJSONCodec{name: name, codec: connectproto.NewJSONCodec()}
 }
 
-func (frameJSONCodec) Unmarshal(data []byte, message any) error {
+func (c frameJSONCodec) Name() string { return c.name }
+
+func (c frameJSONCodec) MarshalWrite(ctx context.Context, dst io.Writer, message any) error {
+	return c.codec.MarshalWrite(ctx, dst, message)
+}
+
+func (c frameJSONCodec) UnmarshalRead(_ context.Context, src io.Reader, message any) error {
+	data, err := readAgentMessage(src)
+	if err != nil {
+		return err
+	}
 	m, ok := message.(proto.Message)
 	if !ok {
 		return fmt.Errorf("unmarshal into %T: not a proto message", message)
@@ -132,25 +150,21 @@ func (frameJSONCodec) Unmarshal(data []byte, message any) error {
 	if len(data) == 0 {
 		return errors.New("zero-length payload is not a valid JSON object")
 	}
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, m); err != nil {
+	if err := c.codec.UnmarshalOptions.Unmarshal(data, m); err != nil {
 		return fmt.Errorf("unmarshal into %T: %w", message, err)
 	}
 	return nil
 }
 
-// newAgentGatewayInterceptor builds the AgentGateway tracing interceptor. otelconnect
-// v0.10+ emits no per-message span events, so a long Publish stream keeps one small span.
-func newAgentGatewayInterceptor() (*otelconnect.Interceptor, error) {
-	return otelconnect.NewInterceptor()
-}
-
-// agentGatewayHandlerOptions registers tracing first so every AgentGateway call gets a server span.
-func agentGatewayHandlerOptions(ic *otelconnect.Interceptor) []connect.HandlerOption {
-	return []connect.HandlerOption{
-		otelx.HandlerInterceptors(ic),
-		connect.WithReadMaxBytes(maxAgentMessageBytes),
-		connect.WithCodec(ackBoundCodec{}),
-		connect.WithCodec(frameJSONCodec{name: "json"}),
-		connect.WithCodec(frameJSONCodec{name: "json; charset=utf-8"}),
+// agentGatewayHandlerOptions applies the read cap and bounded codecs to each
+// AgentGateway method.
+func agentGatewayHandlerOptions() []connecthttp.Option {
+	return []connecthttp.Option{
+		connecthttp.WithReadMaxBytes(maxAgentMessageBytes),
+		connecthttp.WithCodecs(
+			ackBoundCodec{},
+			newFrameJSONCodec(connect.CodecNameJSON),
+			newFrameJSONCodec(connect.CodecNameJSON+"; charset=utf-8"),
+		),
 	}
 }

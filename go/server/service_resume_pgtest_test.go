@@ -16,7 +16,7 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -79,7 +79,6 @@ func newResumeFixture(t *testing.T) resumeFixture {
 
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(admin.ID),
 	)
 	return resumeFixture{
@@ -94,12 +93,13 @@ func newResumeFixture(t *testing.T) resumeFixture {
 
 // startResume drives a StartAgentSession carrying resume_session_id under the
 // given bearer, over the real interceptor chain.
-func (f resumeFixture) startResume(ctx context.Context, bearer, resumeSessionID string) (*connect.Response[compassv1.StartAgentSessionResponse], error) {
-	req := connect.NewRequest(&compassv1.StartAgentSessionRequest{
+func (f resumeFixture) startResume(ctx context.Context, bearer, resumeSessionID string) (*compassv1.StartAgentSessionResponse, error) {
+	req := &compassv1.StartAgentSessionRequest{
 		ContainerName:   fakeContainer,
 		ResumeSessionId: resumeSessionID,
-	})
-	req.Header().Set("Authorization", "Bearer "+bearer)
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
 	return f.client.StartAgentSession(ctx, req)
 }
 

@@ -8,8 +8,6 @@ import (
 	"os"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runnertest"
@@ -62,7 +60,7 @@ func TestFailedReprovisionKeepsLiveContainerSocket(t *testing.T) {
 
 	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	stream, err := runnertest.DialAgentSocket(t, path).Control(subCtx, connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+	stream, err := runnertest.DialAgentSocket(t, path).Control(subCtx, &compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("agent Control over the kept socket = %v", err)
 	}
@@ -71,10 +69,11 @@ func TestFailedReprovisionKeepsLiveContainerSocket(t *testing.T) {
 			t.Errorf("closing Control stream: %v", err)
 		}
 	}()
-	if !stream.Receive() {
-		t.Fatalf("resumed agent got no op over the socket (stream err %v)", stream.Err())
+	msg, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("resumed agent got no op over the socket: %v", err)
 	}
-	if stream.Msg().GetReplayComplete() == nil {
-		t.Fatalf("first op = %v, want replay_complete", stream.Msg())
+	if msg.GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete", msg)
 	}
 }

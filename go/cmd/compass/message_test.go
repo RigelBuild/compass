@@ -9,7 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -29,44 +30,45 @@ type fakeComms struct {
 	gotAuth     string
 }
 
-func (f *fakeComms) PostMessage(_ context.Context, req *connect.Request[compassv1.PostMessageRequest]) (*connect.Response[compassv1.PostMessageResponse], error) {
-	f.gotPost = req.Msg
-	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.PostMessageResponse{
+func (f *fakeComms) PostMessage(ctx context.Context, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
+	f.gotPost = req
+	f.gotAuth = requestAuth(ctx)
+	return &compassv1.PostMessageResponse{
 		Message: &compassv1.Message{Id: "msg-123"},
-	}), nil
+	}, nil
 }
 
-func (f *fakeComms) ApprovePeer(_ context.Context, req *connect.Request[compassv1.ApprovePeerRequest]) (*connect.Response[compassv1.ApprovePeerResponse], error) {
-	f.peerApprove = req.Msg
-	f.peerAuth = append(f.peerAuth, req.Header().Get("Authorization"))
-	return connect.NewResponse(&compassv1.ApprovePeerResponse{Peering: &compassv1.Peering{
-		UserAccountId: "user-1", Handle: req.Msg.GetPeerHandle(), State: compassv1.PeeringState_PEERING_STATE_PENDING_OUTGOING,
-	}}), nil
+func (f *fakeComms) ApprovePeer(ctx context.Context, req *compassv1.ApprovePeerRequest) (*compassv1.ApprovePeerResponse, error) {
+	f.peerApprove = req
+	f.peerAuth = append(f.peerAuth, requestAuth(ctx))
+	return &compassv1.ApprovePeerResponse{Peering: &compassv1.Peering{
+		UserAccountId: "user-1", Handle: req.GetPeerHandle(), State: compassv1.PeeringState_PEERING_STATE_PENDING_OUTGOING,
+	}}, nil
 }
 
-func (f *fakeComms) RevokePeer(_ context.Context, req *connect.Request[compassv1.RevokePeerRequest]) (*connect.Response[compassv1.RevokePeerResponse], error) {
-	f.peerRevoke = req.Msg
-	f.peerAuth = append(f.peerAuth, req.Header().Get("Authorization"))
-	return connect.NewResponse(&compassv1.RevokePeerResponse{Deleted: f.revokeHit}), nil
+func (f *fakeComms) RevokePeer(ctx context.Context, req *compassv1.RevokePeerRequest) (*compassv1.RevokePeerResponse, error) {
+	f.peerRevoke = req
+	f.peerAuth = append(f.peerAuth, requestAuth(ctx))
+	return &compassv1.RevokePeerResponse{Deleted: f.revokeHit}, nil
 }
 
-func (f *fakeComms) ListPeers(_ context.Context, req *connect.Request[compassv1.ListPeersRequest]) (*connect.Response[compassv1.ListPeersResponse], error) {
-	f.peerList = req.Msg
-	f.peerAuth = append(f.peerAuth, req.Header().Get("Authorization"))
-	return connect.NewResponse(&compassv1.ListPeersResponse{Peerings: []*compassv1.Peering{
+func (f *fakeComms) ListPeers(ctx context.Context, req *compassv1.ListPeersRequest) (*compassv1.ListPeersResponse, error) {
+	f.peerList = req
+	f.peerAuth = append(f.peerAuth, requestAuth(ctx))
+	return &compassv1.ListPeersResponse{Peerings: []*compassv1.Peering{
 		{UserAccountId: "user-1", Handle: "alice", State: compassv1.PeeringState_PEERING_STATE_PENDING_OUTGOING},
 		{UserAccountId: "user-2", Handle: "bob", State: compassv1.PeeringState_PEERING_STATE_APPROVED},
-	}}), nil
+	}}, nil
 }
 
 // startFakeCommsServer stands up the fake CommsService over a plain-HTTP httptest
 // server and returns a client wired to it with the bearer interceptor.
 func startFakeCommsServer(t *testing.T, fake *fakeComms) compassv1connect.CommsServiceClient {
 	t.Helper()
-	path, handler := compassv1connect.NewCommsServiceHandler(fake)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	compassv1connect.RegisterCommsServiceHandler(server, fake)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	client, err := newCommsClient(connConfig{serverAddr: srv.URL, token: "test-token"})

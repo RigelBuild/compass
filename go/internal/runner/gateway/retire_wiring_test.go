@@ -28,7 +28,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -84,7 +84,7 @@ func TestRetireSessionReachesTheServedProducer(t *testing.T) {
 	// t.Context is cancelled at test end, so a subscription that outlives the
 	// assertions is reaped rather than leaked into the rest of the package's run.
 	stream, err := agentClient(t, path).Control(t.Context(),
-		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		&compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
 	}
@@ -94,10 +94,11 @@ func TestRetireSessionReachesTheServedProducer(t *testing.T) {
 	// the Gateway's drain over the real socket. A listener holding a DIFFERENT
 	// producer than the Gateway serves would deliver nothing here, so retiring
 	// through it could never touch the served session.
-	if !stream.Receive() {
-		t.Fatalf("no op reached the agent over the socket (stream err %v): the listener's producer is not the one the Gateway serves", stream.Err())
+	msg, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no op reached the agent over the socket: the listener's producer is not the one the Gateway serves: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "bound" {
+	if input := msg.GetPrompt().GetInput(); input != "bound" {
 		t.Fatalf("op off the socket = %q, want %q", input, "bound")
 	}
 
@@ -181,18 +182,20 @@ func TestSendControlReachesTheServedProducer(t *testing.T) {
 	}
 
 	stream, err := agentClient(t, path).Control(t.Context(),
-		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+		&compassv1internal.ControlSubscribeRequest{})
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
 	}
 	defer func() { _ = stream.Close() }()
 
-	if !stream.Receive() {
-		t.Fatalf("no op reached the agent over the socket (stream err %v): SendControl did not delegate to the served producer", stream.Err())
+	msg, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no op reached the agent over the socket: SendControl did not delegate to the served producer: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "relayed" {
+	if input := msg.GetPrompt().GetInput(); input != "relayed" {
 		t.Fatalf("op off the socket = %q, want %q", input, "relayed")
 	}
+
 }
 
 // TestSendControlOnUnwiredListenerErrors pins the nil-producer guard: unlike

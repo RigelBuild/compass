@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -78,19 +79,20 @@ func TestBearerTokenScopesCallerToIssuingTenant(t *testing.T) {
 		Protocols:       protocols,
 	}
 	t.Cleanup(transport.CloseIdleConnections)
-	client := compassv1connect.NewCommsServiceClient(&http.Client{Transport: transport}, "https://"+addr)
+	client := compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, "https://"+addr, connecthttp.WithReadMaxBytes(0))))
 
 	rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	req := connect.NewRequest(&compassv1.ListAccountsRequest{})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req := &compassv1.ListAccountsRequest{}
+	rpcCtx, info := connect.NewClientContext(rpcCtx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	resp, err := client.ListAccounts(rpcCtx, req)
 	if err != nil {
 		t.Fatalf("ListAccounts with tenant B bearer: %v", err)
 	}
 
 	var foundCaller, foundBootstrapAdmin bool
-	for _, account := range resp.Msg.GetAccounts() {
+	for _, account := range resp.GetAccounts() {
 		switch account.GetId() {
 		case string(caller.ID):
 			foundCaller = true
@@ -99,7 +101,7 @@ func TestBearerTokenScopesCallerToIssuingTenant(t *testing.T) {
 		}
 	}
 	if !foundCaller {
-		t.Fatalf("ListAccounts did not return issuing-tenant account %q: %v", caller.ID, resp.Msg.GetAccounts())
+		t.Fatalf("ListAccounts did not return issuing-tenant account %q: %v", caller.ID, resp.GetAccounts())
 	}
 	if foundBootstrapAdmin {
 		t.Fatalf("ListAccounts exposed bootstrap-tenant account %q to tenant B", admin.ID)

@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -206,14 +206,14 @@ var _ compassv1internalconnect.GuestControlHandler = (*supervisor)(nil)
 // immutable fields, so it is safe concurrently with exec and needs no lock.
 func (s *supervisor) Health(
 	_ context.Context,
-	_ *connect.Request[compassv1internal.HealthRequest],
-) (*connect.Response[compassv1internal.HealthResponse], error) {
-	return connect.NewResponse(&compassv1internal.HealthResponse{
+	_ *compassv1internal.HealthRequest,
+) (*compassv1internal.HealthResponse, error) {
+	return &compassv1internal.HealthResponse{
 		GuestdVersion:    s.version,
 		NetProvisioned:   s.netProvisioned,
 		WorkspaceMounted: s.workspaceMounted,
 		BootNonce:        s.bootNonce,
-	}), nil
+	}, nil
 }
 
 // Provision transitions ready -> provisioned (§(b)): it records the session's
@@ -226,23 +226,23 @@ func (s *supervisor) Health(
 // gate as before.
 func (s *supervisor) Provision(
 	ctx context.Context,
-	req *connect.Request[compassv1internal.ProvisionRequest],
-) (*connect.Response[compassv1internal.ProvisionResponse], error) {
-	m := req.Msg
+	req *compassv1internal.ProvisionRequest,
+) (*compassv1internal.ProvisionResponse, error) {
+	m := req
 	if m.GetDefaultExecUid() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("default_exec_uid must be non-zero: the guest supervisor never runs an exec as root"))
+			"default_exec_uid must be non-zero: the guest supervisor never runs an exec as root")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state == stateProvisioned {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("already provisioned"))
+			"already provisioned")
 	}
 	if s.state != stateReady {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("not ready: net/mount bringup incomplete"))
+			"not ready: net/mount bringup incomplete")
 	}
 	// Arm egress before opening the gate (§(d), OQ-4: under s.mu). A non-empty
 	// script that fails to arm leaves the state at stateReady so requireProvisioned
@@ -250,7 +250,7 @@ func (s *supervisor) Provision(
 	if script := m.GetNftScript(); script != "" {
 		if err := s.armFunc(ctx, script); err != nil {
 			wrappedErr := fmt.Errorf("arming nft egress: %w", err)
-			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 	}
 	// Start the unix→vsock forwarder before opening the gate (§(d)): after the V3
@@ -260,7 +260,7 @@ func (s *supervisor) Provision(
 	if s.gatewayPort != 0 {
 		if s.serveCtx == nil {
 			return nil, connect.NewError(connect.CodeInternal,
-				errors.New("gateway port configured but serve context is nil: the forwarder must bind the serve-lifetime context, not the per-request Provision context"))
+				"gateway port configured but serve context is nil: the forwarder must bind the serve-lifetime context, not the per-request Provision context")
 		}
 		proxyCtx := s.serveCtx
 		socketPath := s.gatewaySocketPath
@@ -270,22 +270,22 @@ func (s *supervisor) Provision(
 		closer, err := s.startGatewayProxy(proxyCtx, socketPath, m.GetDefaultExecUid(), s.gatewayPort) //nolint:contextcheck // deliberate: the forwarder is bound to the serve-lifetime ctx (proxyCtx=s.serveCtx), not the per-request Provision ctx, so it outlives this RPC (§(d))
 		if err != nil {
 			wrappedErr := fmt.Errorf("starting agent gateway proxy: %w", err)
-			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 		s.gatewayProxyCloser = closer
 	}
 	s.state = stateProvisioned
 	s.defaultExecUID = m.GetDefaultExecUid()
 	s.baseEnv = m.GetBaseEnv()
-	return connect.NewResponse(&compassv1internal.ProvisionResponse{}), nil
+	return &compassv1internal.ProvisionResponse{}, nil
 }
 
 // Exec returns 127 for missing programs and 126 when a program cannot execute.
 func (s *supervisor) Exec(
 	ctx context.Context,
-	req *connect.Request[compassv1internal.ExecRequest],
-) (*connect.Response[compassv1internal.ExecResponse], error) {
-	m := req.Msg
+	req *compassv1internal.ExecRequest,
+) (*compassv1internal.ExecResponse, error) {
+	m := req
 	if err := s.requireProvisioned(); err != nil {
 		return nil, err
 	}
@@ -304,13 +304,13 @@ func (s *supervisor) Exec(
 
 	command := m.GetCommand()
 	if len(command) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("exec command is empty: command[0] is the program"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "exec command is empty: command[0] is the program")
 	}
 	mergedEnv := s.mergeEnv(m.GetEnv())
 	if code, stderr, ok := guestExecPrecheck(command, m.Workdir, mergedEnv); ok {
-		return connect.NewResponse(&compassv1internal.ExecResponse{
+		return &compassv1internal.ExecResponse{
 			Stderr: []byte(stderr), ExitCode: int32(code), //nolint:gosec // G115: code is the bounded 126/127 exec-start status
-		}), nil
+		}, nil
 	}
 	cmd, err := s.buildChild(ctx, command, uid, m.Workdir, m.GetEnv())
 	if err != nil {
@@ -325,12 +325,12 @@ func (s *supervisor) Exec(
 
 	if err := cmd.Start(); err != nil {
 		if code, stderr, ok := guestExecStartFailure(command[0], m.Workdir, cmd.Path, err); ok {
-			return connect.NewResponse(&compassv1internal.ExecResponse{
+			return &compassv1internal.ExecResponse{
 				Stderr: []byte(stderr), ExitCode: int32(code), //nolint:gosec // G115: code is the bounded 126/127 exec-start status
-			}), nil
+			}, nil
 		}
 		wrappedErr := fmt.Errorf("spawning exec: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	waitErr := make(chan error, 1)
@@ -339,21 +339,21 @@ func (s *supervisor) Exec(
 	select {
 	case werr := <-waitErr:
 		if stdout.over || stderr.over {
-			return nil, connect.NewError(connect.CodeResourceExhausted,
-				fmt.Errorf("exec output exceeded the %d-byte capture cap", limit))
+			return nil, connect.Errorf(connect.CodeResourceExhausted,
+				"exec output exceeded the %d-byte capture cap", limit)
 		}
 		code, ok := exitStatus(werr)
 		if !ok {
 			// A non-ExitError wait failure is a spawn/IO fault, not a command
 			// that ran and failed — surface it as a handler error.
 			wrappedErr := fmt.Errorf("waiting for exec: %w", werr)
-			return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+			return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 		}
-		return connect.NewResponse(&compassv1internal.ExecResponse{
+		return &compassv1internal.ExecResponse{
 			Stdout:   stdout.Bytes(),
 			Stderr:   stderr.Bytes(),
 			ExitCode: int32(code), //nolint:gosec // G115: code is a bounded exit status (0-255 or 128+signal), never overflows int32
-		}), nil
+		}, nil
 	case <-ctx.Done():
 		// The caller's interest ended before the child exited: SIGKILL the
 		// group and reap it so no guest process outlives the RPC (§(b)).
@@ -361,9 +361,9 @@ func (s *supervisor) Exec(
 		<-waitErr
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, connect.NewError(connect.CodeDeadlineExceeded,
-				errors.New("exec exceeded its timeout"))
+				"exec exceeded its timeout")
 		}
-		return nil, connect.NewError(connect.CodeCanceled, errors.New("exec cancelled"))
+		return nil, connect.NewError(connect.CodeCanceled, "exec cancelled")
 	}
 }
 
@@ -371,7 +371,7 @@ func (s *supervisor) Exec(
 // interpreter faults are Connect errors before ExecStarted.
 func (s *supervisor) ExecStream(
 	ctx context.Context,
-	stream *connect.BidiStream[compassv1internal.ExecStreamRequest, compassv1internal.ExecStreamResponse],
+	stream compassv1internalconnect.GuestControlExecStreamServerStream,
 ) error {
 	if err := s.requireProvisioned(); err != nil {
 		return err
@@ -380,12 +380,12 @@ func (s *supervisor) ExecStream(
 	first, err := stream.Receive()
 	if err != nil {
 		wrappedErr := fmt.Errorf("reading start frame: %w", err)
-		return connect.NewError(connect.CodeInvalidArgument, wrappedErr)
+		return connect.NewError(connect.CodeInvalidArgument, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	start := first.GetStart()
 	if start == nil {
 		return connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("first ExecStream frame must be StartExec"))
+			"first ExecStream frame must be StartExec")
 	}
 
 	uid, err := s.resolveUID(start.Uid)
@@ -395,7 +395,7 @@ func (s *supervisor) ExecStream(
 	sendMu := &sync.Mutex{}
 	command := start.GetCommand()
 	if len(command) == 0 {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("exec command is empty: command[0] is the program"))
+		return connect.NewError(connect.CodeInvalidArgument, "exec command is empty: command[0] is the program")
 	}
 	mergedEnv := s.mergeEnv(start.GetEnv())
 	if code, stderr, ok := guestExecPrecheck(command, start.Workdir, mergedEnv); ok {
@@ -409,7 +409,7 @@ func (s *supervisor) ExecStream(
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		wrappedErr := fmt.Errorf("opening stdin pipe: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	cmd.Stdout = &streamWriter{stream: stream, mu: sendMu, stdout: true}
 	cmd.Stderr = &streamWriter{stream: stream, mu: sendMu, stdout: false}
@@ -422,7 +422,7 @@ func (s *supervisor) ExecStream(
 			return s.sendStartFailure(stream, sendMu, cmd, code, stderr)
 		}
 		wrappedErr := fmt.Errorf("spawning exec: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	id := s.register(cmd)
@@ -438,7 +438,7 @@ func (s *supervisor) ExecStream(
 		signalGroupKill(cmd)
 		_ = cmd.Wait() // reap the child we could not report; the stream is already broken
 		wrappedErr := fmt.Errorf("sending started frame: %w", startErr)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	// Receive loop: stdin frames feed the child's stdin, StdinClose half-closes it.
@@ -514,15 +514,15 @@ func (s *supervisor) ExecStream(
 // than "stop the guest".
 func (s *supervisor) Signal(
 	_ context.Context,
-	req *connect.Request[compassv1internal.SignalRequest],
-) (*connect.Response[compassv1internal.SignalResponse], error) {
-	m := req.Msg
+	req *compassv1internal.SignalRequest,
+) (*compassv1internal.SignalResponse, error) {
+	m := req
 	sig := syscall.Signal(m.GetSignal())
 
 	if m.GetExecId() == "" {
 		// signal value forwarded to children; the stop decision is unconditional.
 		s.initiateStop(sig)
-		return connect.NewResponse(&compassv1internal.SignalResponse{}), nil
+		return &compassv1internal.SignalResponse{}, nil
 	}
 
 	s.mu.Lock()
@@ -530,10 +530,10 @@ func (s *supervisor) Signal(
 	s.mu.Unlock()
 	if child == nil {
 		// Unknown or already-reaped exec: no-op success (§(b)).
-		return connect.NewResponse(&compassv1internal.SignalResponse{}), nil
+		return &compassv1internal.SignalResponse{}, nil
 	}
 	child.signalGroup(sig)
-	return connect.NewResponse(&compassv1internal.SignalResponse{}), nil
+	return &compassv1internal.SignalResponse{}, nil
 }
 
 // requireProvisioned is the exec gate: Exec/ExecStream are refused with a typed
@@ -543,7 +543,7 @@ func (s *supervisor) requireProvisioned() error {
 	defer s.mu.Unlock()
 	if s.state != stateProvisioned {
 		return connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("exec refused: session is not provisioned"))
+			"exec refused: session is not provisioned")
 	}
 	return nil
 }
@@ -562,7 +562,7 @@ func (s *supervisor) resolveUID(uid *uint32) (uint32, error) {
 	}
 	if u == 0 {
 		return 0, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("exec uid 0 is refused: the guest supervisor never runs an exec as root"))
+			"exec uid 0 is refused: the guest supervisor never runs an exec as root")
 	}
 	return u, nil
 }
@@ -609,7 +609,7 @@ func (s *supervisor) mergeEnv(execEnv map[string]string) []string {
 func (s *supervisor) buildChild(ctx context.Context, argv []string, uid uint32, workdir *string, env map[string]string) (*exec.Cmd, error) {
 	if len(argv) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("exec command is empty: command[0] is the program"))
+			"exec command is empty: command[0] is the program")
 	}
 	// The exec belongs to the provisioned guest session and is stopped explicitly,
 	// so it must survive the RPC context that starts it.
@@ -618,7 +618,7 @@ func (s *supervisor) buildChild(ctx context.Context, argv []string, uid uint32, 
 	prog, resolveErr := resolveProgram(argv[0], merged, workdir)
 	if resolveErr != nil {
 		wrappedErr := fmt.Errorf("resolving exec program %q: %w", argv[0], resolveErr)
-		return cmd, connect.NewError(connect.CodeInternal, wrappedErr)
+		return cmd, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	// guestd is PID 1 with no PATH, so use the session-env resolution above and
 	// clear exec.Command's process-PATH lookup error.
@@ -759,7 +759,7 @@ func guestExecStartFailure(program string, workdir *string, executablePath strin
 }
 
 func (s *supervisor) sendStartFailure(
-	stream *connect.BidiStream[compassv1internal.ExecStreamRequest, compassv1internal.ExecStreamResponse],
+	stream compassv1internalconnect.GuestControlExecStreamServerStream,
 	sendMu *sync.Mutex,
 	cmd *exec.Cmd,
 	code int,
@@ -773,19 +773,19 @@ func (s *supervisor) sendStartFailure(
 		Frame: &compassv1internal.ExecStreamResponse_Started{Started: &compassv1internal.ExecStarted{ExecId: id}},
 	}); err != nil {
 		wrappedErr := fmt.Errorf("sending started frame: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if err := stream.Send(&compassv1internal.ExecStreamResponse{
 		Frame: &compassv1internal.ExecStreamResponse_Stderr{Stderr: []byte(stderr)},
 	}); err != nil {
 		wrappedErr := fmt.Errorf("sending start failure stderr: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if err := stream.Send(&compassv1internal.ExecStreamResponse{
 		Frame: &compassv1internal.ExecStreamResponse_Exit{Exit: &compassv1internal.ExecExit{ExitCode: int32(code)}}, //nolint:gosec // G115: code is the bounded 126/127 exec-start status
 	}); err != nil {
 		wrappedErr := fmt.Errorf("sending start failure exit: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr)
+		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return nil
 }
@@ -917,7 +917,7 @@ func (c *cappedBuffer) Bytes() []byte { return c.buf.Bytes() }
 // serialized under a shared mutex (connect's Send is not concurrency-safe). It
 // copies each chunk because os/exec reuses its read buffer across Writes.
 type streamWriter struct {
-	stream *connect.BidiStream[compassv1internal.ExecStreamRequest, compassv1internal.ExecStreamResponse]
+	stream compassv1internalconnect.GuestControlExecStreamServerStream
 	mu     *sync.Mutex
 	stdout bool
 }

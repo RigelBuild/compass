@@ -79,9 +79,9 @@ const GO_NIX_FIXTURE = `let
   };
 in guestd
 `;
-// The flake.nix mirror carries the SAME Go vendorHash marker; the script writes
-// the recomputed value here too (FodEntry.mirrorFiles). A distinct placeholder so
-// a missing-mirror regression is unmistakable (it would stay at this value).
+// flake.nix and protoc-gen-connect-go.nix carry the same Go vendorHash; the
+// script writes the recomputed SRI to each mirror. Distinct placeholders make
+// a missing-mirror regression visible.
 const PLACEHOLDER_GO_MIRROR = "sha256-PLACEHOLDERflakemirror00000000000000000=";
 const GO_MIRROR_FIXTURE = `let
   compass-app = pkgs.buildGoModule {
@@ -253,18 +253,15 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		);
 	});
 
-	// RIG-2852 Gap 1: the SAME go/go.mod bump must refresh the flake.nix MIRROR to
-	// the identical value. Before this fix the mirror was never touched, so an
-	// auto-opened Go bump landed with flake.nix stale and nix flake check red.
-	// Assert every declared mirror got the go-modules SRI, none kept its placeholder.
-	test("refreshes every flake.nix mirror to the same SRI on a go/go.mod bump", async () => {
+	// Assert every declared mirror receives the Go module SRI, not just flake.nix.
+	test("refreshes every Go vendorHash mirror to the same SRI on a go/go.mod bump", async () => {
 		await Bun.write(join(repo, "go/go.mod"), "bumped\n");
 
 		const res = await runRefresh(repo);
 		expect(res.exitCode).toBe(0);
 
 		const mirrors = GO_ENTRY.mirrorFiles ?? [];
-		expect(mirrors.length).toBeGreaterThan(0); // the Go entry declares flake.nix
+		expect(mirrors.length).toBeGreaterThan(0);
 		for (const mirror of mirrors) {
 			const text = await readFile(join(repo, mirror), "utf8");
 			expect(maybeHashOnMarker(text, GO_ENTRY.marker)).toBe(

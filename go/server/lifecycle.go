@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"golang.org/x/sync/singleflight"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -173,10 +173,10 @@ func (l *lifecycleService) SpawnAsAccount(
 
 	// First check in the chain, so it covers the idempotent-resume branch too.
 	if !store.IsManagerRole(req.GetRole()) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrUnknownRole)
+		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrUnknownRole.Error()).WithCause(store.ErrUnknownRole)
 	}
 	if len(req.GetPersona()) > store.MaxPersonaBytes {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("persona is %d bytes; the limit is %d", len(req.GetPersona()), store.MaxPersonaBytes))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "persona is %d bytes; the limit is %d", len(req.GetPersona()), store.MaxPersonaBytes)
 	}
 	// Before CreateAgent: a later Provision refusal would leave the handle taken.
 	if err := runnerhub.CheckClientRequestID(req.GetClientRequestId()); err != nil {
@@ -188,10 +188,10 @@ func (l *lifecycleService) SpawnAsAccount(
 	callerOwner, err := l.store.AgentOwner(ctx, caller)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeInternal, errCallerNotAgent)
+			return nil, connect.NewError(connect.CodeInternal, errCallerNotAgent.Error()).WithCause(errCallerNotAgent)
 		}
 		wrappedErr := fmt.Errorf("resolving caller owner: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	// Shadow guard (defense in depth): an agent may never be spawned onto a handle
@@ -199,10 +199,10 @@ func (l *lifecycleService) SpawnAsAccount(
 	// peer shadowing a human's handle could be addressed in its place. Refuse with
 	// the same in-band already_exists, never revealing the holder's account kind.
 	if _, err := l.store.UserByHandle(ctx, req.GetHandle()); err == nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, errHandleTaken)
+		return nil, connect.NewError(connect.CodeAlreadyExists, errHandleTaken.Error()).WithCause(errHandleTaken)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		wrappedErr := fmt.Errorf("checking handle for user shadow: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	// Persona and role are set-at-creation from the spawn request: under the D9
@@ -227,7 +227,7 @@ func (l *lifecycleService) SpawnAsAccount(
 		resp, err = l.resumeOrReject(ctx, callerOwner, req)
 	default:
 		wrappedErr := fmt.Errorf("creating agent: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if err != nil {
 		return nil, err
@@ -265,17 +265,17 @@ func (l *lifecycleService) DespawnAsAccount(
 	callerOwner, err := l.store.AgentOwner(ctx, caller)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeInternal, errCallerNotAgent)
+			return nil, connect.NewError(connect.CodeInternal, errCallerNotAgent.Error()).WithCause(errCallerNotAgent)
 		}
 		wrappedErr := fmt.Errorf("resolving caller owner: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	target, err := l.resolveDespawnTarget(ctx, callerOwner, req.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
 	if target == caller {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
+		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf.Error()).WithCause(errCannotDespawnSelf)
 	}
 
 	// Authorized. Stop the target's live session first (best-effort, bounded so a
@@ -297,7 +297,7 @@ func (l *lifecycleService) DespawnAsAccount(
 			return &compassv1internal.DespawnPeerResponse{}, nil
 		}
 		wrappedErr := fmt.Errorf("resolving target placement: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	if _, err := l.hub.Remove(ctx, "", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: container}); err != nil {
@@ -306,7 +306,7 @@ func (l *lifecycleService) DespawnAsAccount(
 	}
 	if err := l.store.DeleteAgentPlacement(ctx, container); err != nil {
 		wrappedErr := fmt.Errorf("releasing agent placement: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	return &compassv1internal.DespawnPeerResponse{}, nil
 }
@@ -322,20 +322,20 @@ func (l *lifecycleService) resolveDespawnTarget(ctx context.Context, callerOwner
 		ownerHandle, err := l.store.AccountHandle(ctx, callerOwner)
 		if err != nil {
 			wrappedErr := fmt.Errorf("resolving caller owner handle: %w", err)
-			return "", connect.NewError(connect.CodeInternal, wrappedErr)
+			return "", connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 		ownerMatches = qh.Owner == ownerHandle
 	}
 	acc, err := l.store.AgentByHandle(ctx, callerOwner, qh.Handle)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
-			return "", connect.NewError(connect.CodeNotFound, errPeerNotFound)
+			return "", connect.NewError(connect.CodeNotFound, errPeerNotFound.Error()).WithCause(errPeerNotFound)
 		}
 		wrappedErr := fmt.Errorf("resolving target handle: %w", err)
-		return "", connect.NewError(connect.CodeInternal, wrappedErr)
+		return "", connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if !ownerMatches || acc.Agent.OwnerUserID != callerOwner {
-		return "", connect.NewError(connect.CodeNotFound, errPeerNotFound)
+		return "", connect.NewError(connect.CodeNotFound, errPeerNotFound.Error()).WithCause(errPeerNotFound)
 	}
 	return acc.ID, nil
 }
@@ -386,7 +386,7 @@ func (l *lifecycleService) resumeOrReject(
 		// violation (a torn index or a concurrent delete), not a routine outcome
 		// — surface it rather than masking a real fault as already_exists.
 		wrappedErr := fmt.Errorf("resolving existing handle: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	// Same owner: is it already placed (live), or unplaced (resumable)?
@@ -408,7 +408,7 @@ func (l *lifecycleService) resumeOrReject(
 		return l.provisionAndStart(ctx, existing.ID, existing.Agent.Persona, existing.Agent.Role, req)
 	default:
 		wrappedErr := fmt.Errorf("resolving placement for existing agent: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 }
 
@@ -441,7 +441,7 @@ func (l *lifecycleService) provisionAndStart(
 	if err := l.store.RecordAgentPlacement(ctx, agentID, runnerID, container); err != nil {
 		l.rollbackSpawn(ctx, container, "")
 		wrappedErr := fmt.Errorf("recording agent placement: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	startResp, err := l.hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{
@@ -456,7 +456,7 @@ func (l *lifecycleService) provisionAndStart(
 	if err := l.store.RecordAgentSession(ctx, sessionID, agentID); err != nil {
 		l.rollbackSpawn(ctx, container, sessionID)
 		wrappedErr := fmt.Errorf("recording agent session: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
 	return &compassv1internal.SpawnPeerResponse{

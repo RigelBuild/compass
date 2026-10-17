@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -83,7 +83,7 @@ func TestFetchSecretsUnboundSessionPermissionDenied(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-unbound"}))
+	_, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{SessionId: "sess-unbound"})
 	if err == nil {
 		t.Fatal("FetchSecrets for an unbound session = nil, want PermissionDenied")
 	}
@@ -110,7 +110,7 @@ func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	resp, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}))
+	resp, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{SessionId: "sess-1"})
 	if err != nil {
 		t.Fatalf("FetchSecrets for a bound session = %v, want the resolved set", err)
 	}
@@ -118,7 +118,7 @@ func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 		t.Fatalf("ResolveFor tenant = %q (set %t, system role %t), want %q without the system role",
 			tenant, ok, store.IsSystemRole(resolver.gotCtx), testAgentTenant)
 	}
-	got := resp.Msg.GetSecrets()
+	got := resp.GetSecrets()
 	if len(got) != 2 {
 		t.Fatalf("resolved set len = %d, want 2", len(got))
 	}
@@ -145,7 +145,7 @@ func TestFetchSecretsResolveErrorInternal(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}))
+	_, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{SessionId: "sess-1"})
 	if got := connect.CodeOf(err); got != connect.CodeInternal {
 		t.Fatalf("FetchSecrets with a failing resolve code = %v, want Internal", got)
 	}
@@ -165,11 +165,11 @@ func TestFetchSecretsByBoundContainerReturnsResolvedSet(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	resp, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-1"}))
+	resp, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{ContainerName: "cont-1"})
 	if err != nil {
 		t.Fatalf("FetchSecrets for a bound container = %v, want the resolved set", err)
 	}
-	if got := resp.Msg.GetSecrets(); len(got) != 1 || got[0].GetName() != "A" {
+	if got := resp.GetSecrets(); len(got) != 1 || got[0].GetName() != "A" {
 		t.Fatalf("resolved set = %+v, want the single secret A", got)
 	}
 }
@@ -193,7 +193,7 @@ func TestFetchSecretsRejectsForeignRunner(t *testing.T) {
 			url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 
 			foreign := newRawRunnerClient(t, url, "foreign-runner-tok")
-			_, err := foreign.FetchSecrets(context.Background(), connect.NewRequest(tc.request))
+			_, err := foreign.FetchSecrets(context.Background(), tc.request)
 			if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 				t.Fatalf("foreign Runner FetchSecrets code = %v, want PermissionDenied", got)
 			}
@@ -202,7 +202,7 @@ func TestFetchSecretsRejectsForeignRunner(t *testing.T) {
 			}
 
 			owner := newRawRunnerClient(t, url, "runner-tok")
-			if _, err := owner.FetchSecrets(context.Background(), connect.NewRequest(tc.request)); err != nil {
+			if _, err := owner.FetchSecrets(context.Background(), tc.request); err != nil {
 				t.Fatalf("owner Runner FetchSecrets = %v, want success", err)
 			}
 		})
@@ -219,7 +219,7 @@ func TestFetchSecretsUnboundContainerPermissionDenied(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-unbound"}))
+	_, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{ContainerName: "cont-unbound"})
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("FetchSecrets unbound container code = %v, want PermissionDenied", got)
 	}
@@ -237,7 +237,7 @@ func TestFetchSecretsMissingSelectorInvalidArgument(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{}))
+	_, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{})
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("FetchSecrets with no selector code = %v, want InvalidArgument", got)
 	}
@@ -258,7 +258,7 @@ func TestFetchSecretsBothSelectorsInvalidArgument(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1", ContainerName: "cont-1"}))
+	_, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{SessionId: "sess-1", ContainerName: "cont-1"})
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("FetchSecrets with both selectors code = %v, want InvalidArgument", got)
 	}
@@ -280,7 +280,7 @@ func TestFetchSecretsNoResolverFailedPrecondition(t *testing.T) {
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, nil)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
-	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}))
+	_, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{SessionId: "sess-1"})
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("FetchSecrets with no resolver code = %v, want FailedPrecondition", got)
 	}
@@ -613,7 +613,7 @@ func TestFetchSecretsWithoutAgentTenantNeverResolves(t *testing.T) {
 			url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
 			client := newRawRunnerClient(t, url, "runner-tok")
 
-			_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}))
+			_, err := client.FetchSecrets(context.Background(), &compassv1internal.FetchSecretsRequest{SessionId: "sess-1"})
 			if got := connect.CodeOf(err); got != tc.want {
 				t.Fatalf("FetchSecrets code = %v (%v), want %v", got, err, tc.want)
 			}

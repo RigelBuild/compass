@@ -24,18 +24,10 @@
 // non-admin account on the network door's privileged session RPCs with
 // CodePermissionDenied.
 //
-// Each door's caller injection is split across a unary and a streaming
-// interceptor that must BOTH be installed: BearerInterceptor with
-// BearerStreamInterceptor on the network door, AmbientIdentity with
-// AmbientStreamInterceptor on the socket door. Installing only the unary form
-// leaves streaming RPCs with no caller in context — CallerFrom returns false in
-// the handler and the admin gate fail-closes — a silent authorization gap rather
-// than a compile error, so the server stack must wire each pair together.
-//
-// The Rust is the spec, not a template: the wire contract, invariants, and
-// error semantics carry over exactly while the implementation is written as
-// native Go. The store keeps only
-// the SHA-256 hash of each issued token, never the plaintext, so reading it
-// yields no usable credential; a minted token is shown to its holder exactly
-// once (at TokenStore.Issue) and never recoverable after.
+// Each door uses one server interceptor for unary and streaming RPCs. This keeps
+// caller injection consistent across every method shape; auth and error semantics
+// carry over exactly while the implementation is written as native Go.
+// The store retains only the SHA-256 hash of each issued token, never the plaintext,
+// so reading it yields no usable credential. A minted token is shown to its holder
+// exactly once (at TokenStore.Issue) and never recoverable after.
 package auth

@@ -29,7 +29,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -55,7 +56,9 @@ func socketPath(t *testing.T) string {
 func stubHandler(t *testing.T) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.Handle(compassv1internalconnect.NewAgentGatewayHandler(compassv1internalconnect.UnimplementedAgentGatewayHandler{}))
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterAgentGatewayHandler(server, compassv1internalconnect.UnimplementedAgentGatewayHandler{})
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	return mux
 }
 
@@ -75,13 +78,13 @@ func agentClient(t *testing.T, path string) compassv1internalconnect.AgentGatewa
 		},
 	}
 	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1internalconnect.NewAgentGatewayClient(&http.Client{Transport: tr}, "http://unix")
+	return compassv1internalconnect.NewAgentGatewayClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "http://unix", connecthttp.WithReadMaxBytes(0))))
 }
 
 // callComms issues one Comms RPC over the socket and returns its error (nil on
 // an unexpected success).
 func callComms(ctx context.Context, c compassv1internalconnect.AgentGatewayClient) error {
-	_, err := c.Comms(ctx, connect.NewRequest(&compassv1.CommsCallRequest{CallId: "probe"}))
+	_, err := c.Comms(ctx, &compassv1.CommsCallRequest{CallId: "probe"})
 	return err
 }
 
@@ -522,13 +525,13 @@ type blockingGateway struct {
 	release chan struct{}
 }
 
-func (b blockingGateway) Comms(ctx context.Context, _ *connect.Request[compassv1.CommsCallRequest]) (*connect.Response[compassv1.CommsCallResult], error) {
+func (b blockingGateway) Comms(ctx context.Context, _ *compassv1.CommsCallRequest) (*compassv1.CommsCallResult, error) {
 	close(b.started)
 	select {
 	case <-b.release:
-		return connect.NewResponse(&compassv1.CommsCallResult{}), nil
+		return &compassv1.CommsCallResult{}, nil
 	case <-ctx.Done():
-		return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
+		return nil, connect.NewError(connect.CodeCanceled, ctx.Err().Error())
 	}
 }
 
@@ -543,7 +546,9 @@ func TestCloseForceClosesWedgedHandler(t *testing.T) {
 	defer close(h.release) // release the handler if it survives the force-close
 
 	mux := http.NewServeMux()
-	mux.Handle(compassv1internalconnect.NewAgentGatewayHandler(h))
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterAgentGatewayHandler(server, h)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 
 	l, err := listenAgentSocket(context.Background(), path, mux, func() {})
 	if err != nil {

@@ -27,7 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -270,12 +271,20 @@ func WhoAmIOverUDS(ctx context.Context, socket string) (string, error) {
 	}
 	defer transport.CloseIdleConnections()
 
-	client := compassv1connect.NewCompassServiceClient(&http.Client{Transport: transport}, "http://unix")
-	resp, err := client.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{}))
+	client := compassv1connect.NewCompassServiceClient(
+		connect.NewClient(
+			connecthttp.NewTransport(
+				&http.Client{Transport: transport},
+				"http://unix",
+				connecthttp.WithReadMaxBytes(0),
+			),
+		),
+	)
+	resp, err := client.WhoAmI(ctx, &compassv1.WhoAmIRequest{})
 	if err != nil {
 		return "", err
 	}
-	id := resp.Msg.GetAccountId()
+	id := resp.GetAccountId()
 	if id == "" {
 		return "", errors.New("WhoAmI returned an empty account id")
 	}

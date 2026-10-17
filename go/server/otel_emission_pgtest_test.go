@@ -8,20 +8,19 @@ package server
 // so each test installs one + an in-memory exporter and drives PostMessage.
 
 import (
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/otelconnect"
 	"context"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-
-	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -95,16 +94,16 @@ func seedAdminChannel(t *testing.T, ctx context.Context) (dsn string, channelID 
 }
 
 // postOverSocket posts one text message to channelID over the shipped socket
-// door and returns the connect response (whose header carries traceresponse if
-// the interceptor set one) and the created message id.
-func postOverSocket(t *testing.T, ctx context.Context, socketPath, channelID string) (*connect.Response[compassv1.PostMessageResponse], string) {
+// door and returns the response, captured response headers, and created message id.
+func postOverSocket(t *testing.T, ctx context.Context, socketPath, channelID string) (*connect.Header, string) {
 	t.Helper()
 	client := newUDSCommsClient(t, socketPath)
-	resp, err := client.PostMessage(ctx, connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello otel"}}}}))
+	ctx, info := connect.NewClientContext(ctx)
+	resp, err := client.PostMessage(ctx, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello otel"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage over socket: %v", err)
 	}
-	return resp, resp.Msg.GetMessage().GetId()
+	return info.ResponseHeader(), resp.GetMessage().GetId()
 }
 
 // TestServerEmissionSocketDoorTracesPostMessage is the enabled-path emission
@@ -121,7 +120,7 @@ func TestServerEmissionSocketDoorTracesPostMessage(t *testing.T) {
 
 	socketPath := serveOTelSocket(t, "otel-emission-test", dsn)
 
-	resp, msgID := postOverSocket(t, ctx, socketPath, channelID)
+	responseHeader, msgID := postOverSocket(t, ctx, socketPath, channelID)
 	if msgID == "" {
 		t.Fatal("PostMessage returned an empty message id")
 	}
@@ -130,7 +129,7 @@ func TestServerEmissionSocketDoorTracesPostMessage(t *testing.T) {
 	span := spanWithMessageID(t, exp.GetSpans(), msgID)
 
 	// (b) the traceresponse header's trace id equals that span's trace id.
-	hdr := resp.Header().Get(traceResponseHdr)
+	hdr := responseHeader.Get(traceResponseHdr)
 	if hdr == "" {
 		t.Fatal("response carried no traceresponse header on the enabled path")
 	}
@@ -168,12 +167,12 @@ func TestServerEmissionDisabledSetsNoTraceResponseHeader(t *testing.T) {
 	dsn, channelID := seedAdminChannel(t, ctx)
 	socketPath := serveOTelSocket(t, "otel-disabled-test", dsn)
 
-	resp, _ := postOverSocket(t, ctx, socketPath, channelID)
+	responseHeader, _ := postOverSocket(t, ctx, socketPath, channelID)
 
 	// The real disabled-path proof: no valid span context ⇒ no traceresponse
 	// header. (An in-memory exporter cannot prove absence here — no code path
 	// routes spans into a non-global provider, so its emptiness is vacuous.)
-	if hdr := resp.Header().Get(traceResponseHdr); hdr != "" {
+	if hdr := responseHeader.Get(traceResponseHdr); hdr != "" {
 		t.Fatalf("disabled path set traceresponse = %q, want none", hdr)
 	}
 }
@@ -195,9 +194,9 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(ctx, st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	srv, err := buildNetworkServer(
 		ctx,
@@ -265,9 +264,9 @@ func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(ctx, st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	srv, err := buildNetworkServer(
 		ctx,
@@ -354,9 +353,9 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(t.Context(), st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	srv, err := buildNetworkServer(
 		ctx,

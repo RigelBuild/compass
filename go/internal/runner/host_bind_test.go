@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -121,7 +121,7 @@ func TestFreshStartRecordsZeroBinds(t *testing.T) {
 // would make the Server reprovision the container.
 func TestResumeStartBindErrorFailsBeforeStartAgent(t *testing.T) {
 	host, engine, pub := provisionForBind(t)
-	pub.setBind(connect.NewError(connect.CodePermissionDenied, errors.New("denied")), nil)
+	pub.setBind(connect.NewError(connect.CodePermissionDenied, "denied"), nil)
 
 	_, err := host.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: "resume-1"}, "body", "")
 	if err == nil {
@@ -174,7 +174,7 @@ func TestReloadBindErrorFailsBeforeStartAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fresh Start = %v", err)
 	}
-	pub.setBind(connect.NewError(connect.CodeUnavailable, errors.New("server down")), nil)
+	pub.setBind(connect.NewError(connect.CodeUnavailable, "server down"), nil)
 
 	err = host.Reload(t.Context(), sessionID)
 	if err == nil {
@@ -203,7 +203,7 @@ func TestReloadBindDeniedStillRelaunches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fresh Start = %v", err)
 	}
-	pub.setBind(connect.NewError(connect.CodePermissionDenied, errors.New("no row")), nil)
+	pub.setBind(connect.NewError(connect.CodePermissionDenied, "no row"), nil)
 
 	if err := host.Reload(t.Context(), sessionID); err != nil {
 		t.Fatalf("Reload with a denied bind = %v, want the relaunch to proceed", err)

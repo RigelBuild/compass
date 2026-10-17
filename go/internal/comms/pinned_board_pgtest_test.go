@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -68,7 +68,7 @@ func TestUpdatePinnedBoardPinFromAnotherChannelRejectedInBand(t *testing.T) {
 	}
 	msgB := pinnableMessage(t, st, chB.ID, owner.ID, "over in B")
 
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(chA.ID), msgB, "")))
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(chA.ID), msgB, ""))
 	connectCodeIs(t, err, connect.CodeNotFound, "pin of a message from another channel")
 }
 
@@ -87,19 +87,19 @@ func TestUpdatePinnedBoardRepointSwapsAtomically(t *testing.T) {
 	m2 := pinnableMessage(t, st, ch.ID, owner.ID, "second")
 	m3 := pinnableMessage(t, st, ch.ID, owner.ID, "replacement")
 
-	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m1, ""))); err != nil {
+	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m1, "")); err != nil {
 		t.Fatalf("pin m1: %v", err)
 	}
-	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m2, ""))); err != nil {
+	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m2, "")); err != nil {
 		t.Fatalf("pin m2: %v", err)
 	}
 
 	// Repoint m1 -> m3: m3 takes m1's slot (position 0), m2 stays at position 1.
-	resp, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m3, m1)))
+	resp, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m3, m1))
 	if err != nil {
 		t.Fatalf("repoint m1->m3: %v", err)
 	}
-	got := wireBoardIDs(resp.Msg.GetChannel().GetPinnedEntries())
+	got := wireBoardIDs(resp.GetChannel().GetPinnedEntries())
 	if len(got) != 2 || got[0] != m3 || got[1] != m2 {
 		t.Fatalf("board = %v, want [%s %s] (m3 at m1's preserved position, m2 unchanged)", got, m3, m2)
 	}
@@ -120,11 +120,11 @@ func TestUpdatePinnedBoardRepointStaleFailsInBand(t *testing.T) {
 	m2 := pinnableMessage(t, st, ch.ID, owner.ID, "never pinned")
 	m3 := pinnableMessage(t, st, ch.ID, owner.ID, "incoming")
 
-	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m1, ""))); err != nil {
+	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m1, "")); err != nil {
 		t.Fatalf("pin m1: %v", err)
 	}
 	// m2 was never pinned, so the CAS that names it as replace is lost.
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m3, m2)))
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m3, m2))
 	connectCodeIs(t, err, connect.CodeAlreadyExists, "repoint naming a no-longer-pinned id")
 }
 
@@ -143,12 +143,12 @@ func TestUpdatePinnedBoardCapRejectedInBand(t *testing.T) {
 	const boardCap = 5
 	for i := range boardCap {
 		m := pinnableMessage(t, st, ch.ID, owner.ID, "pin")
-		if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m, ""))); err != nil {
+		if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m, "")); err != nil {
 			t.Fatalf("pin %d: %v", i, err)
 		}
 	}
 	overflow := pinnableMessage(t, st, ch.ID, owner.ID, "one too many")
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), overflow, "")))
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), overflow, ""))
 	connectCodeIs(t, err, connect.CodeFailedPrecondition, "cap+1 fresh pin")
 }
 
@@ -160,33 +160,33 @@ func TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsPermissionDenied(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	other := mustUser(t, st, "other")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{other.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 	// A real pin target in the channel (posted by the owner, who may post).
 	msg := pinnableMessage(t, st, store.ChannelID(chID), owner.ID, "target")
 
-	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), &compassv1.SetChannelPolicyRequest{
 		ChannelId:   chID,
 		PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
 		OwnerHandle: owner.Handle,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
 
 	// A visible non-owner member receives the distinct permission denial.
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(chID, msg, "")))
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), pinReq(chID, msg, ""))
 	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner pin on OWNER_ONLY channel")
 	if want := `channel "room" is owner-only: only its owner can change the pinned board`; !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %q, want it to contain %q", err, want)
 	}
 	// The owner, by contrast, may mutate the OWNER_ONLY board.
-	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(chID, msg, ""))); err != nil {
+	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(chID, msg, "")); err != nil {
 		t.Fatalf("owner pin on OWNER_ONLY channel: %v", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestUpdatePinnedBoardNonMemberIsNotFound(t *testing.T) {
 	}
 	msg := pinnableMessage(t, st, ch.ID, owner.ID, "target")
 
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, outsider.ID), connect.NewRequest(pinReq(string(ch.ID), msg, "")))
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, outsider.ID), pinReq(string(ch.ID), msg, ""))
 	connectCodeIs(t, err, connect.CodeNotFound, "non-member board mutation")
 }
 
@@ -221,21 +221,21 @@ func TestUpdatePinnedBoardUnpinRemovesEntry(t *testing.T) {
 	}
 	m1 := pinnableMessage(t, st, ch.ID, owner.ID, "keep")
 	m2 := pinnableMessage(t, st, ch.ID, owner.ID, "drop")
-	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m1, ""))); err != nil {
+	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m1, "")); err != nil {
 		t.Fatalf("pin m1: %v", err)
 	}
-	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), m2, ""))); err != nil {
+	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), m2, "")); err != nil {
 		t.Fatalf("pin m2: %v", err)
 	}
 
-	resp, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdatePinnedBoardRequest{
+	resp, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), &compassv1.UpdatePinnedBoardRequest{
 		ChannelId: string(ch.ID),
 		Op:        &compassv1.UpdatePinnedBoardRequest_UnpinMessageId{UnpinMessageId: m2},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("unpin m2: %v", err)
 	}
-	got := wireBoardIDs(resp.Msg.GetChannel().GetPinnedEntries())
+	got := wireBoardIDs(resp.GetChannel().GetPinnedEntries())
 	if len(got) != 1 || got[0] != m1 {
 		t.Fatalf("board = %v after unpin m2, want [%s]", got, m1)
 	}
@@ -251,9 +251,9 @@ func TestUpdatePinnedBoardEmptyOpIsInvalidArgument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdatePinnedBoardRequest{
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), &compassv1.UpdatePinnedBoardRequest{
 		ChannelId: string(ch.ID),
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "request with no op set")
 }
 
@@ -272,7 +272,7 @@ func TestUpdatePinnedBoardEmitsChannelChangedWithBoard(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, owner.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	if _, err := h.svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(string(ch.ID), msg, ""))); err != nil {
+	if _, err := h.svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), pinReq(string(ch.ID), msg, "")); err != nil {
 		t.Fatalf("UpdatePinnedBoard: %v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestUpdatePinnedBoardMembershipRevokedMidFlightIsNotFound(t *testing.T) {
 
 	// The removed member's pin is refused with the same NotFound a non-member
 	// gets — the in-tx membership gate, not a stale edge snapshot, decides.
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(string(ch.ID), msg, "")))
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), pinReq(string(ch.ID), msg, ""))
 	connectCodeIs(t, err, connect.CodeNotFound, "pin by a member whose membership was revoked")
 }
 
@@ -330,20 +330,20 @@ func TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsPermissionDenied(t *testing.T) 
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 	other := mustUser(t, st, "other")
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, MemberHandles: []string{other.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 	msg := pinnableMessage(t, st, store.ChannelID(chID), owner.ID, "target")
-	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), &compassv1.SetChannelPolicyRequest{
 		ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY, OwnerHandle: owner.Handle,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(chID, msg, "")))
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), pinReq(chID, msg, ""))
 	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner pin on OWNER_ONLY channel (in-tx gate)")
 }
 
@@ -370,11 +370,11 @@ func TestUpdatePinnedBoardNonOwnerMemberOnOpenSucceeds(t *testing.T) {
 
 	// `other` is a plain member of an OPEN channel (default policy): the pin
 	// succeeds and the returned board carries it.
-	resp, err := svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(string(ch.ID), msg, "")))
+	resp, err := svc.UpdatePinnedBoard(WithActor(ctx, other.ID), pinReq(string(ch.ID), msg, ""))
 	if err != nil {
 		t.Fatalf("non-owner member pin on OPEN channel: %v", err)
 	}
-	got := wireBoardIDs(resp.Msg.GetChannel().GetPinnedEntries())
+	got := wireBoardIDs(resp.GetChannel().GetPinnedEntries())
 	if len(got) != 1 || got[0] != msg {
 		t.Fatalf("board = %v, want [%s] (non-owner member's pin present)", got, msg)
 	}

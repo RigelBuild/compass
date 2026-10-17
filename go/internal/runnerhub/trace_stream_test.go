@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/otelconnect"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -24,6 +24,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -88,19 +89,21 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 	hub.bindContainer("container-lost", testAgentAccount, testRunnerID)
 	hub.promoteSession(t.Context(), "container-lost", "lost-session")
 	traceCtx, traceSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "publish-client")
-	interceptor, err := otelconnect.NewInterceptor()
+	interceptor, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := NewMountedHandler(hub, runnerResolverForFetch().resolve, nil, nil, interceptor)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	Mount(mux, hub, runnerResolverForFetch().resolve, nil, nil, interceptor)
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.Protocols = cleartextHTTP2()
 	server.Start()
 	t.Cleanup(server.Close)
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
-	publish := client.PublishEvents(traceCtx)
+	publish, err := client.PublishEvents(traceCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "lost-session",
@@ -118,7 +121,10 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 
 	streamCtx, streamSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "sessions-client")
 	streamCtx = otelx.ContextWithTraceparent(streamCtx, h6Traceparent)
-	sessions := client.Sessions(streamCtx)
+	sessions, err := client.Sessions(streamCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	loopErr := make(chan error, 1)
 	go runnerSessionsLoopWithNotFound(sessions, loopErr)
 	waitRouterAttached(t, hub)
@@ -131,7 +137,7 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 	case <-timeAfter():
 		t.Fatal("send-only refusal did not produce a presence edge")
 	}
-	if err := sessions.CloseRequest(); err != nil {
+	if err := sessions.CloseSend(); err != nil {
 		t.Fatalf("Sessions.CloseRequest: %v", err)
 	}
 	if err := recvLoopErr(t, loopErr); err != nil {
@@ -167,19 +173,18 @@ func TestRelayCommsCallLogCarriesServerSpan(t *testing.T) {
 	resolver := &fakeResolver{tokens: map[string]resolverEntry{
 		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: testRunnerID}},
 	}}
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := NewMountedHandler(hub, resolver.resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	Mount(mux, hub, resolver.resolve, nil, nil, otelIC)
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.Protocols = cleartextHTTP2()
 	server.Start()
 	t.Cleanup(server.Close)
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
-	_, err = client.RelayCommsCall(t.Context(), connect.NewRequest(&compassv1internal.RelayCommsCallRequest{SessionId: "sess-1"}))
+	_, err = client.RelayCommsCall(t.Context(), &compassv1internal.RelayCommsCallRequest{SessionId: "sess-1"})
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("RelayCommsCall error = %v, want FailedPrecondition", err)
 	}
@@ -215,13 +220,12 @@ func TestPublishEventsHubDeliverLogHasNoStreamTrace(t *testing.T) {
 	resolver := &fakeResolver{tokens: map[string]resolverEntry{
 		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: testRunnerID}},
 	}}
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := NewMountedHandler(hub, resolver.resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	Mount(mux, hub, resolver.resolve, nil, nil, otelIC)
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.Protocols = cleartextHTTP2()
 	server.Start()
@@ -229,7 +233,10 @@ func TestPublishEventsHubDeliverLogHasNoStreamTrace(t *testing.T) {
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
 	ctx, span := otel.Tracer("runnerhub.trace-test").Start(t.Context(), "publish-events-test")
 	defer span.End()
-	publish := client.PublishEvents(ctx)
+	publish, err := client.PublishEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "sess-1",
@@ -303,20 +310,22 @@ func TestRunnerHubStreamsStripWorkSpanAndRetainStreamMetrics(t *testing.T) {
 	resolver := &fakeResolver{tokens: map[string]resolverEntry{
 		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: testRunnerID}},
 	}}
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := NewMountedHandler(hub, resolver.resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	Mount(mux, hub, resolver.resolve, nil, nil, otelIC)
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.Protocols = cleartextHTTP2()
 	server.Start()
 	t.Cleanup(server.Close)
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
 
-	publish := client.PublishEvents(t.Context())
+	publish, err := client.PublishEvents(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "unmapped-session",
@@ -333,7 +342,10 @@ func TestRunnerHubStreamsStripWorkSpanAndRetainStreamMetrics(t *testing.T) {
 	assertNoSpanAtBindingCall(t, bindings, "resolve")
 
 	bindings.seedBinding("lost-session", testAgentAccount, testRunnerID)
-	sessions := client.Sessions(t.Context())
+	sessions, err := client.Sessions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	loopErr := make(chan error, 1)
 	go runnerSessionsLoopWithNotFound(sessions, loopErr)
 	waitRouterAttached(t, hub)
@@ -344,7 +356,7 @@ func TestRunnerHubStreamsStripWorkSpanAndRetainStreamMetrics(t *testing.T) {
 		t.Fatalf("NotFound binding call = %q, want tenant", got)
 	}
 	assertNoSpanAtBindingCall(t, bindings, "tenant")
-	if err := sessions.CloseRequest(); err != nil {
+	if err := sessions.CloseSend(); err != nil {
 		t.Fatalf("Sessions.CloseRequest: %v", err)
 	}
 	if err := recvLoopErr(t, loopErr); err != nil {
@@ -377,7 +389,7 @@ func assertNoSpanAtBindingCall(t *testing.T, bindings *traceRecordingBindingStor
 	}
 }
 
-func runnerSessionsLoopWithNotFound(stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse], done chan<- error) {
+func runnerSessionsLoopWithNotFound(stream compassv1internalconnect.RunnerServiceSessionsClientStream, done chan<- error) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		done <- err
 		return

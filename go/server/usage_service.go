@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"slices"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
@@ -30,40 +30,40 @@ var _ compassv1connect.UsageServiceHandler = (*usageService)(nil)
 
 // GetUsageSeries returns rollup buckets for the caller's scope: admins see the
 // tenant, users their own agents, and agents their own subtree.
-func (s *usageService) GetUsageSeries(ctx context.Context, req *connect.Request[compassv1.GetUsageSeriesRequest]) (*connect.Response[compassv1.GetUsageSeriesResponse], error) {
+func (s *usageService) GetUsageSeries(ctx context.Context, req *compassv1.GetUsageSeriesRequest) (*compassv1.GetUsageSeriesResponse, error) {
 	caller, ok := auth.CallerFrom(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing authenticated caller"))
+		return nil, connect.NewError(connect.CodeUnauthenticated, "missing authenticated caller")
 	}
-	start, end := req.Msg.GetStartUnixMs(), req.Msg.GetEndUnixMs()
+	start, end := req.GetStartUnixMs(), req.GetEndUnixMs()
 	if end <= start {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("usage window end must be after start"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "usage window end must be after start")
 	}
-	granularity := usage.Granularity(req.Msg.GetGranularity())
+	granularity := usage.Granularity(req.GetGranularity())
 	if err := (&usage.SeriesQuery{Granularity: granularity}).Validate(); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	agentID, subtree := req.Msg.GetAgentAccountId(), req.Msg.GetIncludeSubtree()
+	agentID, subtree := req.GetAgentAccountId(), req.GetIncludeSubtree()
 	if subtree && agentID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("include_subtree requires agent_account_id"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "include_subtree requires agent_account_id")
 	}
 	filterIDs, admin, err := s.agentFilter(ctx, caller, agentID, subtree)
 	if err != nil {
 		return nil, err
 	}
 	if !admin && len(filterIDs) == 0 {
-		return connect.NewResponse(&compassv1.GetUsageSeriesResponse{}), nil
+		return &compassv1.GetUsageSeriesResponse{}, nil
 	}
 	buckets, err := s.usageStore.TokenUsageSeries(ctx, usage.SeriesQuery{
 		Granularity: granularity, StartUnixMs: start, EndUnixMs: end,
-		AgentAccountIDs: filterIDs, Provider: req.Msg.GetProvider(),
+		AgentAccountIDs: filterIDs, Provider: req.GetProvider(),
 	})
 	if err != nil {
 		if errors.Is(err, usage.ErrInvalidArgument) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 		wrappedErr := fmt.Errorf("reading usage series: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	out := make([]*compassv1.UsageBucket, 0, len(buckets))
 	for _, bucket := range buckets {
@@ -76,7 +76,7 @@ func (s *usageService) GetUsageSeries(ctx context.Context, req *connect.Request[
 			CostMicroUsd:      bucket.CostMicroUSD,
 		})
 	}
-	return connect.NewResponse(&compassv1.GetUsageSeriesResponse{Buckets: out}), nil
+	return &compassv1.GetUsageSeriesResponse{Buckets: out}, nil
 }
 
 // agentFilter resolves the agent IDs a read may cover. A non-admin with no agents
@@ -85,7 +85,7 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	account, err := s.store.GetAccount(ctx, caller)
 	if err != nil {
 		wrappedErr := fmt.Errorf("resolving usage caller: %w", err)
-		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	admin := account.User != nil && account.User.Role == store.UserRoleAdmin
 	var scope []store.Account
@@ -98,11 +98,11 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	case account.User != nil && !admin:
 		scope, err = s.store.AgentsByOwner(ctx, caller)
 	case account.User == nil:
-		return nil, false, connect.NewError(connect.CodePermissionDenied, errors.New("caller account cannot read usage"))
+		return nil, false, connect.NewError(connect.CodePermissionDenied, "caller account cannot read usage")
 	}
 	if err != nil {
 		wrappedErr := fmt.Errorf("resolving usage scope: %w", err)
-		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	ids := accountIDs(scope)
 	if requested == "" {
@@ -112,22 +112,22 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	target, err := s.store.GetAccount(ctx, targetID)
 	if errors.Is(err, store.ErrNotFound) {
 		if admin {
-			return nil, false, connect.NewError(connect.CodeNotFound, err)
+			return nil, false, connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
 		}
-		return nil, false, connect.NewError(connect.CodePermissionDenied, errors.New("agent is outside caller usage scope"))
+		return nil, false, connect.NewError(connect.CodePermissionDenied, "agent is outside caller usage scope")
 	}
 	if err != nil {
 		wrappedErr := fmt.Errorf("resolving usage agent: %w", err)
-		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if !target.IsAgent() {
 		if admin {
-			return nil, false, connect.NewError(connect.CodeNotFound, errors.New("agent not found"))
+			return nil, false, connect.NewError(connect.CodeNotFound, "agent not found")
 		}
-		return nil, false, connect.NewError(connect.CodePermissionDenied, errors.New("agent is outside caller usage scope"))
+		return nil, false, connect.NewError(connect.CodePermissionDenied, "agent is outside caller usage scope")
 	}
 	if !admin && !slices.Contains(ids, string(target.ID)) {
-		return nil, false, connect.NewError(connect.CodePermissionDenied, errors.New("agent is outside caller usage scope"))
+		return nil, false, connect.NewError(connect.CodePermissionDenied, "agent is outside caller usage scope")
 	}
 	if !subtree {
 		return []string{string(targetID)}, admin, nil
@@ -135,7 +135,7 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	descendants, err := s.store.AgentSubtree(ctx, targetID)
 	if err != nil {
 		wrappedErr := fmt.Errorf("resolving requested usage subtree: %w", err)
-		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr)
+		return nil, false, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 	if !admin {
 		owner := caller
@@ -145,7 +145,7 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 		descendants, err = s.intersectOwnerScope(ctx, owner, descendants)
 		if err != nil {
 			wrappedErr := fmt.Errorf("resolving caller usage owner scope: %w", err)
-			return nil, false, connect.NewError(connect.CodeInternal, wrappedErr)
+			return nil, false, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 		}
 	}
 	return accountIDs(descendants), admin, nil

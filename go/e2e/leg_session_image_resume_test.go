@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"github.com/minio/minio-go/v7"
@@ -127,7 +126,7 @@ func runSessionImageResume(t *testing.T, ctx context.Context, withObjectStore bo
 			t.Fatalf("object-store blob %s differs from the first container bytes", sha256Hex)
 		}
 	}
-	if _, err := f.Compass().StopAgentSession(ctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{SessionId: sessionID})); err != nil {
+	if _, err := f.Compass().StopAgentSession(ctx, &compassv1.StopAgentSessionRequest{SessionId: sessionID}); err != nil {
 		t.Fatalf("StopAgentSession: %v", err)
 	}
 	// Remove the bind-mounted blob so the fresh container must restore it.

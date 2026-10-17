@@ -9,12 +9,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
@@ -49,15 +49,15 @@ func TestServeBindsSocketServesClientAndCleansUpOnCancel(t *testing.T) {
 	}
 
 	client := newUDSClient(t, socketPath)
-	resp, err := client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	resp, err := client.GetServerInfo(context.Background(), &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo over socket: %v", err)
 	}
-	if resp.Msg.GetVersion() != "serve-test" {
-		t.Fatalf("Version = %q, want serve-test", resp.Msg.GetVersion())
+	if resp.GetVersion() != "serve-test" {
+		t.Fatalf("Version = %q, want serve-test", resp.GetVersion())
 	}
-	if resp.Msg.GetApiVersion() != apiVersion {
-		t.Fatalf("ApiVersion = %q, want %q", resp.Msg.GetApiVersion(), apiVersion)
+	if resp.GetApiVersion() != apiVersion {
+		t.Fatalf("ApiVersion = %q, want %q", resp.GetApiVersion(), apiVersion)
 	}
 
 	// Cancel: Serve must drain and return nil (clean shutdown), and remove the
@@ -111,7 +111,7 @@ func TestServeShutdownIsClean(t *testing.T) {
 	// graceful-drain path rather than racing store.Open (which would fail with a
 	// context-canceled ping, not the clean shutdown this test asserts).
 	waitListening(t, socketPath)
-	if _, err := newUDSClient(t, socketPath).GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{})); err != nil {
+	if _, err := newUDSClient(t, socketPath).GetServerInfo(context.Background(), &compassv1.GetServerInfoRequest{}); err != nil {
 		t.Fatalf("GetServerInfo before shutdown: %v", err)
 	}
 	cancel()
@@ -175,13 +175,13 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	// admin on the stream. A current member always sees its own channel's
 	// ChannelChanged, so this gate is stable regardless of how the per-variant
 	// visibility filter treats other event kinds.
-	created, err := commsClient.CreateChannel(context.Background(), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := commsClient.CreateChannel(context.Background(), &compassv1.CreateChannelRequest{
 		Name: "shutdown-room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel over socket: %v", err)
 	}
-	wantChannelID := created.Msg.GetChannel().GetId()
+	wantChannelID := created.GetChannel().GetId()
 
 	// Open a SubscribeComms subscriber on its OWN background context — so what
 	// releases the held-open stream is the SERVER closing the comms bus on
@@ -191,7 +191,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	// subscriber is registered and now blocked on the live tail.
 	subCtx, subCancel := context.WithCancel(t.Context())
 	defer subCancel()
-	stream, err := commsClient.SubscribeComms(subCtx, connect.NewRequest(&compassv1.SubscribeCommsRequest{SinceSeq: 0}))
+	stream, err := commsClient.SubscribeComms(subCtx, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 	if err != nil {
 		t.Fatalf("SubscribeComms over socket: %v", err)
 	}
@@ -223,28 +223,38 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if !stream.Receive() {
+		first, err := stream.Receive()
+		if err != nil {
 			// Describe the observable, not a cause: all this proves is that the
 			// stream ended before any frame arrived. Naming the boundary as the
 			// missing one would mis-attribute a stream that ended early.
-			gate <- fmt.Errorf("stream ended before any frame (expected the snapshot boundary first): %w", stream.Err())
+			gate <- fmt.Errorf("stream ended before any frame (expected the snapshot boundary first): %w", err)
 			return
 		}
-		if seq, payload := stream.Msg().GetSeq(), stream.Msg().GetPayload(); seq != 0 || payload != nil {
+		if seq, payload := first.GetSeq(), first.GetPayload(); seq != 0 || payload != nil {
 			gate <- fmt.Errorf("first frame = seq %d payload %T, want the snapshot boundary (seq 0, no payload)", seq, payload)
 			return
 		}
-		if !stream.Receive() {
-			gate <- fmt.Errorf("stream ended before the seeded event: %w", stream.Err())
+		second, err := stream.Receive()
+		if err != nil {
+			gate <- fmt.Errorf("stream ended before the seeded event: %w", err)
 			return
 		}
-		if got := stream.Msg().GetChannelChanged().GetChannel().GetId(); got != wantChannelID {
+		if got := second.GetChannelChanged().GetChannel().GetId(); got != wantChannelID {
 			gate <- fmt.Errorf("first event channel id = %q, want the seeded %q", got, wantChannelID)
 			return
 		}
 		gate <- nil
 		// Block on the live tail until the server closes the comms bus.
-		for stream.Receive() {
+		for {
+			_, receiveErr := stream.Receive()
+			if receiveErr != nil {
+				if errors.Is(receiveErr, io.EOF) {
+					break
+				}
+				t.Errorf("stream ended with receive error: %v", receiveErr)
+				return
+			}
 		}
 	}()
 

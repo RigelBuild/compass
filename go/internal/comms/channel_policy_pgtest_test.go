@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
@@ -23,24 +23,24 @@ func TestSetChannelPolicyUpdatesAndEchoes(t *testing.T) {
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
-	resp, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+	resp, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), &compassv1.SetChannelPolicyRequest{
 		ChannelId:             chID,
 		PostPolicy:            compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
 		OwnerHandle:           owner.Handle,
 		MandatorySubscription: true,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-	ch := resp.Msg.GetChannel()
+	ch := resp.GetChannel()
 	if ch.GetPostPolicy() != compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY {
 		t.Fatalf("post_policy = %v, want OWNER_ONLY", ch.GetPostPolicy())
 	}
@@ -61,20 +61,20 @@ func TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound(t *testing.T) {
 	other := mustUser(t, st, "other")
 	mustAgent(t, st, other.ID, "hidden")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
 	for _, handle := range []string{"ghost", "other/ghost", "other/hidden"} {
-		_, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+		_, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), &compassv1.SetChannelPolicyRequest{
 			ChannelId:   chID,
 			PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
 			OwnerHandle: handle,
-		}))
+		})
 		connectNotFoundFor(t, err, handle, "SetChannelPolicy owner "+handle)
 	}
 }
@@ -86,21 +86,21 @@ func TestPostMessageOwnerOnlyNonOwnerIsPermissionDenied(t *testing.T) {
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 	other := mustUser(t, st, "other")
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{other.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
-	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+	chID := created.GetChannel().GetId()
+	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), &compassv1.SetChannelPolicyRequest{
 		ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
 		OwnerHandle: owner.Handle,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-	_, err = svc.PostMessage(WithActor(ctx, other.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
+	_, err = svc.PostMessage(WithActor(ctx, other.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}})
 	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner post on OWNER_ONLY channel")
 	if got, want := err.Error(), "permission_denied: store: permission denied: channel \"room\" is owner-only: only its owner can post"; !strings.Contains(got, want) {
 		t.Fatalf("error = %q, want message %q", got, want)
@@ -113,15 +113,15 @@ func TestPostMessageOwnerOnlyNonMemberIsNotFound(t *testing.T) {
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 	outsider := mustUser(t, st, "outsider")
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL}))
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
-	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY, OwnerHandle: owner.Handle})); err != nil {
+	chID := created.GetChannel().GetId()
+	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), &compassv1.SetChannelPolicyRequest{ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY, OwnerHandle: owner.Handle}); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-	_, err = svc.PostMessage(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
+	_, err = svc.PostMessage(WithActor(ctx, outsider.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}})
 	connectCodeIs(t, err, connect.CodeNotFound, "non-member post on OWNER_ONLY channel")
 }
 
@@ -133,25 +133,25 @@ func TestUpdateChannelMembersUnsubscribeMandatoryIsInvalidArgument(t *testing.T)
 	owner := mustUser(t, st, "owner")
 	member := mustUser(t, st, "member")
 
-	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), &compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{member.Handle},
-	}))
+	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	chID := created.Msg.GetChannel().GetId()
+	chID := created.GetChannel().GetId()
 
-	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), &compassv1.SetChannelPolicyRequest{
 		ChannelId:             chID,
 		MandatorySubscription: true,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
 
-	_, err = svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+	_, err = svc.UpdateChannelMembers(WithActor(ctx, owner.ID), &compassv1.UpdateChannelMembersRequest{
 		ChannelId:          chID,
 		UnsubscribeHandles: []string{member.Handle},
-	}))
+	})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "unsubscribe on mandatory channel")
 }

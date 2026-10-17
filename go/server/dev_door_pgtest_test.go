@@ -15,7 +15,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -33,8 +34,8 @@ func devClients(t *testing.T, devAddr string) (compassv1connect.CompassServiceCl
 	t.Cleanup(tr.CloseIdleConnections)
 	httpClient := &http.Client{Transport: tr}
 	base := "http://" + devAddr
-	return compassv1connect.NewCompassServiceClient(httpClient, base),
-		compassv1connect.NewCommsServiceClient(httpClient, base)
+	return compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, base, connecthttp.WithReadMaxBytes(0)))),
+		compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, base, connecthttp.WithReadMaxBytes(0))))
 }
 
 // TestDevDoorGatesAdminOnlyRPCsWithoutBearer is the P1 regression: on the dev
@@ -61,12 +62,12 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 	t.Run("IssueToken is PermissionDenied and mints no token", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		resp, err := compassClient.IssueToken(ctx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "any-account"}))
+		resp, err := compassClient.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: "any-account"})
 		if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
 			t.Fatalf("IssueToken on the dev door = %v, want CodePermissionDenied (no bearer → no caller → fail-closed)", code)
 		}
 		if resp != nil {
-			t.Fatalf("IssueToken on the dev door returned a response %+v — a browser must NOT be able to mint an admin token here", resp.Msg)
+			t.Fatalf("IssueToken on the dev door returned a response %+v — a browser must NOT be able to mint an admin token here", resp)
 		}
 	})
 
@@ -88,14 +89,14 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 	t.Run("GetServerInfo is reachable", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		resp, err := compassClient.GetServerInfo(ctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+		resp, err := compassClient.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 		if err != nil {
 			t.Fatalf("GetServerInfo on the dev door (authenticatedOpen): %v", err)
 		}
-		if resp.Msg.GetVersion() != "dev-door-test" {
-			t.Fatalf("Version = %q, want dev-door-test", resp.Msg.GetVersion())
+		if resp.GetVersion() != "dev-door-test" {
+			t.Fatalf("Version = %q, want dev-door-test", resp.GetVersion())
 		}
-		if got, want := resp.Msg.GetRev(), "0123456789abcdef0123456789abcdef01234567"; got != want {
+		if got, want := resp.GetRev(), "0123456789abcdef0123456789abcdef01234567"; got != want {
 			t.Fatalf("Rev = %q, want %q (ServeConfig.Rev)", got, want)
 		}
 	})
@@ -106,11 +107,11 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 		// The dev door serves comms under the ambient bootstrap admin, so this
 		// read succeeds and returns at least the admin account (created at
 		// startup). A gate wrongly applied to CommsService here would deny it.
-		resp, err := commsClient.ListAccounts(ctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+		resp, err := commsClient.ListAccounts(ctx, &compassv1.ListAccountsRequest{})
 		if err != nil {
 			t.Fatalf("ListAccounts on the dev door: %v", err)
 		}
-		if len(resp.Msg.GetAccounts()) == 0 {
+		if len(resp.GetAccounts()) == 0 {
 			t.Fatal("ListAccounts returned no accounts, want at least the bootstrap admin (ambient admin can read)")
 		}
 	})
