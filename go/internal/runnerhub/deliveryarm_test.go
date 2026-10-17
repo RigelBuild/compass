@@ -258,8 +258,18 @@ type fakePresenceSink struct {
 	promoted    []promotedRecord
 }
 
-func (f *fakePresenceSink) OnSessionLifecycle(ctx context.Context, account store.AccountID, sessionID string, state compassv1.AgentSessionState) {
-	record := lifecycleRecord{account: account, sessionID: sessionID, state: state, traceparent: otelx.Traceparent(ctx)}
+func (f *fakePresenceSink) OnSessionLifecycle(
+	ctx context.Context,
+	account store.AccountID,
+	sessionID string,
+	state compassv1.AgentSessionState,
+) {
+	record := lifecycleRecord{
+		account:     account,
+		sessionID:   sessionID,
+		state:       state,
+		traceparent: otelx.Traceparent(ctx),
+	}
 	f.mu.Lock()
 	f.lifecycle = append(f.lifecycle, record)
 	if f.lifecycleCh != nil {
@@ -268,10 +278,18 @@ func (f *fakePresenceSink) OnSessionLifecycle(ctx context.Context, account store
 	f.mu.Unlock()
 }
 
-func (f *fakePresenceSink) OnSessionPromoted(ctx context.Context, account store.AccountID, sessionID string) {
+func (f *fakePresenceSink) OnSessionPromoted(
+	ctx context.Context,
+	account store.AccountID,
+	sessionID string,
+) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.promoted = append(f.promoted, promotedRecord{account: account, sessionID: sessionID, traceparent: otelx.Traceparent(ctx)})
+	f.promoted = append(f.promoted, promotedRecord{
+		account:     account,
+		sessionID:   sessionID,
+		traceparent: otelx.Traceparent(ctx),
+	})
 }
 
 func (f *fakePresenceSink) lifecycleSnapshot() []lifecycleRecord {

@@ -992,7 +992,12 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	presence := h.presence
 	h.mu.Unlock()
 	if presence != nil && hasAccount {
-		presence.OnSessionLifecycle(ctx, account, sessionID, state)
+		presence.OnSessionLifecycle(
+			ctx,
+			account,
+			sessionID,
+			state,
+		)
 	}
 	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
@@ -1320,7 +1325,12 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	// among accounts is irrelevant; publishIfChanged dedups a redundant re-publish.
 	if presence != nil {
 		for _, p := range offline {
-			presence.OnSessionLifecycle(ctx, p.account, p.sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+			presence.OnSessionLifecycle(
+				ctx,
+				p.account,
+				p.sessionID,
+				compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED,
+			)
 		}
 	}
 

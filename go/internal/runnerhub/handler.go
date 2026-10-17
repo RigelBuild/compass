@@ -131,7 +131,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	}
 
 	router.setSessionUnknown(func(sessionID, traceparent string) {
-		lostCtx := otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), traceparent)
+		lostCtx := otelx.ContextWithTraceparent(ctx, traceparent)
 		h.hub.dropLostSessionDetached(lostCtx, enrollGen, subj.ID, sessionID, nil, false)
 	})
 	router.attach(ctx, stream.Send)

@@ -425,7 +425,8 @@ func (r *commandRouter) complete(ctx context.Context, result *compassv1internal.
 	if runnerErr := result.GetError(); runnerErr != nil {
 		log.WarnContext(ctx, "deliver refused by runner; cursor left unadvanced for the reconnect sweep",
 			"request_id", id, "code", runnerErr.GetCode().String(), "message", runnerErr.GetMessage())
-		if runnerErr.GetCode() == compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND && onUnknown != nil && refusal.sessionID != "" {
+		notFound := runnerErr.GetCode() == compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
+		if notFound && onUnknown != nil && refusal.sessionID != "" {
 			onUnknown(refusal.sessionID, refusal.traceparent)
 		}
 	} else {

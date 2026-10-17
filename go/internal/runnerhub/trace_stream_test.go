@@ -55,10 +55,36 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 	if _, err := hub.enroll(ctx, testRunnerID, runnerSubject(), 0, 0); err != nil {
 		t.Fatalf("enroll: %v", err)
 	}
-	if got := <-pres.lifecycleCh; got.account != testAgentAccount || got.traceparent == "" || got.traceparent != otelx.Traceparent(ctx) {
-		t.Fatalf("enroll presence edge = %+v, want enroll traceparent %q", got, otelx.Traceparent(ctx))
+	enrolled := <-pres.lifecycleCh
+	if enrolled.account != testAgentAccount || enrolled.traceparent == "" ||
+		enrolled.traceparent != otelx.Traceparent(ctx) {
+		t.Fatalf("enroll presence edge = %+v, want enroll traceparent %q",
+			enrolled, otelx.Traceparent(ctx))
 	}
 	span.End()
+	promotionCtx, promotionSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "promote")
+	hub.bindContainer("container-traced", testAgentAccount, testRunnerID)
+	hub.promoteSession(promotionCtx, "container-traced", "traced-session")
+	if got := pres.promotedSnapshot(); len(got) != 1 || got[0].traceparent != otelx.Traceparent(promotionCtx) {
+		t.Fatalf("promoted edge = %+v, want traceparent %q", got, otelx.Traceparent(promotionCtx))
+	}
+	promotionSpan.End()
+
+	releaseCtx, releaseSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "release")
+	hub.unbindSession(releaseCtx, "traced-session")
+	releaseSpan.End()
+	var released lifecycleRecord
+	select {
+	case released = <-pres.lifecycleCh:
+	case <-timeAfter():
+		t.Fatal("release did not produce a presence edge")
+	}
+	if released.state != compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED ||
+		released.traceparent != otelx.Traceparent(releaseCtx) {
+		t.Fatalf("release edge = %+v, want DISCONNECTED with release traceparent %q",
+			released, otelx.Traceparent(releaseCtx))
+	}
+
 	hub.bindContainer("container-lost", testAgentAccount, testRunnerID)
 	hub.promoteSession(t.Context(), "container-lost", "lost-session")
 	traceCtx, traceSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "publish-client")

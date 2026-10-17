@@ -270,7 +270,12 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 	// session (orchestrator invariant), so concurrent same-account churn is
 	// unreachable and any transient OFFLINE self-repairs on the next edge.
 	if wentOffline && presence != nil {
-		presence.OnSessionLifecycle(ctx, account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+		presence.OnSessionLifecycle(
+			ctx,
+			account,
+			sessionID,
+			compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED,
+		)
 	}
 	return true
 }

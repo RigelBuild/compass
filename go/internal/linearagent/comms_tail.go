@@ -18,6 +18,7 @@ func (d *Dispatcher) TailComms(ctx context.Context, bus *events.Bus[*compassv1.S
 		return err
 	}
 	defer func() { sub.Cancel() }()
+	traceBase := otelx.WithoutSpan(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -36,7 +37,10 @@ func (d *Dispatcher) TailComms(ctx context.Context, bus *events.Bus[*compassv1.S
 				sub = fresh
 				continue
 			}
-			d.OnCommsEvent(otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), event.Traceparent), event.Payload)
+			d.OnCommsEvent(
+				otelx.ContextWithTraceparent(traceBase, event.Traceparent),
+				event.Payload,
+			)
 		}
 	}
 }

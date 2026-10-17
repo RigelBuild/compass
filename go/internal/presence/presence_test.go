@@ -22,6 +22,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+func readSpanContext(t *testing.T, reads *fakeReads) trace.SpanContext {
+	t.Helper()
+	select {
+	case got := <-reads.ctxs:
+		return got
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for presence store read")
+		return trace.SpanContext{}
+	}
+}
+
 func TestRunDoesNotLeakServeSpanIntoUntracedPublish(t *testing.T) {
 	previous := otel.GetTracerProvider()
 	tp := sdktrace.NewTracerProvider()
@@ -93,12 +104,12 @@ func TestRunRestoresEventAndEdgeTraces(t *testing.T) {
 			t.Fatalf("%s trace = %s, want %s", name, got.TraceID(), want.TraceID())
 		}
 	}
-	assertTrace("edge store read", <-reads.ctxs, serviceSpan.SpanContext())
+	assertTrace("edge store read", readSpanContext(t, reads), serviceSpan.SpanContext())
 
 	eventCtx, eventSpan := tp.Tracer("presence-test").Start(t.Context(), "ask-event")
 	reads.setOpen("agent-a", true)
 	bus.Publish(eventCtx, askPosted("agent-a"))
-	assertTrace("ask store read", <-reads.ctxs, eventSpan.SpanContext())
+	assertTrace("ask store read", readSpanContext(t, reads), eventSpan.SpanContext())
 	rec.waitForPublishes(t, 2)
 	if got := rec.snapshot()[1].traceparent; got == "" {
 		t.Fatal("traced ask publish has empty traceparent")
@@ -107,9 +118,53 @@ func TestRunRestoresEventAndEdgeTraces(t *testing.T) {
 	serviceSpan.End()
 
 	bus.Publish(t.Context(), askPosted("agent-a"))
-	if got := <-reads.ctxs; got.IsValid() {
+	if got := readSpanContext(t, reads); got.IsValid() {
 		t.Fatalf("untraced event read carried span %s", got.SpanID())
 	}
+}
+
+func TestRunRestoresReplayEventTrace(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := tp.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+
+	p, reads, _, bus := newTestPublisher(t)
+	reads.ctxs = make(chan trace.SpanContext, 8)
+	reads.setOpen("agent-replay", true)
+	p.mu.Lock()
+	p.lastState["agent-replay"] = compassv1.AgentSessionState_AGENT_SESSION_STATE_READY
+	p.mu.Unlock()
+	rec := startRecorder(t, bus)
+
+	eventCtx, eventSpan := tp.Tracer("presence-test").Start(t.Context(), "replay-ask-event")
+	defer eventSpan.End()
+	bus.Publish(eventCtx, askPosted("agent-replay"))
+
+	serveCtx, serveSpan := tp.Tracer("presence-test").Start(t.Context(), "serve")
+	defer serveSpan.End()
+	ctx, cancel := context.WithCancel(serveCtx)
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	}()
+
+	got := readSpanContext(t, reads)
+	if !got.IsValid() || got.TraceID() != eventSpan.SpanContext().TraceID() ||
+		got.TraceID() == serveSpan.SpanContext().TraceID() {
+		t.Fatalf("replay ask store read trace = %s, want event trace %s (not serve trace %s)",
+			got.TraceID(), eventSpan.SpanContext().TraceID(), serveSpan.SpanContext().TraceID())
+	}
+	rec.waitForPublishes(t, 1)
 }
 
 // TestPresenceForMapsD4Table is the pure mapper against D4's exact table

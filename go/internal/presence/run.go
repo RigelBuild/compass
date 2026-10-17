@@ -14,16 +14,36 @@ import (
 // LifecycleSink publish in deliverSession (design.md:472-479). It must not block
 // on store work or retain caller ctx; it enqueues the edge, and the loop restores
 // its traceparent on its serve ctx before recomputing and publishing presence.
-func (p *Publisher) OnSessionLifecycle(ctx context.Context, account store.AccountID, sessionID string, state compassv1.AgentSessionState) {
-	p.enqueue(hubEdge{kind: edgeLifecycle, account: account, sessionID: sessionID, state: state, traceparent: otelx.Traceparent(ctx)})
+func (p *Publisher) OnSessionLifecycle(
+	ctx context.Context,
+	account store.AccountID,
+	sessionID string,
+	state compassv1.AgentSessionState,
+) {
+	p.enqueue(hubEdge{
+		kind:        edgeLifecycle,
+		account:     account,
+		sessionID:   sessionID,
+		state:       state,
+		traceparent: otelx.Traceparent(ctx),
+	})
 }
 
 // OnSessionPromoted is the hub's promoteSession reconciliation hook
 // (design.md:494-503); re-enroll clears bindings and re-promotes sessions, so
 // the loop rebuilds presence from lifecycle state and open-ask overlay. The hook
 // only queues; it retains no ctx, and the loop restores its traceparent on ctx.
-func (p *Publisher) OnSessionPromoted(ctx context.Context, account store.AccountID, sessionID string) {
-	p.enqueue(hubEdge{kind: edgePromoted, account: account, sessionID: sessionID, traceparent: otelx.Traceparent(ctx)})
+func (p *Publisher) OnSessionPromoted(
+	ctx context.Context,
+	account store.AccountID,
+	sessionID string,
+) {
+	p.enqueue(hubEdge{
+		kind:        edgePromoted,
+		account:     account,
+		sessionID:   sessionID,
+		traceparent: otelx.Traceparent(ctx),
+	})
 }
 
 // enqueue appends a hub-fed edge and wakes the loop without blocking the caller.
@@ -59,6 +79,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 	// to a fresh subscription, and only a closure cancels whichever one is
 	// current at return.
 	defer func() { sub.Cancel() }()
+	traceBase := otelx.WithoutSpan(ctx)
 
 	for _, event := range sub.Replay {
 		select {
@@ -66,7 +87,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 			return nil
 		default:
 		}
-		p.handleEvent(otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), event.Traceparent), event.Payload)
+		p.handleEvent(otelx.ContextWithTraceparent(traceBase, event.Traceparent), event.Payload)
 	}
 
 	for {
@@ -95,7 +116,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 				}
 				return nil
 			}
-			p.handleEvent(otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), event.Traceparent), event.Payload)
+			p.handleEvent(otelx.ContextWithTraceparent(traceBase, event.Traceparent), event.Payload)
 		}
 	}
 }
@@ -173,6 +194,7 @@ func (p *Publisher) recomputeFromStore(ctx context.Context, account store.Accoun
 
 // drainEdges fires every queued hub-fed edge under the loop's ctx.
 func (p *Publisher) drainEdges(ctx context.Context) {
+	traceBase := otelx.WithoutSpan(ctx)
 	for {
 		p.mu.Lock()
 		if len(p.queue) == 0 {
@@ -183,7 +205,7 @@ func (p *Publisher) drainEdges(ctx context.Context) {
 		p.queue = p.queue[1:]
 		p.mu.Unlock()
 
-		edgeCtx := otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), edge.traceparent)
+		edgeCtx := otelx.ContextWithTraceparent(traceBase, edge.traceparent)
 		switch edge.kind {
 		case edgeLifecycle:
 			p.applyLifecycle(edgeCtx, edge.account, edge.state)
