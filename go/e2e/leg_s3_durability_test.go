@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -241,6 +242,78 @@ func waitArchiveContains(t *testing.T, ctx context.Context, f *Fixture, sessionI
 	}
 }
 
+// waitHistoryContains polls until want is in the PG tail or an S3 segment; the valve may move it before the poll.
+func waitHistoryContains(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID, want string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, transcriptPollBudget)
+	defer cancel()
+	ticker := time.NewTicker(transcriptPollInterval)
+	defer ticker.Stop()
+	for {
+		tail, err := st.SessionTranscript(ctx, sessionID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("SessionTranscript: %v", err)
+		}
+		for _, entry := range tail {
+			if strings.Contains(entry.EntryJSON, want) {
+				return
+			}
+		}
+		if archiveContains(t, ctx, f, sessionID, want) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%q was not committed to the transcript within %s: %v", want, transcriptPollBudget, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// assertSessionEndCoversTail requires the session_end object to hold every row still in the PG tail.
+func assertSessionEndCoversTail(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID string) {
+	t.Helper()
+	pool, err := pgxpool.New(ctx, f.DSN())
+	if err != nil {
+		t.Fatalf("open session_end pool: %v", err)
+	}
+	defer pool.Close()
+	var key string
+	var segMin, segMax int64
+	if err := pool.QueryRow(ctx, `SELECT object_key, min_entry_seq, max_entry_seq FROM agent_session_archive_segments WHERE session_id=$1 AND kind='session_end' ORDER BY max_entry_seq DESC LIMIT 1`, sessionID).Scan(&key, &segMin, &segMax); err != nil {
+		t.Fatalf("session_end segment: %v", err)
+	}
+	obj, err := garageS3Client(t, f.garage).GetObject(ctx, f.garage.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("GetObject(%q): %v", key, err)
+	}
+	body, err := io.ReadAll(obj)
+	_ = obj.Close()
+	if err != nil {
+		t.Fatalf("read session_end segment %q: %v", key, err)
+	}
+	tail, err := st.SessionTranscript(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("SessionTranscript: %v", err)
+	}
+	tailMin, tailMax := int64(tail[0].EntrySeq), int64(tail[len(tail)-1].EntrySeq)
+	if segMin > tailMin || segMax != tailMax {
+		t.Fatalf("session_end segment spans [%d..%d], PG tail spans [%d..%d]", segMin, segMax, tailMin, tailMax)
+	}
+	// A concurrent valve pass may prune rows between the checkpoint and the newest row, so require order, not adjacency.
+	rest := string(body)
+	for _, entry := range tail {
+		i := strings.Index(rest, entry.EntryJSON)
+		if i < 0 {
+			t.Fatalf("session_end segment lacks PG tail entry %d, in order", entry.EntrySeq)
+		}
+		rest = rest[i+len(entry.EntryJSON):]
+	}
+	if rest != "" {
+		t.Fatalf("session_end segment has %d bytes after the newest PG tail entry %d", len(rest), tailMax)
+	}
+}
+
 func runS3TurnSettled(ctx context.Context, f *Fixture, sessionID, channel, marker string) error {
 	tail, err := f.OpenSessionTail(ctx, sessionID)
 	if err != nil {
@@ -427,16 +500,19 @@ func assertSafetyValveEviction(t *testing.T, ctx context.Context, f *Fixture, se
 // as session_end without pruning it, so the woken session still resumes from PG.
 func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 	t.Helper()
-	f, _, _, container, joined := runS3DurabilityBase(t, ctx, "s3-crash-end", nil)
+	f, st, _, container, joined := runS3DurabilityBase(t, ctx, "s3-crash-end", nil)
 	sessionID, channel := splitDurabilityIDs(t, joined)
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-first"); err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
+	// The reply's commit trails the settle; a crash before it lands loses the reply.
+	waitHistoryContains(t, ctx, f, st, sessionID, "durability first reply")
 	if err := podmanRemoveForce(ctx, container); err != nil {
 		t.Fatalf("crash agent container: %v", err)
 	}
 	waitSessionErrored(t, ctx, f, sessionID)
 	waitSegmentKind(t, ctx, f.DSN(), sessionID, "session_end")
+	assertSessionEndCoversTail(t, ctx, f, st, sessionID)
 	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
 	if segmentCountByKind(t, ctx, f.DSN(), sessionID, "superseded") != 0 {
 		t.Fatal("detected-end archive pruned the tail as superseded")
