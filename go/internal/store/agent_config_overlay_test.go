@@ -101,6 +101,12 @@ func TestValidateMCPMemberOverlayShapeAndCredentials(t *testing.T) {
 		{name: "key suffix query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?monkey=x"}}}`, wantErr: true},
 		{name: "secret suffix query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?xSecretHint=x"}}}`, wantErr: true},
 		{name: "benign version query accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?api-version=2024-10-01"}}}`},
+		{name: "userinfo authority URL rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host@evil/?x=v"}}}`, wantErr: true},
+		{name: "backslash authority URL rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https:\\user@host"}}}`, wantErr: true},
+		{name: "double backslash authority URL rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https:\\\\user@host"}}}`, wantErr: true},
+		{name: "mixed authority tokenUrl rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"auth":{"tokenUrl":"https://a\\b@c"}}}}`, wantErr: true},
+		{name: "userinfo authority URL argument rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"args":["https://host@evil/?x=v"]}}}`, wantErr: true},
+		{name: "backslash authority URL argument rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"args":["https://a\\b@c"]}}}`, wantErr: true},
 		{name: "credential free URL accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/mcp"}}}`},
 	}
 	for _, tt := range tests {

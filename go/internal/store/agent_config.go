@@ -954,25 +954,16 @@ func validateMCPArgs(value any, path, member string) error {
 }
 
 func isHTTPURL(value string) bool {
-	u, err := url.Parse(value)
-	if err != nil || u == nil {
-		return false
-	}
-	return strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")
+	scheme, _, ok := strings.Cut(value, ":")
+	return ok && (strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https"))
 }
 
 func validateCredentialFreeMCPURL(value, path, member string) error {
-	if colon := strings.IndexByte(value, ':'); colon >= 0 {
-		scheme, rest := value[:colon], value[colon+1:]
-		if strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https") {
-			if !strings.HasPrefix(rest, "//") {
-				value = strings.ToLower(scheme) + "://" + strings.TrimLeft(rest, "/")
-			} else {
-				value = strings.ToLower(scheme) + ":" + rest
-			}
-		}
+	normalized, authority, rawAuthority, isHTTP := normalizeCredentialMCPURL(value)
+	if isHTTP && (strings.Contains(authority, "@") || strings.Contains(rawAuthority, "@")) {
+		return fmt.Errorf("%w: MCP member %q has URL userinfo at %s", ErrInvalidArgument, member, path)
 	}
-	u, err := url.Parse(value)
+	u, err := url.Parse(normalized)
 	if err != nil {
 		return fmt.Errorf("%w: MCP member %q has an unparseable URL at %s", ErrInvalidArgument, member, path)
 	}
@@ -983,6 +974,31 @@ func validateCredentialFreeMCPURL(value, path, member string) error {
 		return fmt.Errorf("%w: MCP member %q has a credential query at %s", ErrInvalidArgument, member, path)
 	}
 	return nil
+}
+
+func normalizeCredentialMCPURL(value string) (normalized, authority, rawAuthority string, isHTTP bool) {
+	scheme, rest, ok := strings.Cut(value, ":")
+	if !ok {
+		return value, "", "", false
+	}
+	isHTTP = strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https")
+	if !isHTTP {
+		return value, "", "", false
+	}
+	normalizedRest := strings.ReplaceAll(rest, "\\", "/")
+	if !strings.HasPrefix(normalizedRest, "//") {
+		normalizedRest = "//" + strings.TrimLeft(normalizedRest, "/")
+	}
+	normalized = strings.ToLower(scheme) + ":" + normalizedRest
+	authority = strings.TrimPrefix(normalizedRest, "//")
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+	rawAuthority = strings.TrimLeft(rest, "/")
+	if end := strings.IndexAny(rawAuthority, "/?#"); end >= 0 {
+		rawAuthority = rawAuthority[:end]
+	}
+	return normalized, authority, rawAuthority, true
 }
 
 func extensionIDFromPath(p string) string {

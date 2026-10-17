@@ -377,41 +377,69 @@ func TestEffectiveAgentConfigMatchingVersionSkipsCorruptStoredRow(t *testing.T) 
 	}
 }
 
-func TestEffectiveAgentConfigVersionAndBundleUseSeparateReadSnapshots(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	_, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-snapshot-admin", DisplayName: "admin"})
-	if err != nil {
-		t.Fatalf("BootstrapAdmin: %v", err)
-	}
-	owner := mustUser(t, s, "overlay-snapshot-owner")
-	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-snapshot-agent", DisplayName: "agent"})
-	if err != nil {
-		t.Fatalf("CreateAgent: %v", err)
-	}
-	first := mkBundle(t, map[string]string{"skills/x/SKILL.md": "first"})
-	second := mkBundle(t, map[string]string{"skills/x/SKILL.md": "second"})
-	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, first); err != nil {
-		t.Fatalf("PutAgentConfigOverlay(first): %v", err)
-	}
-	var secondVersion string
-	var writeErr error
-	s.afterConfigVersionsRead = func() {
-		s.afterConfigVersionsRead = nil
-		secondVersion, writeErr = s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, second)
-	}
-	version, got, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
-	if err != nil {
-		t.Fatalf("EffectiveAgentConfig(raced): %v", err)
-	}
-	if writeErr != nil {
-		t.Fatalf("racing PutAgentConfigOverlay: %v", writeErr)
-	}
-	files := bundleFiles(t, got)
-	if version != EffectiveConfigVersion("", "", secondVersion, "") || files["skills/x/SKILL.md"] != "second" {
-		t.Fatalf("raced response version=%q member=%q; want version for second overlay %q and new bundle", version, files["skills/x/SKILL.md"], secondVersion)
+func TestEffectiveAgentConfigUsesSingleSnapshot(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		wantMatch bool
+		ifVersion func(string) string
+	}{
+		{name: "matching ifVersion", wantMatch: true, ifVersion: func(version string) string { return version }},
+		{name: "non-matching ifVersion", ifVersion: func(string) string { return "different-version" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+			_, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-snapshot-admin", DisplayName: "admin"})
+			if err != nil {
+				t.Fatalf("BootstrapAdmin: %v", err)
+			}
+			owner := mustUser(t, s, "overlay-snapshot-owner")
+			agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-snapshot-agent", DisplayName: "agent"})
+			if err != nil {
+				t.Fatalf("CreateAgent: %v", err)
+			}
+			first := mkBundle(t, map[string]string{"skills/x/SKILL.md": "first"})
+			second := mkBundle(t, map[string]string{"skills/x/SKILL.md": "second"})
+			firstLayerVersion, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, first)
+			if err != nil {
+				t.Fatalf("PutAgentConfigOverlay(first): %v", err)
+			}
+			firstVersion := EffectiveConfigVersion("", "", firstLayerVersion, "")
+			var secondVersion string
+			var writeErr error
+			hookCalled := false
+			s.afterConfigVersionsRead = func() {
+				hookCalled = true
+				s.afterConfigVersionsRead = nil
+				secondVersion, writeErr = s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, second)
+			}
+			version, got, err := s.EffectiveAgentConfig(ctx, agent.ID, tt.ifVersion(firstVersion))
+			if err != nil {
+				t.Fatalf("EffectiveAgentConfig(raced): %v", err)
+			}
+			if !hookCalled {
+				t.Fatal("afterConfigVersionsRead hook was not called")
+			}
+			if writeErr != nil {
+				t.Fatalf("racing PutAgentConfigOverlay: %v", writeErr)
+			}
+			if secondVersion == "" || secondVersion == firstLayerVersion {
+				t.Fatalf("racing overlay version = %q, want a different non-empty version", secondVersion)
+			}
+			if tt.wantMatch {
+				if version != firstVersion || got != nil {
+					t.Fatalf("matching response version=%q bundle=%v, want snapshot version %q and nil bundle", version, got, firstVersion)
+				}
+				return
+			}
+			files := bundleFiles(t, got)
+			if version != firstVersion || files["skills/x/SKILL.md"] != "first" {
+				t.Fatalf("non-matching response version=%q member=%q; want snapshot version %q and first bundle", version, files["skills/x/SKILL.md"], firstVersion)
+			}
+		})
 	}
 }
+
 func TestEffectiveProfileAgentOrphansAreWarned(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

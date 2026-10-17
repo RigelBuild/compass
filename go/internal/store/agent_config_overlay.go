@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/RigelBuild/compass/go/internal/store/db"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -126,7 +127,17 @@ func (s *Store) AgentConfigOverlayInfo(ctx context.Context, key OverlayKey) (Age
 // EffectiveAgentConfig returns the merged bundle, or only its version on a match.
 // A matching version does not read or validate any bundle contents.
 func (s *Store) EffectiveAgentConfig(ctx context.Context, agent AccountID, ifVersion string) (version string, bundle []byte, err error) {
-	versionRow, err := s.q.EffectiveAgentConfigLayerVersions(ctx, db.EffectiveAgentConfigLayerVersionsParams{
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return "", nil, fmt.Errorf("store: begin effective config snapshot: %w", err)
+	}
+	// Rollback is a no-op after Commit and releases the snapshot on every early return.
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := armTx(ctx, s, tx); err != nil {
+		return "", nil, err
+	}
+	qtx := s.q.WithTx(tx)
+	versionRow, err := qtx.EffectiveAgentConfigLayerVersions(ctx, db.EffectiveAgentConfigLayerVersionsParams{
 		AccountID: string(agent), TenantID: string(s.resolveTenant(ctx)),
 	})
 	if err != nil {
@@ -136,17 +147,23 @@ func (s *Store) EffectiveAgentConfig(ctx context.Context, agent AccountID, ifVer
 		return "", nil, fmt.Errorf("store: read effective config layer versions: %w", err)
 	}
 	version = EffectiveConfigVersion(versionRow.DefaultVersion, versionRow.TenantVersion, versionRow.UserVersion, versionRow.RoleVersion)
-	if ifVersion != "" && ifVersion == version {
-		return version, nil, nil
-	}
 	if s.afterConfigVersionsRead != nil {
 		s.afterConfigVersionsRead()
 	}
-	layers, err := loadEffectiveConfigLayers(ctx, s.q, s.resolveTenant(ctx), agent)
+	if ifVersion != "" && ifVersion == version {
+		if err := tx.Commit(ctx); err != nil {
+			return "", nil, fmt.Errorf("store: commit effective config snapshot: %w", err)
+		}
+		return version, nil, nil
+	}
+	layers, err := loadEffectiveConfigLayers(ctx, qtx, s.resolveTenant(ctx), agent)
 	if err != nil {
 		return "", nil, err
 	}
 	version = EffectiveConfigVersion(layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion)
+	if err := tx.Commit(ctx); err != nil {
+		return "", nil, fmt.Errorf("store: commit effective config snapshot: %w", err)
+	}
 	bundle, _, dropped, orphans, err := MergeConfigBundles(layers.bundles)
 	if err != nil {
 		return "", nil, fmt.Errorf("effective config for agent %s invalid (default %s, tenant %s, user %s, role %s): %s", agent, layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion, err.Error())

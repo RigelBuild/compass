@@ -53,7 +53,7 @@ type Store struct {
 	q *db.Queries
 	// afterBoardMetaRead is a test seam for the snapshot test.
 	afterBoardMetaRead func()
-	// afterConfigVersionsRead lets tests place a write between the two reads.
+	// afterConfigVersionsRead lets tests write after the version read to verify snapshot consistency.
 	afterConfigVersionsRead func()
 	// objectStore is the archive-tier object-store seam (RIG-1667 T4), injected
 	// via SetObjectStore. nil until slice B wires a real client (store tests
