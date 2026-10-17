@@ -1,0 +1,2 @@
+# Keep prior build output out of the next image context.
+out

@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# Build tasks stay local; CI covers the TypeScript mapping and release cores.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']

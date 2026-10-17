@@ -1,0 +1,11 @@
+{
+	"name": "@compass/server-image",
+	"private": true,
+	"type": "module",
+	"description": "Build and publish the compass-server OCI image from its realised Nix closure.",
+	"module": "build.ts",
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

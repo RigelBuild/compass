@@ -1,18 +1,19 @@
 #!/usr/bin/env bun
-// Mint the compass-runner `:vX.Y.Z` release tag by copying an already-published
+// Mint an image lane's `:vX.Y.Z` release tag by copying an already-published
 // `:git-<sha12>` manifest: a registry-side write, never a build, never `:latest`.
 // The source is the newest published closure image at or before the release
 // sha (see retag-core.ts for what that does and does not guarantee).
 //
-// Needs `git` (full history), `skopeo`, and RUNNER_IMAGE_CLOSURE_PATHS. The
-// runner package is private, so every call reads REGISTRY_AUTH_FILE (the file
-// `skopeo login` wrote).
+// Needs `git` (full history), `skopeo`, and the lane's closure-path env var
+// (RUNNER_IMAGE_CLOSURE_PATHS or SERVER_IMAGE_CLOSURE_PATHS). Every call reads
+// REGISTRY_AUTH_FILE (the file `skopeo login` wrote), so private packages work.
 //
 // Usage:
-//   bun tools/runner-image/retag.ts --repo <ghcr.io/owner/name> \
+//   bun tools/runner-image/retag.ts --lane <runner|server> --repo <ghcr.io/owner/name> \
 //     --tag <vX.Y.Z> --release-sha <40-hex sha>
 
 import { appendFileSync } from "node:fs";
+import { imageLaneConfig } from "./image-lane-core.ts";
 import {
 	assertCoherent,
 	assertNoClosureChange,
@@ -68,12 +69,17 @@ function arg(name: string): string | undefined {
 }
 
 async function main(): Promise<number> {
+	const laneConfig = imageLaneConfig(arg("lane"));
+	if (!laneConfig) {
+		console.error("usage: --lane must be runner or server");
+		return EXIT.usage;
+	}
 	const repo = arg("repo");
 	const tag = arg("tag");
 	const releaseSha = arg("release-sha");
 	if (!repo || tag === undefined || releaseSha === undefined) {
 		console.error(
-			"usage: bun tools/runner-image/retag.ts --repo <ghcr.io/owner/name> --tag <vX.Y.Z> --release-sha <sha>",
+			"usage: bun tools/runner-image/retag.ts --lane <runner|server> --repo <ghcr.io/owner/name> --tag <vX.Y.Z> --release-sha <sha>",
 		);
 		return EXIT.usage;
 	}
@@ -91,6 +97,7 @@ async function main(): Promise<number> {
 		ancestors.split("\n").filter((line) => line.length > 0),
 		(short) =>
 			run(["skopeo", "inspect", "--raw", `docker://${repo}:git-${short}`]),
+		laneConfig.lane,
 	);
 	const source = manifestIdentity(resolved.raw);
 	console.log(
@@ -101,7 +108,7 @@ async function main(): Promise<number> {
 	// --no-renames: a rename prints only its destination, which hides a file
 	// moved OUT of the closure. -z keeps odd names whole.
 	assertNoClosureChange(
-		process.env.RUNNER_IMAGE_CLOSURE_PATHS ?? "",
+		process.env[laneConfig.closureEnv] ?? "",
 		resolved.sha12,
 		splitNulPaths(
 			await git([
@@ -113,6 +120,7 @@ async function main(): Promise<number> {
 				releaseSha,
 			]),
 		),
+		laneConfig.lane,
 	);
 
 	// Copy BY DIGEST so a re-push of the build tag between the probe and the
@@ -137,7 +145,7 @@ async function main(): Promise<number> {
 	if (summary) {
 		appendFileSync(
 			summary,
-			`runner release image: \`${target}\` = \`${repo}@${minted.manifestDigest}\` (from :git-${resolved.sha12})\n`,
+			`${laneConfig.lane} release image: \`${target}\` = \`${repo}@${minted.manifestDigest}\` (from :git-${resolved.sha12})\n`,
 		);
 	}
 	return 0;
@@ -147,7 +155,8 @@ try {
 	process.exit(await main());
 } catch (err) {
 	if (err instanceof RetagError) {
-		console.error(`::error::runner-image retag: ${err.message}`);
+		const lane = imageLaneConfig(arg("lane"))?.lane ?? "image-lane";
+		console.error(`::error::${lane} retag: ${err.message}`);
 		process.exit(err.code);
 	}
 	throw err;

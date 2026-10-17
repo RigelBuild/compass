@@ -245,6 +245,7 @@ describe("resolveAncestor", () => {
 					? found(manifest(CONFIG_A))
 					: absentFor(`git-${tag}`);
 			},
+			"runner",
 		);
 		expect(result).toEqual({
 			commit: commit("bbbb"),
@@ -259,7 +260,7 @@ describe("resolveAncestor", () => {
 	test("a probe answered about another tag hard-fails the walk", async () => {
 		// A registry echoing the wrong tag is not a definitive answer for this one.
 		await expectRetagError(
-			() => resolveAncestor([commit("aaaa")], async () => absent),
+			() => resolveAncestor([commit("aaaa")], async () => absent, "runner"),
 			EXIT.registryFailed,
 		);
 	});
@@ -275,6 +276,7 @@ describe("resolveAncestor", () => {
 						if (tag === "aaaa00000000") return timeout;
 						return found(manifest(CONFIG_A));
 					},
+					"runner",
 				),
 			EXIT.registryFailed,
 		);
@@ -289,13 +291,16 @@ describe("resolveAncestor", () => {
 		let probes = 0;
 		const err = await expectRetagError(
 			() =>
-				resolveAncestor(ancestors, async (tag) => {
-					probes += 1;
-					// The 51st ancestor would resolve; the cap must stop short of it.
-					return tag === sha12(ancestors[MAX_WALK] ?? "")
-						? found(manifest(CONFIG_A))
-						: absentFor(`git-${tag}`);
-				}),
+				resolveAncestor(
+					ancestors,
+					async (tag) => {
+						probes += 1;
+						return tag === sha12(ancestors[MAX_WALK] ?? "")
+							? found(manifest(CONFIG_A))
+							: absentFor(`git-${tag}`);
+					},
+					"runner",
+				),
 			EXIT.noAncestor,
 		);
 		expect(probes).toBe(MAX_WALK);
@@ -304,10 +309,8 @@ describe("resolveAncestor", () => {
 	});
 
 	test("the remediation names its HEAD-of-main precondition", async () => {
-		// A main dispatch publishes main's HEAD, which is an ancestor only while
-		// main has not moved past the release sha.
 		const err = await expectRetagError(
-			() => resolveAncestor([], async () => found("{}")),
+			() => resolveAncestor([], async () => found("{}"), "runner"),
 			EXIT.noAncestor,
 		);
 		expect(err.message).toContain("still main's HEAD");
@@ -318,15 +321,18 @@ describe("resolveAncestor", () => {
 			commit(i.toString(16).padStart(4, "0")),
 		);
 		const last = sha12(ancestors[MAX_WALK - 1] ?? "");
-		const result = await resolveAncestor(ancestors, async (tag) =>
-			tag === last ? found("{}") : absentFor(`git-${tag}`),
+		const result = await resolveAncestor(
+			ancestors,
+			async (tag) =>
+				tag === last ? found(manifest(CONFIG_A)) : absentFor(`git-${tag}`),
+			"runner",
 		);
 		expect(result.position).toBe(MAX_WALK);
 	});
 
 	test("an empty walk fails as no ancestor", async () => {
 		await expectRetagError(
-			() => resolveAncestor([], async () => found("{}")),
+			() => resolveAncestor([], async () => found("{}"), "runner"),
 			EXIT.noAncestor,
 		);
 	});
@@ -403,40 +409,68 @@ flake.nix
 describe("closureChanges", () => {
 	test("a file under a /** prefix is a closure change", () => {
 		expect(
-			closureChanges(CLOSURE, ["docs/x.md", "go/cmd/compass-runner/main.go"]),
+			closureChanges(
+				CLOSURE,
+				["docs/x.md", "go/cmd/compass-runner/main.go"],
+				"runner",
+			),
 		).toEqual(["go/cmd/compass-runner/main.go"]);
 	});
 
 	test("an exact entry matches only that path", () => {
-		expect(closureChanges(CLOSURE, ["flake.nix", "flake.nix.bak"])).toEqual([
-			"flake.nix",
-		]);
+		expect(
+			closureChanges(CLOSURE, ["flake.nix", "flake.nix.bak"], "runner"),
+		).toEqual(["flake.nix"]);
 	});
 
 	test("a /** prefix does not match a sibling that shares its name", () => {
-		// `runner-image/**` must not claim `runner-image-extra/` or the bare dir.
 		expect(
-			closureChanges(CLOSURE, ["runner-image-extra/a", "tools/runner-imagex"]),
+			closureChanges(
+				CLOSURE,
+				["runner-image-extra/a", "tools/runner-imagex"],
+				"runner",
+			),
 		).toEqual([]);
 	});
 
 	test("a release commit touching only version files is not a closure change", () => {
-		// The exact file set release-please's release commit writes.
 		expect(
-			closureChanges(CLOSURE, [
-				".release-please-manifest.json",
-				"CHANGELOG.md",
-				"version.txt",
-			]),
+			closureChanges(
+				CLOSURE,
+				[".release-please-manifest.json", "CHANGELOG.md", "version.txt"],
+				"runner",
+			),
 		).toEqual([]);
 	});
 
 	test("an empty closure set is refused rather than matching nothing", async () => {
-		// An unset env var would otherwise pass every diff silently.
 		await expectRetagError(
-			() => closureChanges(" \n\n", ["runner-image/Dockerfile"]),
+			() => closureChanges(" \n\n", ["runner-image/Dockerfile"], "runner"),
 			EXIT.usage,
 		);
+	});
+
+	test("names the server closure when its path set is empty", () => {
+		expect(() => closureChanges(" \n\n", [], "server")).toThrow(
+			"the server closure path set is empty",
+		);
+	});
+
+	test("reports server closure changes and recovery action", () => {
+		expect(() =>
+			assertNoClosureChange(
+				"go/server/**",
+				"bbbb00000000",
+				["go/server/serve.go"],
+				"server",
+			),
+		).toThrow("predates server closure changes it lacks");
+	});
+
+	test("server release remediation names the server publish job", async () => {
+		await expect(
+			resolveAncestor([], async () => found("{}"), "server"),
+		).rejects.toThrow("publish-server-image");
 	});
 });
 
@@ -460,23 +494,27 @@ describe("splitNulPaths", () => {
 		expect(splitNulPaths("")).toEqual([]);
 	});
 });
-
 describe("assertNoClosureChange", () => {
 	test("passes when nothing between source and release is in the closure", () => {
 		expect(() =>
-			assertNoClosureChange(CLOSURE, "bbbb00000000", ["CHANGELOG.md"]),
+			assertNoClosureChange(
+				CLOSURE,
+				"bbbb00000000",
+				["CHANGELOG.md"],
+				"runner",
+			),
 		).not.toThrow();
 	});
 
 	test("fails as no-ancestor, naming the skipped closure paths", async () => {
-		// The skipped commit's publish failed: re-tagging the older image would
-		// ship a release without that closure change.
 		const err = await expectRetagError(
 			() =>
-				assertNoClosureChange(CLOSURE, "bbbb00000000", [
-					"CHANGELOG.md",
-					"runner-image/Dockerfile",
-				]),
+				assertNoClosureChange(
+					CLOSURE,
+					"bbbb00000000",
+					["CHANGELOG.md", "runner-image/Dockerfile"],
+					"runner",
+				),
 			EXIT.noAncestor,
 		);
 		expect(err.message).toContain("runner-image/Dockerfile");

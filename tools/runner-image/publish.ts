@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// Publish the compass-runner container image by digest: scan the locally built
-// image config for leaked secrets, push it UNTAGGED with rootless BuildKit,
-// assert the digest the registry accepted equals the one the local build
-// produced, and only then tag that digest `:git-<sha12>` with skopeo.
+// Publish an image lane (`--lane runner|server`) by digest: scan the locally
+// built image config for leaked secrets, push it UNTAGGED with rootless
+// BuildKit, assert the digest the registry accepted equals the one the local
+// build produced, and only then tag that digest `:git-<sha12>` with skopeo.
 //
 // WHY A DIGEST AND NOT A TAG. GHCR has no server-side tag immutability, so
 // anyone holding packages:write can re-point a tag at other bytes. The
@@ -21,13 +21,14 @@
 // holds the registry auth (BuildKit reads the same file).
 //
 // Usage:
-//   bun tools/runner-image/publish.ts --repo <ghcr.io/owner/name> --sha <sha12>
+//   bun tools/runner-image/publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12>
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { imageLaneConfig } from "./image-lane-core.ts";
 import {
 	buildTag,
 	EXIT,
@@ -38,24 +39,28 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = join(here, "..", "..");
-const ociDir = join(workspaceRoot, "runner-image", "out");
-
-function fail(code: number, message: string): never {
-	console.error(`::error::runner-image publish: ${message}`);
-	process.exit(code);
-}
 
 function arg(name: string): string | undefined {
 	const i = process.argv.indexOf(`--${name}`);
 	return i === -1 ? undefined : process.argv[i + 1];
 }
+const laneConfig = imageLaneConfig(arg("lane"));
+function fail(code: number, message: string): never {
+	console.error(
+		`::error::${laneConfig?.lane ?? "image-lane"} publish: ${message}`,
+	);
+	process.exit(code);
+}
+if (!laneConfig) fail(EXIT.usage, "--lane must be runner or server");
+
+const ociDir = join(workspaceRoot, laneConfig.imageDir, "out");
 
 const repo = arg("repo");
 const sha12 = arg("sha");
 if (!repo || !sha12) {
 	fail(
 		EXIT.usage,
-		"usage: publish.ts --repo <ghcr.io/owner/name> --sha <sha12>",
+		"usage: publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12>",
 	);
 }
 // Validate the sha before any build or registry work.
@@ -78,7 +83,7 @@ const authFile = join(dockerConfig, "config.json");
 if (!existsSync(join(ociDir, "index.json"))) {
 	fail(
 		EXIT.usage,
-		`no OCI layout at ${ociDir} — run \`bun tools/runner-image/build.ts --output oci\` (or \`moon run compass-runner-image:build\`, its default output) first`,
+		`no OCI layout at ${ociDir} — run \`bun tools/${laneConfig.imageDir}/build.ts --output oci\` (or \`moon run ${laneConfig.projectName}:build\`, its default output) first`,
 	);
 }
 const localDigest = manifestDigest(ociDir);
@@ -93,7 +98,7 @@ if (violations.length > 0) {
 // The metadata dir is a throwaway; remove it on every exit path (including a
 // fail()'s process.exit) so a dev-box run leaves nothing behind. force:true
 // keeps the handler from throwing, and it changes no exit code.
-const metadataDir = mkdtempSync(join(tmpdir(), "runner-image-"));
+const metadataDir = mkdtempSync(join(tmpdir(), `${laneConfig.lane}-image-`));
 process.on("exit", () => rmSync(metadataDir, { recursive: true, force: true }));
 const metadataFile = join(metadataDir, "meta.json");
 const result = publishVerified(
@@ -103,7 +108,7 @@ const result = publishVerified(
 			const push = spawnSync(
 				"bun",
 				[
-					join(here, "build.ts"),
+					join(workspaceRoot, "tools", laneConfig.imageDir, "build.ts"),
 					"--output",
 					"push",
 					"--tag",

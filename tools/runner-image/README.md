@@ -14,19 +14,18 @@ moon run compass-runner-image:build
 sha12="$(git rev-parse HEAD | cut -c1-12)"
 DOCKER_CONFIG="/path/to/docker-config" \
   bun tools/runner-image/publish.ts \
-    --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12"
+    --lane runner --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12"
 REGISTRY_AUTH_FILE="/path/to/ghcr-auth.json" \
 RUNNER_IMAGE_CLOSURE_PATHS="<newline-separated paths>" \
   bun tools/runner-image/retag.ts \
-    --repo ghcr.io/rigelbuild/compass-runner --tag v1.2.3 \
+    --lane runner --repo ghcr.io/rigelbuild/compass-runner --tag v1.2.3 \
     --release-sha "$(git rev-parse HEAD)"
 ```
 
-The `publish-runner-image` job in `.github/workflows/release.yml` builds the
-local OCI layout and runs the publish script. The `release-runner-image` job
-runs `retag.ts` to copy a verified image to the release tag. `retag.ts` needs
-full git history and `RUNNER_IMAGE_CLOSURE_PATHS`, the closure path list set in
-`release.yml`'s workflow-level `env`.
+`publish-runner-image` builds the local OCI layout and calls the shared publish
+CLI with `--lane runner`. `release-runner-image` calls the shared retag CLI with
+`--lane runner`. The latter needs full git history and
+`RUNNER_IMAGE_CLOSURE_PATHS` from the workflow environment.
 
 ## Credentials
 

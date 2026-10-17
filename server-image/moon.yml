@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# The server image build stays local; CI covers its pure mapping separately.
+layer: 'application'
+language: 'bash'
+tags: ['ci-group.nix']
+
+workspace:
+  inheritedTasks:
+    exclude: ['install', 'lint', 'format']
+
+tasks:
+  build:
+    command: 'bun tools/server-image/build.ts'
+    options:
+      cache: false
+      runInCI: false
+      runFromWorkspaceRoot: true
+    inputs:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'moon.yml'
+      - '/tools/server-image/**/*'
+      - '/tools/runner-image/*-core.ts'
+      - '/go/**'
+      - '/tools/toolchain/secretspec-env.nix'
+      - '/devenv.lock'
+      - '/flake.nix'
+      - '/flake.lock'
+      - '/version.txt'
