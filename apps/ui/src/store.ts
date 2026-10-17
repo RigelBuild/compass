@@ -2136,19 +2136,22 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			repo: saved.repo,
 			mode: saved.mode,
 		};
-		const state = forgeMirrorSettings();
-		if (state.status === "ready") {
-			setForgeMirrorSettingsState({
-				...state,
-				settings: state.settings.map((previous) =>
-					previous.provider === confirmed.provider &&
-					previous.host === confirmed.host &&
-					previous.repo === confirmed.repo
-						? confirmed
-						: previous,
-				),
-			});
-		}
+		// Functional update: two confirmations resolving before a flush would
+		// otherwise both read the committed value and drop one another.
+		setForgeMirrorSettingsState((state) =>
+			state.status === "ready"
+				? {
+						...state,
+						settings: state.settings.map((previous) =>
+							previous.provider === confirmed.provider &&
+							previous.host === confirmed.host &&
+							previous.repo === confirmed.repo
+								? confirmed
+								: previous,
+						),
+					}
+				: state,
+		);
 	};
 	const mirrorToForge = async (
 		channelId: string,

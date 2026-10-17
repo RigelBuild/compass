@@ -112,7 +112,7 @@ export const ForgeMirrorSection: Component = () => {
 								<For each={state().settings}>
 									{(setting) => {
 										const key = keyOf(setting);
-										const id = `forge-mirror-${key}`;
+										const id = `${uid}-forge-mirror-${key}`;
 										return (
 											<SettingsRow
 												label={`${providerLabel[setting.provider] ?? "Forge"} · ${setting.host}/${setting.repo}`}

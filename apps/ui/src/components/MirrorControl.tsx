@@ -117,7 +117,7 @@ export const MirrorControl: Component<{
 			</Show>
 			<Show when={safeHref(url())}>
 				{(target) => (
-					<span class="mirror-result">
+					<span class="mirror-result" role="status">
 						<a href={target()} target="_blank" rel="noreferrer noopener">
 							View comment
 						</a>
@@ -125,7 +125,9 @@ export const MirrorControl: Component<{
 				)}
 			</Show>
 			<Show when={url() && !safeHref(url())}>
-				<span class="mirror-result">Mirrored</span>
+				<span class="mirror-result" role="status">
+					Mirrored
+				</span>
 			</Show>
 		</div>
 	);

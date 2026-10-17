@@ -138,4 +138,47 @@ describe("ForgeMirrorSection", () => {
 			unmount();
 		}
 	});
+
+	test("two rows confirming in the same tick keep both modes", async () => {
+		const other = { ...setting, repo: "owner/other" };
+		const fake = createFakeCompass({
+			mirrorSettings: [setting, other],
+			canEditMirrorSettings: true,
+		});
+		// Hold every write so both responses can be released together.
+		const held: Array<() => void> = [];
+		const client = {
+			...fake.client,
+			setForgeMirrorSetting: (req: { setting?: typeof setting }) =>
+				new Promise<{ setting?: typeof setting }>((resolve) => {
+					held.push(() => resolve({ setting: req.setting }));
+				}),
+		} as unknown as typeof fake.client;
+		const { container, unmount } = await mountSettings({ compass: client });
+		try {
+			const first = mirrorSelect(container);
+			const second = container.querySelector<HTMLSelectElement>(
+				'select[aria-label="GitHub · github.com/owner/other"]',
+			);
+			if (!first || !second) throw new Error("mirror selects did not render");
+			fireEvent.change(first, {
+				target: { value: String(ForgeMirrorMode.AUTO) },
+			});
+			fireEvent.change(second, {
+				target: { value: String(ForgeMirrorMode.OFF) },
+			});
+			expect(held).toHaveLength(2);
+			for (const release of held) release();
+			await settle();
+
+			expect(mirrorSelect(container)?.value).toBe(String(ForgeMirrorMode.AUTO));
+			expect(
+				container.querySelector<HTMLSelectElement>(
+					'select[aria-label="GitHub · github.com/owner/other"]',
+				)?.value,
+			).toBe(String(ForgeMirrorMode.OFF));
+		} finally {
+			unmount();
+		}
+	});
 });
