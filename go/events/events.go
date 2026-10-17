@@ -167,8 +167,10 @@ func NewBus[P any]() *Bus[P] {
 	}
 }
 
-// Publish stamps the next seq, timestamp, and ctx's traceparent onto payload,
-// pushes it into the ring, and forwards it to every live subscriber.
+// Publish stamps the next seq, a timestamp, and ctx's traceparent (empty with no
+// span), rings the event, and fans it out; it returns the assigned seq. A
+// subscriber whose buffer is full is marked lagged and dropped; the ring keeps
+// the event for a re-subscribe.
 func (b *Bus[P]) Publish(ctx context.Context, payload P) uint64 {
 	return b.publish(otelx.Traceparent(ctx), payload)
 }
