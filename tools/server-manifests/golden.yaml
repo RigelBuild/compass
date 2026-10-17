@@ -36,6 +36,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: compass-server
+      annotations:
+        compass.rigel.build/runner-clusters-checksum: 2e0c7c1e238dfddfffa42348dffc4d18cd15b308e99c51f47499a0739355314d
     spec:
       securityContext:
         runAsNonRoot: true

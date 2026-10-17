@@ -1,3 +1,5 @@
+import { createHash, createPublicKey } from "node:crypto";
+
 import type { renderRunnerManifests } from "../runner-manifests/render-core.ts";
 import { assertRunnerImageDigest } from "../runner-manifests/render-core.ts";
 
@@ -111,6 +113,14 @@ function assertKubernetesQuantity(value: string, field: string): void {
 }
 
 function assertHTTPSURL(value: string, field: string): void {
+	if (
+		!value.startsWith("https://") ||
+		/\s/.test(value) ||
+		value.includes("\\") ||
+		value.slice("https://".length).split(/[/?#]/, 1)[0] === ""
+	) {
+		throw new Error(`${field} must be an https:// URL`);
+	}
 	try {
 		const url = new URL(value);
 		if (url.protocol === "https:" && url.host.length > 0) return;
@@ -118,6 +128,19 @@ function assertHTTPSURL(value: string, field: string): void {
 		// Keep one field-specific error for parse and scheme failures.
 	}
 	throw new Error(`${field} must be an https:// URL`);
+}
+
+function assertOnlyKeys(
+	record: Record<string, unknown>,
+	allowed: readonly string[],
+	field: string,
+): void {
+	for (const key of Object.keys(record)) {
+		if (!allowed.includes(key))
+			throw new Error(
+				`${field.length === 0 ? key : `${field}.${key}`}: unknown key`,
+			);
+	}
 }
 
 const GO_MAX_DURATION_NS = 2n ** 63n - 1n;
@@ -169,30 +192,112 @@ const EC_CURVES = new Set(["P-256", "P-384", "P-521"]);
 // Mirrors the Server's JWKS loader, which drops private, symmetric and
 // incomplete keys and refuses to start when none remain.
 function isUsablePublicJWK(key: unknown): boolean {
-	if (!isPlainObject(key)) return false;
-	const has = (name: string) =>
-		typeof key[name] === "string" && key[name] !== "";
-	if (key.d !== undefined) return false;
+	if (!isPlainObject(key) || key.d !== undefined) return false;
+	let publicJWK:
+		| { kty: "RSA"; n: string; e: string }
+		| { kty: "EC"; crv: string; x: string; y: string }
+		| { kty: "OKP"; crv: "Ed25519"; x: string };
 	switch (key.kty) {
-		case "RSA":
-			return has("n") && has("e");
-		case "EC":
-			return EC_CURVES.has(String(key.crv)) && has("x") && has("y");
-		case "OKP":
-			return key.crv === "Ed25519" && has("x");
+		case "RSA": {
+			const n = key.n;
+			const e = key.e;
+			if (
+				typeof n !== "string" ||
+				n === "" ||
+				typeof e !== "string" ||
+				e === ""
+			)
+				return false;
+			publicJWK = { kty: "RSA", n, e };
+			break;
+		}
+		case "EC": {
+			const crv = key.crv;
+			const x = key.x;
+			const y = key.y;
+			if (
+				typeof crv !== "string" ||
+				!EC_CURVES.has(crv) ||
+				typeof x !== "string" ||
+				x === "" ||
+				typeof y !== "string" ||
+				y === ""
+			)
+				return false;
+			publicJWK = { kty: "EC", crv, x, y };
+			break;
+		}
+		case "OKP": {
+			const crv = key.crv;
+			const x = key.x;
+			if (crv !== "Ed25519" || typeof x !== "string" || x === "") return false;
+			publicJWK = { kty: "OKP", crv, x };
+			break;
+		}
 		default:
 			return false;
 	}
+	try {
+		const publicKey = createPublicKey({ key: publicJWK, format: "jwk" });
+		if (
+			publicKey.asymmetricKeyType === "rsa" &&
+			publicKey.asymmetricKeyDetails?.modulusLength === 0
+		)
+			return false;
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function publicJWKThumbprint(key: Record<string, unknown>): string {
+	let canonical: string;
+	switch (key.kty) {
+		case "RSA":
+			canonical = JSON.stringify({ e: key.e, kty: key.kty, n: key.n });
+			break;
+		case "EC":
+			canonical = JSON.stringify({
+				crv: key.crv,
+				kty: key.kty,
+				x: key.x,
+				y: key.y,
+			});
+			break;
+		case "OKP":
+			canonical = JSON.stringify({ crv: key.crv, kty: key.kty, x: key.x });
+			break;
+		default:
+			throw new Error("unsupported JWK key type");
+	}
+	return createHash("sha256").update(canonical).digest("base64url");
+}
+
+function inlineJWSThumbprints(jwksText: string, field: string): string[] {
+	let jwksValue: unknown;
+	try {
+		jwksValue = JSON.parse(jwksText);
+	} catch {
+		throw new Error(`${field} must be valid JSON with a keys array`);
+	}
+	const jwks = objectValue(jwksValue, field);
+	if (!Array.isArray(jwks.keys)) {
+		throw new Error(`${field} must be valid JSON with a keys array`);
+	}
+	const usableKeys = jwks.keys.filter(isUsablePublicJWK);
+	if (usableKeys.length === 0)
+		throw new Error(`${field} holds no usable public key`);
+	return usableKeys.flatMap((key) =>
+		isPlainObject(key) ? [publicJWKThumbprint(key)] : [],
+	);
 }
 
 function validateRunnerCluster(
 	cluster: RunnerClusterValues,
 	index: number,
-): void {
+): string[] {
 	const field = `runnerClusters[${index}]`;
-	if (!/^[a-z0-9-]{1,40}$/.test(cluster.name)) {
-		throw new Error(`${field}.name must match [a-z0-9-]{1,40}`);
-	}
+	assertDNS1123(cluster.name, `${field}.name`);
 	assertHTTPSURL(cluster.issuer, `${field}.issuer`);
 	assertDNS1123(cluster.namespace, `${field}.namespace`);
 	assertDNS1123(cluster.serviceAccount, `${field}.serviceAccount`);
@@ -202,31 +307,20 @@ function validateRunnerCluster(
 	if (cluster.jwksURI !== undefined) {
 		assertHTTPSURL(cluster.jwksURI, `${field}.jwksURI`);
 	}
-	if (cluster.jwks !== undefined) {
-		let jwksValue: unknown;
-		try {
-			jwksValue = JSON.parse(cluster.jwks);
-		} catch {
-			throw new Error(`${field}.jwks must be valid JSON with a keys array`);
-		}
-		const jwks = objectValue(jwksValue, `${field}.jwks`);
-		if (!Array.isArray(jwks.keys)) {
-			throw new Error(`${field}.jwks must be valid JSON with a keys array`);
-		}
-		if (!jwks.keys.some(isUsablePublicJWK)) {
-			throw new Error(`${field}.jwks holds no usable public key`);
-		}
-	}
 	if (cluster.maxTokenLifetime !== undefined) {
 		parseGoDurationNanos(cluster.maxTokenLifetime, `${field}.maxTokenLifetime`);
 	}
+	return cluster.jwks === undefined
+		? []
+		: inlineJWSThumbprints(cluster.jwks, `${field}.jwks`);
 }
 
 function validateRunnerClusters(clusters: RunnerClusterValues[]): void {
 	const names = new Set<string>();
 	const issuers = new Set<string>();
+	const thumbprints = new Map<string, number>();
 	clusters.forEach((cluster, index) => {
-		validateRunnerCluster(cluster, index);
+		const clusterThumbprints = validateRunnerCluster(cluster, index);
 		if (names.has(cluster.name)) {
 			throw new Error(
 				`runnerClusters[${index}].name duplicate name ${cluster.name}`,
@@ -240,6 +334,15 @@ function validateRunnerClusters(clusters: RunnerClusterValues[]): void {
 			);
 		}
 		issuers.add(normalizedIssuer);
+		for (const thumbprint of clusterThumbprints) {
+			const previousCluster = thumbprints.get(thumbprint);
+			if (previousCluster !== undefined && previousCluster !== index) {
+				throw new Error(
+					`runnerClusters[${index}].jwks contains the same public key`,
+				);
+			}
+			thumbprints.set(thumbprint, index);
+		}
 	});
 }
 
@@ -253,6 +356,28 @@ function parseServerDeployValuesWithoutValidation(
 	raw: unknown,
 ): ServerDeployValues {
 	const root = objectValue(raw, "values");
+	assertOnlyKeys(
+		root,
+		[
+			"namespace",
+			"serverImage",
+			"natsImage",
+			"initImage",
+			"postgres",
+			"natsStorage",
+			"tlsSecretName",
+			"dsnSecretName",
+			"natsSecretName",
+			"serverSecretsSecretName",
+			"adminTokenSecretName",
+			"s3SecretName",
+			"corsAllowedOrigin",
+			"otlpEndpoint",
+			"external",
+			"runnerClusters",
+		],
+		"",
+	);
 	const postgresInput =
 		root.postgres === undefined
 			? undefined
@@ -261,12 +386,35 @@ function parseServerDeployValuesWithoutValidation(
 		root.external === undefined
 			? undefined
 			: objectValue(root.external, "external");
+	if (postgresInput !== undefined)
+		assertOnlyKeys(
+			postgresInput,
+			["image", "storage", "secretName"],
+			"postgres",
+		);
+	if (externalInput !== undefined)
+		assertOnlyKeys(externalInput, ["port", "loadBalancerClass"], "external");
 	const clustersRaw = root.runnerClusters;
 	if (!Array.isArray(clustersRaw))
 		throw new Error("runnerClusters must be an array");
 	const runnerClusters: RunnerClusterValues[] = clustersRaw.map(
 		(value, index) => {
 			const item = objectValue(value, `runnerClusters[${index}]`);
+			assertOnlyKeys(
+				item,
+				[
+					"name",
+					"issuer",
+					"namespace",
+					"serviceAccount",
+					"audience",
+					"maxTokenLifetime",
+					"jwksURI",
+					"jwks",
+					"caFile",
+				],
+				`runnerClusters[${index}]`,
+			);
 			const cluster: RunnerClusterValues = {
 				name: stringValue(item, "name", `runnerClusters[${index}].name`),
 				issuer: stringValue(item, "issuer", `runnerClusters[${index}].issuer`),
@@ -468,8 +616,29 @@ function runnerClustersYAML(clusters: RunnerClusterValues[]): string {
 		}),
 	});
 }
+function runnerClustersConfigMapData(
+	clusters: RunnerClusterValues[],
+): Record<string, string> {
+	const data: Record<string, string> = {
+		"clusters.yaml": runnerClustersYAML(clusters),
+	};
+	for (const cluster of clusters) {
+		if (cluster.jwks !== undefined)
+			data[`${cluster.name}.jwks.json`] = cluster.jwks;
+	}
+	return data;
+}
+function runnerClustersConfigMapChecksum(data: Record<string, string>): string {
+	const stableData = Object.fromEntries(
+		Object.entries(data).sort(([a], [b]) => a.localeCompare(b)),
+	);
+	return createHash("sha256").update(JSON.stringify(stableData)).digest("hex");
+}
 
-function serverDeployment(values: ServerDeployValues): JsonObject {
+function serverDeployment(
+	values: ServerDeployValues,
+	runnerClusters: Record<string, string>,
+): JsonObject {
 	const serverEnv: JsonObject[] = [
 		secretEnv("COMPASS_DATABASE_DSN", values.dsnSecretName, "dsn"),
 		secretEnv("COMPASS_NATS_URL", values.natsSecretName, "url"),
@@ -597,7 +766,13 @@ function serverDeployment(values: ServerDeployValues): JsonObject {
 			strategy: { type: "Recreate" },
 			selector: { matchLabels: SERVER_LABEL },
 			template: {
-				metadata: { labels: SERVER_LABEL },
+				metadata: {
+					labels: SERVER_LABEL,
+					annotations: {
+						"compass.rigel.build/runner-clusters-checksum":
+							runnerClustersConfigMapChecksum(runnerClusters),
+					},
+				},
 				spec: {
 					securityContext: {
 						runAsNonRoot: true,
@@ -867,15 +1042,7 @@ export function renderServerManifests(
 	v: ServerDeployValues,
 ): ReturnType<typeof renderRunnerManifests> {
 	const validated = parseServerDeployValues(v);
-	const jwksData = Object.fromEntries(
-		validated.runnerClusters
-			.filter((cluster) => cluster.jwks !== undefined)
-			.map((cluster) => [`${cluster.name}.jwks.json`, cluster.jwks]),
-	);
-	const runnerClusters: Record<string, string> = {
-		"clusters.yaml": runnerClustersYAML(validated.runnerClusters),
-		...jwksData,
-	};
+	const runnerClusters = runnerClustersConfigMapData(validated.runnerClusters);
 	const networkPolicies = [
 		natsNetworkPolicy(validated.namespace),
 		...(validated.postgres === undefined
@@ -903,7 +1070,7 @@ export function renderServerManifests(
 			},
 			data: runnerClusters,
 		},
-		serverDeployment(validated),
+		serverDeployment(validated, runnerClusters),
 		...serverServices(validated),
 		...natsResources(validated),
 		...postgresResources(validated),

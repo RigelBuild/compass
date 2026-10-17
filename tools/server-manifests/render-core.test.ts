@@ -115,7 +115,11 @@ describe("renderServerManifests", () => {
 		const deployment = serverDeployment(manifests);
 		const podSpec = object(nested(deployment, "spec", "template", "spec"));
 		const server = container(deployment, "compass-server");
-		expect(nested(deployment, "spec", "replicas")).toBe(1);
+		expect(
+			object(nested(deployment, "spec", "template", "metadata", "annotations"))[
+				"compass.rigel.build/runner-clusters-checksum"
+			],
+		).toMatch(/^[a-f0-9]{64}$/);
 		expect(nested(deployment, "spec", "strategy", "type")).toBe("Recreate");
 		expect(podSpec.securityContext).toEqual({
 			runAsNonRoot: true,
@@ -141,6 +145,117 @@ describe("renderServerManifests", () => {
 			port: 50052,
 			scheme: "HTTPS",
 		});
+	});
+	test("rejects a duplicate public key across runner clusters", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				runnerClusters: [
+					cluster,
+					{ ...cluster, name: "other", issuer: "https://other.example.test" },
+				],
+			}),
+		).toThrow("same public key");
+	});
+
+	test("rejects unknown root and nested runner-cluster keys with full paths", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				runerClusters: values.runnerClusters,
+			}),
+		).toThrow("runerClusters: unknown key");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				runnerClusters: [
+					{ ...cluster, jwksUri: "https://issuer.example.test/keys" },
+				],
+			}),
+		).toThrow("runnerClusters[0].jwksUri: unknown key");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				external: { port: 7443, typo: true },
+			}),
+		).toThrow("external.typo: unknown key");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				postgres: {
+					image: digest("postgres"),
+					storage: "10Gi",
+					secretName: "pg-secret",
+					typo: true,
+				},
+			}),
+		).toThrow("postgres.typo: unknown key");
+	});
+
+	test("rejects HTTPS URL forms not accepted by Go", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		for (const issuer of [
+			" https://issuer.example.test",
+			"https://issuer.example.test ",
+			"https:issuer.example.test",
+			"https://issuer\\example.test",
+			"https:///path-only",
+		]) {
+			expect(() =>
+				parseServerDeployValues({
+					...values,
+					runnerClusters: [{ ...cluster, issuer }],
+				}),
+			).toThrow("runnerClusters[0].issuer");
+		}
+	});
+
+	test("requires runner-cluster names to be DNS labels", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		for (const name of ["-leading", "trailing-", "A-upper", "a".repeat(64)]) {
+			expect(() =>
+				parseServerDeployValues({
+					...values,
+					runnerClusters: [{ ...cluster, name }],
+				}),
+			).toThrow("runnerClusters[0].name");
+		}
+	});
+
+	test("changes the Server pod checksum when runner-cluster ConfigMap data changes", () => {
+		const checksum = (input: ServerDeployValues) => {
+			const deployment = serverDeployment(renderServerManifests(input));
+			const annotations = nested(
+				deployment,
+				"spec",
+				"template",
+				"metadata",
+				"annotations",
+			);
+			return object(annotations)[
+				"compass.rigel.build/runner-clusters-checksum"
+			];
+		};
+		const first = checksum(values);
+		const unchanged = checksum(values);
+		const changedValues = structuredClone(values);
+		const cluster = changedValues.runnerClusters[0];
+		if (cluster === undefined || cluster.jwks === undefined)
+			throw new Error("inline JWKS test value missing");
+		const jwks = JSON.parse(cluster.jwks) as { keys: { kid?: string }[] };
+		const key = jwks.keys[0];
+		if (key === undefined) throw new Error("inline JWK missing");
+		key.kid = "changed";
+		cluster.jwks = JSON.stringify(jwks);
+		expect(first).toEqual(expect.any(String));
+		expect(unchanged).toBe(first);
+		expect(checksum(changedValues)).not.toBe(first);
 	});
 
 	test("copies the init-only admin token into the shared state volume", () => {
@@ -540,6 +655,24 @@ describe("renderServerManifests", () => {
 		});
 	});
 
+	test("rejects malformed RSA and EC public key material", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined) throw new Error("cluster test value missing");
+		for (const jwk of [
+			{ ...TEST_JWK, n: "!!" },
+			{ kty: "EC", crv: "P-256", x: "!!", y: "!!" },
+		]) {
+			expect(() =>
+				parseServerDeployValues({
+					...values,
+					runnerClusters: [
+						{ ...cluster, jwks: JSON.stringify({ keys: [jwk] }) },
+					],
+				}),
+			).toThrow("usable public key");
+		}
+	});
+
 	test("rejects mutable image tags for Server, NATS, init, and Postgres images", () => {
 		for (const field of ["serverImage", "natsImage", "initImage"] as const) {
 			expect(() =>
@@ -688,8 +821,14 @@ describe("renderServerManifests", () => {
 			expect(metadata.labels).toEqual({
 				"app.kubernetes.io/part-of": "compass",
 			});
-			if (metadata.namespace !== undefined)
-				expect(metadata.namespace).toBe("compass");
+			const kind = object(manifest).kind;
+			const clusterScopedKinds = ["Namespace", "CustomResourceDefinition"];
+			if (clusterScopedKinds.includes(String(kind))) {
+				continue;
+			}
+			if (metadata.namespace === undefined)
+				throw new Error(`${String(kind)} is missing its namespace`);
+			expect(metadata.namespace).toBe("compass");
 		}
 	});
 });

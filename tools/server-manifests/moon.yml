@@ -9,9 +9,9 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', '/tools/runner-manifests/render-core.ts']
   test:
-    inputs: ['*.ts', '*.json', '*.yaml', '*.md', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', '*.json', '*.yaml', '*.md', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', '/tools/runner-manifests/render-core.ts']
   ci:
     deps: ['typecheck', 'test']
     options:
