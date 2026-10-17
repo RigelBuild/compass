@@ -1,10 +1,9 @@
 # devenv inputs. Rolling nixpkgs is devenv's recommended channel for dev
-# shells (newer than a release channel, curated for devenv). The toolchain is
-# nixpkgs derivations (buf, the codegen plugins, the Go gate battery, the
-# linters) plus the language runtimes — bun/node/moon vendored as nix
-# derivations from tools/toolchain/versions/*.nix and go from the go-overlay
-# input below. It also carries the RigelBuild/nix2container fork's patched
-# skopeo, so the agent-image publish lane resolves `skopeo` from this shell.
+# shells (newer than a release channel, curated for devenv). Nixpkgs supplies
+# buf and codegen tools; Meissa supplies Go analysis and lint modules. Language
+# runtimes are pinned under tools/toolchain/versions/*.nix and Go comes from
+# the go-overlay input below. It also carries the RigelBuild/nix2container
+# fork's patched skopeo for the agent-image publish lane.
 # There is no container image built here and no secrets provider to source.
 inputs:
   nixpkgs:
@@ -70,9 +69,9 @@ inputs:
   # (the same reason skopeo-nix2container sits outside it).
   secretspec-nixpkgs:
     url: github:NixOS/nixpkgs/nixpkgs-unstable
-  # meissa: the shared lint toolchain — rumdl + biome and the rumdl base policy
-  # (base.toml, which .rumdl.toml extends). Pinned by rev in devenv.lock and
-  # deliberately NOT `follows: nixpkgs`: Meissa's linters come from Meissa's own
-  # locked nixpkgs, so every consumer runs the identical derivations.
   meissa:
+    # Shared Go-analysis and lint modules. The Go module adds the analysis
+    # battery built with the consumer's Go toolchain; the default module provides
+    # rumdl, biome, and the rumdl base policy. Pinned by rev in devenv.lock and
+    # deliberately NOT `follows: nixpkgs` so each consumer uses one locked source.
     url: github:RigelBuild/meissa

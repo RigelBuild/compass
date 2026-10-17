@@ -414,8 +414,8 @@ jobs:
 
       - name: Put the Go analysis battery on PATH
         if: matrix.run == 'true' && matrix.group == 'go'
-        # golangci-lint/govulncheck/go-licenses/nilaway, rebuilt with the dev
-        # shell's go toolchain; no cache holds them, so only the go leg builds them.
+        # Meissa's devenvModules.go adds these tools to the dev shell; the same
+        # lib.goAnalysis output supplies their store paths, built on the go leg only.
         run: |
           stores=$(nix eval --json -f tools/toolchain/gate-tools.nix goAnalysis \
             | jq -r '.[].store')
@@ -1443,9 +1443,8 @@ jobs:
           done
 
       - name: Put the Go analysis battery on PATH
-        # golangci-lint/govulncheck/go-licenses/nilaway, rebuilt with the dev
-        # shell's go toolchain. No cache holds them, so only the jobs that run
-        # them build them.
+        # Meissa's devenvModules.go adds these tools to the dev shell; the same
+        # lib.goAnalysis output supplies their store paths for CI.
         run: |
           stores=$(nix eval --json -f tools/toolchain/gate-tools.nix goAnalysis \
             | jq -r '.[].store')
