@@ -1,12 +1,14 @@
 package store
 
 import (
+	"archive/tar"
 	"fmt"
 	"strings"
 
 	yaml "go.yaml.in/yaml/v3"
 )
 
+// ConfigLocks is the tenant's set of config paths that user and role overlays cannot replace.
 type ConfigLocks struct {
 	paths []string
 }
@@ -37,20 +39,18 @@ func parseConfigLocks(body []byte) (ConfigLocks, error) {
 		if _, ok := seen[path]; ok {
 			return ConfigLocks{}, fmt.Errorf("%w: locks.yml repeats path %q", ErrInvalidArgument, path)
 		}
-		parts, err := configMemberParts(strings.TrimSuffix(path, "/"))
+		isPrefix := strings.HasSuffix(path, "/")
+		trimmed := strings.TrimSuffix(path, "/")
+		parts, err := configMemberParts(trimmed)
 		if err != nil {
 			return ConfigLocks{}, fmt.Errorf("%w: locks.yml path %q is not a config member", ErrInvalidArgument, path)
 		}
-		isPrefix := strings.HasSuffix(path, "/")
 		if isPrefix {
-			if len(parts) != 2 || (parts[0] != topDirSkills && parts[0] != topDirExtensions) {
-				return ConfigLocks{}, fmt.Errorf("%w: locks.yml prefix %q must name a skills or extensions directory", ErrInvalidArgument, path)
-			}
-			if !configNamePattern.MatchString(parts[1]) {
-				return ConfigLocks{}, fmt.Errorf("%w: locks.yml prefix %q has an invalid directory name", ErrInvalidArgument, path)
+			if len(parts) > 2 || validateConfigMemberPath(parts, tar.TypeDir, LayerTenant) != nil || (parts[0] != topDirPrompts && parts[0] != topDirSkills && parts[0] != topDirExtensions) {
+				return ConfigLocks{}, fmt.Errorf("%w: locks.yml prefix %q must name an admitted directory", ErrInvalidArgument, path)
 			}
 		} else if !validLockMemberPath(parts) {
-			return ConfigLocks{}, fmt.Errorf("%w: locks.yml path %q must name a member, not a directory member", ErrInvalidArgument, path)
+			return ConfigLocks{}, fmt.Errorf("%w: locks.yml path %q must name an admitted member", ErrInvalidArgument, path)
 		}
 		seen[path] = struct{}{}
 		locks.paths = append(locks.paths, path)
@@ -62,34 +62,15 @@ func validLockMemberPath(parts []string) bool {
 	if len(parts) == 1 {
 		return parts[0] == memberAgentsMD || parts[0] == memberModels
 	}
-	switch parts[0] {
-	case topDirSettings:
-		return strings.Join(parts, "/") == settingsMember
-	case topDirRules:
-		return len(parts) == 2 && validateFlatNamedMember(topDirRules, parts[1], strings.Join(parts, "/"), ".md", ".mdc") == nil
-	case topDirAgents:
-		return len(parts) == 2 && validateFlatNamedMember(topDirAgents, parts[1], strings.Join(parts, "/"), ".md") == nil
-	case topDirPrompts:
-		return len(parts) == 3 && parts[1] != "" && parts[2] == memberSystemMD && configNamePattern.MatchString(parts[1])
-	case topDirSkills, topDirExtensions:
-		return len(parts) >= 3 && configNamePattern.MatchString(parts[1]) && validLockRelativePath(parts[2:])
-	case topDirProfiles:
-		return len(parts) == 3 && parts[1] != "" && parts[2] == memberProfileYML && configNamePattern.MatchString(parts[1])
-	default:
+	if len(parts) >= 3 && (parts[0] == topDirSkills || parts[0] == topDirExtensions) {
 		return false
 	}
+	return validateConfigMemberPath(parts, tar.TypeReg, LayerTenant) == nil
 }
 
-func validLockRelativePath(parts []string) bool {
-	for _, part := range parts {
-		if part == memberLocksYML || part == "" || part == "." || part == ".." || strings.ContainsAny(part, `/\\`) {
-			return false
-		}
-	}
-	return len(parts) > 0
-}
-
+// Covers reports whether a canonical config member matches an exact lock or directory prefix.
 func (l ConfigLocks) Covers(member string) bool {
+	member = canonicalConfigPath(member)
 	for _, path := range l.paths {
 		if strings.HasSuffix(path, "/") {
 			if strings.HasPrefix(member, path) {

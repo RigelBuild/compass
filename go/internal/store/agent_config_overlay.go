@@ -8,11 +8,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// OverlayKey selects the tenant, user, or role config overlay.
+// An empty Owner selects tenant; a non-empty Role selects that owner's role layer.
 type OverlayKey struct {
 	Owner AccountID
 	Role  string
 }
 
+// PutAgentConfigOverlay validates and replaces the bundle selected by key.
+// The returned version hashes the canonical bundle contents.
 func (s *Store) PutAgentConfigOverlay(ctx context.Context, actor AccountID, key OverlayKey, bundle []byte) (version string, err error) {
 	layer, err := overlayLayerForKey(key)
 	if err != nil {
@@ -31,9 +35,8 @@ func (s *Store) PutAgentConfigOverlay(ctx context.Context, actor AccountID, key 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
-	var locks ConfigLocks
 	if layer == LayerUser || layer == LayerRole {
-		locks, err = loadTenantConfigLocks(ctx, q, s.resolveTenant(ctx))
+		locks, err := loadTenantConfigLocks(ctx, q, s.resolveTenant(ctx))
 		if err != nil {
 			return "", err
 		}
@@ -42,7 +45,7 @@ func (s *Store) PutAgentConfigOverlay(ctx context.Context, actor AccountID, key 
 			return "", fmt.Errorf("store: read config overlay bundle: %w", err)
 		}
 		for member := range files {
-			if locks.Covers(member) {
+			if locks.Covers(canonicalConfigPath(member)) {
 				return "", fmt.Errorf("%w: config member %q is locked by the tenant", ErrInvalidArgument, member)
 			}
 		}
@@ -66,6 +69,8 @@ func (s *Store) PutAgentConfigOverlay(ctx context.Context, actor AccountID, key 
 	return version, nil
 }
 
+// DeleteAgentConfigOverlay removes the selected overlay, if present.
+// Deleting an absent overlay succeeds without changing other layers.
 func (s *Store) DeleteAgentConfigOverlay(ctx context.Context, key OverlayKey) error {
 	if _, err := overlayLayerForKey(key); err != nil {
 		return err
@@ -92,6 +97,7 @@ func (s *Store) DeleteAgentConfigOverlay(ctx context.Context, key OverlayKey) er
 	return nil
 }
 
+// AgentConfigOverlayInfo returns version and member names without member contents.
 func (s *Store) AgentConfigOverlayInfo(ctx context.Context, key OverlayKey) (AgentConfigInfoResult, error) {
 	if _, err := overlayLayerForKey(key); err != nil {
 		return AgentConfigInfoResult{}, err
@@ -117,7 +123,22 @@ func (s *Store) AgentConfigOverlayInfo(ctx context.Context, key OverlayKey) (Age
 	return info, nil
 }
 
+// EffectiveAgentConfig returns the merged bundle, or only its version on a match.
+// A matching version does not read or validate any bundle contents.
 func (s *Store) EffectiveAgentConfig(ctx context.Context, agent AccountID, ifVersion string) (version string, bundle []byte, err error) {
+	versionRow, err := s.q.EffectiveAgentConfigLayerVersions(ctx, db.EffectiveAgentConfigLayerVersionsParams{
+		AccountID: string(agent), TenantID: string(s.resolveTenant(ctx)),
+	})
+	if err != nil {
+		if noRows(err) {
+			return "", nil, fmt.Errorf("%w: agent %q", ErrNotFound, agent)
+		}
+		return "", nil, fmt.Errorf("store: read effective config layer versions: %w", err)
+	}
+	version = EffectiveConfigVersion(versionRow.DefaultVersion, versionRow.TenantVersion, versionRow.UserVersion, versionRow.RoleVersion)
+	if ifVersion != "" && ifVersion == version {
+		return version, nil, nil
+	}
 	layers, err := loadEffectiveConfigLayers(ctx, s.q, s.resolveTenant(ctx), agent)
 	if err != nil {
 		return "", nil, err
@@ -135,23 +156,23 @@ func (s *Store) EffectiveAgentConfig(ctx context.Context, agent AccountID, ifVer
 		return "", nil, fmt.Errorf("effective config for agent %s invalid (default %s, tenant %s, user %s, role %s): %s", agent, layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion, err.Error())
 	}
 	warnDroppedConfigMembers(ctx, dropped)
-	if ifVersion != "" && ifVersion == version {
-		return version, nil, nil
-	}
+	warnEffectiveProfileAgentOrphans(ctx, bundle)
 	return version, bundle, nil
 }
 
+// EffectiveAgentConfigMembers returns each winning member's layer in path order.
 func (s *Store) EffectiveAgentConfigMembers(ctx context.Context, agent AccountID) (version string, members []EffectiveMember, err error) {
 	layers, err := loadEffectiveConfigLayers(ctx, s.q, s.resolveTenant(ctx), agent)
 	if err != nil {
 		return "", nil, err
 	}
 	version = EffectiveConfigVersion(layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion)
-	_, members, dropped, err := MergeConfigBundles(layers.bundles)
+	bundle, members, dropped, err := MergeConfigBundles(layers.bundles)
 	if err != nil {
 		return "", nil, fmt.Errorf("effective config for agent %s invalid (default %s, tenant %s, user %s, role %s): %s", agent, layers.defaultVersion, layers.tenantVersion, layers.userVersion, layers.roleVersion, err.Error())
 	}
 	warnDroppedConfigMembers(ctx, dropped)
+	warnEffectiveProfileAgentOrphans(ctx, bundle)
 	return version, members, nil
 }
 
@@ -218,7 +239,7 @@ func loadTenantConfigLocks(ctx context.Context, q *db.Queries, tenant TenantID) 
 	if err != nil {
 		return ConfigLocks{}, fmt.Errorf("store: read tenant config bundle: %w", err)
 	}
-	body, ok := files["locks.yml"]
+	body, ok := files[memberLocksYML]
 	if !ok {
 		return ConfigLocks{}, nil
 	}

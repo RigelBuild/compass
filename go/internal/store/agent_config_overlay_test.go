@@ -1,8 +1,13 @@
 package store
 
 import (
+	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +95,9 @@ func TestValidateMCPMemberOverlayShapeAndCredentials(t *testing.T) {
 		{name: "command indirection accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"env":{"TOKEN":"!command"}}}}`},
 		{name: "userinfo in token URL rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"auth":{"tokenUrl":"https://user:pass@host/token"}}}}`, wantErr: true},
 		{name: "token query in URL rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?token=x"}}}`, wantErr: true},
-		{name: "exa key in args rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"args":["exaApiKey=x"]}}}`, wantErr: true},
+		{name: "key suffix query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?monkey=x"}}}`, wantErr: true},
+		{name: "secret suffix query rejected", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?xSecretHint=x"}}}`, wantErr: true},
+		{name: "benign version query accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/?api-version=2024-10-01"}}}`},
 		{name: "credential free URL accepted", path: "mcp/a.json", body: `{"mcpServers":{"a":{"url":"https://host/mcp"}}}`},
 	}
 	for _, tt := range tests {
@@ -179,5 +186,161 @@ func TestConfigBundleRejectsNestedLocksYML(t *testing.T) {
 	)
 	if _, _, err := validateAndHashConfigBundle(bundle, LayerTenant); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("nested locks.yml error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestTenantLockBundleIsValidatedAtDoor(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed YAML", body: "paths: [\n"},
+		{name: "invalid member path", body: "paths:\n  - unknown/file\n"},
+		{name: "exact path inside skills directory", body: "paths:\n  - skills/web/SKILL.md\n"},
+		{name: "exact path inside extension directory", body: "paths:\n  - extensions/web/main.ts\n"},
+		{name: "trailing slash regular-file lock", body: "paths:\n  - settings/config.yml/\n"},
+		{name: "directory prefix must end in slash", body: "paths:\n  - skills/web\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tarEntry{name: "locks.yml", content: tt.body})
+			if err := validateBundleErrorForLayer(bundle, LayerTenant); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("tenant lock bundle error = %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
+}
+
+func TestConfigBundleDoorAndStoredPathGrammarParity(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		typeflag byte
+		layer    ConfigLayer
+		content  string
+		wantErr  bool
+	}{
+		{name: "nested skill directory", path: "skills/x/references/", typeflag: tar.TypeDir, layer: LayerUser},
+		{name: "nested extension directory", path: "extensions/x/src/", typeflag: tar.TypeDir, layer: LayerDefault},
+		{name: "nested prompt directory rejected", path: "prompts/manager/extra/", typeflag: tar.TypeDir, layer: LayerDefault, wantErr: true},
+		{name: "stored invalid settings path", path: "settings/other.yml", layer: LayerUser, content: "key: value\n", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tarEntry{name: tt.path, typeflag: tt.typeflag, content: tt.content})
+			doorErr := validateBundleErrorForLayer(bundle, tt.layer)
+			storedErr := validateStoredConfigBundle(bundle, tt.layer)
+			if (doorErr != nil) != tt.wantErr || (storedErr != nil) != tt.wantErr {
+				t.Fatalf("door error = %v, stored error = %v, wantErr %t", doorErr, storedErr, tt.wantErr)
+			}
+		})
+	}
+}
+func TestConfigBundleAcceptsRegularHeaderWithTrailingSlash(t *testing.T) {
+	name := "settings/config.yml/"
+	var tarBytes bytes.Buffer
+	header := make([]byte, 512)
+	copy(header[:100], name)
+	copy(header[100:108], "0000644\x00")
+	copy(header[108:116], "0000000\x00")
+	copy(header[116:124], "0000000\x00")
+	copy(header[124:136], "00000000006\x00")
+	copy(header[136:148], "00000000000\x00")
+	for i := 148; i < 156; i++ {
+		header[i] = ' '
+	}
+	header[156] = tar.TypeReg
+	copy(header[257:263], "ustar\x00")
+	copy(header[263:265], "00")
+	var checksum int64
+	for _, value := range header {
+		checksum += int64(value)
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", checksum))
+	tarBytes.Write(header)
+	tarBytes.WriteString("key: x\n")
+	tarBytes.Write(make([]byte, 512-7))
+	tarBytes.Write(make([]byte, 1024))
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	if _, err := gz.Write(tarBytes.Bytes()); err != nil {
+		t.Fatalf("gzip raw tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close raw tar gzip: %v", err)
+	}
+	if err := validateBundleErrorForLayer(raw.Bytes(), LayerUser); err != nil {
+		t.Fatalf("regular header with trailing slash: %v", err)
+	}
+	if err := validateStoredConfigBundle(raw.Bytes(), LayerUser); err != nil {
+		t.Fatalf("stored regular header with trailing slash: %v", err)
+	}
+}
+
+func TestConfigLocksAcceptMCPMembersAndPromptPrefixes(t *testing.T) {
+	locks, err := parseConfigLocks([]byte("paths:\n  - mcp/fetch.json\n  - prompts/\n  - prompts/manager/\n"))
+	if err != nil {
+		t.Fatalf("parseConfigLocks: %v", err)
+	}
+	for _, path := range []string{"mcp/fetch.json", "prompts/manager/SYSTEM.md"} {
+		if !locks.Covers(path) {
+			t.Errorf("lock does not cover %q", path)
+		}
+	}
+	if _, err := parseConfigLocks([]byte("paths:\n  - prompts/manager\n")); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("non-slash directory lock error = %v, want ErrInvalidArgument", err)
+	}
+}
+func TestMergeConfigBundlesEnforcesEffectiveCaps(t *testing.T) {
+	t.Run("merged content size", func(t *testing.T) {
+		bundle := func(name, content string) []byte {
+			return buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tarEntry{name: name, content: content})
+		}
+		_, _, _, err := MergeConfigBundles(LayerBundles{
+			Default: bundle("skills/default/file", strings.Repeat("d", 40<<20)),
+			Tenant:  bundle("skills/tenant/file", strings.Repeat("t", 30<<20)),
+		})
+		if err == nil {
+			t.Fatal("merged content above the effective cap was accepted")
+		}
+	})
+	t.Run("merged file count", func(t *testing.T) {
+		makeBundle := func(prefix string, count int) []byte {
+			entries := make([]tarEntry, 0, count)
+			for i := range count {
+				entries = append(entries, tarEntry{name: fmt.Sprintf("skills/%s%d/file", prefix, i), content: "x"})
+			}
+			return buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), entries...)
+		}
+		_, _, _, err := MergeConfigBundles(LayerBundles{
+			Default: makeBundle("d", 3000),
+			Tenant:  makeBundle("t", 3000),
+		})
+		if err == nil {
+			t.Fatal("merged file count above the effective cap was accepted")
+		}
+	})
+}
+
+func TestEffectiveProfileAgentOrphansAreWarned(t *testing.T) {
+	bundle, _, _, err := MergeConfigBundles(LayerBundles{
+		Default: buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+			tarEntry{name: "agents/impl.md", content: "---\nname: impl\n---\n"},
+			tarEntry{name: "profiles/default/profile.yml", content: "models:\n  agents:\n    impl: selector\n"},
+		),
+		User: buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+			tarEntry{name: "agents/impl.md", content: "---\nname: replacement\n---\n"},
+		),
+	})
+	if err != nil {
+		t.Fatalf("MergeConfigBundles: %v", err)
+	}
+	var log bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(oldLogger)
+	warnEffectiveProfileAgentOrphans(context.Background(), bundle)
+	if !strings.Contains(log.String(), "effective config profile references missing agent") || !strings.Contains(log.String(), "agent=impl") {
+		t.Fatalf("orphan warning = %q, want warning naming missing agent impl", log.String())
 	}
 }

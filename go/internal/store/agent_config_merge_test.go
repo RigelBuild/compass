@@ -26,6 +26,15 @@ func TestMergeConfigBundles(t *testing.T) {
 		wantDrop   []string
 	}{
 		{
+			name: "same-layer skill files are all retained",
+			in: LayerBundles{
+				Default: bundle(map[string]string{"skills/x/a": "a", "skills/x/b": "b", "skills/y/a": "y"}),
+				User:    bundle(map[string]string{"skills/x/c": "c", "skills/x/d": "d"}),
+			},
+			want:       map[string]string{"skills/x/c": "c", "skills/x/d": "d", "skills/y/a": "y"},
+			wantLayers: map[string]ConfigLayer{"skills/x/c": LayerUser, "skills/x/d": LayerUser, "skills/y/a": LayerDefault},
+		},
+		{
 			name: "user file replaces whole tenant file",
 			in: LayerBundles{
 				Default: bundle(map[string]string{"settings/config.yml": "default: yes\n"}),

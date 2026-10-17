@@ -171,6 +171,7 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	return version, nil
 }
 
+// ValidateConfigBundle validates a default config bundle and returns its canonical content version.
 func ValidateConfigBundle(bundle []byte) (version string, err error) {
 	version, _, err = validateAndHashConfigBundle(bundle, LayerDefault)
 	return version, err
@@ -272,7 +273,8 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 			}
 			return AgentConfigInfoResult{}, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
 		}
-		parts, err := configMemberParts(hdr.Name)
+		name := canonicalConfigPath(hdr.Name)
+		parts, err := configMemberParts(name)
 		if err != nil {
 			return AgentConfigInfoResult{}, err
 		}
@@ -352,7 +354,7 @@ func configBundleProfileBodies(bundle []byte) (map[string][]byte, error) {
 			}
 			return nil, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
 		}
-		parts, err := configMemberParts(hdr.Name)
+		parts, err := configMemberParts(canonicalConfigPath(hdr.Name))
 		if err != nil {
 			return nil, err
 		}
@@ -444,7 +446,8 @@ func readAndValidateConfigMembers(gz io.Reader, layer ConfigLayer, caps layerCap
 		if err := validateConfigHeaderType(hdr); err != nil {
 			return nil, err
 		}
-		parts, err := configMemberParts(hdr.Name)
+		name := canonicalConfigPath(hdr.Name)
+		parts, err := configMemberParts(name)
 		if err != nil {
 			return nil, err
 		}
@@ -454,17 +457,18 @@ func readAndValidateConfigMembers(gz io.Reader, layer ConfigLayer, caps layerCap
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
+		hdr.Name = name
 		if err := validateConfigFileLimits(hdr, caps, &contentBytes, seen, len(members)+1); err != nil {
 			return nil, err
 		}
-		content, err := validateRegularMember(parts, strings.Join(parts, "/"), tr)
+		content, err := validateRegularMember(parts, name, tr)
 		if err != nil {
 			if errors.Is(err, errBundleTooLarge) {
 				return nil, errBundleTooLarge
 			}
 			return nil, err
 		}
-		members = append(members, configMemberContent{name: hdr.Name, parts: parts, content: content})
+		members = append(members, configMemberContent{name: name, parts: parts, content: content})
 	}
 }
 
@@ -482,6 +486,12 @@ func validateConfigHeaderType(hdr *tar.Header) error {
 }
 
 func validateConfigHeaderPath(parts []string, kind byte, layer ConfigLayer) error {
+	return validateConfigMemberPath(parts, kind, layer)
+}
+
+// validateConfigMemberPath is shared by the upload door, stored-row validator,
+// and lock parser so each applies one layer-aware path grammar.
+func validateConfigMemberPath(parts []string, kind byte, layer ConfigLayer) error {
 	if len(parts) == 1 && parts[0] == memberLocksYML {
 		if kind != tar.TypeReg || layer != LayerTenant {
 			return fmt.Errorf("%w: %s is allowed only as a tenant regular file", ErrInvalidArgument, memberLocksYML)
@@ -491,16 +501,107 @@ func validateConfigHeaderPath(parts []string, kind byte, layer ConfigLayer) erro
 	if kind == tar.TypeDir {
 		return configDirectoryPathAllowed(parts, layer)
 	}
-	if err := configPathAllowed(parts); err != nil {
-		return err
+	joined := strings.Join(parts, "/")
+	if len(parts) == 1 && (parts[0] == memberAgentsMD || parts[0] == memberModels) {
+		return nil
 	}
-	if err := validateLayerMemberPath(parts, layer); err != nil {
-		return err
+	if len(parts) < 2 || !configBundleTopDirs[parts[0]] {
+		return fmt.Errorf("%w: bundle member %q is not under an admitted config directory", ErrInvalidArgument, joined)
 	}
 	if parts[len(parts)-1] == memberLocksYML {
 		return fmt.Errorf("%w: %s is allowed only at the bundle root in the tenant layer", ErrInvalidArgument, memberLocksYML)
 	}
-	return nil
+	if parts[0] == topDirProfiles && layer != LayerDefault {
+		return fmt.Errorf("%w: profiles/ is allowed only in the default layer", ErrInvalidArgument)
+	}
+	if parts[0] == topDirSkills || parts[0] == topDirExtensions {
+		if len(parts) < 3 || !configNamePattern.MatchString(parts[1]) || (len(parts) > 3 && !validNestedConfigDir(parts[2:len(parts)-1])) {
+			return fmt.Errorf("%w: %s member %q must be a file under %s/<name>/", ErrInvalidArgument, parts[0], joined, parts[0])
+		}
+		return nil
+	}
+	return validateStoredMemberPathGrammar(parts, layer)
+}
+
+func validateStoredMemberPathGrammar(parts []string, layer ConfigLayer) error {
+	if len(parts) == 1 {
+		if parts[0] == memberAgentsMD || parts[0] == memberModels {
+			return nil
+		}
+		return fmt.Errorf("%w: stored top-level file %q is not admitted", ErrInvalidArgument, parts[0])
+	}
+	switch parts[0] {
+	case topDirSettings:
+		if strings.Join(parts, "/") == settingsMember {
+			return nil
+		}
+	case topDirRules:
+		if len(parts) == 2 && validateFlatNamedMember(parts[0], parts[1], strings.Join(parts, "/"), ".md", ".mdc") == nil {
+			return nil
+		}
+	case topDirAgents:
+		if len(parts) == 2 && validateFlatNamedMember(parts[0], parts[1], strings.Join(parts, "/"), ".md") == nil {
+			return nil
+		}
+	case topDirPrompts:
+		if len(parts) == 3 && parts[2] == memberSystemMD && configNamePattern.MatchString(parts[1]) {
+			return nil
+		}
+	case topDirProfiles:
+		if layer == LayerDefault && len(parts) == 3 && parts[2] == memberProfileYML && configNamePattern.MatchString(parts[1]) {
+			return nil
+		}
+	case topDirMCP:
+		if len(parts) == 2 {
+			base, ok := strings.CutSuffix(parts[1], ".json")
+			if ok && configNamePattern.MatchString(base) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: stored member %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
+}
+
+func storedDirectoryPathAllowed(parts []string, layer ConfigLayer) error {
+	return validateConfigMemberPath(parts, tar.TypeDir, layer)
+}
+
+func storedMemberPathAllowed(parts []string, layer ConfigLayer) error {
+	return validateConfigMemberPath(parts, tar.TypeReg, layer)
+}
+
+func configDirectoryPathAllowed(parts []string, layer ConfigLayer) error {
+	if len(parts) == 1 {
+		if parts[0] == memberLocksYML || !configBundleTopDirs[parts[0]] {
+			return fmt.Errorf("%w: bundle directory %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
+		}
+		if parts[0] == topDirProfiles && layer != LayerDefault {
+			return fmt.Errorf("%w: profiles/ is allowed only in the default layer", ErrInvalidArgument)
+		}
+		return nil
+	}
+	if len(parts) == 2 && (parts[0] == topDirSkills || parts[0] == topDirExtensions) && configNamePattern.MatchString(parts[1]) {
+		return nil
+	}
+	if len(parts) == 2 && parts[0] == topDirProfiles && layer == LayerDefault && configNamePattern.MatchString(parts[1]) {
+		return nil
+	}
+	if len(parts) == 2 && parts[0] == topDirPrompts && configNamePattern.MatchString(parts[1]) {
+		return nil
+	}
+	if len(parts) > 2 && (parts[0] == topDirSkills || parts[0] == topDirExtensions) && configNamePattern.MatchString(parts[1]) && validNestedConfigDir(parts[2:]) {
+		return nil
+	}
+	return fmt.Errorf("%w: bundle directory %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
+}
+
+func validNestedConfigDir(parts []string) bool {
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, `/\\`) {
+			return false
+		}
+	}
+	return len(parts) > 0
 }
 
 func validateConfigFileLimits(hdr *tar.Header, caps layerCaps, contentBytes *int64, seen map[string]bool, fileCount int) error {
@@ -566,6 +667,7 @@ func validateStoredConfigBundle(bundle []byte, layer ConfigLayer) error {
 	if layer < LayerDefault || layer > LayerRole {
 		return fmt.Errorf("unknown stored config layer %d", layer)
 	}
+	caps := layerCaps{bytes: maxDecompressedBytes, files: maxFileCount}
 	gz, err := gzip.NewReader(bytes.NewReader(bundle))
 	if err != nil {
 		return fmt.Errorf("invalid gzip stream: %w", err)
@@ -592,7 +694,7 @@ func validateStoredConfigBundle(bundle []byte, layer ConfigLayer) error {
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeDir {
 			return fmt.Errorf("stored member %q has disallowed type %d", hdr.Name, hdr.Typeflag)
 		}
-		parts, err := configMemberParts(hdr.Name)
+		parts, err := configMemberParts(canonicalConfigPath(hdr.Name))
 		if err != nil {
 			return err
 		}
@@ -603,99 +705,20 @@ func validateStoredConfigBundle(bundle []byte, layer ConfigLayer) error {
 			continue
 		}
 		fileCount++
-		if fileCount > maxFileCount {
-			return fmt.Errorf("stored bundle exceeds file-count cap %d", maxFileCount)
+		if fileCount > caps.files {
+			return fmt.Errorf("stored bundle exceeds file-count cap %d", caps.files)
 		}
 		if err := storedMemberPathAllowed(parts, layer); err != nil {
 			return err
 		}
-		if hdr.Size < 0 || hdr.Size > maxDecompressedBytes-contentBytes {
-			return fmt.Errorf("stored bundle exceeds decompressed-size cap %d", maxDecompressedBytes)
+		if hdr.Size < 0 || hdr.Size > caps.bytes-contentBytes {
+			return fmt.Errorf("stored bundle exceeds layer content cap %d", caps.bytes)
 		}
 		contentBytes += hdr.Size
 		if _, err := io.CopyN(io.Discard, tr, hdr.Size); err != nil {
 			return err
 		}
 	}
-}
-
-func storedDirectoryPathAllowed(parts []string, layer ConfigLayer) error {
-	if len(parts) == 1 {
-		if !configBundleTopDirs[parts[0]] || (parts[0] == topDirProfiles && layer != LayerDefault) {
-			return fmt.Errorf("stored bundle directory %q is not admitted", strings.Join(parts, "/"))
-		}
-		return nil
-	}
-	if len(parts) == 2 && configNamePattern.MatchString(parts[1]) {
-		switch parts[0] {
-		case topDirSkills, topDirExtensions, topDirPrompts:
-			return nil
-		case topDirProfiles:
-			if layer == LayerDefault {
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("stored bundle directory %q is not admitted", strings.Join(parts, "/"))
-}
-
-func storedMemberPathAllowed(parts []string, layer ConfigLayer) error {
-	if len(parts) == 1 {
-		if parts[0] == memberLocksYML {
-			if layer != LayerTenant {
-				return errors.New("stored locks.yml is not admitted in this layer")
-			}
-			return nil
-		}
-		if parts[0] == memberAgentsMD || parts[0] == memberModels {
-			return nil
-		}
-		return fmt.Errorf("stored top-level file %q is not admitted", parts[0])
-	}
-	switch parts[0] {
-	case topDirSettings:
-		if strings.Join(parts, "/") != settingsMember {
-			return fmt.Errorf("stored settings member %q is not admitted", strings.Join(parts, "/"))
-		}
-	case topDirRules:
-		return storedFlatMemberPathAllowed(parts, ".md", ".mdc")
-	case topDirAgents:
-		return storedFlatMemberPathAllowed(parts, ".md")
-	case topDirPrompts:
-		if len(parts) != 3 || parts[2] != memberSystemMD || !configNamePattern.MatchString(parts[1]) {
-			return fmt.Errorf("stored prompts member %q is not admitted", strings.Join(parts, "/"))
-		}
-	case topDirProfiles:
-		if len(parts) != 3 || parts[2] != memberProfileYML || !configNamePattern.MatchString(parts[1]) || layer != LayerDefault {
-			return fmt.Errorf("stored profiles member %q is not admitted", strings.Join(parts, "/"))
-		}
-	case topDirSkills, topDirExtensions:
-		if len(parts) < 3 || !configNamePattern.MatchString(parts[1]) {
-			return fmt.Errorf("stored %s member %q is not admitted", parts[0], strings.Join(parts, "/"))
-		}
-	case topDirMCP:
-		return storedMCPMemberPathAllowed(parts)
-	default:
-		return fmt.Errorf("stored member %q is not under an admitted config directory", strings.Join(parts, "/"))
-	}
-	return nil
-}
-
-func storedFlatMemberPathAllowed(parts []string, extensions ...string) error {
-	if len(parts) == 2 && validateFlatNamedMember(parts[0], parts[1], strings.Join(parts, "/"), extensions...) == nil {
-		return nil
-	}
-	return fmt.Errorf("stored %s member %q is not admitted", parts[0], strings.Join(parts, "/"))
-}
-
-func storedMCPMemberPathAllowed(parts []string) error {
-	if len(parts) == 2 {
-		base, ok := strings.CutSuffix(parts[1], ".json")
-		if ok && configNamePattern.MatchString(base) {
-			return nil
-		}
-	}
-	return fmt.Errorf("stored MCP member %q is not admitted", strings.Join(parts, "/"))
 }
 
 func capsForLayer(layer ConfigLayer) (layerCaps, error) {
@@ -709,70 +732,17 @@ func capsForLayer(layer ConfigLayer) (layerCaps, error) {
 	}
 }
 
-func validateLayerMemberPath(parts []string, layer ConfigLayer) error {
-	if len(parts) == 1 && parts[0] == memberLocksYML {
-		if layer != LayerTenant {
-			return fmt.Errorf("%w: %s is allowed only in the tenant layer", ErrInvalidArgument, memberLocksYML)
-		}
-		return nil
-	}
-	if len(parts) > 0 && parts[0] == topDirProfiles && layer != LayerDefault {
-		return fmt.Errorf("%w: profiles/ is allowed only in the default layer", ErrInvalidArgument)
-	}
-	if (parts[0] == topDirSkills || parts[0] == topDirExtensions) && len(parts) < 3 {
-		return fmt.Errorf("%w: %s member %q must be a file under %s/<name>/", ErrInvalidArgument, parts[0], strings.Join(parts, "/"), parts[0])
-	}
-	return nil
-}
-func configDirectoryPathAllowed(parts []string, layer ConfigLayer) error {
-	if len(parts) == 1 {
-		if parts[0] == memberLocksYML || !configBundleTopDirs[parts[0]] {
-			return fmt.Errorf("%w: bundle directory %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
-		}
-		if parts[0] == topDirProfiles && layer != LayerDefault {
-			return fmt.Errorf("%w: profiles/ is allowed only in the default layer", ErrInvalidArgument)
-		}
-		return nil
-	}
-	if len(parts) == 2 && (parts[0] == topDirSkills || parts[0] == topDirExtensions) && configNamePattern.MatchString(parts[1]) {
-		return nil
-	}
-	if len(parts) == 2 && parts[0] == topDirProfiles && layer == LayerDefault && configNamePattern.MatchString(parts[1]) {
-		return nil
-	}
-	if len(parts) == 2 && parts[0] == topDirPrompts && configNamePattern.MatchString(parts[1]) {
-		return nil
-	}
-	return fmt.Errorf("%w: bundle directory %q is not admitted", ErrInvalidArgument, strings.Join(parts, "/"))
-}
-
-func configPathAllowed(parts []string) error {
-	joined := strings.Join(parts, "/")
-	if len(parts) == 1 && (parts[0] == memberAgentsMD || parts[0] == memberModels) {
-		return nil
-	}
-	if !configBundleTopDirs[parts[0]] {
-		return fmt.Errorf("%w: bundle member %q is not under an admitted config directory", ErrInvalidArgument, joined)
-	}
-	if (parts[0] == topDirSkills || parts[0] == topDirExtensions) && len(parts) < 3 {
-		return fmt.Errorf("%w: %s member %q must be a file under %s/<name>/", ErrInvalidArgument, parts[0], joined, parts[0])
-	}
-	return nil
-}
-
-// configMemberParts validates a member path for escapes and the top-dir whitelist,
+// configMemberParts validates a member path for escapes and the top-dir allowlist,
 // returning its cleaned path components. It rejects an absolute path, the empty/root
-// path, and any "", ".", or ".." component, then requires the top-level part to be a
-// whitelisted top dir or (for a single component) an admitted top-level filename.
+// path, and any "", ".", or ".." component.
 func configMemberParts(name string) ([]string, error) {
 	if strings.HasPrefix(name, "/") {
 		return nil, fmt.Errorf("%w: bundle member %q is an absolute path", ErrInvalidArgument, name)
 	}
-	trimmed := strings.TrimSuffix(name, "/")
-	if trimmed == "" {
+	if name == "" {
 		return nil, fmt.Errorf("%w: bundle member has an empty path", ErrInvalidArgument)
 	}
-	parts := strings.Split(trimmed, "/")
+	parts := strings.Split(name, "/")
 	for _, p := range parts {
 		if p == "" || p == "." || p == ".." {
 			return nil, fmt.Errorf("%w: bundle member %q has an illegal path component %q", ErrInvalidArgument, name, p)
@@ -796,7 +766,14 @@ func configMemberParts(name string) ([]string, error) {
 // are name-grammar-checked prose. The read propagates errBundleTooLarge on cap crossing.
 func validateRegularMember(parts []string, joined string, r io.Reader) ([]byte, error) {
 	if len(parts) == 1 && parts[0] == memberLocksYML {
-		return io.ReadAll(r)
+		content, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := parseConfigLocks(content); err != nil {
+			return nil, err
+		}
+		return content, nil
 	}
 	switch parts[0] {
 	case topDirMCP:
@@ -990,7 +967,7 @@ func validateCredentialFreeMCPURL(value, path, member string) error {
 	if u.User != nil {
 		return fmt.Errorf("%w: MCP member %q has URL userinfo at %s", ErrInvalidArgument, member, path)
 	}
-	if name, err := credentialQueryParam(u.RawQuery); err != nil || name != "" {
+	if name, err := credentialMCPQueryParam(u.RawQuery); err != nil || name != "" {
 		return fmt.Errorf("%w: MCP member %q has a credential query at %s", ErrInvalidArgument, member, path)
 	}
 	return nil
@@ -1452,13 +1429,6 @@ func rejectCredentialOwner(owner any, joined, path string) error {
 // remoteCompactionURLKeys are the remoteCompaction members the SDK dials as URLs.
 var remoteCompactionURLKeys = []string{"endpoint", "v2Endpoint", "streamingEndpoint"}
 
-// credentialQueryExact and credentialQuerySuffixes judge a query parameter name
-// lowercased with every non-alphanumeric rune removed.
-var (
-	credentialQueryExact    = map[string]bool{"auth": true, "authorization": true, "sig": true, "pwd": true, "passwd": true}
-	credentialQuerySuffixes = []string{"key", "token", "secret", "password", "signature", "credential"}
-)
-
 // rejectCredentialURLs refuses a literal credential embedded in owner's baseUrl or
 // remoteCompaction endpoints. URL fields bypass env indirection, so any value is literal.
 func rejectCredentialURLs(owner any, joined, path string) error {
@@ -1533,6 +1503,29 @@ func credentialQueryParam(rawQuery string) (string, error) {
 	}
 	return "", nil
 }
+
+func credentialMCPQueryParam(rawQuery string) (string, error) {
+	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		rawName, value, _ := strings.Cut(pair, "=")
+		name, err := url.QueryUnescape(rawName)
+		if err != nil {
+			return "", err
+		}
+		if _, err := url.QueryUnescape(value); err != nil {
+			return "", err
+		}
+		if strings.Contains(strings.ToLower(name), "key") || strings.Contains(strings.ToLower(name), "token") || strings.Contains(strings.ToLower(name), "secret") || strings.Contains(strings.ToLower(name), "auth") {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// credentialQueryExact and credentialQuerySuffixes judge names after punctuation is removed.
+var (
+	credentialQueryExact    = map[string]bool{"auth": true, "authorization": true, "sig": true, "pwd": true, "passwd": true}
+	credentialQuerySuffixes = []string{"key", "token", "secret", "password", "signature", "credential"}
+)
 
 func isCredentialQueryName(name string) bool {
 	norm := strings.Map(func(r rune) rune {

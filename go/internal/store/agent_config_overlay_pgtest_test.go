@@ -287,7 +287,7 @@ func TestEffectiveAgentConfigRejectsStoredBundleThatBypassesDoor(t *testing.T) {
 	}
 }
 
-func TestEffectiveAgentConfigMatchingVersionStillRejectsStoredRowBypass(t *testing.T) {
+func TestEffectiveAgentConfigMatchingVersionSkipsCorruptStoredRow(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	_, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-ifversion-bypass-admin", DisplayName: "admin"})
@@ -300,16 +300,26 @@ func TestEffectiveAgentConfigMatchingVersionStillRejectsStoredRowBypass(t *testi
 		t.Fatalf("CreateAgent: %v", err)
 	}
 	valid := mkBundle(t, map[string]string{"skills/x/SKILL.md": "valid"})
-	version, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, valid)
-	if err != nil {
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, valid); err != nil {
 		t.Fatalf("PutAgentConfigOverlay: %v", err)
+	}
+	version, _, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig(valid row): %v", err)
 	}
 	invalid := mkBundle(t, map[string]string{"unknown/a.txt": "stored path outside config roots"})
 	if _, err := s.pool.Exec(ctx, `UPDATE agent_config_overlays SET bundle = $1 WHERE tenant_id = $2 AND owner_user_id = $3 AND role = ''`, invalid, string(s.resolveTenant(ctx)), string(owner.ID)); err != nil {
 		t.Fatalf("replace row around door: %v", err)
 	}
-	if _, _, err := s.EffectiveAgentConfig(ctx, agent.ID, version); err == nil || errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("EffectiveAgentConfig(matching ifVersion with corrupt row) error = %v, want internal validation error", err)
+	matched, bundle, err := s.EffectiveAgentConfig(ctx, agent.ID, version)
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig(matching ifVersion with corrupt row): %v", err)
+	}
+	if matched != version || bundle != nil {
+		t.Fatalf("matching response version=%q bundle=%v, want matching version and nil bundle", matched, bundle)
+	}
+	if _, _, err := s.EffectiveAgentConfig(ctx, agent.ID, "different-version"); err == nil || errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("EffectiveAgentConfig(non-matching ifVersion with corrupt row) error = %v, want internal validation error", err)
 	}
 }
 
@@ -346,5 +356,37 @@ func TestEffectiveAgentConfigVersionAndBundleUseSeparateReadSnapshots(t *testing
 	files := bundleFiles(t, got)
 	if version != EffectiveConfigVersion("", "", secondVersion, "") || files["skills/x/SKILL.md"] != "second" {
 		t.Fatalf("raced response version=%q member=%q; want version for second overlay %q and new bundle", version, files["skills/x/SKILL.md"], secondVersion)
+	}
+}
+func TestAgentConfigOverlayUserAndAgentIsolation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-isolation-admin", DisplayName: "admin"}); err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	userA := mustUser(t, s, "overlay-isolation-user-a")
+	userB := mustUser(t, s, "overlay-isolation-user-b")
+	agentA1 := mustAgent(t, s, userA.ID, "overlay-isolation-agent-a1")
+	agentA2 := mustAgent(t, s, userA.ID, "overlay-isolation-agent-a2")
+	agentB := mustAgent(t, s, userB.ID, "overlay-isolation-agent-b")
+	bundle := mkBundle(t, map[string]string{"skills/private/SKILL.md": "only user A"})
+	if _, err := s.PutAgentConfigOverlay(ctx, userA.ID, OverlayKey{Owner: userA.ID}, bundle); err != nil {
+		t.Fatalf("PutAgentConfigOverlay for user A: %v", err)
+	}
+	for _, agent := range []Account{agentA1, agentA2} {
+		_, got, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
+		if err != nil {
+			t.Fatalf("EffectiveAgentConfig(%s): %v", agent.Handle, err)
+		}
+		if bundleFiles(t, got)["skills/private/SKILL.md"] != "only user A" {
+			t.Fatalf("agent %s did not receive its owner's overlay", agent.Handle)
+		}
+	}
+	_, got, err := s.EffectiveAgentConfig(ctx, agentB.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig for user B: %v", err)
+	}
+	if len(bundleFiles(t, got)) != 0 {
+		t.Fatalf("user B received user A's overlay: %v", bundleFiles(t, got))
 	}
 }

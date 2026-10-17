@@ -12,8 +12,8 @@ func TestParseConfigLocks(t *testing.T) {
 		wantErr   bool
 	}{
 		{name: "empty paths", body: "paths: []\n", wantPaths: []string{}},
-		{name: "exact skill file", body: "paths:\n  - skills/web/SKILL.md\n", wantPaths: []string{"skills/web/SKILL.md"}},
-		{name: "exact nested extension source", body: "paths:\n  - extensions/ext/src/main.ts\n", wantPaths: []string{"extensions/ext/src/main.ts"}},
+		{name: "exact skill file rejected", body: "paths:\n  - skills/web/SKILL.md\n", wantErr: true},
+		{name: "exact nested extension source rejected", body: "paths:\n  - extensions/ext/src/main.ts\n", wantErr: true},
 		{name: "nested locks file rejected", body: "paths:\n  - skills/x/locks.yml\n", wantErr: true},
 		{name: "members and prefixes", body: "paths:\n  - settings/config.yml\n  - skills/web/\n", wantPaths: []string{"settings/config.yml", "skills/web/"}},
 		{name: "unknown key", body: "paths: []\nextra: true\n", wantErr: true},
@@ -42,7 +42,7 @@ func TestParseConfigLocks(t *testing.T) {
 }
 
 func TestConfigLocksCovers(t *testing.T) {
-	locks, err := parseConfigLocks([]byte("paths:\n  - settings/config.yml\n  - skills/web/\n  - skills/exact/SKILL.md\n  - extensions/ext/src/main.ts\n"))
+	locks, err := parseConfigLocks([]byte("paths:\n  - settings/config.yml\n  - skills/web/\n  - mcp/fetch.json\n"))
 	if err != nil {
 		t.Fatalf("parseConfigLocks: %v", err)
 	}
@@ -53,8 +53,7 @@ func TestConfigLocksCovers(t *testing.T) {
 	}{
 		{name: "exact file", member: "settings/config.yml", want: true},
 		{name: "directory member", member: "skills/web/SKILL.md", want: true},
-		{name: "exact nested skills member", member: "skills/exact/SKILL.md", want: true},
-		{name: "exact nested extension member", member: "extensions/ext/src/main.ts", want: true},
+		{name: "mcp exact member", member: "mcp/fetch.json", want: true},
 		{name: "prefix boundary", member: "skills/webster/SKILL.md", want: false},
 		{name: "unlocked", member: "skills/other/SKILL.md", want: false},
 	}
