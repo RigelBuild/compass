@@ -53,32 +53,7 @@ style = "fenced"
 # ── MD057 (relative-link existence) is ENABLED: adopted with this swap ──
 # A rule markdownlint never had. It stays on repo-wide to catch genuine broken
 # relative links; the per-file exemptions below are its only carve-outs.
-#
-# Every current finding (28 across 11 records) is the same house convention: a
-# design record's `## Ledger delta` section quotes its paste-ready row for the
-# former single-file ledger at `docs/designs/`, whose link is written relative
-# to that directory — e.g. `[board view §Approach](ui/compass-board-view/…)`.
-# rumdl resolves a relative link from the RECORD's own directory, where the
-# ledger-relative path does not exist. These are frozen quotes, not live links;
-# the converted decision files carry the resolving form.
-#
-# `[per-file-ignores]` scopes the MD057 exemption to exactly those records,
-# leaving MD057 live on every other file (and every OTHER rule live on these).
-# These are frozen/Active records; the Ledger-delta rows are append-only, so a
-# per-file exemption is the right tool rather than editing the rows.
 [per-file-ignores]
-"docs/designs/agent/compass-agent-trees/design.md" = ["MD057"]
-"docs/designs/infra/ci/compass-ci-check-naming/design.md" = ["MD057"]
-"docs/designs/server/compass-comms-multi-actor-test-coverage/design.md" = ["MD057"]
-"docs/designs/server/compass-forge-scope-enforcement/design.md" = ["MD057"]
-"docs/designs/server/compass-forge-write-path/design.md" = ["MD057"]
-"docs/designs/server/compass-issue-model/design.md" = ["MD057"]
-"docs/designs/server/compass-linear-agent-responder/design.md" = ["MD057"]
-"docs/designs/server/compass-server-ownership-layer-amendment/design.md" = ["MD057"]
-"docs/designs/ui/compass-board-view/design.md" = ["MD057"]
-"docs/designs/ui/compass-native-packaging/design.md" = ["MD057"]
-"docs/designs/ui/compass-sidebar-pins/design.md" = ["MD057"]
-"docs/designs/ui/compass-sidebar-pins-unreachable-amendment/design.md" = ["MD057"]
 
 # release-please regenerates CHANGELOG.md each release, overwriting any hand-fix.
 # Its template emits double blank lines (MD012) and copies commit subjects
