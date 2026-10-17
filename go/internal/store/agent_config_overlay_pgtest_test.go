@@ -1,0 +1,350 @@
+//go:build pgtest
+
+package store
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"testing"
+)
+
+func TestAgentConfigOverlayPutInfoDelete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-admin", DisplayName: "overlay-admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	bundle := mkBundle(t, map[string]string{"skills/x/SKILL.md": "user skill"})
+	version, err := s.PutAgentConfigOverlay(ctx, admin.ID, OverlayKey{}, bundle)
+	if err != nil {
+		t.Fatalf("tenant PutAgentConfigOverlay: %v", err)
+	}
+	if version == "" {
+		t.Fatal("overlay version is empty")
+	}
+	info, err := s.AgentConfigOverlayInfo(ctx, OverlayKey{})
+	if err != nil {
+		t.Fatalf("AgentConfigOverlayInfo: %v", err)
+	}
+	if info.Version != version || len(info.Skills) != 1 || info.Skills[0] != "x" {
+		t.Fatalf("overlay info = %+v, want version %q and skill x", info, version)
+	}
+	if err := s.DeleteAgentConfigOverlay(ctx, OverlayKey{}); err != nil {
+		t.Fatalf("DeleteAgentConfigOverlay: %v", err)
+	}
+	if _, err := s.AgentConfigOverlayInfo(ctx, OverlayKey{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("overlay info after delete = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEffectiveAgentConfigOverlayLayers(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-layer-admin", DisplayName: "overlay-layer-admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-layer-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-layer-agent", DisplayName: "agent", Role: "manager"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	defaultBundle := mkBundle(t, map[string]string{"mcp/fetch.json": `{"mcpServers":{"fetch":{"command":"default"}}}`})
+	if _, err := s.PutAgentConfig(ctx, admin.ID, defaultBundle); err != nil {
+		t.Fatalf("PutAgentConfig: %v", err)
+	}
+	layers := []struct {
+		name  string
+		actor AccountID
+		key   OverlayKey
+		value string
+	}{
+		{name: "tenant", actor: admin.ID, key: OverlayKey{}, value: "tenant"},
+		{name: "user", actor: owner.ID, key: OverlayKey{Owner: owner.ID}, value: "user"},
+		{name: "role", actor: owner.ID, key: OverlayKey{Owner: owner.ID, Role: "manager"}, value: "role"},
+	}
+	for _, layer := range layers {
+		bundle := mkBundle(t, map[string]string{"mcp/fetch.json": `{"mcpServers":{"fetch":{"command":"` + layer.value + `"}}}`})
+		if _, err := s.PutAgentConfigOverlay(ctx, layer.actor, layer.key, bundle); err != nil {
+			t.Fatalf("PutAgentConfigOverlay(%s): %v", layer.name, err)
+		}
+	}
+	version, got, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig: %v", err)
+	}
+	if version == "" || len(got) == 0 {
+		t.Fatalf("effective version=%q bundle bytes=%d", version, len(got))
+	}
+	files := bundleFiles(t, got)
+	if want := `{"mcpServers":{"fetch":{"command":"role"}}}`; files["mcp/fetch.json"] != want {
+		t.Fatalf("effective mcp/fetch.json = %q, want %q", files["mcp/fetch.json"], want)
+	}
+	matched, bundle, err := s.EffectiveAgentConfig(ctx, agent.ID, version)
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig(ifVersion): %v", err)
+	}
+	if matched != version || bundle != nil {
+		t.Fatalf("ifVersion response version=%q bundle=%v, want matching version and nil bundle", matched, bundle)
+	}
+	_, members, err := s.EffectiveAgentConfigMembers(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfigMembers: %v", err)
+	}
+	if len(members) != 1 || members[0].Path != "mcp/fetch.json" || members[0].Layer != LayerRole {
+		t.Fatalf("effective members = %+v, want role mcp/fetch.json", members)
+	}
+}
+
+func TestEffectiveAgentConfigDoesNotApplyRoleWhenAgentRoleEmpty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	_, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-empty-role-admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-empty-role-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-empty-role-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	roleBundle := mkBundle(t, map[string]string{"skills/role/SKILL.md": "role-only"})
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID, Role: "manager"}, roleBundle); err != nil {
+		t.Fatalf("PutAgentConfigOverlay(role): %v", err)
+	}
+	_, got, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig: %v", err)
+	}
+	if len(bundleFiles(t, got)) != 0 {
+		t.Fatalf("empty-role agent received role overlay: %v", bundleFiles(t, got))
+	}
+}
+
+func TestEffectiveAgentConfigDoesNotApplyUnknownLegacyRole(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	owner := mustUser(t, s, "overlay-unknown-role-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-unknown-role-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, "UPDATE agent_accounts SET role = 'legacy-manager' WHERE account_id = $1", string(agent.ID)); err != nil {
+		t.Fatalf("set legacy role fixture: %v", err)
+	}
+	roleBundle := mkBundle(t, map[string]string{"skills/role/SKILL.md": "role-only"})
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID, Role: "manager"}, roleBundle); err != nil {
+		t.Fatalf("PutAgentConfigOverlay(role): %v", err)
+	}
+	_, got, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig: %v", err)
+	}
+	if len(bundleFiles(t, got)) != 0 {
+		t.Fatalf("unknown legacy role received role overlay: %v", bundleFiles(t, got))
+	}
+}
+
+func TestAgentConfigOverlayLocksAndLayerScope(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-lock-admin", DisplayName: "overlay-lock-admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-lock-owner")
+	if _, err := s.PutAgentConfigOverlay(ctx, admin.ID, OverlayKey{}, mkBundle(t, map[string]string{"locks.yml": "paths:\n  - skills/web/\n  - settings/config.yml\n"})); err != nil {
+		t.Fatalf("put tenant locks: %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		key  OverlayKey
+		path string
+	}{
+		{name: "prefix lock", key: OverlayKey{Owner: owner.ID}, path: "skills/web/SKILL.md"},
+		{name: "exact lock", key: OverlayKey{Owner: owner.ID, Role: "manager"}, path: "settings/config.yml"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			actor := owner.ID
+			if tt.key.Owner == "" {
+				actor = admin.ID
+			}
+			_, err := s.PutAgentConfigOverlay(ctx, actor, tt.key, mkBundle(t, map[string]string{tt.path: "value: locked\n"}))
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("locked PutAgentConfigOverlay error = %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID, Role: "not-a-role"}, mkBundle(t, map[string]string{"skills/web/SKILL.md": "x"})); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("off-taxonomy role error = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Role: "manager"}, mkBundle(t, map[string]string{"skills/other/SKILL.md": "x"})); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("role without owner error = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := s.PutAgentConfigOverlay(ctx, admin.ID, OverlayKey{Owner: owner.ID}, mkBundle(t, map[string]string{"skills/other/SKILL.md": "store accepts the supplied key"})); err != nil {
+		t.Fatalf("Store rejected a valid supplied owner key from another actor: %v", err)
+	}
+	if _, err := s.PutAgentConfigOverlay(ctx, admin.ID, OverlayKey{}, mkBundle(t, map[string]string{"skills/other/SKILL.md": "x"})); err != nil {
+		t.Fatalf("admin tenant overlay: %v", err)
+	}
+}
+
+func TestAgentConfigOverlayTenantIsolation(t *testing.T) {
+	s := newTestStore(t)
+	tenantA := s.EffectiveTenant(context.Background())
+	tenantB := seedTenant(t, s, "overlay-isolation-b")
+	ctxA := WithTenant(context.Background(), tenantA)
+	ctxB := WithTenant(context.Background(), tenantB)
+	adminA, err := s.BootstrapAdmin(ctxA, NewUser{Handle: "overlay-isolation-admin-a", DisplayName: "overlay-isolation-admin-a"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin A: %v", err)
+	}
+	if _, err := s.PutAgentConfigOverlay(ctxA, adminA.ID, OverlayKey{}, mkBundle(t, map[string]string{"skills/a/SKILL.md": "a"})); err != nil {
+		t.Fatalf("PutAgentConfigOverlay A: %v", err)
+	}
+	if _, err := s.AgentConfigOverlayInfo(ctxB, OverlayKey{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("tenant B overlay info = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEffectiveAgentConfigNoOverlayReturnsDefaultBytes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-default-admin", DisplayName: "overlay-default-admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-default-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-default-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	defaultBundle := mkBundle(t, map[string]string{"skills/default/SKILL.md": "default"})
+	if _, err := s.PutAgentConfig(ctx, admin.ID, defaultBundle); err != nil {
+		t.Fatalf("PutAgentConfig: %v", err)
+	}
+	_, got, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig: %v", err)
+	}
+	if !bytes.Equal(got, defaultBundle) {
+		t.Fatalf("default-only effective bytes differ from stored default")
+	}
+}
+
+func TestEffectiveAgentConfigLockAddedAfterWriteDropsStoredOverlay(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-late-lock-admin", DisplayName: "overlay-late-lock-admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-late-lock-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-late-lock-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	defaultBundle := mkBundle(t, map[string]string{"skills/web/SKILL.md": "default"})
+	if _, err := s.PutAgentConfig(ctx, admin.ID, defaultBundle); err != nil {
+		t.Fatalf("PutAgentConfig: %v", err)
+	}
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, mkBundle(t, map[string]string{"skills/web/SKILL.md": "user"})); err != nil {
+		t.Fatalf("user overlay: %v", err)
+	}
+	if _, err := s.PutAgentConfigOverlay(ctx, admin.ID, OverlayKey{}, mkBundle(t, map[string]string{"locks.yml": "paths:\n  - skills/web/\n"})); err != nil {
+		t.Fatalf("tenant lock: %v", err)
+	}
+	_, _, err = s.EffectiveAgentConfig(ctx, agent.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig with late lock: %v", err)
+	}
+	_, members, err := s.EffectiveAgentConfigMembers(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfigMembers with late lock: %v", err)
+	}
+	if len(members) != 1 || members[0].Layer != LayerDefault {
+		t.Fatalf("locked user member did not fall back to default: %+v", members)
+	}
+}
+
+func TestEffectiveAgentConfigRejectsStoredBundleThatBypassesDoor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	owner := mustUser(t, s, "overlay-bypass-door-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-bypass-door-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	bundle := mkBundle(t, map[string]string{"unknown/a.txt": "stored path outside config roots"})
+	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_config_overlays (tenant_id, owner_user_id, role, version, bundle, declared_by)
+		VALUES ($1, $2, '', 'invalid', $3, $2)`, string(s.resolveTenant(ctx)), string(owner.ID), bundle); err != nil {
+		t.Fatalf("insert bypassed overlay row: %v", err)
+	}
+	if _, _, err := s.EffectiveAgentConfig(ctx, agent.ID, ""); err == nil || errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("EffectiveAgentConfig(bypassed row) error = %v, want internal validation error", err)
+	}
+}
+
+func TestEffectiveAgentConfigMatchingVersionStillRejectsStoredRowBypass(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	_, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-ifversion-bypass-admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-ifversion-bypass-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-ifversion-bypass-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	valid := mkBundle(t, map[string]string{"skills/x/SKILL.md": "valid"})
+	version, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, valid)
+	if err != nil {
+		t.Fatalf("PutAgentConfigOverlay: %v", err)
+	}
+	invalid := mkBundle(t, map[string]string{"unknown/a.txt": "stored path outside config roots"})
+	if _, err := s.pool.Exec(ctx, `UPDATE agent_config_overlays SET bundle = $1 WHERE tenant_id = $2 AND owner_user_id = $3 AND role = ''`, invalid, string(s.resolveTenant(ctx)), string(owner.ID)); err != nil {
+		t.Fatalf("replace row around door: %v", err)
+	}
+	if _, _, err := s.EffectiveAgentConfig(ctx, agent.ID, version); err == nil || errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("EffectiveAgentConfig(matching ifVersion with corrupt row) error = %v, want internal validation error", err)
+	}
+}
+
+func TestEffectiveAgentConfigVersionAndBundleUseSeparateReadSnapshots(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	_, err := s.BootstrapAdmin(ctx, NewUser{Handle: "overlay-snapshot-admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "overlay-snapshot-owner")
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "overlay-snapshot-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	first := mkBundle(t, map[string]string{"skills/x/SKILL.md": "first"})
+	second := mkBundle(t, map[string]string{"skills/x/SKILL.md": "second"})
+	if _, err := s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, first); err != nil {
+		t.Fatalf("PutAgentConfigOverlay(first): %v", err)
+	}
+	var secondVersion string
+	var writeErr error
+	s.afterConfigVersionsRead = func() {
+		s.afterConfigVersionsRead = nil
+		secondVersion, writeErr = s.PutAgentConfigOverlay(ctx, owner.ID, OverlayKey{Owner: owner.ID}, second)
+	}
+	version, got, err := s.EffectiveAgentConfig(ctx, agent.ID, "")
+	if err != nil {
+		t.Fatalf("EffectiveAgentConfig(raced): %v", err)
+	}
+	if writeErr != nil {
+		t.Fatalf("racing PutAgentConfigOverlay: %v", writeErr)
+	}
+	files := bundleFiles(t, got)
+	if version != EffectiveConfigVersion("", "", secondVersion, "") || files["skills/x/SKILL.md"] != "second" {
+		t.Fatalf("raced response version=%q member=%q; want version for second overlay %q and new bundle", version, files["skills/x/SKILL.md"], secondVersion)
+	}
+}

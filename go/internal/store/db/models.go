@@ -96,6 +96,18 @@ type AgentConfigBundle struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type AgentConfigOverlay struct {
+	ID          int64
+	TenantID    string
+	OwnerUserID pgtype.Text
+	Role        string
+	Version     string
+	Bundle      []byte
+	DeclaredBy  string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type AgentDeliveryCursor struct {
 	AgentAccountID string
 	ChannelID      string

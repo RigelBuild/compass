@@ -46,7 +46,7 @@ func TestBuildBundleValidDir(t *testing.T) {
 		"skills/alpha/SKILL.md":     "# alpha",
 		"skills/alpha/ref/notes.md": "notes",
 		"extensions/beta/main.go":   "package beta",
-		"mcp/gamma.json":            `{"ok":true}`,
+		"mcp/gamma.json":            `{"mcpServers":{"gamma":{"command":"gamma-mcp"}}}`,
 	})
 
 	bundle, err := buildBundle(root)
@@ -246,7 +246,7 @@ func TestBuildBundleDoorParity(t *testing.T) {
 		"skills/alpha/SKILL.md":        "# alpha",
 		"skills/alpha/ref/notes.md":    "notes",
 		"extensions/beta/main.go":      "package beta",
-		"mcp/gamma.json":               `{"ok":true}`,
+		"mcp/gamma.json":               `{"mcpServers":{"gamma":{"command":"gamma-mcp"}}}`,
 		"settings/config.yml":          "autoCompact: true\n",
 		"rules/delta.md":               "# delta rule",
 		"rules/epsilon.mdc":            "# epsilon rule",

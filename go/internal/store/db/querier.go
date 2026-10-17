@@ -42,6 +42,8 @@ type Querier interface {
 	AgentAccountVisible(ctx context.Context, accountID string) (bool, error)
 	// Feeds requireAgentAttachAuthz: the agent's owner, or an agent of that owner.
 	AgentAttachAuthorized(ctx context.Context, arg AgentAttachAuthorizedParams) (bool, error)
+	AgentConfigOverlay(ctx context.Context, arg AgentConfigOverlayParams) (AgentConfigOverlayRow, error)
+	AgentConfigOverlayLocks(ctx context.Context, tenantID string) ([]byte, error)
 	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the
@@ -145,6 +147,8 @@ type Querier interface {
 	DeclaredServerSecrets(ctx context.Context) ([]ServerSecret, error)
 	DeleteAgentBoardTasks(ctx context.Context, arg DeleteAgentBoardTasksParams) error
 	DeleteAgentConfig(ctx context.Context) error
+	DeleteAgentConfigOwnedOverlay(ctx context.Context, arg DeleteAgentConfigOwnedOverlayParams) (int64, error)
+	DeleteAgentConfigTenantOverlay(ctx context.Context, tenantID string) (int64, error)
 	// Scoped to the calling agent (id AND agent). RETURNING the coordinate drives the
 	// one-tx GC of the artifact cursor when this was the last subscription.
 	DeleteAgentForgeSubscription(ctx context.Context, arg DeleteAgentForgeSubscriptionParams) (DeleteAgentForgeSubscriptionRow, error)
@@ -187,6 +191,8 @@ type Querier interface {
 	DeleteTopic(ctx context.Context, id string) error
 	DeleteUserPeer(ctx context.Context, arg DeleteUserPeerParams) (int64, error)
 	DisableGatewayCredential(ctx context.Context, arg DisableGatewayCredentialParams) (int64, error)
+	EffectiveAgentConfigLayerVersions(ctx context.Context, arg EffectiveAgentConfigLayerVersionsParams) (EffectiveAgentConfigLayerVersionsRow, error)
+	EffectiveAgentConfigLayers(ctx context.Context, arg EffectiveAgentConfigLayersParams) ([]EffectiveAgentConfigLayersRow, error)
 	// The account owner is read in SQL so callers continue to supply only the
 	// session binding identity.
 	EndComputeUsageInterval(ctx context.Context, arg EndComputeUsageIntervalParams) error
@@ -589,6 +595,8 @@ type Querier interface {
 	// tar-walk member inventory (Go-side, over the returned BYTEA). The config
 	// bundle is a fleet-wide singleton row (singleton = TRUE).
 	PutAgentConfig(ctx context.Context, arg PutAgentConfigParams) error
+	PutAgentConfigOverlay(ctx context.Context, arg PutAgentConfigOverlayParams) error
+	PutOwnedAgentConfigOverlay(ctx context.Context, arg PutOwnedAgentConfigOverlayParams) error
 	ReassertDMMandatory(ctx context.Context, id string) error
 	// The bridge posts as a non-owner, so owner-only or owned drift would refuse every cold delegation.
 	ReassertLinearRoutingShape(ctx context.Context, arg ReassertLinearRoutingShapeParams) error

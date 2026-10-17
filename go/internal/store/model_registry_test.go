@@ -300,7 +300,7 @@ func TestDoorProfilesMatchStoredBundleWalk(t *testing.T) {
 		tarEntry{name: "agents/impl.md", content: "---\nname: impl\n---\nx"},
 		tarEntry{name: "skills/review/SKILL.md", content: "# review"},
 	)
-	_, door, err := validateAndHashConfigBundle(bundle)
+	_, door, err := validateAndHashConfigBundle(bundle, LayerDefault)
 	if err != nil {
 		t.Fatalf("validateAndHashConfigBundle: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestDoorProfilesMatchStoredBundleWalk(t *testing.T) {
 func TestDoorProfilesKeepTrailingSlashMember(t *testing.T) {
 	body := "models:\n  manager: ghost\n"
 	bundle := rawUstarBundle(t, "profiles/x/profile.yml/", body)
-	_, door, err := validateAndHashConfigBundle(bundle)
+	_, door, err := validateAndHashConfigBundle(bundle, LayerDefault)
 	if err != nil {
 		t.Fatalf("validateAndHashConfigBundle: %v", err)
 	}

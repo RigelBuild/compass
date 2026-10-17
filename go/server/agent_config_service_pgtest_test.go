@@ -234,7 +234,7 @@ func TestGetAgentConfigInfoReturnsBucketedNames(t *testing.T) {
 		"skills/review/SKILL.md":       "# review",
 		"skills/triage/SKILL.md":       "# triage",
 		"extensions/cotal/main.js":     "x",
-		"mcp/linear.json":              `{"a":1}`,
+		"mcp/linear.json":              `{"mcpServers":{"linear":{"command":"linear-mcp"}}}`,
 		"prompts/supervisor/SYSTEM.md": "# supervisor",
 		"prompts/owner/SYSTEM.md":      "# owner",
 	})

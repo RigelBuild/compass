@@ -57,7 +57,7 @@ func TestPutAgentConfigRoundTrip(t *testing.T) {
 
 	b := mkBundle(t, map[string]string{
 		"skills/review/SKILL.md": "# review",
-		"mcp/linear.json":        `{"url":"https://x"}`,
+		"mcp/linear.json":        `{"mcpServers":{"linear":{"command":"linear-mcp"}}}`,
 	})
 	version, err := s.PutAgentConfig(ctx, actor.ID, b)
 	if err != nil {
