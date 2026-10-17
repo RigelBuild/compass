@@ -89,7 +89,8 @@ test("topic header mirrors its channel and topic to the entered ref", async () =
 			},
 		]);
 		expect(
-			container.querySelector<HTMLAnchorElement>(".mirror-result a")?.href,
+			container.querySelector<HTMLAnchorElement>(".conv-head .mirror-result a")
+				?.href,
 		).toBe("https://github.com/owner/repo/issues/12#issuecomment-1");
 	} finally {
 		fake.close();

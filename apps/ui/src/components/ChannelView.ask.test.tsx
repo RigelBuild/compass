@@ -98,6 +98,9 @@ const submitControl = (c: HTMLElement) =>
 	c.querySelector<HTMLButtonElement>(".block-ask .ask-submit");
 const askErrorText = (c: HTMLElement) =>
 	c.querySelector(".block-ask .ask-error")?.textContent;
+// The topic header has its own mirror control, so scope to the ask block.
+const askResult = (c: HTMLElement) =>
+	c.querySelector(".block-ask .mirror-result")?.textContent ?? "";
 
 describe("multi-question ask (live RespondToAsk gate)", () => {
 	// From the DOM: a click on the first question's option records locally and
@@ -658,7 +661,9 @@ describe("ask forge mirroring", () => {
 				},
 			]);
 			expect(
-				container.querySelector<HTMLAnchorElement>(".mirror-result a")?.href,
+				container.querySelector<HTMLAnchorElement>(
+					".block-ask .mirror-result a",
+				)?.href,
 			).toBe("https://github.com/owner/repo/issues/12#issuecomment-1");
 		} finally {
 			fake.close();
@@ -710,7 +715,7 @@ describe("ask forge mirroring", () => {
 			if (!submit) throw new Error("ask mirror submit did not render");
 			fireEvent.click(submit);
 			await settled();
-			expect(container.querySelector(".mirror-result")).not.toBeNull();
+			expect(askResult(container)).not.toBe("");
 
 			await fake.emit(
 				{
@@ -730,7 +735,7 @@ describe("ask forge mirroring", () => {
 			);
 			await settled();
 			flush();
-			expect(container.querySelector(".mirror-result")).toBeNull();
+			expect(askResult(container)).toBe("");
 			expect(
 				container.querySelector<HTMLInputElement>(
 					'input[aria-label="Issue or PR ref"]',
@@ -769,9 +774,7 @@ describe("ask forge mirroring", () => {
 			if (!submit) throw new Error("ask mirror submit did not render");
 			fireEvent.click(submit);
 			await settled();
-			expect(container.querySelector(".mirror-result")?.textContent).toBe(
-				"Mirrored",
-			);
+			expect(askResult(container)).toBe("Mirrored");
 			expect(
 				container.querySelector('a[href="javascript:alert(1)"]'),
 			).toBeNull();
@@ -823,7 +826,7 @@ describe("ask forge mirroring", () => {
 			gate.resolve("https://github.com/owner/repo/issues/23#issuecomment-2");
 			await settled();
 			flush();
-			expect(container.querySelector(".mirror-result")).toBeNull();
+			expect(askResult(container)).toBe("");
 			expect(
 				container.querySelector<HTMLInputElement>(
 					'input[aria-label="Issue or PR ref"]',

@@ -115,20 +115,17 @@ export const MirrorControl: Component<{
 					</span>
 				)}
 			</Show>
-			<Show when={safeHref(url())}>
-				{(target) => (
-					<span class="mirror-result" role="status">
+			{/* Mounted before the result so a screen reader announces the change. */}
+			<span class="mirror-result" role="status">
+				<Show when={safeHref(url())}>
+					{(target) => (
 						<a href={target()} target="_blank" rel="noreferrer noopener">
 							View comment
 						</a>
-					</span>
-				)}
-			</Show>
-			<Show when={url() && !safeHref(url())}>
-				<span class="mirror-result" role="status">
-					Mirrored
-				</span>
-			</Show>
+					)}
+				</Show>
+				{url() && !safeHref(url()) ? "Mirrored" : ""}
+			</span>
 		</div>
 	);
 };
