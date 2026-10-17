@@ -9,6 +9,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 var (
@@ -78,7 +79,7 @@ func (g *Gateway) sendSharedState(ctx context.Context, pub *sessionPublisher, fr
 		if g.beforeSharedState != nil {
 			g.beforeSharedState()
 		}
-		if err := pub.forwardState(frame); err != nil {
+		if err := pub.forwardState(frame, otelx.Traceparent(ctx)); err != nil {
 			done <- result{err: err}
 			return
 		}

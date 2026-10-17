@@ -199,11 +199,12 @@ func (h *Handler) PublishEvents(ctx context.Context, stream compassv1internalcon
 		}
 		msg := msg2
 		if err := h.hub.Deliver(ctx, RunnerEvent{
-			RunnerSeq: msg.GetRunnerSeq(),
-			SessionID: msg.GetSessionId(),
-			RunnerID:  subj.ID,
-			Frame:     msg.GetFrame(),
-			EnrollGen: enrollGen,
+			RunnerSeq:   msg.GetRunnerSeq(),
+			SessionID:   msg.GetSessionId(),
+			RunnerID:    subj.ID,
+			Frame:       msg.GetFrame(),
+			Traceparent: msg.GetTraceparent(),
+			EnrollGen:   enrollGen,
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
