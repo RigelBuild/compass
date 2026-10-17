@@ -1499,8 +1499,10 @@ type PublishEventsRequest struct {
 	// Server-assigned, not agent-minted (transport-consolidation record,
 	// Matt's Option A ruling 2026-07-24).
 	IdempotencyKey string `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// W3C trace context for the command that produced this frame, when present.
+	Traceparent   string `protobuf:"bytes,5,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PublishEventsRequest) Reset() {
@@ -1557,6 +1559,13 @@ func (x *PublishEventsRequest) GetFrame() *AgentFrame {
 func (x *PublishEventsRequest) GetIdempotencyKey() string {
 	if x != nil {
 		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *PublishEventsRequest) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
 	}
 	return ""
 }
@@ -2546,14 +2555,15 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\aversion\x18\x01 \x01(\tR\aversion\"X\n" +
 	"\vRunnerError\x12/\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x1b.compass.v1.RunnerErrorCodeR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xab\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xcd\x01\n" +
 	"\x14PublishEventsRequest\x12\x1d\n" +
 	"\n" +
 	"runner_seq\x18\x01 \x01(\x04R\trunnerSeq\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12,\n" +
 	"\x05frame\x18\x03 \x01(\v2\x16.compass.v1.AgentFrameR\x05frame\x12'\n" +
-	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\x17\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12 \n" +
+	"\vtraceparent\x18\x05 \x01(\tR\vtraceparent\"\x17\n" +
 	"\x15PublishEventsResponse\"h\n" +
 	"\x15RelayCommsCallRequest\x12\x1d\n" +
 	"\n" +

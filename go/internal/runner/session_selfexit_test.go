@@ -11,9 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnertest"
 )
 
@@ -467,6 +470,91 @@ func TestOldStreamExitAfterReloadDoesNotErrorNewSession(t *testing.T) {
 	}
 }
 
+func TestFailedReloadPublishesCommandTraceparent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		openStream bool
+	}{
+		{name: "once"},
+		{name: "shared", openStream: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testFailedReloadTraceparent(t, tc.openStream)
+		})
+	}
+}
+
+func testFailedReloadTraceparent(t *testing.T, openStream bool) {
+	t.Helper()
+	installCommandTracer(t)
+	engine := newStubStreamingRuntime(t)
+	server := newCapturePublish()
+	h := newTransportFixtureWithEngine(t, server, engine)
+	ctx := t.Context()
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-traced-reload")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+
+	var publish compassv1internalconnect.AgentGatewayPublishClientStream
+	if openStream {
+		publish = openTelemetryPublisher(t, h, server, name, ctx)
+	}
+
+	engine.mu.Lock()
+	engine.execErr = errors.New("injected start failure")
+	engine.mu.Unlock()
+	frame, wantTraceparent := failReloadWithTraceparent(t, h, server, sessionID, ctx)
+	if got := frame.GetTraceparent(); got != wantTraceparent {
+		t.Fatalf("ERRORED frame traceparent = %q, want command traceparent %q", got, wantTraceparent)
+	}
+	if openStream {
+		if _, err := publish.CloseAndReceive(); err != nil {
+			t.Fatalf("Publish.CloseAndReceive: %v", err)
+		}
+	}
+}
+
+func openTelemetryPublisher(t *testing.T, h *agentHost, server *capturePublish, name string, ctx context.Context) compassv1internalconnect.AgentGatewayPublishClientStream {
+	t.Helper()
+	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
+	publish, err := client.Publish(ctx)
+	if err != nil {
+		t.Fatalf("Publish = %v", err)
+	}
+	if err := publish.Send(&compassv1internal.PublishFrameRequest{Frame: sessionFrame("telemetry")}); err != nil {
+		t.Fatalf("Publish.Send telemetry: %v", err)
+	}
+	select {
+	case frame := <-server.frames:
+		if frame.GetTraceparent() != "" {
+			t.Fatalf("telemetry frame traceparent = %q, want empty", frame.GetTraceparent())
+		}
+	case <-timeAfter():
+		t.Fatal("telemetry frame did not reach PublishEvents")
+	}
+	return publish
+}
+
+func failReloadWithTraceparent(t *testing.T, h *agentHost, server *capturePublish, sessionID string, ctx context.Context) (*compassv1internal.PublishEventsRequest, string) {
+	t.Helper()
+	parent := otelx.ContextWithTraceparent(ctx, commandEnvelopeTraceparent)
+	commandCtx, commandSpan := otel.Tracer("runner.reload-test").Start(parent, "reload")
+	wantTraceparent := otelx.Traceparent(commandCtx)
+	if wantTraceparent == commandEnvelopeTraceparent {
+		t.Fatal("Reload command span traceparent = parent traceparent, want the command span id")
+	}
+	if err := h.Reload(commandCtx, sessionID); err == nil {
+		commandSpan.End()
+		t.Fatal("Reload = nil, want injected StartAgent failure")
+	}
+	commandSpan.End()
+	return assertErroredFrame(t, server, sessionID), wantTraceparent
+}
 func TestReloadStartFailureMarksErroredAndResumeWorks(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stay-up")
 	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nif [ -e '"+marker+"' ]; then exec sleep 120; fi\nexec sleep 120\n")
@@ -506,15 +594,17 @@ func TestReloadStartFailureMarksErroredAndResumeWorks(t *testing.T) {
 	assertNoTerminalFrame(t, server)
 }
 
-func assertErroredFrame(t *testing.T, server *capturePublish, sessionID string) {
+func assertErroredFrame(t *testing.T, server *capturePublish, sessionID string) *compassv1internal.PublishEventsRequest {
 	t.Helper()
 	select {
 	case frame := <-server.frames:
 		if frame.GetSessionId() != sessionID || frame.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 			t.Fatalf("terminal frame = %v, want ERRORED for %q", frame, sessionID)
 		}
+		return frame
 	case <-timeAfter():
 		t.Fatal("no Runner ERRORED frame after unrequested exit")
+		return nil
 	}
 }
 

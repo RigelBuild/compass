@@ -22,6 +22,7 @@ import (
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // EventRelay is the narrow slice of the generated RunnerServiceClient the
@@ -163,31 +164,32 @@ func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 	if p.afterAdmit != nil {
 		p.afterAdmit(p.ctx)
 	}
-	return p.sendLocked(seq, frame)
+	return p.sendLocked(seq, frame, otelx.Traceparent(p.ctx))
 }
 
 // forwardState sends a lifecycle state past the publish gate, which is already
 // sealed for it. Taking mu orders it after every frame admitted on this stream.
-func (p *sessionPublisher) forwardState(frame *compassv1internal.AgentFrame) error {
+func (p *sessionPublisher) forwardState(frame *compassv1internal.AgentFrame, traceparent string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// A cancelled or closed stream cannot carry the state; skip the allocation.
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
-	return p.sendLocked(p.seq.next(), frame)
+	return p.sendLocked(p.seq.next(), frame, traceparent)
 }
 
 // sendLocked sends one allocated seq and rolls it back on failure. Caller holds mu.
-func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.AgentFrame) error {
+func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.AgentFrame, traceparent string) error {
 	if p.openErr != nil {
 		p.seq.rollback(seq)
 		return p.openErr
 	}
 	if err := p.stream.Send(&compassv1internal.PublishEventsRequest{
-		RunnerSeq: seq,
-		SessionId: p.sessionID,
-		Frame:     frame,
+		RunnerSeq:   seq,
+		SessionId:   p.sessionID,
+		Frame:       frame,
+		Traceparent: traceparent,
 	}); err != nil {
 		p.seq.rollback(seq)
 		return relayedError(err)

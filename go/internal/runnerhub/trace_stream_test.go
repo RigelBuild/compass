@@ -148,6 +148,62 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 		t.Fatalf("send-only refusal edge = %+v, want DISCONNECTED with deliver traceparent", got)
 	}
 }
+func TestPublishEventsPresenceEdgeRestoresFrameTraceparent(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{lifecycleCh: make(chan lifecycleRecord, 2)}
+	hub.SetPresenceSink(pres)
+	hub.enroll(t.Context(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("container-h8", testAgentAccount, testRunnerID)
+	hub.promoteSession(t.Context(), "container-h8", "session-h8")
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{
+		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: testRunnerID}},
+	}}
+	interceptor, err := otelconnect.NewServerInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
+	}
+	mux := http.NewServeMux()
+	Mount(mux, hub, resolver.resolve, nil, nil, interceptor)
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = cleartextHTTP2()
+	server.Start()
+	t.Cleanup(server.Close)
+	client := newRawRunnerClient(t, server.URL, "runner-tok")
+
+	for i, tc := range []struct {
+		name        string
+		traceparent string
+	}{
+		{name: "traced command", traceparent: h6Traceparent},
+		{name: "no command", traceparent: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			publish, err := client.PublishEvents(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := publish.Send(&compassv1internal.PublishEventsRequest{
+				RunnerSeq:   uint64(i + 1),
+				SessionId:   "session-h8",
+				Frame:       sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
+				Traceparent: tc.traceparent,
+			}); err != nil {
+				t.Fatalf("PublishEvents.Send: %v", err)
+			}
+			if _, err := publish.CloseAndReceive(); err != nil {
+				t.Fatalf("PublishEvents.CloseAndReceive: %v", err)
+			}
+			select {
+			case got := <-pres.lifecycleCh:
+				if got.traceparent != tc.traceparent {
+					t.Fatalf("presence edge traceparent = %q, want %q", got.traceparent, tc.traceparent)
+				}
+			case <-timeAfter():
+				t.Fatal("PublishEvents lifecycle frame did not produce a presence edge")
+			}
+		})
+	}
+}
 
 func TestRelayCommsCallLogCarriesServerSpan(t *testing.T) {
 	previousProvider := otel.GetTracerProvider()

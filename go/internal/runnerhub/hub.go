@@ -26,6 +26,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -45,6 +46,8 @@ type RunnerEvent struct {
 	RunnerID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
+	// Traceparent carries the originating Runner command's context for this frame.
+	Traceparent string
 	// EnrollGen is the hub's enrollment generation when the frame's stream opened;
 	// a session frame from an older one is dropped. Zero means no enrollment fence.
 	EnrollGen uint64
@@ -774,7 +777,8 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	case *compassv1internal.AgentFrame_Session:
 		// Acks stay unfenced: they are idempotent and record work already done.
 		if !stale {
-			h.deliverSession(ctx, ev, f.Session)
+			deliveryCtx := otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), ev.Traceparent)
+			h.deliverSession(deliveryCtx, ev, f.Session)
 		}
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
