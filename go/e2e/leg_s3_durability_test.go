@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -241,6 +242,36 @@ func waitArchiveContains(t *testing.T, ctx context.Context, f *Fixture, sessionI
 	}
 }
 
+// waitHistoryContains polls until want is in the PG tail or an S3 segment; the valve may move it before the poll.
+func waitHistoryContains(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(transcriptPollBudget)
+	ticker := time.NewTicker(transcriptPollInterval)
+	defer ticker.Stop()
+	for {
+		tail, err := st.SessionTranscript(ctx, sessionID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("SessionTranscript: %v", err)
+		}
+		for _, entry := range tail {
+			if strings.Contains(entry.EntryJSON, want) {
+				return
+			}
+		}
+		if archiveContains(t, ctx, f, sessionID, want) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("%q was not committed to the transcript within %s", want, transcriptPollBudget)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for transcript commit: %v", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func runS3TurnSettled(ctx context.Context, f *Fixture, sessionID, channel, marker string) error {
 	tail, err := f.OpenSessionTail(ctx, sessionID)
 	if err != nil {
@@ -427,11 +458,13 @@ func assertSafetyValveEviction(t *testing.T, ctx context.Context, f *Fixture, se
 // as session_end without pruning it, so the woken session still resumes from PG.
 func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 	t.Helper()
-	f, _, _, container, joined := runS3DurabilityBase(t, ctx, "s3-crash-end", nil)
+	f, st, _, container, joined := runS3DurabilityBase(t, ctx, "s3-crash-end", nil)
 	sessionID, channel := splitDurabilityIDs(t, joined)
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-first"); err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
+	// The reply's commit trails the settle; a crash before it lands loses the reply.
+	waitHistoryContains(t, ctx, f, st, sessionID, "durability first reply")
 	if err := podmanRemoveForce(ctx, container); err != nil {
 		t.Fatalf("crash agent container: %v", err)
 	}
