@@ -181,6 +181,7 @@ func (p *sessionPublisher) forwardState(frame *compassv1internal.AgentFrame) err
 // sendLocked sends one allocated seq and rolls it back on failure. Caller holds mu.
 func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.AgentFrame) error {
 	if p.openErr != nil {
+		p.seq.rollback(seq)
 		return p.openErr
 	}
 	if err := p.stream.Send(&compassv1internal.PublishEventsRequest{

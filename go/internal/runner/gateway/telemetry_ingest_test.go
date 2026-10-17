@@ -1321,6 +1321,51 @@ func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 	}
 }
 
+// openFailRelay fails every PublishEvents open, as an unreachable hub does.
+type openFailRelay struct{}
+
+func (openFailRelay) PublishEvents(context.Context) (compassv1internalconnect.RunnerServicePublishEventsClientStream, error) {
+	return compassv1internalconnect.RunnerServicePublishEventsClientStream{}, connect.NewError(connect.CodeUnavailable, "hub unreachable")
+}
+
+// A stream that never opened must not burn a sequence number either; the hub
+// would read the hole as in-transit loss.
+//
+// RED: drop the rollback on the openErr path in sendLocked -> seqs = [1 3].
+func TestFailedStreamOpenDoesNotBurnASequenceNumber(t *testing.T) {
+	sink := &seqSink{}
+	live := newRunnerServiceServer(t, sink)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: live})
+	forward := func(txt string) error {
+		return g.acquirePublisher("sess-1").forward(traceFrame(txt))
+	}
+
+	if err := forward("ok-1"); err != nil {
+		t.Fatalf("first forward = %v, want success", err)
+	}
+	if err := releaseCurrentPublisher(g); err != nil {
+		t.Fatalf("release before the failing open = %v", err)
+	}
+	g.events = openFailRelay{}
+	if err := forward("unopened-2"); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("forward on an unopened stream = %v, want Unavailable", err)
+	}
+	if err := releaseCurrentPublisher(g); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("release of the unopened publisher = %v, want the open error", err)
+	}
+	g.events = live
+	if err := forward("ok-3"); err != nil {
+		t.Fatalf("forward after the failed open = %v, want success", err)
+	}
+	if err := releaseCurrentPublisher(g); err != nil {
+		t.Fatalf("final release = %v", err)
+	}
+
+	if got, want := sink.seqs(), []uint64{1, 2}; !slices.Equal(got, want) {
+		t.Fatalf("delivered RunnerSeq = %v, want %v: the unopened stream burned a number", got, want)
+	}
+}
+
 // A SUPPLEMENTARY race check, not the guard. TestSequenceSurvivesPublisherReplacement
 // above is the deterministic guard for the counter's ownership; this one adds the
 // concurrent case the other sibling explicitly avoids — TestConcurrencyNoFalseGap
