@@ -78,8 +78,9 @@ const CI_GROUP_PREFIX = "ci-group.";
 export const AGENT_FOD_TASK = "renovate:agent-fod";
 
 /**
- * forge trigger (PR): a changed path under go/internal/forge/ — the forge
- * CONTRACT SURFACE the live oracle re-verifies (client code AND its committed
+ * forge trigger (PR): a changed path under go/internal/forge/ or the webhook
+ * ingress (go/internal/linearagent/, the server webhook handlers, the tunnel
+ * leg) — the CONTRACT SURFACE the live oracle re-verifies (client code AND its committed
  * testdata fixtures). Deliberately NOT keyed on ci.yml: the live oracle is the
  * expensive, third-party-dependent EXTRA verification on top of the untagged
  * golden-replay battery (leg 1) that already asserts the client contract on
@@ -91,7 +92,6 @@ export const AGENT_FOD_TASK = "renovate:agent-fod";
  * PR paths use `HEAD^1..HEAD`: GitHub's first merge parent is the base it merged,
  * so base churn or main drift cannot add files to this PR's trigger.
  */
-// Also the webhook ingress (handlers + linearagent) and the live tunnel leg.
 const FORGE_PATH_RE =
 	/^go\/(internal\/(forge|linearagent)\/|server\/(github_webhook|linear_webhook|webhook_tunnel))/;
 /**
