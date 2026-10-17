@@ -106,7 +106,7 @@ func NewRunnerVerifier(
 		return nil, err
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = http.DefaultClient //nolint:forbidigo // the client is wrapped after clusterHTTPClient to preserve its TLS settings
 	}
 	if now == nil {
 		now = time.Now
