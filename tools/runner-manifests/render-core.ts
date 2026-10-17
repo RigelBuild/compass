@@ -130,8 +130,9 @@ function assertNamespace(namespace: string): void {
 function isValidEgressHost(host: string): boolean {
 	if (host.length === 0 || host.length > 253) return false;
 	if (host.includes(":")) {
-		if (host.includes("%") || host.includes("[") || host.includes("]"))
-			return false;
+		// URL parsing drops tabs and newlines, so admit only IPv6 text characters
+		// first; brackets and a zone ("%") fall outside this set.
+		if (!/^[0-9A-Fa-f:.]+$/.test(host)) return false;
 		try {
 			return new URL(`http://[${host}]/`).hostname.startsWith("[");
 		} catch {
@@ -162,10 +163,11 @@ function assertServerCA(ca: RunnerDeployValues["serverCA"]): void {
 		);
 	}
 	const [name] = sources;
+	const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 	if (
 		name === undefined ||
 		name.length > 253 ||
-		!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(name)
+		!name.split(".").every((part) => label.test(part))
 	) {
 		throw new Error("serverCA source must be a Kubernetes object name");
 	}

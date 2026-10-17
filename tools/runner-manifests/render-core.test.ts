@@ -821,13 +821,14 @@ describe("egressAllow", () => {
 						"api.github.com",
 						"10.0.0.7",
 						"2001:db8::1",
+						"::ffff:192.0.2.1",
 					],
 				}),
 			),
 		)[0];
 		expect(runner?.args).toEqual([
 			"--egress-allow",
-			"github.com,api.github.com,10.0.0.7,2001:db8::1",
+			"github.com,api.github.com,10.0.0.7,2001:db8::1,::ffff:192.0.2.1",
 		]);
 	});
 
@@ -839,6 +840,10 @@ describe("egressAllow", () => {
 			"evil.com;rm",
 			"a b",
 			"x".repeat(254),
+			// URL parsing strips these, but the Runner's netip parser does not.
+			"2\n001:db8::1",
+			"2001:db8::1\t",
+			"[::1]",
 		]) {
 			expect(() =>
 				renderRunnerManifests({ ...values, egressAllow: [host] }),
@@ -920,6 +925,8 @@ describe("serverCA", () => {
 			{ configMapName: "compass-server-ca", key: "" },
 			{ configMapName: "compass-server-ca", key: "../ca.crt" },
 			{ configMapName: "compass-server-ca", key: "dir/ca.crt" },
+			{ configMapName: "a..b", key: "ca.crt" },
+			{ secretName: `${"a".repeat(64)}.example`, key: "ca.crt" },
 		];
 		for (const serverCA of bad) {
 			expect(() =>
