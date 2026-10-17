@@ -1219,7 +1219,7 @@ jobs:
           fi
           changed=$(git diff --name-only HEAD^1 HEAD)
           if printf '%s\n' "$changed" \
-            | grep -qE '^go/internal/forge/'; then
+            | grep -qE '^go/(internal/forge/|server/(github_webhook|linear_webhook|webhook_tunnel))'; then
             echo "forge_affected=true" >>"$GITHUB_OUTPUT"
           else
             echo "forge_affected=false" >>"$GITHUB_OUTPUT"
@@ -1308,6 +1308,11 @@ jobs:
           LINEAR_FORGE: ${{ env.LINEAR_FORGE }}
           LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
           LINEAR_FORGE_ASSIGNEE: ${{ secrets.LINEAR_FORGE_ASSIGNEE }}
+          # The webhook tunnel leg: the relay channel the testbed webhooks post to,
+          # and the TESTBED webhook secrets (never production).
+          WEBHOOK_TUNNEL_CHANNEL: ${{ secrets.WEBHOOK_TUNNEL_CHANNEL }}
+          LIVEGITHUB_WEBHOOK_SECRET: ${{ secrets.LIVEGITHUB_WEBHOOK_SECRET }}
+          LINEAR_FORGE_WEBHOOK_SECRET: ${{ secrets.LINEAR_FORGE_WEBHOOK_SECRET }}
           # -race needs cgo, matching go/moon.yml's race lane (§431-436). Without
           # it `go test -race` refuses to build.
           CGO_ENABLED: '1'
@@ -1320,6 +1325,8 @@ jobs:
         run: |
           rc=0
           go test -tags livegithub -race -v -timeout 10m ./internal/forge/... >/tmp/forge-oracle.log 2>&1 || rc=$?
+          # -run keeps the server package's untagged unit suite out of this lane.
+          go test -tags livegithub -race -v -timeout 5m -run '^TestLiveWebhookTunnel' ./server/ >>/tmp/forge-oracle.log 2>&1 || rc=$?
           cat /tmp/forge-oracle.log
           exit "$rc"
 
@@ -1361,8 +1368,9 @@ jobs:
           lnskip=$(sed -n 's/.*liveLinearSkipMessage = "\(.*\)"/\1/p' "$src")
           boardskip=$(sed -n 's/.*liveBoardStateSkipPrefix = "\(.*\)"/\1/p' "$src")
           assigneeskip=$(sed -n 's/.*liveLinearAssigneeSkipMessage = "\(.*\)"/\1/p' "$src")
-          if [ -z "$ghskip" ] || [ -z "$lnskip" ] || [ -z "$boardskip" ] || [ -z "$assigneeskip" ]; then
-            echo "::error::could not read the skip messages out of $src (github='$ghskip' linear='$lnskip' board='$boardskip' assignee='$assigneeskip') — this guard has drifted from the harness and is no longer checking anything"
+          tunnelskip=$(sed -n 's/.*liveTunnelSkipMessage = "\(.*\)"/\1/p' server/webhook_tunnel_live_test.go)
+          if [ -z "$ghskip" ] || [ -z "$lnskip" ] || [ -z "$boardskip" ] || [ -z "$assigneeskip" ] || [ -z "$tunnelskip" ]; then
+            echo "::error::could not read the skip messages out of $src and server/webhook_tunnel_live_test.go (github='$ghskip' linear='$lnskip' board='$boardskip' assignee='$assigneeskip' tunnel='$tunnelskip') — this guard has drifted from the harness and is no longer checking anything"
             exit 1
           fi
           if grep -qF "$ghskip" /tmp/forge-oracle.log; then
@@ -1380,6 +1388,11 @@ jobs:
             grep -nF "$assigneeskip" /tmp/forge-oracle.log | head
             exit 1
           fi
+          if grep -qF "$tunnelskip" /tmp/forge-oracle.log; then
+            echo "::error::forge live-contract oracle skipped the webhook tunnel leg — the relay channel or a testbed webhook secret was not set, so live ingress was not asserted"
+            grep -nF "$tunnelskip" /tmp/forge-oracle.log | head
+            exit 1
+          fi
           # A board-state skip leaves the package reporting ok, so only an
           # explicit grep keeps the by-name contracts from silently vanishing.
           if grep -qF "$boardskip" /tmp/forge-oracle.log; then
@@ -1389,6 +1402,10 @@ jobs:
           fi
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/internal/forge[[:space:]]" /tmp/forge-oracle.log; then
             echo "::error::the forge live-contract package did not report ok — it failed, skipped, or never ran"
+            exit 1
+          fi
+          if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/server[[:space:]]" /tmp/forge-oracle.log; then
+            echo "::error::the webhook tunnel leg (go/server) did not report ok — it failed, skipped, or never ran"
             exit 1
           fi
           echo "forge oracle: the live-contract suite ran both the GitHub and Linear legs against the testbed and reported ok"

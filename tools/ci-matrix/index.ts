@@ -81,7 +81,9 @@ export const AGENT_FOD_TASK = "renovate:agent-fod";
  * PR paths use `HEAD^1..HEAD`: GitHub's first merge parent is the base it merged,
  * so base churn or main drift cannot add files to this PR's trigger.
  */
-const FORGE_PATH_RE = /^go\/internal\/forge\//;
+// Also the webhook ingress handlers and the live tunnel leg that drives them.
+const FORGE_PATH_RE =
+	/^go\/(internal\/forge\/|server\/(github_webhook|linear_webhook|webhook_tunnel))/;
 /**
  * gtk4 trigger: any changed path under go/cmd/compass-app/, one of the shared
  * GTK closure inputs, OR a Go module manifest. The e2e lane is the ONLY CI lane that compiles the
