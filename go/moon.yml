@@ -181,6 +181,9 @@ tasks:
       # Re-run the spawnable-role prompt check when a shipped role prompt moves.
       - '/config/prompts/**'
       - '/tools/toolchain/secretspec-env.nix'
+      # Profile validation and the pinned Go overlay are test inputs.
+      - '/config/profiles/**'
+      - '/devenv.lock'
       - 'go.work'
       - 'go.work.sum'
       - '/go.work'

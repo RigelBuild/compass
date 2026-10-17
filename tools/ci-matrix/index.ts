@@ -15,6 +15,12 @@
 // firing the edge.
 
 import { $ } from "bun";
+import { loadGoGraph } from "./go-graph.ts";
+import {
+	residuePaths,
+	type SuiteSelection,
+	selectGoSuites,
+} from "./go-impact.ts";
 
 // ── Pure-core types ────────────────────────────────────────────────────────
 
@@ -28,14 +34,12 @@ export type ProjectInput = {
 };
 
 export type GenInput = {
-	/** ALL workspace projects (for the group universe + assertions) */
 	projects: ProjectInput[];
-	/** closure members (PR) or all ids (push/schedule) */
 	affectedIds: string[];
-	/** PR changed paths (for forge/gtk4 detection); [] on push/schedule */
 	changedPaths: string[];
-	/** `<project>:<task>` targets from `moon query tasks --affected` (PR); unused on push/schedule */
+	/** `<project>:<task>` targets from moon's affected-task query. */
 	affectedTasks?: string[];
+	goSelection: Record<"pgtest" | "microvm" | "e2e", SuiteSelection>;
 	event: "pull_request" | "push" | "schedule";
 };
 
@@ -51,17 +55,12 @@ export type MatrixEntry = {
 export type GenOutput = {
 	/** ONE entry per group EXISTING in the workspace, sorted by group name */
 	matrix: MatrixEntry[];
-	/** closure contains compass-go */
 	pgtestAffected: boolean;
-	/** closure contains compass-go OR compass-guest-image */
 	microvmAffected: boolean;
-	/** push/schedule OR changedPaths matches forge trigger */
+	e2eAffected: boolean;
 	forgeAffected: boolean;
-	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/, a shared GTK closure input, or go/go.mod / go/go.sum */
 	gtk4Affected: boolean;
-	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell), the macos-bundle tool, or the sidecar surface (four sidecars plus shared go/internal/) */
 	darwinAffected: boolean;
-	/** push/schedule OR the PR affects AGENT_FOD_TASK (its declared inputs changed) */
 	agentFodAffected: boolean;
 };
 
@@ -69,10 +68,6 @@ export type GenOutput = {
 
 /** The prefix stripped to get the group name: tag is `ci-group.<group>`. */
 const CI_GROUP_PREFIX = "ci-group.";
-
-/** Special-leg project ids the flags key off. */
-const PGTEST_PROJECT = "compass-go";
-const GUEST_IMAGE_PROJECT = "compass-guest-image";
 
 /**
  * The FOD check the arm64 leg reruns natively. Keyed on moon's task-affected set,
@@ -152,124 +147,127 @@ const DARWIN_SIDECAR_PREFIXES = [
  * Translate the affected closure + tags into the concern matrix + flags.
  * Pure; throws an Error naming the offending project id on assertion failure.
  */
-export function generate(input: GenInput): GenOutput {
-	const isFullSweep = input.event === "push" || input.event === "schedule";
-
-	// The group of each project, keyed by id. Enforces zero-untagged +
-	// disjointness while building it (each throws, naming the offending id).
+function groupByProject(projects: readonly ProjectInput[]): {
+	groupOf: Map<string, string>;
+	groupUniverse: Set<string>;
+	projectById: Map<string, ProjectInput>;
+} {
 	const groupOf = new Map<string, string>();
-	// The group universe: every group appearing as a ci-group.* tag on any
-	// project. Placeholder anchor — the matrix has one entry per existing group.
 	const groupUniverse = new Set<string>();
-
-	for (const project of input.projects) {
-		const groupTags = project.tags.filter((t) => t.startsWith(CI_GROUP_PREFIX));
-		if (groupTags.length === 0) {
+	const projectById = new Map<string, ProjectInput>();
+	for (const project of projects) {
+		const groupTags = project.tags.filter((tag) =>
+			tag.startsWith(CI_GROUP_PREFIX),
+		);
+		if (groupTags.length === 0)
 			throw new Error(
 				`ci-matrix: project '${project.id}' carries no ci-group.* tag`,
 			);
-		}
 		if (groupTags.length > 1) {
 			throw new Error(
-				`ci-matrix: project '${project.id}' carries multiple ci-group.* tags: ${groupTags
-					.slice()
-					.sort()
-					.join(", ")}`,
+				`ci-matrix: project '${project.id}' carries multiple ci-group.* tags: ${groupTags.slice().sort().join(", ")}`,
 			);
 		}
-		// biome-ignore lint/style/noNonNullAssertion: length checked === 1 above.
-		const group = groupTags[0]!.slice(CI_GROUP_PREFIX.length);
+		const groupTag = groupTags[0];
+		if (groupTag === undefined)
+			throw new Error(
+				`ci-matrix: project '${project.id}' has no ci-group.* tag`,
+			);
+		const group = groupTag.slice(CI_GROUP_PREFIX.length);
 		groupOf.set(project.id, group);
 		groupUniverse.add(group);
-	}
-
-	// Index projects by id for ciTarget lookup during target collection.
-	const projectById = new Map<string, ProjectInput>();
-	for (const project of input.projects) {
 		projectById.set(project.id, project);
 	}
+	return { groupOf, groupUniverse, projectById };
+}
 
-	const affectedSet = new Set(input.affectedIds);
-
-	// Collect, per group, the ci targets of affected members that have a
-	// non-null ciTarget. A null-ciTarget member is skipped (never emit a bare
-	// `<id>:ci` for a project without the task).
-	const targetsByGroup = new Map<string, string[]>();
-	for (const group of groupUniverse) {
-		targetsByGroup.set(group, []);
-	}
+function targetsByGroup(
+	input: GenInput,
+	groupOf: ReadonlyMap<string, string>,
+	groupUniverse: ReadonlySet<string>,
+	projectById: ReadonlyMap<string, ProjectInput>,
+): Map<string, string[]> {
+	const targets = new Map<string, string[]>(
+		[...groupUniverse].map((group) => [group, []]),
+	);
 	for (const id of input.affectedIds) {
 		const group = groupOf.get(id);
-		// coverage: an affected id with no group means it is not in `projects`.
-		// The group universe is built from all projects, so this can only happen
-		// if the caller passed an affectedId absent from `projects`.
-		if (group === undefined) {
+		if (group === undefined)
 			throw new Error(
 				`ci-matrix: affected project '${id}' has no ci-group.* mapping (not in projects list)`,
 			);
-		}
-		const project = projectById.get(id);
-		const ciTarget = project?.ciTarget ?? null;
-		if (ciTarget !== null) {
-			// biome-ignore lint/style/noNonNullAssertion: group is in groupUniverse.
-			targetsByGroup.get(group)!.push(ciTarget);
-		}
+		const ciTarget = projectById.get(id)?.ciTarget ?? null;
+		if (ciTarget !== null) targets.get(group)?.push(ciTarget);
 	}
+	return targets;
+}
 
-	// Build the matrix: one entry per existing group, sorted by group name.
-	// group == tag-suffix and groupUniverse is a Set, so group names are unique
-	// by construction — the emitted check names cannot collide.
-	const matrix: MatrixEntry[] = [];
-	for (const group of [...groupUniverse].sort()) {
-		// biome-ignore lint/style/noNonNullAssertion: group is in groupUniverse.
-		const targets = targetsByGroup.get(group)!.slice().sort();
-		// A group runs iff it has >=1 runnable target. On a full sweep every id
-		// is affected, so every group with a ci task runs; on a PR only groups
-		// with an affected, ci-task-bearing member run. Deriving `run` from
-		// `targets` (not mere membership) upholds the ci.yml invariant that a
-		// running leg always has >=1 target, so `moon run` is never targetless:
-		// a group whose only affected member has no ci task emits run:'false'.
-		const run: "true" | "false" = targets.length > 0 ? "true" : "false";
-		matrix.push({
-			group,
-			run,
-			targets,
-		});
-	}
+function matrixForGroups(
+	groups: ReadonlySet<string>,
+	targetsByGroup: ReadonlyMap<string, readonly string[]>,
+): MatrixEntry[] {
+	return [...groups].sort().map((group) => {
+		const targets = [...(targetsByGroup.get(group) ?? [])].sort();
+		return { group, run: targets.length > 0 ? "true" : "false", targets };
+	});
+}
 
-	const pgtestAffected = affectedSet.has(PGTEST_PROJECT);
-	const microvmAffected =
-		affectedSet.has(PGTEST_PROJECT) || affectedSet.has(GUEST_IMAGE_PROJECT);
-	const forgeAffected =
-		isFullSweep || input.changedPaths.some((p) => FORGE_PATH_RE.test(p));
-	const gtk4Affected =
-		isFullSweep ||
-		input.changedPaths.some(
-			(p) =>
-				p.startsWith(GTK4_PATH_PREFIX) ||
-				GTK4_CLOSURE_PATHS.includes(p) ||
-				GTK4_MODULE_PATHS.includes(p),
-		);
-	const darwinAffected =
-		isFullSweep ||
-		input.changedPaths.some(
-			(p) =>
-				p.startsWith(GTK4_PATH_PREFIX) ||
-				GTK4_CLOSURE_PATHS.includes(p) ||
-				p.startsWith(MACOS_BUNDLE_PATH_PREFIX) ||
-				DARWIN_SIDECAR_PREFIXES.some((prefix) => p.startsWith(prefix)),
-		);
-	const agentFodAffected =
-		isFullSweep || (input.affectedTasks ?? []).includes(AGENT_FOD_TASK);
-
+function affectedFlags(
+	input: GenInput,
+): Pick<
+	GenOutput,
+	| "pgtestAffected"
+	| "microvmAffected"
+	| "e2eAffected"
+	| "forgeAffected"
+	| "gtk4Affected"
+	| "darwinAffected"
+	| "agentFodAffected"
+> {
+	const isFullSweep = input.event === "push" || input.event === "schedule";
 	return {
-		matrix,
-		pgtestAffected,
-		microvmAffected,
-		forgeAffected,
-		gtk4Affected,
-		darwinAffected,
-		agentFodAffected,
+		pgtestAffected: input.goSelection.pgtest.run,
+		microvmAffected: input.goSelection.microvm.run,
+		e2eAffected: input.goSelection.e2e.run,
+		forgeAffected:
+			isFullSweep ||
+			input.changedPaths.some((path) => FORGE_PATH_RE.test(path)),
+		gtk4Affected:
+			isFullSweep ||
+			input.changedPaths.some(
+				(path) =>
+					path.startsWith(GTK4_PATH_PREFIX) ||
+					GTK4_CLOSURE_PATHS.includes(path) ||
+					GTK4_MODULE_PATHS.includes(path),
+			),
+		darwinAffected:
+			isFullSweep ||
+			input.changedPaths.some(
+				(path) =>
+					path.startsWith(GTK4_PATH_PREFIX) ||
+					GTK4_CLOSURE_PATHS.includes(path) ||
+					path.startsWith(MACOS_BUNDLE_PATH_PREFIX) ||
+					DARWIN_SIDECAR_PREFIXES.some((prefix) => path.startsWith(prefix)),
+			),
+		agentFodAffected:
+			isFullSweep || (input.affectedTasks ?? []).includes(AGENT_FOD_TASK),
+	};
+}
+
+/** Translate the affected closure + tags into the concern matrix + flags. */
+export function generate(input: GenInput): GenOutput {
+	const { groupOf, groupUniverse, projectById } = groupByProject(
+		input.projects,
+	);
+	const taskTargets = targetsByGroup(
+		input,
+		groupOf,
+		groupUniverse,
+		projectById,
+	);
+	return {
+		matrix: matrixForGroups(groupUniverse, taskTargets),
+		...affectedFlags(input),
 	};
 }
 
@@ -374,10 +372,41 @@ export function outputLines(out: GenOutput): string[] {
 		`matrix=${JSON.stringify(out.matrix)}`,
 		`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
 		`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
+		`e2e_affected=${out.e2eAffected ? "true" : "false"}`,
 		`forge_affected=${out.forgeAffected ? "true" : "false"}`,
 		`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
 		`darwin_affected=${out.darwinAffected ? "true" : "false"}`,
 		`agent_fod_affected=${out.agentFodAffected ? "true" : "false"}`,
+	];
+}
+
+async function taskTargetsForPaths(
+	paths: readonly string[],
+): Promise<string[]> {
+	if (paths.length === 0) return [];
+	const child = Bun.spawn(["moon", "query", "tasks", "--affected"], {
+		stdin: new Blob([`${paths.join("\n")}\n`]),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+		child.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`moon query tasks --affected failed: ${stderr.trim()}`);
+	}
+	return parseAffectedTaskTargets(stdout);
+}
+
+function suiteReasonLines(
+	selection: Record<"pgtest" | "microvm" | "e2e", SuiteSelection>,
+): string[] {
+	return [
+		`  pgtest: ${selection.pgtest.reason}`,
+		`  microvm: ${selection.microvm.reason}`,
+		`  e2e: ${selection.e2e.reason}`,
 	];
 }
 
@@ -439,98 +468,131 @@ async function assertNoDesignWrites(): Promise<void> {
 	}
 }
 
+async function prSelection(projects: readonly ProjectInput[]): Promise<{
+	affectedIds: string[];
+	affectedTasks: string[];
+	changedPaths: string[];
+	goSelection: Record<"pgtest" | "microvm" | "e2e", SuiteSelection>;
+}> {
+	const [affectedJson, taskJson, changedPaths] = await Promise.all([
+		$`moon query projects --affected --upstream deep --downstream direct`
+			.quiet()
+			.text(),
+		$`moon query tasks --affected`.quiet().text(),
+		prChangedPaths(),
+	]);
+	const affectedParsed = JSON.parse(affectedJson) as {
+		projects?: MoonProject[];
+	};
+	const projectsById = new Set(projects.map((project) => project.id));
+	const affectedTasks = parseAffectedTaskTargets(taskJson);
+	const affectedIds = unionAffectedIds(
+		(affectedParsed.projects ?? []).map((project) => project.id),
+		parseTaskAffectedIds(taskJson),
+		projectsById,
+	);
+	const graph = await loadGoGraph(`${process.cwd()}/go`);
+	const residueTasks = await taskTargetsForPaths(
+		residuePaths(changedPaths, graph),
+	);
+	const goSelection = selectGoSuites({
+		event: "pull_request",
+		changedPaths,
+		affectedIds,
+		residueTasks,
+		graph,
+	});
+	return { affectedIds, affectedTasks, changedPaths, goSelection };
+}
+
+async function fullSweepSelection(
+	projects: readonly ProjectInput[],
+	event: "push" | "schedule",
+): Promise<{
+	affectedIds: string[];
+	affectedTasks: string[];
+	changedPaths: string[];
+	goSelection: Record<"pgtest" | "microvm" | "e2e", SuiteSelection>;
+}> {
+	const affectedIds = projects.map((project) => project.id);
+	const changedPaths: string[] = [];
+	const affectedTasks: string[] = [];
+	const graph = await loadGoGraph(`${process.cwd()}/go`);
+	const goSelection = selectGoSuites({
+		event,
+		changedPaths,
+		affectedIds,
+		residueTasks: [],
+		graph,
+	});
+	return { affectedIds, affectedTasks, changedPaths, goSelection };
+}
+function reportMainError(err: unknown): void {
+	const message = err instanceof Error ? err.message : String(err);
+	const stderr = String(
+		(err as { stderr?: unknown } | null)?.stderr ?? "",
+	).trim();
+	console.error(
+		`::error::${stderr === "" ? message : `${message}: ${stderr}`}`,
+	);
+	process.exit(1);
+}
+
+function eventFromEnvironment(value: string | undefined): GenInput["event"] {
+	if (value === "pull_request" || value === "schedule") return value;
+	return "push";
+}
+
+async function runSelection(
+	event: GenInput["event"],
+	projects: ProjectInput[],
+): Promise<{
+	affectedIds: string[];
+	affectedTasks: string[];
+	changedPaths: string[];
+	goSelection: GenInput["goSelection"];
+}> {
+	return event === "pull_request"
+		? prSelection(projects)
+		: fullSweepSelection(projects, event);
+}
+
 async function main(): Promise<void> {
-	const eventNameRaw = process.env.GITHUB_EVENT_NAME ?? "push";
-	const event: GenInput["event"] =
-		eventNameRaw === "pull_request"
-			? "pull_request"
-			: eventNameRaw === "schedule"
-				? "schedule"
-				: "push";
-
+	const event = eventFromEnvironment(process.env.GITHUB_EVENT_NAME);
 	try {
-		// Full set: group universe + tags + ci-task presence.
-		const fullJson = await $`moon query projects`.quiet().text();
-		const projects = parseProjects(fullJson);
-
-		// Affected set: on a PR, the union of the project closure and the
-		// task-level closure (see parseTaskAffectedIds for why the project walk
-		// alone misses cross-tree gates); else the full set.
-		let affectedIds: string[];
-		let affectedTasks: string[] = [];
-		if (event === "pull_request") {
-			const [affectedJson, taskJson] = await Promise.all([
-				$`moon query projects --affected --upstream deep --downstream direct`
-					.quiet()
-					.text(),
-				$`moon query tasks --affected`.quiet().text(),
-			]);
-			const affectedParsed = JSON.parse(affectedJson) as {
-				projects?: MoonProject[];
-			};
-			const known = new Set(projects.map((p) => p.id));
-			affectedIds = unionAffectedIds(
-				(affectedParsed.projects ?? []).map((p) => p.id),
-				parseTaskAffectedIds(taskJson),
-				known,
-			);
-			affectedTasks = parseAffectedTaskTargets(taskJson);
-		} else {
-			affectedIds = projects.map((p) => p.id);
-		}
-
-		// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
-		// where the flags are unconditionally true).
-		const changedPaths = event === "pull_request" ? await prChangedPaths() : [];
+		const projects = parseProjects(await $`moon query projects`.quiet().text());
+		const selection = await runSelection(event, projects);
+		const { affectedIds, affectedTasks, changedPaths, goSelection } = selection;
 		await assertNoDesignWrites();
-
 		const out = generate({
 			projects,
 			affectedIds,
 			changedPaths,
 			affectedTasks,
+			goSelection,
 			event,
 		});
-
 		const lines = outputLines(out);
-
 		const githubOutput = process.env.GITHUB_OUTPUT;
 		if (githubOutput != null && githubOutput !== "") {
-			const existing = (await Bun.file(githubOutput).exists())
-				? await Bun.file(githubOutput).text()
-				: "";
-			await Bun.write(
-				Bun.file(githubOutput),
-				`${existing}${lines.join("\n")}\n`,
-			);
+			const file = Bun.file(githubOutput);
+			const existing = (await file.exists()) ? await file.text() : "";
+			await Bun.write(file, `${existing}${lines.join("\n")}\n`);
 		}
-
-		// Human summary.
 		console.log(`ci-matrix (${event}):`);
 		for (const entry of out.matrix) {
+			const targets =
+				entry.targets.length > 0 ? entry.targets.join(" ") : "(none)";
 			console.log(
-				`  [${entry.run === "true" ? "run " : "skip"}] ${entry.group}: ${
-					entry.targets.length > 0 ? entry.targets.join(" ") : "(none)"
-				}`,
+				`  [${entry.run === "true" ? "run " : "skip"}] ${entry.group}: ${targets}`,
 			);
 		}
+		for (const reason of suiteReasonLines(goSelection)) console.log(reason);
 		console.log(
-			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected} darwin=${out.darwinAffected} agent-fod=${out.agentFodAffected}`,
+			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} e2e=${out.e2eAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected} darwin=${out.darwinAffected} agent-fod=${out.agentFodAffected}`,
 		);
 	} catch (err) {
-		// A failed `moon query` throws a Bun ShellError whose `message` is only
-		// "Failed with exit code N" — moon's own diagnostic (the part naming
-		// the cause) rides on a separate `stderr` Buffer. Two queries now run
-		// concurrently, so the bare message cannot even say which one failed;
-		// append the stderr when present so a CI operator sees the cause.
-		const message = err instanceof Error ? err.message : String(err);
-		const stderr = String(
-			(err as { stderr?: unknown } | null)?.stderr ?? "",
-		).trim();
-		console.error(
-			`::error::${stderr === "" ? message : `${message}: ${stderr}`}`,
-		);
-		process.exit(1);
+		reportMainError(err);
 	}
 }
 
