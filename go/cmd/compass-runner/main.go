@@ -510,7 +510,7 @@ func registerBackendFlags() backendFlags {
 }
 
 // selectEngine resolves the configured runtime backend from the parsed flags
-// and their environment fallbacks.
+// and their environment fallbacks. guestInterceptors go to every guest control client except Health.
 func (f backendFlags) selectEngine(guestInterceptors ...connect.ClientInterceptor) (runtime.WorkloadRuntime, error) {
 	cfg, err := f.backendConfig()
 	if err != nil {

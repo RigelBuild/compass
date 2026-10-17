@@ -109,7 +109,7 @@ type guestVM interface {
 type guestLaunchFunc func(context.Context, microvm.BootConfig) (guestVM, error)
 
 // guestClientFunc dials the guest control plane, returning a GuestControlClient.
-// It defaults to microvm.GuestClient (installSeamDefaults) and is overridden in
+// It defaults to microvm.GuestClient with GuestClientInterceptors (installSeamDefaults) and is overridden in
 // hermetic Start tests so a fake client answers Provision with no real vsock
 // dial. It seams Start's Provision client ONLY; Stop's own dial stays direct.
 type guestClientFunc func(socket string, port uint32) compassv1internalconnect.GuestControlClient

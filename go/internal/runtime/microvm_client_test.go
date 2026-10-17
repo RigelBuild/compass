@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -36,7 +37,9 @@ func TestMicroVMConfigGuestClientInterceptors(t *testing.T) {
 	})
 
 	client := m.newGuestClient(socket, 1024)
-	if _, err := client.Health(t.Context(), &compassv1.HealthRequest{}); err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := client.Health(ctx, &compassv1.HealthRequest{}); err != nil {
 		t.Fatalf("Health: %v", err)
 	}
 	if got := requests.Load(); got != 1 {
@@ -89,6 +92,12 @@ func serveRuntimeGuest(t *testing.T, handler compassv1internalconnect.GuestContr
 		if err != nil {
 			return
 		}
+		served := false
+		defer func() {
+			if !served {
+				_ = conn.Close() // unblocks the client after a failed preamble
+			}
+		}()
 		reader := bufio.NewReader(conn)
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -103,6 +112,7 @@ func serveRuntimeGuest(t *testing.T, handler compassv1internalconnect.GuestContr
 			t.Errorf("writing guest ack: %v", err)
 			return
 		}
+		served = true
 		serveErr := server.Serve(&runtimeOneConnListener{conn: conn})
 		if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) {
 			t.Errorf("serving guest HTTP connection: %v", serveErr)
