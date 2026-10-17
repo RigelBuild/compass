@@ -110,7 +110,7 @@ func readPreambleLine(conn net.Conn) (string, error) {
 // only an endpoint need not fabricate one. h2c is enabled the same way the
 // gateway server enables it (go/internal/runner/gateway/socket.go: http.Protocols
 // + SetUnencryptedHTTP2), mirrored here on the client transport.
-func GuestClient(vsockSocket string, port uint32) compassv1internalconnect.GuestControlClient {
+func GuestClient(vsockSocket string, port uint32, interceptors ...connect.ClientInterceptor) compassv1internalconnect.GuestControlClient {
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
 	httpClient := &http.Client{
@@ -128,6 +128,7 @@ func GuestClient(vsockSocket string, port uint32) compassv1internalconnect.Guest
 				"http://guest",
 				connecthttp.WithReadMaxBytes(0),
 			),
+			interceptors...,
 		),
 	)
 }

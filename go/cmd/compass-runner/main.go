@@ -22,7 +22,9 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/otel/otelsetup"
@@ -100,7 +102,7 @@ func run() error {
 	// runs ahead of every operator-input check: a refusal about a host fact must
 	// precede telling an operator to fix a token, or they fix it, re-run, and only
 	// then learn the engine can never launch. Select the engine, then gate on it.
-	engine, err := backends.selectEngine()
+	engine, err := backends.selectTracedEngine()
 	if err != nil {
 		return err
 	}
@@ -508,13 +510,23 @@ func registerBackendFlags() backendFlags {
 }
 
 // selectEngine resolves the configured runtime backend from the parsed flags
-// and their environment fallbacks.
-func (f backendFlags) selectEngine() (runtime.WorkloadRuntime, error) {
+// and their environment fallbacks. guestInterceptors go to every guest control client except Health.
+func (f backendFlags) selectEngine(guestInterceptors ...connect.ClientInterceptor) (runtime.WorkloadRuntime, error) {
 	cfg, err := f.backendConfig()
 	if err != nil {
 		return nil, err
 	}
+	cfg.MicroVM.GuestClientInterceptors = guestInterceptors
 	return runtime.SelectBackend(cfg)
+}
+
+// selectTracedEngine selects the engine with guest control client spans; Health stays untraced.
+func (f backendFlags) selectTracedEngine() (runtime.WorkloadRuntime, error) {
+	guestInterceptor, err := otelconnect.NewClientInterceptor()
+	if err != nil {
+		return nil, fmt.Errorf("otel: guest connect interceptor: %w", err)
+	}
+	return f.selectEngine(guestInterceptor)
 }
 
 // backendConfig resolves every backend knob from its flag with an environment

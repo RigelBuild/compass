@@ -22,9 +22,12 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // testTimeout bounds every blocking dial/RPC so a wedged fake fails the test
@@ -252,6 +255,35 @@ func (h healthHandler) Health(context.Context, *compassv1.HealthRequest) (*compa
 }
 
 func TestGuestClient_HealthRoundTrip(t *testing.T) {
+	guestClientHealthRoundTrip(t)
+}
+
+func TestGuestClientPassesOptions(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() {
+		if err := provider.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("shutdown tracer provider: %v", err)
+		}
+	})
+	interceptor, err := otelconnect.NewClientInterceptor(otelconnect.WithTracerProvider(provider))
+	if err != nil {
+		t.Fatalf("otelconnect.NewClientInterceptor: %v", err)
+	}
+
+	guestClientHealthRoundTrip(t, interceptor)
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("recorded client spans = %d, want 1", len(spans))
+	}
+	if got := spans[0].Name(); got != "compass.v1.GuestControl/Health" {
+		t.Errorf("client span name = %q, want Health RPC", got)
+	}
+}
+
+func guestClientHealthRoundTrip(t *testing.T, interceptors ...connect.ClientInterceptor) {
+	t.Helper()
 	path := socketPath(t)
 
 	// h2c Connect server for the GuestControl handler.
@@ -312,7 +344,7 @@ func TestGuestClient_HealthRoundTrip(t *testing.T) {
 		}
 	}()
 
-	client := GuestClient(path, guestPort)
+	client := GuestClient(path, guestPort, interceptors...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
