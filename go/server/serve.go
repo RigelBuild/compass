@@ -1130,7 +1130,7 @@ func buildDoors(
 	udsMux.Handle(usageSocketPath, usageSocketHandler)
 	udsMux.Handle(agentRepositoryPath, agentRepositoryHandler)
 	health.mount(udsMux)
-	udsServer := &http.Server{Handler: udsMux, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply; the network door below sets it
+	udsServer := newLocalDoorServer(udsMux, localDoorHeaderTimeout, localDoorIdleTimeout)
 
 	// Dev-only browser door: the same services with permissive CORS on the
 	// loopback listener, off unless DevHTTP is passed. Interceptor ORDER is
@@ -1156,7 +1156,7 @@ func buildDoors(
 		devMux.Handle(devUsagePath, devUsageHandler)
 		devMux.Handle(devAgentRepositoryPath, devAgentRepositoryHandler)
 		health.mount(devMux)
-		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
+		devServer = newLocalDoorServer(devCORS().Handler(devMux), localDoorHeaderTimeout, localDoorIdleTimeout)
 	}
 
 	// The Linear half: notify lane, session responder, and the webhook feeding both.
@@ -1328,6 +1328,17 @@ func devCORS() *cors.Cors {
 		ExposedHeaders:   append(connectcors.ExposedHeaders(), "traceresponse"),
 		AllowCredentials: false,
 	})
+}
+
+// Local doors (UDS, loopback dev) bound the header read and idle lifetime so a
+// local process cannot hold connections open forever.
+const (
+	localDoorHeaderTimeout = 10 * time.Second
+	localDoorIdleTimeout   = 120 * time.Second
+)
+
+func newLocalDoorServer(h http.Handler, header, idle time.Duration) *http.Server {
+	return &http.Server{Handler: h, Protocols: cleartextHTTP2(), ReadHeaderTimeout: header, IdleTimeout: idle}
 }
 
 // cleartextHTTP2 enables HTTP/1.1 and prior-knowledge cleartext HTTP/2 (h2c) on
