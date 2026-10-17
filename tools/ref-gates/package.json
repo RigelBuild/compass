@@ -1,0 +1,11 @@
+{
+	"name": "@compass/ref-gates",
+	"private": true,
+	"type": "module",
+	"description": "Compass configs for the shared @rigelbuild/ref-gate boundary scans: private-repo names and SEA issue keys.",
+	"devDependencies": {
+		"@rigelbuild/ref-gate": "catalog:",
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

@@ -270,6 +270,14 @@
         "typescript": "catalog:",
       },
     },
+    "tools/ref-gates": {
+      "name": "@compass/ref-gates",
+      "devDependencies": {
+        "@rigelbuild/ref-gate": "catalog:",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/release-notes": {
       "name": "@compass/release-notes",
       "bin": {
@@ -566,6 +574,8 @@
     "@compass/microvm-boot-test": ["@compass/microvm-boot-test@workspace:tools/microvm-boot-test"],
 
     "@compass/operator-cli-check": ["@compass/operator-cli-check@workspace:tools/operator-cli-check"],
+
+    "@compass/ref-gates": ["@compass/ref-gates@workspace:tools/ref-gates"],
 
     "@compass/release-notes": ["@compass/release-notes@workspace:tools/release-notes"],
 

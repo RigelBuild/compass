@@ -1,10 +1,19 @@
 // Pins the matching semantics of the checked-in boundary configs; the shared
-// package only validates their shape.
-import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+// package only validates their shape. Scans run through git grep so the prefilter counts.
+import { afterAll, describe, expect, test } from "bun:test";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
 	findViolations,
+	gitGrep,
 	loadRefGateConfig,
 	type RefGateConfig,
 } from "@rigelbuild/ref-gate";
@@ -13,49 +22,88 @@ const here = import.meta.dir;
 const repoRoot = join(here, "../..");
 const privateName = loadRefGateConfig(join(here, "private-name.json"));
 const sea = loadRefGateConfig(join(here, "sea.json"));
+const scratch: string[] = [];
+afterAll(() => {
+	for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
+});
 
-const hit = (file: string, text: string): string => `${file}\0${1}\0${text}`;
-const flags = (cfg: RefGateConfig, text: string, file = "docs/x.md"): boolean =>
-	findViolations(cfg, [hit(file, text)]).length > 0;
+// Commits each file into a fresh repo and returns the paths the gate flags.
+function flagged(cfg: RefGateConfig, files: Record<string, string>): string[] {
+	const root = mkdtempSync(join(tmpdir(), "ref-gates-"));
+	scratch.push(root);
+	for (const [path, text] of Object.entries(files)) {
+		mkdirSync(dirname(join(root, path)), { recursive: true });
+		writeFileSync(join(root, path), `${text}\n`);
+	}
+	const git = (...args: string[]) => {
+		const r = Bun.spawnSync({
+			cmd: ["git", "-C", root, ...args],
+			stderr: "pipe",
+		});
+		if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+	};
+	git("init", "-q");
+	git("add", "-A");
+	const hits = gitGrep(root, cfg.prefilter);
+	return [...new Set(findViolations(cfg, hits).map((v) => v.file))].sort();
+}
+
+const caseFiles = (texts: string[]) =>
+	Object.fromEntries(texts.map((text, i) => [`docs/case-${i}.md`, text]));
+
+function expectExactlyFlagged(
+	cfg: RefGateConfig,
+	hits: string[],
+	misses: string[],
+) {
+	const files = caseFiles([...hits, ...misses]);
+	const want = hits.map((_, i) => `docs/case-${i}.md`).sort();
+	const got = flagged(cfg, files);
+	expect(got.map((f) => files[f])).toEqual(want.map((f) => files[f]));
+}
 
 describe("private-name config", () => {
-	test.each([
-		"ported from orion's config",
-		"the ORION monorepo",
-		"`orion tools/publish-agent-config/index.ts:79`",
-		"orion-ref-gate scans for orion references",
-		"See `sealed/ci/pipeline.ts:554` for the job",
-		"mirrors `sealed gather.ts:25,203-205`",
-		"ported from sealed flake.nix",
-		"a sealed-monorepo domain",
-		"deployed to sealed-docs.rigel.build",
-		"following sealed's shape",
-		"this record lives in the sealed design corpus",
-		"per sealed convention a later change ADDS",
-	])("flags %p", (text) => {
-		expect(flags(privateName, text)).toBe(true);
+	test("flags private-repo references and spares look-alikes", () => {
+		expectExactlyFlagged(
+			privateName,
+			[
+				"ported from orion's config",
+				"the ORION monorepo",
+				"`orion tools/publish-agent-config/index.ts:79`",
+				"orion-ref-gate scans for orion references",
+				"See `sealed/ci/pipeline.ts:554` for the job",
+				"mirrors `sealed gather.ts:25,203-205`",
+				"ported from sealed flake.nix",
+				"a sealed-monorepo domain",
+				"deployed to sealed-docs.rigel.build",
+				"following Sealed's shape",
+				"this record lives in the sealed design corpus",
+				"per sealed convention a later change ADDS",
+			],
+			[
+				"orionic nebula naming",
+				"categorion",
+				"orion-ref-gate: 'tools/orion-ref-gate'",
+				"values sealed and/or rotated",
+				"Frame is a sealed sum type",
+				"an egress-sealed agent holds no server token",
+				"github.com/sealedsecurity/compass/go",
+				"ci.sealedsecurity.com",
+			],
+		);
 	});
 
-	test.each([
-		"orionic nebula naming",
-		"categorion",
-		"orion-ref-gate: 'tools/orion-ref-gate'",
-		"values sealed and/or rotated",
-		"Frame is a sealed sum type",
-		"an egress-sealed agent holds no server token",
-		"github.com/sealedsecurity/compass/go",
-		"ci.sealedsecurity.com",
-	])("does not flag %p", (text) => {
-		expect(flags(privateName, text)).toBe(false);
-	});
-
-	test.each([
-		"bun.lock",
-		"tools/ref-gates/private-name.json",
-		"apps/eng-docs/src/content/docs/x.md",
-		"apps/eng-docs/dist/x/index.html",
-	])("carves out %p", (file) => {
-		expect(flags(privateName, "from orion", file)).toBe(false);
+	test("carves out the lockfile, its own configs and generated docsite copies", () => {
+		const carved = [
+			"bun.lock",
+			"tools/ref-gates/private-name.json",
+			"apps/eng-docs/src/content/docs/x.md",
+			"apps/eng-docs/dist/x/index.html",
+		];
+		const files = Object.fromEntries(
+			[...carved, "docs/x.md"].map((path) => [path, "from orion"]),
+		);
+		expect(flagged(privateName, files)).toEqual(["docs/x.md"]);
 	});
 
 	test("its remediation doc exists", () => {
@@ -66,34 +114,29 @@ describe("private-name config", () => {
 });
 
 describe("sea config", () => {
-	test.each(["tracked as SEA-1512 here", "(SEA-42)"])("flags %p", (text) => {
-		expect(flags(sea, text)).toBe(true);
+	test("flags issue keys and spares slugs and placeholders", () => {
+		expectExactlyFlagged(
+			sea,
+			["tracked as SEA-1512 here", "(SEA-42)"],
+			["branch sea-1512-fix", "a SEA-nnn placeholder", "SEA-NNN", "XSEA-12"],
+		);
 	});
 
-	test.each([
-		"branch sea-1512-fix",
-		"a SEA-nnn placeholder",
-		"SEA-NNN",
-		"XSEA-12",
-	])("does not flag %p", (text) => {
-		expect(flags(sea, text)).toBe(false);
+	test("carves out the lockfile, changelog and its own configs", () => {
+		const carved = ["bun.lock", "CHANGELOG.md", "tools/ref-gates/sea.json"];
+		const files = Object.fromEntries(
+			[...carved, "docs/x.md"].map((path) => [path, "see SEA-1512"]),
+		);
+		expect(flagged(sea, files)).toEqual(["docs/x.md"]);
 	});
-
-	test.each(["bun.lock", "CHANGELOG.md", "tools/ref-gates/sea.json"])(
-		"carves out %p",
-		(file) => {
-			expect(flags(sea, "SEA-1512", file)).toBe(false);
-		},
-	);
 });
 
 // Moon reports these tasks affected only through workspace-root inputs.
-test("both gate tasks take every workspace file as input", () => {
-	const moon = readFileSync(join(here, "moon.yml"), "utf8");
+test("each gate task takes every workspace file as input", () => {
+	const moon = Bun.YAML.parse(readFileSync(join(here, "moon.yml"), "utf8")) as {
+		tasks: Record<string, { inputs?: string[] }>;
+	};
 	for (const task of ["sea", "private-name"]) {
-		const block = new RegExp(
-			`\\n  ${task}:\\n[\\s\\S]*?inputs: \\[([^\\]]*)\\]`,
-		).exec(moon);
-		expect(block?.[1]).toContain("'/**/*'");
+		expect(moon.tasks[task]?.inputs).toContain("/**/*");
 	}
 });

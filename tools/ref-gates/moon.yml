@@ -5,6 +5,10 @@ language: 'typescript'
 tags: ['bun', 'ci-group.bun']
 
 tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', '/bun.lock']
   test:
     inputs:
       - '*.ts'
@@ -31,6 +35,6 @@ tasks:
     options:
       cache: false
   ci:
-    deps: ['check', 'test']
+    deps: ['check', 'test', 'typecheck']
     options:
       cache: false
