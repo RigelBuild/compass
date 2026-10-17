@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 func syncTree(root string) error {
@@ -41,14 +42,14 @@ func syncTree(root string) error {
 	if err != nil {
 		return err
 	}
-	for i := len(dirs) - 1; i >= 0; i-- {
-		f, err := os.Open(dirs[i]) //nolint:gosec // path is discovered under the internally-owned tree root.
+	for _, dir := range slices.Backward(dirs) {
+		f, err := os.Open(dir) //nolint:gosec // path is discovered under the internally-owned tree root.
 		if err != nil {
-			return fmt.Errorf("vfs: opening tree directory %q for sync: %w", dirs[i], err)
+			return fmt.Errorf("vfs: opening tree directory %q for sync: %w", dir, err)
 		}
 		syncErr := f.Sync()
 		if syncErr != nil {
-			syncErr = fmt.Errorf("vfs: syncing tree directory %q: %w", dirs[i], syncErr)
+			syncErr = fmt.Errorf("vfs: syncing tree directory %q: %w", dir, syncErr)
 		}
 		if err := errors.Join(syncErr, f.Close()); err != nil {
 			return err
