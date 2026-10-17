@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
 import {
+	checksPrMergeRef,
 	type GenInput,
 	generate,
 	outputLines,
@@ -1178,5 +1179,19 @@ describe("prDesignWrites", () => {
 			await $`git mv docs/designs/old.md docs/designs/moved.md`.cwd(r).quiet();
 		});
 		expect(await prDesignWrites(repo)).toEqual(["docs/designs/moved.md"]);
+	});
+});
+
+describe("checksPrMergeRef — where the design guard runs", () => {
+	test("pull_request and a base-repoint dispatch both check the merge ref", () => {
+		expect(checksPrMergeRef("pull_request", undefined)).toBe(true);
+		expect(checksPrMergeRef("workflow_dispatch", "2329")).toBe(true);
+	});
+
+	test("push, schedule and a dispatch without a PR do not", () => {
+		expect(checksPrMergeRef("push", undefined)).toBe(false);
+		expect(checksPrMergeRef("schedule", "")).toBe(false);
+		expect(checksPrMergeRef("workflow_dispatch", "")).toBe(false);
+		expect(checksPrMergeRef("workflow_dispatch", undefined)).toBe(false);
 	});
 });

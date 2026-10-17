@@ -494,7 +494,22 @@ export async function prDesignWrites(cwd = process.cwd()): Promise<string[]> {
 		.filter((path) => path !== "");
 }
 
+/** True when the checkout is a PR merge ref: a pull_request run or a base-repoint dispatch. */
+export function checksPrMergeRef(
+	eventName: string | undefined,
+	dispatchPr: string | undefined,
+): boolean {
+	return (
+		eventName === "pull_request" ||
+		(eventName === "workflow_dispatch" && (dispatchPr ?? "") !== "")
+	);
+}
+
 async function assertNoDesignWrites(): Promise<void> {
+	if (
+		!checksPrMergeRef(process.env.GITHUB_EVENT_NAME, process.env.CI_MATRIX_PR)
+	)
+		return;
 	const writes = await prDesignWrites();
 	if (writes.length > 0) {
 		throw new Error(
@@ -546,7 +561,7 @@ async function main(): Promise<void> {
 		// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
 		// where the flags are unconditionally true).
 		const changedPaths = event === "pull_request" ? await prChangedPaths() : [];
-		if (event === "pull_request") await assertNoDesignWrites();
+		await assertNoDesignWrites();
 
 		const out = generate({
 			projects,
