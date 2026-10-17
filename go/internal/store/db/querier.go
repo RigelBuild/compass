@@ -75,7 +75,7 @@ type Querier interface {
 	AskForgeMirrors(ctx context.Context, askIds []string) ([]AskForgeMirrorsRow, error)
 	AuthoredArtifactByCoordinate(ctx context.Context, arg AuthoredArtifactByCoordinateParams) (ForgeAuthoredArtifact, error)
 	AuthoredArtifactByRequestID(ctx context.Context, arg AuthoredArtifactByRequestIDParams) (ForgeAuthoredArtifact, error)
-	AuthoredCoordsForAgent(ctx context.Context, arg AuthoredCoordsForAgentParams) ([]AuthoredCoordsForAgentRow, error)
+	AuthoredCoordsForAgents(ctx context.Context, arg AuthoredCoordsForAgentsParams) ([]AuthoredCoordsForAgentsRow, error)
 	BeginForgeMirrorAttempt(ctx context.Context, arg BeginForgeMirrorAttemptParams) (BeginForgeMirrorAttemptRow, error)
 	// Agent-transcript queries (sqlc adoption T5, RIG-3034). These replace the
 	// inline SQL literals in internal/store/agent_transcripts.go; the hand-written
@@ -442,7 +442,7 @@ type Querier interface {
 	ListGatewayCredentials(ctx context.Context, arg ListGatewayCredentialsParams) ([]ListGatewayCredentialsRow, error)
 	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
-	ListOpenAuthoredRefs(ctx context.Context, agentAccountID string) ([]ListOpenAuthoredRefsRow, error)
+	ListOpenAuthoredRefsForAgents(ctx context.Context, agentAccountIds []string) ([]ListOpenAuthoredRefsForAgentsRow, error)
 	ListOpenPullRequests(ctx context.Context, arg ListOpenPullRequestsParams) ([]int64, error)
 	ListPullRequestLinks(ctx context.Context, arg ListPullRequestLinksParams) ([]ListPullRequestLinksRow, error)
 	// ListTenantIDs lists every tenant. tenants has no row-level security, so the

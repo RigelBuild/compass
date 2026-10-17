@@ -16,38 +16,56 @@ import (
 var _ RefResolver = (*store.Store)(nil)
 
 type fakeRefResolver struct {
-	prs       []store.PullRequestRow
-	issues    []store.Issue
-	authored  []store.AuthoredRef
-	owned     []store.AuthoredRef
-	calls     []string
-	coords    [][]store.ForgeCoord
-	agentSeen store.AccountID
+	prs             []store.PullRequestRow
+	issues          []store.Issue
+	authored        []store.AuthoredRef
+	owned           []store.AuthoredRef
+	authoredByAgent map[store.AccountID][]store.AuthoredRef
+	ownedByAgent    map[store.AccountID][]store.AuthoredRef
+	calls           []string
+	coords          [][]store.ForgeCoord
+	agents          [][]store.AccountID
+	openErr         error
+	ownedErr        error
+	prsErr          error
+	issuesErr       error
 }
 
-func (f *fakeRefResolver) AuthoredCoordsForAgent(_ context.Context, agent store.AccountID, coords []store.ForgeCoord) ([]store.AuthoredRef, error) {
+func refsByAgent(agents []store.AccountID, all []store.AuthoredRef, specific map[store.AccountID][]store.AuthoredRef) map[store.AccountID][]store.AuthoredRef {
+	out := make(map[store.AccountID][]store.AuthoredRef, len(agents))
+	for _, agent := range agents {
+		refs := all
+		if specific != nil {
+			refs = specific[agent]
+		}
+		out[agent] = refs
+	}
+	return out
+}
+
+func (f *fakeRefResolver) AuthoredCoordsForAgents(_ context.Context, agents []store.AccountID, coords []store.ForgeCoord) (map[store.AccountID][]store.AuthoredRef, error) {
 	f.calls = append(f.calls, "owned")
-	f.agentSeen = agent
+	f.agents = append(f.agents, slices.Clone(agents))
 	f.coords = append(f.coords, slices.Clone(coords))
-	return f.owned, nil
+	return refsByAgent(agents, f.owned, f.ownedByAgent), f.ownedErr
+}
+
+func (f *fakeRefResolver) OpenAuthoredRefsForAgents(_ context.Context, agents []store.AccountID) (map[store.AccountID][]store.AuthoredRef, error) {
+	f.calls = append(f.calls, "authored")
+	f.agents = append(f.agents, slices.Clone(agents))
+	return refsByAgent(agents, f.authored, f.authoredByAgent), f.openErr
 }
 
 func (f *fakeRefResolver) PullRequestsByCoords(_ context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error) {
 	f.calls = append(f.calls, "prs")
 	f.coords = append(f.coords, slices.Clone(coords))
-	return f.prs, nil
+	return f.prs, f.prsErr
 }
 
 func (f *fakeRefResolver) IssuesByCoords(_ context.Context, coords []store.ForgeCoord) ([]store.Issue, error) {
 	f.calls = append(f.calls, "issues")
 	f.coords = append(f.coords, slices.Clone(coords))
-	return f.issues, nil
-}
-
-func (f *fakeRefResolver) OpenAuthoredRefs(_ context.Context, agent store.AccountID) ([]store.AuthoredRef, error) {
-	f.calls = append(f.calls, "authored")
-	f.agentSeen = agent
-	return f.authored, nil
+	return f.issues, f.issuesErr
 }
 
 func TestDeriveRefs(t *testing.T) {
@@ -112,9 +130,11 @@ func TestDeriveRefs(t *testing.T) {
 
 	t.Run("one authored query and one batched query per row type", func(t *testing.T) {
 		resolver := &fakeRefResolver{
-			authored: []store.AuthoredRef{
-				{Coord: store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo", Number: 77}, Kind: store.ForgeArtifactKindPullRequest},
-				{Coord: store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo", Number: 42}, Kind: store.ForgeArtifactKindPullRequest},
+			authoredByAgent: map[store.AccountID][]store.AuthoredRef{
+				"agent-1": {
+					{Coord: store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo", Number: 77}, Kind: store.ForgeArtifactKindPullRequest},
+					{Coord: store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo", Number: 42}, Kind: store.ForgeArtifactKindPullRequest},
+				},
 			},
 		}
 		_, _, err := DeriveRefs(context.Background(), resolver, forges, "agent-1", []string{"owner/repo#42", "owner/repo#9"})
@@ -124,8 +144,8 @@ func TestDeriveRefs(t *testing.T) {
 		if !slices.Equal(resolver.calls, []string{"authored", "owned", "prs", "issues"}) {
 			t.Errorf("resolver calls = %v", resolver.calls)
 		}
-		if resolver.agentSeen != "agent-1" {
-			t.Errorf("authored refs agent = %q, want agent-1", resolver.agentSeen)
+		if len(resolver.agents) != 2 || !slices.Equal(resolver.agents[0], []store.AccountID{"agent-1"}) || !slices.Equal(resolver.agents[1], []store.AccountID{"agent-1"}) {
+			t.Errorf("resolver agents = %v, want agent-1 for both authored reads", resolver.agents)
 		}
 		if len(resolver.coords) != 3 || !slices.Equal(resolver.coords[0], resolver.coords[1]) || !slices.Equal(resolver.coords[1], resolver.coords[2]) || len(resolver.coords[0]) != 3 {
 			t.Errorf("coordinate batches = %+v, want identical batch of three unique coordinates", resolver.coords)

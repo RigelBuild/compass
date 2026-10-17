@@ -79,7 +79,7 @@ func (c *Comms) UpdateBoardAsAccount(
 		}
 	}
 	wire := authored.wire
-	completed, completeErr := c.completeBoardWire(ctx, caller, account, row, authored.wire, authored.refs)
+	completed, completeErr := c.completeBoardWire(ctx, caller, account, row, authored.wire, c.deriveBoardRefs(ctx, account.ID, authored.refs))
 	if completeErr != nil {
 		slog.WarnContext(ctx, "comms: board refs unavailable after update", "agent_account_id", string(caller), "error", completeErr)
 	} else {
@@ -508,9 +508,25 @@ func (c *Comms) ListBoardsAsAccount(
 		matchingIDs = append(matchingIDs, id)
 	}
 	slices.Sort(matchingIDs)
-	boards := make([]*compassv1.AgentBoard, 0, len(matches))
+	boards := c.listedBoards(ctx, caller, matchingIDs, accounts, rows, matches)
+	c.fillAskMirrors(ctx, boards)
+	return &compassv1.ListAgentBoardsResponse{Boards: boards}, nil
+}
 
-	for _, id := range matchingIDs {
+// listedBoards completes the matched boards with one batched ref derivation;
+// a board whose refs fail still serves its authored wire.
+func (c *Comms) listedBoards(
+	ctx context.Context,
+	caller store.AccountID,
+	ids []store.AccountID,
+	accounts map[store.AccountID]store.Account,
+	rows map[store.AccountID]store.BoardRow,
+	matches map[store.AccountID][]string,
+) []*compassv1.AgentBoard {
+	listed := make([]store.Account, 0, len(ids))
+	authoredBoards := make([]authoredBoard, 0, len(ids))
+	refRequests := make([]board.RefRequest, 0, len(ids))
+	for _, id := range ids {
 		account, ok := accounts[id]
 		if !ok {
 			continue
@@ -519,17 +535,23 @@ func (c *Comms) ListBoardsAsAccount(
 		if authored.decodeErr != nil {
 			slog.WarnContext(ctx, "comms: board decode failed while listing", "agent_account_id", string(id), "error", authored.decodeErr)
 		}
-		wire := authored.wire
-		completed, err := c.completeBoardWire(ctx, caller, account, rows[id], wire, authored.refs)
+		listed = append(listed, account)
+		authoredBoards = append(authoredBoards, authored)
+		refRequests = append(refRequests, board.RefRequest{Agent: id, Refs: authored.refs})
+	}
+	derived := board.DeriveRefsBatch(ctx, c.boardRefs, c.boardForges, refRequests)
+	boards := make([]*compassv1.AgentBoard, 0, len(listed))
+	for i, account := range listed {
+		wire := authoredBoards[i].wire
+		completed, err := c.completeBoardWire(ctx, caller, account, rows[account.ID], wire, derived[i])
 		if err != nil {
-			slog.WarnContext(ctx, "comms: board refs unavailable while listing", "agent_account_id", string(id), "error", err)
+			slog.WarnContext(ctx, "comms: board refs unavailable while listing", "agent_account_id", string(account.ID), "error", err)
 		} else {
 			wire = completed
 		}
 		boards = append(boards, wire)
 	}
-	c.fillAskMirrors(ctx, boards)
-	return &compassv1.ListAgentBoardsResponse{Boards: boards}, nil
+	return boards
 }
 
 func boardLimit(limit uint32) int {
@@ -615,7 +637,12 @@ func boardAuthoredToWire(account store.Account, row store.BoardRow, matched []st
 	return authoredBoard{wire: out, refs: allRefs, decodeErr: decodeErr}
 }
 
-func (c *Comms) completeBoardWire(ctx context.Context, viewer store.AccountID, account store.Account, row store.BoardRow, out *compassv1.AgentBoard, allRefs []string) (*compassv1.AgentBoard, error) {
+// deriveBoardRefs derives one board's refs through the same batch path.
+func (c *Comms) deriveBoardRefs(ctx context.Context, agent store.AccountID, allRefs []string) board.RefResult {
+	return board.DeriveRefsBatch(ctx, c.boardRefs, c.boardForges, []board.RefRequest{{Agent: agent, Refs: allRefs}})[0]
+}
+
+func (c *Comms) completeBoardWire(ctx context.Context, viewer store.AccountID, account store.Account, row store.BoardRow, out *compassv1.AgentBoard, derived board.RefResult) (*compassv1.AgentBoard, error) {
 	presence := compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE
 	if c.presence != nil {
 		if live := c.presence.PresenceFor([]store.AccountID{account.ID}); live[account.ID] != compassv1.AgentPresence_AGENT_PRESENCE_UNSPECIFIED {
@@ -629,11 +656,10 @@ func (c *Comms) completeBoardWire(ctx context.Context, viewer store.AccountID, a
 	} else {
 		out.Asks = asks
 	}
-	derived, untracked, err := board.DeriveRefs(ctx, c.store, c.boardForges, account.ID, allRefs)
-	if err != nil {
-		return out, err
+	if derived.Err != nil {
+		return out, derived.Err
 	}
-	out.Refs, out.UntrackedRefs = derived, untracked
+	out.Refs, out.UntrackedRefs = derived.Refs, derived.Untracked
 	return out, nil
 }
 

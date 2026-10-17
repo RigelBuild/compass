@@ -52,6 +52,7 @@ const instrumentationScope = "github.com/RigelBuild/compass/go/internal/comms"
 // the source of truth, so there is no in-memory account/channel/group state.
 type Comms struct {
 	store                 *store.Store
+	boardRefs             board.RefResolver
 	bus                   commsBus
 	fabric                fabric.EventFabric
 	fabricPublishFailures metric.Int64Counter
@@ -96,7 +97,7 @@ func NewComms(ctx context.Context, st *store.Store, bus commsBus, fab fabric.Eve
 		slog.WarnContext(ctx, "comms: failed to create fabric publish failure counter; metric disabled", "err", err)
 		failures = nil
 	}
-	return &Comms{store: st, bus: bus, fabric: fab, fabricPublishFailures: failures, adminID: adminID}
+	return &Comms{store: st, boardRefs: st, bus: bus, fabric: fab, fabricPublishFailures: failures, adminID: adminID}
 }
 
 // PublishAccountRename emits account and renamed-channel changes after the store

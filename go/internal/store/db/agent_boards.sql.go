@@ -11,41 +11,42 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const authoredCoordsForAgent = `-- name: AuthoredCoordsForAgent :many
+const authoredCoordsForAgents = `-- name: AuthoredCoordsForAgents :many
 WITH want AS (
     SELECT unnest($2::smallint[]) AS provider,
            unnest($3::text[]) AS host,
            unnest($4::text[]) AS repo,
            unnest($5::bigint[]) AS number
 )
-SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+SELECT a.agent_account_id, a.forge_provider, a.forge_host, a.repo, a.kind, a.number
   FROM forge_authored_artifacts a
   JOIN want w ON a.forge_provider = w.provider AND a.forge_host = w.host
              AND (CASE WHEN a.forge_provider = 1 THEN lower(a.repo) ELSE a.repo END) = w.repo
              AND a.number = w.number
- WHERE a.agent_account_id = $1
- ORDER BY a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+ WHERE a.agent_account_id = ANY($1::text[])
+ ORDER BY a.agent_account_id, a.forge_provider, a.forge_host, a.repo, a.kind, a.number
 `
 
-type AuthoredCoordsForAgentParams struct {
+type AuthoredCoordsForAgentsParams struct {
+	AgentAccountIds []string
+	ForgeProviders  []int16
+	ForgeHosts      []string
+	ForgeRepos      []string
+	ForgeNumbers    []int64
+}
+
+type AuthoredCoordsForAgentsRow struct {
 	AgentAccountID string
-	ForgeProviders []int16
-	ForgeHosts     []string
-	ForgeRepos     []string
-	ForgeNumbers   []int64
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Kind           int16
+	Number         int64
 }
 
-type AuthoredCoordsForAgentRow struct {
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Kind          int16
-	Number        int64
-}
-
-func (q *Queries) AuthoredCoordsForAgent(ctx context.Context, arg AuthoredCoordsForAgentParams) ([]AuthoredCoordsForAgentRow, error) {
-	rows, err := q.db.Query(ctx, authoredCoordsForAgent,
-		arg.AgentAccountID,
+func (q *Queries) AuthoredCoordsForAgents(ctx context.Context, arg AuthoredCoordsForAgentsParams) ([]AuthoredCoordsForAgentsRow, error) {
+	rows, err := q.db.Query(ctx, authoredCoordsForAgents,
+		arg.AgentAccountIds,
 		arg.ForgeProviders,
 		arg.ForgeHosts,
 		arg.ForgeRepos,
@@ -55,10 +56,11 @@ func (q *Queries) AuthoredCoordsForAgent(ctx context.Context, arg AuthoredCoords
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AuthoredCoordsForAgentRow
+	var items []AuthoredCoordsForAgentsRow
 	for rows.Next() {
-		var i AuthoredCoordsForAgentRow
+		var i AuthoredCoordsForAgentsRow
 		if err := rows.Scan(
+			&i.AgentAccountID,
 			&i.ForgeProvider,
 			&i.ForgeHost,
 			&i.Repo,
@@ -421,10 +423,10 @@ func (q *Queries) ListAsksByAuthor(ctx context.Context, arg ListAsksByAuthorPara
 	return items, nil
 }
 
-const listOpenAuthoredRefs = `-- name: ListOpenAuthoredRefs :many
-SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+const listOpenAuthoredRefsForAgents = `-- name: ListOpenAuthoredRefsForAgents :many
+SELECT a.agent_account_id, a.forge_provider, a.forge_host, a.repo, a.kind, a.number
   FROM forge_authored_artifacts a
- WHERE a.agent_account_id = $1
+ WHERE a.agent_account_id = ANY($1::text[])
    AND ((a.kind = 2 AND EXISTS (
             SELECT 1 FROM pull_requests p
              WHERE p.forge_provider = a.forge_provider AND p.forge_host = a.forge_host
@@ -436,27 +438,29 @@ SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
                AND (CASE WHEN i.forge_provider = 1 THEN lower(i.repo) ELSE i.repo END) =
                    (CASE WHEN a.forge_provider = 1 THEN lower(a.repo) ELSE a.repo END)
                AND i.number = a.number AND i.forge_state = 'open')))
- ORDER BY a.created_at_unix_ms, a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+ ORDER BY a.agent_account_id, a.created_at_unix_ms, a.forge_provider, a.forge_host, a.repo, a.kind, a.number
 `
 
-type ListOpenAuthoredRefsRow struct {
-	ForgeProvider int16
-	ForgeHost     string
-	Repo          string
-	Kind          int16
-	Number        int64
+type ListOpenAuthoredRefsForAgentsRow struct {
+	AgentAccountID string
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Kind           int16
+	Number         int64
 }
 
-func (q *Queries) ListOpenAuthoredRefs(ctx context.Context, agentAccountID string) ([]ListOpenAuthoredRefsRow, error) {
-	rows, err := q.db.Query(ctx, listOpenAuthoredRefs, agentAccountID)
+func (q *Queries) ListOpenAuthoredRefsForAgents(ctx context.Context, agentAccountIds []string) ([]ListOpenAuthoredRefsForAgentsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenAuthoredRefsForAgents, agentAccountIds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListOpenAuthoredRefsRow
+	var items []ListOpenAuthoredRefsForAgentsRow
 	for rows.Next() {
-		var i ListOpenAuthoredRefsRow
+		var i ListOpenAuthoredRefsForAgentsRow
 		if err := rows.Scan(
+			&i.AgentAccountID,
 			&i.ForgeProvider,
 			&i.ForgeHost,
 			&i.Repo,

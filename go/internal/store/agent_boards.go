@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -961,9 +962,12 @@ func (s *Store) AsksByAuthor(ctx context.Context, viewer, author AccountID, answ
 	return out, nil
 }
 
-// AuthoredCoordsForAgent returns authored coordinates that intersect a batch.
-func (s *Store) AuthoredCoordsForAgent(ctx context.Context, agent AccountID, coords []ForgeCoord) ([]AuthoredRef, error) {
-	if agent == "" {
+// AuthoredCoordsForAgents returns authored coordinates for agents that intersect a batch.
+func (s *Store) AuthoredCoordsForAgents(ctx context.Context, agents []AccountID, coords []ForgeCoord) (map[AccountID][]AuthoredRef, error) {
+	if len(agents) == 0 {
+		return map[AccountID][]AuthoredRef{}, nil
+	}
+	if slices.Contains(agents, "") {
 		return nil, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 	want, err := normalizeCoords(coords)
@@ -971,14 +975,14 @@ func (s *Store) AuthoredCoordsForAgent(ctx context.Context, agent AccountID, coo
 		return nil, err
 	}
 	if len(want) == 0 {
-		return nil, nil
+		return map[AccountID][]AuthoredRef{}, nil
 	}
-	arg := db.AuthoredCoordsForAgentParams{
-		AgentAccountID: string(agent),
-		ForgeProviders: make([]int16, 0, len(want)),
-		ForgeHosts:     make([]string, 0, len(want)),
-		ForgeRepos:     make([]string, 0, len(want)),
-		ForgeNumbers:   make([]int64, 0, len(want)),
+	arg := db.AuthoredCoordsForAgentsParams{
+		AgentAccountIds: uniqueAccountStrings(agents),
+		ForgeProviders:  make([]int16, 0, len(want)),
+		ForgeHosts:      make([]string, 0, len(want)),
+		ForgeRepos:      make([]string, 0, len(want)),
+		ForgeNumbers:    make([]int64, 0, len(want)),
 	}
 	for _, coord := range want {
 		value := coord.db()
@@ -987,13 +991,14 @@ func (s *Store) AuthoredCoordsForAgent(ctx context.Context, agent AccountID, coo
 		arg.ForgeRepos = append(arg.ForgeRepos, value.repo)
 		arg.ForgeNumbers = append(arg.ForgeNumbers, value.number)
 	}
-	rows, err := s.q.AuthoredCoordsForAgent(ctx, arg)
+	rows, err := s.q.AuthoredCoordsForAgents(ctx, arg)
 	if err != nil {
-		return nil, fmt.Errorf("store: authored coordinates for agent: %w", err)
+		return nil, fmt.Errorf("store: authored coordinates for agents: %w", err)
 	}
-	out := make([]AuthoredRef, 0, len(rows))
+	out := make(map[AccountID][]AuthoredRef, len(agents))
 	for _, row := range rows {
-		out = append(out, AuthoredRef{
+		agent := AccountID(row.AgentAccountID)
+		out[agent] = append(out[agent], AuthoredRef{
 			Coord: coordFromDB(row.ForgeProvider, row.ForgeHost, row.Repo, row.Number),
 			Kind:  ForgeArtifactKind(row.Kind),
 		})
@@ -1001,18 +1006,23 @@ func (s *Store) AuthoredCoordsForAgent(ctx context.Context, agent AccountID, coo
 	return out, nil
 }
 
-// OpenAuthoredRefs returns the agent's authored issues and PRs that remain open.
-func (s *Store) OpenAuthoredRefs(ctx context.Context, agent AccountID) ([]AuthoredRef, error) {
-	if agent == "" {
+// OpenAuthoredRefsForAgents returns each agent's authored issues and PRs that remain open.
+func (s *Store) OpenAuthoredRefsForAgents(ctx context.Context, agents []AccountID) (map[AccountID][]AuthoredRef, error) {
+	if len(agents) == 0 {
+		return map[AccountID][]AuthoredRef{}, nil
+	}
+	if slices.Contains(agents, "") {
 		return nil, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	rows, err := s.q.ListOpenAuthoredRefs(ctx, string(agent))
+	ids := uniqueAccountStrings(agents)
+	rows, err := s.q.ListOpenAuthoredRefsForAgents(ctx, ids)
 	if err != nil {
-		return nil, fmt.Errorf("store: list open authored refs: %w", err)
+		return nil, fmt.Errorf("store: list open authored refs for agents: %w", err)
 	}
-	out := make([]AuthoredRef, 0, len(rows))
+	out := make(map[AccountID][]AuthoredRef, len(ids))
 	for _, row := range rows {
-		out = append(out, AuthoredRef{
+		agent := AccountID(row.AgentAccountID)
+		out[agent] = append(out[agent], AuthoredRef{
 			Coord: coordFromDB(row.ForgeProvider, row.ForgeHost, row.Repo, row.Number),
 			Kind:  ForgeArtifactKind(row.Kind),
 		})
