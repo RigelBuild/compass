@@ -24,6 +24,7 @@ describe("RUNNER_IMAGE_CLOSURE_PATHS in release.yml", () => {
 			closureChanges(
 				workflow.env.RUNNER_IMAGE_CLOSURE_PATHS ?? "",
 				RUNNER_GO_SOURCES,
+				"runner",
 			),
 		).toEqual(RUNNER_GO_SOURCES);
 	});
