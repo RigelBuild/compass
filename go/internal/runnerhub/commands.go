@@ -70,11 +70,7 @@ func (h *Hub) Provision(ctx context.Context, requestID string, accountID store.A
 func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartAgentSessionRequest) (*compassv1.StartAgentSessionResponse, error) {
 	freshID := ""
 	if req.GetResumeSessionId() == "" {
-		var err error
-		freshID, err = h.freshSessionID()
-		if err != nil {
-			return nil, fmt.Errorf("minting fresh session id: %w", err)
-		}
+		freshID = h.freshSessionID()
 	}
 	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
 		RequestId:      orNewRequestID(requestID),
@@ -267,12 +263,11 @@ func orNewRequestID(id string) string {
 	return hex.EncodeToString(b[:])
 }
 
-func mintFreshSessionID() (string, error) {
+func mintFreshSessionID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
+	// crypto/rand.Read never returns an error (Go 1.24+); it crashes instead.
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // provisionDedupID derives the correlation/dedup id for a provision. An empty
