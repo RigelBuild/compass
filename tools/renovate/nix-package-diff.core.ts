@@ -323,7 +323,7 @@ export function parseArtifact(raw: string): DiffArtifact {
 }
 
 export const REVIEWABLE_MARKER = "<!-- Reviewable:start -->";
-export const REVIEWABLE_CUT_VERIFIED_AT = "44.149.3";
+export const REVIEWABLE_CUT_VERIFIED_AT = "44.151.0";
 const MAX_BODY_CHARS = 65_536;
 
 function renderChange(change: PackageChange): string {
