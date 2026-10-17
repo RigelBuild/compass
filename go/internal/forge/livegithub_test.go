@@ -265,12 +265,10 @@ func TestLiveGitHubCreateIssue(t *testing.T) {
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "create_issue")
-	got, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{
-			Title:  "compass-live-issue-" + newRunID(),
-			Body:   f.Request.Input.body(),
-			Labels: f.Request.Input.labels(),
-		})
+	got, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{
+		Title:  "compass-live-issue-" + newRunID(),
+		Body:   f.Request.Input.body(),
+		Labels: f.Request.Input.labels(),
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
@@ -289,9 +287,7 @@ func TestLiveGitHubCommentOnIssue(t *testing.T) {
 	defer cancel()
 	gh := liveGitHub(author)
 
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
-	})
+	issue, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
@@ -318,12 +314,10 @@ func TestLiveGitHubGetIssue(t *testing.T) {
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "get_issue")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{
-			Title:  "compass-live-get-" + newRunID(),
-			Body:   "compass-live get body " + newRunID(),
-			Labels: []string{"bug", "p1"},
-		})
+	issue, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{
+		Title:  "compass-live-get-" + newRunID(),
+		Body:   "compass-live get body " + newRunID(),
+		Labels: []string{"bug", "p1"},
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -346,11 +340,9 @@ func TestLiveGitHubListIssues(t *testing.T) {
 	defer cancel()
 	gh := liveGitHub(author)
 
-	setup, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{
-			Title:  "compass-live-list-" + newRunID(),
-			Labels: []string{"bug"},
-		})
+	setup, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{
+		Title:  "compass-live-list-" + newRunID(),
+		Labels: []string{"bug"},
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -567,9 +559,7 @@ func TestLiveGitHubTransitionIssueClose(t *testing.T) {
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "transition_issue_close_default")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
-	})
+	issue, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
@@ -592,9 +582,7 @@ func TestLiveGitHubTransitionIssueCloseReason(t *testing.T) {
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "transition_issue_close_reason")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclosereason-" + newRunID(), Labels: []string{"bug"}})
-	})
+	issue, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{Title: "compass-live-tclosereason-" + newRunID(), Labels: []string{"bug"}})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
@@ -616,9 +604,7 @@ func TestLiveGitHubTransitionIssueReopen(t *testing.T) {
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "transition_issue_reopen")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
-	})
+	issue, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
@@ -702,9 +688,7 @@ func TestLiveGitHubTransitionCrossOp(t *testing.T) {
 	defer cancel()
 	gh := liveGitHub(author)
 
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-xop-" + newRunID()})
-	})
+	issue, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{Title: "compass-live-xop-" + newRunID()})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
@@ -736,12 +720,10 @@ func TestLiveLinearCreateIssue(t *testing.T) {
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "create_issue")
-	got, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{
-			Title:  "compass-live-issue-" + newRunID(),
-			Body:   f.Request.Input.body(),
-			Labels: f.Request.Input.labels(),
-		})
+	got, err := createLinearIssueWithBackoff(ctx, t, ln, ts, team, CreateIssue{
+		Title:  "compass-live-issue-" + newRunID(),
+		Body:   f.Request.Input.body(),
+		Labels: f.Request.Input.labels(),
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
@@ -918,10 +900,8 @@ func TestLiveLinearCreateIssueSelfDelegate(t *testing.T) {
 	defer cancel()
 	ln := liveLinear(ts)
 
-	got, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{
-			Title: "compass-live-delegate-" + newRunID(), DelegateSelf: true, Assignee: assignee,
-		})
+	got, err := createLinearIssueWithBackoff(ctx, t, ln, ts, team, CreateIssue{
+		Title: "compass-live-delegate-" + newRunID(), DelegateSelf: true, Assignee: assignee,
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
@@ -1007,10 +987,8 @@ func TestLiveLinearListIssues(t *testing.T) {
 	defer cancel()
 	ln := liveLinear(ts)
 
-	setup, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{
-			Title: "compass-live-list-" + newRunID(),
-		})
+	setup, err := createLinearIssueWithBackoff(ctx, t, ln, ts, team, CreateIssue{
+		Title: "compass-live-list-" + newRunID(),
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -1263,11 +1241,128 @@ func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T,
 		case <-ctx.Done():
 			var zero T
 			return zero, ctx.Err()
-		case <-time.After(30 * time.Second):
+		case <-time.After(createRetryDelay):
 		}
 		return create()
 	}
 	return got, err
+}
+
+// createRetryDelay is createWithBackoff's one backoff; unit tests shorten it.
+var createRetryDelay = 30 * time.Second
+
+// createIssueWithBackoff is createWithBackoff for an issue create. A timed-out
+// create may still have committed, so cleanup discards same-title extras.
+func createIssueWithBackoff(ctx context.Context, t *testing.T, find titleFinder, create func() (Issue, error), discard func(number uint64)) (Issue, error) {
+	t.Helper()
+	timeouts := 0
+	got, err := createWithBackoff(ctx, func() (Issue, error) {
+		issue, err := create()
+		if isTransientNetworkTimeout(err) {
+			timeouts++
+		}
+		return issue, err
+	})
+	if timeouts > 0 {
+		keep := got.Number
+		//nolint:contextcheck // Cleanup must outlive the live test context.
+		t.Cleanup(func() { discardCommittedCreates(t, find, keep, timeouts, discard) })
+	}
+	return got, err
+}
+
+// titleFinder returns the issues carrying one create's unique title.
+type titleFinder func(ctx context.Context) ([]Issue, error)
+
+// issueCreator is the CreateIssue both live providers expose.
+type issueCreator interface {
+	CreateIssue(ctx context.Context, repo string, in CreateIssue) (Issue, error)
+}
+
+// createGitHubIssueWithBackoff creates in on repo; the sweep uses an unrecorded
+// client so a capture never records it.
+func createGitHubIssueWithBackoff(ctx context.Context, t *testing.T, gh issueCreator, author TokenSource, repo string, in CreateIssue) (Issue, error) {
+	t.Helper()
+	// GitHub has no title filter; its list defaults to newest-created first.
+	find := func(ctx context.Context) ([]Issue, error) {
+		issues, err := setupGitHub(author).ListIssues(ctx, repo, IssueFilter{Limit: 50})
+		return withTitle(issues, in.Title), err
+	}
+	return createIssueWithBackoff(ctx, t, find,
+		func() (Issue, error) { return gh.CreateIssue(ctx, repo, in) },
+		func(n uint64) { closeGitHubIssue(t, author, repo, n) }) //nolint:contextcheck // teardown outlives ctx
+}
+
+// createLinearIssueWithBackoff is createGitHubIssueWithBackoff for a Linear team.
+func createLinearIssueWithBackoff(ctx context.Context, t *testing.T, ln issueCreator, ts TokenSource, team string, in CreateIssue) (Issue, error) {
+	t.Helper()
+	find := func(ctx context.Context) ([]Issue, error) {
+		var out struct {
+			Issues struct {
+				Nodes []struct {
+					Number float64 `json:"number"`
+				} `json:"nodes"`
+			} `json:"issues"`
+		}
+		const query = `query CompassLiveTitleSweep($team: String!, $title: String!) {
+  issues(first: 10, filter: { team: { key: { eq: $team } }, title: { eq: $title } }) { nodes { number } }
+}`
+		if err := linearDirectGraphQL(ctx, ts, query, map[string]any{"team": team, "title": in.Title}, &out); err != nil {
+			return nil, err
+		}
+		issues := make([]Issue, 0, len(out.Issues.Nodes))
+		for _, n := range out.Issues.Nodes {
+			issues = append(issues, Issue{Number: uint64(n.Number), Title: in.Title})
+		}
+		return issues, nil
+	}
+	setup := setupLinear(ts)
+	return createIssueWithBackoff(ctx, t, find,
+		func() (Issue, error) { return ln.CreateIssue(ctx, team, in) },
+		func(n uint64) { archiveLinearIssue(t, setup, ts, team, n) }) //nolint:contextcheck // teardown outlives ctx
+}
+
+func withTitle(issues []Issue, title string) []Issue {
+	var out []Issue
+	for _, issue := range issues {
+		if issue.Title == title {
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+// discardCommittedCreates polls through list lag and discards issues other than
+// keep (0 keeps none) until each timed-out attempt is accounted for. A timeout
+// may not have committed, so an exhausted window logs and never fails.
+func discardCommittedCreates(t *testing.T, find titleFinder, keep uint64, want int, discard func(number uint64)) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), readGateBudget(listLagDelays))
+	defer cancel()
+	discarded := map[uint64]bool{}
+	for _, delay := range listLagDelays {
+		select {
+		case <-ctx.Done():
+			t.Logf("teardown: find committed duplicate create: %v", ctx.Err())
+			return
+		case <-time.After(delay):
+		}
+		issues, err := find(ctx)
+		if err != nil {
+			t.Logf("teardown: list for committed duplicate create: %v", err)
+			continue
+		}
+		for _, issue := range issues {
+			if issue.Number != keep && !discarded[issue.Number] {
+				discard(issue.Number)
+				discarded[issue.Number] = true
+			}
+		}
+		if len(discarded) >= want {
+			return
+		}
+	}
+	t.Logf("teardown: %d of %d timed-out creates found committed", len(discarded), want)
 }
 
 // issueLister is the ListIssues read both live providers expose (GitHub and
@@ -1410,7 +1505,7 @@ func awaitIssueState(ctx context.Context, getter issueGetter, repo string, numbe
 // createVisibleLinearIssue creates a Linear setup issue and waits for visibility.
 func createVisibleLinearIssue(ctx context.Context, t *testing.T, ln *Linear, ts TokenSource, team string, in CreateIssue) Issue {
 	t.Helper()
-	issue, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
+	issue, err := createLinearIssueWithBackoff(ctx, t, ln, ts, team, in)
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
@@ -1763,7 +1858,7 @@ func githubCreateIssueSpec() []captureSpec {
 				defer cancel()
 				gh := recordingGitHub(author, rt)
 				in := CreateIssue{Title: "compass-live-issue-" + newRunID(), Body: "stamped body", Labels: []string{"bug", "p1"}}
-				got, err := createWithBackoff(ctx, func() (Issue, error) { return gh.CreateIssue(ctx, repo, in) })
+				got, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, in)
 				if err != nil {
 					t.Fatalf("CreateIssue: %v", err)
 				}
@@ -1787,10 +1882,8 @@ func githubGetIssueSpec() []captureSpec {
 				ctx, cancel := liveCtx(t)
 				defer cancel()
 				setup := setupGitHub(author)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, repo, CreateIssue{
-						Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body", Labels: []string{"bug", "p1"}})
-				})
+				issue, err := createGitHubIssueWithBackoff(ctx, t, setup, author, repo, CreateIssue{
+					Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body", Labels: []string{"bug", "p1"}})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -1813,9 +1906,7 @@ func githubListIssuesSpec() []captureSpec {
 				ctx, cancel := liveCtx(t)
 				defer cancel()
 				setup := setupGitHub(author)
-				got, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-list-" + newRunID(), Labels: []string{"bug"}})
-				})
+				got, err := createGitHubIssueWithBackoff(ctx, t, setup, author, repo, CreateIssue{Title: "compass-live-list-" + newRunID(), Labels: []string{"bug"}})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -1895,9 +1986,7 @@ func githubCommentIssueSpec() []captureSpec {
 				ctx, cancel := liveCtx(t)
 				defer cancel()
 				setup := setupGitHub(author)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
-				})
+				issue, err := createGitHubIssueWithBackoff(ctx, t, setup, author, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -1924,9 +2013,7 @@ func githubTransitionSpecs() []captureSpec {
 				ctx, cancel := liveCtx(t)
 				defer cancel()
 				setup := setupGitHub(author)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
-				})
+				issue, err := createGitHubIssueWithBackoff(ctx, t, setup, author, repo, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -1945,9 +2032,7 @@ func githubTransitionSpecs() []captureSpec {
 				ctx, cancel := liveCtx(t)
 				defer cancel()
 				setup := setupGitHub(author)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclosereason-" + newRunID(), Labels: []string{"bug"}})
-				})
+				issue, err := createGitHubIssueWithBackoff(ctx, t, setup, author, repo, CreateIssue{Title: "compass-live-tclosereason-" + newRunID(), Labels: []string{"bug"}})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -1966,9 +2051,7 @@ func githubTransitionSpecs() []captureSpec {
 				ctx, cancel := liveCtx(t)
 				defer cancel()
 				setup := setupGitHub(author)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
-				})
+				issue, err := createGitHubIssueWithBackoff(ctx, t, setup, author, repo, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -2055,7 +2138,7 @@ func linearCreateReadSpecs() []captureSpec {
 				defer cancel()
 				ln := recordingLinear(ts, rt)
 				in := CreateIssue{Title: "compass-live-issue-" + newRunID(), Body: "stamped body"}
-				got, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
+				got, err := createLinearIssueWithBackoff(ctx, t, ln, ts, team, in)
 				if err != nil {
 					t.Fatalf("CreateIssue: %v", err)
 				}
@@ -2117,7 +2200,7 @@ func linearCreateReadSpecs() []captureSpec {
 				defer cancel()
 				ln := recordingLinear(ts, rt)
 				in := CreateIssue{Title: "compass-live-delegate-" + newRunID(), Body: "stamped body", DelegateSelf: true, Assignee: assignee}
-				got, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
+				got, err := createLinearIssueWithBackoff(ctx, t, ln, ts, team, in)
 				if err != nil {
 					t.Fatalf("CreateIssue: %v", err)
 				}
