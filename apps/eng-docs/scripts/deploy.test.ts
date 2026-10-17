@@ -214,18 +214,17 @@ test("parsePreviewUrl returns null for empty output", () => {
 const exclude = ["config/prompts/**"];
 
 test("changedDocPages maps a docs/ file to its site route", () => {
-	// classify("docs/designs/repo/foo.md") → destRel "designs/repo/foo.md"
-	// (domain "designs" ∈ DOMAINS); routeSlug drops .md + lowercases →
-	// "/designs/repo/foo".
+	// classify("docs/specs/repo/foo.md") → destRel "specs/repo/foo.md";
+	// routeSlug drops .md + lowercases → "/specs/repo/foo".
 	expect(
 		changedDocPages(
-			[{ filename: "docs/designs/repo/foo.md", status: "modified" }],
+			[{ filename: "docs/specs/repo/foo.md", status: "modified" }],
 			exclude,
 		),
 	).toEqual([
 		{
-			sourcePath: "docs/designs/repo/foo.md",
-			route: "/designs/repo/foo",
+			sourcePath: "docs/specs/repo/foo.md",
+			route: "/specs/repo/foo",
 		},
 	]);
 });
@@ -239,7 +238,7 @@ test("changedDocPages slugifies a dotted directory segment", () => {
 		changedDocPages(
 			[
 				{
-					filename: "docs/designs/product/v1.2/design.md",
+					filename: "docs/specs/product/v1.2/design.md",
 					status: "modified",
 				},
 			],
@@ -247,8 +246,8 @@ test("changedDocPages slugifies a dotted directory segment", () => {
 		),
 	).toEqual([
 		{
-			sourcePath: "docs/designs/product/v1.2/design.md",
-			route: "/designs/product/v12/design",
+			sourcePath: "docs/specs/product/v1.2/design.md",
+			route: "/specs/product/v12/design",
 		},
 	]);
 });
@@ -266,7 +265,7 @@ test("changedDocPages drops a non-markdown file", () => {
 	// .png fails the /\.md$/ extension gate — dropped before classify.
 	expect(
 		changedDocPages(
-			[{ filename: "docs/designs/repo/diagram.png", status: "added" }],
+			[{ filename: "docs/specs/repo/diagram.png", status: "added" }],
 			exclude,
 		),
 	).toEqual([]);
@@ -294,6 +293,15 @@ test("changedDocPages drops the docsite's own tree (apps/eng-docs/**)", () => {
 	).toEqual([]);
 });
 
+test("changedDocPages drops the retired design corpus", () => {
+	expect(
+		changedDocPages(
+			[{ filename: "docs/designs/compass/record.md", status: "modified" }],
+			exclude,
+		),
+	).toEqual([]);
+});
+
 test("changedDocPages drops a deleted (removed) markdown file", () => {
 	// A removed file has no rendered page — the status !== "removed" gate.
 	expect(
@@ -312,7 +320,7 @@ test("changedDocPages returns [] when every file is dropped", () => {
 	expect(
 		changedDocPages(
 			[
-				{ filename: "docs/designs/repo/diagram.png", status: "added" }, // non-md
+				{ filename: "docs/specs/repo/diagram.png", status: "added" }, // non-md
 				{ filename: "docs/specs/web/gone.md", status: "removed" }, // removed
 				{ filename: "apps/eng-docs/src/content/x.md", status: "modified" }, // docsite tree
 				{ filename: "config/prompts/example.md", status: "added" }, // exclude-set match
@@ -330,21 +338,21 @@ test("changedDocPages preserves input order and multiplicity, dropping in place"
 	expect(
 		changedDocPages(
 			[
-				{ filename: "docs/designs/repo/foo.md", status: "modified" },
-				{ filename: "docs/designs/repo/diagram.png", status: "added" }, // dropped
-				{ filename: "docs/designs/repo/foo.md", status: "added" }, // duplicate
+				{ filename: "docs/specs/repo/foo.md", status: "modified" },
+				{ filename: "docs/specs/repo/diagram.png", status: "added" }, // dropped
+				{ filename: "docs/specs/repo/foo.md", status: "added" }, // duplicate
 				{ filename: "docs/specs/web/api.md", status: "modified" },
 			],
 			exclude,
 		),
 	).toEqual([
 		{
-			sourcePath: "docs/designs/repo/foo.md",
-			route: "/designs/repo/foo",
+			sourcePath: "docs/specs/repo/foo.md",
+			route: "/specs/repo/foo",
 		},
 		{
-			sourcePath: "docs/designs/repo/foo.md",
-			route: "/designs/repo/foo",
+			sourcePath: "docs/specs/repo/foo.md",
+			route: "/specs/repo/foo",
 		},
 		{ sourcePath: "docs/specs/web/api.md", route: "/specs/web/api" },
 	]);
@@ -356,7 +364,7 @@ test("changedDocPages drops an uppercase .MD file (case-SENSITIVE extension gate
 	// produced must be dropped — linking it would 404.
 	expect(
 		changedDocPages(
-			[{ filename: "docs/designs/repo/FOO.MD", status: "added" }],
+			[{ filename: "docs/specs/repo/FOO.MD", status: "added" }],
 			exclude,
 		),
 	).toEqual([]);
@@ -367,13 +375,13 @@ test("changedDocPages keeps a renamed markdown file (only 'removed' is dropped)"
 	// render, so a renamed page is mapped like any other.
 	expect(
 		changedDocPages(
-			[{ filename: "docs/designs/repo/foo.md", status: "renamed" }],
+			[{ filename: "docs/specs/repo/foo.md", status: "renamed" }],
 			exclude,
 		),
 	).toEqual([
 		{
-			sourcePath: "docs/designs/repo/foo.md",
-			route: "/designs/repo/foo",
+			sourcePath: "docs/specs/repo/foo.md",
+			route: "/specs/repo/foo",
 		},
 	]);
 });
@@ -492,15 +500,13 @@ test("escapeLinkText backslash-escapes \\ [ ] ` and HTML-entity-encodes < > &", 
 	expect(escapeLinkText("a&lt;b")).toBe("a&amp;lt;b");
 	expect(escapeLinkText("&amp;")).toBe("&amp;amp;");
 	// a clean filename passes through untouched.
-	expect(escapeLinkText("designs/repo/foo.md")).toBe("designs/repo/foo.md");
+	expect(escapeLinkText("specs/repo/foo.md")).toBe("specs/repo/foo.md");
 });
 
 test("encodeRoutePath encodes each segment, keeps /, and encodes ( ) that would close a Markdown link", () => {
 	// space + clean route:
-	expect(encodeRoutePath("/designs/my doc/a b")).toBe(
-		"/designs/my%20doc/a%20b",
-	);
-	expect(encodeRoutePath("/designs/repo/foo")).toBe("/designs/repo/foo");
+	expect(encodeRoutePath("/specs/my doc/a b")).toBe("/specs/my%20doc/a%20b");
+	expect(encodeRoutePath("/specs/repo/foo")).toBe("/specs/repo/foo");
 	// ( ) → %28 %29: encodeURIComponent leaves them raw, and a raw ) closes the
 	// Markdown (...) target early → 404. Encoded explicitly per segment.
 	expect(encodeRoutePath("/x/foo)bar")).toBe("/x/foo%29bar");
@@ -568,14 +574,14 @@ test("commentBody appends the Changed pages section verbatim (exact format lock)
 			commitSha: "abcdef1234567",
 			changedPages: [
 				{
-					sourcePath: "docs/designs/repo/foo.md",
-					route: "/designs/repo/foo",
+					sourcePath: "docs/specs/repo/foo.md",
+					route: "/specs/repo/foo",
 				},
 				{ sourcePath: "go/README.md", route: "/packages/go/readme" },
 			],
 		}),
 	).toBe(
-		"<!-- compass-eng-docs-preview -->\n**Compass engineering docs preview:** https://abc.pages.dev\n\nDeployed from `feat/x` at `abcdef1`.\n\n**Changed pages:**\n- [docs/designs/repo/foo.md](https://abc.pages.dev/designs/repo/foo)\n- [go/README.md](https://abc.pages.dev/packages/go/readme)",
+		"<!-- compass-eng-docs-preview -->\n**Compass engineering docs preview:** https://abc.pages.dev\n\nDeployed from `feat/x` at `abcdef1`.\n\n**Changed pages:**\n- [docs/specs/repo/foo.md](https://abc.pages.dev/specs/repo/foo)\n- [go/README.md](https://abc.pages.dev/packages/go/readme)",
 	);
 });
 
@@ -586,11 +592,9 @@ test("commentBody escapes a Markdown-breaking char in an attacker-controlled sou
 	const body = commentBody({
 		previewUrl: "https://abc.pages.dev",
 		branch: "feat/x",
-		changedPages: [{ sourcePath: "foo](evil).md", route: "/designs/foo" }],
+		changedPages: [{ sourcePath: "foo](evil).md", route: "/specs/foo" }],
 	});
-	expect(body).toContain(
-		"[foo\\](evil).md](https://abc.pages.dev/designs/foo)",
-	);
+	expect(body).toContain("[foo\\](evil).md](https://abc.pages.dev/specs/foo)");
 	// the unescaped early-close link never appears
 	expect(body).not.toContain("[foo](evil)");
 });
@@ -604,10 +608,10 @@ test("commentBody escapes the label AND encodes the route for one changed page (
 			previewUrl: "https://abc.pages.dev",
 			branch: "feat/x",
 			commitSha: "abcdef1234567",
-			changedPages: [{ sourcePath: "<x>foo).md", route: "/designs/foo)bar" }],
+			changedPages: [{ sourcePath: "<x>foo).md", route: "/specs/foo)bar" }],
 		}),
 	).toBe(
-		"<!-- compass-eng-docs-preview -->\n**Compass engineering docs preview:** https://abc.pages.dev\n\nDeployed from `feat/x` at `abcdef1`.\n\n**Changed pages:**\n- [&lt;x&gt;foo).md](https://abc.pages.dev/designs/foo%29bar)",
+		"<!-- compass-eng-docs-preview -->\n**Compass engineering docs preview:** https://abc.pages.dev\n\nDeployed from `feat/x` at `abcdef1`.\n\n**Changed pages:**\n- [&lt;x&gt;foo).md](https://abc.pages.dev/specs/foo%29bar)",
 	);
 });
 

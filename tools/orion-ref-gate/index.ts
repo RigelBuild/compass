@@ -5,9 +5,8 @@
 // The compass repo is public, and its docs/ tree is rendered to a public,
 // no-auth docsite (apps/eng-docs → compass-eng-docs.pages.dev). A reference to
 // the private monorepo — its name, a path inside it, one of its PR numbers, or
-// a quoted snippet of its source — is a private-information leak. A one-time
-// sweep removed the existing references; this gate keeps the boundary from
-// silently re-rotting, the same way design-ledger-gate keeps the ledger honest.
+// a quoted snippet of its source — is a private-information leak. The gate
+// keeps that boundary from silently re-rotting.
 //
 // SCOPE: the private repo's two names ONLY — the current one and the former
 // one imported records still carry. This gate does not double as a general
