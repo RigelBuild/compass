@@ -368,7 +368,7 @@ type Hub struct {
 	comms     CommsCaller
 	log       *slog.Logger
 	// freshSessionID mints globally collision-resistant IDs for fresh starts.
-	freshSessionID func() (string, error)
+	freshSessionID func() string
 	// deliverSession right after the LifecycleSink publish. Nil until SetSettleSink
 	// wires it; read under mu. Nil-safe (today's behavior).
 	settle SettleSink
