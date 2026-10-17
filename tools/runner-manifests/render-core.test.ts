@@ -793,3 +793,148 @@ describe("renderRunnerManifests", () => {
 		);
 	});
 });
+
+function runnerEnv(daemonSet: JsonObject): Record<string, JsonObject> {
+	const runner = containers(daemonSet)[0];
+	if (runner === undefined || !Array.isArray(runner.env))
+		throw new Error("runner env is missing");
+	return Object.fromEntries(
+		runner.env.map((entry) => [String(object(entry).name), object(entry)]),
+	);
+}
+
+describe("egressAllow", () => {
+	test("renders no egress flag when unset, so agents stay default-deny", () => {
+		const runner = containers(
+			runnerDaemonSet(renderRunnerManifests(values)),
+		)[0];
+		expect(runner?.args).toBeUndefined();
+	});
+
+	test("passes the allowlist as one comma-joined --egress-allow", () => {
+		const runner = containers(
+			runnerDaemonSet(
+				renderRunnerManifests({
+					...values,
+					egressAllow: [
+						"github.com",
+						"api.github.com",
+						"10.0.0.7",
+						"2001:db8::1",
+						"::ffff:192.0.2.1",
+					],
+				}),
+			),
+		)[0];
+		expect(runner?.args).toEqual([
+			"--egress-allow",
+			"github.com,api.github.com,10.0.0.7,2001:db8::1,::ffff:192.0.2.1",
+		]);
+	});
+
+	test("rejects hosts the Runner's egress parser would reject", () => {
+		for (const host of [
+			"",
+			"github.com:443",
+			"fe80::1%eth0",
+			"evil.com;rm",
+			"a b",
+			"x".repeat(254),
+			// URL parsing strips these, but the Runner's netip parser does not.
+			"2\n001:db8::1",
+			"2001:db8::1\t",
+			"[::1]",
+		]) {
+			expect(() =>
+				renderRunnerManifests({ ...values, egressAllow: [host] }),
+			).toThrow("egressAllow");
+		}
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				egressAllow: "github.com" as unknown as string[],
+			}),
+		).toThrow("egressAllow must be an array of strings");
+	});
+});
+
+describe("serverCA", () => {
+	test("leaves mounts and env unchanged when unset", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		expect(runnerEnv(daemonSet)).not.toHaveProperty("COMPASS_RUNNER_CA");
+		const volumes = nested(daemonSet, "spec", "template", "spec", "volumes");
+		if (!Array.isArray(volumes)) throw new Error("expected volume list");
+		expect(volumes.map((volume) => object(volume).name)).not.toContain(
+			"server-ca",
+		);
+	});
+
+	test("mounts a ConfigMap key read-only and points COMPASS_RUNNER_CA at it", () => {
+		const daemonSet = runnerDaemonSet(
+			renderRunnerManifests({
+				...values,
+				serverCA: { configMapName: "compass-server-ca", key: "ca.crt" },
+			}),
+		);
+		expect(runnerEnv(daemonSet).COMPASS_RUNNER_CA?.value).toBe(
+			"/etc/compass/server-ca/ca.crt",
+		);
+		const runner = containers(daemonSet)[0];
+		expect(runner?.volumeMounts).toContainEqual({
+			name: "server-ca",
+			mountPath: "/etc/compass/server-ca",
+			readOnly: true,
+		});
+		const volumes = nested(daemonSet, "spec", "template", "spec", "volumes");
+		if (!Array.isArray(volumes)) throw new Error("expected volume list");
+		expect(volumes).toContainEqual({
+			name: "server-ca",
+			configMap: {
+				name: "compass-server-ca",
+				items: [{ key: "ca.crt", path: "ca.crt" }],
+			},
+		});
+	});
+
+	test("mounts a Secret key the same way", () => {
+		const daemonSet = runnerDaemonSet(
+			renderRunnerManifests({
+				...values,
+				serverCA: { secretName: "compass-server-tls", key: "ca.crt" },
+			}),
+		);
+		const volumes = nested(daemonSet, "spec", "template", "spec", "volumes");
+		if (!Array.isArray(volumes)) throw new Error("expected volume list");
+		expect(volumes).toContainEqual({
+			name: "server-ca",
+			secret: {
+				secretName: "compass-server-tls",
+				items: [{ key: "ca.crt", path: "ca.crt" }],
+			},
+		});
+		expect(runnerEnv(daemonSet).COMPASS_RUNNER_CA?.value).toBe(
+			"/etc/compass/server-ca/ca.crt",
+		);
+	});
+
+	test("requires exactly one source and a plain key", () => {
+		const bad: unknown[] = [
+			{ key: "ca.crt" },
+			{ configMapName: "a", secretName: "b", key: "ca.crt" },
+			{ configMapName: "Not_A_Name", key: "ca.crt" },
+			{ configMapName: "compass-server-ca", key: "" },
+			{ configMapName: "compass-server-ca", key: "../ca.crt" },
+			{ configMapName: "compass-server-ca", key: "dir/ca.crt" },
+			{ configMapName: "a..b", key: "ca.crt" },
+			{ secretName: `${"a".repeat(64)}.example`, key: "ca.crt" },
+		];
+		for (const serverCA of bad) {
+			expect(() =>
+				renderRunnerManifests({
+					...values,
+					serverCA: serverCA as RunnerDeployValues["serverCA"],
+				}),
+			).toThrow("serverCA");
+		}
+	});
+});
