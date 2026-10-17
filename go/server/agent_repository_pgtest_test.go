@@ -58,7 +58,7 @@ func newAgentRepositoryLifecycleTest(t *testing.T) *agentRepositoryLifecycleTest
 		t.Fatalf("IssueAccountToken(owner): %v", err)
 	}
 	signal := &recordingAgentRepoSignaler{}
-	svc := newAgentRepositoryService(f.store, broker, signal)
+	svc := newAgentRepositoryService(f.store, broker, signal, nil)
 	url := newAgentRepositoryH2CServer(t, svc, f.store, f.ownerAdmin)
 	client := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), url, connecthttp.WithReadMaxBytes(0))))
 	return &agentRepositoryLifecycleTest{

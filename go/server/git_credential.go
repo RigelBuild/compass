@@ -835,6 +835,30 @@ func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets
 	}, nil
 }
 
+// buildRepoInstallationResolver maps grant owners to App installations; nil
+// (no GitHub App configured) keeps checkOrg on the single-owner rule.
+func buildRepoInstallationResolver(cfg ServeConfig, resolver secrets.Resolver) (agentInstallationResolver, error) {
+	if !cfg.Forge.boardIngestionEnabled() {
+		return nil, nil //nolint:nilnil // nil resolver means App not configured
+	}
+	rc := cfg.Forge.resolved()
+	client, err := forgeHTTPClient(rc.ForgeCAPath)
+	if err != nil {
+		return nil, fmt.Errorf("GitHub repository installation HTTP client: %w", err)
+	}
+	installations, err := forge.NewInstallationResolver(forge.GitHubAppConfig{
+		AppID:          rc.App.AppID,
+		InstallationID: rc.App.InstallationID,
+		PrivateKey:     newDeclaredSecretResolver(resolver, rc.App.AppPrivateKeySecret),
+		Host:           rc.Host,
+		Client:         client,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("GitHub repository installation resolver: %w", err)
+	}
+	return installations, nil
+}
+
 // startGitCredentialRefresh refreshes brokered App tokens on the serve group;
 // a nil broker (no GitHub App) starts nothing.
 func startGitCredentialRefresh(ctx context.Context, group *errgroup.Group, broker *gitCredentialBroker) {

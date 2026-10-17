@@ -14,6 +14,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -22,15 +23,25 @@ type agentSecretsSignaler interface {
 	SignalSecretsVersionFor(ctx context.Context, account store.AccountID) error
 }
 
-type agentRepositoryService struct {
-	store  *store.Store
-	host   string
-	broker *gitCredentialBroker
-	signal agentSecretsSignaler
+type agentRepositoryScopeLister interface {
+	ListForgeScopeRepos(ctx context.Context, accountID store.AccountID, provider store.ForgeProvider, host string) ([]string, error)
 }
 
-func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, signal agentSecretsSignaler) *agentRepositoryService {
-	svc := &agentRepositoryService{store: st, broker: broker, signal: signal}
+type agentInstallationResolver interface {
+	InstallationFor(ctx context.Context, owner string) (int64, error)
+}
+
+type agentRepositoryService struct {
+	store         *store.Store
+	scopes        agentRepositoryScopeLister
+	host          string
+	broker        *gitCredentialBroker
+	signal        agentSecretsSignaler
+	installations agentInstallationResolver
+}
+
+func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, signal agentSecretsSignaler, installations agentInstallationResolver) *agentRepositoryService {
+	svc := &agentRepositoryService{store: st, scopes: st, broker: broker, signal: signal, installations: installations}
 	if broker != nil {
 		svc.host = broker.host
 	}
@@ -258,13 +269,37 @@ func (s *agentRepositoryService) requireHost() error {
 	return nil
 }
 
+// checkOrg admits any owner the GitHub App is installed on. Without an App
+// resolver it keeps the single-owner rule over the agent's existing grants.
 func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.AccountID, repo string) error {
-	grants, err := s.store.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, s.host)
+	org, _, _ := strings.Cut(repo, "/")
+	if s.installations != nil {
+		return s.checkInstallation(ctx, org)
+	}
+	scopes := s.scopes
+	if scopes == nil {
+		scopes = s.store
+	}
+	grants, err := scopes.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, s.host)
 	if err != nil {
 		wrappedErr := fmt.Errorf("checking agent credential org: %w", err)
 		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
-	org, _, _ := strings.Cut(repo, "/")
+	return s.checkOrgFromGrants(grants, org)
+}
+
+func (s *agentRepositoryService) checkInstallation(ctx context.Context, org string) error {
+	if _, err := s.installations.InstallationFor(ctx, org); err != nil {
+		if errors.Is(err, forge.ErrNoInstallation) {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("the GitHub App has no installation for owner %q", org)).WithCause(err)
+		}
+		wrappedErr := fmt.Errorf("resolving GitHub App installation for owner %q: %w", org, err)
+		return connect.NewError(connect.CodeUnavailable, wrappedErr.Error()).WithCause(wrappedErr)
+	}
+	return nil
+}
+
+func (s *agentRepositoryService) checkOrgFromGrants(grants []string, org string) error {
 	wildcard := false
 	mismatch := false
 	for _, grant := range grants {

@@ -4,10 +4,16 @@ package server
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -83,7 +89,9 @@ func buildAgentRepositoryDoors(t *testing.T) (context.Context, *serveDoors, stri
 		{Name: serverSecretName("APP_KEY"), Value: appKey},
 		{Name: serverSecretName("APP_WEBHOOK"), Value: "webhook-test-secret"},
 	}}
+	forgeHost, forgeCA := fakeAppInstallationsServer(t, "admin", "owner")
 	doors, err := buildDoors(ctx, ServeConfig{StateDir: t.TempDir(), DevHTTP: &devHTTP, Forge: ForgeConfig{
+		Host: forgeHost, ForgeCAPath: forgeCA,
 		App: ForgeAppConfig{AppID: 42, InstallationID: 7, AppPrivateKeySecret: "APP_KEY", AppWebhookSecretName: "APP_WEBHOOK"},
 	}}, svc, commsSvc, secretsSvc, hub, st, admin.ID, "", container, serverResolver, devListener, netListener, tlsConfig,
 		nil, nil, nil, envelope.Key{}, 0)
@@ -122,4 +130,31 @@ func buildAgentRepositoryDoors(t *testing.T) (context.Context, *serveDoors, stri
 		t.Fatalf("IssueAccountToken(owner): %v", err)
 	}
 	return ctx, &doors, adminToken, ownerToken
+}
+
+// fakeAppInstallationsServer serves GET /api/v3/app/installations with one
+// installation per owner, returning the GHES-style host and a CA bundle path.
+func fakeAppInstallationsServer(t *testing.T, owners ...string) (host, caPath string) {
+	t.Helper()
+	entries := make([]string, 0, len(owners))
+	for i, owner := range owners {
+		entries = append(entries, fmt.Sprintf(`{"id":%d,"account":{"login":%q}}`, 100+i, owner))
+	}
+	body := "[" + strings.Join(entries, ",") + "]"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v3/app/installations" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := fmt.Fprint(w, body); err != nil {
+			t.Errorf("write installations: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	caPath = filepath.Join(t.TempDir(), "forge-ca.pem")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(caPath, caPEM, 0o600); err != nil {
+		t.Fatalf("write forge CA: %v", err)
+	}
+	return strings.TrimPrefix(srv.URL, "https://"), caPath
 }
