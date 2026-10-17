@@ -39,35 +39,44 @@ func requireRecordedSpan(t *testing.T, recorder *tracetest.SpanRecorder, name st
 	return found[0]
 }
 
-func assertSpan(t *testing.T, got sdktrace.ReadOnlySpan, name, operation string, parent trace.SpanContext, wantCode codes.Code, wantDescription, wantSQLState string) {
+type spanWant struct {
+	name        string
+	operation   string
+	parent      trace.SpanContext
+	code        codes.Code
+	description string
+	sqlState    string
+}
+
+func assertSpan(t *testing.T, got sdktrace.ReadOnlySpan, want spanWant) {
 	t.Helper()
-	if got.Name() != name {
-		t.Errorf("span name = %q, want %q", got.Name(), name)
+	if got.Name() != want.name {
+		t.Errorf("span name = %q, want %q", got.Name(), want.name)
 	}
 	if got.SpanKind() != trace.SpanKindClient {
 		t.Errorf("span kind = %v, want client", got.SpanKind())
 	}
-	if got.Parent().SpanID() != parent.SpanID() || got.Parent().TraceID() != parent.TraceID() {
-		t.Errorf("span parent = %v, want %v", got.Parent(), parent)
+	if got.Parent().SpanID() != want.parent.SpanID() || got.Parent().TraceID() != want.parent.TraceID() {
+		t.Errorf("span parent = %v, want %v", got.Parent(), want.parent)
 	}
-	if got.Status().Code != wantCode || got.Status().Description != wantDescription {
-		t.Errorf("span status = (%v, %q), want (%v, %q)", got.Status().Code, got.Status().Description, wantCode, wantDescription)
+	if got.Status().Code != want.code || got.Status().Description != want.description {
+		t.Errorf("span status = (%v, %q), want (%v, %q)", got.Status().Code, got.Status().Description, want.code, want.description)
 	}
 	attrs := make(map[string]string)
 	for _, attr := range got.Attributes() {
 		attrs[string(attr.Key)] = attr.Value.AsString()
 	}
-	want := map[string]string{
+	wantAttrs := map[string]string{
 		"db.system":         "postgresql",
-		"db.operation.name": operation,
+		"db.operation.name": want.operation,
 	}
-	if wantSQLState != "" {
-		want["db.response.status_code"] = wantSQLState
+	if want.sqlState != "" {
+		wantAttrs["db.response.status_code"] = want.sqlState
 	}
-	if len(attrs) != len(want) {
-		t.Errorf("span attributes = %v, want exactly %v", attrs, want)
+	if len(attrs) != len(wantAttrs) {
+		t.Errorf("span attributes = %v, want exactly %v", attrs, wantAttrs)
 	}
-	for key, value := range want {
+	for key, value := range wantAttrs {
 		if attrs[key] != value {
 			t.Errorf("span attribute %q = %q, want %q", key, attrs[key], value)
 		}
@@ -102,7 +111,7 @@ func TestSpanTracerQuerySpans(t *testing.T) {
 			parent.End()
 
 			span := requireRecordedSpan(t, recorder, tc.spanName)
-			assertSpan(t, span, tc.spanName, tc.operation, parent.SpanContext(), codes.Unset, "", "")
+			assertSpan(t, span, spanWant{name: tc.spanName, operation: tc.operation, parent: parent.SpanContext(), code: codes.Unset})
 		})
 	}
 }
@@ -113,15 +122,16 @@ func TestSpanTracerBatchUsesFirstSQLCQueryName(t *testing.T) {
 	batch := &pgx.Batch{}
 	batch.Queue("SET LOCAL ROLE compass_app")
 	batch.Queue("SELECT set_config($1, $2, true)", "compass.tenant_id", "tenant")
-	batch.Queue("-- name: GetTourState :one\nSELECT 'query-secret'")
+	batch.Queue("-- name: GetTourState :one\nSELECT 'tour-secret'")
+	batch.Queue("-- name: GetAccount :one\nSELECT 'account-secret'")
 
 	batchCtx := tracer.TraceBatchStart(parentCtx, nil, pgx.TraceBatchStartData{Batch: batch})
-	tracer.TraceBatchQuery(batchCtx, nil, pgx.TraceBatchQueryData{SQL: "-- name: GetTourState :one\nSELECT 'query-secret'"})
+	tracer.TraceBatchQuery(batchCtx, nil, pgx.TraceBatchQueryData{SQL: "-- name: GetTourState :one\nSELECT 'tour-secret'"})
 	tracer.TraceBatchEnd(batchCtx, nil, pgx.TraceBatchEndData{})
 	parent.End()
 
 	span := requireRecordedSpan(t, recorder, "GetTourState")
-	assertSpan(t, span, "GetTourState", "GetTourState", parent.SpanContext(), codes.Unset, "", "")
+	assertSpan(t, span, spanWant{name: "GetTourState", operation: "GetTourState", parent: parent.SpanContext(), code: codes.Unset})
 }
 
 func TestSpanTracerBatchWithoutSQLCQueryUsesFallbackName(t *testing.T) {
@@ -135,7 +145,7 @@ func TestSpanTracerBatchWithoutSQLCQueryUsesFallbackName(t *testing.T) {
 	parent.End()
 
 	span := requireRecordedSpan(t, recorder, "postgres.batch")
-	assertSpan(t, span, "postgres.batch", "postgres.batch", parent.SpanContext(), codes.Unset, "", "")
+	assertSpan(t, span, spanWant{name: "postgres.batch", operation: "postgres.batch", parent: parent.SpanContext(), code: codes.Unset})
 }
 
 func TestSpanTracerUsesGenericErrorDescription(t *testing.T) {
@@ -146,7 +156,7 @@ func TestSpanTracerUsesGenericErrorDescription(t *testing.T) {
 	parent.End()
 
 	span := requireRecordedSpan(t, recorder, "postgres")
-	assertSpan(t, span, "postgres", "postgres", parent.SpanContext(), codes.Error, "error", "")
+	assertSpan(t, span, spanWant{name: "postgres", operation: "postgres", parent: parent.SpanContext(), code: codes.Error, description: "error"})
 }
 
 func TestSpanTracerRecordsPostgresErrorCode(t *testing.T) {
@@ -158,7 +168,7 @@ func TestSpanTracerRecordsPostgresErrorCode(t *testing.T) {
 	parent.End()
 
 	span := requireRecordedSpan(t, recorder, "InsertAccount")
-	assertSpan(t, span, "InsertAccount", "InsertAccount", parent.SpanContext(), codes.Error, "23505", "23505")
+	assertSpan(t, span, spanWant{name: "InsertAccount", operation: "InsertAccount", parent: parent.SpanContext(), code: codes.Error, description: "23505", sqlState: "23505"})
 }
 
 func TestSpanTracerDoesNotStartWithoutParent(t *testing.T) {

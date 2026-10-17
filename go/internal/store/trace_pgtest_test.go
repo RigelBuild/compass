@@ -59,7 +59,7 @@ func TestStoreQueriesTraceOnlyUnderRequestParent(t *testing.T) {
 			t.Fatalf("GetAccount spans = %d, want 2", len(queries))
 		}
 		for _, span := range queries {
-			assertSpan(t, span, "GetAccount", "GetAccount", parent.SpanContext(), codes.Unset, "", "")
+			assertSpan(t, span, spanWant{name: "GetAccount", operation: "GetAccount", parent: parent.SpanContext(), code: codes.Unset})
 		}
 	})
 	t.Run("no parent", func(t *testing.T) {
@@ -98,5 +98,5 @@ func TestOpenTracedComposesQueryCounterAndSpanTracer(t *testing.T) {
 	if spans := recorder.Ended(); len(spans) != 2 {
 		t.Fatalf("recorded spans = %d, want request and query", len(spans))
 	}
-	assertSpan(t, requireRecordedSpan(t, recorder, "GetAccount"), "GetAccount", "GetAccount", parent.SpanContext(), codes.Unset, "", "")
+	assertSpan(t, requireRecordedSpan(t, recorder, "GetAccount"), spanWant{name: "GetAccount", operation: "GetAccount", parent: parent.SpanContext(), code: codes.Unset})
 }

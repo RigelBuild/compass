@@ -177,7 +177,48 @@ func TestSubscribeAgentSessionStoreQueryHasNoSpan(t *testing.T) {
 
 	assertStreamQueryHasNoSpan(t, queries, "RequireAgentSessionSubscriber")
 	waitForStreamSpan(t, recorder)
-	assertStreamSpanRecorded(t, recorder)
+	assertStreamSpanRecorded(t, recorder, "RequireAgentSessionSubscriber")
+}
+
+func assertStreamSpanRecorded(t *testing.T, recorder *tracetest.SpanRecorder, queryName string) {
+	t.Helper()
+	spans := recorder.Ended()
+	var serverSpans []sdktrace.ReadOnlySpan
+	for _, span := range spans {
+		if span.SpanKind() == trace.SpanKindServer {
+			serverSpans = append(serverSpans, span)
+		}
+	}
+	if len(serverSpans) != 1 {
+		t.Fatalf("ended server spans = %+v, want one", serverSpans)
+	}
+	serverContext := serverSpans[0].SpanContext()
+	for _, span := range spans {
+		parent := span.Parent()
+		if span.SpanKind() == trace.SpanKindClient && span.Name() == queryName &&
+			parent.TraceID() == serverContext.TraceID() && parent.SpanID() == serverContext.SpanID() {
+			t.Errorf("ended client span %q is a child of the stream server span, want no span for that query", queryName)
+		}
+	}
+}
+
+func waitForStreamSpan(t *testing.T, recorder *tracetest.SpanRecorder) {
+	t.Helper()
+	deadline := timeAfter()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for _, span := range recorder.Ended() {
+			if span.SpanKind() == trace.SpanKindServer {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("server span did not end after client canceled stream")
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestSubscribeCommsHeadQueryHasNoSpan(t *testing.T) {
@@ -214,7 +255,7 @@ func TestSubscribeCommsHeadQueryHasNoSpan(t *testing.T) {
 
 	assertStreamQueryHasNoSpan(t, queries, "MessagesHeadSeq")
 	waitForStreamSpan(t, recorder)
-	assertStreamSpanRecorded(t, recorder)
+	assertStreamSpanRecorded(t, recorder, "MessagesHeadSeq")
 }
 
 func assertStreamQueryHasNoSpan(t *testing.T, queries *streamQueryTracer, name string) {
@@ -225,28 +266,6 @@ func assertStreamQueryHasNoSpan(t *testing.T, queries *streamQueryTracer, name s
 	}
 	if contexts[0].IsValid() {
 		t.Fatalf("%s query carried stream span %s, want no active span", name, contexts[0].SpanID())
-	}
-}
-
-func assertStreamSpanRecorded(t *testing.T, recorder *tracetest.SpanRecorder) {
-	t.Helper()
-	spans := recorder.Ended()
-	if len(spans) != 1 || spans[0].SpanKind() != trace.SpanKindServer {
-		t.Fatalf("ended spans = %+v, want one server span", spans)
-	}
-}
-
-func waitForStreamSpan(t *testing.T, recorder *tracetest.SpanRecorder) {
-	t.Helper()
-	deadline := timeAfter()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for len(recorder.Ended()) == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("server span did not end after client canceled stream")
-		case <-ticker.C:
-		}
 	}
 }
 

@@ -31,7 +31,6 @@ func (t spanTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.T
 		return ctx
 	}
 	name := querySpanName(data.SQL, unnamedQuerySpanName)
-	// pgx calls TraceQueryEnd for every TraceQueryStart, and that ends the span.
 	ctx, span := t.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient)) //nolint:spancheck // ended in TraceQueryEnd
 	span.SetAttributes(semconv.DBSystemPostgreSQL, semconv.DBOperationName(name))
 	return context.WithValue(ctx, spanContextKey{}, span) //nolint:spancheck // ended in TraceQueryEnd
