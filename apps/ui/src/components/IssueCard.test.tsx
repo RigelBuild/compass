@@ -6,12 +6,10 @@ import { STUB_ISSUES } from "../stub-data";
 import { testQueryClient } from "../test-support";
 import { IssueCard } from "./IssueCard";
 
-// The advancing-card dormant hook (RIG-2111 T5, D2). The chase-light CSS is
-// exercised end-to-end in e2e/advancing-hook.spec.ts; this unit test defends the
-// PROP SEAM that a future store accessor will drive: `advancing` toggles
-// `data-advancing="1"` on the card (presence attribute, like `data-selected`),
-// and is absent by default so the hook ships dormant. An inverted or dropped
-// toggle would otherwise ship green — no caller passes the prop today.
+// The advancing-card prop seam (D2). The chase-light CSS is exercised end-to-end
+// in e2e/advancing-hook.spec.ts; this unit test defends that `advancing` toggles
+// `data-advancing="1"` on the card (presence attribute, like `data-selected`) and
+// is absent by default. The Bridge drives it from `isAdvancing`.
 function mountCard(advancing?: boolean): HTMLElement {
 	const issue = STUB_ISSUES[0];
 	if (!issue) throw new Error("no fixture issue");

@@ -1058,6 +1058,17 @@ describe("adaptIssue", () => {
 		expect(r.agent).toBeUndefined();
 		expect(r.tracker).toBeUndefined();
 		expect(r.prs).toEqual([]);
+		expect(r.stateChangedAtUnixMs).toBeUndefined();
+	});
+
+	test("state_changed_at maps to Unix milliseconds", () => {
+		const r = adaptIssue(
+			create(IssueSchema, {
+				id: "i3",
+				stateChangedAt: { seconds: 1_760_000_000n, nanos: 250_000_000 },
+			}),
+		);
+		expect(r.stateChangedAtUnixMs).toBe(1_760_000_000_250);
 	});
 });
 

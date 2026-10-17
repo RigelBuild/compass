@@ -3,6 +3,7 @@
 // fixture. Bridges two gaps: protobuf-es oneofs (`{case,value}`) → discriminated `kind`,
 // and numeric enums → string literals (maps total, so an unhandled value is a compile error).
 
+import { timestampMs } from "@bufbuild/protobuf/wkt";
 import {
 	AgentPlanEntryStatus,
 	AgentPresence,
@@ -708,6 +709,9 @@ export function adaptIssue(w: WireIssue): DomainIssue {
 		branch: w.branch,
 		prs: w.prs.map(adaptPullRequest),
 		tracker: w.tracker ? adaptTrackerRef(w.tracker) : undefined,
+		stateChangedAtUnixMs: w.stateChangedAt
+			? Number(timestampMs(w.stateChangedAt))
+			: undefined,
 	};
 }
 

@@ -1084,7 +1084,7 @@ func (s *Store) IssuesByCoords(ctx context.Context, coords []ForgeCoord) ([]Issu
 		out = append(out, issueFromColumns(
 			row.ID, row.ForgeProvider, row.ForgeHost, row.Repo, row.Number,
 			row.Title, row.Body, row.ForgeState, row.Url, row.ForgeAccount, row.Labels, row.AgentHandle,
-			row.ForgeUpdatedAt, row.State, row.Priority, row.Assignee, row.Summary, row.Branch,
+			row.ForgeUpdatedAt, row.State, row.Priority, row.Assignee, row.Summary, row.Branch, row.StateChangedAt,
 		))
 	}
 	return out, nil

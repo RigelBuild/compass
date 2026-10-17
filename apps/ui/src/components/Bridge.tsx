@@ -11,7 +11,9 @@ import {
 	backlogIssues,
 	boardAgents as boardAgentsOf,
 	cellItems as cellItemsOf,
+	isAdvancing,
 	laneTotal as laneTotalOf,
+	nextAdvancingExpiry,
 	type PrRow,
 	prBoardGroups,
 	prCount,
@@ -46,7 +48,7 @@ import {
 } from "../keyboard/roving";
 import { openLink } from "../open-link";
 import type { RefLinkRule } from "../refs/grammar";
-import type { IssueState } from "../stub-data";
+import type { Issue, IssueState } from "../stub-data";
 import { useView } from "../view-scope";
 import { BacklogList } from "./BacklogView";
 import { BadgeGlyph } from "./BadgeGlyph";
@@ -303,6 +305,32 @@ export const Bridge: Component = () => {
 		activeIssues(store.issues()).filter((w) => w.state !== "done").length;
 	const agentItemCount = (agentId: string) =>
 		store.issues().filter((w) => w.assignee === agentId).length;
+	// The board clock for the advancing card. It re-reads at the next card's
+	// expiry, so the chase-light ends on time with no polling timer.
+	const [nowMs, setNowMs] = createSignal(Date.now());
+	createEffect(
+		() => nextAdvancingExpiry(store.issues(), nowMs()),
+		(expiry) => {
+			if (expiry === null) return;
+			const timer = window.setTimeout(
+				() => setNowMs(Date.now()),
+				Math.max(0, expiry - Date.now()),
+			);
+			return () => window.clearTimeout(timer);
+		},
+	);
+	createEffect(
+		() => store.issues(),
+		() => {
+			setNowMs(Date.now());
+		},
+		{ defer: true },
+	);
+	const advancing = (issue: Issue) => isAdvancing(issue, nowMs());
+	// Bridge's aria-label overrides the card's content, so the advancing cue for
+	// screen readers goes in the label.
+	const cardLabel = (issue: Issue) =>
+		`Issue ${issueKey(issue, multiForge())}${advancing(issue) ? ", advancing" : ""}`;
 
 	// Grid columns: the agent gutter (only in swimlane mode) + one per lane.
 	const gridColumns = () =>
@@ -405,7 +433,7 @@ export const Bridge: Component = () => {
 				title: issue.title,
 				assignee: issue.assignee,
 				crossLink: openPr,
-				ariaLabel: `Issue ${issueKey(issue, multiForge())}`,
+				ariaLabel: cardLabel(issue),
 				ariaDescription: `${laneLabel(stop.col)} column, row ${stop.row + 1}`,
 			});
 		}
@@ -862,6 +890,7 @@ export const Bridge: Component = () => {
 													<IssueCard
 														issue={ws}
 														inRovingGroup
+														advancing={advancing(ws)}
 														cardRef={setStopEl(ws.id)}
 														onOpenPr={() => {
 															store.selectIssue(ws.id);
@@ -915,6 +944,7 @@ export const Bridge: Component = () => {
 																<IssueCard
 																	issue={ws}
 																	inRovingGroup
+																	advancing={advancing(ws)}
 																	cardRef={setStopEl(ws.id)}
 																	onOpenPr={() => {
 																		store.selectIssue(ws.id);

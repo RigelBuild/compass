@@ -233,7 +233,10 @@ review badge is
 `.cx-badge[data-status="review-approved | review-changes | review-pending"]` on
 `--cx-review-*`; the issue cross-link is a `.cx-chip`. The advancing card carries
 the chase-light in the blue flow color as it crosses a column boundary; it is not
-a state pulse.
+a state pulse. A card is advancing for 60 seconds after the server moves its
+lifecycle state (`Issue.state_changed_at`), and only while it is on the board.
+An advancing card's aria-label ends in ", advancing", so screen readers hear the
+move as well.
 
 **Focus and keyboard.** The board is the main-view focus zone and a
 two-dimensional roving-tabindex grid: arrow keys move a card cursor across lanes

@@ -193,6 +193,51 @@ func TestSetIssueStateRoundTrips(t *testing.T) {
 	}
 }
 
+// A column move stamps state_changed_at; a same-state write and a forge re-poll
+// keep it, so a card advances only when its lifecycle state really changed.
+func TestSetIssueStateStampsStateChangedAtOnlyOnChange(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	id, err := s.UpsertIssueForgeFields(ctx, forgeFields(1))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	fresh, err := s.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !fresh.StateChangedAt.IsZero() {
+		t.Fatalf("StateChangedAt before any transition = %v, want zero", fresh.StateChangedAt)
+	}
+
+	before := time.Now().Add(-time.Minute)
+	if err := s.SetIssueState(ctx, id, IssueStateInProgress); err != nil {
+		t.Fatalf("SetIssueState: %v", err)
+	}
+	moved, err := s.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if moved.StateChangedAt.Before(before) {
+		t.Fatalf("StateChangedAt after a move = %v, want a fresh stamp", moved.StateChangedAt)
+	}
+
+	if err := s.SetIssueState(ctx, id, IssueStateInProgress); err != nil {
+		t.Fatalf("SetIssueState same state: %v", err)
+	}
+	if _, err := s.UpsertIssueForgeFields(ctx, forgeFields(1)); err != nil {
+		t.Fatalf("re-poll upsert: %v", err)
+	}
+	kept, err := s.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !kept.StateChangedAt.Equal(moved.StateChangedAt) {
+		t.Fatalf("StateChangedAt after same-state write and re-poll = %v, want %v", kept.StateChangedAt, moved.StateChangedAt)
+	}
+}
+
 func TestSetIssueStateUnknownID(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

@@ -417,6 +417,7 @@ type Issue struct {
 	Branch         string
 	TenantID       string
 	SearchTsv      interface{}
+	StateChangedAt pgtype.Timestamptz
 }
 
 type LinearAgentSession struct {

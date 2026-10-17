@@ -3,7 +3,12 @@ import { createRouter, memoryHistory } from "@solidjs/router";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { createRoot, flush as flushSync } from "solid-js";
 import App from "../App";
-import { backlogIssues, prBoardRows, prCount } from "../board";
+import {
+	ADVANCING_WINDOW_MS,
+	backlogIssues,
+	prBoardRows,
+	prCount,
+} from "../board";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
 import { FIXTURE_REF_LINK_RULES } from "../live/compass-fake";
@@ -1165,5 +1170,47 @@ describe("Bridge empty board (T5, RIG-2130)", () => {
 		);
 		expect(container.querySelector(".bridge-grid")).toBeNull();
 		expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(0);
+	});
+});
+
+// The advancing card: a fresh column change sets data-advancing and appends
+// ", advancing" to the card's aria-label, which overrides the card content for
+// screen readers. A change outside the window does neither.
+describe("Bridge advancing card", () => {
+	function mountWithStamps(stamps: Record<string, number>): HTMLElement {
+		const { container } = render(() => {
+			const store = createAppStore({
+				queryClient: testQueryClient(),
+				initialIssues: STUB_ISSUES.map((issue) =>
+					issue.id in stamps
+						? { ...issue, stateChangedAtUnixMs: stamps[issue.id] }
+						: issue,
+				),
+			});
+			return (
+				<StoreContext value={store}>
+					<ViewContext value={store.focusedView()}>
+						<Bridge />
+					</ViewContext>
+				</StoreContext>
+			);
+		});
+		return container;
+	}
+
+	test("a fresh column change marks the card and its label", () => {
+		const now = Date.now();
+		const container = mountWithStamps({
+			"ws-1022": now,
+			"ws-1085": now - 10 * ADVANCING_WINDOW_MS,
+		});
+		const fresh = cardByLabel(container, "Issue RIG-1022, advancing");
+		expect(fresh?.getAttribute("data-advancing")).toBe("1");
+		const stale = cardByLabel(container, "Issue RIG-1085");
+		expect(stale).not.toBeNull();
+		expect(stale?.hasAttribute("data-advancing")).toBe(false);
+		expect(
+			container.querySelectorAll('.bridge-grid .cx-card[data-advancing="1"]'),
+		).toHaveLength(1);
 	});
 });

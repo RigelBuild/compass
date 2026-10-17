@@ -1,13 +1,12 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
-// Advancing-card dormant hook (RIG-2111 T5; design record G10 / D2 / F12).
+// Advancing-card hook (RIG-2111 T5; design record G10 / D2 / F12).
 //
 // The board paints a blue chase-light on the one card mid-advance via
-// `.bridge-cell > .cx-card[data-advancing="1"]::after`. No live data sets the
-// flag yet (the Issue model carries no transition timestamp), so the hook ships
-// dormant — this spec is the ONLY thing that exercises it, by toggling the
-// attribute the way a future store accessor will.
+// `.bridge-cell > .cx-card[data-advancing="1"]::after`. The Bridge sets the flag
+// from `Issue.state_changed_at`; the fixture issues carry no stamp, so this
+// spec toggles the attribute directly to exercise the CSS.
 //
 // These are computed-style + stylesheet assertions, not screenshots: the
 // affordance is an animation, and a committed pixel of a moving bar is timing-
@@ -68,7 +67,7 @@ test.describe("advancing hook — normal motion", () => {
 			const el = document.querySelector(sel);
 			return el ? getComputedStyle(el, "::after").animationName : null;
 		}, SEL);
-		// No data-advancing → no ::after animation (dormant by default).
+		// No data-advancing → no ::after animation.
 		expect(name).not.toBe("card-advance");
 	});
 });

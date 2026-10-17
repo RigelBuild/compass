@@ -178,6 +178,10 @@ func TestPublishReflectsCommittedState(t *testing.T) {
 	if got.GetTitle() != "a bug (updated title)" {
 		t.Errorf("fanned title = %q, want the re-polled title", got.GetTitle())
 	}
+	// The column move's stamp rides the wire, and a forge re-poll keeps it.
+	if at := got.GetStateChangedAt(); at == nil || time.Since(at.AsTime()) > time.Minute {
+		t.Errorf("fanned state_changed_at = %v, want the fresh transition stamp", at)
+	}
 }
 
 // TestSnapshotReturnsBoard pins Snapshot: publish 3 issues -> Snapshot returns 3,

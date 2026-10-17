@@ -21,10 +21,9 @@ import { RefText } from "./RefText";
 export const IssueCard: Component<{
 	issue: Issue;
 	onOpenPr?: () => void;
-	/** Dormant hook (T5, D2): when a future store accessor marks this card as
-	 *  advancing a column, it renders `data-advancing="1"` and the board paints
-	 *  the chase-light. No live data sets it yet (the Issue model carries no
-	 *  transition timestamp), so it is unwired — every caller omits it today. */
+	/** True while the issue's column change is recent (`isAdvancing` in
+	 *  board.ts): the card renders `data-advancing="1"` and the board paints the
+	 *  chase-light. The Bridge sets it; other hosts omit it. */
 	advancing?: boolean;
 	/** Board wiring (T4, DL-221): when the card is a stop in the Bridge's
 	 *  roving-tabindex group, its PR chip must not be a second Tab stop — the

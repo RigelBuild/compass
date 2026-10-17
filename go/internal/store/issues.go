@@ -78,6 +78,9 @@ type Issue struct {
 	Assignee string
 	Summary  string
 	Branch   string
+	// StateChangedAt is when SetIssueState last changed State; zero before the
+	// first transition.
+	StateChangedAt time.Time
 }
 
 // IssueForgeFields is the ingestion write input: the forge coordinate plus the
@@ -246,7 +249,7 @@ func (s *Store) SearchIssues(ctx context.Context, query string, limit uint32) ([
 func issueFromGetRow(r db.GetIssueRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
-		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch, r.StateChangedAt)
 }
 
 // issueFromListRow maps a generated ListIssues row into a domain Issue (identical
@@ -254,14 +257,14 @@ func issueFromGetRow(r db.GetIssueRow) Issue {
 func issueFromListRow(r db.ListIssuesRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
-		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch, r.StateChangedAt)
 }
 
 // issueFromSearchRow maps a generated search result to the store issue model.
 func issueFromSearchRow(r db.SearchIssuesRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
-		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+		r.ForgeUpdatedAt, r.State, r.Priority, r.Assignee, r.Summary, r.Branch, r.StateChangedAt)
 }
 
 // issueFromColumns builds an Issue from the shared issue projection both reads
@@ -271,6 +274,7 @@ func issueFromColumns(
 	id string, forgeProvider int16, forgeHost, repo string, number int64,
 	title, body, forgeState, url, forgeAccount string, labels []string, agentHandle string,
 	forgeUpdatedAt pgtype.Timestamptz, state int16, priority, assignee, summary, branch string,
+	stateChangedAt pgtype.Timestamptz,
 ) Issue {
 	iss := Issue{
 		ID:             id,
@@ -291,6 +295,7 @@ func issueFromColumns(
 		Assignee:       assignee,
 		Summary:        summary,
 		Branch:         branch,
+		StateChangedAt: stateChangedAt.Time,
 	}
 	if len(iss.Labels) == 0 {
 		iss.Labels = nil
