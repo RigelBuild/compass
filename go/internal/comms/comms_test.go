@@ -53,10 +53,10 @@ func TestRespondToAskPublishesMessageUpdatedTraceparent(t *testing.T) {
 		t.Fatal("precondition: active span produced an empty traceparent")
 	}
 
-	if _, err := h.svc.RespondToAsk(WithActor(spanCtx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+	if _, err := h.svc.RespondToAsk(WithActor(spanCtx, author.ID), &compassv1.RespondToAskRequest{
 		AskId:   "ask-1",
 		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("RespondToAsk: %v", err)
 	}
 

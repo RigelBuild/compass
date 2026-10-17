@@ -89,19 +89,21 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 	hub.bindContainer("container-lost", testAgentAccount, testRunnerID)
 	hub.promoteSession(t.Context(), "container-lost", "lost-session")
 	traceCtx, traceSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "publish-client")
-	interceptor, err := otelconnect.NewInterceptor()
+	interceptor, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := NewMountedHandler(hub, runnerResolverForFetch().resolve, nil, nil, interceptor)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	Mount(mux, hub, runnerResolverForFetch().resolve, nil, nil, interceptor)
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.Protocols = cleartextHTTP2()
 	server.Start()
 	t.Cleanup(server.Close)
 	client := newRawRunnerClient(t, server.URL, "runner-tok")
-	publish := client.PublishEvents(traceCtx)
+	publish, err := client.PublishEvents(traceCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := publish.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "lost-session",
@@ -119,7 +121,10 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 
 	streamCtx, streamSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "sessions-client")
 	streamCtx = otelx.ContextWithTraceparent(streamCtx, h6Traceparent)
-	sessions := client.Sessions(streamCtx)
+	sessions, err := client.Sessions(streamCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	loopErr := make(chan error, 1)
 	go runnerSessionsLoopWithNotFound(sessions, loopErr)
 	waitRouterAttached(t, hub)
@@ -132,7 +137,7 @@ func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
 	case <-timeAfter():
 		t.Fatal("send-only refusal did not produce a presence edge")
 	}
-	if err := sessions.CloseRequest(); err != nil {
+	if err := sessions.CloseSend(); err != nil {
 		t.Fatalf("Sessions.CloseRequest: %v", err)
 	}
 	if err := recvLoopErr(t, loopErr); err != nil {
