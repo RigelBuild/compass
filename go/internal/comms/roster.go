@@ -87,9 +87,20 @@ func (c *Comms) roster(
 	if err != nil {
 		return nil, edgeError(err)
 	}
+	// One batched ref derivation for every board, then each summary reads its slice.
+	refRequests := make([]board.RefRequest, 0, len(boards))
+	for id, row := range boards {
+		if refs := boardRowRefs(row); len(refs) != 0 {
+			refRequests = append(refRequests, board.RefRequest{Agent: id, Refs: refs})
+		}
+	}
+	derived := make(map[store.AccountID]board.RefResult, len(refRequests))
+	for i, result := range board.DeriveRefsBatch(ctx, c.boardRefs, c.boardForges, refRequests) {
+		derived[refRequests[i].Agent] = result
+	}
 	summaries := make(map[store.AccountID]*compassv1.AgentBoardSummary, len(boards))
 	for id, row := range boards {
-		summaries[id] = c.boardSummary(ctx, row, presence)
+		summaries[id] = boardSummary(ctx, row, presence, derived[id])
 	}
 	entries := make([]*compassv1.RosterEntry, 0, len(clipped))
 	for _, acc := range clipped {
@@ -116,13 +127,26 @@ func (c *Comms) roster(
 	return entries, nil
 }
 
-func (c *Comms) boardSummary(ctx context.Context, row store.BoardRow, presence map[store.AccountID]compassv1.AgentPresence) *compassv1.AgentBoardSummary {
+// boardRowRefs lists every task's refs then primary ref, in task order; the
+// summary indexes derived refs by the same layout.
+func boardRowRefs(row store.BoardRow) []string {
+	allRefs := make([]string, 0, len(row.Tasks)*2)
+	for _, task := range row.Tasks {
+		allRefs = append(allRefs, task.Refs...)
+		if task.PrimaryRef != "" {
+			allRefs = append(allRefs, task.PrimaryRef)
+		}
+	}
+	return allRefs
+}
+
+func boardSummary(ctx context.Context, row store.BoardRow, presence map[store.AccountID]compassv1.AgentPresence, derived board.RefResult) *compassv1.AgentBoardSummary {
 	summary := &compassv1.AgentBoardSummary{
 		TaskCount: uint32(min(len(row.Tasks), store.MaxBoardTasks)), Halt: haltToWire(row.Halt), WrittenAtUnixMs: row.WrittenAtUnixMs,
 	}
-	allRefs := make([]string, 0, len(row.Tasks)*2)
 	taskRefRanges := make([][2]int, len(row.Tasks))
 	waitingOnOperator := make([]bool, len(row.Tasks))
+	next := 0
 	for i, task := range row.Tasks {
 		if task.Key == row.Focus {
 			summary.Focus = task.PrimaryRef
@@ -131,12 +155,12 @@ func (c *Comms) boardSummary(ctx context.Context, row store.BoardRow, presence m
 			}
 			summary.Focus += task.Title
 		}
-		start := len(allRefs)
-		allRefs = append(allRefs, task.Refs...)
+		start := next
+		next += len(task.Refs)
 		if task.PrimaryRef != "" {
-			allRefs = append(allRefs, task.PrimaryRef)
+			next++
 		}
-		taskRefRanges[i] = [2]int{start, len(allRefs)}
+		taskRefRanges[i] = [2]int{start, next}
 		waiting, err := unmarshalBoardWaiting(task.Waiting)
 		if err != nil {
 			slog.WarnContext(ctx, "comms: board summary decode failed", "agent_account_id", string(row.Agent), "task_key", task.Key, "error", err)
@@ -151,13 +175,12 @@ func (c *Comms) boardSummary(ctx context.Context, row store.BoardRow, presence m
 	}
 	presenceValue := presence[row.Agent]
 	summary.Stale = presenceValue == compassv1.AgentPresence_AGENT_PRESENCE_WORKING && row.WrittenAtUnixMs < time.Now().Add(-boardStaleAfter).UnixMilli()
-	if len(allRefs) != 0 {
-		derived, _, err := board.DeriveRefs(ctx, c.store, c.boardForges, row.Agent, allRefs)
-		if err != nil {
-			slog.WarnContext(ctx, "comms: board summary PR gates unavailable", "agent_account_id", string(row.Agent), "error", err)
+	if next != 0 {
+		if derived.Err != nil {
+			slog.WarnContext(ctx, "comms: board summary PR gates unavailable", "agent_account_id", string(row.Agent), "error", derived.Err)
 		} else {
 			for i := range row.Tasks {
-				for _, ref := range derived[taskRefRanges[i][0]:taskRefRanges[i][1]] {
+				for _, ref := range derived.Refs[taskRefRanges[i][0]:taskRefRanges[i][1]] {
 					if ref.GetGate() == compassv1.BoardPrGate_BOARD_PR_GATE_AWAITING_REVIEW || ref.GetGate() == compassv1.BoardPrGate_BOARD_PR_GATE_AWAITING_ENQUEUE {
 						waitingOnOperator[i] = true
 						break

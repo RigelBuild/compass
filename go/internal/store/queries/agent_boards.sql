@@ -185,10 +185,10 @@ SELECT k.id AS message_id, t.channel_id,
           COALESCE(an.at_unix_ms, k.at_unix_ms) DESC, k.seq DESC
  LIMIT sqlc.arg(row_limit);
 
--- name: ListOpenAuthoredRefs :many
-SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+-- name: ListOpenAuthoredRefsForAgents :many
+SELECT a.agent_account_id, a.forge_provider, a.forge_host, a.repo, a.kind, a.number
   FROM forge_authored_artifacts a
- WHERE a.agent_account_id = $1
+ WHERE a.agent_account_id = ANY(@agent_account_ids::text[])
    AND ((a.kind = 2 AND EXISTS (
             SELECT 1 FROM pull_requests p
              WHERE p.forge_provider = a.forge_provider AND p.forge_host = a.forge_host
@@ -200,21 +200,21 @@ SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
                AND (CASE WHEN i.forge_provider = 1 THEN lower(i.repo) ELSE i.repo END) =
                    (CASE WHEN a.forge_provider = 1 THEN lower(a.repo) ELSE a.repo END)
                AND i.number = a.number AND i.forge_state = 'open')))
- ORDER BY a.created_at_unix_ms, a.forge_provider, a.forge_host, a.repo, a.kind, a.number;
--- name: AuthoredCoordsForAgent :many
+ ORDER BY a.agent_account_id, a.created_at_unix_ms, a.forge_provider, a.forge_host, a.repo, a.kind, a.number;
+-- name: AuthoredCoordsForAgents :many
 WITH want AS (
     SELECT unnest(@forge_providers::smallint[]) AS provider,
            unnest(@forge_hosts::text[]) AS host,
            unnest(@forge_repos::text[]) AS repo,
            unnest(@forge_numbers::bigint[]) AS number
 )
-SELECT a.forge_provider, a.forge_host, a.repo, a.kind, a.number
+SELECT a.agent_account_id, a.forge_provider, a.forge_host, a.repo, a.kind, a.number
   FROM forge_authored_artifacts a
   JOIN want w ON a.forge_provider = w.provider AND a.forge_host = w.host
              AND (CASE WHEN a.forge_provider = 1 THEN lower(a.repo) ELSE a.repo END) = w.repo
              AND a.number = w.number
- WHERE a.agent_account_id = @agent_account_id
- ORDER BY a.forge_provider, a.forge_host, a.repo, a.kind, a.number;
+ WHERE a.agent_account_id = ANY(@agent_account_ids::text[])
+ ORDER BY a.agent_account_id, a.forge_provider, a.forge_host, a.repo, a.kind, a.number;
 
 
 -- name: PullRequestsByCoords :many

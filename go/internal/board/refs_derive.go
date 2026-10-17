@@ -4,6 +4,7 @@ package board
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -19,8 +20,21 @@ import (
 type RefResolver interface {
 	PullRequestsByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error)
 	IssuesByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.Issue, error)
-	AuthoredCoordsForAgent(ctx context.Context, agent store.AccountID, coords []store.ForgeCoord) ([]store.AuthoredRef, error)
-	OpenAuthoredRefs(ctx context.Context, agent store.AccountID) ([]store.AuthoredRef, error)
+	AuthoredCoordsForAgents(ctx context.Context, agents []store.AccountID, coords []store.ForgeCoord) (map[store.AccountID][]store.AuthoredRef, error)
+	OpenAuthoredRefsForAgents(ctx context.Context, agents []store.AccountID) (map[store.AccountID][]store.AuthoredRef, error)
+}
+
+// RefRequest identifies one agent's board references to derive.
+type RefRequest struct {
+	Agent store.AccountID
+	Refs  []string
+}
+
+// RefResult contains references derived for one request.
+type RefResult struct {
+	Refs      []*compassv1.BoardRef
+	Untracked []string
+	Err       error
 }
 
 // Forges maps parsed references to the configured forge hosts and Linear teams.
@@ -58,144 +72,233 @@ func DeriveRefs(
 	agent store.AccountID,
 	refsIn []string,
 ) ([]*compassv1.BoardRef, []string, error) {
+	results := DeriveRefsBatch(ctx, resolver, forges, []RefRequest{{Agent: agent, Refs: refsIn}})
+	if len(results) == 0 {
+		return nil, nil, nil
+	}
+	return results[0].Refs, results[0].Untracked, results[0].Err
+}
+
+type batchRequest struct {
+	parsed   []*parsedBoardRef
+	taskRefs map[artifactKey]struct{}
+	coords   map[store.ForgeCoord]struct{}
+}
+
+// batchRows holds the batch's store reads, indexed for per-request splitting.
+type batchRows struct {
+	open   map[store.AccountID][]store.AuthoredRef
+	owned  map[store.AccountID]map[artifactKey]struct{}
+	prs    map[store.ForgeCoord]storedBoardPR
+	badPRs map[store.ForgeCoord]error
+	stacks map[store.AccountID]map[stackGroup]map[string]Stack
+	issues map[store.ForgeCoord]store.Issue
+}
+
+// DeriveRefsBatch resolves references for multiple board requests with one store read per row type.
+func DeriveRefsBatch(
+	ctx context.Context,
+	resolver RefResolver,
+	forges Forges,
+	reqs []RefRequest,
+) []RefResult {
+	results := make([]RefResult, len(reqs))
+	requests := make([]batchRequest, len(reqs))
+	agents := make([]store.AccountID, 0, len(reqs))
+	agentSet := make(map[store.AccountID]struct{}, len(reqs))
+	var allCoords []store.ForgeCoord
+	coordSet := make(map[store.ForgeCoord]struct{})
+	for i, req := range reqs {
+		requests[i], results[i].Refs = parseRefRequest(req.Refs, forges, coordSet, &allCoords)
+		if _, found := agentSet[req.Agent]; !found {
+			agentSet[req.Agent] = struct{}{}
+			agents = append(agents, req.Agent)
+		}
+	}
+	rows, err := loadBatchRows(ctx, resolver, agents, reqs, requests, coordSet, allCoords)
+	if err != nil {
+		for i := range results {
+			results[i] = RefResult{Err: err}
+		}
+		return results
+	}
+	for i, req := range reqs {
+		results[i] = rows.result(req.Agent, requests[i], results[i].Refs)
+	}
+	return results
+}
+
+func parseRefRequest(refsIn []string, forges Forges, coordSet map[store.ForgeCoord]struct{}, allCoords *[]store.ForgeCoord) (batchRequest, []*compassv1.BoardRef) {
+	request := batchRequest{
+		parsed:   make([]*parsedBoardRef, len(refsIn)),
+		taskRefs: make(map[artifactKey]struct{}, len(refsIn)),
+		coords:   make(map[store.ForgeCoord]struct{}, len(refsIn)),
+	}
 	derived := make([]*compassv1.BoardRef, len(refsIn))
-	parsed := make([]*parsedBoardRef, len(refsIn))
-	coords := make([]store.ForgeCoord, 0, len(refsIn))
-	coordSet := make(map[store.ForgeCoord]struct{}, len(refsIn))
-	taskRefs := make(map[artifactKey]struct{}, len(refsIn))
-	for i, text := range refsIn {
+	for j, text := range refsIn {
 		ref, err := refs.Parse(text)
 		if err != nil {
-			derived[i] = &compassv1.BoardRef{Ref: text}
+			derived[j] = &compassv1.BoardRef{Ref: text}
 			continue
 		}
 		item, base := parseBoardRef(ref, forges)
-		derived[i] = base
-		if item == nil {
-			addTaskRefCoords(ref, nil, taskRefs)
-			continue
+		derived[j] = base
+		if item != nil {
+			request.parsed[j] = item
+			request.coords[item.coord] = struct{}{}
+			addCoord(item.coord, coordSet, allCoords)
 		}
-		parsed[i] = item
-		addCoord(item.coord, coordSet, &coords)
-		addTaskRefCoords(ref, item, taskRefs)
+		addTaskRefCoords(ref, item, request.taskRefs)
 	}
-	openAuthored, err := resolver.OpenAuthoredRefs(ctx, agent)
-	if err != nil {
-		return nil, nil, fmt.Errorf("board: list open authored refs: %w", err)
-	}
-	openAuthoredSet := make(map[artifactKey]struct{}, len(openAuthored))
-	for _, ref := range openAuthored {
-		coord := ref.Coord.Normalized()
-		openAuthoredSet[artifactKey{coord: coord, kind: boardRefKind(ref.Kind)}] = struct{}{}
-		addCoord(coord, coordSet, &coords)
-	}
+	return request, derived
+}
 
-	authored, err := resolver.AuthoredCoordsForAgent(ctx, agent, coords)
+// loadBatchRows reads each row type once for the union of agents and coords;
+// it also adds each agent's open authored coords to its requests.
+func loadBatchRows(
+	ctx context.Context,
+	resolver RefResolver,
+	agents []store.AccountID,
+	reqs []RefRequest,
+	requests []batchRequest,
+	coordSet map[store.ForgeCoord]struct{},
+	allCoords []store.ForgeCoord,
+) (batchRows, error) {
+	openByAgent, err := resolver.OpenAuthoredRefsForAgents(ctx, agents)
 	if err != nil {
-		return nil, nil, fmt.Errorf("board: list authored coordinates: %w", err)
+		return batchRows{}, fmt.Errorf("board: list open authored refs: %w", err)
 	}
-	authoredSet := make(map[artifactKey]struct{}, len(authored))
-	for _, ref := range authored {
-		authoredSet[artifactKey{coord: ref.Coord.Normalized(), kind: boardRefKind(ref.Kind)}] = struct{}{}
-	}
-
-	data, err := loadStoredRows(ctx, resolver, coords, openAuthoredSet)
-	if err != nil {
-		return nil, nil, err
-	}
-	prsByCoord, issuesByCoord, stacksByGroup := data.prs, data.issues, data.stacks
-
-	for i, item := range parsed {
-		if item == nil {
-			continue
-		}
-		base := derived[i]
-		switch item.kind {
-		case compassv1.BoardRefKind_BOARD_REF_KIND_PULL_REQUEST:
-			if stored, ok := prsByCoord[item.coord]; ok {
-				_, base.Owned = authoredSet[artifactKey{coord: item.coord, kind: item.kind}]
-				group := stackGroup{provider: item.coord.Provider, host: strings.ToLower(item.coord.Host)}
-				fillPullRequestRef(base, stored, item, stacksByGroup[group])
-				continue
-			}
-			if item.ref.Kind != refs.KindForge {
-				continue
-			}
-			issue, ok := issuesByCoord[item.coord]
-			if !ok {
-				continue
-			}
-			fillIssueDerivedRef(base, item, issue, authoredSet)
-		case compassv1.BoardRefKind_BOARD_REF_KIND_ISSUE:
-			issue, ok := issuesByCoord[item.coord]
-			if !ok {
-				continue
-			}
-			fillIssueDerivedRef(base, item, issue, authoredSet)
-		case compassv1.BoardRefKind_BOARD_REF_KIND_UNSPECIFIED:
-			continue
+	for i, req := range reqs {
+		for _, ref := range openByAgent[req.Agent] {
+			coord := ref.Coord.Normalized()
+			requests[i].coords[coord] = struct{}{}
+			addCoord(coord, coordSet, &allCoords)
 		}
 	}
+	ownedByAgent, err := resolver.AuthoredCoordsForAgents(ctx, agents, allCoords)
+	if err != nil {
+		return batchRows{}, fmt.Errorf("board: list authored coordinates: %w", err)
+	}
+	prRows, err := resolver.PullRequestsByCoords(ctx, allCoords)
+	if err != nil {
+		return batchRows{}, fmt.Errorf("board: load pull requests: %w", err)
+	}
+	issueRows, err := resolver.IssuesByCoords(ctx, allCoords)
+	if err != nil {
+		return batchRows{}, fmt.Errorf("board: load issues: %w", err)
+	}
+	rows := batchRows{
+		open:   openByAgent,
+		owned:  make(map[store.AccountID]map[artifactKey]struct{}, len(agents)),
+		prs:    make(map[store.ForgeCoord]storedBoardPR, len(prRows)),
+		badPRs: make(map[store.ForgeCoord]error),
+		issues: make(map[store.ForgeCoord]store.Issue, len(issueRows)),
+	}
+	for _, agent := range agents {
+		rows.owned[agent] = authoredKeys(ownedByAgent[agent])
+	}
+	for _, row := range prRows {
+		if err := storePRRow(row, rows.prs); err != nil {
+			rows.badPRs[row.Coord.Normalized()] = err
+		}
+	}
+	rows.stacks = agentStacks(agents, openByAgent, prRows, rows.prs)
+	for _, issue := range issueRows {
+		rows.issues[issueCoord(issue)] = issue
+	}
+	return rows, nil
+}
 
+func authoredKeys(refsIn []store.AuthoredRef) map[artifactKey]struct{} {
+	keys := make(map[artifactKey]struct{}, len(refsIn))
+	for _, ref := range refsIn {
+		keys[artifactKey{coord: ref.Coord.Normalized(), kind: boardRefKind(ref.Kind)}] = struct{}{}
+	}
+	return keys
+}
+
+// agentStacks groups each agent's own open authored PRs into stacks, so one
+// agent's stack never shows on another agent's board.
+func agentStacks(
+	agents []store.AccountID,
+	openByAgent map[store.AccountID][]store.AuthoredRef,
+	prRows []store.PullRequestRow,
+	prs map[store.ForgeCoord]storedBoardPR,
+) map[store.AccountID]map[stackGroup]map[string]Stack {
+	stacks := make(map[store.AccountID]map[stackGroup]map[string]Stack, len(agents))
+	for _, agent := range agents {
+		open := authoredKeys(openByAgent[agent])
+		groups := make(map[stackGroup][]*compassv1.PullRequest)
+		for _, row := range prRows {
+			coord := row.Coord.Normalized()
+			stored, ok := prs[coord]
+			if !ok || row.State != "open" {
+				continue
+			}
+			if _, owned := open[artifactKey{coord: coord, kind: compassv1.BoardRefKind_BOARD_REF_KIND_PULL_REQUEST}]; !owned {
+				continue
+			}
+			group := stackGroup{provider: coord.Provider, host: strings.ToLower(coord.Host)}
+			groups[group] = append(groups[group], stored.pr)
+		}
+		stacks[agent] = make(map[stackGroup]map[string]Stack, len(groups))
+		for group, groupPRs := range groups {
+			stacks[agent][group] = StackOf(groupPRs)
+		}
+	}
+	return stacks
+}
+
+// result fills one request from the batch. An undecodable PR fails only the
+// requests whose coords include it.
+func (rows batchRows) result(agent store.AccountID, request batchRequest, derived []*compassv1.BoardRef) RefResult {
+	var decodeErr error
+	for coord, err := range rows.badPRs {
+		if _, relevant := request.coords[coord]; relevant {
+			decodeErr = errors.Join(decodeErr, err)
+		}
+	}
+	if decodeErr != nil {
+		return RefResult{Err: decodeErr}
+	}
+	authoredSet := rows.owned[agent]
+	for i, item := range request.parsed {
+		if item != nil {
+			rows.fillRef(derived[i], item, authoredSet, rows.stacks[agent])
+		}
+	}
+	openAuthored := rows.open[agent]
 	untracked := make([]string, 0, len(openAuthored))
 	for _, ref := range openAuthored {
-		if _, named := taskRefs[artifactKey{coord: ref.Coord.Normalized(), kind: boardRefKind(ref.Kind)}]; named {
+		if _, named := request.taskRefs[artifactKey{coord: ref.Coord.Normalized(), kind: boardRefKind(ref.Kind)}]; named {
 			continue
 		}
 		untracked = append(untracked, authoredRefString(ref))
 	}
-	return derived, untracked, nil
+	return RefResult{Refs: derived, Untracked: untracked}
 }
 
-type storedRows struct {
-	prs    map[store.ForgeCoord]storedBoardPR
-	issues map[store.ForgeCoord]store.Issue
-	stacks map[stackGroup]map[string]Stack
-}
-
-func loadStoredRows(
-	ctx context.Context,
-	resolver RefResolver,
-	coords []store.ForgeCoord,
-	openAuthored map[artifactKey]struct{},
-) (storedRows, error) {
-	prRows, err := resolver.PullRequestsByCoords(ctx, coords)
-	if err != nil {
-		return storedRows{}, fmt.Errorf("board: load pull requests: %w", err)
-	}
-	issueRows, err := resolver.IssuesByCoords(ctx, coords)
-	if err != nil {
-		return storedRows{}, fmt.Errorf("board: load issues: %w", err)
-	}
-
-	prsByCoord := make(map[store.ForgeCoord]storedBoardPR, len(prRows))
-	openAuthoredPRs := make(map[stackGroup][]*compassv1.PullRequest)
-	for _, row := range prRows {
-		if err := storePRRow(row, prsByCoord); err != nil {
-			return storedRows{}, err
+func (rows batchRows) fillRef(base *compassv1.BoardRef, item *parsedBoardRef, authoredSet map[artifactKey]struct{}, stacks map[stackGroup]map[string]Stack) {
+	switch item.kind {
+	case compassv1.BoardRefKind_BOARD_REF_KIND_PULL_REQUEST:
+		if stored, ok := rows.prs[item.coord]; ok {
+			_, base.Owned = authoredSet[artifactKey{coord: item.coord, kind: item.kind}]
+			group := stackGroup{provider: item.coord.Provider, host: strings.ToLower(item.coord.Host)}
+			fillPullRequestRef(base, stored, item, stacks[group])
+			return
 		}
-		coord := row.Coord.Normalized()
-		key := artifactKey{coord: coord, kind: compassv1.BoardRefKind_BOARD_REF_KIND_PULL_REQUEST}
-		if row.State != "open" {
-			continue
+		if item.ref.Kind != refs.KindForge {
+			return
 		}
-		if _, owned := openAuthored[key]; !owned {
-			continue
+		if issue, ok := rows.issues[item.coord]; ok {
+			fillIssueDerivedRef(base, item, issue, authoredSet)
 		}
-		group := stackGroup{provider: coord.Provider, host: strings.ToLower(coord.Host)}
-		openAuthoredPRs[group] = append(openAuthoredPRs[group], prsByCoord[coord].pr)
+	case compassv1.BoardRefKind_BOARD_REF_KIND_ISSUE:
+		if issue, ok := rows.issues[item.coord]; ok {
+			fillIssueDerivedRef(base, item, issue, authoredSet)
+		}
+	case compassv1.BoardRefKind_BOARD_REF_KIND_UNSPECIFIED:
 	}
-
-	stacksByGroup := make(map[stackGroup]map[string]Stack, len(openAuthoredPRs))
-	for group, prs := range openAuthoredPRs {
-		stacksByGroup[group] = StackOf(prs)
-	}
-
-	issuesByCoord := make(map[store.ForgeCoord]store.Issue, len(issueRows))
-	for _, issue := range issueRows {
-		issuesByCoord[issueCoord(issue)] = issue
-	}
-	return storedRows{prs: prsByCoord, issues: issuesByCoord, stacks: stacksByGroup}, nil
 }
 
 func storePRRow(row store.PullRequestRow, byCoord map[store.ForgeCoord]storedBoardPR) error {

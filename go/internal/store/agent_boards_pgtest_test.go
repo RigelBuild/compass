@@ -722,20 +722,20 @@ func TestBoardCoordinateReadsAndOpenAuthoredRefs(t *testing.T) {
 			t.Fatalf("RecordAuthoredArtifact(PR %d): %v", tc.coord.Number, err)
 		}
 	}
-	open, err := s.OpenAuthoredRefs(t.Context(), agent)
+	open, err := s.OpenAuthoredRefsForAgents(t.Context(), []AccountID{agent})
 	if err != nil {
-		t.Fatalf("OpenAuthoredRefs: %v", err)
+		t.Fatalf("OpenAuthoredRefsForAgents: %v", err)
 	}
-	if len(open) != 2 || open[0].Coord.Number != openIssue.Number || open[0].Kind != ForgeArtifactKindIssue ||
-		open[1].Coord.Number != openPR.Number || open[1].Kind != ForgeArtifactKindPullRequest {
-		t.Fatalf("open authored refs = %+v, want open issue and PR only", open)
+	if len(open[agent]) != 2 || open[agent][0].Coord.Number != openIssue.Number || open[agent][0].Kind != ForgeArtifactKindIssue ||
+		open[agent][1].Coord.Number != openPR.Number || open[agent][1].Kind != ForgeArtifactKindPullRequest {
+		t.Fatalf("open authored refs = %+v, want open issue and PR only", open[agent])
 	}
-	owned, err := s.AuthoredCoordsForAgent(t.Context(), agent, []ForgeCoord{openIssue, closedIssue, openPR, closedPR, mergedPR})
+	owned, err := s.AuthoredCoordsForAgents(t.Context(), []AccountID{agent}, []ForgeCoord{openIssue, closedIssue, openPR, closedPR, mergedPR})
 	if err != nil {
-		t.Fatalf("AuthoredCoordsForAgent: %v", err)
+		t.Fatalf("AuthoredCoordsForAgents: %v", err)
 	}
-	ownedByArtifact := make(map[uint64]ForgeArtifactKind, len(owned))
-	for _, ref := range owned {
+	ownedByArtifact := make(map[uint64]ForgeArtifactKind, len(owned[agent]))
+	for _, ref := range owned[agent] {
 		coord := ref.Coord.Normalized()
 		ownedByArtifact[coord.Number] = ref.Kind
 	}
@@ -769,6 +769,48 @@ func TestBoardCoordinateReadsAndOpenAuthoredRefs(t *testing.T) {
 	}
 	if len(issues) != 2 || issues[0].Number != uint32(openIssue.Number) || issues[1].Number != uint32(closedIssue.Number) {
 		t.Fatalf("IssuesByCoords = %+v", issues)
+	}
+}
+
+// Both authored reads key rows by agent, so one batch never mixes agents.
+func TestAuthoredRefsForAgentsSplitsByAgent(t *testing.T) {
+	s := newTestStore(t)
+	first, firstOwner := seedAgent(t, s, "authored-split-first")
+	second, secondOwner := seedAgent(t, s, "authored-split-second")
+	firstIssue, secondIssue := ghCoord("First/Repo", 71), ghCoord("Second/Repo", 72)
+	for _, tc := range []struct {
+		coord ForgeCoord
+		agent AccountID
+		owner AccountID
+	}{{firstIssue, first, firstOwner}, {secondIssue, second, secondOwner}} {
+		if _, err := s.UpsertIssueForgeFields(t.Context(), IssueForgeFields{
+			ForgeProvider: tc.coord.Provider, ForgeHost: tc.coord.Host, Repo: tc.coord.Repo,
+			Number: uint32(tc.coord.Number), Title: "issue", ForgeState: "open",
+		}); err != nil {
+			t.Fatalf("UpsertIssueForgeFields(%d): %v", tc.coord.Number, err)
+		}
+		if err := s.RecordAuthoredArtifact(t.Context(), AuthoredArtifact{
+			Provider: tc.coord.Provider, Host: tc.coord.Host, Repo: tc.coord.Repo,
+			Kind: ForgeArtifactKindIssue, Number: tc.coord.Number, AgentAccountID: tc.agent,
+			OwnerUserID: tc.owner, CreatedAtUnixMS: int64(tc.coord.Number),
+		}); err != nil {
+			t.Fatalf("RecordAuthoredArtifact(%d): %v", tc.coord.Number, err)
+		}
+	}
+	agents := []AccountID{first, second}
+	open, err := s.OpenAuthoredRefsForAgents(t.Context(), agents)
+	if err != nil {
+		t.Fatalf("OpenAuthoredRefsForAgents: %v", err)
+	}
+	owned, err := s.AuthoredCoordsForAgents(t.Context(), agents, []ForgeCoord{firstIssue, secondIssue})
+	if err != nil {
+		t.Fatalf("AuthoredCoordsForAgents: %v", err)
+	}
+	for _, got := range []map[AccountID][]AuthoredRef{open, owned} {
+		if len(got[first]) != 1 || got[first][0].Coord.Number != firstIssue.Number ||
+			len(got[second]) != 1 || got[second][0].Coord.Number != secondIssue.Number {
+			t.Errorf("authored refs = %+v, want each agent's own issue only", got)
+		}
 	}
 }
 
