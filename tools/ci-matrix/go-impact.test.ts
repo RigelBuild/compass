@@ -161,9 +161,12 @@ function changedTestRootsFromGoList(suite: GoSuite): string[] {
 		.sort();
 }
 
+// The live checks spawn go list and moon; a loaded pre-push run blows bun's 5 s default.
+const LIVE_TIMEOUT_MS = 60_000;
+
 beforeAll(async () => {
 	liveGraph = await loadGoGraph(goDir);
-});
+}, LIVE_TIMEOUT_MS);
 
 describe("Go suite selection", () => {
 	test("a server-only change selects only the pgtest server root", () => {
@@ -303,56 +306,64 @@ describe("Go graph discovered from the module", () => {
 		);
 	});
 
-	test("a cold module cache yields the same graph as the warm one", async () => {
-		// CI setup has no module cache, and GOPROXY=off leaves external records without a Dir.
-		const cold = mkdtempSync(join(tmpdir(), "ci-matrix-gomodcache-"));
-		const previous = process.env.GOMODCACHE;
-		process.env.GOMODCACHE = cold;
-		try {
-			expect(await loadGoGraph(goDir)).toEqual(liveGraph);
-		} finally {
-			if (previous === undefined) delete process.env.GOMODCACHE;
-			else process.env.GOMODCACHE = previous;
-			rmSync(cold, { recursive: true, force: true });
-		}
-	});
+	test(
+		"a cold module cache yields the same graph as the warm one",
+		async () => {
+			// CI setup has no module cache, and GOPROXY=off leaves external records without a Dir.
+			const cold = mkdtempSync(join(tmpdir(), "ci-matrix-gomodcache-"));
+			const previous = process.env.GOMODCACHE;
+			process.env.GOMODCACHE = cold;
+			try {
+				expect(await loadGoGraph(goDir)).toEqual(liveGraph);
+			} finally {
+				if (previous === undefined) delete process.env.GOMODCACHE;
+				else process.env.GOMODCACHE = previous;
+				rmSync(cold, { recursive: true, force: true });
+			}
+		},
+		LIVE_TIMEOUT_MS,
+	);
 
-	test("E2E roots and built binaries match their source", async () => {
-		const builtBinaries = (source: string): string[] =>
-			[...source.matchAll(/for _, name := range \[\]string\{([^}]*)\}/g)]
-				.flatMap((match) => [...(match[1] ?? "").matchAll(/"([^"]+)"/g)])
-				.map((match) => match[1])
-				.filter((name): name is string => name !== undefined)
+	test(
+		"E2E roots and built binaries match their source",
+		async () => {
+			const builtBinaries = (source: string): string[] =>
+				[...source.matchAll(/for _, name := range \[\]string\{([^}]*)\}/g)]
+					.flatMap((match) => [...(match[1] ?? "").matchAll(/"([^"]+)"/g)])
+					.map((match) => match[1])
+					.filter((name): name is string => name !== undefined)
+					.sort();
+			const workflow = await Bun.file(
+				join(repoRoot, ".github/workflows/ci.yml"),
+			).text();
+			const e2eMain = await Bun.file(join(goDir, "e2e/main_test.go")).text();
+			const stackIntegration = await Bun.file(
+				join(goDir, "cmd/compass-stack/integration_podman_test.go"),
+			).text();
+			const e2eCommand = workflow.match(/go test -tags podman[^\n]*/);
+			expect(e2eCommand).not.toBeNull();
+			const workflowRoots = (e2eCommand?.[0] ?? "")
+				.split(/\s+/)
+				.filter(
+					(argument) => argument.startsWith("./") && argument.endsWith("/..."),
+				)
+				.map((argument) => argument.slice(2, -4))
 				.sort();
-		const workflow = await Bun.file(
-			join(repoRoot, ".github/workflows/ci.yml"),
-		).text();
-		const e2eMain = await Bun.file(join(goDir, "e2e/main_test.go")).text();
-		const stackIntegration = await Bun.file(
-			join(goDir, "cmd/compass-stack/integration_podman_test.go"),
-		).text();
-		const e2eCommand = workflow.match(/go test -tags podman[^\n]*/);
-		expect(e2eCommand).not.toBeNull();
-		const workflowRoots = (e2eCommand?.[0] ?? "")
-			.split(/\s+/)
-			.filter(
-				(argument) => argument.startsWith("./") && argument.endsWith("/..."),
-			)
-			.map((argument) => argument.slice(2, -4))
-			.sort();
-		expect(workflowRoots).toEqual([...E2E_ROOTS].sort());
-		const expectedBinaries = [...E2E_BUILT_BINARIES]
-			.map((binary) => binary.slice("cmd/".length))
-			.sort();
-		expect(builtBinaries(e2eMain)).toEqual(expectedBinaries);
-		expect(builtBinaries(stackIntegration)).toEqual(expectedBinaries);
-		expect(e2eMain).toMatch(
-			/cmd := exec\.CommandContext\(ctx, "go", "build",[\s\S]*?"\.\/cmd\/"\+name\)/,
-		);
-		expect(stackIntegration).toMatch(
-			/cmd := exec\.CommandContext\(t\.Context\(\), "go", "build",[\s\S]*?"\.\/cmd\/"\+name\)/,
-		);
-	});
+			expect(workflowRoots).toEqual([...E2E_ROOTS].sort());
+			const expectedBinaries = [...E2E_BUILT_BINARIES]
+				.map((binary) => binary.slice("cmd/".length))
+				.sort();
+			expect(builtBinaries(e2eMain)).toEqual(expectedBinaries);
+			expect(builtBinaries(stackIntegration)).toEqual(expectedBinaries);
+			expect(e2eMain).toMatch(
+				/cmd := exec\.CommandContext\(ctx, "go", "build",[\s\S]*?"\.\/cmd\/"\+name\)/,
+			);
+			expect(stackIntegration).toMatch(
+				/cmd := exec\.CommandContext\(t\.Context\(\), "go", "build",[\s\S]*?"\.\/cmd\/"\+name\)/,
+			);
+		},
+		LIVE_TIMEOUT_MS,
+	);
 });
 
 describe("gate constants and path mapping", () => {
@@ -624,17 +635,27 @@ async function findTaggedFixtureEscapes(): Promise<string[]> {
 }
 
 describe("owner-task input coverage", () => {
-	test("each sampled owner-task input maps to Go or widens its suite", () => {
-		for (const { suite, file } of ownerInputSamples()) {
-			expect(ownerInputCovered(suite, file), `${file} is uncovered`).toBe(true);
-		}
-	});
+	test(
+		"each sampled owner-task input maps to Go or widens its suite",
+		() => {
+			for (const { suite, file } of ownerInputSamples()) {
+				expect(ownerInputCovered(suite, file), `${file} is uncovered`).toBe(
+					true,
+				);
+			}
+		},
+		LIVE_TIMEOUT_MS,
+	);
 });
 
 describe("tagged-test path escapes", () => {
-	test("every parent-relative test fixture is in a Go closure or owner input", async () => {
-		expect(await findTaggedFixtureEscapes()).toEqual([]);
-	});
+	test(
+		"every parent-relative test fixture is in a Go closure or owner input",
+		async () => {
+			expect(await findTaggedFixtureEscapes()).toEqual([]);
+		},
+		LIVE_TIMEOUT_MS,
+	);
 });
 
 function suiteTag(suite: GoSuite): "pgtest" | "microvm" | "podman" {
