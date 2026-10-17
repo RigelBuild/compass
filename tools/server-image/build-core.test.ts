@@ -1,10 +1,47 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { entrypointTarget } from "./build-core.ts";
+import { dockerfileViolations, entrypointTarget } from "./build-core.ts";
+
+// The image build is not a CI task, so this is what catches Dockerfile drift.
+describe("server-image Dockerfile contract", () => {
+	test("the committed Dockerfile runs the staged entrypoint as nonroot", () => {
+		const path = join(
+			import.meta.dir,
+			"..",
+			"..",
+			"server-image",
+			"Dockerfile",
+		);
+		expect(dockerfileViolations(readFileSync(path, "utf8"))).toEqual([]);
+	});
+
+	test("rejects a wrong entrypoint and a root or overridden user", () => {
+		expect(
+			dockerfileViolations(
+				'USER 0\nENTRYPOINT ["/nix/store/x/bin/compass-server"]\n',
+			),
+		).toEqual([
+			'missing ENTRYPOINT ["/nix/store/.compass-server"]',
+			"last USER must be 65532:65532",
+		]);
+		expect(
+			dockerfileViolations(
+				'USER 65532:65532\nUSER root\nENTRYPOINT ["/nix/store/.compass-server"]\n',
+			),
+		).toEqual(["last USER must be 65532:65532"]);
+	});
+});
 
 describe("server image entrypoint mapping", () => {
-	test("resolves the entrypoint through the staged in-store relative symlink", () => {
+	test("maps the entrypoint to the staged binary by a relative path", () => {
 		const server = "/nix/store/abc-compass-server";
 		const stageDir = mkdtempSync(join(tmpdir(), "server-image-core-"));
 		try {

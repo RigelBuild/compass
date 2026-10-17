@@ -74,16 +74,13 @@ env:
     tools/toolchain/microvm-vmm-env.nix
     version.txt
     .github/workflows/release.yml
-  # The server image closure is distinct from Runner because it realizes only compass-server.
+  # The server image closure: flake.nix builds compass-server from all of ./go,
+  # and the build tool imports the runner-image build core.
   SERVER_IMAGE_CLOSURE_PATHS: |
     server-image/**
     tools/server-image/**
-    tools/runner-image/*-core.ts
-    go/go.mod
-    go/go.sum
-    go/server/**
-    go/cmd/compass-server/**
-    go/internal/**
+    tools/runner-image/**
+    go/**
     tools/toolchain/secretspec-env.nix
     devenv.lock
     flake.nix

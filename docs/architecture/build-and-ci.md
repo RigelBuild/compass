@@ -212,8 +212,9 @@ published tag is the source of truth; a missing per-push tag (paths filtered it
 out, or a superseding push skipped it under the serialized concurrency group) is
 **not** a failure — `workflow_dispatch` republishes any HEAD on demand.
 
-The same workflow also runs `publish-runner-image`, `publish-guest-image`, and
-`publish-gateway-image`. The gateway job builds and smoke-tests one local OCI
+The same workflow also runs `publish-runner-image`, `publish-server-image`,
+`publish-guest-image`, and `publish-gateway-image`, plus the
+`release-runner-image` and `release-server-image` re-tags. The gateway job builds and smoke-tests one local OCI
 layout, then publishes its write-once `:git-<sha12>` tag and records the
 `repo@sha256:…` identity to pin in the step summary.
 

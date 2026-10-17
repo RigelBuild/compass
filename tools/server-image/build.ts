@@ -12,7 +12,7 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { outputSpec } from "../runner-image/build-core.ts";
-import { entrypointTarget } from "./build-core.ts";
+import { ENTRYPOINT_LINK, entrypointTarget } from "./build-core.ts";
 
 const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const imageDir = join(workspaceRoot, "server-image");
@@ -118,8 +118,8 @@ for (const path of closurePaths) {
 console.error(`server-image: staged ${closurePaths.length} store paths`);
 
 const entrypoint = entrypointTarget(server, stageDir);
-rmSync(join(stageDir, ".compass-server"), { force: true });
-symlinkSync(entrypoint, join(stageDir, ".compass-server"));
+rmSync(join(stageDir, ENTRYPOINT_LINK), { force: true });
+symlinkSync(entrypoint, join(stageDir, ENTRYPOINT_LINK));
 mkdirSync(ociDir, { recursive: true });
 console.error(`server-image: building ${tag}…`);
 const build = spawnSync(

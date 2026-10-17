@@ -8,4 +8,5 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    # build.ts imports the runner-image build core, so its changes must re-run this check.
+    inputs: ['*.ts', '/tools/runner-image/*-core.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']

@@ -7,6 +7,5 @@
 		"allowImportingTsExtensions": true,
 		"noUncheckedIndexedAccess": true,
 		"types": ["bun"]
-	},
-	"include": ["build.ts", "build-core.ts"]
+	}
 }
