@@ -173,7 +173,7 @@ linters:
         - pattern: '^context\.(Background|TODO)$'
           msg: "pass the caller's context (rule://go-thread-context)"
         - pattern: '^http\.DefaultClient$'
-          msg: "use otelx.HTTPTransport for outbound HTTP tracing (docs/designs/compass/observability/compass-go-trace-hops/design.md)"
+          msg: "use otelx.HTTPTransport for outbound HTTP tracing (RigelBuild/docs:docs/designs/compass/observability/compass-go-trace-hops/design.md)"
 
     # nolintlint governs the inline `//nolint` directives themselves — the
     # per-site suppression form this module uses for architectural false

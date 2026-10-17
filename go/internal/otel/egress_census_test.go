@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"path"
 	"path/filepath"
 	"sort"
@@ -30,6 +31,7 @@ type egressSite struct {
 
 var egressSites = map[string]egressSite{
 	"cmd/compass-app/bridge_service.go:probe:compassv1connect.NewCompassServiceClient":                {class: noProvider, count: 1, reason: "the app installs no provider"},
+	"cmd/compass/client.go:httpClientFor:http.DefaultClient":                                          {class: noProvider, count: 1, reason: "the CLI has no provider; tracing is disabled by design"},
 	"cmd/compass/client.go:newAgentRepositoryClient:compassv1connect.NewAgentRepositoryServiceClient": {class: noProvider, count: 1, reason: "the CLI installs no provider"},
 	"cmd/compass/client.go:newClient:compassv1connect.NewCompassServiceClient":                        {class: noProvider, count: 1, reason: "the CLI installs no provider"},
 	"cmd/compass/client.go:newCommsClient:compassv1connect.NewCommsServiceClient":                     {class: noProvider, count: 1, reason: "the CLI installs no provider"},
@@ -38,20 +40,24 @@ var egressSites = map[string]egressSite{
 	"e2e/clients.go:newAuthedClients:compassv1connect.NewCompassServiceClient":                        {class: testHelper, count: 1, reason: "e2e test helper uses a local client"},
 	"e2e/clients.go:newUnauthedCompassClient:compassv1connect.NewCompassServiceClient":                {class: testHelper, count: 1, reason: "e2e test helper uses a local client"},
 	"e2e/garage_fixture.go:garageS3Client:minio.New":                                                  {class: testHelper, count: 1, reason: "e2e fixture connects to local Garage"},
+	"internal/auth/workload_identity.go:NewRunnerVerifier:http.DefaultClient":                         {class: traced, count: 1, reason: "the client is wrapped after clusterHTTPClient to preserve its TLS settings"},
 	"internal/bridge/pump.go:NewUnixTarget:http.Client":                                               {class: noProvider, count: 1, reason: "client routes locally over a Unix socket"},
 	"internal/bridge/tls_target.go:NewTLSTarget:http.Client":                                          {class: noProvider, count: 1, reason: "client runs in the app, which installs no provider"},
 	"internal/embedded/embedded.go:WhoAmIOverUDS:compassv1connect.NewCompassServiceClient":            {class: noProvider, count: 1, reason: "embedded client runs in the app, which installs no provider"},
 	"internal/embedded/embedded.go:WhoAmIOverUDS:http.Client":                                         {class: noProvider, count: 1, reason: "client routes locally over a Unix socket"},
 	"internal/fabric/fabric.go:New:nats.Connect":                                                      {class: traced, count: 1, reason: "Fabric publishes and consumes traced messages"},
-	"internal/forge/github.go:NewGitHub:http.Client":                                                  {class: traced, count: 1, reason: "server passes the traced HTTP client"},
-	"internal/forge/githubapp.go:newAppTokenSource:http.Client":                                       {class: traced, count: 1, reason: "server passes the traced HTTP client"},
-	"internal/forge/linear.go:NewLinear:http.Client":                                                  {class: traced, count: 1, reason: "server passes the traced HTTP client"},
-	"internal/forge/trunk.go:NewTrunk:http.Client":                                                    {class: traced, count: 1, reason: "server passes the traced HTTP client"},
+	"internal/forge/github.go:NewGitHub:http.Client":                                                  {class: testHelper, count: 1, reason: "nil-client fallback; production passes tracedHTTPClient"},
+	"internal/forge/githubapp.go:newAppTokenSource:http.Client":                                       {class: testHelper, count: 1, reason: "nil-client fallback; production passes tracedHTTPClient"},
+	"internal/forge/linear.go:NewLinear:http.Client":                                                  {class: testHelper, count: 1, reason: "nil-client fallback; production passes tracedHTTPClient"},
+	"internal/forge/trunk.go:NewTrunk:http.Client":                                                    {class: testHelper, count: 1, reason: "nil-client fallback; production passes tracedHTTPClient"},
+	"internal/linearagent/client.go:NewClient:http.DefaultClient":                                     {class: testHelper, count: 1, reason: "test-only fallback; production passes tracedHTTPClient"},
+	"internal/linearagent/client.go:NewTokenSource:http.DefaultClient":                                {class: testHelper, count: 1, reason: "test-only fallback; production passes tracedHTTPClient"},
 	"internal/pgshare/pgshare.go:IsolatedDatabase:pgx.Connect":                                        {class: testHelper, count: 2, reason: "test-only database harness"},
 	"internal/pgshare/pgshare.go:IsolatedSchemaDSN:pgx.Connect":                                       {class: testHelper, count: 2, reason: "test-only database harness"},
 	"internal/pgshare/pgshare.go:waitReady:pgx.Connect":                                               {class: testHelper, count: 1, reason: "test-only database readiness probe"},
 	"internal/pgshare/pgshare.go:waitSuiteReady:pgx.Connect":                                          {class: testHelper, count: 1, reason: "test-only database readiness probe"},
 	"internal/runner/runner.go:Dial:compassv1internalconnect.NewRunnerServiceClient":                  {class: traced, count: 1, reason: "Connect interceptor records client spans"},
+	"internal/runner/runner.go:Dial:http.DefaultClient":                                               {class: traced, count: 1, reason: "the Connect interceptor carries the trace"},
 	"internal/runner/tls.go:NewCATrustClient:http.Client":                                             {class: noProvider, count: 1, reason: "runner client can be used without an installed provider"},
 	"internal/runnertest/socket.go:DialAgentSocket:compassv1internalconnect.NewAgentGatewayClient":    {class: testHelper, count: 1, reason: "test-only generated client helper"},
 	"internal/runnertest/socket.go:DialAgentSocket:http.Client":                                       {class: testHelper, count: 1, reason: "test-only local socket helper"},
@@ -77,15 +83,15 @@ func TestCompareEgressSitesDetectsCountChanges(t *testing.T) {
 
 	const fixturePath = "fixture.go"
 	const oneClient = `package fixture
-import api "example.com/service/connect"
+import api "example.com/gen/servicev1connect"
 func dial() { api.NewServiceClient(nil, "") }
 `
 	const twoClients = `package fixture
-import api "example.com/service/connect"
+import api "example.com/gen/servicev1connect"
 func dial() { api.NewServiceClient(nil, ""); api.NewServiceClient(nil, "") }
 `
 	const noClients = `package fixture
-import api "example.com/service/connect"
+import api "example.com/gen/servicev1connect"
 func dial() {}
 `
 	const key = "fixture.go:dial:api.NewServiceClient"
@@ -94,12 +100,16 @@ func dial() {}
 		t.Fatal(err)
 	}
 	baseline := collectFileEgress(fixturePath, baselineFile)
+	if baseline[key] != 1 {
+		t.Fatalf("baseline count for %s = %d, want 1", key, baseline[key])
+	}
 	tests := []struct {
-		name   string
-		source string
+		name     string
+		source   string
+		wantDiff string
 	}{
-		{name: "one extra constructor", source: twoClients},
-		{name: "one fewer constructor", source: noClients},
+		{name: "one extra constructor", source: twoClients, wantDiff: "count = 2, want 1"},
+		{name: "one fewer constructor", source: noClients, wantDiff: "is missing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -110,10 +120,67 @@ func dial() {}
 			}
 			got := collectFileEgress(fixturePath, file)
 			want := map[string]egressSite{
-				key: {class: traced, count: baseline[key], reason: "fixture traced client"},
+				key: {class: traced, count: 1, reason: "fixture traced client"},
 			}
-			if diff := compareEgressSites(got, want); len(diff) == 0 {
-				t.Fatal("count change was not detected")
+			diff := compareEgressSites(got, want)
+			if len(diff) != 1 || !strings.Contains(diff[0], key) || !strings.Contains(diff[0], tt.wantDiff) {
+				t.Fatalf("compareEgressSites() = %v, want one diagnostic for %s containing %q", diff, key, tt.wantDiff)
+			}
+		})
+	}
+}
+
+func TestCollectFileEgress(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		source string
+		want   map[string]int
+	}{
+		{
+			name: "generated wrapper and separate runtime constructor",
+			source: `package fixture
+import api "example.com/gen/servicev1connect"
+import connect "connectrpc.com/connect/v2"
+func dial() {
+	api.NewServiceClient(connect.NewClient(nil))
+	connect.NewClient(nil)
+}
+`,
+			want: map[string]int{
+				"fixture.go:dial:api.NewServiceClient": 1,
+				"fixture.go:dial:connect.NewClient":    1,
+			},
+		},
+		{
+			name: "package-level initializers and aliased net/http selectors",
+			source: `package fixture
+import api "example.com/gen/servicev1connect"
+import connect "connectrpc.com/connect/v2"
+import web "net/http"
+var (
+	client = &web.Client{}
+	service = api.NewServiceClient(connect.NewClient(nil))
+	defaultClient = web.DefaultClient
+)
+`,
+			want: map[string]int{
+				"fixture.go:<package-level>:http.Client":          1,
+				"fixture.go:<package-level>:api.NewServiceClient": 1,
+				"fixture.go:<package-level>:http.DefaultClient":   1,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", tt.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := collectFileEgress("fixture.go", file)
+			if !maps.Equal(got, tt.want) {
+				t.Fatalf("collectFileEgress() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -184,11 +251,19 @@ func collectFileEgress(filePath string, file *ast.File) map[string]int {
 		sites[filePath+":"+function+":"+callee]++
 	}
 	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			if decl.Body != nil {
+				collectFunctionEgress(decl.Body, decl.Name.Name, imports, add)
+			}
+		case *ast.GenDecl:
+			if decl.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range decl.Specs {
+				collectFunctionEgress(spec, "<package-level>", imports, add)
+			}
 		}
-		collectFunctionEgress(fn.Body, fn.Name.Name, imports, add)
 	}
 	return sites
 }
@@ -196,8 +271,14 @@ func collectFileEgress(filePath string, file *ast.File) map[string]int {
 func collectFunctionEgress(node ast.Node, function string, imports map[string]string, add func(string, string)) {
 	skipped := generatedConnectClientArguments(node, imports)
 	ast.Inspect(node, func(node ast.Node) bool {
-		if clientAlias, ok := httpClientLiteral(node, imports); ok {
-			add(function, clientAlias+".Client")
+		if _, ok := httpClientLiteral(node, imports); ok {
+			add(function, "http.Client")
+		}
+		selector, ok := node.(*ast.SelectorExpr)
+		if ok && selector.Sel.Name == "DefaultClient" {
+			if alias, isIdent := selector.X.(*ast.Ident); isIdent && imports[alias.Name] == "net/http" {
+				add(function, "http.DefaultClient")
+			}
 		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
@@ -278,7 +359,7 @@ func httpClientLiteral(node ast.Node, imports map[string]string) (string, bool) 
 		return "", false
 	}
 	alias, ok := httpClientType(literal.Type)
-	return alias, ok && imports[alias] == "net/http"
+	return "http", ok && imports[alias] == "net/http"
 }
 
 func isGeneratedConnectPackage(importPath string) bool {

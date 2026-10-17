@@ -77,8 +77,8 @@ type TokenSource struct {
 }
 
 // NewTokenSource builds a TokenSource for the given credentials. doer defaults
-// to http.DefaultClient and tokenURL to the Linear OAuth endpoint when zero, so
-// production callers pass only the credentials and tests inject both.
+// to http.DefaultClient and tokenURL to the Linear OAuth endpoint when zero.
+// Production passes the traced HTTP client; tests can inject both.
 func NewTokenSource(clientID, clientSecret string, doer httpDoer, tokenURL string) *TokenSource {
 	if doer == nil {
 		doer = http.DefaultClient //nolint:forbidigo // test-only fallback; production passes tracedHTTPClient
