@@ -425,7 +425,8 @@ func readPid(t *testing.T, path string) int {
 func TestPodmanRunTimeoutKillsHungProcess(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
-	script := fmt.Sprintf("#!/bin/sh\necho $$ > %q\nexec sleep 30\n", pidFile)
+	// Rename into place so the wait below never sees a created-but-empty file.
+	script := fmt.Sprintf("#!/bin/sh\necho $$ > %q.tmp && mv %q.tmp %q\nexec sleep 30\n", pidFile, pidFile, pidFile)
 	if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
 		t.Fatalf("writing stub: %v", err)
 	}
