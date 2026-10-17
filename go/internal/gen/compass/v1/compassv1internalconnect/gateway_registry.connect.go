@@ -8,134 +8,131 @@
 package compassv1internalconnect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// GatewayRegistryName is the fully-qualified name of the GatewayRegistry service.
 	GatewayRegistryName = "compass.v1.GatewayRegistry"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// GatewayRegistryGetGatewayModelRegistryProcedure is the fully-qualified name of the
-	// GatewayRegistry's GetGatewayModelRegistry RPC.
+	// GatewayRegistryGetGatewayModelRegistryProcedure is the procedure name of the GatewayRegistry's
+	// GetGatewayModelRegistry RPC.
 	GatewayRegistryGetGatewayModelRegistryProcedure = "/compass.v1.GatewayRegistry/GetGatewayModelRegistry"
-	// GatewayRegistryGetGatewayModelRegistryVersionProcedure is the fully-qualified name of the
+	// GatewayRegistryGetGatewayModelRegistryVersionProcedure is the procedure name of the
 	// GatewayRegistry's GetGatewayModelRegistryVersion RPC.
 	GatewayRegistryGetGatewayModelRegistryVersionProcedure = "/compass.v1.GatewayRegistry/GetGatewayModelRegistryVersion"
 )
 
+var (
+	gatewayRegistryGetGatewayModelRegistrySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_gateway_registry_proto.Services().ByName("GatewayRegistry").Methods().ByName("GetGatewayModelRegistry"),
+			Procedure:  GatewayRegistryGetGatewayModelRegistryProcedure,
+		}
+	})
+	gatewayRegistryGetGatewayModelRegistryVersionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_gateway_registry_proto.Services().ByName("GatewayRegistry").Methods().ByName("GetGatewayModelRegistryVersion"),
+			Procedure:  GatewayRegistryGetGatewayModelRegistryVersionProcedure,
+		}
+	})
+)
+
 // GatewayRegistryClient is a client for the compass.v1.GatewayRegistry service.
 type GatewayRegistryClient interface {
-	GetGatewayModelRegistry(context.Context, *connect.Request[v1.GetGatewayModelRegistryRequest]) (*connect.Response[v1.GetGatewayModelRegistryResponse], error)
-	GetGatewayModelRegistryVersion(context.Context, *connect.Request[v1.GetGatewayModelRegistryVersionRequest]) (*connect.Response[v1.GetGatewayModelRegistryVersionResponse], error)
+	GetGatewayModelRegistry(context.Context, *v1.GetGatewayModelRegistryRequest) (*v1.GetGatewayModelRegistryResponse, error)
+	GetGatewayModelRegistryVersion(context.Context, *v1.GetGatewayModelRegistryVersionRequest) (*v1.GetGatewayModelRegistryVersionResponse, error)
 }
 
-// NewGatewayRegistryClient constructs a client for the compass.v1.GatewayRegistry service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewGatewayRegistryClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) GatewayRegistryClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	gatewayRegistryMethods := v1.File_compass_v1_gateway_registry_proto.Services().ByName("GatewayRegistry").Methods()
-	return &gatewayRegistryClient{
-		getGatewayModelRegistry: connect.NewClient[v1.GetGatewayModelRegistryRequest, v1.GetGatewayModelRegistryResponse](
-			httpClient,
-			baseURL+GatewayRegistryGetGatewayModelRegistryProcedure,
-			connect.WithSchema(gatewayRegistryMethods.ByName("GetGatewayModelRegistry")),
-			connect.WithClientOptions(opts...),
-		),
-		getGatewayModelRegistryVersion: connect.NewClient[v1.GetGatewayModelRegistryVersionRequest, v1.GetGatewayModelRegistryVersionResponse](
-			httpClient,
-			baseURL+GatewayRegistryGetGatewayModelRegistryVersionProcedure,
-			connect.WithSchema(gatewayRegistryMethods.ByName("GetGatewayModelRegistryVersion")),
-			connect.WithClientOptions(opts...),
-		),
-	}
-}
-
-// gatewayRegistryClient implements GatewayRegistryClient.
-type gatewayRegistryClient struct {
-	getGatewayModelRegistry        *connect.Client[v1.GetGatewayModelRegistryRequest, v1.GetGatewayModelRegistryResponse]
-	getGatewayModelRegistryVersion *connect.Client[v1.GetGatewayModelRegistryVersionRequest, v1.GetGatewayModelRegistryVersionResponse]
-}
-
-// GetGatewayModelRegistry calls compass.v1.GatewayRegistry.GetGatewayModelRegistry.
-func (c *gatewayRegistryClient) GetGatewayModelRegistry(ctx context.Context, req *connect.Request[v1.GetGatewayModelRegistryRequest]) (*connect.Response[v1.GetGatewayModelRegistryResponse], error) {
-	return c.getGatewayModelRegistry.CallUnary(ctx, req)
-}
-
-// GetGatewayModelRegistryVersion calls compass.v1.GatewayRegistry.GetGatewayModelRegistryVersion.
-func (c *gatewayRegistryClient) GetGatewayModelRegistryVersion(ctx context.Context, req *connect.Request[v1.GetGatewayModelRegistryVersionRequest]) (*connect.Response[v1.GetGatewayModelRegistryVersionResponse], error) {
-	return c.getGatewayModelRegistryVersion.CallUnary(ctx, req)
+// NewGatewayRegistryClient constructs a client for the compass.v1.GatewayRegistry service. Multiple
+// service clients may share a single connect.Client.
+func NewGatewayRegistryClient(client *connect.Client) GatewayRegistryClient {
+	return &gatewayRegistryClient{client: client}
 }
 
 // GatewayRegistryHandler is an implementation of the compass.v1.GatewayRegistry service.
 type GatewayRegistryHandler interface {
-	GetGatewayModelRegistry(context.Context, *connect.Request[v1.GetGatewayModelRegistryRequest]) (*connect.Response[v1.GetGatewayModelRegistryResponse], error)
-	GetGatewayModelRegistryVersion(context.Context, *connect.Request[v1.GetGatewayModelRegistryVersionRequest]) (*connect.Response[v1.GetGatewayModelRegistryVersionResponse], error)
+	GetGatewayModelRegistry(context.Context, *v1.GetGatewayModelRegistryRequest) (*v1.GetGatewayModelRegistryResponse, error)
+	GetGatewayModelRegistryVersion(context.Context, *v1.GetGatewayModelRegistryVersionRequest) (*v1.GetGatewayModelRegistryVersionResponse, error)
 }
 
-// NewGatewayRegistryHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewGatewayRegistryHandler(svc GatewayRegistryHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	gatewayRegistryMethods := v1.File_compass_v1_gateway_registry_proto.Services().ByName("GatewayRegistry").Methods()
-	gatewayRegistryGetGatewayModelRegistryHandler := connect.NewUnaryHandler(
-		GatewayRegistryGetGatewayModelRegistryProcedure,
-		svc.GetGatewayModelRegistry,
-		connect.WithSchema(gatewayRegistryMethods.ByName("GetGatewayModelRegistry")),
-		connect.WithHandlerOptions(opts...),
+// RegisterGatewayRegistryHandler registers svc as the compass.v1.GatewayRegistry implementation on
+// server.
+func RegisterGatewayRegistryHandler(server *connect.Server, svc GatewayRegistryHandler) {
+	adapter := gatewayRegistryHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: gatewayRegistryGetGatewayModelRegistrySpec(), Handler: adapter.getGatewayModelRegistry},
+		connect.Method{Spec: gatewayRegistryGetGatewayModelRegistryVersionSpec(), Handler: adapter.getGatewayModelRegistryVersion},
 	)
-	gatewayRegistryGetGatewayModelRegistryVersionHandler := connect.NewUnaryHandler(
-		GatewayRegistryGetGatewayModelRegistryVersionProcedure,
-		svc.GetGatewayModelRegistryVersion,
-		connect.WithSchema(gatewayRegistryMethods.ByName("GetGatewayModelRegistryVersion")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.GatewayRegistry/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case GatewayRegistryGetGatewayModelRegistryProcedure:
-			gatewayRegistryGetGatewayModelRegistryHandler.ServeHTTP(w, r)
-		case GatewayRegistryGetGatewayModelRegistryVersionProcedure:
-			gatewayRegistryGetGatewayModelRegistryVersionHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
 }
 
 // UnimplementedGatewayRegistryHandler returns CodeUnimplemented from all methods.
 type UnimplementedGatewayRegistryHandler struct{}
 
-func (UnimplementedGatewayRegistryHandler) GetGatewayModelRegistry(context.Context, *connect.Request[v1.GetGatewayModelRegistryRequest]) (*connect.Response[v1.GetGatewayModelRegistryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GatewayRegistry.GetGatewayModelRegistry is not implemented"))
+func (UnimplementedGatewayRegistryHandler) GetGatewayModelRegistry(context.Context, *v1.GetGatewayModelRegistryRequest) (*v1.GetGatewayModelRegistryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GatewayRegistry.GetGatewayModelRegistry is not implemented")
 }
 
-func (UnimplementedGatewayRegistryHandler) GetGatewayModelRegistryVersion(context.Context, *connect.Request[v1.GetGatewayModelRegistryVersionRequest]) (*connect.Response[v1.GetGatewayModelRegistryVersionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GatewayRegistry.GetGatewayModelRegistryVersion is not implemented"))
+func (UnimplementedGatewayRegistryHandler) GetGatewayModelRegistryVersion(context.Context, *v1.GetGatewayModelRegistryVersionRequest) (*v1.GetGatewayModelRegistryVersionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GatewayRegistry.GetGatewayModelRegistryVersion is not implemented")
+}
+
+type gatewayRegistryClient struct {
+	client *connect.Client
+}
+
+func (c *gatewayRegistryClient) GetGatewayModelRegistry(ctx context.Context, req *v1.GetGatewayModelRegistryRequest) (*v1.GetGatewayModelRegistryResponse, error) {
+	var res v1.GetGatewayModelRegistryResponse
+	if err := c.client.CallUnary(ctx, gatewayRegistryGetGatewayModelRegistrySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *gatewayRegistryClient) GetGatewayModelRegistryVersion(ctx context.Context, req *v1.GetGatewayModelRegistryVersionRequest) (*v1.GetGatewayModelRegistryVersionResponse, error) {
+	var res v1.GetGatewayModelRegistryVersionResponse
+	if err := c.client.CallUnary(ctx, gatewayRegistryGetGatewayModelRegistryVersionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type gatewayRegistryHandler struct{ svc GatewayRegistryHandler }
+
+func (h gatewayRegistryHandler) getGatewayModelRegistry(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetGatewayModelRegistryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetGatewayModelRegistry(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h gatewayRegistryHandler) getGatewayModelRegistryVersion(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetGatewayModelRegistryVersionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetGatewayModelRegistryVersion(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
 }

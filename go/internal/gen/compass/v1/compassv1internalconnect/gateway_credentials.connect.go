@@ -10,43 +10,58 @@
 package compassv1internalconnect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// GatewayCredentialsName is the fully-qualified name of the GatewayCredentials service.
 	GatewayCredentialsName = "compass.v1.GatewayCredentials"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// GatewayCredentialsListCredentialPoolProcedure is the fully-qualified name of the
-	// GatewayCredentials's ListCredentialPool RPC.
+	// GatewayCredentialsListCredentialPoolProcedure is the procedure name of the GatewayCredentials's
+	// ListCredentialPool RPC.
 	GatewayCredentialsListCredentialPoolProcedure = "/compass.v1.GatewayCredentials/ListCredentialPool"
-	// GatewayCredentialsUpdateCredentialOAuthProcedure is the fully-qualified name of the
+	// GatewayCredentialsUpdateCredentialOAuthProcedure is the procedure name of the
 	// GatewayCredentials's UpdateCredentialOAuth RPC.
 	GatewayCredentialsUpdateCredentialOAuthProcedure = "/compass.v1.GatewayCredentials/UpdateCredentialOAuth"
-	// GatewayCredentialsDisableCredentialProcedure is the fully-qualified name of the
-	// GatewayCredentials's DisableCredential RPC.
+	// GatewayCredentialsDisableCredentialProcedure is the procedure name of the GatewayCredentials's
+	// DisableCredential RPC.
 	GatewayCredentialsDisableCredentialProcedure = "/compass.v1.GatewayCredentials/DisableCredential"
+)
+
+var (
+	gatewayCredentialsListCredentialPoolSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_gateway_credentials_proto.Services().ByName("GatewayCredentials").Methods().ByName("ListCredentialPool"),
+			Procedure:  GatewayCredentialsListCredentialPoolProcedure,
+		}
+	})
+	gatewayCredentialsUpdateCredentialOAuthSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_gateway_credentials_proto.Services().ByName("GatewayCredentials").Methods().ByName("UpdateCredentialOAuth"),
+			Procedure:  GatewayCredentialsUpdateCredentialOAuthProcedure,
+		}
+	})
+	gatewayCredentialsDisableCredentialSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_gateway_credentials_proto.Services().ByName("GatewayCredentials").Methods().ByName("DisableCredential"),
+			Procedure:  GatewayCredentialsDisableCredentialProcedure,
+		}
+	})
 )
 
 // GatewayCredentialsClient is a client for the compass.v1.GatewayCredentials service.
@@ -54,69 +69,21 @@ type GatewayCredentialsClient interface {
 	// INVALID_ARGUMENT for empty agent_token; UNAUTHENTICATED for invalid tokens.
 	// Returns enabled credentials; empty provider selects all, own credentials first.
 	// INTERNAL if credential lookup is unavailable.
-	ListCredentialPool(context.Context, *connect.Request[v1.ListCredentialPoolRequest]) (*connect.Response[v1.ListCredentialPoolResponse], error)
+	ListCredentialPool(context.Context, *v1.ListCredentialPoolRequest) (*v1.ListCredentialPoolResponse, error)
 	// INVALID_ARGUMENT for invalid fields; UNAUTHENTICATED for invalid agent_token.
 	// NOT_FOUND masks missing, disabled or out-of-pool IDs; omitted OAuth fields stay unchanged.
 	// FAILED_PRECONDITION if not OAuth; ABORTED on version conflict; INTERNAL if unavailable.
-	UpdateCredentialOAuth(context.Context, *connect.Request[v1.UpdateCredentialOAuthRequest]) (*connect.Response[v1.UpdateCredentialOAuthResponse], error)
+	UpdateCredentialOAuth(context.Context, *v1.UpdateCredentialOAuthRequest) (*v1.UpdateCredentialOAuthResponse, error)
 	// INVALID_ARGUMENT for invalid fields; UNAUTHENTICATED for invalid agent_token.
 	// NOT_FOUND masks missing, disabled or out-of-pool IDs; cause records why it was disabled.
 	// ABORTED on version conflict; INTERNAL if unavailable.
-	DisableCredential(context.Context, *connect.Request[v1.DisableCredentialRequest]) (*connect.Response[v1.DisableCredentialResponse], error)
+	DisableCredential(context.Context, *v1.DisableCredentialRequest) (*v1.DisableCredentialResponse, error)
 }
 
-// NewGatewayCredentialsClient constructs a client for the compass.v1.GatewayCredentials service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewGatewayCredentialsClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) GatewayCredentialsClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	gatewayCredentialsMethods := v1.File_compass_v1_gateway_credentials_proto.Services().ByName("GatewayCredentials").Methods()
-	return &gatewayCredentialsClient{
-		listCredentialPool: connect.NewClient[v1.ListCredentialPoolRequest, v1.ListCredentialPoolResponse](
-			httpClient,
-			baseURL+GatewayCredentialsListCredentialPoolProcedure,
-			connect.WithSchema(gatewayCredentialsMethods.ByName("ListCredentialPool")),
-			connect.WithClientOptions(opts...),
-		),
-		updateCredentialOAuth: connect.NewClient[v1.UpdateCredentialOAuthRequest, v1.UpdateCredentialOAuthResponse](
-			httpClient,
-			baseURL+GatewayCredentialsUpdateCredentialOAuthProcedure,
-			connect.WithSchema(gatewayCredentialsMethods.ByName("UpdateCredentialOAuth")),
-			connect.WithClientOptions(opts...),
-		),
-		disableCredential: connect.NewClient[v1.DisableCredentialRequest, v1.DisableCredentialResponse](
-			httpClient,
-			baseURL+GatewayCredentialsDisableCredentialProcedure,
-			connect.WithSchema(gatewayCredentialsMethods.ByName("DisableCredential")),
-			connect.WithClientOptions(opts...),
-		),
-	}
-}
-
-// gatewayCredentialsClient implements GatewayCredentialsClient.
-type gatewayCredentialsClient struct {
-	listCredentialPool    *connect.Client[v1.ListCredentialPoolRequest, v1.ListCredentialPoolResponse]
-	updateCredentialOAuth *connect.Client[v1.UpdateCredentialOAuthRequest, v1.UpdateCredentialOAuthResponse]
-	disableCredential     *connect.Client[v1.DisableCredentialRequest, v1.DisableCredentialResponse]
-}
-
-// ListCredentialPool calls compass.v1.GatewayCredentials.ListCredentialPool.
-func (c *gatewayCredentialsClient) ListCredentialPool(ctx context.Context, req *connect.Request[v1.ListCredentialPoolRequest]) (*connect.Response[v1.ListCredentialPoolResponse], error) {
-	return c.listCredentialPool.CallUnary(ctx, req)
-}
-
-// UpdateCredentialOAuth calls compass.v1.GatewayCredentials.UpdateCredentialOAuth.
-func (c *gatewayCredentialsClient) UpdateCredentialOAuth(ctx context.Context, req *connect.Request[v1.UpdateCredentialOAuthRequest]) (*connect.Response[v1.UpdateCredentialOAuthResponse], error) {
-	return c.updateCredentialOAuth.CallUnary(ctx, req)
-}
-
-// DisableCredential calls compass.v1.GatewayCredentials.DisableCredential.
-func (c *gatewayCredentialsClient) DisableCredential(ctx context.Context, req *connect.Request[v1.DisableCredentialRequest]) (*connect.Response[v1.DisableCredentialResponse], error) {
-	return c.disableCredential.CallUnary(ctx, req)
+// NewGatewayCredentialsClient constructs a client for the compass.v1.GatewayCredentials service.
+// Multiple service clients may share a single connect.Client.
+func NewGatewayCredentialsClient(client *connect.Client) GatewayCredentialsClient {
+	return &gatewayCredentialsClient{client: client}
 }
 
 // GatewayCredentialsHandler is an implementation of the compass.v1.GatewayCredentials service.
@@ -124,67 +91,105 @@ type GatewayCredentialsHandler interface {
 	// INVALID_ARGUMENT for empty agent_token; UNAUTHENTICATED for invalid tokens.
 	// Returns enabled credentials; empty provider selects all, own credentials first.
 	// INTERNAL if credential lookup is unavailable.
-	ListCredentialPool(context.Context, *connect.Request[v1.ListCredentialPoolRequest]) (*connect.Response[v1.ListCredentialPoolResponse], error)
+	ListCredentialPool(context.Context, *v1.ListCredentialPoolRequest) (*v1.ListCredentialPoolResponse, error)
 	// INVALID_ARGUMENT for invalid fields; UNAUTHENTICATED for invalid agent_token.
 	// NOT_FOUND masks missing, disabled or out-of-pool IDs; omitted OAuth fields stay unchanged.
 	// FAILED_PRECONDITION if not OAuth; ABORTED on version conflict; INTERNAL if unavailable.
-	UpdateCredentialOAuth(context.Context, *connect.Request[v1.UpdateCredentialOAuthRequest]) (*connect.Response[v1.UpdateCredentialOAuthResponse], error)
+	UpdateCredentialOAuth(context.Context, *v1.UpdateCredentialOAuthRequest) (*v1.UpdateCredentialOAuthResponse, error)
 	// INVALID_ARGUMENT for invalid fields; UNAUTHENTICATED for invalid agent_token.
 	// NOT_FOUND masks missing, disabled or out-of-pool IDs; cause records why it was disabled.
 	// ABORTED on version conflict; INTERNAL if unavailable.
-	DisableCredential(context.Context, *connect.Request[v1.DisableCredentialRequest]) (*connect.Response[v1.DisableCredentialResponse], error)
+	DisableCredential(context.Context, *v1.DisableCredentialRequest) (*v1.DisableCredentialResponse, error)
 }
 
-// NewGatewayCredentialsHandler builds an HTTP handler from the service implementation. It returns
-// the path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewGatewayCredentialsHandler(svc GatewayCredentialsHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	gatewayCredentialsMethods := v1.File_compass_v1_gateway_credentials_proto.Services().ByName("GatewayCredentials").Methods()
-	gatewayCredentialsListCredentialPoolHandler := connect.NewUnaryHandler(
-		GatewayCredentialsListCredentialPoolProcedure,
-		svc.ListCredentialPool,
-		connect.WithSchema(gatewayCredentialsMethods.ByName("ListCredentialPool")),
-		connect.WithHandlerOptions(opts...),
+// RegisterGatewayCredentialsHandler registers svc as the compass.v1.GatewayCredentials
+// implementation on server.
+func RegisterGatewayCredentialsHandler(server *connect.Server, svc GatewayCredentialsHandler) {
+	adapter := gatewayCredentialsHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: gatewayCredentialsListCredentialPoolSpec(), Handler: adapter.listCredentialPool},
+		connect.Method{Spec: gatewayCredentialsUpdateCredentialOAuthSpec(), Handler: adapter.updateCredentialOAuth},
+		connect.Method{Spec: gatewayCredentialsDisableCredentialSpec(), Handler: adapter.disableCredential},
 	)
-	gatewayCredentialsUpdateCredentialOAuthHandler := connect.NewUnaryHandler(
-		GatewayCredentialsUpdateCredentialOAuthProcedure,
-		svc.UpdateCredentialOAuth,
-		connect.WithSchema(gatewayCredentialsMethods.ByName("UpdateCredentialOAuth")),
-		connect.WithHandlerOptions(opts...),
-	)
-	gatewayCredentialsDisableCredentialHandler := connect.NewUnaryHandler(
-		GatewayCredentialsDisableCredentialProcedure,
-		svc.DisableCredential,
-		connect.WithSchema(gatewayCredentialsMethods.ByName("DisableCredential")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.GatewayCredentials/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case GatewayCredentialsListCredentialPoolProcedure:
-			gatewayCredentialsListCredentialPoolHandler.ServeHTTP(w, r)
-		case GatewayCredentialsUpdateCredentialOAuthProcedure:
-			gatewayCredentialsUpdateCredentialOAuthHandler.ServeHTTP(w, r)
-		case GatewayCredentialsDisableCredentialProcedure:
-			gatewayCredentialsDisableCredentialHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
 }
 
 // UnimplementedGatewayCredentialsHandler returns CodeUnimplemented from all methods.
 type UnimplementedGatewayCredentialsHandler struct{}
 
-func (UnimplementedGatewayCredentialsHandler) ListCredentialPool(context.Context, *connect.Request[v1.ListCredentialPoolRequest]) (*connect.Response[v1.ListCredentialPoolResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GatewayCredentials.ListCredentialPool is not implemented"))
+func (UnimplementedGatewayCredentialsHandler) ListCredentialPool(context.Context, *v1.ListCredentialPoolRequest) (*v1.ListCredentialPoolResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GatewayCredentials.ListCredentialPool is not implemented")
 }
 
-func (UnimplementedGatewayCredentialsHandler) UpdateCredentialOAuth(context.Context, *connect.Request[v1.UpdateCredentialOAuthRequest]) (*connect.Response[v1.UpdateCredentialOAuthResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GatewayCredentials.UpdateCredentialOAuth is not implemented"))
+func (UnimplementedGatewayCredentialsHandler) UpdateCredentialOAuth(context.Context, *v1.UpdateCredentialOAuthRequest) (*v1.UpdateCredentialOAuthResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GatewayCredentials.UpdateCredentialOAuth is not implemented")
 }
 
-func (UnimplementedGatewayCredentialsHandler) DisableCredential(context.Context, *connect.Request[v1.DisableCredentialRequest]) (*connect.Response[v1.DisableCredentialResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.GatewayCredentials.DisableCredential is not implemented"))
+func (UnimplementedGatewayCredentialsHandler) DisableCredential(context.Context, *v1.DisableCredentialRequest) (*v1.DisableCredentialResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.GatewayCredentials.DisableCredential is not implemented")
+}
+
+type gatewayCredentialsClient struct {
+	client *connect.Client
+}
+
+func (c *gatewayCredentialsClient) ListCredentialPool(ctx context.Context, req *v1.ListCredentialPoolRequest) (*v1.ListCredentialPoolResponse, error) {
+	var res v1.ListCredentialPoolResponse
+	if err := c.client.CallUnary(ctx, gatewayCredentialsListCredentialPoolSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *gatewayCredentialsClient) UpdateCredentialOAuth(ctx context.Context, req *v1.UpdateCredentialOAuthRequest) (*v1.UpdateCredentialOAuthResponse, error) {
+	var res v1.UpdateCredentialOAuthResponse
+	if err := c.client.CallUnary(ctx, gatewayCredentialsUpdateCredentialOAuthSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *gatewayCredentialsClient) DisableCredential(ctx context.Context, req *v1.DisableCredentialRequest) (*v1.DisableCredentialResponse, error) {
+	var res v1.DisableCredentialResponse
+	if err := c.client.CallUnary(ctx, gatewayCredentialsDisableCredentialSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type gatewayCredentialsHandler struct{ svc GatewayCredentialsHandler }
+
+func (h gatewayCredentialsHandler) listCredentialPool(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListCredentialPoolRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListCredentialPool(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h gatewayCredentialsHandler) updateCredentialOAuth(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UpdateCredentialOAuthRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpdateCredentialOAuth(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h gatewayCredentialsHandler) disableCredential(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DisableCredentialRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DisableCredential(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
 }

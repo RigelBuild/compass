@@ -54,7 +54,8 @@ require (
 require golang.org/x/sys v0.49.0
 
 require (
-	connectrpc.com/connect/v2 v2.0.0 // indirect
+	connectrpc.com/connect/v2 v2.0.1 // indirect
+	connectrpc.com/grpchealth/v2 v2.0.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -113,3 +114,5 @@ require (
 	google.golang.org/grpc v1.83.2 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
+
+tool connectrpc.com/connect/v2/cmd/protoc-gen-connect-go

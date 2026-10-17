@@ -35,79 +35,129 @@
 package compassv1internalconnect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// AgentGatewayName is the fully-qualified name of the AgentGateway service.
 	AgentGatewayName = "compass.v1.AgentGateway"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// AgentGatewayCommsProcedure is the fully-qualified name of the AgentGateway's Comms RPC.
+	// AgentGatewayCommsProcedure is the procedure name of the AgentGateway's Comms RPC.
 	AgentGatewayCommsProcedure = "/compass.v1.AgentGateway/Comms"
-	// AgentGatewayLifecycleProcedure is the fully-qualified name of the AgentGateway's Lifecycle RPC.
+	// AgentGatewayLifecycleProcedure is the procedure name of the AgentGateway's Lifecycle RPC.
 	AgentGatewayLifecycleProcedure = "/compass.v1.AgentGateway/Lifecycle"
-	// AgentGatewayPublishProcedure is the fully-qualified name of the AgentGateway's Publish RPC.
+	// AgentGatewayPublishProcedure is the procedure name of the AgentGateway's Publish RPC.
 	AgentGatewayPublishProcedure = "/compass.v1.AgentGateway/Publish"
-	// AgentGatewayPostConversationFrameProcedure is the fully-qualified name of the AgentGateway's
+	// AgentGatewayPostConversationFrameProcedure is the procedure name of the AgentGateway's
 	// PostConversationFrame RPC.
 	AgentGatewayPostConversationFrameProcedure = "/compass.v1.AgentGateway/PostConversationFrame"
-	// AgentGatewayControlProcedure is the fully-qualified name of the AgentGateway's Control RPC.
+	// AgentGatewayControlProcedure is the procedure name of the AgentGateway's Control RPC.
 	AgentGatewayControlProcedure = "/compass.v1.AgentGateway/Control"
-	// AgentGatewayForgeProcedure is the fully-qualified name of the AgentGateway's Forge RPC.
+	// AgentGatewayForgeProcedure is the procedure name of the AgentGateway's Forge RPC.
 	AgentGatewayForgeProcedure = "/compass.v1.AgentGateway/Forge"
-	// AgentGatewayBoardProcedure is the fully-qualified name of the AgentGateway's Board RPC.
+	// AgentGatewayBoardProcedure is the procedure name of the AgentGateway's Board RPC.
 	AgentGatewayBoardProcedure = "/compass.v1.AgentGateway/Board"
-	// AgentGatewayPutSessionBlobProcedure is the fully-qualified name of the AgentGateway's
-	// PutSessionBlob RPC.
+	// AgentGatewayPutSessionBlobProcedure is the procedure name of the AgentGateway's PutSessionBlob
+	// RPC.
 	AgentGatewayPutSessionBlobProcedure = "/compass.v1.AgentGateway/PutSessionBlob"
+)
+
+var (
+	agentGatewayCommsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("Comms"),
+			Procedure:  AgentGatewayCommsProcedure,
+		}
+	})
+	agentGatewayLifecycleSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("Lifecycle"),
+			Procedure:  AgentGatewayLifecycleProcedure,
+		}
+	})
+	agentGatewayPublishSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeClient,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("Publish"),
+			Procedure:  AgentGatewayPublishProcedure,
+		}
+	})
+	agentGatewayPostConversationFrameSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("PostConversationFrame"),
+			Procedure:  AgentGatewayPostConversationFrameProcedure,
+		}
+	})
+	agentGatewayControlSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("Control"),
+			Procedure:  AgentGatewayControlProcedure,
+		}
+	})
+	agentGatewayForgeSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("Forge"),
+			Procedure:  AgentGatewayForgeProcedure,
+		}
+	})
+	agentGatewayBoardSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("Board"),
+			Procedure:  AgentGatewayBoardProcedure,
+		}
+	})
+	agentGatewayPutSessionBlobSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods().ByName("PutSessionBlob"),
+			Procedure:  AgentGatewayPutSessionBlobProcedure,
+		}
+	})
 )
 
 // AgentGatewayClient is a client for the compass.v1.AgentGateway service.
 type AgentGatewayClient interface {
-	Comms(context.Context, *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error)
+	Comms(context.Context, *v1.CommsCallRequest) (*v1.CommsCallResult, error)
 	// Lifecycle (unary, agent -> Runner): spawn or despawn a peer agent. A
 	// sibling call family to Comms (DL-049 shape) — the LifecycleCallRequest /
 	// LifecycleCallResult envelopes are reused verbatim as the
 	// RelayLifecycleCallRequest.call / RelayLifecycleCallResponse.result payloads
 	// on the Runner->Server leg (runner.proto RelayLifecycleCall). One shared
 	// envelope across both hops. INTERNAL surface (never public gen).
-	Lifecycle(context.Context, *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error)
+	Lifecycle(context.Context, *v1.LifecycleCallRequest) (*v1.LifecycleCallResult, error)
 	// agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every
 	// TRACE and SESSION AgentFrame rides it in emission order. Replaces the
 	// stdout relay's trace/session half. The Runner assigns the upstream sequence
 	// (PublishEvents RunnerSeq), so the request carries no seq of its own.
-	Publish(context.Context) *connect.ClientStreamForClient[v1.PublishFrameRequest, v1.PublishFrameResponse]
+	Publish(context.Context) (AgentGatewayPublishClientStream, error)
 	// agent -> Runner, UNARY, delivered-or-erred: the durable conversation-frame
 	// path (consolidation OQ-2(c)). conversation_posted / conversation_updated
 	// ride THIS, not Publish — request/response so an agent-side drop is an ERROR
 	// the agent retries (with a stable idempotency_key, so a commit whose response
 	// was lost is deduped on retry, never duplicated), never a silent gapless loss.
-	PostConversationFrame(context.Context, *connect.Request[v1.PostConversationFrameRequest]) (*connect.Response[v1.PostConversationFrameResponse], error)
+	PostConversationFrame(context.Context, *v1.PostConversationFrameRequest) (*v1.PostConversationFrameResponse, error)
 	// agent-opened server-stream: the control lane. The agent opens it at boot and
 	// the Runner pushes one AgentControl per message. Replaces the never-built
 	// stdin decoder.
-	Control(context.Context, *connect.Request[v1.ControlSubscribeRequest]) (*connect.ServerStreamForClient[v1.AgentControl], error)
+	Control(context.Context, *v1.ControlSubscribeRequest) (AgentGatewayControlClientStream, error)
 	// Forge (unary, agent -> Runner): create/comment/read a forge issue or PR, or
 	// subscribe/unsubscribe an artifact. A sibling call family to Comms and
 	// Lifecycle (DL-049 shape) — the ForgeCallRequest / ForgeCallResult envelopes
@@ -119,7 +169,7 @@ type AgentGatewayClient interface {
 	// credential (DL-052). Read ops are answered from the projection/store, not a
 	// live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
 	// surface (never public gen).
-	Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error)
+	Forge(context.Context, *v1.ForgeCallRequest) (*v1.ForgeCallResult, error)
 	// Board (unary, agent -> Runner): write an issue's canonical lifecycle state.
 	// A sibling call family to Comms/Lifecycle/Forge (DL-049 shape) — the
 	// BoardCallRequest / BoardCallResult envelopes are reused verbatim as the
@@ -128,151 +178,92 @@ type AgentGatewayClient interface {
 	// both hops. The Runner asserts NO account; the Server resolves session_id ->
 	// account and runs the transition under that caller (single-trust-domain MVP,
 	// amendment §Resolved decisions 2). INTERNAL surface (never public gen).
-	Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error)
+	Board(context.Context, *v1.BoardCallRequest) (*v1.BoardCallResult, error)
 	// PutSessionBlob (unary): best-effort upload of one inline-image blob from
 	// the session's blob dir. The Runner binds the session from the socket.
-	PutSessionBlob(context.Context, *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error)
+	PutSessionBlob(context.Context, *v1.PutSessionBlobRequest) (*v1.PutSessionBlobResponse, error)
 }
 
-// NewAgentGatewayClient constructs a client for the compass.v1.AgentGateway service. By default, it
-// uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and sends
-// uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC() or
-// connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewAgentGatewayClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) AgentGatewayClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	agentGatewayMethods := v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods()
-	return &agentGatewayClient{
-		comms: connect.NewClient[v1.CommsCallRequest, v1.CommsCallResult](
-			httpClient,
-			baseURL+AgentGatewayCommsProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("Comms")),
-			connect.WithClientOptions(opts...),
-		),
-		lifecycle: connect.NewClient[v1.LifecycleCallRequest, v1.LifecycleCallResult](
-			httpClient,
-			baseURL+AgentGatewayLifecycleProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("Lifecycle")),
-			connect.WithClientOptions(opts...),
-		),
-		publish: connect.NewClient[v1.PublishFrameRequest, v1.PublishFrameResponse](
-			httpClient,
-			baseURL+AgentGatewayPublishProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("Publish")),
-			connect.WithClientOptions(opts...),
-		),
-		postConversationFrame: connect.NewClient[v1.PostConversationFrameRequest, v1.PostConversationFrameResponse](
-			httpClient,
-			baseURL+AgentGatewayPostConversationFrameProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("PostConversationFrame")),
-			connect.WithClientOptions(opts...),
-		),
-		control: connect.NewClient[v1.ControlSubscribeRequest, v1.AgentControl](
-			httpClient,
-			baseURL+AgentGatewayControlProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("Control")),
-			connect.WithClientOptions(opts...),
-		),
-		forge: connect.NewClient[v1.ForgeCallRequest, v1.ForgeCallResult](
-			httpClient,
-			baseURL+AgentGatewayForgeProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("Forge")),
-			connect.WithClientOptions(opts...),
-		),
-		board: connect.NewClient[v1.BoardCallRequest, v1.BoardCallResult](
-			httpClient,
-			baseURL+AgentGatewayBoardProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("Board")),
-			connect.WithClientOptions(opts...),
-		),
-		putSessionBlob: connect.NewClient[v1.PutSessionBlobRequest, v1.PutSessionBlobResponse](
-			httpClient,
-			baseURL+AgentGatewayPutSessionBlobProcedure,
-			connect.WithSchema(agentGatewayMethods.ByName("PutSessionBlob")),
-			connect.WithClientOptions(opts...),
-		),
+// NewAgentGatewayClient constructs a client for the compass.v1.AgentGateway service. Multiple
+// service clients may share a single connect.Client.
+func NewAgentGatewayClient(client *connect.Client) AgentGatewayClient {
+	return &agentGatewayClient{client: client}
+}
+
+// AgentGatewayPublishClientStream is the client stream for the AgentGateway's Publish RPC.
+type AgentGatewayPublishClientStream struct {
+	stream connect.ClientStream
+}
+
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s AgentGatewayPublishClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a request message to the server.
+func (s AgentGatewayPublishClientStream) Send(req *v1.PublishFrameRequest) error {
+	return s.stream.Send(req)
+}
+
+// CloseAndReceive closes the request side of the stream and returns the single response message. It
+// reads the stream to completion to release its resources.
+func (s AgentGatewayPublishClientStream) CloseAndReceive() (*v1.PublishFrameResponse, error) {
+	if err := s.stream.CloseSend(); err != nil {
+		return nil, err
 	}
+	var res v1.PublishFrameResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
-// agentGatewayClient implements AgentGatewayClient.
-type agentGatewayClient struct {
-	comms                 *connect.Client[v1.CommsCallRequest, v1.CommsCallResult]
-	lifecycle             *connect.Client[v1.LifecycleCallRequest, v1.LifecycleCallResult]
-	publish               *connect.Client[v1.PublishFrameRequest, v1.PublishFrameResponse]
-	postConversationFrame *connect.Client[v1.PostConversationFrameRequest, v1.PostConversationFrameResponse]
-	control               *connect.Client[v1.ControlSubscribeRequest, v1.AgentControl]
-	forge                 *connect.Client[v1.ForgeCallRequest, v1.ForgeCallResult]
-	board                 *connect.Client[v1.BoardCallRequest, v1.BoardCallResult]
-	putSessionBlob        *connect.Client[v1.PutSessionBlobRequest, v1.PutSessionBlobResponse]
+// AgentGatewayControlClientStream is the client stream for the AgentGateway's Control RPC.
+type AgentGatewayControlClientStream struct {
+	stream connect.ClientStream
 }
 
-// Comms calls compass.v1.AgentGateway.Comms.
-func (c *agentGatewayClient) Comms(ctx context.Context, req *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error) {
-	return c.comms.CallUnary(ctx, req)
+// Receive returns the next response message from the server.
+func (s AgentGatewayControlClientStream) Receive() (*v1.AgentControl, error) {
+	var res v1.AgentControl
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
-// Lifecycle calls compass.v1.AgentGateway.Lifecycle.
-func (c *agentGatewayClient) Lifecycle(ctx context.Context, req *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error) {
-	return c.lifecycle.CallUnary(ctx, req)
-}
-
-// Publish calls compass.v1.AgentGateway.Publish.
-func (c *agentGatewayClient) Publish(ctx context.Context) *connect.ClientStreamForClient[v1.PublishFrameRequest, v1.PublishFrameResponse] {
-	return c.publish.CallClientStream(ctx)
-}
-
-// PostConversationFrame calls compass.v1.AgentGateway.PostConversationFrame.
-func (c *agentGatewayClient) PostConversationFrame(ctx context.Context, req *connect.Request[v1.PostConversationFrameRequest]) (*connect.Response[v1.PostConversationFrameResponse], error) {
-	return c.postConversationFrame.CallUnary(ctx, req)
-}
-
-// Control calls compass.v1.AgentGateway.Control.
-func (c *agentGatewayClient) Control(ctx context.Context, req *connect.Request[v1.ControlSubscribeRequest]) (*connect.ServerStreamForClient[v1.AgentControl], error) {
-	return c.control.CallServerStream(ctx, req)
-}
-
-// Forge calls compass.v1.AgentGateway.Forge.
-func (c *agentGatewayClient) Forge(ctx context.Context, req *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error) {
-	return c.forge.CallUnary(ctx, req)
-}
-
-// Board calls compass.v1.AgentGateway.Board.
-func (c *agentGatewayClient) Board(ctx context.Context, req *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error) {
-	return c.board.CallUnary(ctx, req)
-}
-
-// PutSessionBlob calls compass.v1.AgentGateway.PutSessionBlob.
-func (c *agentGatewayClient) PutSessionBlob(ctx context.Context, req *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error) {
-	return c.putSessionBlob.CallUnary(ctx, req)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s AgentGatewayControlClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // AgentGatewayHandler is an implementation of the compass.v1.AgentGateway service.
 type AgentGatewayHandler interface {
-	Comms(context.Context, *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error)
+	Comms(context.Context, *v1.CommsCallRequest) (*v1.CommsCallResult, error)
 	// Lifecycle (unary, agent -> Runner): spawn or despawn a peer agent. A
 	// sibling call family to Comms (DL-049 shape) — the LifecycleCallRequest /
 	// LifecycleCallResult envelopes are reused verbatim as the
 	// RelayLifecycleCallRequest.call / RelayLifecycleCallResponse.result payloads
 	// on the Runner->Server leg (runner.proto RelayLifecycleCall). One shared
 	// envelope across both hops. INTERNAL surface (never public gen).
-	Lifecycle(context.Context, *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error)
+	Lifecycle(context.Context, *v1.LifecycleCallRequest) (*v1.LifecycleCallResult, error)
 	// agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every
 	// TRACE and SESSION AgentFrame rides it in emission order. Replaces the
 	// stdout relay's trace/session half. The Runner assigns the upstream sequence
 	// (PublishEvents RunnerSeq), so the request carries no seq of its own.
-	Publish(context.Context, *connect.ClientStream[v1.PublishFrameRequest]) (*connect.Response[v1.PublishFrameResponse], error)
+	Publish(context.Context, AgentGatewayPublishServerStream) (*v1.PublishFrameResponse, error)
 	// agent -> Runner, UNARY, delivered-or-erred: the durable conversation-frame
 	// path (consolidation OQ-2(c)). conversation_posted / conversation_updated
 	// ride THIS, not Publish — request/response so an agent-side drop is an ERROR
 	// the agent retries (with a stable idempotency_key, so a commit whose response
 	// was lost is deduped on retry, never duplicated), never a silent gapless loss.
-	PostConversationFrame(context.Context, *connect.Request[v1.PostConversationFrameRequest]) (*connect.Response[v1.PostConversationFrameResponse], error)
+	PostConversationFrame(context.Context, *v1.PostConversationFrameRequest) (*v1.PostConversationFrameResponse, error)
 	// agent-opened server-stream: the control lane. The agent opens it at boot and
 	// the Runner pushes one AgentControl per message. Replaces the never-built
 	// stdin decoder.
-	Control(context.Context, *connect.Request[v1.ControlSubscribeRequest], *connect.ServerStream[v1.AgentControl]) error
+	Control(context.Context, *v1.ControlSubscribeRequest, AgentGatewayControlServerStream) error
 	// Forge (unary, agent -> Runner): create/comment/read a forge issue or PR, or
 	// subscribe/unsubscribe an artifact. A sibling call family to Comms and
 	// Lifecycle (DL-049 shape) — the ForgeCallRequest / ForgeCallResult envelopes
@@ -284,7 +275,7 @@ type AgentGatewayHandler interface {
 	// credential (DL-052). Read ops are answered from the projection/store, not a
 	// live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
 	// surface (never public gen).
-	Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error)
+	Forge(context.Context, *v1.ForgeCallRequest) (*v1.ForgeCallResult, error)
 	// Board (unary, agent -> Runner): write an issue's canonical lifecycle state.
 	// A sibling call family to Comms/Lifecycle/Forge (DL-049 shape) — the
 	// BoardCallRequest / BoardCallResult envelopes are reused verbatim as the
@@ -293,122 +284,246 @@ type AgentGatewayHandler interface {
 	// both hops. The Runner asserts NO account; the Server resolves session_id ->
 	// account and runs the transition under that caller (single-trust-domain MVP,
 	// amendment §Resolved decisions 2). INTERNAL surface (never public gen).
-	Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error)
+	Board(context.Context, *v1.BoardCallRequest) (*v1.BoardCallResult, error)
 	// PutSessionBlob (unary): best-effort upload of one inline-image blob from
 	// the session's blob dir. The Runner binds the session from the socket.
-	PutSessionBlob(context.Context, *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error)
+	PutSessionBlob(context.Context, *v1.PutSessionBlobRequest) (*v1.PutSessionBlobResponse, error)
 }
 
-// NewAgentGatewayHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	agentGatewayMethods := v1.File_compass_v1_agent_gateway_proto.Services().ByName("AgentGateway").Methods()
-	agentGatewayCommsHandler := connect.NewUnaryHandler(
-		AgentGatewayCommsProcedure,
-		svc.Comms,
-		connect.WithSchema(agentGatewayMethods.ByName("Comms")),
-		connect.WithHandlerOptions(opts...),
+// RegisterAgentGatewayHandler registers svc as the compass.v1.AgentGateway implementation on
+// server.
+func RegisterAgentGatewayHandler(server *connect.Server, svc AgentGatewayHandler) {
+	adapter := agentGatewayHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: agentGatewayCommsSpec(), Handler: adapter.comms},
+		connect.Method{Spec: agentGatewayLifecycleSpec(), Handler: adapter.lifecycle},
+		connect.Method{Spec: agentGatewayPublishSpec(), Handler: adapter.publish},
+		connect.Method{Spec: agentGatewayPostConversationFrameSpec(), Handler: adapter.postConversationFrame},
+		connect.Method{Spec: agentGatewayControlSpec(), Handler: adapter.control},
+		connect.Method{Spec: agentGatewayForgeSpec(), Handler: adapter.forge},
+		connect.Method{Spec: agentGatewayBoardSpec(), Handler: adapter.board},
+		connect.Method{Spec: agentGatewayPutSessionBlobSpec(), Handler: adapter.putSessionBlob},
 	)
-	agentGatewayLifecycleHandler := connect.NewUnaryHandler(
-		AgentGatewayLifecycleProcedure,
-		svc.Lifecycle,
-		connect.WithSchema(agentGatewayMethods.ByName("Lifecycle")),
-		connect.WithHandlerOptions(opts...),
-	)
-	agentGatewayPublishHandler := connect.NewClientStreamHandler(
-		AgentGatewayPublishProcedure,
-		svc.Publish,
-		connect.WithSchema(agentGatewayMethods.ByName("Publish")),
-		connect.WithHandlerOptions(opts...),
-	)
-	agentGatewayPostConversationFrameHandler := connect.NewUnaryHandler(
-		AgentGatewayPostConversationFrameProcedure,
-		svc.PostConversationFrame,
-		connect.WithSchema(agentGatewayMethods.ByName("PostConversationFrame")),
-		connect.WithHandlerOptions(opts...),
-	)
-	agentGatewayControlHandler := connect.NewServerStreamHandler(
-		AgentGatewayControlProcedure,
-		svc.Control,
-		connect.WithSchema(agentGatewayMethods.ByName("Control")),
-		connect.WithHandlerOptions(opts...),
-	)
-	agentGatewayForgeHandler := connect.NewUnaryHandler(
-		AgentGatewayForgeProcedure,
-		svc.Forge,
-		connect.WithSchema(agentGatewayMethods.ByName("Forge")),
-		connect.WithHandlerOptions(opts...),
-	)
-	agentGatewayBoardHandler := connect.NewUnaryHandler(
-		AgentGatewayBoardProcedure,
-		svc.Board,
-		connect.WithSchema(agentGatewayMethods.ByName("Board")),
-		connect.WithHandlerOptions(opts...),
-	)
-	agentGatewayPutSessionBlobHandler := connect.NewUnaryHandler(
-		AgentGatewayPutSessionBlobProcedure,
-		svc.PutSessionBlob,
-		connect.WithSchema(agentGatewayMethods.ByName("PutSessionBlob")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.AgentGateway/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case AgentGatewayCommsProcedure:
-			agentGatewayCommsHandler.ServeHTTP(w, r)
-		case AgentGatewayLifecycleProcedure:
-			agentGatewayLifecycleHandler.ServeHTTP(w, r)
-		case AgentGatewayPublishProcedure:
-			agentGatewayPublishHandler.ServeHTTP(w, r)
-		case AgentGatewayPostConversationFrameProcedure:
-			agentGatewayPostConversationFrameHandler.ServeHTTP(w, r)
-		case AgentGatewayControlProcedure:
-			agentGatewayControlHandler.ServeHTTP(w, r)
-		case AgentGatewayForgeProcedure:
-			agentGatewayForgeHandler.ServeHTTP(w, r)
-		case AgentGatewayBoardProcedure:
-			agentGatewayBoardHandler.ServeHTTP(w, r)
-		case AgentGatewayPutSessionBlobProcedure:
-			agentGatewayPutSessionBlobHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// AgentGatewayPublishServerStream is the server stream for the AgentGateway's Publish RPC.
+type AgentGatewayPublishServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s AgentGatewayPublishServerStream) Receive() (*v1.PublishFrameRequest, error) {
+	var req v1.PublishFrameRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// AgentGatewayControlServerStream is the server stream for the AgentGateway's Control RPC.
+type AgentGatewayControlServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s AgentGatewayControlServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s AgentGatewayControlServerStream) Send(res *v1.AgentControl) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedAgentGatewayHandler returns CodeUnimplemented from all methods.
 type UnimplementedAgentGatewayHandler struct{}
 
-func (UnimplementedAgentGatewayHandler) Comms(context.Context, *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Comms is not implemented"))
+func (UnimplementedAgentGatewayHandler) Comms(context.Context, *v1.CommsCallRequest) (*v1.CommsCallResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.Comms is not implemented")
 }
 
-func (UnimplementedAgentGatewayHandler) Lifecycle(context.Context, *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Lifecycle is not implemented"))
+func (UnimplementedAgentGatewayHandler) Lifecycle(context.Context, *v1.LifecycleCallRequest) (*v1.LifecycleCallResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.Lifecycle is not implemented")
 }
 
-func (UnimplementedAgentGatewayHandler) Publish(context.Context, *connect.ClientStream[v1.PublishFrameRequest]) (*connect.Response[v1.PublishFrameResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Publish is not implemented"))
+func (UnimplementedAgentGatewayHandler) Publish(context.Context, AgentGatewayPublishServerStream) (*v1.PublishFrameResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.Publish is not implemented")
 }
 
-func (UnimplementedAgentGatewayHandler) PostConversationFrame(context.Context, *connect.Request[v1.PostConversationFrameRequest]) (*connect.Response[v1.PostConversationFrameResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.PostConversationFrame is not implemented"))
+func (UnimplementedAgentGatewayHandler) PostConversationFrame(context.Context, *v1.PostConversationFrameRequest) (*v1.PostConversationFrameResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.PostConversationFrame is not implemented")
 }
 
-func (UnimplementedAgentGatewayHandler) Control(context.Context, *connect.Request[v1.ControlSubscribeRequest], *connect.ServerStream[v1.AgentControl]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Control is not implemented"))
+func (UnimplementedAgentGatewayHandler) Control(context.Context, *v1.ControlSubscribeRequest, AgentGatewayControlServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.Control is not implemented")
 }
 
-func (UnimplementedAgentGatewayHandler) Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Forge is not implemented"))
+func (UnimplementedAgentGatewayHandler) Forge(context.Context, *v1.ForgeCallRequest) (*v1.ForgeCallResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.Forge is not implemented")
 }
 
-func (UnimplementedAgentGatewayHandler) Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Board is not implemented"))
+func (UnimplementedAgentGatewayHandler) Board(context.Context, *v1.BoardCallRequest) (*v1.BoardCallResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.Board is not implemented")
 }
 
-func (UnimplementedAgentGatewayHandler) PutSessionBlob(context.Context, *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.PutSessionBlob is not implemented"))
+func (UnimplementedAgentGatewayHandler) PutSessionBlob(context.Context, *v1.PutSessionBlobRequest) (*v1.PutSessionBlobResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentGateway.PutSessionBlob is not implemented")
+}
+
+type agentGatewayClient struct {
+	client *connect.Client
+}
+
+func (c *agentGatewayClient) Comms(ctx context.Context, req *v1.CommsCallRequest) (*v1.CommsCallResult, error) {
+	var res v1.CommsCallResult
+	if err := c.client.CallUnary(ctx, agentGatewayCommsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentGatewayClient) Lifecycle(ctx context.Context, req *v1.LifecycleCallRequest) (*v1.LifecycleCallResult, error) {
+	var res v1.LifecycleCallResult
+	if err := c.client.CallUnary(ctx, agentGatewayLifecycleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentGatewayClient) Publish(ctx context.Context) (AgentGatewayPublishClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, agentGatewayPublishSpec())
+	if err != nil {
+		return AgentGatewayPublishClientStream{}, err
+	}
+	return AgentGatewayPublishClientStream{stream: stream}, nil
+}
+
+func (c *agentGatewayClient) PostConversationFrame(ctx context.Context, req *v1.PostConversationFrameRequest) (*v1.PostConversationFrameResponse, error) {
+	var res v1.PostConversationFrameResponse
+	if err := c.client.CallUnary(ctx, agentGatewayPostConversationFrameSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentGatewayClient) Control(ctx context.Context, req *v1.ControlSubscribeRequest) (AgentGatewayControlClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, agentGatewayControlSpec(), req)
+	if err != nil {
+		return AgentGatewayControlClientStream{}, err
+	}
+	return AgentGatewayControlClientStream{stream: stream}, nil
+}
+
+func (c *agentGatewayClient) Forge(ctx context.Context, req *v1.ForgeCallRequest) (*v1.ForgeCallResult, error) {
+	var res v1.ForgeCallResult
+	if err := c.client.CallUnary(ctx, agentGatewayForgeSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentGatewayClient) Board(ctx context.Context, req *v1.BoardCallRequest) (*v1.BoardCallResult, error) {
+	var res v1.BoardCallResult
+	if err := c.client.CallUnary(ctx, agentGatewayBoardSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentGatewayClient) PutSessionBlob(ctx context.Context, req *v1.PutSessionBlobRequest) (*v1.PutSessionBlobResponse, error) {
+	var res v1.PutSessionBlobResponse
+	if err := c.client.CallUnary(ctx, agentGatewayPutSessionBlobSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type agentGatewayHandler struct{ svc AgentGatewayHandler }
+
+func (h agentGatewayHandler) comms(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CommsCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Comms(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentGatewayHandler) lifecycle(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.LifecycleCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Lifecycle(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentGatewayHandler) publish(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	res, err := h.svc.Publish(ctx, AgentGatewayPublishServerStream{stream: stream})
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentGatewayHandler) postConversationFrame(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PostConversationFrameRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PostConversationFrame(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentGatewayHandler) control(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ControlSubscribeRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.Control(ctx, &req, AgentGatewayControlServerStream{stream: stream})
+}
+
+func (h agentGatewayHandler) forge(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ForgeCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Forge(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentGatewayHandler) board(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.BoardCallRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Board(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentGatewayHandler) putSessionBlob(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PutSessionBlobRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PutSessionBlob(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
 }

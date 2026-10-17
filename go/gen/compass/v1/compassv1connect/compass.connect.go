@@ -13,20 +13,11 @@
 package compassv1connect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "github.com/RigelBuild/compass/go/gen/compass/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// CompassServiceName is the fully-qualified name of the CompassService service.
@@ -37,128 +28,329 @@ const (
 	AgentRepositoryServiceName = "compass.v1.AgentRepositoryService"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// CompassServiceGetServerInfoProcedure is the fully-qualified name of the CompassService's
-	// GetServerInfo RPC.
+	// CompassServiceGetServerInfoProcedure is the procedure name of the CompassService's GetServerInfo
+	// RPC.
 	CompassServiceGetServerInfoProcedure = "/compass.v1.CompassService/GetServerInfo"
-	// CompassServiceWhoAmIProcedure is the fully-qualified name of the CompassService's WhoAmI RPC.
+	// CompassServiceWhoAmIProcedure is the procedure name of the CompassService's WhoAmI RPC.
 	CompassServiceWhoAmIProcedure = "/compass.v1.CompassService/WhoAmI"
-	// CompassServiceGetRefLinkRulesProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceGetRefLinkRulesProcedure is the procedure name of the CompassService's
 	// GetRefLinkRules RPC.
 	CompassServiceGetRefLinkRulesProcedure = "/compass.v1.CompassService/GetRefLinkRules"
-	// CompassServiceGetTourStateProcedure is the fully-qualified name of the CompassService's
-	// GetTourState RPC.
+	// CompassServiceGetTourStateProcedure is the procedure name of the CompassService's GetTourState
+	// RPC.
 	CompassServiceGetTourStateProcedure = "/compass.v1.CompassService/GetTourState"
-	// CompassServiceClaimTourStartProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceClaimTourStartProcedure is the procedure name of the CompassService's
 	// ClaimTourStart RPC.
 	CompassServiceClaimTourStartProcedure = "/compass.v1.CompassService/ClaimTourStart"
-	// CompassServiceSetTourStateProcedure is the fully-qualified name of the CompassService's
-	// SetTourState RPC.
+	// CompassServiceSetTourStateProcedure is the procedure name of the CompassService's SetTourState
+	// RPC.
 	CompassServiceSetTourStateProcedure = "/compass.v1.CompassService/SetTourState"
-	// CompassServiceSubscribeEventsProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceSubscribeEventsProcedure is the procedure name of the CompassService's
 	// SubscribeEvents RPC.
 	CompassServiceSubscribeEventsProcedure = "/compass.v1.CompassService/SubscribeEvents"
-	// CompassServiceListBoardIssuesProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceListBoardIssuesProcedure is the procedure name of the CompassService's
 	// ListBoardIssues RPC.
 	CompassServiceListBoardIssuesProcedure = "/compass.v1.CompassService/ListBoardIssues"
-	// CompassServiceSearchIssuesProcedure is the fully-qualified name of the CompassService's
-	// SearchIssues RPC.
+	// CompassServiceSearchIssuesProcedure is the procedure name of the CompassService's SearchIssues
+	// RPC.
 	CompassServiceSearchIssuesProcedure = "/compass.v1.CompassService/SearchIssues"
-	// CompassServiceProvisionAgentWorkspaceProcedure is the fully-qualified name of the
-	// CompassService's ProvisionAgentWorkspace RPC.
+	// CompassServiceProvisionAgentWorkspaceProcedure is the procedure name of the CompassService's
+	// ProvisionAgentWorkspace RPC.
 	CompassServiceProvisionAgentWorkspaceProcedure = "/compass.v1.CompassService/ProvisionAgentWorkspace"
-	// CompassServiceStartAgentSessionProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceStartAgentSessionProcedure is the procedure name of the CompassService's
 	// StartAgentSession RPC.
 	CompassServiceStartAgentSessionProcedure = "/compass.v1.CompassService/StartAgentSession"
-	// CompassServiceSpawnAgentProcedure is the fully-qualified name of the CompassService's SpawnAgent
-	// RPC.
+	// CompassServiceSpawnAgentProcedure is the procedure name of the CompassService's SpawnAgent RPC.
 	CompassServiceSpawnAgentProcedure = "/compass.v1.CompassService/SpawnAgent"
-	// CompassServiceStopAgentSessionProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceStopAgentSessionProcedure is the procedure name of the CompassService's
 	// StopAgentSession RPC.
 	CompassServiceStopAgentSessionProcedure = "/compass.v1.CompassService/StopAgentSession"
-	// CompassServiceSkipBatchWindowProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceSkipBatchWindowProcedure is the procedure name of the CompassService's
 	// SkipBatchWindow RPC.
 	CompassServiceSkipBatchWindowProcedure = "/compass.v1.CompassService/SkipBatchWindow"
-	// CompassServiceRemoveAgentWorkspaceProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceRemoveAgentWorkspaceProcedure is the procedure name of the CompassService's
 	// RemoveAgentWorkspace RPC.
 	CompassServiceRemoveAgentWorkspaceProcedure = "/compass.v1.CompassService/RemoveAgentWorkspace"
-	// CompassServiceReloadAgentSessionProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceReloadAgentSessionProcedure is the procedure name of the CompassService's
 	// ReloadAgentSession RPC.
 	CompassServiceReloadAgentSessionProcedure = "/compass.v1.CompassService/ReloadAgentSession"
-	// CompassServiceGetAgentStatusProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceGetAgentStatusProcedure is the procedure name of the CompassService's
 	// GetAgentStatus RPC.
 	CompassServiceGetAgentStatusProcedure = "/compass.v1.CompassService/GetAgentStatus"
-	// CompassServiceSubscribeAgentSessionProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceSubscribeAgentSessionProcedure is the procedure name of the CompassService's
 	// SubscribeAgentSession RPC.
 	CompassServiceSubscribeAgentSessionProcedure = "/compass.v1.CompassService/SubscribeAgentSession"
-	// CompassServiceIssueTokenProcedure is the fully-qualified name of the CompassService's IssueToken
-	// RPC.
+	// CompassServiceIssueTokenProcedure is the procedure name of the CompassService's IssueToken RPC.
 	CompassServiceIssueTokenProcedure = "/compass.v1.CompassService/IssueToken"
-	// CompassServiceRenameAccountProcedure is the fully-qualified name of the CompassService's
-	// RenameAccount RPC.
+	// CompassServiceRenameAccountProcedure is the procedure name of the CompassService's RenameAccount
+	// RPC.
 	CompassServiceRenameAccountProcedure = "/compass.v1.CompassService/RenameAccount"
-	// CompassServiceRevokeTokenProcedure is the fully-qualified name of the CompassService's
-	// RevokeToken RPC.
+	// CompassServiceRevokeTokenProcedure is the procedure name of the CompassService's RevokeToken RPC.
 	CompassServiceRevokeTokenProcedure = "/compass.v1.CompassService/RevokeToken"
-	// CompassServicePutAgentConfigProcedure is the fully-qualified name of the CompassService's
+	// CompassServicePutAgentConfigProcedure is the procedure name of the CompassService's
 	// PutAgentConfig RPC.
 	CompassServicePutAgentConfigProcedure = "/compass.v1.CompassService/PutAgentConfig"
-	// CompassServiceGetAgentConfigInfoProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceGetAgentConfigInfoProcedure is the procedure name of the CompassService's
 	// GetAgentConfigInfo RPC.
 	CompassServiceGetAgentConfigInfoProcedure = "/compass.v1.CompassService/GetAgentConfigInfo"
-	// CompassServiceDeleteAgentConfigProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceDeleteAgentConfigProcedure is the procedure name of the CompassService's
 	// DeleteAgentConfig RPC.
 	CompassServiceDeleteAgentConfigProcedure = "/compass.v1.CompassService/DeleteAgentConfig"
-	// CompassServicePutModelRegistryProcedure is the fully-qualified name of the CompassService's
+	// CompassServicePutModelRegistryProcedure is the procedure name of the CompassService's
 	// PutModelRegistry RPC.
 	CompassServicePutModelRegistryProcedure = "/compass.v1.CompassService/PutModelRegistry"
-	// CompassServiceGetModelRegistryProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceGetModelRegistryProcedure is the procedure name of the CompassService's
 	// GetModelRegistry RPC.
 	CompassServiceGetModelRegistryProcedure = "/compass.v1.CompassService/GetModelRegistry"
-	// CompassServiceDeleteModelRegistryProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceDeleteModelRegistryProcedure is the procedure name of the CompassService's
 	// DeleteModelRegistry RPC.
 	CompassServiceDeleteModelRegistryProcedure = "/compass.v1.CompassService/DeleteModelRegistry"
-	// CompassServiceListForgeMirrorSettingsProcedure is the fully-qualified name of the
-	// CompassService's ListForgeMirrorSettings RPC.
+	// CompassServiceListForgeMirrorSettingsProcedure is the procedure name of the CompassService's
+	// ListForgeMirrorSettings RPC.
 	CompassServiceListForgeMirrorSettingsProcedure = "/compass.v1.CompassService/ListForgeMirrorSettings"
-	// CompassServiceSetForgeMirrorSettingProcedure is the fully-qualified name of the CompassService's
+	// CompassServiceSetForgeMirrorSettingProcedure is the procedure name of the CompassService's
 	// SetForgeMirrorSetting RPC.
 	CompassServiceSetForgeMirrorSettingProcedure = "/compass.v1.CompassService/SetForgeMirrorSetting"
-	// SecretsServiceSetSecretProcedure is the fully-qualified name of the SecretsService's SetSecret
-	// RPC.
+	// SecretsServiceSetSecretProcedure is the procedure name of the SecretsService's SetSecret RPC.
 	SecretsServiceSetSecretProcedure = "/compass.v1.SecretsService/SetSecret"
-	// SecretsServiceListSecretsProcedure is the fully-qualified name of the SecretsService's
-	// ListSecrets RPC.
+	// SecretsServiceListSecretsProcedure is the procedure name of the SecretsService's ListSecrets RPC.
 	SecretsServiceListSecretsProcedure = "/compass.v1.SecretsService/ListSecrets"
-	// SecretsServiceDeleteSecretProcedure is the fully-qualified name of the SecretsService's
-	// DeleteSecret RPC.
+	// SecretsServiceDeleteSecretProcedure is the procedure name of the SecretsService's DeleteSecret
+	// RPC.
 	SecretsServiceDeleteSecretProcedure = "/compass.v1.SecretsService/DeleteSecret"
-	// SecretsServiceListServerSecretsProcedure is the fully-qualified name of the SecretsService's
+	// SecretsServiceListServerSecretsProcedure is the procedure name of the SecretsService's
 	// ListServerSecrets RPC.
 	SecretsServiceListServerSecretsProcedure = "/compass.v1.SecretsService/ListServerSecrets"
-	// AgentRepositoryServiceGrantAgentRepositoryProcedure is the fully-qualified name of the
+	// AgentRepositoryServiceGrantAgentRepositoryProcedure is the procedure name of the
 	// AgentRepositoryService's GrantAgentRepository RPC.
 	AgentRepositoryServiceGrantAgentRepositoryProcedure = "/compass.v1.AgentRepositoryService/GrantAgentRepository"
-	// AgentRepositoryServiceRevokeAgentRepositoryProcedure is the fully-qualified name of the
+	// AgentRepositoryServiceRevokeAgentRepositoryProcedure is the procedure name of the
 	// AgentRepositoryService's RevokeAgentRepository RPC.
 	AgentRepositoryServiceRevokeAgentRepositoryProcedure = "/compass.v1.AgentRepositoryService/RevokeAgentRepository"
-	// AgentRepositoryServiceListAgentRepositoriesProcedure is the fully-qualified name of the
+	// AgentRepositoryServiceListAgentRepositoriesProcedure is the procedure name of the
 	// AgentRepositoryService's ListAgentRepositories RPC.
 	AgentRepositoryServiceListAgentRepositoriesProcedure = "/compass.v1.AgentRepositoryService/ListAgentRepositories"
+)
+
+var (
+	compassServiceGetServerInfoSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("GetServerInfo"),
+			Procedure:  CompassServiceGetServerInfoProcedure,
+		}
+	})
+	compassServiceWhoAmISpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("WhoAmI"),
+			Procedure:  CompassServiceWhoAmIProcedure,
+		}
+	})
+	compassServiceGetRefLinkRulesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("GetRefLinkRules"),
+			Procedure:  CompassServiceGetRefLinkRulesProcedure,
+		}
+	})
+	compassServiceGetTourStateSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("GetTourState"),
+			Procedure:  CompassServiceGetTourStateProcedure,
+		}
+	})
+	compassServiceClaimTourStartSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("ClaimTourStart"),
+			Procedure:  CompassServiceClaimTourStartProcedure,
+		}
+	})
+	compassServiceSetTourStateSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("SetTourState"),
+			Procedure:  CompassServiceSetTourStateProcedure,
+		}
+	})
+	compassServiceSubscribeEventsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("SubscribeEvents"),
+			Procedure:  CompassServiceSubscribeEventsProcedure,
+		}
+	})
+	compassServiceListBoardIssuesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("ListBoardIssues"),
+			Procedure:  CompassServiceListBoardIssuesProcedure,
+		}
+	})
+	compassServiceSearchIssuesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("SearchIssues"),
+			Procedure:  CompassServiceSearchIssuesProcedure,
+		}
+	})
+	compassServiceProvisionAgentWorkspaceSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("ProvisionAgentWorkspace"),
+			Procedure:  CompassServiceProvisionAgentWorkspaceProcedure,
+		}
+	})
+	compassServiceStartAgentSessionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("StartAgentSession"),
+			Procedure:  CompassServiceStartAgentSessionProcedure,
+		}
+	})
+	compassServiceSpawnAgentSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("SpawnAgent"),
+			Procedure:  CompassServiceSpawnAgentProcedure,
+		}
+	})
+	compassServiceStopAgentSessionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("StopAgentSession"),
+			Procedure:  CompassServiceStopAgentSessionProcedure,
+		}
+	})
+	compassServiceSkipBatchWindowSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("SkipBatchWindow"),
+			Procedure:  CompassServiceSkipBatchWindowProcedure,
+		}
+	})
+	compassServiceRemoveAgentWorkspaceSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("RemoveAgentWorkspace"),
+			Procedure:  CompassServiceRemoveAgentWorkspaceProcedure,
+		}
+	})
+	compassServiceReloadAgentSessionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("ReloadAgentSession"),
+			Procedure:  CompassServiceReloadAgentSessionProcedure,
+		}
+	})
+	compassServiceGetAgentStatusSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("GetAgentStatus"),
+			Procedure:  CompassServiceGetAgentStatusProcedure,
+		}
+	})
+	compassServiceSubscribeAgentSessionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("SubscribeAgentSession"),
+			Procedure:  CompassServiceSubscribeAgentSessionProcedure,
+		}
+	})
+	compassServiceIssueTokenSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("IssueToken"),
+			Procedure:  CompassServiceIssueTokenProcedure,
+		}
+	})
+	compassServiceRenameAccountSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("RenameAccount"),
+			Procedure:  CompassServiceRenameAccountProcedure,
+		}
+	})
+	compassServiceRevokeTokenSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("RevokeToken"),
+			Procedure:  CompassServiceRevokeTokenProcedure,
+		}
+	})
+	compassServicePutAgentConfigSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("PutAgentConfig"),
+			Procedure:  CompassServicePutAgentConfigProcedure,
+		}
+	})
+	compassServiceGetAgentConfigInfoSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("GetAgentConfigInfo"),
+			Procedure:  CompassServiceGetAgentConfigInfoProcedure,
+		}
+	})
+	compassServiceDeleteAgentConfigSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("DeleteAgentConfig"),
+			Procedure:  CompassServiceDeleteAgentConfigProcedure,
+		}
+	})
+	compassServicePutModelRegistrySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("PutModelRegistry"),
+			Procedure:  CompassServicePutModelRegistryProcedure,
+		}
+	})
+	compassServiceGetModelRegistrySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("GetModelRegistry"),
+			Procedure:  CompassServiceGetModelRegistryProcedure,
+		}
+	})
+	compassServiceDeleteModelRegistrySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("DeleteModelRegistry"),
+			Procedure:  CompassServiceDeleteModelRegistryProcedure,
+		}
+	})
+	compassServiceListForgeMirrorSettingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("ListForgeMirrorSettings"),
+			Procedure:  CompassServiceListForgeMirrorSettingsProcedure,
+		}
+	})
+	compassServiceSetForgeMirrorSettingSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods().ByName("SetForgeMirrorSetting"),
+			Procedure:  CompassServiceSetForgeMirrorSettingProcedure,
+		}
+	})
 )
 
 // CompassServiceClient is a client for the compass.v1.CompassService service.
 type CompassServiceClient interface {
 	// Liveness probe plus the server's build + contract version. The first
 	// round-trip a UI makes after connecting over the local transport.
-	GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error)
+	GetServerInfo(context.Context, *v1.GetServerInfoRequest) (*v1.GetServerInfoResponse, error)
 	// Return the caller's own account id, resolved server-side from the
 	// authenticated credential — the socket's ambient-admin identity for an
 	// embedded client, the bearer subject for a native client. A UI calls it at
@@ -167,20 +359,20 @@ type CompassServiceClient interface {
 	// roster keyed by this id, so they are deliberately not echoed here.
 	// authenticatedOpen: any authenticated caller may learn its OWN identity
 	// (not admin-gated). account_id is server-derived, never client-supplied.
-	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
+	WhoAmI(context.Context, *v1.WhoAmIRequest) (*v1.WhoAmIResponse, error)
 	// Link targets for issue and PR references in rendered text, built from the
 	// configured forges. authenticatedOpen: the rules hold no secrets.
-	GetRefLinkRules(context.Context, *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error)
+	GetRefLinkRules(context.Context, *v1.GetRefLinkRulesRequest) (*v1.GetRefLinkRulesResponse, error)
 	// Per-account first-run progress. No account id is accepted; the server keys
 	// each operation to the authenticated caller.
-	GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error)
-	ClaimTourStart(context.Context, *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error)
-	SetTourState(context.Context, *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error)
+	GetTourState(context.Context, *v1.GetTourStateRequest) (*v1.GetTourStateResponse, error)
+	ClaimTourStart(context.Context, *v1.ClaimTourStartRequest) (*v1.ClaimTourStartResponse, error)
+	SetTourState(context.Context, *v1.SetTourStateRequest) (*v1.SetTourStateResponse, error)
 	// The event channel: board, agent, and audit updates as a server stream
 	// (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
 	// from the server to the UI.
-	SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest]) (*connect.ServerStreamForClient[v1.SubscribeEventsResponse], error)
+	SubscribeEvents(context.Context, *v1.SubscribeEventsRequest) (CompassServiceSubscribeEventsClientStream, error)
 	// The durable board catch-up read: at `since_seq = 0` a UI re-snapshots the
 	// whole board (every issue in all lifecycle states) from the projection store,
 	// then unions the result with the SubscribeEvents live tail (deduping by issue
@@ -192,21 +384,21 @@ type CompassServiceClient interface {
 	// account may read the board, the same access class as the SubscribeEvents
 	// tail it re-snapshots — the whole board is repo-scoped, with no per-account
 	// filter, exactly like that tail.
-	ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error)
+	ListBoardIssues(context.Context, *v1.ListBoardIssuesRequest) (*v1.ListBoardIssuesResponse, error)
 	// Full-text search over the whole board (title/body/summary/labels),
 	// best-match-first. authenticatedOpen: same access class as ListBoardIssues.
-	SearchIssues(context.Context, *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error)
+	SearchIssues(context.Context, *v1.SearchIssuesRequest) (*v1.SearchIssuesResponse, error)
 	// Provision a per-agent container for a workstream: build the image, create
 	// and start the isolated container, arm egress, and clone the repo — the
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
 	// container_name that StartAgentSession then brings online. Provision and
 	// start are separate RPCs: a container can exist idle before an agent session
 	// runs in it. Routes Client -> Server -> RunnerHub -> Runner (design: architecture-lineage).
-	ProvisionAgentWorkspace(context.Context, *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error)
+	ProvisionAgentWorkspace(context.Context, *v1.ProvisionAgentWorkspaceRequest) (*v1.ProvisionAgentWorkspaceResponse, error)
 	// Bring the first-party agent in a provisioned container online over the
 	// Runner streaming-exec bridge and stream its relayed activity onto
 	// SubscribeEvents. Returns the server-side session id (design: architecture-lineage).
-	StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error)
+	StartAgentSession(context.Context, *v1.StartAgentSessionRequest) (*v1.StartAgentSessionResponse, error)
 	// Spawn an agent: the composite lifecycle operation that provisions a
 	// per-agent container and brings its session online in ONE call, so a UI
 	// starts an agent without orchestrating ProvisionAgentWorkspace and
@@ -219,13 +411,13 @@ type CompassServiceClient interface {
 	// a pre-Provision short-circuit ordered AFTER the idempotency dedup-join, so
 	// a retry of an in-flight/completed spawn rejoins the original rather than
 	// bouncing. Routes Client -> Server -> RunnerHub -> Runner.
-	SpawnAgent(context.Context, *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error)
+	SpawnAgent(context.Context, *v1.SpawnAgentRequest) (*v1.SpawnAgentResponse, error)
 	// Stop a live agent session: deliberately kill the in-container agent and
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
-	StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error)
+	StopAgentSession(context.Context, *v1.StopAgentSessionRequest) (*v1.StopAgentSessionResponse, error)
 	// End the agent's idle batching window now; with no window open it is a no-op.
-	SkipBatchWindow(context.Context, *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error)
+	SkipBatchWindow(context.Context, *v1.SkipBatchWindowRequest) (*v1.SkipBatchWindowResponse, error)
 	// Remove a per-agent container and release its durable placement: the
 	// teardown counterpart to ProvisionAgentWorkspace, keyed by the same
 	// container_name. Admin-gated on this public door (like IssueToken); the
@@ -233,14 +425,14 @@ type CompassServiceClient interface {
 	// its own owner-scoped check, never this door. Idempotent — removing an
 	// unknown/already-removed container succeeds. Routes Client -> Server ->
 	// RunnerHub -> Runner.
-	RemoveAgentWorkspace(context.Context, *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error)
+	RemoveAgentWorkspace(context.Context, *v1.RemoveAgentWorkspaceRequest) (*v1.RemoveAgentWorkspaceResponse, error)
 	// Reload a live agent session in place: tear down the current agent exec and
 	// start a fresh one against the same container, reusing the session id so the
 	// board entry is continuous. The agent reloads from workspace state
 	// (design: architecture-lineage).
-	ReloadAgentSession(context.Context, *connect.Request[v1.ReloadAgentSessionRequest]) (*connect.Response[v1.ReloadAgentSessionResponse], error)
+	ReloadAgentSession(context.Context, *v1.ReloadAgentSessionRequest) (*v1.ReloadAgentSessionResponse, error)
 	// Query one session's status, or every live session's when no id is given.
-	GetAgentStatus(context.Context, *connect.Request[v1.GetAgentStatusRequest]) (*connect.Response[v1.GetAgentStatusResponse], error)
+	GetAgentStatus(context.Context, *v1.GetAgentStatusRequest) (*v1.GetAgentStatusResponse, error)
 	// Subscribe to one agent session's typed observation trace as a server
 	// stream: the session-tail pane. Access is scoped to the caller's
 	// home-channel membership — the handler resolves the session's owning agent's
@@ -253,7 +445,7 @@ type CompassServiceClient interface {
 	// a wrapper would change the wire shape. Ignore
 	// the rule for this one RPC only — every other RPC keeps it armed.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-	SubscribeAgentSession(context.Context, *connect.Request[v1.SubscribeAgentSessionRequest]) (*connect.ServerStreamForClient[v1.AgentSessionFrame], error)
+	SubscribeAgentSession(context.Context, *v1.SubscribeAgentSessionRequest) (CompassServiceSubscribeAgentSessionClientStream, error)
 	// Admin-gated: only an admin may mint a token for an account; a non-admin
 	// caller gets permission_denied. Enforcement lands with the network door's
 	// admin gate (not in this schema-only change). Token is 32B random,
@@ -261,13 +453,13 @@ type CompassServiceClient interface {
 	// resolves it to this account. Sole public-contract path to mint a
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
-	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	IssueToken(context.Context, *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error)
 	// Admin-gated: only an admin may rename an account; non-admin callers get
 	// permission_denied. Same-owner DM, agent home, and coordination channel names
 	// follow the new handle; freed handles may be
 	// reclaimed, and an agent's owner does not change. The bootstrap admin and
 	// its root supervisor are protected from rename with failed_precondition.
-	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)
+	RenameAccount(context.Context, *v1.RenameAccountRequest) (*v1.RenameAccountResponse, error)
 	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
 	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
 	// account: the caller presents the token plaintext and the server hashes it,
@@ -275,7 +467,7 @@ type CompassServiceClient interface {
 	// already-revoked token succeeds; revoking a token that was never issued is
 	// not_found. The plaintext is carried on the wire only to be hashed
 	// server-side; it is never logged (debug_redact).
-	RevokeToken(context.Context, *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error)
+	RevokeToken(context.Context, *v1.RevokeTokenRequest) (*v1.RevokeTokenResponse, error)
 	// Declare the fleet agent-config bundle: the gzip tarball of skills/,
 	// extensions/, and mcp/ material every agent materializes into its scoped
 	// config dir. Whole-bundle replace (current-only): the new bundle supersedes
@@ -285,18 +477,18 @@ type CompassServiceClient interface {
 	// top dirs, no path escapes, decompressed-size + file-count caps, valid mcp
 	// JSON) before a row is written, and a success signals every live Runner to
 	// re-fetch. Credential-free by rule — secrets ride the separate resolve path.
-	PutAgentConfig(context.Context, *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error)
+	PutAgentConfig(context.Context, *v1.PutAgentConfigRequest) (*v1.PutAgentConfigResponse, error)
 	// Report the current fleet config bundle's version and the NAMES of its
 	// declared members, bucketed by top dir (skills / extensions / mcp) — names
 	// only, never content, mirroring the value-free secrets status view. An
 	// unconfigured fleet is a valid state: the response is empty (empty version,
 	// empty name lists), never an error.
-	GetAgentConfigInfo(context.Context, *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error)
+	GetAgentConfigInfo(context.Context, *v1.GetAgentConfigInfoRequest) (*v1.GetAgentConfigInfoResponse, error)
 	// Clear the fleet config bundle back to the unconfigured state — the explicit
 	// return-to-empty path. Admin-gated like PutAgentConfig. Idempotent: deleting
 	// when already empty succeeds. On success every live Runner is signalled with
 	// an empty config version so it re-materializes the empty config dir.
-	DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error)
+	DeleteAgentConfig(context.Context, *v1.DeleteAgentConfigRequest) (*v1.DeleteAgentConfigResponse, error)
 	// Declare the fleet model registry: the stable-name → candidate-chain map the
 	// gateway resolver routes with (compass-stable-name-routing §P2). Compare-and-
 	// set on the whole-registry version — the caller carries the version it read
@@ -306,396 +498,78 @@ type CompassServiceClient interface {
 	// author). The payload is validated fail-closed at the RPC boundary (schema
 	// shape, candidate provider/model_id shape, and no removal that would orphan a
 	// published profile's models.* reference) before a row is written.
-	PutModelRegistry(context.Context, *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error)
+	PutModelRegistry(context.Context, *v1.PutModelRegistryRequest) (*v1.PutModelRegistryResponse, error)
 	// Report the current model registry: its version and full payload. An
 	// unconfigured fleet is a valid state — the response is empty (version 0, no
 	// entries), never an error. Value-free of credentials by construction (the
 	// registry names providers/models, never holds keys), so it is open to any
 	// authenticated account like GetAgentConfigInfo.
-	GetModelRegistry(context.Context, *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error)
+	GetModelRegistry(context.Context, *v1.GetModelRegistryRequest) (*v1.GetModelRegistryResponse, error)
 	// Clear the fleet model registry back to the unconfigured state. Admin-gated
 	// like PutModelRegistry. Fails closed if the registry being cleared holds any
 	// stable name still referenced by a published profile's models.* map.
-	DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error)
+	DeleteModelRegistry(context.Context, *v1.DeleteModelRegistryRequest) (*v1.DeleteModelRegistryResponse, error)
 	// List the tenant's enabled forge-repository mirror settings. Any authenticated
 	// account may read them; can_edit reports whether the caller may change them.
-	ListForgeMirrorSettings(context.Context, *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error)
+	ListForgeMirrorSettings(context.Context, *v1.ListForgeMirrorSettingsRequest) (*v1.ListForgeMirrorSettingsResponse, error)
 	// Set one tenant's mirror mode for an enabled forge repository. Requires a
 	// tenant admin; OFF removes the setting row.
-	SetForgeMirrorSetting(context.Context, *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error)
+	SetForgeMirrorSetting(context.Context, *v1.SetForgeMirrorSettingRequest) (*v1.SetForgeMirrorSettingResponse, error)
 }
 
-// NewCompassServiceClient constructs a client for the compass.v1.CompassService service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) CompassServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	compassServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods()
-	return &compassServiceClient{
-		getServerInfo: connect.NewClient[v1.GetServerInfoRequest, v1.GetServerInfoResponse](
-			httpClient,
-			baseURL+CompassServiceGetServerInfoProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("GetServerInfo")),
-			connect.WithClientOptions(opts...),
-		),
-		whoAmI: connect.NewClient[v1.WhoAmIRequest, v1.WhoAmIResponse](
-			httpClient,
-			baseURL+CompassServiceWhoAmIProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
-			connect.WithClientOptions(opts...),
-		),
-		getRefLinkRules: connect.NewClient[v1.GetRefLinkRulesRequest, v1.GetRefLinkRulesResponse](
-			httpClient,
-			baseURL+CompassServiceGetRefLinkRulesProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("GetRefLinkRules")),
-			connect.WithClientOptions(opts...),
-		),
-		getTourState: connect.NewClient[v1.GetTourStateRequest, v1.GetTourStateResponse](
-			httpClient,
-			baseURL+CompassServiceGetTourStateProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("GetTourState")),
-			connect.WithClientOptions(opts...),
-		),
-		claimTourStart: connect.NewClient[v1.ClaimTourStartRequest, v1.ClaimTourStartResponse](
-			httpClient,
-			baseURL+CompassServiceClaimTourStartProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("ClaimTourStart")),
-			connect.WithClientOptions(opts...),
-		),
-		setTourState: connect.NewClient[v1.SetTourStateRequest, v1.SetTourStateResponse](
-			httpClient,
-			baseURL+CompassServiceSetTourStateProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("SetTourState")),
-			connect.WithClientOptions(opts...),
-		),
-		subscribeEvents: connect.NewClient[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse](
-			httpClient,
-			baseURL+CompassServiceSubscribeEventsProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("SubscribeEvents")),
-			connect.WithClientOptions(opts...),
-		),
-		listBoardIssues: connect.NewClient[v1.ListBoardIssuesRequest, v1.ListBoardIssuesResponse](
-			httpClient,
-			baseURL+CompassServiceListBoardIssuesProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("ListBoardIssues")),
-			connect.WithClientOptions(opts...),
-		),
-		searchIssues: connect.NewClient[v1.SearchIssuesRequest, v1.SearchIssuesResponse](
-			httpClient,
-			baseURL+CompassServiceSearchIssuesProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("SearchIssues")),
-			connect.WithClientOptions(opts...),
-		),
-		provisionAgentWorkspace: connect.NewClient[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse](
-			httpClient,
-			baseURL+CompassServiceProvisionAgentWorkspaceProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("ProvisionAgentWorkspace")),
-			connect.WithClientOptions(opts...),
-		),
-		startAgentSession: connect.NewClient[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse](
-			httpClient,
-			baseURL+CompassServiceStartAgentSessionProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("StartAgentSession")),
-			connect.WithClientOptions(opts...),
-		),
-		spawnAgent: connect.NewClient[v1.SpawnAgentRequest, v1.SpawnAgentResponse](
-			httpClient,
-			baseURL+CompassServiceSpawnAgentProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("SpawnAgent")),
-			connect.WithClientOptions(opts...),
-		),
-		stopAgentSession: connect.NewClient[v1.StopAgentSessionRequest, v1.StopAgentSessionResponse](
-			httpClient,
-			baseURL+CompassServiceStopAgentSessionProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("StopAgentSession")),
-			connect.WithClientOptions(opts...),
-		),
-		skipBatchWindow: connect.NewClient[v1.SkipBatchWindowRequest, v1.SkipBatchWindowResponse](
-			httpClient,
-			baseURL+CompassServiceSkipBatchWindowProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("SkipBatchWindow")),
-			connect.WithClientOptions(opts...),
-		),
-		removeAgentWorkspace: connect.NewClient[v1.RemoveAgentWorkspaceRequest, v1.RemoveAgentWorkspaceResponse](
-			httpClient,
-			baseURL+CompassServiceRemoveAgentWorkspaceProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("RemoveAgentWorkspace")),
-			connect.WithClientOptions(opts...),
-		),
-		reloadAgentSession: connect.NewClient[v1.ReloadAgentSessionRequest, v1.ReloadAgentSessionResponse](
-			httpClient,
-			baseURL+CompassServiceReloadAgentSessionProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("ReloadAgentSession")),
-			connect.WithClientOptions(opts...),
-		),
-		getAgentStatus: connect.NewClient[v1.GetAgentStatusRequest, v1.GetAgentStatusResponse](
-			httpClient,
-			baseURL+CompassServiceGetAgentStatusProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("GetAgentStatus")),
-			connect.WithClientOptions(opts...),
-		),
-		subscribeAgentSession: connect.NewClient[v1.SubscribeAgentSessionRequest, v1.AgentSessionFrame](
-			httpClient,
-			baseURL+CompassServiceSubscribeAgentSessionProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("SubscribeAgentSession")),
-			connect.WithClientOptions(opts...),
-		),
-		issueToken: connect.NewClient[v1.IssueTokenRequest, v1.IssueTokenResponse](
-			httpClient,
-			baseURL+CompassServiceIssueTokenProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
-			connect.WithClientOptions(opts...),
-		),
-		renameAccount: connect.NewClient[v1.RenameAccountRequest, v1.RenameAccountResponse](
-			httpClient,
-			baseURL+CompassServiceRenameAccountProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("RenameAccount")),
-			connect.WithClientOptions(opts...),
-		),
-		revokeToken: connect.NewClient[v1.RevokeTokenRequest, v1.RevokeTokenResponse](
-			httpClient,
-			baseURL+CompassServiceRevokeTokenProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("RevokeToken")),
-			connect.WithClientOptions(opts...),
-		),
-		putAgentConfig: connect.NewClient[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse](
-			httpClient,
-			baseURL+CompassServicePutAgentConfigProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("PutAgentConfig")),
-			connect.WithClientOptions(opts...),
-		),
-		getAgentConfigInfo: connect.NewClient[v1.GetAgentConfigInfoRequest, v1.GetAgentConfigInfoResponse](
-			httpClient,
-			baseURL+CompassServiceGetAgentConfigInfoProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("GetAgentConfigInfo")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteAgentConfig: connect.NewClient[v1.DeleteAgentConfigRequest, v1.DeleteAgentConfigResponse](
-			httpClient,
-			baseURL+CompassServiceDeleteAgentConfigProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("DeleteAgentConfig")),
-			connect.WithClientOptions(opts...),
-		),
-		putModelRegistry: connect.NewClient[v1.PutModelRegistryRequest, v1.PutModelRegistryResponse](
-			httpClient,
-			baseURL+CompassServicePutModelRegistryProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("PutModelRegistry")),
-			connect.WithClientOptions(opts...),
-		),
-		getModelRegistry: connect.NewClient[v1.GetModelRegistryRequest, v1.GetModelRegistryResponse](
-			httpClient,
-			baseURL+CompassServiceGetModelRegistryProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("GetModelRegistry")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteModelRegistry: connect.NewClient[v1.DeleteModelRegistryRequest, v1.DeleteModelRegistryResponse](
-			httpClient,
-			baseURL+CompassServiceDeleteModelRegistryProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("DeleteModelRegistry")),
-			connect.WithClientOptions(opts...),
-		),
-		listForgeMirrorSettings: connect.NewClient[v1.ListForgeMirrorSettingsRequest, v1.ListForgeMirrorSettingsResponse](
-			httpClient,
-			baseURL+CompassServiceListForgeMirrorSettingsProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("ListForgeMirrorSettings")),
-			connect.WithClientOptions(opts...),
-		),
-		setForgeMirrorSetting: connect.NewClient[v1.SetForgeMirrorSettingRequest, v1.SetForgeMirrorSettingResponse](
-			httpClient,
-			baseURL+CompassServiceSetForgeMirrorSettingProcedure,
-			connect.WithSchema(compassServiceMethods.ByName("SetForgeMirrorSetting")),
-			connect.WithClientOptions(opts...),
-		),
+// NewCompassServiceClient constructs a client for the compass.v1.CompassService service. Multiple
+// service clients may share a single connect.Client.
+func NewCompassServiceClient(client *connect.Client) CompassServiceClient {
+	return &compassServiceClient{client: client}
+}
+
+// CompassServiceSubscribeEventsClientStream is the client stream for the CompassService's
+// SubscribeEvents RPC.
+type CompassServiceSubscribeEventsClientStream struct {
+	stream connect.ClientStream
+}
+
+// Receive returns the next response message from the server.
+func (s CompassServiceSubscribeEventsClientStream) Receive() (*v1.SubscribeEventsResponse, error) {
+	var res v1.SubscribeEventsResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
 	}
+	return &res, nil
 }
 
-// compassServiceClient implements CompassServiceClient.
-type compassServiceClient struct {
-	getServerInfo           *connect.Client[v1.GetServerInfoRequest, v1.GetServerInfoResponse]
-	whoAmI                  *connect.Client[v1.WhoAmIRequest, v1.WhoAmIResponse]
-	getRefLinkRules         *connect.Client[v1.GetRefLinkRulesRequest, v1.GetRefLinkRulesResponse]
-	getTourState            *connect.Client[v1.GetTourStateRequest, v1.GetTourStateResponse]
-	claimTourStart          *connect.Client[v1.ClaimTourStartRequest, v1.ClaimTourStartResponse]
-	setTourState            *connect.Client[v1.SetTourStateRequest, v1.SetTourStateResponse]
-	subscribeEvents         *connect.Client[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse]
-	listBoardIssues         *connect.Client[v1.ListBoardIssuesRequest, v1.ListBoardIssuesResponse]
-	searchIssues            *connect.Client[v1.SearchIssuesRequest, v1.SearchIssuesResponse]
-	provisionAgentWorkspace *connect.Client[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse]
-	startAgentSession       *connect.Client[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse]
-	spawnAgent              *connect.Client[v1.SpawnAgentRequest, v1.SpawnAgentResponse]
-	stopAgentSession        *connect.Client[v1.StopAgentSessionRequest, v1.StopAgentSessionResponse]
-	skipBatchWindow         *connect.Client[v1.SkipBatchWindowRequest, v1.SkipBatchWindowResponse]
-	removeAgentWorkspace    *connect.Client[v1.RemoveAgentWorkspaceRequest, v1.RemoveAgentWorkspaceResponse]
-	reloadAgentSession      *connect.Client[v1.ReloadAgentSessionRequest, v1.ReloadAgentSessionResponse]
-	getAgentStatus          *connect.Client[v1.GetAgentStatusRequest, v1.GetAgentStatusResponse]
-	subscribeAgentSession   *connect.Client[v1.SubscribeAgentSessionRequest, v1.AgentSessionFrame]
-	issueToken              *connect.Client[v1.IssueTokenRequest, v1.IssueTokenResponse]
-	renameAccount           *connect.Client[v1.RenameAccountRequest, v1.RenameAccountResponse]
-	revokeToken             *connect.Client[v1.RevokeTokenRequest, v1.RevokeTokenResponse]
-	putAgentConfig          *connect.Client[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse]
-	getAgentConfigInfo      *connect.Client[v1.GetAgentConfigInfoRequest, v1.GetAgentConfigInfoResponse]
-	deleteAgentConfig       *connect.Client[v1.DeleteAgentConfigRequest, v1.DeleteAgentConfigResponse]
-	putModelRegistry        *connect.Client[v1.PutModelRegistryRequest, v1.PutModelRegistryResponse]
-	getModelRegistry        *connect.Client[v1.GetModelRegistryRequest, v1.GetModelRegistryResponse]
-	deleteModelRegistry     *connect.Client[v1.DeleteModelRegistryRequest, v1.DeleteModelRegistryResponse]
-	listForgeMirrorSettings *connect.Client[v1.ListForgeMirrorSettingsRequest, v1.ListForgeMirrorSettingsResponse]
-	setForgeMirrorSetting   *connect.Client[v1.SetForgeMirrorSettingRequest, v1.SetForgeMirrorSettingResponse]
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s CompassServiceSubscribeEventsClientStream) Close() error {
+	return s.stream.Close()
 }
 
-// GetServerInfo calls compass.v1.CompassService.GetServerInfo.
-func (c *compassServiceClient) GetServerInfo(ctx context.Context, req *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error) {
-	return c.getServerInfo.CallUnary(ctx, req)
+// CompassServiceSubscribeAgentSessionClientStream is the client stream for the CompassService's
+// SubscribeAgentSession RPC.
+type CompassServiceSubscribeAgentSessionClientStream struct {
+	stream connect.ClientStream
 }
 
-// WhoAmI calls compass.v1.CompassService.WhoAmI.
-func (c *compassServiceClient) WhoAmI(ctx context.Context, req *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
-	return c.whoAmI.CallUnary(ctx, req)
+// Receive returns the next response message from the server.
+func (s CompassServiceSubscribeAgentSessionClientStream) Receive() (*v1.AgentSessionFrame, error) {
+	var res v1.AgentSessionFrame
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
-// GetRefLinkRules calls compass.v1.CompassService.GetRefLinkRules.
-func (c *compassServiceClient) GetRefLinkRules(ctx context.Context, req *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error) {
-	return c.getRefLinkRules.CallUnary(ctx, req)
-}
-
-// GetTourState calls compass.v1.CompassService.GetTourState.
-func (c *compassServiceClient) GetTourState(ctx context.Context, req *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error) {
-	return c.getTourState.CallUnary(ctx, req)
-}
-
-// ClaimTourStart calls compass.v1.CompassService.ClaimTourStart.
-func (c *compassServiceClient) ClaimTourStart(ctx context.Context, req *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error) {
-	return c.claimTourStart.CallUnary(ctx, req)
-}
-
-// SetTourState calls compass.v1.CompassService.SetTourState.
-func (c *compassServiceClient) SetTourState(ctx context.Context, req *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error) {
-	return c.setTourState.CallUnary(ctx, req)
-}
-
-// SubscribeEvents calls compass.v1.CompassService.SubscribeEvents.
-func (c *compassServiceClient) SubscribeEvents(ctx context.Context, req *connect.Request[v1.SubscribeEventsRequest]) (*connect.ServerStreamForClient[v1.SubscribeEventsResponse], error) {
-	return c.subscribeEvents.CallServerStream(ctx, req)
-}
-
-// ListBoardIssues calls compass.v1.CompassService.ListBoardIssues.
-func (c *compassServiceClient) ListBoardIssues(ctx context.Context, req *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error) {
-	return c.listBoardIssues.CallUnary(ctx, req)
-}
-
-// SearchIssues calls compass.v1.CompassService.SearchIssues.
-func (c *compassServiceClient) SearchIssues(ctx context.Context, req *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error) {
-	return c.searchIssues.CallUnary(ctx, req)
-}
-
-// ProvisionAgentWorkspace calls compass.v1.CompassService.ProvisionAgentWorkspace.
-func (c *compassServiceClient) ProvisionAgentWorkspace(ctx context.Context, req *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error) {
-	return c.provisionAgentWorkspace.CallUnary(ctx, req)
-}
-
-// StartAgentSession calls compass.v1.CompassService.StartAgentSession.
-func (c *compassServiceClient) StartAgentSession(ctx context.Context, req *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error) {
-	return c.startAgentSession.CallUnary(ctx, req)
-}
-
-// SpawnAgent calls compass.v1.CompassService.SpawnAgent.
-func (c *compassServiceClient) SpawnAgent(ctx context.Context, req *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error) {
-	return c.spawnAgent.CallUnary(ctx, req)
-}
-
-// StopAgentSession calls compass.v1.CompassService.StopAgentSession.
-func (c *compassServiceClient) StopAgentSession(ctx context.Context, req *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error) {
-	return c.stopAgentSession.CallUnary(ctx, req)
-}
-
-// SkipBatchWindow calls compass.v1.CompassService.SkipBatchWindow.
-func (c *compassServiceClient) SkipBatchWindow(ctx context.Context, req *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error) {
-	return c.skipBatchWindow.CallUnary(ctx, req)
-}
-
-// RemoveAgentWorkspace calls compass.v1.CompassService.RemoveAgentWorkspace.
-func (c *compassServiceClient) RemoveAgentWorkspace(ctx context.Context, req *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error) {
-	return c.removeAgentWorkspace.CallUnary(ctx, req)
-}
-
-// ReloadAgentSession calls compass.v1.CompassService.ReloadAgentSession.
-func (c *compassServiceClient) ReloadAgentSession(ctx context.Context, req *connect.Request[v1.ReloadAgentSessionRequest]) (*connect.Response[v1.ReloadAgentSessionResponse], error) {
-	return c.reloadAgentSession.CallUnary(ctx, req)
-}
-
-// GetAgentStatus calls compass.v1.CompassService.GetAgentStatus.
-func (c *compassServiceClient) GetAgentStatus(ctx context.Context, req *connect.Request[v1.GetAgentStatusRequest]) (*connect.Response[v1.GetAgentStatusResponse], error) {
-	return c.getAgentStatus.CallUnary(ctx, req)
-}
-
-// SubscribeAgentSession calls compass.v1.CompassService.SubscribeAgentSession.
-func (c *compassServiceClient) SubscribeAgentSession(ctx context.Context, req *connect.Request[v1.SubscribeAgentSessionRequest]) (*connect.ServerStreamForClient[v1.AgentSessionFrame], error) {
-	return c.subscribeAgentSession.CallServerStream(ctx, req)
-}
-
-// IssueToken calls compass.v1.CompassService.IssueToken.
-func (c *compassServiceClient) IssueToken(ctx context.Context, req *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
-	return c.issueToken.CallUnary(ctx, req)
-}
-
-// RenameAccount calls compass.v1.CompassService.RenameAccount.
-func (c *compassServiceClient) RenameAccount(ctx context.Context, req *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error) {
-	return c.renameAccount.CallUnary(ctx, req)
-}
-
-// RevokeToken calls compass.v1.CompassService.RevokeToken.
-func (c *compassServiceClient) RevokeToken(ctx context.Context, req *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error) {
-	return c.revokeToken.CallUnary(ctx, req)
-}
-
-// PutAgentConfig calls compass.v1.CompassService.PutAgentConfig.
-func (c *compassServiceClient) PutAgentConfig(ctx context.Context, req *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error) {
-	return c.putAgentConfig.CallUnary(ctx, req)
-}
-
-// GetAgentConfigInfo calls compass.v1.CompassService.GetAgentConfigInfo.
-func (c *compassServiceClient) GetAgentConfigInfo(ctx context.Context, req *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error) {
-	return c.getAgentConfigInfo.CallUnary(ctx, req)
-}
-
-// DeleteAgentConfig calls compass.v1.CompassService.DeleteAgentConfig.
-func (c *compassServiceClient) DeleteAgentConfig(ctx context.Context, req *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error) {
-	return c.deleteAgentConfig.CallUnary(ctx, req)
-}
-
-// PutModelRegistry calls compass.v1.CompassService.PutModelRegistry.
-func (c *compassServiceClient) PutModelRegistry(ctx context.Context, req *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error) {
-	return c.putModelRegistry.CallUnary(ctx, req)
-}
-
-// GetModelRegistry calls compass.v1.CompassService.GetModelRegistry.
-func (c *compassServiceClient) GetModelRegistry(ctx context.Context, req *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error) {
-	return c.getModelRegistry.CallUnary(ctx, req)
-}
-
-// DeleteModelRegistry calls compass.v1.CompassService.DeleteModelRegistry.
-func (c *compassServiceClient) DeleteModelRegistry(ctx context.Context, req *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error) {
-	return c.deleteModelRegistry.CallUnary(ctx, req)
-}
-
-// ListForgeMirrorSettings calls compass.v1.CompassService.ListForgeMirrorSettings.
-func (c *compassServiceClient) ListForgeMirrorSettings(ctx context.Context, req *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error) {
-	return c.listForgeMirrorSettings.CallUnary(ctx, req)
-}
-
-// SetForgeMirrorSetting calls compass.v1.CompassService.SetForgeMirrorSetting.
-func (c *compassServiceClient) SetForgeMirrorSetting(ctx context.Context, req *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error) {
-	return c.setForgeMirrorSetting.CallUnary(ctx, req)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s CompassServiceSubscribeAgentSessionClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // CompassServiceHandler is an implementation of the compass.v1.CompassService service.
 type CompassServiceHandler interface {
 	// Liveness probe plus the server's build + contract version. The first
 	// round-trip a UI makes after connecting over the local transport.
-	GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error)
+	GetServerInfo(context.Context, *v1.GetServerInfoRequest) (*v1.GetServerInfoResponse, error)
 	// Return the caller's own account id, resolved server-side from the
 	// authenticated credential — the socket's ambient-admin identity for an
 	// embedded client, the bearer subject for a native client. A UI calls it at
@@ -704,20 +578,20 @@ type CompassServiceHandler interface {
 	// roster keyed by this id, so they are deliberately not echoed here.
 	// authenticatedOpen: any authenticated caller may learn its OWN identity
 	// (not admin-gated). account_id is server-derived, never client-supplied.
-	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
+	WhoAmI(context.Context, *v1.WhoAmIRequest) (*v1.WhoAmIResponse, error)
 	// Link targets for issue and PR references in rendered text, built from the
 	// configured forges. authenticatedOpen: the rules hold no secrets.
-	GetRefLinkRules(context.Context, *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error)
+	GetRefLinkRules(context.Context, *v1.GetRefLinkRulesRequest) (*v1.GetRefLinkRulesResponse, error)
 	// Per-account first-run progress. No account id is accepted; the server keys
 	// each operation to the authenticated caller.
-	GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error)
-	ClaimTourStart(context.Context, *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error)
-	SetTourState(context.Context, *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error)
+	GetTourState(context.Context, *v1.GetTourStateRequest) (*v1.GetTourStateResponse, error)
+	ClaimTourStart(context.Context, *v1.ClaimTourStartRequest) (*v1.ClaimTourStartResponse, error)
+	SetTourState(context.Context, *v1.SetTourStateRequest) (*v1.SetTourStateResponse, error)
 	// The event channel: board, agent, and audit updates as a server stream
 	// (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
 	// from the server to the UI.
-	SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest], *connect.ServerStream[v1.SubscribeEventsResponse]) error
+	SubscribeEvents(context.Context, *v1.SubscribeEventsRequest, CompassServiceSubscribeEventsServerStream) error
 	// The durable board catch-up read: at `since_seq = 0` a UI re-snapshots the
 	// whole board (every issue in all lifecycle states) from the projection store,
 	// then unions the result with the SubscribeEvents live tail (deduping by issue
@@ -729,21 +603,21 @@ type CompassServiceHandler interface {
 	// account may read the board, the same access class as the SubscribeEvents
 	// tail it re-snapshots — the whole board is repo-scoped, with no per-account
 	// filter, exactly like that tail.
-	ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error)
+	ListBoardIssues(context.Context, *v1.ListBoardIssuesRequest) (*v1.ListBoardIssuesResponse, error)
 	// Full-text search over the whole board (title/body/summary/labels),
 	// best-match-first. authenticatedOpen: same access class as ListBoardIssues.
-	SearchIssues(context.Context, *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error)
+	SearchIssues(context.Context, *v1.SearchIssuesRequest) (*v1.SearchIssuesResponse, error)
 	// Provision a per-agent container for a workstream: build the image, create
 	// and start the isolated container, arm egress, and clone the repo — the
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
 	// container_name that StartAgentSession then brings online. Provision and
 	// start are separate RPCs: a container can exist idle before an agent session
 	// runs in it. Routes Client -> Server -> RunnerHub -> Runner (design: architecture-lineage).
-	ProvisionAgentWorkspace(context.Context, *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error)
+	ProvisionAgentWorkspace(context.Context, *v1.ProvisionAgentWorkspaceRequest) (*v1.ProvisionAgentWorkspaceResponse, error)
 	// Bring the first-party agent in a provisioned container online over the
 	// Runner streaming-exec bridge and stream its relayed activity onto
 	// SubscribeEvents. Returns the server-side session id (design: architecture-lineage).
-	StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error)
+	StartAgentSession(context.Context, *v1.StartAgentSessionRequest) (*v1.StartAgentSessionResponse, error)
 	// Spawn an agent: the composite lifecycle operation that provisions a
 	// per-agent container and brings its session online in ONE call, so a UI
 	// starts an agent without orchestrating ProvisionAgentWorkspace and
@@ -756,13 +630,13 @@ type CompassServiceHandler interface {
 	// a pre-Provision short-circuit ordered AFTER the idempotency dedup-join, so
 	// a retry of an in-flight/completed spawn rejoins the original rather than
 	// bouncing. Routes Client -> Server -> RunnerHub -> Runner.
-	SpawnAgent(context.Context, *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error)
+	SpawnAgent(context.Context, *v1.SpawnAgentRequest) (*v1.SpawnAgentResponse, error)
 	// Stop a live agent session: deliberately kill the in-container agent and
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
-	StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error)
+	StopAgentSession(context.Context, *v1.StopAgentSessionRequest) (*v1.StopAgentSessionResponse, error)
 	// End the agent's idle batching window now; with no window open it is a no-op.
-	SkipBatchWindow(context.Context, *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error)
+	SkipBatchWindow(context.Context, *v1.SkipBatchWindowRequest) (*v1.SkipBatchWindowResponse, error)
 	// Remove a per-agent container and release its durable placement: the
 	// teardown counterpart to ProvisionAgentWorkspace, keyed by the same
 	// container_name. Admin-gated on this public door (like IssueToken); the
@@ -770,14 +644,14 @@ type CompassServiceHandler interface {
 	// its own owner-scoped check, never this door. Idempotent — removing an
 	// unknown/already-removed container succeeds. Routes Client -> Server ->
 	// RunnerHub -> Runner.
-	RemoveAgentWorkspace(context.Context, *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error)
+	RemoveAgentWorkspace(context.Context, *v1.RemoveAgentWorkspaceRequest) (*v1.RemoveAgentWorkspaceResponse, error)
 	// Reload a live agent session in place: tear down the current agent exec and
 	// start a fresh one against the same container, reusing the session id so the
 	// board entry is continuous. The agent reloads from workspace state
 	// (design: architecture-lineage).
-	ReloadAgentSession(context.Context, *connect.Request[v1.ReloadAgentSessionRequest]) (*connect.Response[v1.ReloadAgentSessionResponse], error)
+	ReloadAgentSession(context.Context, *v1.ReloadAgentSessionRequest) (*v1.ReloadAgentSessionResponse, error)
 	// Query one session's status, or every live session's when no id is given.
-	GetAgentStatus(context.Context, *connect.Request[v1.GetAgentStatusRequest]) (*connect.Response[v1.GetAgentStatusResponse], error)
+	GetAgentStatus(context.Context, *v1.GetAgentStatusRequest) (*v1.GetAgentStatusResponse, error)
 	// Subscribe to one agent session's typed observation trace as a server
 	// stream: the session-tail pane. Access is scoped to the caller's
 	// home-channel membership — the handler resolves the session's owning agent's
@@ -790,7 +664,7 @@ type CompassServiceHandler interface {
 	// a wrapper would change the wire shape. Ignore
 	// the rule for this one RPC only — every other RPC keeps it armed.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-	SubscribeAgentSession(context.Context, *connect.Request[v1.SubscribeAgentSessionRequest], *connect.ServerStream[v1.AgentSessionFrame]) error
+	SubscribeAgentSession(context.Context, *v1.SubscribeAgentSessionRequest, CompassServiceSubscribeAgentSessionServerStream) error
 	// Admin-gated: only an admin may mint a token for an account; a non-admin
 	// caller gets permission_denied. Enforcement lands with the network door's
 	// admin gate (not in this schema-only change). Token is 32B random,
@@ -798,13 +672,13 @@ type CompassServiceHandler interface {
 	// resolves it to this account. Sole public-contract path to mint a
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
-	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	IssueToken(context.Context, *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error)
 	// Admin-gated: only an admin may rename an account; non-admin callers get
 	// permission_denied. Same-owner DM, agent home, and coordination channel names
 	// follow the new handle; freed handles may be
 	// reclaimed, and an agent's owner does not change. The bootstrap admin and
 	// its root supervisor are protected from rename with failed_precondition.
-	RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error)
+	RenameAccount(context.Context, *v1.RenameAccountRequest) (*v1.RenameAccountResponse, error)
 	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
 	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
 	// account: the caller presents the token plaintext and the server hashes it,
@@ -812,7 +686,7 @@ type CompassServiceHandler interface {
 	// already-revoked token succeeds; revoking a token that was never issued is
 	// not_found. The plaintext is carried on the wire only to be hashed
 	// server-side; it is never logged (debug_redact).
-	RevokeToken(context.Context, *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error)
+	RevokeToken(context.Context, *v1.RevokeTokenRequest) (*v1.RevokeTokenResponse, error)
 	// Declare the fleet agent-config bundle: the gzip tarball of skills/,
 	// extensions/, and mcp/ material every agent materializes into its scoped
 	// config dir. Whole-bundle replace (current-only): the new bundle supersedes
@@ -822,18 +696,18 @@ type CompassServiceHandler interface {
 	// top dirs, no path escapes, decompressed-size + file-count caps, valid mcp
 	// JSON) before a row is written, and a success signals every live Runner to
 	// re-fetch. Credential-free by rule — secrets ride the separate resolve path.
-	PutAgentConfig(context.Context, *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error)
+	PutAgentConfig(context.Context, *v1.PutAgentConfigRequest) (*v1.PutAgentConfigResponse, error)
 	// Report the current fleet config bundle's version and the NAMES of its
 	// declared members, bucketed by top dir (skills / extensions / mcp) — names
 	// only, never content, mirroring the value-free secrets status view. An
 	// unconfigured fleet is a valid state: the response is empty (empty version,
 	// empty name lists), never an error.
-	GetAgentConfigInfo(context.Context, *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error)
+	GetAgentConfigInfo(context.Context, *v1.GetAgentConfigInfoRequest) (*v1.GetAgentConfigInfoResponse, error)
 	// Clear the fleet config bundle back to the unconfigured state — the explicit
 	// return-to-empty path. Admin-gated like PutAgentConfig. Idempotent: deleting
 	// when already empty succeeds. On success every live Runner is signalled with
 	// an empty config version so it re-materializes the empty config dir.
-	DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error)
+	DeleteAgentConfig(context.Context, *v1.DeleteAgentConfigRequest) (*v1.DeleteAgentConfigResponse, error)
 	// Declare the fleet model registry: the stable-name → candidate-chain map the
 	// gateway resolver routes with (compass-stable-name-routing §P2). Compare-and-
 	// set on the whole-registry version — the caller carries the version it read
@@ -843,401 +717,832 @@ type CompassServiceHandler interface {
 	// author). The payload is validated fail-closed at the RPC boundary (schema
 	// shape, candidate provider/model_id shape, and no removal that would orphan a
 	// published profile's models.* reference) before a row is written.
-	PutModelRegistry(context.Context, *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error)
+	PutModelRegistry(context.Context, *v1.PutModelRegistryRequest) (*v1.PutModelRegistryResponse, error)
 	// Report the current model registry: its version and full payload. An
 	// unconfigured fleet is a valid state — the response is empty (version 0, no
 	// entries), never an error. Value-free of credentials by construction (the
 	// registry names providers/models, never holds keys), so it is open to any
 	// authenticated account like GetAgentConfigInfo.
-	GetModelRegistry(context.Context, *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error)
+	GetModelRegistry(context.Context, *v1.GetModelRegistryRequest) (*v1.GetModelRegistryResponse, error)
 	// Clear the fleet model registry back to the unconfigured state. Admin-gated
 	// like PutModelRegistry. Fails closed if the registry being cleared holds any
 	// stable name still referenced by a published profile's models.* map.
-	DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error)
+	DeleteModelRegistry(context.Context, *v1.DeleteModelRegistryRequest) (*v1.DeleteModelRegistryResponse, error)
 	// List the tenant's enabled forge-repository mirror settings. Any authenticated
 	// account may read them; can_edit reports whether the caller may change them.
-	ListForgeMirrorSettings(context.Context, *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error)
+	ListForgeMirrorSettings(context.Context, *v1.ListForgeMirrorSettingsRequest) (*v1.ListForgeMirrorSettingsResponse, error)
 	// Set one tenant's mirror mode for an enabled forge repository. Requires a
 	// tenant admin; OFF removes the setting row.
-	SetForgeMirrorSetting(context.Context, *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error)
+	SetForgeMirrorSetting(context.Context, *v1.SetForgeMirrorSettingRequest) (*v1.SetForgeMirrorSettingResponse, error)
 }
 
-// NewCompassServiceHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	compassServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("CompassService").Methods()
-	compassServiceGetServerInfoHandler := connect.NewUnaryHandler(
-		CompassServiceGetServerInfoProcedure,
-		svc.GetServerInfo,
-		connect.WithSchema(compassServiceMethods.ByName("GetServerInfo")),
-		connect.WithHandlerOptions(opts...),
+// RegisterCompassServiceHandler registers svc as the compass.v1.CompassService implementation on
+// server.
+func RegisterCompassServiceHandler(server *connect.Server, svc CompassServiceHandler) {
+	adapter := compassServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: compassServiceGetServerInfoSpec(), Handler: adapter.getServerInfo},
+		connect.Method{Spec: compassServiceWhoAmISpec(), Handler: adapter.whoAmI},
+		connect.Method{Spec: compassServiceGetRefLinkRulesSpec(), Handler: adapter.getRefLinkRules},
+		connect.Method{Spec: compassServiceGetTourStateSpec(), Handler: adapter.getTourState},
+		connect.Method{Spec: compassServiceClaimTourStartSpec(), Handler: adapter.claimTourStart},
+		connect.Method{Spec: compassServiceSetTourStateSpec(), Handler: adapter.setTourState},
+		connect.Method{Spec: compassServiceSubscribeEventsSpec(), Handler: adapter.subscribeEvents},
+		connect.Method{Spec: compassServiceListBoardIssuesSpec(), Handler: adapter.listBoardIssues},
+		connect.Method{Spec: compassServiceSearchIssuesSpec(), Handler: adapter.searchIssues},
+		connect.Method{Spec: compassServiceProvisionAgentWorkspaceSpec(), Handler: adapter.provisionAgentWorkspace},
+		connect.Method{Spec: compassServiceStartAgentSessionSpec(), Handler: adapter.startAgentSession},
+		connect.Method{Spec: compassServiceSpawnAgentSpec(), Handler: adapter.spawnAgent},
+		connect.Method{Spec: compassServiceStopAgentSessionSpec(), Handler: adapter.stopAgentSession},
+		connect.Method{Spec: compassServiceSkipBatchWindowSpec(), Handler: adapter.skipBatchWindow},
+		connect.Method{Spec: compassServiceRemoveAgentWorkspaceSpec(), Handler: adapter.removeAgentWorkspace},
+		connect.Method{Spec: compassServiceReloadAgentSessionSpec(), Handler: adapter.reloadAgentSession},
+		connect.Method{Spec: compassServiceGetAgentStatusSpec(), Handler: adapter.getAgentStatus},
+		connect.Method{Spec: compassServiceSubscribeAgentSessionSpec(), Handler: adapter.subscribeAgentSession},
+		connect.Method{Spec: compassServiceIssueTokenSpec(), Handler: adapter.issueToken},
+		connect.Method{Spec: compassServiceRenameAccountSpec(), Handler: adapter.renameAccount},
+		connect.Method{Spec: compassServiceRevokeTokenSpec(), Handler: adapter.revokeToken},
+		connect.Method{Spec: compassServicePutAgentConfigSpec(), Handler: adapter.putAgentConfig},
+		connect.Method{Spec: compassServiceGetAgentConfigInfoSpec(), Handler: adapter.getAgentConfigInfo},
+		connect.Method{Spec: compassServiceDeleteAgentConfigSpec(), Handler: adapter.deleteAgentConfig},
+		connect.Method{Spec: compassServicePutModelRegistrySpec(), Handler: adapter.putModelRegistry},
+		connect.Method{Spec: compassServiceGetModelRegistrySpec(), Handler: adapter.getModelRegistry},
+		connect.Method{Spec: compassServiceDeleteModelRegistrySpec(), Handler: adapter.deleteModelRegistry},
+		connect.Method{Spec: compassServiceListForgeMirrorSettingsSpec(), Handler: adapter.listForgeMirrorSettings},
+		connect.Method{Spec: compassServiceSetForgeMirrorSettingSpec(), Handler: adapter.setForgeMirrorSetting},
 	)
-	compassServiceWhoAmIHandler := connect.NewUnaryHandler(
-		CompassServiceWhoAmIProcedure,
-		svc.WhoAmI,
-		connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceGetRefLinkRulesHandler := connect.NewUnaryHandler(
-		CompassServiceGetRefLinkRulesProcedure,
-		svc.GetRefLinkRules,
-		connect.WithSchema(compassServiceMethods.ByName("GetRefLinkRules")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceGetTourStateHandler := connect.NewUnaryHandler(
-		CompassServiceGetTourStateProcedure,
-		svc.GetTourState,
-		connect.WithSchema(compassServiceMethods.ByName("GetTourState")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceClaimTourStartHandler := connect.NewUnaryHandler(
-		CompassServiceClaimTourStartProcedure,
-		svc.ClaimTourStart,
-		connect.WithSchema(compassServiceMethods.ByName("ClaimTourStart")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceSetTourStateHandler := connect.NewUnaryHandler(
-		CompassServiceSetTourStateProcedure,
-		svc.SetTourState,
-		connect.WithSchema(compassServiceMethods.ByName("SetTourState")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceSubscribeEventsHandler := connect.NewServerStreamHandler(
-		CompassServiceSubscribeEventsProcedure,
-		svc.SubscribeEvents,
-		connect.WithSchema(compassServiceMethods.ByName("SubscribeEvents")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceListBoardIssuesHandler := connect.NewUnaryHandler(
-		CompassServiceListBoardIssuesProcedure,
-		svc.ListBoardIssues,
-		connect.WithSchema(compassServiceMethods.ByName("ListBoardIssues")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceSearchIssuesHandler := connect.NewUnaryHandler(
-		CompassServiceSearchIssuesProcedure,
-		svc.SearchIssues,
-		connect.WithSchema(compassServiceMethods.ByName("SearchIssues")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceProvisionAgentWorkspaceHandler := connect.NewUnaryHandler(
-		CompassServiceProvisionAgentWorkspaceProcedure,
-		svc.ProvisionAgentWorkspace,
-		connect.WithSchema(compassServiceMethods.ByName("ProvisionAgentWorkspace")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceStartAgentSessionHandler := connect.NewUnaryHandler(
-		CompassServiceStartAgentSessionProcedure,
-		svc.StartAgentSession,
-		connect.WithSchema(compassServiceMethods.ByName("StartAgentSession")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceSpawnAgentHandler := connect.NewUnaryHandler(
-		CompassServiceSpawnAgentProcedure,
-		svc.SpawnAgent,
-		connect.WithSchema(compassServiceMethods.ByName("SpawnAgent")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceStopAgentSessionHandler := connect.NewUnaryHandler(
-		CompassServiceStopAgentSessionProcedure,
-		svc.StopAgentSession,
-		connect.WithSchema(compassServiceMethods.ByName("StopAgentSession")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceSkipBatchWindowHandler := connect.NewUnaryHandler(
-		CompassServiceSkipBatchWindowProcedure,
-		svc.SkipBatchWindow,
-		connect.WithSchema(compassServiceMethods.ByName("SkipBatchWindow")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceRemoveAgentWorkspaceHandler := connect.NewUnaryHandler(
-		CompassServiceRemoveAgentWorkspaceProcedure,
-		svc.RemoveAgentWorkspace,
-		connect.WithSchema(compassServiceMethods.ByName("RemoveAgentWorkspace")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceReloadAgentSessionHandler := connect.NewUnaryHandler(
-		CompassServiceReloadAgentSessionProcedure,
-		svc.ReloadAgentSession,
-		connect.WithSchema(compassServiceMethods.ByName("ReloadAgentSession")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceGetAgentStatusHandler := connect.NewUnaryHandler(
-		CompassServiceGetAgentStatusProcedure,
-		svc.GetAgentStatus,
-		connect.WithSchema(compassServiceMethods.ByName("GetAgentStatus")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceSubscribeAgentSessionHandler := connect.NewServerStreamHandler(
-		CompassServiceSubscribeAgentSessionProcedure,
-		svc.SubscribeAgentSession,
-		connect.WithSchema(compassServiceMethods.ByName("SubscribeAgentSession")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceIssueTokenHandler := connect.NewUnaryHandler(
-		CompassServiceIssueTokenProcedure,
-		svc.IssueToken,
-		connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceRenameAccountHandler := connect.NewUnaryHandler(
-		CompassServiceRenameAccountProcedure,
-		svc.RenameAccount,
-		connect.WithSchema(compassServiceMethods.ByName("RenameAccount")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceRevokeTokenHandler := connect.NewUnaryHandler(
-		CompassServiceRevokeTokenProcedure,
-		svc.RevokeToken,
-		connect.WithSchema(compassServiceMethods.ByName("RevokeToken")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServicePutAgentConfigHandler := connect.NewUnaryHandler(
-		CompassServicePutAgentConfigProcedure,
-		svc.PutAgentConfig,
-		connect.WithSchema(compassServiceMethods.ByName("PutAgentConfig")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceGetAgentConfigInfoHandler := connect.NewUnaryHandler(
-		CompassServiceGetAgentConfigInfoProcedure,
-		svc.GetAgentConfigInfo,
-		connect.WithSchema(compassServiceMethods.ByName("GetAgentConfigInfo")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceDeleteAgentConfigHandler := connect.NewUnaryHandler(
-		CompassServiceDeleteAgentConfigProcedure,
-		svc.DeleteAgentConfig,
-		connect.WithSchema(compassServiceMethods.ByName("DeleteAgentConfig")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServicePutModelRegistryHandler := connect.NewUnaryHandler(
-		CompassServicePutModelRegistryProcedure,
-		svc.PutModelRegistry,
-		connect.WithSchema(compassServiceMethods.ByName("PutModelRegistry")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceGetModelRegistryHandler := connect.NewUnaryHandler(
-		CompassServiceGetModelRegistryProcedure,
-		svc.GetModelRegistry,
-		connect.WithSchema(compassServiceMethods.ByName("GetModelRegistry")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceDeleteModelRegistryHandler := connect.NewUnaryHandler(
-		CompassServiceDeleteModelRegistryProcedure,
-		svc.DeleteModelRegistry,
-		connect.WithSchema(compassServiceMethods.ByName("DeleteModelRegistry")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceListForgeMirrorSettingsHandler := connect.NewUnaryHandler(
-		CompassServiceListForgeMirrorSettingsProcedure,
-		svc.ListForgeMirrorSettings,
-		connect.WithSchema(compassServiceMethods.ByName("ListForgeMirrorSettings")),
-		connect.WithHandlerOptions(opts...),
-	)
-	compassServiceSetForgeMirrorSettingHandler := connect.NewUnaryHandler(
-		CompassServiceSetForgeMirrorSettingProcedure,
-		svc.SetForgeMirrorSetting,
-		connect.WithSchema(compassServiceMethods.ByName("SetForgeMirrorSetting")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.CompassService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case CompassServiceGetServerInfoProcedure:
-			compassServiceGetServerInfoHandler.ServeHTTP(w, r)
-		case CompassServiceWhoAmIProcedure:
-			compassServiceWhoAmIHandler.ServeHTTP(w, r)
-		case CompassServiceGetRefLinkRulesProcedure:
-			compassServiceGetRefLinkRulesHandler.ServeHTTP(w, r)
-		case CompassServiceGetTourStateProcedure:
-			compassServiceGetTourStateHandler.ServeHTTP(w, r)
-		case CompassServiceClaimTourStartProcedure:
-			compassServiceClaimTourStartHandler.ServeHTTP(w, r)
-		case CompassServiceSetTourStateProcedure:
-			compassServiceSetTourStateHandler.ServeHTTP(w, r)
-		case CompassServiceSubscribeEventsProcedure:
-			compassServiceSubscribeEventsHandler.ServeHTTP(w, r)
-		case CompassServiceListBoardIssuesProcedure:
-			compassServiceListBoardIssuesHandler.ServeHTTP(w, r)
-		case CompassServiceSearchIssuesProcedure:
-			compassServiceSearchIssuesHandler.ServeHTTP(w, r)
-		case CompassServiceProvisionAgentWorkspaceProcedure:
-			compassServiceProvisionAgentWorkspaceHandler.ServeHTTP(w, r)
-		case CompassServiceStartAgentSessionProcedure:
-			compassServiceStartAgentSessionHandler.ServeHTTP(w, r)
-		case CompassServiceSpawnAgentProcedure:
-			compassServiceSpawnAgentHandler.ServeHTTP(w, r)
-		case CompassServiceStopAgentSessionProcedure:
-			compassServiceStopAgentSessionHandler.ServeHTTP(w, r)
-		case CompassServiceSkipBatchWindowProcedure:
-			compassServiceSkipBatchWindowHandler.ServeHTTP(w, r)
-		case CompassServiceRemoveAgentWorkspaceProcedure:
-			compassServiceRemoveAgentWorkspaceHandler.ServeHTTP(w, r)
-		case CompassServiceReloadAgentSessionProcedure:
-			compassServiceReloadAgentSessionHandler.ServeHTTP(w, r)
-		case CompassServiceGetAgentStatusProcedure:
-			compassServiceGetAgentStatusHandler.ServeHTTP(w, r)
-		case CompassServiceSubscribeAgentSessionProcedure:
-			compassServiceSubscribeAgentSessionHandler.ServeHTTP(w, r)
-		case CompassServiceIssueTokenProcedure:
-			compassServiceIssueTokenHandler.ServeHTTP(w, r)
-		case CompassServiceRenameAccountProcedure:
-			compassServiceRenameAccountHandler.ServeHTTP(w, r)
-		case CompassServiceRevokeTokenProcedure:
-			compassServiceRevokeTokenHandler.ServeHTTP(w, r)
-		case CompassServicePutAgentConfigProcedure:
-			compassServicePutAgentConfigHandler.ServeHTTP(w, r)
-		case CompassServiceGetAgentConfigInfoProcedure:
-			compassServiceGetAgentConfigInfoHandler.ServeHTTP(w, r)
-		case CompassServiceDeleteAgentConfigProcedure:
-			compassServiceDeleteAgentConfigHandler.ServeHTTP(w, r)
-		case CompassServicePutModelRegistryProcedure:
-			compassServicePutModelRegistryHandler.ServeHTTP(w, r)
-		case CompassServiceGetModelRegistryProcedure:
-			compassServiceGetModelRegistryHandler.ServeHTTP(w, r)
-		case CompassServiceDeleteModelRegistryProcedure:
-			compassServiceDeleteModelRegistryHandler.ServeHTTP(w, r)
-		case CompassServiceListForgeMirrorSettingsProcedure:
-			compassServiceListForgeMirrorSettingsHandler.ServeHTTP(w, r)
-		case CompassServiceSetForgeMirrorSettingProcedure:
-			compassServiceSetForgeMirrorSettingHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// CompassServiceSubscribeEventsServerStream is the server stream for the CompassService's
+// SubscribeEvents RPC.
+type CompassServiceSubscribeEventsServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s CompassServiceSubscribeEventsServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s CompassServiceSubscribeEventsServerStream) Send(res *v1.SubscribeEventsResponse) error {
+	return s.stream.Send(res)
+}
+
+// CompassServiceSubscribeAgentSessionServerStream is the server stream for the CompassService's
+// SubscribeAgentSession RPC.
+type CompassServiceSubscribeAgentSessionServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s CompassServiceSubscribeAgentSessionServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s CompassServiceSubscribeAgentSessionServerStream) Send(res *v1.AgentSessionFrame) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedCompassServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedCompassServiceHandler struct{}
 
-func (UnimplementedCompassServiceHandler) GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetServerInfo is not implemented"))
+func (UnimplementedCompassServiceHandler) GetServerInfo(context.Context, *v1.GetServerInfoRequest) (*v1.GetServerInfoResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.GetServerInfo is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.WhoAmI is not implemented"))
+func (UnimplementedCompassServiceHandler) WhoAmI(context.Context, *v1.WhoAmIRequest) (*v1.WhoAmIResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.WhoAmI is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) GetRefLinkRules(context.Context, *connect.Request[v1.GetRefLinkRulesRequest]) (*connect.Response[v1.GetRefLinkRulesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetRefLinkRules is not implemented"))
+func (UnimplementedCompassServiceHandler) GetRefLinkRules(context.Context, *v1.GetRefLinkRulesRequest) (*v1.GetRefLinkRulesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.GetRefLinkRules is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetTourState is not implemented"))
+func (UnimplementedCompassServiceHandler) GetTourState(context.Context, *v1.GetTourStateRequest) (*v1.GetTourStateResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.GetTourState is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) ClaimTourStart(context.Context, *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ClaimTourStart is not implemented"))
+func (UnimplementedCompassServiceHandler) ClaimTourStart(context.Context, *v1.ClaimTourStartRequest) (*v1.ClaimTourStartResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.ClaimTourStart is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) SetTourState(context.Context, *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SetTourState is not implemented"))
+func (UnimplementedCompassServiceHandler) SetTourState(context.Context, *v1.SetTourStateRequest) (*v1.SetTourStateResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.SetTourState is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest], *connect.ServerStream[v1.SubscribeEventsResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SubscribeEvents is not implemented"))
+func (UnimplementedCompassServiceHandler) SubscribeEvents(context.Context, *v1.SubscribeEventsRequest, CompassServiceSubscribeEventsServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.SubscribeEvents is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ListBoardIssues is not implemented"))
+func (UnimplementedCompassServiceHandler) ListBoardIssues(context.Context, *v1.ListBoardIssuesRequest) (*v1.ListBoardIssuesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.ListBoardIssues is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) SearchIssues(context.Context, *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SearchIssues is not implemented"))
+func (UnimplementedCompassServiceHandler) SearchIssues(context.Context, *v1.SearchIssuesRequest) (*v1.SearchIssuesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.SearchIssues is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) ProvisionAgentWorkspace(context.Context, *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ProvisionAgentWorkspace is not implemented"))
+func (UnimplementedCompassServiceHandler) ProvisionAgentWorkspace(context.Context, *v1.ProvisionAgentWorkspaceRequest) (*v1.ProvisionAgentWorkspaceResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.ProvisionAgentWorkspace is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.StartAgentSession is not implemented"))
+func (UnimplementedCompassServiceHandler) StartAgentSession(context.Context, *v1.StartAgentSessionRequest) (*v1.StartAgentSessionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.StartAgentSession is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) SpawnAgent(context.Context, *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SpawnAgent is not implemented"))
+func (UnimplementedCompassServiceHandler) SpawnAgent(context.Context, *v1.SpawnAgentRequest) (*v1.SpawnAgentResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.SpawnAgent is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.StopAgentSession is not implemented"))
+func (UnimplementedCompassServiceHandler) StopAgentSession(context.Context, *v1.StopAgentSessionRequest) (*v1.StopAgentSessionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.StopAgentSession is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) SkipBatchWindow(context.Context, *connect.Request[v1.SkipBatchWindowRequest]) (*connect.Response[v1.SkipBatchWindowResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SkipBatchWindow is not implemented"))
+func (UnimplementedCompassServiceHandler) SkipBatchWindow(context.Context, *v1.SkipBatchWindowRequest) (*v1.SkipBatchWindowResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.SkipBatchWindow is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) RemoveAgentWorkspace(context.Context, *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.RemoveAgentWorkspace is not implemented"))
+func (UnimplementedCompassServiceHandler) RemoveAgentWorkspace(context.Context, *v1.RemoveAgentWorkspaceRequest) (*v1.RemoveAgentWorkspaceResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.RemoveAgentWorkspace is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) ReloadAgentSession(context.Context, *connect.Request[v1.ReloadAgentSessionRequest]) (*connect.Response[v1.ReloadAgentSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ReloadAgentSession is not implemented"))
+func (UnimplementedCompassServiceHandler) ReloadAgentSession(context.Context, *v1.ReloadAgentSessionRequest) (*v1.ReloadAgentSessionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.ReloadAgentSession is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) GetAgentStatus(context.Context, *connect.Request[v1.GetAgentStatusRequest]) (*connect.Response[v1.GetAgentStatusResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetAgentStatus is not implemented"))
+func (UnimplementedCompassServiceHandler) GetAgentStatus(context.Context, *v1.GetAgentStatusRequest) (*v1.GetAgentStatusResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.GetAgentStatus is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) SubscribeAgentSession(context.Context, *connect.Request[v1.SubscribeAgentSessionRequest], *connect.ServerStream[v1.AgentSessionFrame]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SubscribeAgentSession is not implemented"))
+func (UnimplementedCompassServiceHandler) SubscribeAgentSession(context.Context, *v1.SubscribeAgentSessionRequest, CompassServiceSubscribeAgentSessionServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.SubscribeAgentSession is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.IssueToken is not implemented"))
+func (UnimplementedCompassServiceHandler) IssueToken(context.Context, *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.IssueToken is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) RenameAccount(context.Context, *connect.Request[v1.RenameAccountRequest]) (*connect.Response[v1.RenameAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.RenameAccount is not implemented"))
+func (UnimplementedCompassServiceHandler) RenameAccount(context.Context, *v1.RenameAccountRequest) (*v1.RenameAccountResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.RenameAccount is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) RevokeToken(context.Context, *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.RevokeToken is not implemented"))
+func (UnimplementedCompassServiceHandler) RevokeToken(context.Context, *v1.RevokeTokenRequest) (*v1.RevokeTokenResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.RevokeToken is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) PutAgentConfig(context.Context, *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.PutAgentConfig is not implemented"))
+func (UnimplementedCompassServiceHandler) PutAgentConfig(context.Context, *v1.PutAgentConfigRequest) (*v1.PutAgentConfigResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.PutAgentConfig is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) GetAgentConfigInfo(context.Context, *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetAgentConfigInfo is not implemented"))
+func (UnimplementedCompassServiceHandler) GetAgentConfigInfo(context.Context, *v1.GetAgentConfigInfoRequest) (*v1.GetAgentConfigInfoResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.GetAgentConfigInfo is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.DeleteAgentConfig is not implemented"))
+func (UnimplementedCompassServiceHandler) DeleteAgentConfig(context.Context, *v1.DeleteAgentConfigRequest) (*v1.DeleteAgentConfigResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.DeleteAgentConfig is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) PutModelRegistry(context.Context, *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.PutModelRegistry is not implemented"))
+func (UnimplementedCompassServiceHandler) PutModelRegistry(context.Context, *v1.PutModelRegistryRequest) (*v1.PutModelRegistryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.PutModelRegistry is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) GetModelRegistry(context.Context, *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetModelRegistry is not implemented"))
+func (UnimplementedCompassServiceHandler) GetModelRegistry(context.Context, *v1.GetModelRegistryRequest) (*v1.GetModelRegistryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.GetModelRegistry is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.DeleteModelRegistry is not implemented"))
+func (UnimplementedCompassServiceHandler) DeleteModelRegistry(context.Context, *v1.DeleteModelRegistryRequest) (*v1.DeleteModelRegistryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.DeleteModelRegistry is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) ListForgeMirrorSettings(context.Context, *connect.Request[v1.ListForgeMirrorSettingsRequest]) (*connect.Response[v1.ListForgeMirrorSettingsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ListForgeMirrorSettings is not implemented"))
+func (UnimplementedCompassServiceHandler) ListForgeMirrorSettings(context.Context, *v1.ListForgeMirrorSettingsRequest) (*v1.ListForgeMirrorSettingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.ListForgeMirrorSettings is not implemented")
 }
 
-func (UnimplementedCompassServiceHandler) SetForgeMirrorSetting(context.Context, *connect.Request[v1.SetForgeMirrorSettingRequest]) (*connect.Response[v1.SetForgeMirrorSettingResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SetForgeMirrorSetting is not implemented"))
+func (UnimplementedCompassServiceHandler) SetForgeMirrorSetting(context.Context, *v1.SetForgeMirrorSettingRequest) (*v1.SetForgeMirrorSettingResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.CompassService.SetForgeMirrorSetting is not implemented")
 }
+
+type compassServiceClient struct {
+	client *connect.Client
+}
+
+func (c *compassServiceClient) GetServerInfo(ctx context.Context, req *v1.GetServerInfoRequest) (*v1.GetServerInfoResponse, error) {
+	var res v1.GetServerInfoResponse
+	if err := c.client.CallUnary(ctx, compassServiceGetServerInfoSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) WhoAmI(ctx context.Context, req *v1.WhoAmIRequest) (*v1.WhoAmIResponse, error) {
+	var res v1.WhoAmIResponse
+	if err := c.client.CallUnary(ctx, compassServiceWhoAmISpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) GetRefLinkRules(ctx context.Context, req *v1.GetRefLinkRulesRequest) (*v1.GetRefLinkRulesResponse, error) {
+	var res v1.GetRefLinkRulesResponse
+	if err := c.client.CallUnary(ctx, compassServiceGetRefLinkRulesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) GetTourState(ctx context.Context, req *v1.GetTourStateRequest) (*v1.GetTourStateResponse, error) {
+	var res v1.GetTourStateResponse
+	if err := c.client.CallUnary(ctx, compassServiceGetTourStateSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) ClaimTourStart(ctx context.Context, req *v1.ClaimTourStartRequest) (*v1.ClaimTourStartResponse, error) {
+	var res v1.ClaimTourStartResponse
+	if err := c.client.CallUnary(ctx, compassServiceClaimTourStartSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) SetTourState(ctx context.Context, req *v1.SetTourStateRequest) (*v1.SetTourStateResponse, error) {
+	var res v1.SetTourStateResponse
+	if err := c.client.CallUnary(ctx, compassServiceSetTourStateSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) SubscribeEvents(ctx context.Context, req *v1.SubscribeEventsRequest) (CompassServiceSubscribeEventsClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, compassServiceSubscribeEventsSpec(), req)
+	if err != nil {
+		return CompassServiceSubscribeEventsClientStream{}, err
+	}
+	return CompassServiceSubscribeEventsClientStream{stream: stream}, nil
+}
+
+func (c *compassServiceClient) ListBoardIssues(ctx context.Context, req *v1.ListBoardIssuesRequest) (*v1.ListBoardIssuesResponse, error) {
+	var res v1.ListBoardIssuesResponse
+	if err := c.client.CallUnary(ctx, compassServiceListBoardIssuesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) SearchIssues(ctx context.Context, req *v1.SearchIssuesRequest) (*v1.SearchIssuesResponse, error) {
+	var res v1.SearchIssuesResponse
+	if err := c.client.CallUnary(ctx, compassServiceSearchIssuesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) ProvisionAgentWorkspace(ctx context.Context, req *v1.ProvisionAgentWorkspaceRequest) (*v1.ProvisionAgentWorkspaceResponse, error) {
+	var res v1.ProvisionAgentWorkspaceResponse
+	if err := c.client.CallUnary(ctx, compassServiceProvisionAgentWorkspaceSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) StartAgentSession(ctx context.Context, req *v1.StartAgentSessionRequest) (*v1.StartAgentSessionResponse, error) {
+	var res v1.StartAgentSessionResponse
+	if err := c.client.CallUnary(ctx, compassServiceStartAgentSessionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) SpawnAgent(ctx context.Context, req *v1.SpawnAgentRequest) (*v1.SpawnAgentResponse, error) {
+	var res v1.SpawnAgentResponse
+	if err := c.client.CallUnary(ctx, compassServiceSpawnAgentSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) StopAgentSession(ctx context.Context, req *v1.StopAgentSessionRequest) (*v1.StopAgentSessionResponse, error) {
+	var res v1.StopAgentSessionResponse
+	if err := c.client.CallUnary(ctx, compassServiceStopAgentSessionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) SkipBatchWindow(ctx context.Context, req *v1.SkipBatchWindowRequest) (*v1.SkipBatchWindowResponse, error) {
+	var res v1.SkipBatchWindowResponse
+	if err := c.client.CallUnary(ctx, compassServiceSkipBatchWindowSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) RemoveAgentWorkspace(ctx context.Context, req *v1.RemoveAgentWorkspaceRequest) (*v1.RemoveAgentWorkspaceResponse, error) {
+	var res v1.RemoveAgentWorkspaceResponse
+	if err := c.client.CallUnary(ctx, compassServiceRemoveAgentWorkspaceSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) ReloadAgentSession(ctx context.Context, req *v1.ReloadAgentSessionRequest) (*v1.ReloadAgentSessionResponse, error) {
+	var res v1.ReloadAgentSessionResponse
+	if err := c.client.CallUnary(ctx, compassServiceReloadAgentSessionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) GetAgentStatus(ctx context.Context, req *v1.GetAgentStatusRequest) (*v1.GetAgentStatusResponse, error) {
+	var res v1.GetAgentStatusResponse
+	if err := c.client.CallUnary(ctx, compassServiceGetAgentStatusSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) SubscribeAgentSession(ctx context.Context, req *v1.SubscribeAgentSessionRequest) (CompassServiceSubscribeAgentSessionClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, compassServiceSubscribeAgentSessionSpec(), req)
+	if err != nil {
+		return CompassServiceSubscribeAgentSessionClientStream{}, err
+	}
+	return CompassServiceSubscribeAgentSessionClientStream{stream: stream}, nil
+}
+
+func (c *compassServiceClient) IssueToken(ctx context.Context, req *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error) {
+	var res v1.IssueTokenResponse
+	if err := c.client.CallUnary(ctx, compassServiceIssueTokenSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) RenameAccount(ctx context.Context, req *v1.RenameAccountRequest) (*v1.RenameAccountResponse, error) {
+	var res v1.RenameAccountResponse
+	if err := c.client.CallUnary(ctx, compassServiceRenameAccountSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) RevokeToken(ctx context.Context, req *v1.RevokeTokenRequest) (*v1.RevokeTokenResponse, error) {
+	var res v1.RevokeTokenResponse
+	if err := c.client.CallUnary(ctx, compassServiceRevokeTokenSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) PutAgentConfig(ctx context.Context, req *v1.PutAgentConfigRequest) (*v1.PutAgentConfigResponse, error) {
+	var res v1.PutAgentConfigResponse
+	if err := c.client.CallUnary(ctx, compassServicePutAgentConfigSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) GetAgentConfigInfo(ctx context.Context, req *v1.GetAgentConfigInfoRequest) (*v1.GetAgentConfigInfoResponse, error) {
+	var res v1.GetAgentConfigInfoResponse
+	if err := c.client.CallUnary(ctx, compassServiceGetAgentConfigInfoSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) DeleteAgentConfig(ctx context.Context, req *v1.DeleteAgentConfigRequest) (*v1.DeleteAgentConfigResponse, error) {
+	var res v1.DeleteAgentConfigResponse
+	if err := c.client.CallUnary(ctx, compassServiceDeleteAgentConfigSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) PutModelRegistry(ctx context.Context, req *v1.PutModelRegistryRequest) (*v1.PutModelRegistryResponse, error) {
+	var res v1.PutModelRegistryResponse
+	if err := c.client.CallUnary(ctx, compassServicePutModelRegistrySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) GetModelRegistry(ctx context.Context, req *v1.GetModelRegistryRequest) (*v1.GetModelRegistryResponse, error) {
+	var res v1.GetModelRegistryResponse
+	if err := c.client.CallUnary(ctx, compassServiceGetModelRegistrySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) DeleteModelRegistry(ctx context.Context, req *v1.DeleteModelRegistryRequest) (*v1.DeleteModelRegistryResponse, error) {
+	var res v1.DeleteModelRegistryResponse
+	if err := c.client.CallUnary(ctx, compassServiceDeleteModelRegistrySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) ListForgeMirrorSettings(ctx context.Context, req *v1.ListForgeMirrorSettingsRequest) (*v1.ListForgeMirrorSettingsResponse, error) {
+	var res v1.ListForgeMirrorSettingsResponse
+	if err := c.client.CallUnary(ctx, compassServiceListForgeMirrorSettingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *compassServiceClient) SetForgeMirrorSetting(ctx context.Context, req *v1.SetForgeMirrorSettingRequest) (*v1.SetForgeMirrorSettingResponse, error) {
+	var res v1.SetForgeMirrorSettingResponse
+	if err := c.client.CallUnary(ctx, compassServiceSetForgeMirrorSettingSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type compassServiceHandler struct{ svc CompassServiceHandler }
+
+func (h compassServiceHandler) getServerInfo(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetServerInfoRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetServerInfo(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) whoAmI(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WhoAmIRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.WhoAmI(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) getRefLinkRules(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetRefLinkRulesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetRefLinkRules(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) getTourState(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetTourStateRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetTourState(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) claimTourStart(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ClaimTourStartRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ClaimTourStart(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) setTourState(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SetTourStateRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SetTourState(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) subscribeEvents(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SubscribeEventsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.SubscribeEvents(ctx, &req, CompassServiceSubscribeEventsServerStream{stream: stream})
+}
+
+func (h compassServiceHandler) listBoardIssues(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListBoardIssuesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListBoardIssues(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) searchIssues(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SearchIssuesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SearchIssues(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) provisionAgentWorkspace(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ProvisionAgentWorkspaceRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ProvisionAgentWorkspace(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) startAgentSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.StartAgentSessionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.StartAgentSession(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) spawnAgent(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SpawnAgentRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SpawnAgent(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) stopAgentSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.StopAgentSessionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.StopAgentSession(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) skipBatchWindow(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SkipBatchWindowRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SkipBatchWindow(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) removeAgentWorkspace(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RemoveAgentWorkspaceRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RemoveAgentWorkspace(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) reloadAgentSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReloadAgentSessionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReloadAgentSession(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) getAgentStatus(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetAgentStatusRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetAgentStatus(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) subscribeAgentSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SubscribeAgentSessionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.SubscribeAgentSession(ctx, &req, CompassServiceSubscribeAgentSessionServerStream{stream: stream})
+}
+
+func (h compassServiceHandler) issueToken(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.IssueTokenRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.IssueToken(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) renameAccount(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RenameAccountRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RenameAccount(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) revokeToken(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RevokeTokenRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RevokeToken(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) putAgentConfig(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PutAgentConfigRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PutAgentConfig(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) getAgentConfigInfo(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetAgentConfigInfoRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetAgentConfigInfo(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) deleteAgentConfig(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteAgentConfigRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteAgentConfig(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) putModelRegistry(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PutModelRegistryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PutModelRegistry(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) getModelRegistry(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetModelRegistryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetModelRegistry(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) deleteModelRegistry(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteModelRegistryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteModelRegistry(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) listForgeMirrorSettings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListForgeMirrorSettingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListForgeMirrorSettings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h compassServiceHandler) setForgeMirrorSetting(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SetForgeMirrorSettingRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SetForgeMirrorSetting(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	secretsServiceSetSecretSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods().ByName("SetSecret"),
+			Procedure:  SecretsServiceSetSecretProcedure,
+		}
+	})
+	secretsServiceListSecretsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods().ByName("ListSecrets"),
+			Procedure:  SecretsServiceListSecretsProcedure,
+		}
+	})
+	secretsServiceDeleteSecretSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods().ByName("DeleteSecret"),
+			Procedure:  SecretsServiceDeleteSecretProcedure,
+		}
+	})
+	secretsServiceListServerSecretsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods().ByName("ListServerSecrets"),
+			Procedure:  SecretsServiceListServerSecretsProcedure,
+		}
+	})
+)
 
 // SecretsServiceClient is a client for the compass.v1.SecretsService service.
 type SecretsServiceClient interface {
 	// Declare a secret's registry row (name/delivery/kind/routing) and write its
 	// value via the resolver. User-only. `value` is never logged.
-	SetSecret(context.Context, *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error)
+	SetSecret(context.Context, *v1.SetSecretRequest) (*v1.SetSecretResponse, error)
 	// List declared secrets by name with set/unset + routing — never values.
 	// User and agent tokens.
-	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
+	ListSecrets(context.Context, *v1.ListSecretsRequest) (*v1.ListSecretsResponse, error)
 	// Remove a secret's registry row + value. User-only.
-	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	DeleteSecret(context.Context, *v1.DeleteSecretRequest) (*v1.DeleteSecretResponse, error)
 	// List declared SERVER secrets by name with set/unset — names only, NEVER
 	// values. Admin-only: the rows are deployment-owned, so there is no
 	// per-account authorization to fall back on.
@@ -1245,85 +1550,25 @@ type SecretsServiceClient interface {
 	// server secret's row is self-declared at every boot while its value lives in
 	// the SecretSpec provider and is populated separately, so a declared name is
 	// routinely unset and the two states must be distinguishable.
-	ListServerSecrets(context.Context, *connect.Request[v1.ListServerSecretsRequest]) (*connect.Response[v1.ListServerSecretsResponse], error)
+	ListServerSecrets(context.Context, *v1.ListServerSecretsRequest) (*v1.ListServerSecretsResponse, error)
 }
 
-// NewSecretsServiceClient constructs a client for the compass.v1.SecretsService service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewSecretsServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) SecretsServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	secretsServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods()
-	return &secretsServiceClient{
-		setSecret: connect.NewClient[v1.SetSecretRequest, v1.SetSecretResponse](
-			httpClient,
-			baseURL+SecretsServiceSetSecretProcedure,
-			connect.WithSchema(secretsServiceMethods.ByName("SetSecret")),
-			connect.WithClientOptions(opts...),
-		),
-		listSecrets: connect.NewClient[v1.ListSecretsRequest, v1.ListSecretsResponse](
-			httpClient,
-			baseURL+SecretsServiceListSecretsProcedure,
-			connect.WithSchema(secretsServiceMethods.ByName("ListSecrets")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteSecret: connect.NewClient[v1.DeleteSecretRequest, v1.DeleteSecretResponse](
-			httpClient,
-			baseURL+SecretsServiceDeleteSecretProcedure,
-			connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
-			connect.WithClientOptions(opts...),
-		),
-		listServerSecrets: connect.NewClient[v1.ListServerSecretsRequest, v1.ListServerSecretsResponse](
-			httpClient,
-			baseURL+SecretsServiceListServerSecretsProcedure,
-			connect.WithSchema(secretsServiceMethods.ByName("ListServerSecrets")),
-			connect.WithClientOptions(opts...),
-		),
-	}
-}
-
-// secretsServiceClient implements SecretsServiceClient.
-type secretsServiceClient struct {
-	setSecret         *connect.Client[v1.SetSecretRequest, v1.SetSecretResponse]
-	listSecrets       *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
-	deleteSecret      *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
-	listServerSecrets *connect.Client[v1.ListServerSecretsRequest, v1.ListServerSecretsResponse]
-}
-
-// SetSecret calls compass.v1.SecretsService.SetSecret.
-func (c *secretsServiceClient) SetSecret(ctx context.Context, req *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error) {
-	return c.setSecret.CallUnary(ctx, req)
-}
-
-// ListSecrets calls compass.v1.SecretsService.ListSecrets.
-func (c *secretsServiceClient) ListSecrets(ctx context.Context, req *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error) {
-	return c.listSecrets.CallUnary(ctx, req)
-}
-
-// DeleteSecret calls compass.v1.SecretsService.DeleteSecret.
-func (c *secretsServiceClient) DeleteSecret(ctx context.Context, req *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error) {
-	return c.deleteSecret.CallUnary(ctx, req)
-}
-
-// ListServerSecrets calls compass.v1.SecretsService.ListServerSecrets.
-func (c *secretsServiceClient) ListServerSecrets(ctx context.Context, req *connect.Request[v1.ListServerSecretsRequest]) (*connect.Response[v1.ListServerSecretsResponse], error) {
-	return c.listServerSecrets.CallUnary(ctx, req)
+// NewSecretsServiceClient constructs a client for the compass.v1.SecretsService service. Multiple
+// service clients may share a single connect.Client.
+func NewSecretsServiceClient(client *connect.Client) SecretsServiceClient {
+	return &secretsServiceClient{client: client}
 }
 
 // SecretsServiceHandler is an implementation of the compass.v1.SecretsService service.
 type SecretsServiceHandler interface {
 	// Declare a secret's registry row (name/delivery/kind/routing) and write its
 	// value via the resolver. User-only. `value` is never logged.
-	SetSecret(context.Context, *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error)
+	SetSecret(context.Context, *v1.SetSecretRequest) (*v1.SetSecretResponse, error)
 	// List declared secrets by name with set/unset + routing — never values.
 	// User and agent tokens.
-	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
+	ListSecrets(context.Context, *v1.ListSecretsRequest) (*v1.ListSecretsResponse, error)
 	// Remove a secret's registry row + value. User-only.
-	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	DeleteSecret(context.Context, *v1.DeleteSecretRequest) (*v1.DeleteSecretResponse, error)
 	// List declared SERVER secrets by name with set/unset — names only, NEVER
 	// values. Admin-only: the rows are deployment-owned, so there is no
 	// per-account authorization to fall back on.
@@ -1331,139 +1576,166 @@ type SecretsServiceHandler interface {
 	// server secret's row is self-declared at every boot while its value lives in
 	// the SecretSpec provider and is populated separately, so a declared name is
 	// routinely unset and the two states must be distinguishable.
-	ListServerSecrets(context.Context, *connect.Request[v1.ListServerSecretsRequest]) (*connect.Response[v1.ListServerSecretsResponse], error)
+	ListServerSecrets(context.Context, *v1.ListServerSecretsRequest) (*v1.ListServerSecretsResponse, error)
 }
 
-// NewSecretsServiceHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	secretsServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods()
-	secretsServiceSetSecretHandler := connect.NewUnaryHandler(
-		SecretsServiceSetSecretProcedure,
-		svc.SetSecret,
-		connect.WithSchema(secretsServiceMethods.ByName("SetSecret")),
-		connect.WithHandlerOptions(opts...),
+// RegisterSecretsServiceHandler registers svc as the compass.v1.SecretsService implementation on
+// server.
+func RegisterSecretsServiceHandler(server *connect.Server, svc SecretsServiceHandler) {
+	adapter := secretsServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: secretsServiceSetSecretSpec(), Handler: adapter.setSecret},
+		connect.Method{Spec: secretsServiceListSecretsSpec(), Handler: adapter.listSecrets},
+		connect.Method{Spec: secretsServiceDeleteSecretSpec(), Handler: adapter.deleteSecret},
+		connect.Method{Spec: secretsServiceListServerSecretsSpec(), Handler: adapter.listServerSecrets},
 	)
-	secretsServiceListSecretsHandler := connect.NewUnaryHandler(
-		SecretsServiceListSecretsProcedure,
-		svc.ListSecrets,
-		connect.WithSchema(secretsServiceMethods.ByName("ListSecrets")),
-		connect.WithHandlerOptions(opts...),
-	)
-	secretsServiceDeleteSecretHandler := connect.NewUnaryHandler(
-		SecretsServiceDeleteSecretProcedure,
-		svc.DeleteSecret,
-		connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
-		connect.WithHandlerOptions(opts...),
-	)
-	secretsServiceListServerSecretsHandler := connect.NewUnaryHandler(
-		SecretsServiceListServerSecretsProcedure,
-		svc.ListServerSecrets,
-		connect.WithSchema(secretsServiceMethods.ByName("ListServerSecrets")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.SecretsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case SecretsServiceSetSecretProcedure:
-			secretsServiceSetSecretHandler.ServeHTTP(w, r)
-		case SecretsServiceListSecretsProcedure:
-			secretsServiceListSecretsHandler.ServeHTTP(w, r)
-		case SecretsServiceDeleteSecretProcedure:
-			secretsServiceDeleteSecretHandler.ServeHTTP(w, r)
-		case SecretsServiceListServerSecretsProcedure:
-			secretsServiceListServerSecretsHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
 }
 
 // UnimplementedSecretsServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedSecretsServiceHandler struct{}
 
-func (UnimplementedSecretsServiceHandler) SetSecret(context.Context, *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.SetSecret is not implemented"))
+func (UnimplementedSecretsServiceHandler) SetSecret(context.Context, *v1.SetSecretRequest) (*v1.SetSecretResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.SecretsService.SetSecret is not implemented")
 }
 
-func (UnimplementedSecretsServiceHandler) ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.ListSecrets is not implemented"))
+func (UnimplementedSecretsServiceHandler) ListSecrets(context.Context, *v1.ListSecretsRequest) (*v1.ListSecretsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.SecretsService.ListSecrets is not implemented")
 }
 
-func (UnimplementedSecretsServiceHandler) DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.DeleteSecret is not implemented"))
+func (UnimplementedSecretsServiceHandler) DeleteSecret(context.Context, *v1.DeleteSecretRequest) (*v1.DeleteSecretResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.SecretsService.DeleteSecret is not implemented")
 }
 
-func (UnimplementedSecretsServiceHandler) ListServerSecrets(context.Context, *connect.Request[v1.ListServerSecretsRequest]) (*connect.Response[v1.ListServerSecretsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.ListServerSecrets is not implemented"))
+func (UnimplementedSecretsServiceHandler) ListServerSecrets(context.Context, *v1.ListServerSecretsRequest) (*v1.ListServerSecretsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.SecretsService.ListServerSecrets is not implemented")
 }
+
+type secretsServiceClient struct {
+	client *connect.Client
+}
+
+func (c *secretsServiceClient) SetSecret(ctx context.Context, req *v1.SetSecretRequest) (*v1.SetSecretResponse, error) {
+	var res v1.SetSecretResponse
+	if err := c.client.CallUnary(ctx, secretsServiceSetSecretSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *secretsServiceClient) ListSecrets(ctx context.Context, req *v1.ListSecretsRequest) (*v1.ListSecretsResponse, error) {
+	var res v1.ListSecretsResponse
+	if err := c.client.CallUnary(ctx, secretsServiceListSecretsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *secretsServiceClient) DeleteSecret(ctx context.Context, req *v1.DeleteSecretRequest) (*v1.DeleteSecretResponse, error) {
+	var res v1.DeleteSecretResponse
+	if err := c.client.CallUnary(ctx, secretsServiceDeleteSecretSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *secretsServiceClient) ListServerSecrets(ctx context.Context, req *v1.ListServerSecretsRequest) (*v1.ListServerSecretsResponse, error) {
+	var res v1.ListServerSecretsResponse
+	if err := c.client.CallUnary(ctx, secretsServiceListServerSecretsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type secretsServiceHandler struct{ svc SecretsServiceHandler }
+
+func (h secretsServiceHandler) setSecret(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SetSecretRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SetSecret(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h secretsServiceHandler) listSecrets(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListSecretsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListSecrets(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h secretsServiceHandler) deleteSecret(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteSecretRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteSecret(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h secretsServiceHandler) listServerSecrets(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListServerSecretsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListServerSecrets(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	agentRepositoryServiceGrantAgentRepositorySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("AgentRepositoryService").Methods().ByName("GrantAgentRepository"),
+			Procedure:  AgentRepositoryServiceGrantAgentRepositoryProcedure,
+		}
+	})
+	agentRepositoryServiceRevokeAgentRepositorySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("AgentRepositoryService").Methods().ByName("RevokeAgentRepository"),
+			Procedure:  AgentRepositoryServiceRevokeAgentRepositoryProcedure,
+		}
+	})
+	agentRepositoryServiceListAgentRepositoriesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_compass_v1_compass_proto.Services().ByName("AgentRepositoryService").Methods().ByName("ListAgentRepositories"),
+			Procedure:  AgentRepositoryServiceListAgentRepositoriesProcedure,
+		}
+	})
+)
 
 // AgentRepositoryServiceClient is a client for the compass.v1.AgentRepositoryService service.
 type AgentRepositoryServiceClient interface {
 	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
 	// or the org differs from the agent's credential org.
-	GrantAgentRepository(context.Context, *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error)
+	GrantAgentRepository(context.Context, *v1.GrantAgentRepositoryRequest) (*v1.GrantAgentRepositoryResponse, error)
 	// Remove one `org/name`. removed reports whether the row existed.
-	RevokeAgentRepository(context.Context, *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error)
+	RevokeAgentRepository(context.Context, *v1.RevokeAgentRepositoryRequest) (*v1.RevokeAgentRepositoryResponse, error)
 	// List the agent's own rows, not its owner's grants. An agent caller sends
 	// an empty agent_handle and gets its own rows.
-	ListAgentRepositories(context.Context, *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error)
+	ListAgentRepositories(context.Context, *v1.ListAgentRepositoriesRequest) (*v1.ListAgentRepositoriesResponse, error)
 }
 
 // NewAgentRepositoryServiceClient constructs a client for the compass.v1.AgentRepositoryService
-// service. By default, it uses the Connect protocol with the binary Protobuf Codec, asks for
-// gzipped responses, and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply
-// the connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewAgentRepositoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) AgentRepositoryServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	agentRepositoryServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("AgentRepositoryService").Methods()
-	return &agentRepositoryServiceClient{
-		grantAgentRepository: connect.NewClient[v1.GrantAgentRepositoryRequest, v1.GrantAgentRepositoryResponse](
-			httpClient,
-			baseURL+AgentRepositoryServiceGrantAgentRepositoryProcedure,
-			connect.WithSchema(agentRepositoryServiceMethods.ByName("GrantAgentRepository")),
-			connect.WithClientOptions(opts...),
-		),
-		revokeAgentRepository: connect.NewClient[v1.RevokeAgentRepositoryRequest, v1.RevokeAgentRepositoryResponse](
-			httpClient,
-			baseURL+AgentRepositoryServiceRevokeAgentRepositoryProcedure,
-			connect.WithSchema(agentRepositoryServiceMethods.ByName("RevokeAgentRepository")),
-			connect.WithClientOptions(opts...),
-		),
-		listAgentRepositories: connect.NewClient[v1.ListAgentRepositoriesRequest, v1.ListAgentRepositoriesResponse](
-			httpClient,
-			baseURL+AgentRepositoryServiceListAgentRepositoriesProcedure,
-			connect.WithSchema(agentRepositoryServiceMethods.ByName("ListAgentRepositories")),
-			connect.WithClientOptions(opts...),
-		),
-	}
-}
-
-// agentRepositoryServiceClient implements AgentRepositoryServiceClient.
-type agentRepositoryServiceClient struct {
-	grantAgentRepository  *connect.Client[v1.GrantAgentRepositoryRequest, v1.GrantAgentRepositoryResponse]
-	revokeAgentRepository *connect.Client[v1.RevokeAgentRepositoryRequest, v1.RevokeAgentRepositoryResponse]
-	listAgentRepositories *connect.Client[v1.ListAgentRepositoriesRequest, v1.ListAgentRepositoriesResponse]
-}
-
-// GrantAgentRepository calls compass.v1.AgentRepositoryService.GrantAgentRepository.
-func (c *agentRepositoryServiceClient) GrantAgentRepository(ctx context.Context, req *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error) {
-	return c.grantAgentRepository.CallUnary(ctx, req)
-}
-
-// RevokeAgentRepository calls compass.v1.AgentRepositoryService.RevokeAgentRepository.
-func (c *agentRepositoryServiceClient) RevokeAgentRepository(ctx context.Context, req *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error) {
-	return c.revokeAgentRepository.CallUnary(ctx, req)
-}
-
-// ListAgentRepositories calls compass.v1.AgentRepositoryService.ListAgentRepositories.
-func (c *agentRepositoryServiceClient) ListAgentRepositories(ctx context.Context, req *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error) {
-	return c.listAgentRepositories.CallUnary(ctx, req)
+// service. Multiple service clients may share a single connect.Client.
+func NewAgentRepositoryServiceClient(client *connect.Client) AgentRepositoryServiceClient {
+	return &agentRepositoryServiceClient{client: client}
 }
 
 // AgentRepositoryServiceHandler is an implementation of the compass.v1.AgentRepositoryService
@@ -1471,64 +1743,102 @@ func (c *agentRepositoryServiceClient) ListAgentRepositories(ctx context.Context
 type AgentRepositoryServiceHandler interface {
 	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
 	// or the org differs from the agent's credential org.
-	GrantAgentRepository(context.Context, *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error)
+	GrantAgentRepository(context.Context, *v1.GrantAgentRepositoryRequest) (*v1.GrantAgentRepositoryResponse, error)
 	// Remove one `org/name`. removed reports whether the row existed.
-	RevokeAgentRepository(context.Context, *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error)
+	RevokeAgentRepository(context.Context, *v1.RevokeAgentRepositoryRequest) (*v1.RevokeAgentRepositoryResponse, error)
 	// List the agent's own rows, not its owner's grants. An agent caller sends
 	// an empty agent_handle and gets its own rows.
-	ListAgentRepositories(context.Context, *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error)
+	ListAgentRepositories(context.Context, *v1.ListAgentRepositoriesRequest) (*v1.ListAgentRepositoriesResponse, error)
 }
 
-// NewAgentRepositoryServiceHandler builds an HTTP handler from the service implementation. It
-// returns the path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewAgentRepositoryServiceHandler(svc AgentRepositoryServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	agentRepositoryServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("AgentRepositoryService").Methods()
-	agentRepositoryServiceGrantAgentRepositoryHandler := connect.NewUnaryHandler(
-		AgentRepositoryServiceGrantAgentRepositoryProcedure,
-		svc.GrantAgentRepository,
-		connect.WithSchema(agentRepositoryServiceMethods.ByName("GrantAgentRepository")),
-		connect.WithHandlerOptions(opts...),
+// RegisterAgentRepositoryServiceHandler registers svc as the compass.v1.AgentRepositoryService
+// implementation on server.
+func RegisterAgentRepositoryServiceHandler(server *connect.Server, svc AgentRepositoryServiceHandler) {
+	adapter := agentRepositoryServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: agentRepositoryServiceGrantAgentRepositorySpec(), Handler: adapter.grantAgentRepository},
+		connect.Method{Spec: agentRepositoryServiceRevokeAgentRepositorySpec(), Handler: adapter.revokeAgentRepository},
+		connect.Method{Spec: agentRepositoryServiceListAgentRepositoriesSpec(), Handler: adapter.listAgentRepositories},
 	)
-	agentRepositoryServiceRevokeAgentRepositoryHandler := connect.NewUnaryHandler(
-		AgentRepositoryServiceRevokeAgentRepositoryProcedure,
-		svc.RevokeAgentRepository,
-		connect.WithSchema(agentRepositoryServiceMethods.ByName("RevokeAgentRepository")),
-		connect.WithHandlerOptions(opts...),
-	)
-	agentRepositoryServiceListAgentRepositoriesHandler := connect.NewUnaryHandler(
-		AgentRepositoryServiceListAgentRepositoriesProcedure,
-		svc.ListAgentRepositories,
-		connect.WithSchema(agentRepositoryServiceMethods.ByName("ListAgentRepositories")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/compass.v1.AgentRepositoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case AgentRepositoryServiceGrantAgentRepositoryProcedure:
-			agentRepositoryServiceGrantAgentRepositoryHandler.ServeHTTP(w, r)
-		case AgentRepositoryServiceRevokeAgentRepositoryProcedure:
-			agentRepositoryServiceRevokeAgentRepositoryHandler.ServeHTTP(w, r)
-		case AgentRepositoryServiceListAgentRepositoriesProcedure:
-			agentRepositoryServiceListAgentRepositoriesHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
 }
 
 // UnimplementedAgentRepositoryServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedAgentRepositoryServiceHandler struct{}
 
-func (UnimplementedAgentRepositoryServiceHandler) GrantAgentRepository(context.Context, *connect.Request[v1.GrantAgentRepositoryRequest]) (*connect.Response[v1.GrantAgentRepositoryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentRepositoryService.GrantAgentRepository is not implemented"))
+func (UnimplementedAgentRepositoryServiceHandler) GrantAgentRepository(context.Context, *v1.GrantAgentRepositoryRequest) (*v1.GrantAgentRepositoryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentRepositoryService.GrantAgentRepository is not implemented")
 }
 
-func (UnimplementedAgentRepositoryServiceHandler) RevokeAgentRepository(context.Context, *connect.Request[v1.RevokeAgentRepositoryRequest]) (*connect.Response[v1.RevokeAgentRepositoryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentRepositoryService.RevokeAgentRepository is not implemented"))
+func (UnimplementedAgentRepositoryServiceHandler) RevokeAgentRepository(context.Context, *v1.RevokeAgentRepositoryRequest) (*v1.RevokeAgentRepositoryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentRepositoryService.RevokeAgentRepository is not implemented")
 }
 
-func (UnimplementedAgentRepositoryServiceHandler) ListAgentRepositories(context.Context, *connect.Request[v1.ListAgentRepositoriesRequest]) (*connect.Response[v1.ListAgentRepositoriesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentRepositoryService.ListAgentRepositories is not implemented"))
+func (UnimplementedAgentRepositoryServiceHandler) ListAgentRepositories(context.Context, *v1.ListAgentRepositoriesRequest) (*v1.ListAgentRepositoriesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "compass.v1.AgentRepositoryService.ListAgentRepositories is not implemented")
+}
+
+type agentRepositoryServiceClient struct {
+	client *connect.Client
+}
+
+func (c *agentRepositoryServiceClient) GrantAgentRepository(ctx context.Context, req *v1.GrantAgentRepositoryRequest) (*v1.GrantAgentRepositoryResponse, error) {
+	var res v1.GrantAgentRepositoryResponse
+	if err := c.client.CallUnary(ctx, agentRepositoryServiceGrantAgentRepositorySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentRepositoryServiceClient) RevokeAgentRepository(ctx context.Context, req *v1.RevokeAgentRepositoryRequest) (*v1.RevokeAgentRepositoryResponse, error) {
+	var res v1.RevokeAgentRepositoryResponse
+	if err := c.client.CallUnary(ctx, agentRepositoryServiceRevokeAgentRepositorySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentRepositoryServiceClient) ListAgentRepositories(ctx context.Context, req *v1.ListAgentRepositoriesRequest) (*v1.ListAgentRepositoriesResponse, error) {
+	var res v1.ListAgentRepositoriesResponse
+	if err := c.client.CallUnary(ctx, agentRepositoryServiceListAgentRepositoriesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type agentRepositoryServiceHandler struct{ svc AgentRepositoryServiceHandler }
+
+func (h agentRepositoryServiceHandler) grantAgentRepository(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GrantAgentRepositoryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GrantAgentRepository(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentRepositoryServiceHandler) revokeAgentRepository(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RevokeAgentRepositoryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RevokeAgentRepository(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentRepositoryServiceHandler) listAgentRepositories(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListAgentRepositoriesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListAgentRepositories(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
 }
