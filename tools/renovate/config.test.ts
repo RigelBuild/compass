@@ -1643,7 +1643,11 @@ describe("tools/renovate postgres-stack digest manager (RIG-2774, DL-260)", () =
 describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 	// The catalog soak-exempt rule must name exactly the bunfig excludes that are
 	// catalog deps; Solid prerelease pins use a separate apps/ui-scoped rule.
-	const firstPartyToolNames = ["@rigelbuild/ref-gate"];
+	const firstPartyToolNames = [
+		"@rigelbuild/ref-gate",
+		"@rigelbuild/biome-config",
+		"@rigelbuild/tsconfig",
+	];
 	// Runs with the Renovate App token in renovate.yml, so it must stay soaked.
 	const tokenBearingPackage = "@rigelbuild/renovate-preflight";
 	const soakRule = cfg.packageRules.find(
