@@ -256,6 +256,31 @@ describe("shortcuts overlay (RIG-2482)", () => {
 			),
 		).toBe(true);
 	});
+	test("Bridge title-ref commands and Escape appear in the overlay", async () => {
+		setPlatform("other");
+		const { container } = mountApp("/");
+		press({ key: "?", shiftKey: true });
+		await flush();
+		const rows = rowText(container);
+		expect(
+			rows.some(
+				(text) =>
+					text.includes("Focus next link in card title") && text.includes("R"),
+			),
+		).toBe(true);
+		expect(
+			rows.some(
+				(text) =>
+					text.includes("Focus previous link in card title") &&
+					text.includes("Shift+R"),
+			),
+		).toBe(true);
+		expect(
+			rows.some(
+				(text) => text.includes("Return to card") && text.includes("Escape"),
+			),
+		).toBe(true);
+	});
 
 	test("drift-immunity: registering a tabled-but-dead command makes its row appear on next open", async () => {
 		setPlatform("other");
