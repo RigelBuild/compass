@@ -151,6 +151,16 @@ func buildLinearResolver(st *store.Store, adminID store.AccountID) *linearagent.
 	return linearagent.NewResolver(st, routing, forge.LinearHost, routing)
 }
 
+// linearResponderHTTPClient is the traced client for the session dispatcher.
+func linearResponderHTTPClient() *http.Client {
+	return tracedHTTPClient(linearAPITimeout)
+}
+
+// linearResponderClient builds the dispatcher's GraphQL client.
+func linearResponderClient(tokens *linearagent.TokenSource, graphQLURL string) linearagent.Client {
+	return linearagent.NewClient(tokens, linearResponderHTTPClient(), graphQLURL)
+}
+
 // buildLinearResponder assembles the session dispatcher over the shared Linear
 // token source; nil when Linear is not configured. An empty graphQLURL is Linear's own.
 func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, bridgeID store.AccountID, tokens *linearagent.TokenSource, graphQLURL string, resolver *linearagent.Resolver) *linearagent.Dispatcher {
@@ -165,7 +175,7 @@ func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, bri
 		Topics:       st,
 		Associations: st,
 		Deliveries:   st,
-		Client:       linearagent.NewClient(tokens, &http.Client{Timeout: linearAPITimeout}, graphQLURL),
+		Client:       linearResponderClient(tokens, graphQLURL),
 		SessionLinkFor: func(id string) string {
 			return sessionLinkFor(cfg.PublicURL, id)
 		},

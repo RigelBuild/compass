@@ -22,6 +22,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -120,6 +121,7 @@ func NewRunnerVerifier(
 		if err != nil {
 			return nil, fmt.Errorf("runner cluster %q: %w", c.Name, err)
 		}
+		hc.Transport = otel.HTTPTransport(hc.Transport)
 		ck := &clusterKeys{cluster: c, client: hc}
 		v.clusters = append(v.clusters, ck)
 		v.byIssuer[c.Issuer] = ck

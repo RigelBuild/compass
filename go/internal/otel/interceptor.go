@@ -27,7 +27,7 @@ func HandlerInterceptors(ic connect.ServerInterceptor, rest ...connect.ServerInt
 
 // traceResponseHeader is the W3C trace-context response header (still a draft;
 // DECIDED by compass-obs to use the standard name + "00-…" grammar anyway).
-const traceResponseHeader = "traceresponse"
+const traceResponseHeader = "Traceresponse"
 
 // NewTraceResponseInterceptor sets traceresponse on a successful unary response
 // immediately before its first Send, when the handler span has a valid context.
@@ -92,7 +92,7 @@ func (s *unaryResponseBuffer) Send(msg any) error {
 // Exported because the CORS builders must allow it as a REQUEST header. A
 // browser preflight that omits it fails the whole request, so the interceptor
 // below would be unreachable from the UI that is its only source.
-const PostHogSessionHeader = "X-POSTHOG-SESSION-ID"
+const PostHogSessionHeader = "X-Posthog-Session-Id"
 
 // maxSessionIDLen caps a SINGLE attribute's size and refuses payload-shaped
 // values; per-request volume is governed by the door's own rate and size

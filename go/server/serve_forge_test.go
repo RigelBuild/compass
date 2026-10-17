@@ -9,17 +9,199 @@ package server
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 )
+
+type scriptedHTTPTransport struct {
+	body     string
+	requests chan string
+}
+
+func (rt *scriptedHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if rt.requests != nil {
+		rt.requests <- req.URL.String()
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(rt.body)),
+		Request:    req,
+	}, nil
+}
+
+func installServerHTTPTransport(t *testing.T, transport http.RoundTripper) {
+	t.Helper()
+	previous := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+}
+
+func TestLinearHTTPBuildersRecordClientSpans(t *testing.T) {
+	for _, builder := range []struct {
+		name string
+		call func(*testing.T) *forge.Linear
+	}{
+		{
+			name: "notify lane",
+			call: func(t *testing.T) *forge.Linear {
+				t.Helper()
+				lane := buildLinearNotifyLane(nil, nil, linearagent.NewTokenSource("cid", "secret", nil, ""), slog.Default())
+				linear, ok := lane.reader.(*forge.Linear)
+				if !ok {
+					t.Fatalf("notify reader is %T, want *forge.Linear", lane.reader)
+				}
+				return linear
+			},
+		},
+		{
+			name: "write coordinate",
+			call: func(t *testing.T) *forge.Linear {
+				t.Helper()
+				cfg := ServeConfig{Forge: ForgeConfig{
+					Host:        "github.com",
+					App:         ForgeAppConfig{AppID: 42, InstallationID: 7, AppPrivateKeySecret: "APP_KEY"},
+					ReviewerApp: ForgeAppConfig{AppID: 43, InstallationID: 8, AppPrivateKeySecret: "REVIEWER_KEY"},
+				}}
+				resolver := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("REVIEWER_KEY"), Value: "key"}}}
+				primary := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: staticTokenSource{}})
+				service, err := buildForgeWriteService(
+					t.Context(), cfg, nil, nil, resolver, primary,
+					linearagent.NewTokenSource("cid", "secret", nil, ""), slog.Default(),
+				)
+				if err != nil {
+					t.Fatalf("buildForgeWriteService: %v", err)
+				}
+				resolved, ok := service.providers.resolve(&compassv1.ForgeRef{
+					Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
+				})
+				if !ok {
+					t.Fatal("Linear write coordinate was not registered")
+				}
+				linear, ok := resolved.author.(*forge.Linear)
+				if !ok {
+					t.Fatalf("Linear author is %T, want *forge.Linear", resolved.author)
+				}
+				return linear
+			},
+		},
+	} {
+		t.Run(builder.name, func(t *testing.T) {
+			recorder := installServerHTTPSpanRecorder(t)
+			installServerHTTPTransport(t, &scriptedHTTPTransport{
+				body: `{"access_token":"token","expires_in":3600,"data":{"viewer":{"id":"app","displayName":"Compass"}}}`,
+			})
+			linear := builder.call(t)
+			if _, err := linear.AppLogin(t.Context()); err != nil {
+				t.Fatalf("Linear API request: %v", err)
+			}
+			requireOneClientSpan(t, recorder)
+		})
+	}
+}
+
+func TestLinearTokenSourceConstructionRecordsClientSpan(t *testing.T) {
+	recorder := installServerHTTPSpanRecorder(t)
+	installServerHTTPTransport(t, &scriptedHTTPTransport{body: `{"access_token":"token","expires_in":3600}`})
+	resolver := &fakeResolver{resolved: []secrets.ResolvedSecret{
+		{Name: serverSecretName(defaultForgeLinearClientIDSecretName), Value: "cid"},
+		{Name: serverSecretName(defaultForgeLinearClientSecretName), Value: "secret"},
+	}}
+	tokens, err := buildLinearTokenSource(t.Context(), ServeConfig{}, resolver, slog.Default())
+	if err != nil {
+		t.Fatalf("buildLinearTokenSource: %v", err)
+	}
+	if tokens == nil {
+		t.Fatal("buildLinearTokenSource returned nil")
+	}
+	requireOneClientSpan(t, recorder)
+}
+
+func TestLinearHTTPClientsKeepTimeouts(t *testing.T) {
+	if got := linearHTTPClient().Timeout; got != 30*time.Second {
+		t.Errorf("Linear client timeout = %v, want 30s", got)
+	}
+	if got := linearResponderHTTPClient().Timeout; got != linearAPITimeout {
+		t.Errorf("Linear responder timeout = %v, want %v", got, linearAPITimeout)
+	}
+	if got := trunkHTTPClient(ForgeConfig{}).Timeout; got != 30*time.Second {
+		t.Errorf("Trunk client timeout = %v, want 30s", got)
+	}
+	injected := &http.Client{}
+	if got := trunkHTTPClient(ForgeConfig{TrunkHTTP: injected}); got != injected {
+		t.Error("Trunk client ignored the injected ForgeConfig.TrunkHTTP")
+	}
+}
+
+func TestLinearResponderHTTPClientRecordsClientSpan(t *testing.T) {
+	recorder := installServerHTTPSpanRecorder(t)
+	installServerHTTPTransport(t, &scriptedHTTPTransport{
+		body: `{"access_token":"token","expires_in":3600,"data":{"agentActivityCreate":{"success":true}}}`,
+	})
+	tokens := linearagent.NewTokenSource("cid", "secret", nil, "")
+	client := linearResponderClient(tokens, "https://linear.example/graphql")
+	if err := client.CreateActivity(
+		t.Context(), "session", linearagent.ActivityContent{Type: "thought", Body: "ack"},
+	); err != nil {
+		t.Fatalf("responder Linear request: %v", err)
+	}
+	requireOneClientSpan(t, recorder)
+}
+
+func TestTrunkMergeQueueProvidersRecordClientSpan(t *testing.T) {
+	recorder := installServerHTTPSpanRecorder(t)
+	installServerHTTPTransport(t, &scriptedHTTPTransport{body: `{"pullRequests":[]}`})
+	token := func(context.Context) ([]byte, error) { return []byte("token"), nil }
+	queue := trunkMergeQueueProviders(ForgeConfig{Host: "github.com"}, token)["trunk"]
+	if _, err := queue.Entries(t.Context(), "owner/repo", "main", []uint64{7}); err != nil {
+		t.Fatalf("Trunk Entries: %v", err)
+	}
+	requireOneClientSpan(t, recorder)
+}
+
+func TestS3ConfigWithTracingRecordsClientSpan(t *testing.T) {
+	recorder := installServerHTTPSpanRecorder(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	wrapped := s3ConfigWithTracing(S3Config{Endpoint: "s3.example", Bucket: "archive"})
+	if wrapped.WrapTransport == nil {
+		t.Fatal("S3 WrapTransport = nil, want traced transport wrapper")
+	}
+	client := &http.Client{Transport: wrapped.WrapTransport(http.DefaultTransport)}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("building S3 transport request: %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("S3 transport request: %v", err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("closing S3 transport response: %v", err)
+	}
+	requireOneClientSpan(t, recorder)
+}
 
 // fakeResolver is a secrets.Resolver whose Resolve returns a scripted set (or a
 // scripted error). The resolved value can be changed between calls so a test
@@ -66,17 +248,23 @@ func TestForgeConfigEnableAndDefaults(t *testing.T) {
 			t.Fatalf("Host = %q, want %q", got.Host, defaultForgeHost)
 		}
 		if got.LinearClientIDSecretName != defaultForgeLinearClientIDSecretName {
-			t.Fatalf("LinearClientIDSecretName = %q, want %q", got.LinearClientIDSecretName, defaultForgeLinearClientIDSecretName)
+			t.Fatalf("LinearClientIDSecretName = %q, want %q",
+				got.LinearClientIDSecretName, defaultForgeLinearClientIDSecretName)
 		}
 		if got.LinearClientSecretName != defaultForgeLinearClientSecretName {
-			t.Fatalf("LinearClientSecretName = %q, want %q", got.LinearClientSecretName, defaultForgeLinearClientSecretName)
+			t.Fatalf("LinearClientSecretName = %q, want %q",
+				got.LinearClientSecretName, defaultForgeLinearClientSecretName)
 		}
 		if got.App.ReconcileBackstop != defaultReconcileBackstop {
 			t.Fatalf("ReconcileBackstop = %v, want %v", got.App.ReconcileBackstop, defaultReconcileBackstop)
 		}
 	})
 	t.Run("explicit fields survive defaulting", func(t *testing.T) {
-		in := ForgeConfig{Host: "ghe.example.com", LinearClientIDSecretName: "LID", App: ForgeAppConfig{ReconcileBackstop: 3 * time.Minute}}
+		in := ForgeConfig{
+			Host:                     "ghe.example.com",
+			LinearClientIDSecretName: "LID",
+			App:                      ForgeAppConfig{ReconcileBackstop: 3 * time.Minute},
+		}
 		got := in.resolved()
 		if got.Host != "ghe.example.com" || got.LinearClientIDSecretName != "LID" || got.App.ReconcileBackstop != 3*time.Minute {
 			t.Fatalf("explicit fields clobbered by defaulting: %+v", got)
@@ -606,7 +794,8 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 		t.Fatalf("buildLinearWebhookWiring(container): %v", err)
 	}
 	if offHandler != nil {
-		t.Fatal("container resolver mounted the Linear webhook handler; the secret is not in the user registry, so this can only mean the wrong instance would work by accident")
+		t.Fatal("container resolver mounted the Linear webhook handler; the secret is not in the user registry, " +
+			"so this can only mean the wrong instance would work by accident")
 	}
 
 	// And the container instance must still be the one that can see a USER
@@ -689,7 +878,8 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 		t.Fatal("no Linear write coordinate registered with a configured token source")
 	}
 	if resolved.host != forge.LinearHost {
-		t.Fatalf("Linear coordinate resolved host %q, want %q (the DL-055 row rejects an empty host)", resolved.host, forge.LinearHost)
+		t.Fatalf("Linear coordinate resolved host %q, want %q "+
+			"(the DL-055 row rejects an empty host)", resolved.host, forge.LinearHost)
 	}
 	writeLinear, ok := resolved.author.(*forge.Linear)
 	if !ok {
@@ -717,4 +907,111 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 	if ghResolved.author != forge.Provider(primary) {
 		t.Fatal("GitHub coordinate author is not the primaryClient passed to buildForgeWriteService")
 	}
+}
+
+func installServerHTTPSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := provider.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+	return recorder
+}
+
+func requireOneClientSpan(t *testing.T, recorder *tracetest.SpanRecorder) {
+	t.Helper()
+	var count int
+	for _, span := range recorder.Ended() {
+		if span.SpanKind() == trace.SpanKindClient {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("client spans = %d, want 1", count)
+	}
+}
+
+func TestForgeHTTPClientRecordsClientSpan(t *testing.T) {
+	t.Run("default transport", func(t *testing.T) {
+		recorder := installServerHTTPSpanRecorder(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(server.Close)
+		client, err := forgeHTTPClient("")
+		if err != nil {
+			t.Fatalf("forgeHTTPClient: %v", err)
+		}
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+		if err != nil {
+			t.Fatalf("building GET request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatalf("closing response body: %v", err)
+		}
+		requireOneClientSpan(t, recorder)
+	})
+
+	t.Run("custom CA transport", func(t *testing.T) {
+		recorder := installServerHTTPSpanRecorder(t)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(server.Close)
+		caPath := filepath.Join(t.TempDir(), "ca.pem")
+		block := &pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}
+		if err := os.WriteFile(caPath, pem.EncodeToMemory(block), 0o600); err != nil {
+			t.Fatalf("writing CA bundle: %v", err)
+		}
+		client, err := forgeHTTPClient(caPath)
+		if err != nil {
+			t.Fatalf("forgeHTTPClient: %v", err)
+		}
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+		if err != nil {
+			t.Fatalf("building GET request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatalf("closing response body: %v", err)
+		}
+		requireOneClientSpan(t, recorder)
+	})
+}
+
+func TestTracedHTTPClientRecordsClientSpan(t *testing.T) {
+	recorder := installServerHTTPSpanRecorder(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("building GET request: %v", err)
+	}
+	client := tracedHTTPClient(time.Second)
+	if client.Timeout != time.Second {
+		t.Errorf("traced client timeout = %v, want 1s", client.Timeout)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("closing response body: %v", err)
+	}
+	requireOneClientSpan(t, recorder)
 }

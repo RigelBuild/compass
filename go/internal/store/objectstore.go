@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -30,6 +31,8 @@ type S3Config struct {
 	Region string
 	// UseTLS selects https (true) vs http (false) to the endpoint.
 	UseTLS bool
+	// WrapTransport, when set, wraps MinIO's default HTTP transport.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
 }
 
 // present reports whether enough config is set to construct a client. An
@@ -59,10 +62,19 @@ func NewS3ObjectStore(cfg S3Config) (*S3ObjectStore, error) {
 	if !cfg.present() {
 		return nil, errors.New("s3 object store: endpoint and bucket are required")
 	}
+	transport, err := minio.DefaultTransport(cfg.UseTLS)
+	if err != nil {
+		return nil, fmt.Errorf("s3 object store: creating HTTP transport: %w", err)
+	}
+	var roundTripper http.RoundTripper = transport
+	if cfg.WrapTransport != nil {
+		roundTripper = cfg.WrapTransport(transport)
+	}
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.UseTLS,
-		Region: cfg.Region,
+		Creds:     credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
+		Secure:    cfg.UseTLS,
+		Region:    cfg.Region,
+		Transport: roundTripper,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("s3 object store: constructing client for %q: %w", cfg.Endpoint, err)
