@@ -1,4 +1,11 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, jest, spyOn, test } from "bun:test";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
+import {
+	create,
+	ForgeProvider,
+	IssueSchema,
+	IssueState,
+} from "@compass/client";
 import { createRouter, memoryHistory } from "@solidjs/router";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { createRoot, flush as flushSync } from "solid-js";
@@ -11,7 +18,10 @@ import {
 } from "../board";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
-import { FIXTURE_REF_LINK_RULES } from "../live/compass-fake";
+import {
+	createFakeCompass,
+	FIXTURE_REF_LINK_RULES,
+} from "../live/compass-fake";
 import { appRoutes } from "../routes";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
@@ -1212,5 +1222,84 @@ describe("Bridge advancing card", () => {
 		expect(
 			container.querySelectorAll('.bridge-grid .cx-card[data-advancing="1"]'),
 		).toHaveLength(1);
+	});
+
+	test("the cue ends at the window boundary without a poll", () => {
+		jest.useFakeTimers();
+		try {
+			jest.setSystemTime(new Date(5_000_000));
+			const container = mountWithStamps({ "ws-1022": 5_000_000 - 1_000 });
+			expect(
+				cardByLabel(container, "Issue RIG-1022, advancing"),
+			).not.toBeNull();
+			// One timer, armed for the expiry: no polling interval.
+			expect(jest.getTimerCount()).toBe(1);
+			jest.advanceTimersByTime(ADVANCING_WINDOW_MS - 1_001);
+			flushSync();
+			expect(
+				cardByLabel(container, "Issue RIG-1022, advancing"),
+			).not.toBeNull();
+			jest.advanceTimersByTime(1);
+			flushSync();
+			const card = cardByLabel(container, "Issue RIG-1022");
+			expect(card?.hasAttribute("data-advancing")).toBe(false);
+			expect(jest.getTimerCount()).toBe(0);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("unmounting clears the pending expiry timer", () => {
+		jest.useFakeTimers();
+		try {
+			jest.setSystemTime(new Date(5_000_000));
+			mountWithStamps({ "ws-1022": 5_000_000 });
+			expect(jest.getTimerCount()).toBe(1);
+			cleanup();
+			expect(jest.getTimerCount()).toBe(0);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("a live column move marks the card after mount", async () => {
+		const compass = createFakeCompass();
+		let store!: AppStore;
+		const { container } = render(() => {
+			store = createAppStore({
+				queryClient: testQueryClient(),
+				compass: compass.client,
+			});
+			return (
+				<StoreContext value={store}>
+					<ViewContext value={store.focusedView()}>
+						<Bridge />
+					</ViewContext>
+				</StoreContext>
+			);
+		});
+		const now = Date.now();
+		compass.pushIssue(
+			create(IssueSchema, {
+				id: "live-1",
+				forge: { provider: ForgeProvider.GITHUB, host: "github.com" },
+				repo: "RigelBuild/compass",
+				number: 4242,
+				state: IssueState.IN_REVIEW,
+				// A swimlane card needs an agent row; reuse a fixture agent.
+				assignee: "acc-compass-ui",
+				stateChangedAt: timestampFromMs(now),
+			}),
+			now,
+		);
+		for (let i = 0; i < 200 && store.issues()[0]?.id !== "live-1"; i++) {
+			await Promise.resolve();
+			flushSync();
+		}
+		const card = cardByLabel(
+			container,
+			"Issue RigelBuild/compass#4242, advancing",
+		);
+		expect(card?.getAttribute("data-advancing")).toBe("1");
 	});
 });

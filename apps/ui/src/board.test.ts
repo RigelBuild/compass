@@ -245,8 +245,12 @@ describe("isAdvancing / nextAdvancingExpiry", () => {
 		);
 	});
 
-	test("a stamp ahead of the local clock still advances", () => {
+	test("a stamp ahead of the clock advances only within one window", () => {
 		expect(isAdvancing(moved("skew", -5_000), now)).toBe(true);
+		expect(isAdvancing(moved("future", -ADVANCING_WINDOW_MS), now)).toBe(false);
+		expect(
+			nextAdvancingExpiry([moved("future", -10 * ADVANCING_WINDOW_MS)], now),
+		).toBe(null);
 	});
 
 	test("a card that moved off the board does not advance", () => {

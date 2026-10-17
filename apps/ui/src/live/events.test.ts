@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import {
 	AgentSessionState,
 	AgentSessionStatusSchema,
@@ -387,6 +388,37 @@ describe("runEventStream (RIG-1729 read driver)", () => {
 			const a = latest.find((i) => i.id === "a");
 			expect(a?.title).toBe("first-v2");
 			expect(a?.state).toBe("in_progress");
+		} finally {
+			abort.abort();
+			await run;
+		}
+	});
+
+	test("maps a state stamp from the server clock into the browser clock", async () => {
+		// The server clock runs 90s ahead; its stamp is 10s old in server time.
+		const skew = 90_000;
+		const serverNow = BigInt(Date.now() + skew);
+		const moved = issueResp(1n, "a", {
+			state: IssueState.IN_REVIEW,
+			stateChangedAt: timestampFromMs(Number(serverNow) - 10_000),
+		});
+		moved.atUnixMs = serverNow;
+		const client = createCompassClient(scriptedTransport([moved]));
+		const abort = new AbortController();
+		let latest: DomainIssue[] = [];
+		const run = runEventStream({
+			client,
+			onIssues: (issues) => {
+				latest = issues;
+			},
+			signal: abort.signal,
+		});
+		try {
+			await drainUntil(() => latest.length === 1);
+			const age = Date.now() - (latest[0]?.stateChangedAtUnixMs ?? 0);
+			// Without the offset the stamp would read 80s in the future.
+			expect(age).toBeGreaterThanOrEqual(9_000);
+			expect(age).toBeLessThan(12_000);
 		} finally {
 			abort.abort();
 			await run;

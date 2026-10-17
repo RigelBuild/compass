@@ -1,9 +1,9 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
-// Advancing-card hook (RIG-2111 T5; design record G10 / D2 / F12).
+// Advancing-card hook: the chase-light and its reduced-motion guard.
 //
-// The board paints a blue chase-light on the one card mid-advance via
+// The board paints a blue chase-light on a card mid-advance via
 // `.bridge-cell > .cx-card[data-advancing="1"]::after`. The Bridge sets the flag
 // from `Issue.state_changed_at`; the fixture issues carry no stamp, so this
 // spec toggles the attribute directly to exercise the CSS.

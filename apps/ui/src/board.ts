@@ -90,12 +90,13 @@ export function cellItems(
  *  seen on a glance at the board, short enough that one move reads as motion. */
 export const ADVANCING_WINDOW_MS = 60_000;
 
-/** Whether an issue changed column within the advancing window ending at `nowMs`.
- *  A stamp ahead of the local clock (server skew) still counts as fresh. */
+/** Whether an issue changed column within the advancing window of `nowMs`. The
+ *  stream maps stamps into the browser clock; a stamp still ahead of it counts
+ *  only within one window, so a bad clock can never pin a card advancing. */
 export function isAdvancing(issue: Issue, nowMs: number): boolean {
 	const at = issue.stateChangedAtUnixMs;
 	if (at === undefined || !isActiveState(issue.state)) return false;
-	return nowMs - at < ADVANCING_WINDOW_MS;
+	return Math.abs(nowMs - at) < ADVANCING_WINDOW_MS;
 }
 
 /** When the next advancing card stops advancing, or null when none is. The
@@ -106,8 +107,9 @@ export function nextAdvancingExpiry(
 ): number | null {
 	let next: number | null = null;
 	for (const issue of all) {
-		if (!isAdvancing(issue, nowMs)) continue;
-		const end = (issue.stateChangedAtUnixMs ?? 0) + ADVANCING_WINDOW_MS;
+		const at = issue.stateChangedAtUnixMs;
+		if (at === undefined || !isAdvancing(issue, nowMs)) continue;
+		const end = at + ADVANCING_WINDOW_MS;
 		if (next === null || end < next) next = end;
 	}
 	return next;

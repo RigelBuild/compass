@@ -220,8 +220,8 @@ and a PRs view.
   title, and a footer with the `@assignee` and a diff `+add / −del`.
 - **PRs view rows** carry the PR's own facts — the CI badge, the review badge, and
   a `resolved/total threads` count — distinct from the issue's.
-- **One advancing card** carries the chase-light (the `advancing` flag) as it
-  crosses a column: work in motion.
+- **Advancing cards** carry the chase-light (the `advancing` flag) as they
+  cross a column: work in motion.
 
 **Composition.** Cells are `.cx-card` on the panel tier; selection is
 `--cx-bg-selected` plus the accent left rule, never a raised background. Lane

@@ -58,6 +58,24 @@ function turnEndForStatus(
 	return previous.turnEndedAtUnixMs;
 }
 
+/** Map an issue's server-clock state stamp into the browser clock, given the
+ *  latest server-minus-browser offset. Clamped to now, so a stamp the offset
+ *  cannot fully correct never reads as future. */
+export function toLocalClock(
+	issue: DomainIssue,
+	offsetMs: number,
+	nowMs: number,
+): DomainIssue {
+	if (issue.stateChangedAtUnixMs === undefined) return issue;
+	return {
+		...issue,
+		stateChangedAtUnixMs: Math.min(
+			issue.stateChangedAtUnixMs - offsetMs,
+			nowMs,
+		),
+	};
+}
+
 /** Run the SubscribeEvents stream until `signal` aborts. Maintains the board as
  *  a driver-local `Map<id, Issue>` plus the single stream cursor + instance
  *  epoch across reconnects. A cold-start subscription (since_seq = 0) reads the
@@ -81,6 +99,8 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 	// epoch. Both 0 means a cold start → re-read + re-tail. Never persisted.
 	let sinceSeq = 0n;
 	let instanceEpoch = 0n;
+	// Server wall time minus browser time, from the latest frame's at_unix_ms.
+	let clockOffsetMs = 0;
 	// Reset the moment a subscribe yields forward progress (the connection is live again).
 	const backoff = createReconnectBackoff(signal);
 	const backoffBeforeReconnect = backoff.wait;
@@ -113,7 +133,11 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 			return;
 		}
 		if (payload.case !== "issue") return;
-		const issue = adaptIssue(payload.value);
+		const issue = toLocalClock(
+			adaptIssue(payload.value),
+			clockOffsetMs,
+			Date.now(),
+		);
 		board.set(issue.id, issue);
 		onIssues([...board.values()]);
 	};
@@ -126,7 +150,7 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 		try {
 			const resp = await client.listBoardIssues({ snapshotSeq }, { signal });
 			for (const wire of resp.issues) {
-				const issue = adaptIssue(wire);
+				const issue = toLocalClock(adaptIssue(wire), clockOffsetMs, Date.now());
 				board.set(issue.id, issue);
 			}
 			onIssues([...board.values()]);
@@ -165,6 +189,11 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 					madeProgress = true;
 					break;
 				}
+
+				// Every frame, the boundary included, carries server wall time; the
+				// offset maps issue state stamps into the browser clock.
+				if (resp.atUnixMs > 0n)
+					clockOffsetMs = Number(resp.atUnixMs) - Date.now();
 
 				// The first cold-start response is the boundary frame carrying snapshot_seq;
 				// read the durable board through it and union into the map (dedup-by-id

@@ -710,7 +710,7 @@ export function adaptIssue(w: WireIssue): DomainIssue {
 		prs: w.prs.map(adaptPullRequest),
 		tracker: w.tracker ? adaptTrackerRef(w.tracker) : undefined,
 		stateChangedAtUnixMs: w.stateChangedAt
-			? Number(timestampMs(w.stateChangedAt))
+			? timestampMs(w.stateChangedAt)
 			: undefined,
 	};
 }

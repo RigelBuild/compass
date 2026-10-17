@@ -236,6 +236,28 @@ func TestSetIssueStateStampsStateChangedAtOnlyOnChange(t *testing.T) {
 	if !kept.StateChangedAt.Equal(moved.StateChangedAt) {
 		t.Fatalf("StateChangedAt after same-state write and re-poll = %v, want %v", kept.StateChangedAt, moved.StateChangedAt)
 	}
+
+	// Rehydrate (ListIssues), search and board-ref reads each map their own row
+	// type; every one must carry the stamp.
+	listed, err := s.ListIssues(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("ListIssues = %d rows, err %v; want 1", len(listed), err)
+	}
+	found, err := s.SearchIssues(ctx, "bug", 10)
+	if err != nil || len(found) != 1 {
+		t.Fatalf("SearchIssues = %d rows, err %v; want 1", len(found), err)
+	}
+	byCoord, err := s.IssuesByCoords(ctx, []ForgeCoord{{
+		Provider: ForgeProviderGitHub, Host: "github.com", Repo: "RigelBuild/compass", Number: 1,
+	}})
+	if err != nil || len(byCoord) != 1 {
+		t.Fatalf("IssuesByCoords = %d rows, err %v; want 1", len(byCoord), err)
+	}
+	for name, got := range map[string]Issue{"ListIssues": listed[0], "SearchIssues": found[0], "IssuesByCoords": byCoord[0]} {
+		if !got.StateChangedAt.Equal(moved.StateChangedAt) {
+			t.Errorf("%s StateChangedAt = %v, want %v", name, got.StateChangedAt, moved.StateChangedAt)
+		}
+	}
 }
 
 func TestSetIssueStateUnknownID(t *testing.T) {
