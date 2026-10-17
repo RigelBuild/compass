@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 // biome-ignore lint/style/noRestrictedImports: classify the status returned by the Runner transport
 import { Code, ConnectError } from "@connectrpc/connect";
+import { Context } from "effect";
 import {
 	type PutSessionBlobRequest,
 	PutSessionBlobRequestSchema,
@@ -38,7 +39,7 @@ function increment(
 		| typeof sessionBlobsFailed
 		| typeof sessionBlobsUploaded,
 ): void {
-	metric.unsafeUpdate(1, []);
+	metric.updateUnsafe(1, Context.empty());
 }
 
 function isEnoent(err: unknown): boolean {

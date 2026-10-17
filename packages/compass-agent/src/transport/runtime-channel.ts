@@ -8,14 +8,15 @@
 // the map is unreachable outside this file, and GC of a transport reclaims its entry. A fake
 // transport is never a key, so the borrowing factory falls back to its own default runtime.
 
-import type { ManagedRuntime } from "effect";
+import { Logger, type ManagedRuntime } from "effect";
 import type { RunnerTransport } from "./index";
 
-// The single runtime type the transport constructs and the siblings borrow:
-// `ManagedRuntime.make(Logger.remove(Logger.defaultLogger))` yields a runtime
-// with no residual requirements and no construction error
-// (`Logger.remove` is a `Layer.Layer<never>`).
+// The single runtime type the transport constructs and siblings borrow. It
+// retains tracer logging but replaces the console loggers in the default set.
 export type TransportRuntime = ManagedRuntime.ManagedRuntime<never, never>;
+
+// Every transport runtime's logger set: log lines become span events, never console output.
+export const transportLoggerLayer = Logger.layer([Logger.tracerLogger]);
 
 const channel = new WeakMap<RunnerTransport, TransportRuntime>();
 

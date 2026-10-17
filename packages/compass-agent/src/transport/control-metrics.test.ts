@@ -44,11 +44,11 @@ import { setTransportRuntime } from "./runtime-channel";
 // runtime and Effect.runSync all share), mirroring otel-metrics.test.ts.
 // ---------------------------------------------------------------------------
 
-function counterCount(metric: Metric.Metric.Counter<number>): number {
+function counterCount(metric: Metric.Counter<number>): number {
 	return Effect.runSync(Metric.value(metric)).count;
 }
 
-function gaugeValue(metric: Metric.Metric.Gauge<number>): number {
+function gaugeValue(metric: Metric.Gauge<number>): number {
 	return Effect.runSync(Metric.value(metric)).value;
 }
 
@@ -56,7 +56,9 @@ function gaugeValue(metric: Metric.Metric.Gauge<number>): number {
 // must name the SAME tagged instance the increment site created.
 function unmappedCount(eventType: string): number {
 	return Effect.runSync(
-		Metric.value(Metric.tagged(controlUnmapped, "event_type", eventType)),
+		Metric.value(
+			Metric.withAttributes(controlUnmapped, { event_type: eventType }),
+		),
 	).count;
 }
 
@@ -299,7 +301,7 @@ test("no_progress_depth tracks the consecutive-no-progress level", async () => {
 		noopImmediate,
 		{ onUnmapped: () => {}, now: () => t, metricNamespace: namespace },
 	);
-	Effect.runSync(Metric.set(noProgressDepth, 99));
+	Effect.runSync(Metric.update(noProgressDepth, 99));
 	const outcome = await drive(source);
 	expect(outcome.ended).toBe("cleanly");
 	expect(rec.controlOpens).toBe(4);
@@ -480,7 +482,7 @@ test("each connection attempt opens a control.connection span with the attempt a
 	// The hung dial has no established event; the header-delivering attempt does, and both spans finish on source settlement.
 	const exporter = new InMemorySpanExporter();
 	const runtime = ManagedRuntime.make(
-		Layer.merge(Logger.remove(Logger.defaultLogger), recordingLayer(exporter)),
+		Layer.merge(Logger.layer([Logger.tracerLogger]), recordingLayer(exporter)),
 	);
 	const transport = fakeSpanTransport([
 		{ established: false, ops: [], end: "throw" }, // hung dial

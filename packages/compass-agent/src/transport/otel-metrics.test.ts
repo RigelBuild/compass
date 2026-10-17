@@ -34,12 +34,12 @@ import {
 
 // Read a counter's current count / a metric's Out synchronously off the global
 // registry (the default the spine/sink runtimes and Effect.runSync all share).
-function counterCount(metric: Metric.Metric.Counter<number>): number {
+function counterCount(metric: Metric.Counter<number>): number {
 	return Effect.runSync(Metric.value(metric)).count;
 }
 
 // Read a gauge's current level synchronously off the same global registry.
-function gaugeValue(metric: Metric.Metric.Gauge<number>): number {
+function gaugeValue(metric: Metric.Gauge<number>): number {
 	return Effect.runSync(Metric.value(metric)).value;
 }
 
@@ -223,7 +223,7 @@ test("a namespaced gauge read survives a concurrent writer clobbering the shared
 	// A hostile concurrent writer clobbers the SHARED key with a value the spine
 	// never wrote (the exact interleaving a sibling test file causes in CI).
 	const clobbered = PRIORITY_BATCH_RETRY_MS.length + 999;
-	Effect.runSync(Metric.set(priorityRetryDepthGauge(""), clobbered));
+	Effect.runSync(Metric.update(priorityRetryDepthGauge(""), clobbered));
 	// The namespaced read is immune; a shared-key read now returns the clobber.
 	expect(gaugeValue(priorityRetryDepthGauge(namespace))).toBe(isolated);
 	expect(gaugeValue(priorityRetryDepthGauge(""))).toBe(clobbered);
@@ -275,7 +275,7 @@ test("a successful durable send counts its one attempt and no give-up", async ()
 // A histogram's sample count and running total for one pre-tagged lane. `sum`
 // pins the exact sizes recorded; the buckets are cumulative (`le`), so a
 // per-bucket delta cannot tell a 1 from a 2 and is never asserted on.
-function histShape(metric: Metric.Metric.Histogram<number>): {
+function histShape(metric: Metric.Histogram<number>): {
 	count: number;
 	sum: number;
 } {
@@ -286,7 +286,7 @@ function histShape(metric: Metric.Metric.Histogram<number>): {
 // The histogram's finite upper bounds, in order. Pins the boundary
 // CONFIGURATION, which count/sum alone cannot distinguish from another valid
 // histogram. `+Inf` serializes as a non-finite key and is excluded.
-function histBounds(metric: Metric.Metric.Histogram<number>): number[] {
+function histBounds(metric: Metric.Histogram<number>): number[] {
 	return Effect.runSync(Metric.value(metric))
 		.buckets.map(([bound]) => bound)
 		.filter((bound) => Number.isFinite(bound));

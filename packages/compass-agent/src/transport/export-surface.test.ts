@@ -69,12 +69,60 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 		// Recurse through signature types only, including aliases, to find indirect leaks.
 		const seen = new Set<ts.Symbol>();
 		const files = new Set<string>();
+		// effect 4 augments the global Error in these two files; that is ambient, not a
+		// type this package exports. Only those exact Error shapes are skipped (asserted).
+		const GLOBAL_ALLOW =
+			/[/\\]node_modules[/\\]effect[/\\]dist[/\\](ErrorReporter|Runtime)\.d\.ts$/;
+		const skipped = new Set<string>();
 		const collect = (symbol: ts.Symbol) => {
 			const target = unalias(symbol);
 			if (seen.has(target)) return;
 			seen.add(target);
 			for (const decl of target.getDeclarations() ?? []) {
-				files.add(decl.getSourceFile().fileName);
+				const file = decl.getSourceFile().fileName;
+				let n: ts.Node | undefined = decl;
+				while (
+					n &&
+					!(
+						ts.isModuleDeclaration(n) &&
+						n.flags & ts.NodeFlags.GlobalAugmentation
+					)
+				)
+					n = n.parent;
+				if (
+					n &&
+					GLOBAL_ALLOW.test(file) &&
+					ts.isInterfaceDeclaration(decl) &&
+					decl.name.text === "Error"
+				) {
+					// Pin each member's full text, base members included, so a changed type fails too.
+					const sig = (members: ts.NodeArray<ts.TypeElement>) =>
+						members
+							.map((m) =>
+								m
+									.getText()
+									.replace(/\/\*\*[\s\S]*?\*\/\s*/g, "")
+									.replace(/\s+/g, " "),
+							)
+							.join(" ");
+					const bases = (decl.heritageClauses ?? []).flatMap((h) =>
+						h.types.map((t) => {
+							const base = checker
+								.getSymbolAtLocation(t.expression)
+								?.getDeclarations()?.[0];
+							const body =
+								base && ts.isInterfaceDeclaration(base)
+									? sig(base.members)
+									: "?";
+							return `${t.getText()}{${body}}`;
+						}),
+					);
+					skipped.add(
+						`${file.replace(/^.*[/\\]dist[/\\]/, "")} extends[${bases}] {${sig(decl.members)}}`,
+					);
+					continue;
+				}
+				files.add(file);
 				const visit = (node: ts.Node) => {
 					if (ts.isTypeReferenceNode(node)) {
 						const s = resolveName(node.typeName);
@@ -115,6 +163,10 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 		// The walk actually traversed the surface (guards a silent no-op).
 		expect(seen.size).toBeGreaterThan(1);
 		expect(leaked).toEqual([]);
+		expect([...skipped].sort()).toEqual([
+			"ErrorReporter.d.ts extends[Reportable{readonly [ignore]?: boolean; readonly [severity]?: Severity; readonly [attributes]?: ReadonlyRecord<string, unknown>;}] {}",
+			"Runtime.d.ts extends[] {readonly [errorExitCode]?: number; readonly [errorReported]?: boolean;}",
+		]);
 	} finally {
 		rmSync(out, { recursive: true, force: true });
 	}

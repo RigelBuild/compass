@@ -29,7 +29,7 @@ test("makeOtelLayer treats an empty endpoint string as unconfigured", () => {
 test("a runtime built with the merged OTel layer runs withSpan + Metric and disposes cleanly", async () => {
 	delete process.env[ENDPOINT_KEY];
 	const runtime = ManagedRuntime.make(
-		Layer.merge(Logger.remove(Logger.defaultLogger), makeOtelLayer()),
+		Layer.merge(Logger.layer([Logger.tracerLogger]), makeOtelLayer()),
 	);
 
 	const spanned = await runtime.runPromise(
@@ -38,9 +38,8 @@ test("a runtime built with the merged OTel layer runs withSpan + Metric and disp
 	expect(spanned).toBe(42);
 
 	const requests = Metric.counter("test.requests");
-	await runtime.runPromise(Metric.increment(requests));
-	const value = await runtime.runPromise(Metric.value(requests));
-	expect(value.count).toBe(1);
+	await runtime.runPromise(Metric.update(requests, 1));
+	expect(Effect.runSync(Metric.value(requests)).count).toBe(1);
 
 	await runtime.dispose();
 });
@@ -76,12 +75,12 @@ test("with an endpoint set, the layer exports a span and a metric over OTLP and 
 		expect(layer).not.toBe(Layer.empty);
 
 		const runtime = ManagedRuntime.make(
-			Layer.merge(Logger.remove(Logger.defaultLogger), layer),
+			Layer.merge(Logger.layer([Logger.tracerLogger]), layer),
 		);
 		await runtime.runPromise(
 			Effect.succeed(1).pipe(Effect.withSpan("test.export.span")),
 		);
-		await runtime.runPromise(Metric.increment(Metric.counter("test.export")));
+		await runtime.runPromise(Metric.update(Metric.counter("test.export"), 1));
 		// dispose drives the BatchSpanProcessor + PeriodicExportingMetricReader
 		// final flush, bounded by the layer's shutdownTimeout.
 		await runtime.dispose();
