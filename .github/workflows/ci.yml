@@ -345,6 +345,8 @@ jobs:
       # guards against it are elsewhere; nothing about this repo's sockets should
       # be redesigned around one runner's choice of temp root.
       TMPDIR: /tmp
+      # Only the go leg builds the Go battery; the others skip its parity half.
+      TOOLCHAIN_PARITY_SCOPE: ${{ matrix.group != 'go' && 'core' || '' }}
     steps:
       # Every step is gated on `matrix.run == 'true'`: an unaffected group is a
       # placeholder leg (run:'false', empty targets) that the generator emits to
@@ -411,10 +413,9 @@ jobs:
           done
 
       - name: Put the Go analysis battery on PATH
-        if: matrix.run == 'true'
+        if: matrix.run == 'true' && matrix.group == 'go'
         # golangci-lint/govulncheck/go-licenses/nilaway, rebuilt with the dev
-        # shell's go toolchain. No cache holds them, so only the jobs that run
-        # them build them.
+        # shell's go toolchain; no cache holds them, so only the go leg builds them.
         run: |
           stores=$(nix eval --json -f tools/toolchain/gate-tools.nix goAnalysis \
             | jq -r '.[].store')

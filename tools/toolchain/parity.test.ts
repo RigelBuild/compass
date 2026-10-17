@@ -44,12 +44,17 @@ async function writeSet(output: string, set: Record<string, Identity>) {
 	await Bun.write(join(repo, "json", `${output}.json`), JSON.stringify(set));
 }
 
-async function runParity(pathDirs: readonly string[], args: string[] = []) {
+async function runParity(
+	pathDirs: readonly string[],
+	args: string[] = [],
+	extraEnv: Record<string, string> = {},
+) {
 	const proc = Bun.spawn([process.execPath, SCRIPT_REL, ...args], {
 		cwd: repo,
 		env: {
 			PATH: [join(repo, "stubbin"), ...pathDirs].join(":"),
 			STUB_JSON: join(repo, "json"),
+			...extraEnv,
 		},
 		stdout: "pipe",
 		stderr: "pipe",
@@ -174,6 +179,64 @@ describe("parity.ts Go analysis battery", () => {
 		expect(res.exitCode).toBe(1);
 		expect(res.output).toContain("0 language toolchains");
 	});
+});
+
+describe("parity.ts TOOLCHAIN_PARITY_SCOPE", () => {
+	const core = { TOOLCHAIN_PARITY_SCOPE: "core" };
+	const battery = (d: string) =>
+		GO_ANALYSIS_TOOLS.some((tool) => d.includes(`/store/${tool}/`));
+
+	test("core passes without the battery and never evaluates goAnalysis", async () => {
+		await rm(join(repo, "json", "goAnalysis.json"));
+		const res = await runParity(
+			goodPath.filter((d) => !battery(d)),
+			[],
+			core,
+		);
+		expect(res.exitCode).toBe(0);
+		expect(res.output).toContain(
+			"out of scope: goAnalysis (TOOLCHAIN_PARITY_SCOPE=core)",
+		);
+		expect(res.output).toContain("All 4 pinned tools match");
+	});
+
+	test("core still fails a mismatched core tool", async () => {
+		const foreign = await derivation("nixpkgs-rumdl", "rumdl");
+		const res = await runParity(
+			[join(foreign.store, "bin"), ...goodPath],
+			[],
+			core,
+		);
+		expect(res.exitCode).toBe(1);
+		expect(res.output).toContain("MISMATCH     rumdl");
+	});
+
+	// The go leg gets an explicitly empty value from the workflow expression.
+	const unsetOrEmpty: Record<string, string>[] = [
+		{},
+		{ TOOLCHAIN_PARITY_SCOPE: "" },
+	];
+	for (const env of unsetOrEmpty) {
+		test(`scope ${JSON.stringify(env)} still checks the battery`, async () => {
+			const res = await runParity(
+				goodPath.filter((d) => !battery(d)),
+				[],
+				env,
+			);
+			expect(res.exitCode).toBe(1);
+			expect(res.output).not.toContain("out of scope");
+		});
+	}
+
+	for (const value of ["full", "Core", "go"]) {
+		test(`refuses unknown scope ${value}`, async () => {
+			const res = await runParity(goodPath, [], {
+				TOOLCHAIN_PARITY_SCOPE: value,
+			});
+			expect(res.exitCode).toBe(1);
+			expect(res.output).toContain(`TOOLCHAIN_PARITY_SCOPE=${value}`);
+		});
+	}
 });
 
 describe("parity.ts --print-nix-attrs", () => {
