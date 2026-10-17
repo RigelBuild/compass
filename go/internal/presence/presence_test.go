@@ -11,12 +11,161 @@ package presence
 // startPublisher and never re-rooted below.
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
+
+func readSpanContext(t *testing.T, reads *fakeReads) trace.SpanContext {
+	t.Helper()
+	select {
+	case got := <-reads.ctxs:
+		return got
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for presence store read")
+		return trace.SpanContext{}
+	}
+}
+
+func TestRunDoesNotLeakServeSpanIntoUntracedPublish(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := tp.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+
+	p, _, _, bus := newTestPublisher(t)
+	rec := startRecorder(t, bus)
+	serveCtx, serveSpan := tp.Tracer("presence-test").Start(t.Context(), "serve")
+	ctx, cancel := context.WithCancel(serveCtx)
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+		serveSpan.End()
+	}()
+
+	p.OnSessionLifecycle(context.WithoutCancel(t.Context()), "agent-a", "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	rec.waitForPublishes(t, 1)
+	reads := p.st.(*fakeReads)
+	reads.setOpen("agent-a", true)
+	bus.Publish(t.Context(), askPosted("agent-a"))
+	rec.waitForPublishes(t, 2)
+	for _, got := range rec.snapshot() {
+		if got.traceparent != "" {
+			t.Fatalf("untraced presence publish traceparent = %q, want empty", got.traceparent)
+		}
+	}
+}
+
+func TestRunRestoresEventAndEdgeTraces(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := tp.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+
+	p, reads, _, bus := newTestPublisher(t)
+	reads.ctxs = make(chan trace.SpanContext, 16)
+	rec := startRecorder(t, bus)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	}()
+
+	serviceCtx, serviceSpan := tp.Tracer("presence-test").Start(t.Context(), "service")
+	p.OnSessionLifecycle(serviceCtx, "agent-a", "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	rec.waitForPublishes(t, 1)
+	assertTrace := func(name string, got trace.SpanContext, want trace.SpanContext) {
+		t.Helper()
+		if !got.IsValid() || got.TraceID() != want.TraceID() {
+			t.Fatalf("%s trace = %s, want %s", name, got.TraceID(), want.TraceID())
+		}
+	}
+	assertTrace("edge store read", readSpanContext(t, reads), serviceSpan.SpanContext())
+
+	eventCtx, eventSpan := tp.Tracer("presence-test").Start(t.Context(), "ask-event")
+	reads.setOpen("agent-a", true)
+	bus.Publish(eventCtx, askPosted("agent-a"))
+	assertTrace("ask store read", readSpanContext(t, reads), eventSpan.SpanContext())
+	rec.waitForPublishes(t, 2)
+	if got := rec.snapshot()[1].traceparent; got == "" {
+		t.Fatal("traced ask publish has empty traceparent")
+	}
+	eventSpan.End()
+	serviceSpan.End()
+
+	bus.Publish(t.Context(), askPosted("agent-a"))
+	if got := readSpanContext(t, reads); got.IsValid() {
+		t.Fatalf("untraced event read carried span %s", got.SpanID())
+	}
+}
+
+func TestRunRestoresReplayEventTrace(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := tp.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+
+	p, reads, _, bus := newTestPublisher(t)
+	reads.ctxs = make(chan trace.SpanContext, 8)
+	reads.setOpen("agent-replay", true)
+	p.mu.Lock()
+	p.lastState["agent-replay"] = compassv1.AgentSessionState_AGENT_SESSION_STATE_READY
+	p.mu.Unlock()
+	rec := startRecorder(t, bus)
+
+	eventCtx, eventSpan := tp.Tracer("presence-test").Start(t.Context(), "replay-ask-event")
+	defer eventSpan.End()
+	bus.Publish(eventCtx, askPosted("agent-replay"))
+
+	serveCtx, serveSpan := tp.Tracer("presence-test").Start(t.Context(), "serve")
+	defer serveSpan.End()
+	ctx, cancel := context.WithCancel(serveCtx)
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	}()
+
+	got := readSpanContext(t, reads)
+	if !got.IsValid() || got.TraceID() != eventSpan.SpanContext().TraceID() ||
+		got.TraceID() == serveSpan.SpanContext().TraceID() {
+		t.Fatalf("replay ask store read trace = %s, want event trace %s (not serve trace %s)",
+			got.TraceID(), eventSpan.SpanContext().TraceID(), serveSpan.SpanContext().TraceID())
+	}
+	rec.waitForPublishes(t, 1)
+}
 
 // TestPresenceForMapsD4Table is the pure mapper against D4's exact table
 // (design.md:864-867): WORKING→WORKING; STARTING/READY→IDLE (or WAITING with an
@@ -59,7 +208,7 @@ func TestLifecycleTransitionPublishesExactlyOne(t *testing.T) {
 	const agent store.AccountID = "agent-a"
 
 	// READY (no open ask) → IDLE: one publish.
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	rec.waitForPublishes(t, 1)
 	if got := rec.snapshot(); got[0].account != agent || got[0].presence != compassv1.AgentPresence_AGENT_PRESENCE_IDLE {
 		t.Fatalf("first publish = %+v, want {agent-a, IDLE}", got[0])
@@ -67,8 +216,8 @@ func TestLifecycleTransitionPublishesExactlyOne(t *testing.T) {
 
 	// A repeat of the same lifecycle state recomputes IDLE again — no change, so
 	// no second publish. WORKING then differs and publishes.
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
 	rec.waitForPublishes(t, 2)
 
 	got := rec.snapshot()
@@ -92,7 +241,7 @@ func TestAskOpenPublishesWaitingThenAnsweredPublishesPrior(t *testing.T) {
 
 	// Establish the agent as live READY → IDLE (one publish), and record its
 	// last-known lifecycle so the ask arm layers WAITING on READY, not OFFLINE.
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	rec.waitForPublishes(t, 1)
 
 	// Open an ask: the store now reports an open ask; a MessagePosted carrying an
@@ -127,7 +276,7 @@ func TestNonAskPostedDoesNotPublish(t *testing.T) {
 	startPublisher(t, p)
 	const agent store.AccountID = "agent-a"
 
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	rec.waitForPublishes(t, 1)
 
 	// A text post while the store (hypothetically) has an open ask must STILL not
@@ -162,7 +311,7 @@ func TestReconcileReadyWithOpenAskRebuildsWaiting(t *testing.T) {
 	status.set("sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	reads.setOpen(agent, true)
 
-	p.OnSessionPromoted(agent, "sess-a")
+	p.OnSessionPromoted(t.Context(), agent, "sess-a")
 	rec.waitForPublishes(t, 1)
 
 	if got := rec.snapshot()[0]; got.account != agent || got.presence != compassv1.AgentPresence_AGENT_PRESENCE_WAITING {
@@ -181,7 +330,7 @@ func TestReconcileWorkingRebuildsWithoutTransition(t *testing.T) {
 
 	status.set("sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
 
-	p.OnSessionPromoted(agent, "sess-a")
+	p.OnSessionPromoted(t.Context(), agent, "sess-a")
 	rec.waitForPublishes(t, 1)
 
 	if got := rec.snapshot()[0]; got.presence != compassv1.AgentPresence_AGENT_PRESENCE_WORKING {
@@ -200,8 +349,8 @@ func TestSnapshotReturnsLastPublished(t *testing.T) {
 	// agentB has an open ask, so its READY session projects WAITING — this also
 	// exercises setOpen for an agent other than agent-a.
 	reads.setOpen(agentB, true)
-	p.OnSessionLifecycle(agentA, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
-	p.OnSessionLifecycle(agentB, "sess-b", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p.OnSessionLifecycle(t.Context(), agentA, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	p.OnSessionLifecycle(t.Context(), agentB, "sess-b", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	rec.waitForPublishes(t, 2)
 
 	snap := p.PresenceSnapshot()
@@ -233,14 +382,14 @@ func TestTerminalLifecycleEdgeGoesOfflineThenDedups(t *testing.T) {
 	startPublisher(t, p)
 	const agent store.AccountID = "agent-a"
 
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
 	rec.waitForPublishes(t, 1)
 	if got := rec.snapshot()[0]; got.presence != compassv1.AgentPresence_AGENT_PRESENCE_WORKING {
 		t.Fatalf("first publish = %+v, want WORKING", got)
 	}
 
 	// Terminal edge from teardown → OFFLINE (one publish).
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
 	rec.waitForPublishes(t, 2)
 	if got := rec.snapshot()[1]; got.presence != compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE {
 		t.Fatalf("terminal-edge publish = %+v, want OFFLINE", got)
@@ -248,8 +397,8 @@ func TestTerminalLifecycleEdgeGoesOfflineThenDedups(t *testing.T) {
 
 	// A second terminal edge recomputes OFFLINE again — no change, so no publish.
 	// A following distinct edge (WORKING) proves nothing published in between.
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
 	rec.waitForPublishes(t, 3)
 
 	got := rec.snapshot()
@@ -284,7 +433,7 @@ func TestAskFromUnknownAuthorPublishesNothing(t *testing.T) {
 	// Drive a real agent ask right after; when THAT publish lands, a spurious
 	// human-triggered publish (if any) would already be recorded before it. The
 	// agent is established live READY (→ IDLE) first so it has a lastState entry.
-	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p.OnSessionLifecycle(t.Context(), agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	rec.waitForPublishes(t, 1)
 	reads.setOpen(agent, true)
 	bus.Publish(t.Context(), askPosted(agent))
@@ -324,11 +473,11 @@ func TestBlockingResolveDoesNotWedgeFollowingEdges(t *testing.T) {
 
 	// Establish the live agent so its ask has a recorded lifecycle state to layer
 	// on (M2 gate); this publish lands before the wedged promotion is enqueued.
-	p.OnSessionLifecycle(live, "sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p.OnSessionLifecycle(t.Context(), live, "sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	rec.waitForPublishes(t, 1)
 
 	// Enqueue the wedged promotion; the loop enters the blocking resolve.
-	p.OnSessionPromoted(wedged, "sess-wedged")
+	p.OnSessionPromoted(t.Context(), wedged, "sess-wedged")
 	select {
 	case <-blocker.entered:
 	case <-time.After(testTimeout):

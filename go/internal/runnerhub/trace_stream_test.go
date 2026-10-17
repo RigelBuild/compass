@@ -28,6 +28,121 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
+const h6Traceparent = "00-11111111111111111111111111111111-2222222222222222-01"
+
+func TestPresenceEdgesRestoreTheirSourceTrace(t *testing.T) {
+	previousProvider := otel.GetTracerProvider()
+	previousPropagator := otel.GetTextMapPropagator()
+	provider := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		otel.SetTextMapPropagator(previousPropagator)
+		if err := provider.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("shutdown tracer provider: %v", err)
+		}
+	})
+
+	hub := newHubOnly()
+	pres := &fakePresenceSink{lifecycleCh: make(chan lifecycleRecord, 8)}
+	hub.SetPresenceSink(pres)
+	bindings := newFakeBindingStore()
+	bindings.seedBinding("lost-session", testAgentAccount, testRunnerID)
+	hub.SetSessionBindingStore(bindings)
+
+	ctx, span := otel.Tracer("runnerhub.h6").Start(t.Context(), "enroll")
+	if _, err := hub.enroll(ctx, testRunnerID, runnerSubject(), 0, 0); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	enrolled := <-pres.lifecycleCh
+	if enrolled.account != testAgentAccount || enrolled.traceparent == "" ||
+		enrolled.traceparent != otelx.Traceparent(ctx) {
+		t.Fatalf("enroll presence edge = %+v, want enroll traceparent %q",
+			enrolled, otelx.Traceparent(ctx))
+	}
+	span.End()
+	promotionCtx, promotionSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "promote")
+	hub.bindContainer("container-traced", testAgentAccount, testRunnerID)
+	hub.promoteSession(promotionCtx, "container-traced", "traced-session")
+	if got := pres.promotedSnapshot(); len(got) != 1 || got[0].traceparent != otelx.Traceparent(promotionCtx) {
+		t.Fatalf("promoted edge = %+v, want traceparent %q", got, otelx.Traceparent(promotionCtx))
+	}
+	promotionSpan.End()
+
+	releaseCtx, releaseSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "release")
+	hub.unbindSession(releaseCtx, "traced-session")
+	releaseSpan.End()
+	var released lifecycleRecord
+	select {
+	case released = <-pres.lifecycleCh:
+	case <-timeAfter():
+		t.Fatal("release did not produce a presence edge")
+	}
+	if released.state != compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED ||
+		released.traceparent != otelx.Traceparent(releaseCtx) {
+		t.Fatalf("release edge = %+v, want DISCONNECTED with release traceparent %q",
+			released, otelx.Traceparent(releaseCtx))
+	}
+
+	hub.bindContainer("container-lost", testAgentAccount, testRunnerID)
+	hub.promoteSession(t.Context(), "container-lost", "lost-session")
+	traceCtx, traceSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "publish-client")
+	interceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	path, handler := NewMountedHandler(hub, runnerResolverForFetch().resolve, nil, nil, interceptor)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = cleartextHTTP2()
+	server.Start()
+	t.Cleanup(server.Close)
+	client := newRawRunnerClient(t, server.URL, "runner-tok")
+	publish := client.PublishEvents(traceCtx)
+	if err := publish.Send(&compassv1internal.PublishEventsRequest{
+		RunnerSeq: 1,
+		SessionId: "lost-session",
+		Frame:     sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
+	}); err != nil {
+		t.Fatalf("PublishEvents.Send: %v", err)
+	}
+	if _, err := publish.CloseAndReceive(); err != nil {
+		t.Fatalf("PublishEvents.CloseAndReceive: %v", err)
+	}
+	traceSpan.End()
+	if got := <-pres.lifecycleCh; got.traceparent != "" {
+		t.Fatalf("PublishEvents edge traceparent = %q, want empty", got.traceparent)
+	}
+
+	streamCtx, streamSpan := otel.Tracer("runnerhub.h6").Start(t.Context(), "sessions-client")
+	streamCtx = otelx.ContextWithTraceparent(streamCtx, h6Traceparent)
+	sessions := client.Sessions(streamCtx)
+	loopErr := make(chan error, 1)
+	go runnerSessionsLoopWithNotFound(sessions, loopErr)
+	waitRouterAttached(t, hub)
+	if err := hub.DispatchControl(streamCtx, "lost-session", &compassv1internal.AgentControl{}); err != nil {
+		t.Fatalf("DispatchControl: %v", err)
+	}
+	var got lifecycleRecord
+	select {
+	case got = <-pres.lifecycleCh:
+	case <-timeAfter():
+		t.Fatal("send-only refusal did not produce a presence edge")
+	}
+	if err := sessions.CloseRequest(); err != nil {
+		t.Fatalf("Sessions.CloseRequest: %v", err)
+	}
+	if err := recvLoopErr(t, loopErr); err != nil {
+		t.Fatalf("Runner Sessions loop: %v", err)
+	}
+	streamSpan.End()
+	if got.state != compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED || got.traceparent != h6Traceparent {
+		t.Fatalf("send-only refusal edge = %+v, want DISCONNECTED with deliver traceparent", got)
+	}
+}
+
 func TestRelayCommsCallLogCarriesServerSpan(t *testing.T) {
 	previousProvider := otel.GetTracerProvider()
 	previousPropagator := otel.GetTextMapPropagator()

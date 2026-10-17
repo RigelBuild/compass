@@ -94,10 +94,11 @@ const (
 // hubEdge is one queued hub-fed edge handed from the hub's Deliver / promote
 // goroutine to the publisher's ctx-rooted loop.
 type hubEdge struct {
-	kind      edgeKind
-	account   store.AccountID
-	sessionID string
-	state     compassv1.AgentSessionState // set for edgeLifecycle only
+	kind        edgeKind
+	account     store.AccountID
+	sessionID   string
+	state       compassv1.AgentSessionState // set for edgeLifecycle only
+	traceparent string
 }
 
 // Publisher tails the comms bus and publishes AgentPresenceChanged onto it as a

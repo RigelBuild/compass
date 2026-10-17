@@ -16,6 +16,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -237,36 +238,58 @@ func sessionFrameWithSequence(state compassv1.AgentSessionState, turnSequence ui
 
 // lifecycleRecord is one recorded OnSessionLifecycle call.
 type lifecycleRecord struct {
-	account   store.AccountID
-	sessionID string
-	state     compassv1.AgentSessionState
+	account     store.AccountID
+	sessionID   string
+	state       compassv1.AgentSessionState
+	traceparent string
 }
 
 // promotedRecord is one recorded OnSessionPromoted call.
 type promotedRecord struct {
-	account   store.AccountID
-	sessionID string
+	account     store.AccountID
+	sessionID   string
+	traceparent string
 }
 
-// fakePresenceSink records the hub's presence-edge calls — the RIG-1569 T8
-// lifecycle + reconciliation sink. Concurrency-safe for parity with the real
-// component, which is fed from the hub's goroutine.
 type fakePresenceSink struct {
-	mu        sync.Mutex
-	lifecycle []lifecycleRecord
-	promoted  []promotedRecord
+	mu          sync.Mutex
+	lifecycle   []lifecycleRecord
+	lifecycleCh chan lifecycleRecord
+	promoted    []promotedRecord
 }
 
-func (f *fakePresenceSink) OnSessionLifecycle(account store.AccountID, sessionID string, state compassv1.AgentSessionState) {
+func (f *fakePresenceSink) OnSessionLifecycle(
+	ctx context.Context,
+	account store.AccountID,
+	sessionID string,
+	state compassv1.AgentSessionState,
+) {
+	record := lifecycleRecord{
+		account:     account,
+		sessionID:   sessionID,
+		state:       state,
+		traceparent: otelx.Traceparent(ctx),
+	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.lifecycle = append(f.lifecycle, lifecycleRecord{account: account, sessionID: sessionID, state: state})
+	f.lifecycle = append(f.lifecycle, record)
+	if f.lifecycleCh != nil {
+		f.lifecycleCh <- record
+	}
+	f.mu.Unlock()
 }
 
-func (f *fakePresenceSink) OnSessionPromoted(account store.AccountID, sessionID string) {
+func (f *fakePresenceSink) OnSessionPromoted(
+	ctx context.Context,
+	account store.AccountID,
+	sessionID string,
+) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.promoted = append(f.promoted, promotedRecord{account: account, sessionID: sessionID})
+	f.promoted = append(f.promoted, promotedRecord{
+		account:     account,
+		sessionID:   sessionID,
+		traceparent: otelx.Traceparent(ctx),
+	})
 }
 
 func (f *fakePresenceSink) lifecycleSnapshot() []lifecycleRecord {
@@ -285,25 +308,15 @@ func (f *fakePresenceSink) promotedSnapshot() []promotedRecord {
 	return out
 }
 
-// T8: the hub fires its presence-edge sink at deliverSession (a lifecycle
-// transition, with the RESOLVED account) and at promoteSession (the
-// reconciliation edge). A trace-only frame (UNSPECIFIED) is not a lifecycle
-// edge, and a lifecycle transition on a session with no bound account publishes
-// no presence (nothing to attribute). Nil-safe: a hub with no presence sink is
-// today's behavior, covered by every other test.
+// TestDeliverSessionFiresPresenceSink covers the lifecycle and promotion edges.
 func TestDeliverSessionFiresPresenceSink(t *testing.T) {
 	hub := newHubOnly()
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
-	// bindSession promotes sess-1 -> testAgentAccount, which itself fires the
-	// reconciliation edge once.
 	bindSession(hub, "sess-1")
 	if got := pres.promotedSnapshot(); len(got) != 1 || got[0].account != testAgentAccount || got[0].sessionID != "sess-1" {
-		t.Fatalf("promoted = %+v, want one {%s, sess-1} from bindSession's promote", pres.promotedSnapshot(), testAgentAccount)
+		t.Fatalf("promoted = %+v, want one {%s, sess-1}", got, testAgentAccount)
 	}
-
-	// A lifecycle transition on the bound session fires the lifecycle edge with
-	// the resolved account.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",

@@ -165,11 +165,13 @@ type SessionEndSink interface {
 // accountForSession is private and stays so).
 type PresenceSink interface {
 	// OnSessionLifecycle reports that account's session transitioned to state,
-	// called at deliverSession right after the LifecycleSink publish.
-	OnSessionLifecycle(account store.AccountID, sessionID string, state compassv1.AgentSessionState)
+	// called at deliverSession after the LifecycleSink publish. It receives caller
+	// ctx to extract the traceparent; implementations must not retain it.
+	OnSessionLifecycle(ctx context.Context, account store.AccountID, sessionID string, state compassv1.AgentSessionState)
 	// OnSessionPromoted reports that account's session (re-)promoted onto its
-	// binding, called at promoteSession — the reconciliation edge.
-	OnSessionPromoted(account store.AccountID, sessionID string)
+	// binding at promoteSession, the reconciliation edge. It receives caller ctx
+	// to extract the traceparent; implementations must not retain it.
+	OnSessionPromoted(ctx context.Context, account store.AccountID, sessionID string)
 }
 
 // DeliveryStore is the durable delivery-cursor surface the hub's ack arms need:
@@ -990,7 +992,12 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	presence := h.presence
 	h.mu.Unlock()
 	if presence != nil && hasAccount {
-		presence.OnSessionLifecycle(account, sessionID, state)
+		presence.OnSessionLifecycle(
+			ctx,
+			account,
+			sessionID,
+			state,
+		)
 	}
 	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
@@ -1318,7 +1325,12 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	// among accounts is irrelevant; publishIfChanged dedups a redundant re-publish.
 	if presence != nil {
 		for _, p := range offline {
-			presence.OnSessionLifecycle(p.account, p.sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+			presence.OnSessionLifecycle(
+				ctx,
+				p.account,
+				p.sessionID,
+				compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED,
+			)
 		}
 	}
 
