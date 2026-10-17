@@ -263,9 +263,10 @@ park, republish the raw payload to `compass.dlq.comms` and then
 - `Term` is issued **even if the DLQ publish fails**, with both failures logged:
   a poison message redelivering forever is the worse outcome.
 - Headers on the parked message: `Compass-Original-Subject` (the concrete
-  subject the message was delivered on, even for a wildcard (`SubscribeKind`)
-  consumer, so it always names the tenant) and `Compass-Park-Reason` (the
-  error), so an operator reading the DLQ needs no log correlation.
+  subject delivered, including for a wildcard `SubscribeKind` consumer, so it
+  names the tenant), `Compass-Park-Reason` (the error), and `traceparent` (the
+  publisher's W3C trace context, present only when the publish carried one), so
+  an operator needs no log correlation.
 
 ### Advisory park: messages the server dropped
 
