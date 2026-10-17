@@ -265,6 +265,9 @@ jobs:
         # untagged / double-tagged project or coverage gap — the fail-loud posture
         # that lets moon own discovery without a stale YAML enumeration.
         run: bun run tools/ci-matrix/index.ts
+        env:
+          # A base-repoint dispatch checks out the PR merge ref; the design guard runs there too.
+          CI_MATRIX_PR: ${{ github.event.inputs.pr }}
 
   bun-audit:
     name: bun-audit

@@ -73,7 +73,10 @@ so jobs can be added or renamed without touching it.
   matrix for the `moon` job and an affected flag for each special job. Nothing
   about the workspace is listed in the workflow, so a new project is gated the
   moment it is registered in `.moon/workspace.yml` and tagged with a
-  `ci-group.<name>` tag.
+  `ci-group.<name>` tag. On a pull request it also fails when the change adds
+  or edits a file under `docs/designs/`. Design records live in
+  [RigelBuild/docs](https://github.com/RigelBuild/docs); deleting a record here
+  is allowed.
 - **`moon`** runs the moon battery, one leg per concern group, each its own
   check, today `moon (go)`, `moon (bun)` and `moon (nix)`. This is the same task
   graph the local gate and the `hk` pre-push hook run.
