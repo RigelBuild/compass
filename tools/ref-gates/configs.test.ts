@@ -5,6 +5,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -30,16 +31,16 @@ afterAll(() => {
 	for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
 });
 
-// Hook-exported GIT_DIR and friends would aim git at the outer checkout. Bun's
+// Hook-exported GIT_* variables would aim git at the outer checkout. Bun's
 // spawn ignores `delete process.env`, so every git call gets an explicit env.
-const gitEnv = Object.fromEntries(
-	Object.entries(process.env).filter(
-		([key]) => !["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"].includes(key),
-	),
-);
+const gitEnv = (env: Record<string, string | undefined>) =>
+	Object.fromEntries(
+		Object.entries(env).filter(([key]) => !key.startsWith("GIT_")),
+	);
+let inherited: Record<string, string | undefined> = process.env;
 
 function run(cmd: string[]): string {
-	const r = Bun.spawnSync({ cmd, env: gitEnv, stderr: "pipe" });
+	const r = Bun.spawnSync({ cmd, env: gitEnv(inherited), stderr: "pipe" });
 	if (r.exitCode !== 0) throw new Error(r.stderr.toString());
 	return r.stdout.toString();
 }
@@ -144,12 +145,38 @@ describe("sea config", () => {
 	});
 });
 
-// Moon reports these tasks affected only through workspace-root inputs.
-test("each gate task takes every workspace file as input", () => {
+test("a hook's git env cannot redirect the fixture repos", () => {
+	const decoy = mkdtempSync(join(tmpdir(), "ref-gates-decoy-"));
+	scratch.push(decoy);
+	const poison = [
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_COMMON_DIR",
+	];
+	inherited = {
+		...process.env,
+		...Object.fromEntries(poison.map((key) => [key, join(decoy, key)])),
+	};
+	try {
+		expect(flagged(sea, { "docs/x.md": "see SEA-1512" })).toEqual([
+			"docs/x.md",
+		]);
+	} finally {
+		inherited = process.env;
+	}
+	expect(readdirSync(decoy)).toEqual([]);
+});
+
+// Moon reports the gates affected only through workspace-root inputs, and a
+// manifest-only change must still bust the typecheck cache.
+test("gate and typecheck tasks keep their cache-key inputs", () => {
 	const moon = Bun.YAML.parse(readFileSync(join(here, "moon.yml"), "utf8")) as {
 		tasks: Record<string, { inputs?: string[] }>;
 	};
 	for (const task of ["sea", "private-name"]) {
 		expect(moon.tasks[task]?.inputs).toContain("/**/*");
 	}
+	expect(moon.tasks.typecheck?.inputs).toContain("package.json");
 });
