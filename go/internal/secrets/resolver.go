@@ -402,15 +402,19 @@ func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclara
 
 // dotenvFilePath returns the local file a dotenv provider URI names, in the
 // three forms secretspec accepts. A relative path resolves against baseDir,
-// the manifest's directory, as the CLI does. A bare "dotenv://" or a "~" path
-// leaves the file choice to the CLI.
+// the manifest's directory, as the CLI does. A bare "dotenv://" or a leading
+// "~" component leaves the file choice to the CLI. The scheme match is exact
+// because secretspec rejects other casings.
 func dotenvFilePath(provider, baseDir string) (string, bool) {
+	if !strings.HasPrefix(provider, "dotenv:") {
+		return "", false
+	}
 	parsed, err := url.Parse(provider)
-	if err != nil || !strings.EqualFold(parsed.Scheme, "dotenv") {
+	if err != nil {
 		return "", false
 	}
 	path := parsed.Host + parsed.Path
-	if path == "" || strings.HasPrefix(path, "~") {
+	if path == "" || path == "~" || strings.HasPrefix(path, "~/") {
 		return "", false
 	}
 	if !filepath.IsAbs(path) {

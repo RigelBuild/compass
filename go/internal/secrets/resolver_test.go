@@ -273,6 +273,8 @@ func TestDotenvFilePath(t *testing.T) {
 		{name: "single slash absolute", provider: "dotenv:/abs/path", wantPath: "/abs/path", wantOK: true},
 		{name: "double slash relative joins the manifest dir", provider: "dotenv://rel/path", wantPath: "/state/rel/path", wantOK: true},
 		{name: "home path defers to the CLI", provider: "dotenv://~/x.env"},
+		{name: "tilde-prefixed file name is relative", provider: "dotenv://~literal.env", wantPath: "/state/~literal.env", wantOK: true},
+		{name: "uppercase scheme is not dotenv", provider: "DOTENV:///abs/path"},
 		{name: "other scheme", provider: "keyring://"},
 		{name: "bare dotenv defers to the CLI", provider: "dotenv://"},
 		{name: "empty provider"},
