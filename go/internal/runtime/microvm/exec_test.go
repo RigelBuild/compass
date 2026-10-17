@@ -22,6 +22,10 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -53,6 +57,11 @@ func (f *fakeGuest) Signal(ctx context.Context, req *compassv1.SignalRequest) (*
 // returns a GuestExec whose client dials that listener. Everything is torn down
 // via t.Cleanup.
 func serveFakeGuest(t *testing.T, fake *fakeGuest) *GuestExec {
+	t.Helper()
+	return NewGuestExec(serveFakeGuestClient(t, fake))
+}
+
+func serveFakeGuestClient(t *testing.T, fake *fakeGuest, interceptors ...connect.ClientInterceptor) compassv1internalconnect.GuestControlClient {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "guest.sock")
 
@@ -90,9 +99,10 @@ func serveFakeGuest(t *testing.T, fake *fakeGuest) *GuestExec {
 				"http://guest",
 				connecthttp.WithReadMaxBytes(0),
 			),
+			interceptors...,
 		),
 	)
-	return NewGuestExec(client)
+	return client
 }
 
 func TestGuestExec_OneShot_NonZeroExitIsSuccess(t *testing.T) {
@@ -328,6 +338,70 @@ func TestGuestExec_Stream_KillIssuesSignalAndUnblocksWait(t *testing.T) {
 	defer mu.Unlock()
 	if gotSignal != 9 {
 		t.Fatalf("guest saw signal %d, want 9", gotSignal)
+	}
+}
+
+func TestGuestStreamKillSignalStartsRootSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() {
+		if err := provider.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("shutdown tracer provider: %v", err)
+		}
+	})
+	interceptor, err := otelconnect.NewClientInterceptor(otelconnect.WithTracerProvider(provider))
+	if err != nil {
+		t.Fatalf("otelconnect.NewClientInterceptor: %v", err)
+	}
+
+	client := serveFakeGuestClient(t, &fakeGuest{
+		execStreamFn: func(_ context.Context, stream compassv1internalconnect.GuestControlExecStreamServerStream) error {
+			if _, err := stream.Receive(); err != nil {
+				return err
+			}
+			startStream(t, stream, "exec-trace")
+			return stream.Send(&compassv1.ExecStreamResponse{
+				Frame: &compassv1.ExecStreamResponse_Exit{Exit: &compassv1.ExecExit{Signal: 9}},
+			})
+		},
+		signalFn: func(context.Context, *compassv1.SignalRequest) (*compassv1.SignalResponse, error) {
+			return &compassv1.SignalResponse{}, nil
+		},
+	}, interceptor)
+	ctx, parent := provider.Tracer("guest-stream-test").Start(t.Context(), "command")
+	defer parent.End()
+	gs, err := NewGuestExec(client).ExecStream(ctx, StreamCall{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+	if err := gs.Kill(9); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	gs.Wait()
+	var execStreamSpan sdktrace.ReadOnlySpan
+	var signalSpan sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		if span.SpanKind() != trace.SpanKindClient {
+			continue
+		}
+		switch span.Name() {
+		case "compass.v1.GuestControl/ExecStream":
+			execStreamSpan = span
+		case "compass.v1.GuestControl/Signal":
+			signalSpan = span
+		}
+	}
+	if execStreamSpan == nil {
+		t.Fatal("ExecStream client span was not recorded")
+	}
+	if got, want := execStreamSpan.Parent().SpanID(), parent.SpanContext().SpanID(); got != want {
+		t.Errorf("ExecStream parent span id = %s, want command span id %s", got, want)
+	}
+	if signalSpan == nil {
+		t.Fatal("Signal client span was not recorded")
+	}
+	if signalSpan.Parent().IsValid() {
+		t.Fatalf("Signal parent span = %s, want a root span", signalSpan.Parent().SpanID())
 	}
 }
 

@@ -126,7 +126,9 @@ func (m *MicroVMRuntime) installSeamDefaults() {
 		}
 		return vm, nil
 	}
-	m.newGuestClient = microvm.GuestClient
+	m.newGuestClient = func(socket string, port uint32) compassv1internalconnect.GuestControlClient {
+		return microvm.GuestClient(socket, port, m.config.GuestClientInterceptors...)
+	}
 }
 
 // microvmSession is one allocated microVM session's state. Created by Create
@@ -602,7 +604,7 @@ func (m *MicroVMRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.D
 	// The graceful preamble: ask the guest to power itself off. A failed Signal
 	// is not fatal — the VMM-kill escalation below is the backstop — but it is
 	// wrapped into the deadline wait's outcome rather than silently dropped.
-	client := microvm.GuestClient(session.cfg.VsockSocket, session.cfg.VsockPort)
+	client := microvm.GuestClient(session.cfg.VsockSocket, session.cfg.VsockPort, m.config.GuestClientInterceptors...)
 	signalErr := stopGuest(ctx, client)
 
 	// Await a real VMM exit up to timeout (a SIGTERM-honoring guest powers off
