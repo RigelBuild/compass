@@ -139,7 +139,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	// releasing the lock and only once the binding is recorded; the sink enqueues
 	// into its own loop, which resolves live state and must not run under h.mu.
 	if presence != nil {
-		presence.OnSessionPromoted(account, sessionID)
+		presence.OnSessionPromoted(ctx, account, sessionID)
 	}
 }
 
@@ -270,7 +270,7 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 	// session (orchestrator invariant), so concurrent same-account churn is
 	// unreachable and any transient OFFLINE self-repairs on the next edge.
 	if wentOffline && presence != nil {
-		presence.OnSessionLifecycle(account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+		presence.OnSessionLifecycle(ctx, account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
 	}
 	return true
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // TailComms feeds live comms bus events to OnCommsEvent until ctx ends or the
@@ -35,7 +36,7 @@ func (d *Dispatcher) TailComms(ctx context.Context, bus *events.Bus[*compassv1.S
 				sub = fresh
 				continue
 			}
-			d.OnCommsEvent(ctx, event.Payload)
+			d.OnCommsEvent(otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), event.Traceparent), event.Payload)
 		}
 	}
 }

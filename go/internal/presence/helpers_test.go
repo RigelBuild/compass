@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -37,13 +39,17 @@ func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 type fakeReads struct {
 	mu   sync.Mutex
 	open map[store.AccountID]bool
+	ctxs chan trace.SpanContext
 }
 
 func newFakeReads() *fakeReads {
 	return &fakeReads{open: map[store.AccountID]bool{}}
 }
 
-func (f *fakeReads) AgentHasOpenAsk(_ context.Context, agent store.AccountID) (bool, error) {
+func (f *fakeReads) AgentHasOpenAsk(ctx context.Context, agent store.AccountID) (bool, error) {
+	if f.ctxs != nil {
+		f.ctxs <- trace.SpanContextFromContext(ctx)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.open[agent], nil
@@ -112,10 +118,10 @@ func (b *blockingStatus) SessionState(ctx context.Context, sessionID string) (co
 	}
 }
 
-// presenceRecord is one observed AgentPresenceChanged publish.
 type presenceRecord struct {
-	account  store.AccountID
-	presence compassv1.AgentPresence
+	account     store.AccountID
+	presence    compassv1.AgentPresence
+	traceparent string
 }
 
 // recorder subscribes to the bus and records every AgentPresenceChanged the
@@ -149,8 +155,9 @@ func startRecorder(t *testing.T, bus *events.Bus[*compassv1.SubscribeCommsRespon
 			}
 			r.mu.Lock()
 			r.records = append(r.records, presenceRecord{
-				account:  store.AccountID(pc.GetAgentAccountId()),
-				presence: pc.GetPresence(),
+				account:     store.AccountID(pc.GetAgentAccountId()),
+				presence:    pc.GetPresence(),
+				traceparent: ev.Traceparent,
 			})
 			r.mu.Unlock()
 			select {

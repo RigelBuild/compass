@@ -6,29 +6,24 @@ import (
 	"context"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// OnSessionLifecycle is the hub's PresenceSink lifecycle hook, called at the
-// hub's deliverSession arm right after the LifecycleSink publish, from the hub's
-// Deliver goroutine (design.md:472-479). It must NOT block that goroutine on
-// store work and must NOT store the caller's ctx (the loop owns the serve ctx),
-// so it only enqueues the edge and wakes the loop; the loop recomputes (openAsk
-// from the store) + publishes-on-change under its own ctx. The account is
-// resolved in-package by the hub before the call (presence is per-account).
-func (p *Publisher) OnSessionLifecycle(account store.AccountID, sessionID string, state compassv1.AgentSessionState) {
-	p.enqueue(hubEdge{kind: edgeLifecycle, account: account, sessionID: sessionID, state: state})
+// OnSessionLifecycle is the hub's PresenceSink lifecycle hook after the
+// LifecycleSink publish in deliverSession (design.md:472-479). It must not block
+// on store work or retain caller ctx; it enqueues the edge, and the loop restores
+// its traceparent on its serve ctx before recomputing and publishing presence.
+func (p *Publisher) OnSessionLifecycle(ctx context.Context, account store.AccountID, sessionID string, state compassv1.AgentSessionState) {
+	p.enqueue(hubEdge{kind: edgeLifecycle, account: account, sessionID: sessionID, state: state, traceparent: otelx.Traceparent(ctx)})
 }
 
-// OnSessionPromoted is the hub's PresenceSink reconciliation hook, called at the
-// hub's promoteSession arm when a session (re-)promotes onto its account binding
-// (design.md:494-503). A Runner re-enroll clears bindings and each session
-// re-promotes through promoteSession, so this is the restart-reconciliation edge:
-// the loop resolves the session's live lifecycle state (via the Status relay) +
-// the agent's open-ask overlay (store) and publishes the reconstructed presence.
-// Same non-blocking + ctx discipline as OnSessionLifecycle.
-func (p *Publisher) OnSessionPromoted(account store.AccountID, sessionID string) {
-	p.enqueue(hubEdge{kind: edgePromoted, account: account, sessionID: sessionID})
+// OnSessionPromoted is the hub's promoteSession reconciliation hook
+// (design.md:494-503); re-enroll clears bindings and re-promotes sessions, so
+// the loop rebuilds presence from lifecycle state and open-ask overlay. The hook
+// only queues; it retains no ctx, and the loop restores its traceparent on ctx.
+func (p *Publisher) OnSessionPromoted(ctx context.Context, account store.AccountID, sessionID string) {
+	p.enqueue(hubEdge{kind: edgePromoted, account: account, sessionID: sessionID, traceparent: otelx.Traceparent(ctx)})
 }
 
 // enqueue appends a hub-fed edge and wakes the loop without blocking the caller.
@@ -71,7 +66,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 			return nil
 		default:
 		}
-		p.handleEvent(ctx, event.Payload)
+		p.handleEvent(otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), event.Traceparent), event.Payload)
 	}
 
 	for {
@@ -100,7 +95,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 				}
 				return nil
 			}
-			p.handleEvent(ctx, event.Payload)
+			p.handleEvent(otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), event.Traceparent), event.Payload)
 		}
 	}
 }
@@ -188,11 +183,12 @@ func (p *Publisher) drainEdges(ctx context.Context) {
 		p.queue = p.queue[1:]
 		p.mu.Unlock()
 
+		edgeCtx := otelx.ContextWithTraceparent(otelx.WithoutSpan(ctx), edge.traceparent)
 		switch edge.kind {
 		case edgeLifecycle:
-			p.applyLifecycle(ctx, edge.account, edge.state)
+			p.applyLifecycle(edgeCtx, edge.account, edge.state)
 		case edgePromoted:
-			p.applyPromoted(ctx, edge.account, edge.sessionID)
+			p.applyPromoted(edgeCtx, edge.account, edge.sessionID)
 		}
 	}
 }
