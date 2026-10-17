@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// Everything is t3- namespaced: this leg shares ONE stack with the other comms
+// Everything is t3-namespaced: this leg shares ONE stack with the other comms
 // legs, so a bare name would collide with theirs.
 const (
 	t3PosterHandle   = "t3-poster"
@@ -260,7 +259,7 @@ func t3CreateAgent(ctx context.Context, t *testing.T, f *Fixture, handle, displa
 // t3ObserverStream opens accountID's own comms subscription and drains the
 // snapshot-boundary frame, so the stream is provably live server-side before any
 // post — the per-account bearer is what lets a NEGATIVE visibility claim stand.
-func t3ObserverStream(ctx context.Context, t *testing.T, f *Fixture, accountID string) *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse] {
+func t3ObserverStream(ctx context.Context, t *testing.T, f *Fixture, accountID string) compassv1connect.CommsServiceSubscribeCommsClientStream {
 	t.Helper()
 	_, comms, err := f.AsObserver(ctx, accountID)
 	if err != nil {
@@ -276,7 +275,7 @@ func t3ObserverStream(ctx context.Context, t *testing.T, f *Fixture, accountID s
 
 // t3AwaitBody waits for the message whose first block is body and fatals if it
 // never fans, naming the stream so a failure points at the right subscriber.
-func t3AwaitBody(ctx context.Context, t *testing.T, f *Fixture, stream *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse], body, who string) *compassv1.Message {
+func t3AwaitBody(ctx context.Context, t *testing.T, f *Fixture, stream compassv1connect.CommsServiceSubscribeCommsClientStream, body, who string) *compassv1.Message {
 	t.Helper()
 	m, err := f.AwaitDelivery(ctx, stream, func(msg *compassv1.Message) bool {
 		return firstBlockText(msg) == body
@@ -287,7 +286,7 @@ func t3AwaitBody(ctx context.Context, t *testing.T, f *Fixture, stream *connect.
 	return m
 }
 
-func t3DrivePosts(ctx context.Context, t *testing.T, f *Fixture, poster store.Account, tail *connect.ServerStreamForClient[compassv1.AgentSessionFrame]) {
+func t3DrivePosts(ctx context.Context, t *testing.T, f *Fixture, poster store.Account, tail compassv1connect.CompassServiceSubscribeAgentSessionClientStream) {
 	t.Helper()
 
 	// Drive the poster's five posts, one trigger per marker round-trip.

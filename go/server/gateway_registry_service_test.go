@@ -13,6 +13,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -42,16 +43,16 @@ type gatewayRegistryContextCapture struct {
 	ctx context.Context
 }
 
-func (c *gatewayRegistryContextCapture) handle(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+func (c *gatewayRegistryContextCapture) handle(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
 	c.ctx = ctx
-	return &compassv1internal.GetGatewayModelRegistryResponse{}, nil
+	return nil
 }
 
 func gatewayRegistryServiceContext(t *testing.T, subject store.Subject) context.Context {
 	t.Helper()
 	const token = "gateway-registry-test-token"
-	request := &compassv1internal.GetGatewayModelRegistryRequest{}
-	request.Header().Set("Authorization", "Bearer "+token)
+	info := &connect.CallInfo{}
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	interceptor := auth.ServiceBearerInterceptor(func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		if presented != token || want != store.SubjectService {
 			t.Fatalf("service resolver args = (%q, %v), want gateway token and SubjectService", presented, want)
@@ -59,8 +60,10 @@ func gatewayRegistryServiceContext(t *testing.T, subject store.Subject) context.
 		return subject, nil
 	}, subject.ID)
 	var capture gatewayRegistryContextCapture
-	_, err := interceptor(capture.handle)(t.Context(), request)
-	if err != nil {
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: compassv1internalconnect.GatewayRegistryGetGatewayModelRegistryProcedure}
+	server := connect.NewServer(interceptor)
+	server.Register(connect.Method{Spec: spec, Handler: capture.handle})
+	if err := server.Call(t.Context(), spec.Procedure, info, testServerStream{}); err != nil {
 		t.Fatalf("authenticate service context: %v", err)
 	}
 	return capture.ctx

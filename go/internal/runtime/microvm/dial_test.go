@@ -264,7 +264,7 @@ func TestGuestClient_HealthRoundTrip(t *testing.T) {
 			WorkspaceMounted: true,
 		},
 	})
-	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	connecthttp.Mount(mux, server)
 
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)

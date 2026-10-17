@@ -96,9 +96,10 @@ func startTLSRunnerServer(t *testing.T, kp certgen.Keypair) *httptest.Server {
 	if err != nil {
 		t.Fatalf("tls.X509KeyPair: %v", err)
 	}
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(enrollStub{})
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, enrollStub{})
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv.StartTLS()

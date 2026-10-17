@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/stack"
@@ -34,11 +37,12 @@ func serveInfo(t *testing.T, version string, enrolledRunners ...*compassv1.Enrol
 	if err != nil {
 		t.Fatalf("net.Listen unix = %v", err)
 	}
-	mux := http.NewServeMux()
-	path, handler := compassv1connect.NewCompassServiceHandler(&infoService{version: version, enrolledRunners: enrolledRunners})
-	mux.Handle(path, handler)
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
+	mux := http.NewServeMux()
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, &infoService{version: version, enrolledRunners: enrolledRunners})
+	connecthttp.Mount(mux, server)
 	srv := &http.Server{Handler: mux, Protocols: protocols}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() {

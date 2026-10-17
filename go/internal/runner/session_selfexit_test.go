@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -55,7 +53,7 @@ func TestSelfExitKeepsErroredSessionReloadable(t *testing.T) {
 		t.Fatalf("Status after Reload = %v, %v; want READY", statuses, err)
 	}
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
-	controlStream := assertFirstReplayComplete(t, client)
+	controlStream, _ := assertFirstReplayComplete(t, client)
 	if err := h.Deliver(ctx, sessionID, &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_Prompt{Prompt: &compassv1internal.PromptControl{Input: "hi"}}}); err != nil {
 		t.Fatalf("Deliver after Reload = %v", err)
 	}
@@ -115,7 +113,7 @@ func TestReloadErroredSessionBindsOnceBeforeStartAgent(t *testing.T) {
 	}
 }
 
-func assertFirstReplayComplete(t *testing.T, client compassv1internalconnect.AgentGatewayClient) *connect.ServerStreamForClient[compassv1internal.AgentControl] {
+func assertFirstReplayComplete(t *testing.T, client compassv1internalconnect.AgentGatewayClient) (compassv1internalconnect.AgentGatewayControlClientStream, *compassv1internal.AgentControl) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	t.Cleanup(cancel)
@@ -123,19 +121,28 @@ func assertFirstReplayComplete(t *testing.T, client compassv1internalconnect.Age
 	if err != nil {
 		t.Fatalf("Control subscription = %v", err)
 	}
-	t.Cleanup(func() { _ = stream.Close() })
-	if !stream.Receive() || stream.Msg().GetReplayComplete() == nil {
-		t.Fatalf("first control op = %v, err %v; want replay_complete", stream.Msg(), stream.Err())
+	t.Cleanup(func() {
+		if err := stream.Close(); err != nil {
+			t.Errorf("close control stream: %v", err)
+		}
+	})
+	first, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("receive first control op: %v", err)
 	}
-	return stream
+	if first.GetReplayComplete() == nil {
+		t.Fatalf("first control op = %v; want replay_complete", first)
+	}
+	return stream, first
 }
 
-func assertNextPrompt(t *testing.T, stream *connect.ServerStreamForClient[compassv1internal.AgentControl], input string) {
+func assertNextPrompt(t *testing.T, stream compassv1internalconnect.AgentGatewayControlClientStream, input string) {
 	t.Helper()
-	if !stream.Receive() {
-		t.Fatalf("no prompt reached the agent (stream err %v)", stream.Err())
+	msg, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("receive prompt: %v", err)
 	}
-	if got := stream.Msg().GetPrompt().GetInput(); got != input {
+	if got := msg.GetPrompt().GetInput(); got != input {
 		t.Fatalf("prompt = %q, want %q", got, input)
 	}
 }
@@ -162,7 +169,7 @@ func TestPlainReloadSendsReplayCompleteThenUnackedOps(t *testing.T) {
 		t.Fatalf("Reload = %v", err)
 	}
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
-	controlStream := assertFirstReplayComplete(t, client)
+	controlStream, _ := assertFirstReplayComplete(t, client)
 	assertNextPrompt(t, controlStream, "before-reload")
 	if err := h.Deliver(ctx, sessionID, &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_Prompt{Prompt: &compassv1internal.PromptControl{Input: "plain-reload"}}}); err != nil {
 		t.Fatalf("Deliver after Reload = %v", err)
@@ -189,24 +196,23 @@ func TestReloadAfterAckedBarrierSendsFreshReplayComplete(t *testing.T) {
 		t.Fatalf("Start = %v", err)
 	}
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
-	first := assertFirstReplayComplete(t, client)
+	_, first := assertFirstReplayComplete(t, client)
 	publish, err := client.Publish(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := publish.Send(&compassv1internal.PublishFrameRequest{Frame: &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_ControlAck{ControlAck: &compassv1internal.ControlAck{AckedSeq: first.Msg().GetControlSeq()}},
+		Frame: &compassv1internal.AgentFrame_ControlAck{ControlAck: &compassv1internal.ControlAck{AckedSeq: first.GetControlSeq()}},
 	}}); err != nil {
 		t.Fatalf("send ack: %v", err)
 	}
-	// The handler returns only after applying every frame, so the ack is in.
 	if _, err := publish.CloseAndReceive(); err != nil {
 		t.Fatalf("close ack stream: %v", err)
 	}
 	if err := h.Reload(ctx, sessionID); err != nil {
 		t.Fatalf("Reload = %v", err)
 	}
-	controlStream := assertFirstReplayComplete(t, client)
+	controlStream, _ := assertFirstReplayComplete(t, client)
 	if err := h.Deliver(ctx, sessionID, &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_Prompt{Prompt: &compassv1internal.PromptControl{Input: "live"}}}); err != nil {
 		t.Fatalf("Deliver after Reload = %v", err)
 	}

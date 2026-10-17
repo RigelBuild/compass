@@ -28,14 +28,18 @@ func ServiceSubjectFrom(ctx context.Context) (store.Subject, bool) {
 func ServiceBearerInterceptor(
 	resolve func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error),
 	allow ...string,
-) connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			authenticated, err := authenticateServiceSubject(ctx, req.Header().Get(authorizationHeader), resolve, allow)
-			if err != nil {
-				return nil, err
+) connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			var header *connect.Header
+			if info, ok := connect.CallInfoForServerContext(ctx); ok {
+				header = info.RequestHeader()
 			}
-			return next(authenticated, req)
+			authenticated, err := authenticateServiceSubject(ctx, header.Get(authorizationHeader), resolve, allow)
+			if err != nil {
+				return err
+			}
+			return next(authenticated, spec, stream)
 		}
 	}
 }

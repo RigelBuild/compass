@@ -39,7 +39,15 @@ func TestServeHandshakeHealthOverH2C(t *testing.T) {
 	protocols.SetUnencryptedHTTP2(true)
 	h2cClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
 
-	client := compassv1internalconnect.NewGuestControlClient(connect.NewClient(connecthttp.NewTransport(h2cClient, "http://"+ln.Addr().String(), connecthttp.WithReadMaxBytes(0))))
+	client := compassv1internalconnect.NewGuestControlClient(
+		connect.NewClient(
+			connecthttp.NewTransport(
+				h2cClient,
+				"http://"+ln.Addr().String(),
+				connecthttp.WithReadMaxBytes(0),
+			),
+		),
+	)
 	resp, err := client.Health(t.Context(), &compassv1internal.HealthRequest{})
 	if err != nil {
 		t.Fatalf("Health call over h2c: %v", err)

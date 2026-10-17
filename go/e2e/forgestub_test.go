@@ -27,11 +27,16 @@ func TestForgeStubProviderClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCATrustClient: %v", err)
 	}
-	appTokens, err := forge.NewAppTokenSource(forge.GitHubAppConfig{AppID: 1001, InstallationID: 1, PrivateKey: func(context.Context) ([]byte, error) { return pemKey, nil }, Host: stub.Host(), Client: client.(*http.Client)})
+	appTokens, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+		AppID: 1001, InstallationID: 1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemKey, nil },
+		Host:       stub.Host(),
+		Client:     client,
+	})
 	if err != nil {
 		t.Fatalf("NewAppTokenSource: %v", err)
 	}
-	provider := forge.NewGitHub(forge.GitHubConfig{Host: stub.Host(), Token: appTokens, Client: client.(*http.Client)})
+	provider := forge.NewGitHub(forge.GitHubConfig{Host: stub.Host(), Token: appTokens, Client: client})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	created, err := provider.CreateIssue(ctx, "owner/repo", forge.CreateIssue{Title: "title", Body: "body", Labels: []string{"bug"}})
@@ -82,7 +87,7 @@ func TestForgeStubRejectsUnauthenticatedRoutes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewRequest: %v", err)
 			}
-			resp, err := client.(*http.Client).Do(req)
+			resp, err := client.Do(req)
 			if err != nil {
 				t.Fatalf("Do: %v", err)
 			}

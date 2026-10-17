@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
-
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
@@ -99,8 +98,8 @@ func (c *fakeGuestClient) Exec(context.Context, *compassv1.ExecRequest) (*compas
 	return nil, errors.New("fakeGuestClient: Exec not used on the hermetic Start path")
 }
 
-func (c *fakeGuestClient) ExecStream(context.Context) *connect.BidiStreamForClient[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse] {
-	return nil
+func (c *fakeGuestClient) ExecStream(context.Context) (compassv1internalconnect.GuestControlExecStreamClientStream, error) {
+	return compassv1internalconnect.GuestControlExecStreamClientStream{}, nil
 }
 
 func (c *fakeGuestClient) Signal(context.Context, *compassv1.SignalRequest) (*compassv1.SignalResponse, error) {

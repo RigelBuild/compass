@@ -223,34 +223,37 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if !stream.Receive() {
+		first, err := stream.Receive()
+		if err != nil {
 			// Describe the observable, not a cause: all this proves is that the
 			// stream ended before any frame arrived. Naming the boundary as the
 			// missing one would mis-attribute a stream that ended early.
-			gate <- fmt.Errorf("stream ended before any frame (expected the snapshot boundary first): %w", stream.Err())
+			gate <- fmt.Errorf("stream ended before any frame (expected the snapshot boundary first): %w", err)
 			return
 		}
-		if seq, payload := stream.Msg().GetSeq(), stream.Msg().GetPayload(); seq != 0 || payload != nil {
+		if seq, payload := first.GetSeq(), first.GetPayload(); seq != 0 || payload != nil {
 			gate <- fmt.Errorf("first frame = seq %d payload %T, want the snapshot boundary (seq 0, no payload)", seq, payload)
 			return
 		}
-		if !stream.Receive() {
-			gate <- fmt.Errorf("stream ended before the seeded event: %w", stream.Err())
+		second, err := stream.Receive()
+		if err != nil {
+			gate <- fmt.Errorf("stream ended before the seeded event: %w", err)
 			return
 		}
-		if got := stream.Msg().GetChannelChanged().GetChannel().GetId(); got != wantChannelID {
+		if got := second.GetChannelChanged().GetChannel().GetId(); got != wantChannelID {
 			gate <- fmt.Errorf("first event channel id = %q, want the seeded %q", got, wantChannelID)
 			return
 		}
 		gate <- nil
 		// Block on the live tail until the server closes the comms bus.
 		for {
-			_, err := stream.Receive()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
+			_, receiveErr := stream.Receive()
+			if receiveErr != nil {
+				if errors.Is(receiveErr, io.EOF) {
 					break
 				}
-				return err
+				t.Errorf("stream ended with receive error: %v", receiveErr)
+				return
 			}
 		}
 	}()

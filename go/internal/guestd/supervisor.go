@@ -759,7 +759,7 @@ func guestExecStartFailure(program string, workdir *string, executablePath strin
 }
 
 func (s *supervisor) sendStartFailure(
-	stream *connect.BidiStream[compassv1internal.ExecStreamRequest, compassv1internal.ExecStreamResponse],
+	stream compassv1internalconnect.GuestControlExecStreamServerStream,
 	sendMu *sync.Mutex,
 	cmd *exec.Cmd,
 	code int,
@@ -917,7 +917,7 @@ func (c *cappedBuffer) Bytes() []byte { return c.buf.Bytes() }
 // serialized under a shared mutex (connect's Send is not concurrency-safe). It
 // copies each chunk because os/exec reuses its read buffer across Writes.
 type streamWriter struct {
-	stream *connect.BidiStream[compassv1internal.ExecStreamRequest, compassv1internal.ExecStreamResponse]
+	stream compassv1internalconnect.GuestControlExecStreamServerStream
 	mu     *sync.Mutex
 	stdout bool
 }

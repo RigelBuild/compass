@@ -97,9 +97,10 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 		}
 	}
 	base := &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 3_600_000, Granularity: compassv1.Granularity_GRANULARITY_HOUR}
-	path, handler := compassv1connect.NewUsageServiceHandler(newUsageService(usageStore, st), connect.WithInterceptors(auth.BearerInterceptor(st), auth.NewAdminGate(admin.ID)))
+	server := connect.NewServer(auth.BearerInterceptor(st), auth.NewAdminGate(admin.ID))
+	compassv1connect.RegisterUsageServiceHandler(server, newUsageService(usageStore, st))
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	client := newUsageH2CClient(t, newUsageH2CServer(t, mux))
 	tokens := make(map[store.AccountID]string)
 	for _, account := range []store.Account{admin, owner1, owner2, zeroOwner, a, b, c, d} {
@@ -197,9 +198,9 @@ func TestUsageSeriesNetworkDoor(t *testing.T) {
 	svc := newService("usage-test", bus, st, nil, nil, nil, nil)
 	commsSvc := comms.NewComms(ctx, st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	srv, err := buildNetworkServer(
 		ctx,

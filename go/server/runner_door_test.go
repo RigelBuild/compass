@@ -280,14 +280,13 @@ func signTestTokenAt(t *testing.T, k testSigningKey, iss string, iat time.Time) 
 // mountRunnerDoor serves the RunnerService door over resolve on an h2c test server.
 func mountRunnerDoor(t *testing.T, resolve runnerhub.TokenResolver) string {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	hub := runnerhub.NewHub(nil, nil, nil, slog.Default())
-	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	runnerhub.Mount(mux, hub, resolve, nil, nil, otelIC)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -305,10 +304,14 @@ func newRunnerDoorClient(t *testing.T, baseURL, token string) compassv1internalc
 	t.Cleanup(tr.CloseIdleConnections)
 	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL,
 		connecthttp.WithReadMaxBytes(0),
-	), connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			req.Header().Set("Authorization", "Bearer "+token)
-			return next(ctx, req)
+	), connect.ClientInterceptor(func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "runner client: missing call info")
+			}
+			info.RequestHeader().Set("Authorization", "Bearer "+token)
+			return next(ctx, spec)
 		}
 	})))
 }

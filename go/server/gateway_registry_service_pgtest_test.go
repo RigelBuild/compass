@@ -41,16 +41,16 @@ func (s *gatewayRegistryContextStore) ModelRegistryVersion(ctx context.Context) 
 	return s.Store.ModelRegistryVersion(ctx)
 }
 
-func gatewayRegistryRequest(token string) *compassv1internal.GetGatewayModelRegistryRequest {
-	req := &compassv1internal.GetGatewayModelRegistryRequest{}
-	req.Header().Set("Authorization", "Bearer "+token)
-	return req
+func gatewayRegistryRequest(ctx context.Context, token string) (context.Context, *compassv1internal.GetGatewayModelRegistryRequest) {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return ctx, &compassv1internal.GetGatewayModelRegistryRequest{}
 }
 
-func gatewayRegistryVersionRequest(token string) *compassv1internal.GetGatewayModelRegistryVersionRequest {
-	req := &compassv1internal.GetGatewayModelRegistryVersionRequest{}
-	req.Header().Set("Authorization", "Bearer "+token)
-	return req
+func gatewayRegistryVersionRequest(ctx context.Context, token string) (context.Context, *compassv1internal.GetGatewayModelRegistryVersionRequest) {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return ctx, &compassv1internal.GetGatewayModelRegistryVersionRequest{}
 }
 
 func assertGatewayRegistryVersion(t *testing.T, response *compassv1internal.GetGatewayModelRegistryVersionResponse, want int64) {
@@ -74,10 +74,12 @@ func assertGatewayRegistryQueryContext(t *testing.T, queryStore *gatewayRegistry
 
 func assertGatewayRegistryAllowlist(t *testing.T, ctx context.Context, client compassv1internalconnect.GatewayRegistryClient, token string) {
 	t.Helper()
-	if _, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(token)); connect.CodeOf(err) != connect.CodeUnauthenticated {
+	ctx, request := gatewayRegistryRequest(ctx, token)
+	if _, err := client.GetGatewayModelRegistry(ctx, request); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Errorf("GetGatewayModelRegistry error = %v, want Unauthenticated", err)
 	}
-	if _, err := client.GetGatewayModelRegistryVersion(ctx, gatewayRegistryVersionRequest(token)); connect.CodeOf(err) != connect.CodeUnauthenticated {
+	ctx, versionRequest := gatewayRegistryVersionRequest(ctx, token)
+	if _, err := client.GetGatewayModelRegistryVersion(ctx, versionRequest); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Errorf("GetGatewayModelRegistryVersion error = %v, want Unauthenticated", err)
 	}
 }
@@ -123,9 +125,9 @@ func newGatewayRegistryDoorFixture(t *testing.T) *gatewayRegistryDoorFixture {
 		return auth.ResolveToken(ctx, st, presented, want)
 	}
 	runnerResolve := newRunnerResolve(resolve, nil)
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	mux := http.NewServeMux()
 	mountGatewayServices(mux, gatewayServices{registry: registryService}, otelIC, runnerResolve)
@@ -144,14 +146,16 @@ func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
 	serviceToken := fixture.serviceToken
 	queryStore, client := fixture.queryStore, fixture.client
 
-	unconfigured, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(serviceToken))
+	ctx, request := gatewayRegistryRequest(ctx, serviceToken)
+	unconfigured, err := client.GetGatewayModelRegistry(ctx, request)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistry on unconfigured fleet: %v", err)
 	}
 	if unconfigured.GetVersion() != 0 || len(unconfigured.GetRegistry().GetEntries()) != 0 {
 		t.Fatalf("unconfigured response = %v, want version 0 and empty registry", unconfigured)
 	}
-	unconfiguredVersion, err := client.GetGatewayModelRegistryVersion(ctx, gatewayRegistryVersionRequest(serviceToken))
+	ctx, versionRequest := gatewayRegistryVersionRequest(ctx, serviceToken)
+	unconfiguredVersion, err := client.GetGatewayModelRegistryVersion(ctx, versionRequest)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistryVersion on unconfigured fleet: %v", err)
 	}
@@ -174,14 +178,16 @@ func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
 	if seededVersion != 1 {
 		t.Fatalf("seed version = %d, want 1", seededVersion)
 	}
-	seeded, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(serviceToken))
+	ctx, request = gatewayRegistryRequest(ctx, serviceToken)
+	seeded, err := client.GetGatewayModelRegistry(ctx, request)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistry after seed: %v", err)
 	}
 	if seeded.GetVersion() != 1 || !proto.Equal(seeded.GetRegistry(), registryToProto(wantRegistry)) {
 		t.Fatalf("seeded response = %v, want version 1 and registry %v", seeded, registryToProto(wantRegistry))
 	}
-	seededVersionOnly, err := client.GetGatewayModelRegistryVersion(ctx, gatewayRegistryVersionRequest(serviceToken))
+	ctx, versionRequest = gatewayRegistryVersionRequest(ctx, serviceToken)
+	seededVersionOnly, err := client.GetGatewayModelRegistryVersion(ctx, versionRequest)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistryVersion after seed: %v", err)
 	}
@@ -200,12 +206,14 @@ func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
 	if updatedVersion != 2 {
 		t.Fatalf("updated version = %d, want 2", updatedVersion)
 	}
-	observedVersion, err := client.GetGatewayModelRegistryVersion(ctx, gatewayRegistryVersionRequest(serviceToken))
+	ctx, versionRequest = gatewayRegistryVersionRequest(ctx, serviceToken)
+	observedVersion, err := client.GetGatewayModelRegistryVersion(ctx, versionRequest)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistryVersion after update: %v", err)
 	}
 	assertGatewayRegistryVersion(t, observedVersion, 2)
-	updatedRead, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(serviceToken))
+	ctx, request = gatewayRegistryRequest(ctx, serviceToken)
+	updatedRead, err := client.GetGatewayModelRegistry(ctx, request)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistry after update: %v", err)
 	}
@@ -215,11 +223,13 @@ func TestGatewayRegistryDoorServiceBearerAllowlist(t *testing.T) {
 	if err := st.DeleteModelRegistry(ctx); err != nil {
 		t.Fatalf("DeleteModelRegistry: %v", err)
 	}
-	deleted, err := client.GetGatewayModelRegistry(ctx, gatewayRegistryRequest(serviceToken))
+	ctx, request = gatewayRegistryRequest(ctx, serviceToken)
+	deleted, err := client.GetGatewayModelRegistry(ctx, request)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistry after delete: %v", err)
 	}
-	deletedVersion, err := client.GetGatewayModelRegistryVersion(ctx, gatewayRegistryVersionRequest(serviceToken))
+	ctx, versionRequest = gatewayRegistryVersionRequest(ctx, serviceToken)
+	deletedVersion, err := client.GetGatewayModelRegistryVersion(ctx, versionRequest)
 	if err != nil {
 		t.Fatalf("GetGatewayModelRegistryVersion after delete: %v", err)
 	}

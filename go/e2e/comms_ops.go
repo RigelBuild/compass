@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
-	"connectrpc.com/connect"
+	"io"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 // PostMessage posts one text block to a channel's topic over
@@ -70,12 +70,12 @@ func (f *Fixture) SubscribeMember(ctx context.Context, channelID, memberHandle s
 // stream fails visibly rather than hanging; the caller MUST Close the returned
 // stream. Returns an error rather than panicking so the caller (a test) decides
 // fatality.
-func (f *Fixture) SubscribeComms(ctx context.Context, sinceSeq uint64) (*connect.ServerStreamForClient[compassv1.SubscribeCommsResponse], error) {
+func (f *Fixture) SubscribeComms(ctx context.Context, sinceSeq uint64) (compassv1connect.CommsServiceSubscribeCommsClientStream, error) {
 	stream, err := f.Comms().SubscribeComms(ctx, &compassv1.SubscribeCommsRequest{
 		SinceSeq: sinceSeq,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("SubscribeComms RPC: %w", err)
+		return compassv1connect.CommsServiceSubscribeCommsClientStream{}, fmt.Errorf("SubscribeComms RPC: %w", err)
 	}
 	return stream, nil
 }
@@ -112,12 +112,12 @@ func (f *Fixture) PostMessageAsObserver(ctx context.Context, comms commsServiceC
 // the caller MUST Close it); AwaitDelivery consumes the returned stream
 // unchanged. Returns an error rather than panicking so the caller (a test)
 // decides fatality.
-func (f *Fixture) SubscribeCommsAsObserver(ctx context.Context, comms commsServiceClient, sinceSeq uint64) (*connect.ServerStreamForClient[compassv1.SubscribeCommsResponse], error) {
+func (f *Fixture) SubscribeCommsAsObserver(ctx context.Context, comms commsServiceClient, sinceSeq uint64) (compassv1connect.CommsServiceSubscribeCommsClientStream, error) {
 	stream, err := comms.SubscribeComms(ctx, &compassv1.SubscribeCommsRequest{
 		SinceSeq: sinceSeq,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("SubscribeComms RPC (observer): %w", err)
+		return compassv1connect.CommsServiceSubscribeCommsClientStream{}, fmt.Errorf("SubscribeComms RPC (observer): %w", err)
 	}
 	return stream, nil
 }
@@ -130,7 +130,7 @@ func (f *Fixture) SubscribeCommsAsObserver(ctx context.Context, comms commsServi
 // never carries a matching post fails visibly here rather than blocking to the
 // go-test timeout. The deliver-side observation counterpart to PostMessage; the
 // caller still owns Close on stream (see SubscribeComms).
-func (f *Fixture) AwaitDelivery(ctx context.Context, stream *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse], match func(*compassv1.Message) bool) (*compassv1.Message, error) {
+func (f *Fixture) AwaitDelivery(ctx context.Context, stream compassv1connect.CommsServiceSubscribeCommsClientStream, match func(*compassv1.Message) bool) (*compassv1.Message, error) {
 	ctx, cancel := context.WithTimeout(ctx, deliverTimeout)
 	defer cancel()
 
@@ -143,17 +143,21 @@ func (f *Fixture) AwaitDelivery(ctx context.Context, stream *connect.ServerStrea
 	// once and exits, no leak past the caller's Close.
 	out := make(chan received, 1)
 	go func() {
-		for stream.Receive() {
-			if m := stream.Msg().GetMessagePosted().GetMessage(); m != nil && match(m) {
+		for {
+			frame, err := stream.Receive()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					out <- received{err: errors.New("SubscribeComms stream ended before a matching MessagePosted arrived")}
+				} else {
+					out <- received{err: fmt.Errorf("SubscribeComms stream: %w", err)}
+				}
+				return
+			}
+			if m := frame.GetMessagePosted().GetMessage(); m != nil && match(m) {
 				out <- received{msg: m}
 				return
 			}
 		}
-		if err := stream.Err(); err != nil {
-			out <- received{err: fmt.Errorf("SubscribeComms stream: %w", err)}
-			return
-		}
-		out <- received{err: errors.New("SubscribeComms stream ended before a matching MessagePosted arrived")}
 	}()
 
 	select {

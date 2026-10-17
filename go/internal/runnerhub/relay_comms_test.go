@@ -188,7 +188,7 @@ func TestRunnerRelayBindingErrorContractAcrossLegs(t *testing.T) {
 					t.Fatalf("binding error = %v, want %s", err, wantCode)
 				}
 				if wantCode == connect.CodeFailedPrecondition {
-					wantMessage := connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound).Error()
+					wantMessage := connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound.Error()).Error()
 					if got := err.Error(); got != wantMessage {
 						t.Fatalf("binding message = %q, want shared message %q", got, wantMessage)
 					}

@@ -16,6 +16,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
@@ -291,7 +292,7 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // container starts; the returned listener's Close tears the socket down at
 // container teardown.
 func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketListener, error) {
-	ic, err := newAgentGatewayInterceptor()
+	ic, err := otelconnect.NewServerInterceptor()
 	if err != nil {
 		return nil, fmt.Errorf("otel: connect interceptor: %w", err)
 	}
@@ -310,9 +311,9 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 	// SetControlRouter's concurrency note.
 	control := newControlProducer()
 	g.SetControlRouter(control)
-	server := connect.NewServer()
+	server := connect.NewServer(otelx.HandlerInterceptors(ic))
 	compassv1internalconnect.RegisterAgentGatewayHandler(server, g)
-	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0), agentGatewayHandlerOptions(ic))
+	connecthttp.Mount(mux, server, agentGatewayHandlerOptions()...)
 
 	l, err := listenAgentSocket(ctx, path, mux, socketCancel)
 	if err != nil {
@@ -348,7 +349,7 @@ func (g *Gateway) Comms(
 		Call:      req,
 	})
 	if err != nil {
-		return nil, err
+		return nil, relayedError(err)
 	}
 	result := resp.GetResult()
 	if result == nil {
@@ -379,7 +380,7 @@ func (g *Gateway) PutSessionBlob(
 		Blob:      req,
 	})
 	if err != nil {
-		return nil, err
+		return nil, relayedError(err)
 	}
 	return &compassv1internal.PutSessionBlobResponse{}, nil
 }

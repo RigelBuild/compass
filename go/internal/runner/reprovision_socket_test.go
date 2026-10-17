@@ -69,10 +69,11 @@ func TestFailedReprovisionKeepsLiveContainerSocket(t *testing.T) {
 			t.Errorf("closing Control stream: %v", err)
 		}
 	}()
-	if !stream.Receive() {
-		t.Fatalf("resumed agent got no op over the socket (stream err %v)", stream.Err())
+	msg, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("resumed agent got no op over the socket: %v", err)
 	}
-	if stream.Msg().GetReplayComplete() == nil {
-		t.Fatalf("first op = %v, want replay_complete", stream.Msg())
+	if msg.GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete", msg)
 	}
 }

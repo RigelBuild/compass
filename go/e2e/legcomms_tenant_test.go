@@ -34,6 +34,7 @@ import (
 	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 // The two tenants, their agents, and the two channels. Handles obey the account
@@ -281,7 +282,7 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 // derived one — the shape AwaitDelivery uses (comms_ops.go:132) and for the
 // same reason: a server that registers the subscriber but never sends the
 // boundary frame fails legibly here instead of blocking to the go-test timeout.
-func awaitSubscriptionLive(ctx context.Context, t *testing.T, stream *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse]) {
+func awaitSubscriptionLive(ctx context.Context, t *testing.T, stream compassv1connect.CommsServiceSubscribeCommsClientStream) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -294,11 +295,12 @@ func awaitSubscriptionLive(ctx context.Context, t *testing.T, stream *connect.Se
 	// helper has already returned on the ctx deadline.
 	out := make(chan frame, 1)
 	go func() {
-		if !stream.Receive() {
-			out <- frame{err: fmt.Errorf("subscription ended before its leading control frame: %w", stream.Err())}
+		got, err := stream.Receive()
+		if err != nil {
+			out <- frame{err: fmt.Errorf("subscription ended before its leading control frame: %w", err)}
 			return
 		}
-		out <- frame{payload: stream.Msg().GetPayload()}
+		out <- frame{payload: got.GetPayload()}
 	}()
 
 	select {

@@ -38,9 +38,9 @@ type spawnCompass struct {
 	gotSpawn []*compassv1.SpawnAgentRequest
 }
 
-func (f *spawnFakes) CreateAgent(_ context.Context, req *compassv1.CreateAgentRequest) (*compassv1.CreateAgentResponse, error) {
+func (f *spawnFakes) CreateAgent(ctx context.Context, req *compassv1.CreateAgentRequest) (*compassv1.CreateAgentResponse, error) {
 	f.calls = append(f.calls, "CreateAgent")
-	f.gotAuth = append(f.gotAuth, req.Header().Get("Authorization"))
+	f.gotAuth = append(f.gotAuth, requestAuth(ctx))
 	f.gotCreate = req
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -53,21 +53,21 @@ func (f *spawnFakes) CreateAgent(_ context.Context, req *compassv1.CreateAgentRe
 	return &compassv1.CreateAgentResponse{Account: acc}, nil
 }
 
-func (f *spawnFakes) ListAccounts(_ context.Context, req *compassv1.ListAccountsRequest) (*compassv1.ListAccountsResponse, error) {
+func (f *spawnFakes) ListAccounts(ctx context.Context, req *compassv1.ListAccountsRequest) (*compassv1.ListAccountsResponse, error) {
 	f.calls = append(f.calls, "ListAccounts")
-	f.gotAuth = append(f.gotAuth, req.Header().Get("Authorization"))
+	f.gotAuth = append(f.gotAuth, requestAuth(ctx))
 	return &compassv1.ListAccountsResponse{Accounts: f.accounts}, nil
 }
 
-func (c *spawnCompass) WhoAmI(_ context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+func (c *spawnCompass) WhoAmI(ctx context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
 	c.parent.calls = append(c.parent.calls, "WhoAmI")
-	c.parent.gotAuth = append(c.parent.gotAuth, req.Header().Get("Authorization"))
+	c.parent.gotAuth = append(c.parent.gotAuth, requestAuth(ctx))
 	return &compassv1.WhoAmIResponse{AccountId: "admin-1"}, nil
 }
 
-func (c *spawnCompass) SpawnAgent(_ context.Context, req *compassv1.SpawnAgentRequest) (*compassv1.SpawnAgentResponse, error) {
+func (c *spawnCompass) SpawnAgent(ctx context.Context, req *compassv1.SpawnAgentRequest) (*compassv1.SpawnAgentResponse, error) {
 	c.parent.calls = append(c.parent.calls, "SpawnAgent")
-	c.parent.gotAuth = append(c.parent.gotAuth, req.Header().Get("Authorization"))
+	c.parent.gotAuth = append(c.parent.gotAuth, requestAuth(ctx))
 	c.gotSpawn = append(c.gotSpawn, req)
 	if c.spawnErr != nil {
 		return nil, c.spawnErr

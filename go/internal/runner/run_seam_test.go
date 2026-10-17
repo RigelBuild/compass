@@ -30,17 +30,16 @@ import (
 )
 
 // scriptStream is a scripted sessionStream: Receive hands out queued commands in
-// order then blocks until CloseResponse (the ctx-cancel watcher) or an explicit
-// EOF frame; Send is programmable per call. It records every sent result. It is
-// the in-memory stand-in for the connect bidi stream that lets a test drive the
-// runSessions loop with exact control over Send outcomes and Receive timing.
+// order then blocks until Close (the ctx-cancel watcher) or an explicit EOF frame. Send
+// is programmable per call. It records every sent result and lets the loop tests control
+// Send outcomes and Receive timing.
 type scriptStream struct {
 	mu sync.Mutex
 
 	recv     chan recvItem                                  // queued Receive results; the loop reads in order
 	sendHook func(*compassv1internal.SessionsRequest) error // per-Send override; nil = succeed
 
-	closed    chan struct{} // closed by CloseResponse (the loop's ctx-cancel watcher)
+	closed    chan struct{} // closed by Close (the loop's ctx-cancel watcher)
 	closeOnce sync.Once
 }
 
@@ -68,13 +67,12 @@ func (s *scriptStream) Receive() (*compassv1internal.SessionsResponse, error) {
 	case item := <-s.recv:
 		return item.cmd, item.err
 	case <-s.closed:
-		// CloseResponse ran (the ctx-cancel watcher): surface EOF, the connect
-		// stream's natural post-close Receive result.
+		// Close ran (the ctx-cancel watcher): surface EOF, the stream's natural post-close Receive result.
 		return nil, io.EOF
 	}
 }
 
-func (s *scriptStream) CloseResponse() error {
+func (s *scriptStream) Close() error {
 	s.closeOnce.Do(func() { close(s.closed) })
 	return nil
 }

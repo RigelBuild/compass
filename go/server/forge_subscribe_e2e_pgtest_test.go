@@ -11,11 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	compassv1internalconnect "github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -76,7 +75,7 @@ func newForgeSubscribeNotifyEndpoint(t *testing.T, w *forgeE2EWire) (string, []b
 func openForgeSubscribeControl(
 	t *testing.T,
 	w *forgeE2EWire,
-) (context.Context, *connect.ServerStreamForClient[compassv1internal.AgentControl]) {
+) (context.Context, compassv1internalconnect.AgentGatewayControlClientStream) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(w.ctx, e2eTimeout)
 	t.Cleanup(cancel)
@@ -90,10 +89,11 @@ func openForgeSubscribeControl(
 		}
 	})
 	for {
-		if !stream.Receive() {
-			t.Fatalf("Control ended before replay_complete: %v", stream.Err())
+		msg, err := stream.Receive()
+		if err != nil {
+			t.Fatalf("Control ended before replay_complete: %v", err)
 		}
-		if stream.Msg().GetReplayComplete() != nil {
+		if msg.GetReplayComplete() != nil {
 			return ctx, stream
 		}
 	}
@@ -102,14 +102,15 @@ func openForgeSubscribeControl(
 // receiveForgeSubscribeNotification skips unrelated ops until a forge notification arrives.
 func receiveForgeSubscribeNotification(
 	t *testing.T,
-	stream *connect.ServerStreamForClient[compassv1internal.AgentControl],
+	stream compassv1internalconnect.AgentGatewayControlClientStream,
 ) *compassv1internal.ForgeNotification {
 	t.Helper()
 	for {
-		if !stream.Receive() {
-			t.Fatalf("Control ended before forge notification: %v", stream.Err())
+		msg, err := stream.Receive()
+		if err != nil {
+			t.Fatalf("Control ended before forge notification: %v", err)
 		}
-		if notification := stream.Msg().GetForgeNotification(); notification != nil {
+		if notification := msg.GetForgeNotification(); notification != nil {
 			return notification
 		}
 	}

@@ -11,12 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/agentmsg"
@@ -26,6 +24,22 @@ import (
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+// Mount registers the RunnerService on mux with the Runner-subject bearer
+// interceptor and its historical inbound read limit.
+func Mount(
+	mux connecthttp.ServeMux,
+	hub *Hub,
+	resolve TokenResolver,
+	resolver secretResolver,
+	configStore AgentConfigStore,
+	otelIC connect.ServerInterceptor,
+) {
+	auth := &bearerAuth{resolve: resolve}
+	server := connect.NewServer(otelx.HandlerInterceptors(otelIC, auth.interceptor()))
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, NewHandler(hub, resolver, configStore))
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(runnerMaxReadBytes))
+}
 
 // runnerMaxReadBytes caps one inbound RunnerService message. Each Runner→Server
 // request carries at most one agent message (a relayed call or AgentFrame,
@@ -485,31 +499,4 @@ func kindToProto(k secrets.SecretKind) compassv1.SecretKind {
 	default:
 		return compassv1.SecretKind_SECRET_KIND_GENERIC
 	}
-}
-
-// NewMountedHandler builds the RunnerService HTTP handler with the Runner-subject
-// bearer interceptor applied, returning the mount path and handler for serve.go
-// to Handle on the network mux. resolve is the shared credential resolver
-// (auth.ResolveToken with the store closed over); the door authenticates every
-// RPC through it for a SubjectRunner token. resolver is the Server-side secret
-// resolve surface FetchSecrets delegates to; configStore the fleet config-bundle
-// surface FetchAgentConfig delegates to (either may be nil on a server built
-// without that surface).
-//
-// otelIC is mounted outermost so its span envelopes the bearer pair. It must be
-// non-nil: a typed-nil *otelconnect.Interceptor passes connect's nil check and
-// panics on the first RPC.
-func NewMountedHandler(
-	hub *Hub,
-	resolve TokenResolver,
-	resolver secretResolver,
-	configStore AgentConfigStore,
-	otelIC *otelconnect.Interceptor,
-) (string, http.Handler) {
-	auth := &bearerAuth{resolve: resolve}
-	return compassv1internalconnect.NewRunnerServiceHandler(
-		NewHandler(hub, resolver, configStore),
-		otelx.HandlerInterceptors(otelIC, auth.unaryInterceptor(), auth.streamInterceptor()),
-		connecthttp.WithReadMaxBytes(runnerMaxReadBytes),
-	)
 }

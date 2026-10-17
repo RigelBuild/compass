@@ -518,16 +518,15 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withhol
 // stream opens, so a gate is in place before the ready hook can drive a command.
 func attachRecordingRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, rec *recordingRunner) *recordingRunner {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := runnerhub.NewMountedHandler(hub,
+	mux := http.NewServeMux()
+	runnerhub.Mount(mux, hub,
 		func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 			return auth.ResolveToken(ctx, st, presented, want)
 		}, nil, nil, otelIC)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -545,7 +544,7 @@ func attachRecordingRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, re
 	rc := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: tr}, srv.URL,
 		connecthttp.WithReadMaxBytes(0),
-	), runnerBearer(fakeRunnerToken),
+	), runnerBearer(fakeRunnerToken).ClientInterceptor,
 	))
 	if _, err := rc.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: fakeRunnerID}); err != nil {
 		t.Fatalf("Enroll = %v, want success", err)
@@ -675,7 +674,7 @@ type recordingRunner struct {
 // result carries no request id, so router.complete treats it as an unknown-id
 // no-op. It ends on the clean EOF the caller's CloseRequest produces.
 func (r *recordingRunner) serve(
-	stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse],
+	stream compassv1internalconnect.RunnerServiceSessionsClientStream,
 	done chan<- error,
 ) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
@@ -764,7 +763,7 @@ func (r *recordingRunner) reply(cmd *compassv1internal.SessionsResponse) (*compa
 // dropped answer is not a loop fault. Returning an error instead would report a
 // teardown artifact as a dirty end — the RIG-3606 failure in a new spelling.
 func (r *recordingRunner) send(
-	stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse],
+	stream compassv1internalconnect.RunnerServiceSessionsClientStream,
 	req *compassv1internal.SessionsRequest,
 ) error {
 	r.sendMu.Lock()
@@ -1129,25 +1128,16 @@ func (r *recordingRunner) provisionRole(t *testing.T) string {
 	return ""
 }
 
-// runnerBearer stamps the Runner's bearer on every outbound RPC (unary +
-// streaming), mirroring the Runner-side interceptor so the door authenticates.
+// runnerBearer stamps the Runner's bearer on every outbound RPC.
 type runnerBearer string
 
-func (b runnerBearer) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		req.Header().Set("Authorization", "Bearer "+string(b))
-		return next(ctx, req)
+func (b runnerBearer) ClientInterceptor(next connect.ClientFunc) connect.ClientFunc {
+	return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+		info, ok := connect.CallInfoForClientContext(ctx)
+		if !ok {
+			return nil, errors.New("missing Connect client call info")
+		}
+		info.RequestHeader().Set("Authorization", "Bearer "+string(b))
+		return next(ctx, spec)
 	}
-}
-
-func (b runnerBearer) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		conn := next(ctx, spec)
-		conn.RequestHeader().Set("Authorization", "Bearer "+string(b))
-		return conn
-	}
-}
-
-func (b runnerBearer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }

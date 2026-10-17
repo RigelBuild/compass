@@ -32,7 +32,7 @@ func newGatewayCredentialsService(tokens gatewayTokenVerifier, creds gatewaycred
 }
 
 func (s *gatewayCredentialsService) ListCredentialPool(ctx context.Context, req *compassv1internal.ListCredentialPoolRequest) (*compassv1internal.ListCredentialPoolResponse, error) {
-	if req == nil || req == nil || req.GetAgentToken() == "" {
+	if req == nil || req.GetAgentToken() == "" {
 		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "agent_token is required")
 	}
 	ctx, agent, err := s.resolveCaller(ctx, req.GetAgentToken(), "ListCredentialPool")
@@ -55,7 +55,7 @@ func (s *gatewayCredentialsService) ListCredentialPool(ctx context.Context, req 
 }
 
 func (s *gatewayCredentialsService) UpdateCredentialOAuth(ctx context.Context, req *compassv1internal.UpdateCredentialOAuthRequest) (*compassv1internal.UpdateCredentialOAuthResponse, error) {
-	if req == nil || req == nil || req.GetAgentToken() == "" || req.GetId() == "" || req.GetExpectedVersion() == 0 || req.GetToken() == nil || req.GetToken().GetAccess() == "" {
+	if req == nil || req.GetAgentToken() == "" || req.GetId() == "" || req.GetExpectedVersion() == 0 || req.GetToken() == nil || req.GetToken().GetAccess() == "" {
 		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "id, agent_token, expected_version, and token access are required")
 	}
 	if !gatewaycred.ValidOAuthClearFields(req.GetClearFields()) {
@@ -73,7 +73,7 @@ func (s *gatewayCredentialsService) UpdateCredentialOAuth(ctx context.Context, r
 }
 
 func (s *gatewayCredentialsService) DisableCredential(ctx context.Context, req *compassv1internal.DisableCredentialRequest) (*compassv1internal.DisableCredentialResponse, error) {
-	if req == nil || req == nil || req.GetAgentToken() == "" || req.GetId() == "" || req.GetExpectedVersion() == 0 {
+	if req == nil || req.GetAgentToken() == "" || req.GetId() == "" || req.GetExpectedVersion() == 0 {
 		return nil, gatewayCredentialsError(connect.CodeInvalidArgument, "id, agent_token, and expected_version are required")
 	}
 	ctx, agent, err := s.resolveCaller(ctx, req.GetAgentToken(), "DisableCredential")

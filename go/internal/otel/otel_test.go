@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -13,10 +14,44 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// passthrough is the inner handler for interceptor tests: it returns an empty
-// response and no error, so the assertion is about the interceptor alone.
-func passthrough(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-	return &struct{}{}, nil
+// fakeServerStream records unary responses and runs a hook before each send.
+type fakeServerStream struct {
+	response []any
+	onSend   func() error
+}
+
+func (s *fakeServerStream) Receive(any) error { return nil }
+
+func (s *fakeServerStream) SendHeaders() error { return nil }
+
+func (s *fakeServerStream) Send(msg any) error {
+	if s.onSend != nil {
+		if err := s.onSend(); err != nil {
+			return err
+		}
+	}
+	s.response = append(s.response, msg)
+	return nil
+}
+
+func serverCallInfo(header string, set bool) *connect.CallInfo {
+	info := &connect.CallInfo{}
+	if set {
+		info.RequestHeader().Set(PostHogSessionHeader, header)
+	}
+	return info
+}
+func runServerInterceptor(
+	ctx context.Context,
+	interceptor connect.ServerInterceptor,
+	spec connect.Spec,
+	info *connect.CallInfo,
+	stream connect.ServerStream,
+	next connect.ServerFunc,
+) error {
+	server := connect.NewServer(interceptor)
+	server.Register(connect.Method{Spec: spec, Handler: next})
+	return server.Call(ctx, spec.Procedure, info, stream)
 }
 
 // w3cTraceparent matches the W3C traceparent grammar: 00-<32hex>-<16hex>-<2hex>.
@@ -107,12 +142,10 @@ func TestFormatTraceResponse(t *testing.T) {
 	}
 }
 
-// TestTraceResponseInterceptor asserts the interceptor sets the traceresponse
-// header when the ctx carries a valid span context, sets none otherwise, and
-// never alters the handler's error.
+// TestTraceResponseInterceptor asserts the response header is set before the
+// unary adapter's first Send, omitted without a span or on handler failure.
 func TestTraceResponseInterceptor(t *testing.T) {
 	interceptor := NewTraceResponseInterceptor()
-
 	traceID, err := trace.TraceIDFromHex("0af7651916cd43dd8448eb211c80319c")
 	if err != nil {
 		t.Fatalf("TraceIDFromHex err = %v", err)
@@ -122,51 +155,79 @@ func TestTraceResponseInterceptor(t *testing.T) {
 		t.Fatalf("SpanIDFromHex err = %v", err)
 	}
 	validSC := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceFlags: trace.FlagsSampled,
+		TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled,
 	})
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: "/test.Service/Call"}
+	want := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
-	t.Run("valid span sets header", func(t *testing.T) {
-		ctx := trace.ContextWithSpanContext(context.Background(), validSC)
-		resp := &struct{}{}
-		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-			return resp, nil
-		})
-		ctx, info := connect.NewClientContext(ctx)
-		got, err := interceptor(next)(ctx, &struct{}{})
-		if err != nil {
+	t.Run("valid span sets header before send", func(t *testing.T) {
+		ctx := trace.ContextWithSpanContext(t.Context(), validSC)
+		info := &connect.CallInfo{}
+		stream := &fakeServerStream{onSend: func() error {
+			if got := info.ResponseHeader().Get(traceResponseHeader); got != want {
+				t.Fatalf("header at first send = %q, want %q", got, want)
+			}
+			return nil
+		}}
+		next := func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+			return stream.Send(&struct{}{})
+		}
+		if err := runServerInterceptor(ctx, interceptor, spec, info, stream, next); err != nil {
 			t.Fatalf("interceptor err = %v, want nil", err)
 		}
-		want := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
-		if h := info.ResponseHeader().Get(traceResponseHeader); h != want {
-			t.Errorf("%s = %q, want %q", traceResponseHeader, h, want)
+		if got := info.ResponseHeader().Get(traceResponseHeader); got != want {
+			t.Errorf("%s = %q, want %q", traceResponseHeader, got, want)
 		}
 	})
 
 	t.Run("no span sets no header", func(t *testing.T) {
-		resp := &struct{}{}
-		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-			return resp, nil
-		})
-		got, err := interceptor(next)(context.Background(), &struct{}{})
-		if err != nil {
+		info := &connect.CallInfo{}
+		stream := &fakeServerStream{}
+		next := func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+			return stream.Send(&struct{}{})
+		}
+		if err := runServerInterceptor(t.Context(), interceptor, spec, info, stream, next); err != nil {
 			t.Fatalf("interceptor err = %v, want nil", err)
 		}
-		if h := got.Header().Get(traceResponseHeader); h != "" {
-			t.Errorf("%s = %q, want empty", traceResponseHeader, h)
+		if got := info.ResponseHeader().Get(traceResponseHeader); got != "" {
+			t.Errorf("%s = %q, want empty", traceResponseHeader, got)
 		}
 	})
 
-	t.Run("handler error passthrough", func(t *testing.T) {
-		ctx := trace.ContextWithSpanContext(context.Background(), validSC)
+	t.Run("handler error has no trace response header", func(t *testing.T) {
+		ctx := trace.ContextWithSpanContext(t.Context(), validSC)
+		info := &connect.CallInfo{}
 		wantErr := connect.NewError(connect.CodeInternal, errSentinel.Error()).WithCause(errSentinel)
-		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-			return nil, wantErr
-		})
-		_, err := interceptor(next)(ctx, &struct{}{})
-		if err != wantErr {
-			t.Errorf("interceptor err = %v, want the handler's error unchanged", err)
+		next := func(context.Context, connect.Spec, connect.ServerStream) error {
+			return wantErr
+		}
+		if got := runServerInterceptor(ctx, interceptor, spec, info, &fakeServerStream{}, next); got != wantErr {
+			t.Errorf("interceptor err = %v, want the handler's error unchanged", got)
+		}
+		if got := info.ResponseHeader().Get(traceResponseHeader); got != "" {
+			t.Errorf("error response %s = %q, want empty", traceResponseHeader, got)
+		}
+	})
+
+	t.Run("send followed by handler error has no trace response header", func(t *testing.T) {
+		ctx := trace.ContextWithSpanContext(t.Context(), validSC)
+		info := &connect.CallInfo{}
+		sendErr := errors.New("failed to send")
+		stream := &fakeServerStream{}
+		next := func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+			if err := stream.Send(&struct{}{}); err != nil {
+				return err
+			}
+			return sendErr
+		}
+		if got := runServerInterceptor(ctx, interceptor, spec, info, stream, next); got != sendErr {
+			t.Errorf("interceptor err = %v, want handler error", got)
+		}
+		if got := info.ResponseHeader().Get(traceResponseHeader); got != "" {
+			t.Errorf("error response %s = %q, want empty", traceResponseHeader, got)
+		}
+		if len(stream.response) != 0 {
+			t.Errorf("sent %d responses before handler succeeded, want none", len(stream.response))
 		}
 	})
 }
@@ -186,14 +247,12 @@ func TestSessionIDInterceptor(t *testing.T) {
 		t.Helper()
 		rec := tracetest.NewSpanRecorder()
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
-		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
-
-		req := &struct{}{}
-		ctx, info := connect.NewClientContext(ctx)
-		if set {
-			info.RequestHeader().Set("X-POSTHOG-SESSION-ID", header)
-		}
-		if _, err := interceptor(passthrough)(ctx, req); err != nil {
+		ctx, span := tp.Tracer("test").Start(t.Context(), "rpc")
+		info := serverCallInfo(header, set)
+		spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: "/test.Service/Call"}
+		if err := runServerInterceptor(ctx, interceptor, spec, info, &fakeServerStream{}, func(context.Context, connect.Spec, connect.ServerStream) error {
+			return nil
+		}); err != nil {
 			t.Fatalf("interceptor: %v", err)
 		}
 		span.End()
@@ -277,38 +336,32 @@ func TestSessionIDInterceptor(t *testing.T) {
 	t.Run("no active span is a no-op, not a panic", func(t *testing.T) {
 		// The provider-absent path: SpanFromContext returns a non-recording
 		// span, and stamping it must be harmless.
-		req := &struct{}{}
-		req.Header().Set("X-POSTHOG-SESSION-ID", "sess-noop")
-		if _, err := interceptor(passthrough)(context.Background(), req); err != nil {
+		info := serverCallInfo("sess-noop", true)
+		spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: "/test.Service/Call"}
+		if err := runServerInterceptor(context.Background(), interceptor, spec, info, &fakeServerStream{}, func(context.Context, connect.Spec, connect.ServerStream) error {
+			return nil
+		}); err != nil {
 			t.Fatalf("interceptor with no span: %v", err)
 		}
 	})
 }
 
-// TestSessionIDInterceptorStampOrdering pins WHEN the stamp happens, which the
-// value-handling subtests above cannot see: they read the ended span, and both
-// a before-handler and an after-handler stamp leave the attribute there.
+// TestSessionIDInterceptorStampOrdering pins that session.id is attached before
+// the handler runs, including handlers that return errors.
 func TestSessionIDInterceptorStampOrdering(t *testing.T) {
 	interceptor := NewSessionIDInterceptor()
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: "/test.Service/Call"}
 
-	t.Run("stamps before the handler runs, so an erroring RPC keeps the key", func(t *testing.T) {
-		// The traces most worth pivoting to from a product funnel are the
-		// failures, so the key must not depend on the handler succeeding.
+	t.Run("stamps before an erroring handler", func(t *testing.T) {
 		rec := tracetest.NewSpanRecorder()
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
-		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
-
-		req := &struct{}{}
-		ctx, info := connect.NewClientContext(ctx)
-		info.RequestHeader().Set("X-POSTHOG-SESSION-ID", "sess-err")
-		failing := func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-			return nil, errSentinel
-		}
-		if _, err := interceptor(failing)(ctx, req); err != errSentinel {
-			t.Fatalf("interceptor swallowed the handler error: %v", err)
+		ctx, span := tp.Tracer("test").Start(t.Context(), "rpc")
+		info := serverCallInfo("sess-err", true)
+		failing := func(context.Context, connect.Spec, connect.ServerStream) error { return errSentinel }
+		if err := runServerInterceptor(ctx, interceptor, spec, info, &fakeServerStream{}, failing); err != errSentinel {
+			t.Fatalf("interceptor err = %v, want handler error", err)
 		}
 		span.End()
-
 		var got []string
 		for _, attr := range rec.Ended()[0].Attributes() {
 			if attr.Key == "session.id" {
@@ -316,50 +369,38 @@ func TestSessionIDInterceptorStampOrdering(t *testing.T) {
 			}
 		}
 		if len(got) != 1 || got[0] != "sess-err" {
-			t.Fatalf("session.id = %v on a failed RPC, want it stamped anyway", got)
+			t.Fatalf("session.id = %v on a failed RPC, want [sess-err]", got)
 		}
 	})
 
-	t.Run("the key is already on the span WHILE the handler runs", func(t *testing.T) {
-		// The subtest above proves an erroring RPC keeps the key, but it cannot
-		// tell "stamped before next" from "stamped unconditionally after next" —
-		// both leave the attribute on the ended span. This one pins the ordering
-		// itself by reading the LIVE span from inside the handler, which is the
-		// property the interceptor's doc comment actually claims. It matters for
-		// any handler, sampler, or span processor that reads session.id while the
-		// span is open: under a post-handler stamp they would all see nothing.
+	t.Run("the key is visible while the handler runs", func(t *testing.T) {
 		rec := tracetest.NewSpanRecorder()
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
-		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
-
-		req := &struct{}{}
-		ctx, info := connect.NewClientContext(ctx)
-		info.RequestHeader().Set("X-POSTHOG-SESSION-ID", "sess-live")
-
+		ctx, span := tp.Tracer("test").Start(t.Context(), "rpc")
+		info := serverCallInfo("sess-live", true)
 		var seen []string
-		observing := func(hctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		observing := func(hctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
 			live := trace.SpanFromContext(hctx)
 			if !live.IsRecording() {
-				t.Fatal("handler span is not recording; the observation would be vacuous")
+				t.Fatal("handler span is not recording; observation would be vacuous")
 			}
 			ro, ok := live.(sdktrace.ReadOnlySpan)
 			if !ok {
-				t.Fatal("handler span is not a ReadOnlySpan; cannot observe live attributes")
+				t.Fatal("handler span is not a ReadOnlySpan")
 			}
 			for _, attr := range ro.Attributes() {
 				if attr.Key == "session.id" {
 					seen = append(seen, attr.Value.AsString())
 				}
 			}
-			return &struct{}{}, nil
+			return nil
 		}
-		if _, err := interceptor(observing)(ctx, req); err != nil {
+		if err := runServerInterceptor(ctx, interceptor, spec, info, &fakeServerStream{}, observing); err != nil {
 			t.Fatalf("interceptor: %v", err)
 		}
 		span.End()
-
 		if len(seen) != 1 || seen[0] != "sess-live" {
-			t.Fatalf("session.id visible inside the handler = %v, want [sess-live]: the stamp must happen BEFORE next, not after", seen)
+			t.Fatalf("session.id visible inside handler = %v, want [sess-live]", seen)
 		}
 	})
 }

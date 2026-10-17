@@ -445,9 +445,8 @@ func (c *capturePublish) PublishEvents(_ context.Context, stream compassv1intern
 			}
 			return nil, err
 		}
-		c.frames <- stream.Msg()
+		c.frames <- msg
 	}
-
 	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
@@ -522,7 +521,7 @@ func (c *capturePublish) FetchSessionBlobs(_ context.Context, req *compassv1inte
 // sendEmptyAgentConfig streams the unconfigured-fleet bundle (a lone empty
 // version frame) — the FetchAgentConfig response the provision-path fixtures
 // that don't exercise config need so Materialize succeeds with an empty mount.
-func sendEmptyAgentConfig(stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+func sendEmptyAgentConfig(stream compassv1internalconnect.RunnerServiceFetchAgentConfigServerStream) error {
 	return stream.Send(versionFrame(""))
 }
 
@@ -691,9 +690,10 @@ func h2cHTTPClient(t *testing.T) *http.Client {
 // server and returns a live generated client to it. Torn down via t.Cleanup.
 func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerServiceHandler) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(svc)
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

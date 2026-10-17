@@ -100,10 +100,11 @@ func TestNetworkDoorCommsActorIsBearerCallerNotAdmin(t *testing.T) {
 	// the bearer resolve and the admin gate and reaches the comms handler.
 	client := newTLSCommsClient(t, addr, pool)
 	req := &compassv1.CreateChannelGroupRequest{Name: "caller-space"}
-	req.Header().Set("Authorization", "Bearer "+memberTok)
 	rctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	resp, err := client.CreateChannelGroup(rctx, req)
+	rpcCtx, info := connect.NewClientContext(rctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+memberTok)
+	resp, err := client.CreateChannelGroup(rpcCtx, req)
 	if err != nil {
 		t.Fatalf("member bearer CreateChannelGroup over the network door: %v", err)
 	}

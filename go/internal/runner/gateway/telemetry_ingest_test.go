@@ -33,10 +33,12 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // --- capture upstream (EventRelay) -------------------------------------------
@@ -70,18 +72,17 @@ func (c *capturePublish) PublishEvents(_ context.Context, stream compassv1intern
 			streamErr = err
 			break
 		}
-		c.frames <- stream.Msg()
+		c.frames <- msg
 	}
 	if errors.Is(streamErr, io.EOF) {
 		streamErr = nil
 	}
-	err := streamErr
 	select {
 	case c.ended <- struct{}{}:
 	default:
 	}
-	if err != nil {
-		return nil, err
+	if streamErr != nil {
+		return nil, streamErr
 	}
 	return &compassv1internal.PublishEventsResponse{}, nil
 }
@@ -124,9 +125,10 @@ func h2cHTTPClient(t *testing.T) *http.Client {
 // NewGateway. Torn down via t.Cleanup.
 func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerServiceHandler) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(svc)
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -141,9 +143,10 @@ func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerSer
 // delivered-or-erred contract must surface — no request-ctx coincidence.
 func newClosedRunnerServiceServer(t *testing.T) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(newCapturePublish())
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, newCapturePublish())
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -158,9 +161,15 @@ func newClosedRunnerServiceServer(t *testing.T) compassv1internalconnect.RunnerS
 // to Publish and for the real over-limit bound.
 func newAgentGatewayServer(t *testing.T, g *Gateway) compassv1internalconnect.AgentGatewayClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
+
+	ic, err := otelconnect.NewServerInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
+	}
+	server := connect.NewServer(otelx.HandlerInterceptors(ic))
+	compassv1internalconnect.RegisterAgentGatewayHandler(server, g)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, agentGatewayHandlerOptions()...)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -710,9 +719,8 @@ func (s *stallFirstPublish) PublishEvents(ctx context.Context, stream compassv1i
 			}
 			return nil, err
 		}
-		s.frames <- stream.Msg()
+		s.frames <- msg
 	}
-
 	return &compassv1internal.PublishEventsResponse{}, nil
 }
 
@@ -784,9 +792,8 @@ func (c *taggedPublish) PublishEvents(_ context.Context, stream compassv1interna
 			}
 			return nil, err
 		}
-		c.frames <- taggedFrame{stream: id, req: stream.Msg()}
+		c.frames <- taggedFrame{stream: id, req: msg}
 	}
-
 	return &compassv1internal.PublishEventsResponse{}, nil
 }
 

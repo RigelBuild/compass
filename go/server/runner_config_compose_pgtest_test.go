@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
+	"io"
 	"math/rand/v2"
 	"path/filepath"
 	"testing"
@@ -90,7 +92,7 @@ func buildValidConfigBundle(t *testing.T) []byte {
 // carry the tarball in receive order, and chunkFrames counts the chunk frames so
 // a caller can assert the bundle actually streamed in more than one. Fails on a
 // chunk before the version frame.
-func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compassv1internal.FetchAgentConfigResponse]) (string, []byte, int) {
+func drainConfigStream(t *testing.T, stream compassv1internalconnect.RunnerServiceFetchAgentConfigClientStream) (string, []byte, int) {
 	t.Helper()
 	var (
 		version     string
@@ -98,21 +100,25 @@ func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compa
 		bundle      []byte
 		chunkFrames int
 	)
-	for stream.Receive() {
-		switch frame := stream.Msg().GetFrame().(type) {
+	for {
+		frame, err := stream.Receive()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("FetchAgentConfig stream: %v", err)
+		}
+		switch payload := frame.GetFrame().(type) {
 		case *compassv1internal.FetchAgentConfigResponse_Version:
-			version = frame.Version
+			version = payload.Version
 			gotVersion = true
 		case *compassv1internal.FetchAgentConfigResponse_Chunk:
 			if !gotVersion {
 				t.Fatal("received a chunk frame before the version frame")
 			}
 			chunkFrames++
-			bundle = append(bundle, frame.Chunk...)
+			bundle = append(bundle, payload.Chunk...)
 		}
-	}
-	if err := stream.Err(); err != nil {
-		t.Fatalf("FetchAgentConfig stream: %v", err)
 	}
 	return version, bundle, chunkFrames
 }
@@ -171,7 +177,7 @@ func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		httpClient, "https://"+addr,
 		connecthttp.WithReadMaxBytes(0),
-	), runnerBearer(token),
+	), runnerBearer(token).ClientInterceptor,
 	))
 
 	fctx, cancel := context.WithTimeout(ctx, testTimeout)

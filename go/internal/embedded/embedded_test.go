@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -86,10 +87,13 @@ func serveWhoAmI(t *testing.T, srv *stubWhoAmIServer) string {
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}
-	_, handler := compassv1connect.NewCompassServiceHandler(srv)
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, srv)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server)
 	p := new(http.Protocols)
 	p.SetUnencryptedHTTP2(true)
-	httpSrv := &http.Server{Handler: handler, Protocols: p}
+	httpSrv := &http.Server{Handler: mux, Protocols: p}
 	go func() { _ = httpSrv.Serve(ln) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)

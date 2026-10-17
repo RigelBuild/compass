@@ -193,9 +193,9 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 		t.Fatal("runner_enrolled = true before any Runner enrolled")
 	}
 
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	resolve := func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		if presented != "runner-tok" || want != store.SubjectRunner {
@@ -203,9 +203,8 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 		}
 		return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, nil
 	}
-	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	runnerhub.Mount(mux, hub, resolve, nil, nil, otelIC)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -58,7 +59,8 @@ func drainReplayAsActor(t *testing.T, h streamHarness, actor store.AccountID, ca
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	req := &compassv1.SubscribeCommsRequest{SinceSeq: 0}
-	req.Header().Set(commsTestActorHeader, string(actor))
+	connectCtx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set(commsTestActorHeader, string(actor))
 
 	type result struct {
 		evts []*compassv1.SubscribeCommsResponse
@@ -66,7 +68,7 @@ func drainReplayAsActor(t *testing.T, h streamHarness, actor store.AccountID, ca
 	}
 	out := make(chan result, 1)
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, req)
+		stream, err := h.client.SubscribeComms(connectCtx, req)
 		if err != nil {
 			out <- result{err: err}
 			return

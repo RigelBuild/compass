@@ -73,9 +73,10 @@ func newStreamHarness(t *testing.T) streamHarness {
 	}
 	svc := NewComms(t.Context(), st, bus, nil, admin.ID)
 
-	path, handler := compassv1connect.NewCommsServiceHandler(svc)
+	server := connect.NewServer()
+	compassv1connect.RegisterCommsServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewServer(withActorHeader(mux))
 	t.Cleanup(srv.Close)
 
@@ -107,20 +108,22 @@ func subscribeFirst(t *testing.T, h streamHarness, actor store.AccountID, req *c
 	t.Cleanup(cancel)
 	out := make(chan firstEvent, 1)
 	connectReq := req
+	connectCtx, info := connect.NewClientContext(ctx)
 	if actor != "" {
-		connectReq.Header().Set(commsTestActorHeader, string(actor))
+		info.RequestHeader().Set(commsTestActorHeader, string(actor))
 	}
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, connectReq)
+		stream, err := h.client.SubscribeComms(connectCtx, connectReq)
 		if err != nil {
 			out <- firstEvent{err: err}
 			return
 		}
-		if !stream.Receive() {
-			out <- firstEvent{err: stream.Err()}
+		msg, err := stream.Receive()
+		if err != nil {
+			out <- firstEvent{err: err}
 			return
 		}
-		out <- firstEvent{msg: stream.Msg()}
+		out <- firstEvent{msg: msg}
 	}()
 	return out
 }
@@ -139,31 +142,34 @@ func firstEventAfterBoundary(t *testing.T, h streamHarness, actor store.AccountI
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	out := make(chan firstEvent, 1)
 	connectReq := req
+	connectCtx, info := connect.NewClientContext(ctx)
+	out := make(chan firstEvent, 1)
 	if actor != "" {
-		connectReq.Header().Set(commsTestActorHeader, string(actor))
+		info.RequestHeader().Set(commsTestActorHeader, string(actor))
 	}
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, connectReq)
+		stream, err := h.client.SubscribeComms(connectCtx, connectReq)
 		if err != nil {
 			out <- firstEvent{err: err}
 			return
 		}
-		if !stream.Receive() {
-			out <- firstEvent{err: stream.Err()}
+		boundary, err := stream.Receive()
+		if err != nil {
+			out <- firstEvent{err: err}
 			return
 		}
-		if boundary := stream.Msg(); boundary.GetSeq() != 0 || boundary.GetPayload() != nil {
+		if boundary.GetSeq() != 0 || boundary.GetPayload() != nil {
 			t.Errorf("first frame = seq %d payload %T, want the snapshot-boundary frame (seq 0, no payload)", boundary.GetSeq(), boundary.GetPayload())
 			out <- firstEvent{err: fmt.Errorf("first frame was not the snapshot boundary: seq %d payload %T", boundary.GetSeq(), boundary.GetPayload())}
 			return
 		}
-		if !stream.Receive() {
-			out <- firstEvent{err: stream.Err()}
+		msg, err := stream.Receive()
+		if err != nil {
+			out <- firstEvent{err: err}
 			return
 		}
-		out <- firstEvent{msg: stream.Msg()}
+		out <- firstEvent{msg: msg}
 	}()
 	return out
 }

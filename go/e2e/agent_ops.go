@@ -6,12 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
 	"connectrpc.com/connect/v2"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -103,18 +105,18 @@ func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID str
 // keeps ctx alive across the post). The RECEIVE loop is bounded separately in
 // AwaitTurnSettled via its own derived settleTimeout, mirroring how
 // SubscribeComms opens under the caller's ctx and AwaitDelivery bounds the read.
-func (f *Fixture) OpenSessionTail(ctx context.Context, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
+func (f *Fixture) OpenSessionTail(ctx context.Context, sessionID string) (compassv1connect.CompassServiceSubscribeAgentSessionClientStream, error) {
 	return f.OpenSessionTailAs(ctx, f.Compass(), sessionID)
 }
 
 // OpenSessionTailAs opens the tail as client's account, which must be a member
 // of the agent's home channel (another owner's agent is invisible to admin).
-func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceClient, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
+func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceClient, sessionID string) (compassv1connect.CompassServiceSubscribeAgentSessionClientStream, error) {
 	stream, err := client.SubscribeAgentSession(ctx, &compassv1.SubscribeAgentSessionRequest{
 		SessionId: sessionID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("SubscribeAgentSession RPC: %w", err)
+		return compassv1connect.CompassServiceSubscribeAgentSessionClientStream{}, fmt.Errorf("SubscribeAgentSession RPC: %w", err)
 	}
 	return stream, nil
 }
@@ -138,7 +140,7 @@ func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceCl
 // the derived deadline — the exact shape AwaitDelivery uses to bound a
 // caller-ctx stream. So a wedged stream fails visibly here rather than blocking
 // to the go-test timeout.
-func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerStreamForClient[compassv1.AgentSessionFrame]) error {
+func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream compassv1connect.CompassServiceSubscribeAgentSessionClientStream) error {
 	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 	defer cancel()
 
@@ -148,8 +150,17 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 	out := make(chan error, 1)
 	go func() {
 		workingSeen := false
-		for stream.Receive() {
-			st := stream.Msg().GetState()
+		for {
+			frame, err := stream.Receive()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					out <- errors.New("frame stream ended before reaching a WORKING→READY settle")
+				} else {
+					out <- fmt.Errorf("SubscribeAgentSession stream: %w", err)
+				}
+				return
+			}
+			st := frame.GetState()
 			switch st {
 			case compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING:
 				workingSeen = true
@@ -165,11 +176,6 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 				compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED:
 			}
 		}
-		if err := stream.Err(); err != nil {
-			out <- fmt.Errorf("SubscribeAgentSession stream: %w", err)
-			return
-		}
-		out <- errors.New("frame stream ended before reaching a WORKING→READY settle")
 	}()
 
 	select {
@@ -227,7 +233,7 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 // exclusion — a later sweep-redelivered deliver (settle.go builds a deliverOp for
 // every owed message) is out of window and legitimately unobserved. The method
 // keeps no internal retention; the surface stays exactly this one signature.
-func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.ServerStreamForClient[compassv1.AgentSessionFrame], match func(opKind, messageID string) bool) (opKind string, err error) {
+func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream compassv1connect.CompassServiceSubscribeAgentSessionClientStream, match func(opKind, messageID string) bool) (opKind string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 	defer cancel()
 
@@ -240,8 +246,17 @@ func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.Se
 	// once and exits, no leak past the caller's Close.
 	out := make(chan received, 1)
 	go func() {
-		for stream.Receive() {
-			inj := stream.Msg().GetEvent().GetSessionInjection()
+		for {
+			frame, err := stream.Receive()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					out <- received{err: errors.New("frame stream ended before a matching SessionInjection arrived")}
+				} else {
+					out <- received{err: fmt.Errorf("SubscribeAgentSession stream: %w", err)}
+				}
+				return
+			}
+			inj := frame.GetEvent().GetSessionInjection()
 			if inj == nil {
 				continue
 			}
@@ -252,13 +267,7 @@ func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.Se
 				return
 			}
 		}
-		if err := stream.Err(); err != nil {
-			out <- received{err: fmt.Errorf("SubscribeAgentSession stream: %w", err)}
-			return
-		}
-		out <- received{err: errors.New("frame stream ended before a matching SessionInjection arrived")}
 	}()
-
 	select {
 	case r := <-out:
 		return r.opKind, r.err

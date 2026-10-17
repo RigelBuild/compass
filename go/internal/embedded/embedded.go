@@ -271,7 +271,15 @@ func WhoAmIOverUDS(ctx context.Context, socket string) (string, error) {
 	}
 	defer transport.CloseIdleConnections()
 
-	client := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, "http://unix", connecthttp.WithReadMaxBytes(0))))
+	client := compassv1connect.NewCompassServiceClient(
+		connect.NewClient(
+			connecthttp.NewTransport(
+				&http.Client{Transport: transport},
+				"http://unix",
+				connecthttp.WithReadMaxBytes(0),
+			),
+		),
+	)
 	resp, err := client.WhoAmI(ctx, &compassv1.WhoAmIRequest{})
 	if err != nil {
 		return "", err

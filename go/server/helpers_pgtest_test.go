@@ -22,6 +22,23 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
+func clientContextWithHeaders(ctx context.Context, headers http.Header) context.Context {
+	ctx, info := connect.NewClientContext(ctx)
+	for name, values := range headers {
+		for _, value := range values {
+			info.RequestHeader().Add(name, value)
+		}
+	}
+	return ctx
+}
+
+func clientContextWithBearer(ctx context.Context, bearer string) context.Context {
+	if bearer == "" {
+		return ctx
+	}
+	return clientContextWithHeaders(ctx, http.Header{"Authorization": {bearer}})
+}
+
 // socketReadyTimeout bounds the wait for Serve to bind its Unix socket. It is
 // deliberately separate from — and larger than — testTimeout (the RPC/stream
 // safety net, helpers_test.go): under full-suite -race load the Serve goroutine
@@ -89,18 +106,14 @@ func newUDSCommsClient(t *testing.T, socketPath string) compassv1connect.CommsSe
 	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "http://unix", connecthttp.WithReadMaxBytes(0))))
 }
 
-// newH2CTestServerWithInterceptors stands up the compass.v1 handler on an h2c
-// httptest server with a production interceptor chain mounted — the network
-// door's bearer + admin-gate chain, driven over a real connect client so the
-// AdminGate reads a populated Spec().Procedure (the integration seam a
-// hand-built unary request cannot exercise). Returns the base URL; torn down via
-// t.Cleanup. Lives in the pgtest lane because its only caller is the store-backed
-// network_door_test.go; it builds on the tag-neutral cleartextHTTP2 helper.
-func newH2CTestServerWithInterceptors(t *testing.T, svc *service, interceptors ...connect.Interceptor) string {
+// newH2CTestServerWithInterceptors stands up CompassService on h2c with its
+// production interceptor chain. It returns the base URL for the wire test.
+func newH2CTestServerWithInterceptors(t *testing.T, svc *service, interceptors ...connect.ServerInterceptor) string {
 	t.Helper()
-	path, handler := compassv1connect.NewCompassServiceHandler(svc, connect.WithInterceptors(interceptors...))
+	server := connect.NewServer(interceptors...)
+	compassv1connect.RegisterCompassServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -108,16 +121,13 @@ func newH2CTestServerWithInterceptors(t *testing.T, svc *service, interceptors .
 	return srv.URL
 }
 
-// newSecretsH2CServer stands up the SecretsService handler on an h2c httptest
-// server with the given interceptor chain (the network door's bearer + admin-gate
-// chain), driven over a real connect client so the handler reads a populated
-// caller identity the shipped door supplies. Returns the base URL; torn down via
-// t.Cleanup.
-func newSecretsH2CServer(t *testing.T, svc compassv1connect.SecretsServiceHandler, interceptors ...connect.Interceptor) string {
+// newSecretsH2CServer stands up SecretsService on h2c with its interceptor chain.
+func newSecretsH2CServer(t *testing.T, svc compassv1connect.SecretsServiceHandler, interceptors ...connect.ServerInterceptor) string {
 	t.Helper()
-	path, handler := compassv1connect.NewSecretsServiceHandler(svc, connect.WithInterceptors(interceptors...))
+	server := connect.NewServer(interceptors...)
+	compassv1connect.RegisterSecretsServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

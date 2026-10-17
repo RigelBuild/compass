@@ -53,9 +53,9 @@ func (g *Gateway) Forge(
 		Call:      req,
 	})
 	if err != nil {
-		// A transport failure on the Runner->Server leg. Surfaced as a Connect
-		// error the agent renders in-band; the turn is not torn down.
-		return nil, err
+		// A transport failure on the Runner->Server leg. Surface the upstream
+		// status and message as a local gateway verdict.
+		return nil, relayedError(err)
 	}
 	// A well-formed RelayForgeCallResponse always carries a result; a nil result
 	// is a malformed Server response, surfaced as a Connect error (never a

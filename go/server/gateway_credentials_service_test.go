@@ -12,6 +12,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/gatewaycred"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -112,8 +113,8 @@ func newGatewayServiceFixture(t *testing.T) gatewayServiceTestFixture {
 func gatewayServiceContext(t *testing.T) context.Context {
 	t.Helper()
 	token := "service-token-for-gateway-tests"
-	request := &compassv1internal.ListCredentialPoolRequest{}
-	request.Header().Set("Authorization", "Bearer "+token)
+	info := &connect.CallInfo{}
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	interceptor := auth.ServiceBearerInterceptor(func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		if presented != token || want != store.SubjectService {
 			t.Fatalf("service resolver args = (%q, %v), want gateway token and SubjectService", presented, want)
@@ -121,11 +122,13 @@ func gatewayServiceContext(t *testing.T) context.Context {
 		return store.Subject{Kind: store.SubjectService, ID: auth.LLMGatewayServiceID}, nil
 	}, auth.LLMGatewayServiceID)
 	var captured gatewayServiceContextCapture
-	_, err := interceptor(func(requestCtx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		captured.capture(requestCtx)
-		return &compassv1internal.ListCredentialPoolResponse{}, nil
-	})(t.Context(), request)
-	if err != nil {
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: compassv1internalconnect.GatewayCredentialsListCredentialPoolProcedure}
+	server := connect.NewServer(interceptor)
+	server.Register(connect.Method{Spec: spec, Handler: func(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
+		captured.capture(ctx)
+		return nil
+	}})
+	if err := server.Call(t.Context(), spec.Procedure, info, testServerStream{}); err != nil {
 		t.Fatalf("authenticate test request: %v", err)
 	}
 	if _, ok := auth.ServiceSubjectFrom(captured.ctx); !ok {
@@ -137,23 +140,25 @@ func gatewayServiceContext(t *testing.T) context.Context {
 func TestGatewayCredentialsResolveCallerRequiresGatewayServiceID(t *testing.T) {
 	fixture := newGatewayServiceFixture(t)
 	token := "other-service-token"
-	request := &compassv1internal.ListCredentialPoolRequest{}
-	request.Header().Set("Authorization", "Bearer "+token)
+	var capture gatewayServiceContextCapture
+	info := &connect.CallInfo{}
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	interceptor := auth.ServiceBearerInterceptor(func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		if presented != token || want != store.SubjectService {
 			t.Fatalf("service resolver args = (%q, %v), want other-service token and SubjectService", presented, want)
 		}
 		return store.Subject{Kind: store.SubjectService, ID: "other-service"}, nil
 	}, "other-service")
-	var capture gatewayServiceContextCapture
-	_, err := interceptor(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: compassv1internalconnect.GatewayCredentialsListCredentialPoolProcedure}
+	server := connect.NewServer(interceptor)
+	server.Register(connect.Method{Spec: spec, Handler: func(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
 		capture.capture(ctx)
-		return &compassv1internal.ListCredentialPoolResponse{}, nil
-	})(t.Context(), request)
-	if err != nil {
+		return nil
+	}})
+	if err := server.Call(t.Context(), spec.Procedure, info, testServerStream{}); err != nil {
 		t.Fatalf("authenticate other service: %v", err)
 	}
-	_, _, err = fixture.svc.resolveCaller(capture.ctx, fixture.tokens.validAgentToken(), "ListCredentialPool")
+	_, _, err := fixture.svc.resolveCaller(capture.ctx, fixture.tokens.validAgentToken(), "ListCredentialPool")
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("resolveCaller error = %v, want Unauthenticated", err)
 	}

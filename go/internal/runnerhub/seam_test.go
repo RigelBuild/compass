@@ -27,10 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -193,7 +192,7 @@ type startRoundTrip struct {
 // to open the stream. runner.RunSessions opens its real Sessions stream with the
 // same bootstrap Send (dispatch.go), so this loop mirrors the production client's
 // stream-open, not a test shortcut.
-func runnerSessionsLoop(stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse], done chan<- error) {
+func runnerSessionsLoop(stream compassv1internalconnect.RunnerServiceSessionsClientStream, done chan<- error) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		done <- err
 		return

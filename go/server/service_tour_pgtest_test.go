@@ -24,9 +24,8 @@ func TestNonAdminBearerCanUseTourRPCs(t *testing.T) {
 	t.Cleanup(bus.Close)
 	client := networkDoorHandler(t, newService("tour-test", bus, st, nil, nil, nil, nil), st, admin)
 
-	get := &compassv1.GetTourStateRequest{}
-	get.Header().Set("Authorization", "Bearer "+memberToken)
-	state, err := client.GetTourState(ctx, get)
+	ctx = clientContextWithBearer(ctx, "Bearer "+memberToken)
+	state, err := client.GetTourState(ctx, &compassv1.GetTourStateRequest{})
 	if err != nil {
 		t.Fatalf("non-admin GetTourState: %v", err)
 	}
@@ -34,9 +33,8 @@ func TestNonAdminBearerCanUseTourRPCs(t *testing.T) {
 		t.Fatalf("initial outcome = %v, want unspecified", state.GetOutcome())
 	}
 
-	claim := &compassv1.ClaimTourStartRequest{StepId: "welcome"}
-	claim.Header().Set("Authorization", "Bearer "+memberToken)
-	claimed, err := client.ClaimTourStart(ctx, claim)
+	ctx = clientContextWithBearer(ctx, "Bearer "+memberToken)
+	claimed, err := client.ClaimTourStart(ctx, &compassv1.ClaimTourStartRequest{StepId: "welcome"})
 	if err != nil {
 		t.Fatalf("non-admin ClaimTourStart: %v", err)
 	}
@@ -48,14 +46,13 @@ func TestNonAdminBearerCanUseTourRPCs(t *testing.T) {
 		Outcome: compassv1.TourOutcome_TOUR_OUTCOME_DISMISSED,
 		StepId:  "last-step",
 	}
-	set.Header().Set("Authorization", "Bearer "+memberToken)
+	ctx = clientContextWithBearer(ctx, "Bearer "+memberToken)
 	if _, err := client.SetTourState(ctx, set); err != nil {
 		t.Fatalf("non-admin SetTourState: %v", err)
 	}
 
-	verify := &compassv1.GetTourStateRequest{}
-	verify.Header().Set("Authorization", "Bearer "+memberToken)
-	state, err = client.GetTourState(ctx, verify)
+	ctx = clientContextWithBearer(ctx, "Bearer "+memberToken)
+	state, err = client.GetTourState(ctx, &compassv1.GetTourStateRequest{})
 	if err != nil {
 		t.Fatalf("non-admin GetTourState after SetTourState: %v", err)
 	}

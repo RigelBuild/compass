@@ -472,13 +472,12 @@ const accountIDHexLen = 32
 
 func mountRunnerServer(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.TokenResolver) string {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	runnerhub.Mount(mux, hub, resolve, nil, nil, otelIC)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = runnertest.CleartextH2()
 	srv.Start()

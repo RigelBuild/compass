@@ -45,10 +45,9 @@ func TestRevokeTokenRoundTrip(t *testing.T) {
 
 	revoke := func(bearer, token string) error {
 		req := &compassv1.RevokeTokenRequest{Token: token}
-		req.Header().Set("Authorization", "Bearer "+bearer)
 		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 		defer cancel()
-		_, err := client.RevokeToken(rpcCtx, req)
+		_, err := client.RevokeToken(clientContextWithBearer(rpcCtx, "Bearer "+bearer), req)
 		return err
 	}
 

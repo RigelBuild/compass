@@ -86,7 +86,6 @@ func newAgentSessionFixture(t *testing.T) agentSessionFixture {
 	svc := newService("test", bus, st, nil, nil, nil, tail)
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(admin.ID),
 	)
 	return agentSessionFixture{
@@ -113,10 +112,11 @@ func subscribeErr(t *testing.T, client compassv1connect.CompassServiceClient, be
 	stream, err := client.SubscribeAgentSession(ctx, req)
 	if err == nil {
 		defer func() { _ = stream.Close() }()
-		if recvAgentFrameOrTimeout(t, stream) {
-			t.Fatalf("a rejected SubscribeAgentSession stream delivered a frame: %+v", stream.Msg())
+		frame, receiveErr := receiveAgentFrameOrTimeout(t, stream)
+		if receiveErr == nil {
+			t.Fatalf("a rejected SubscribeAgentSession stream delivered a frame: %+v", frame)
 		}
-		err = stream.Err()
+		err = receiveErr
 	}
 	ce, ok := errors.AsType[*connect.Error](err)
 	if !ok {
@@ -237,11 +237,11 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 	// First frame is ALWAYS the leading registration-ack: session_id stamped, no
 	// event, UNSPECIFIED state. It carries no history — a pure happens-before
 	// marker — so consume and assert it before the relayed trace frame.
-	if !recvAgentFrameOrTimeout(t, stream) {
+	ack, receiveErr := receiveAgentFrameOrTimeout(t, stream)
+	if receiveErr != nil {
 		cancel()
-		t.Fatalf("authorized subscribe delivered no leading ack: first Receive = false, err = %v", stream.Err())
+		t.Fatalf("authorized subscribe delivered no leading ack: %v", receiveErr)
 	}
-	ack := stream.Msg()
 	if ack.GetSessionId() != f.sessionID {
 		cancel()
 		t.Fatalf("ack session_id = %q, want %q (stamped from the routing key)", ack.GetSessionId(), f.sessionID)
@@ -256,11 +256,11 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 	}
 
 	// Second frame is the relayed live trace, faithfully repackaged.
-	if !recvAgentFrameOrTimeout(t, stream) {
+	got, receiveErr := receiveAgentFrameOrTimeout(t, stream)
+	if receiveErr != nil {
 		cancel()
-		t.Fatalf("authorized subscribe delivered no relayed frame: second Receive = false, err = %v", stream.Err())
+		t.Fatalf("authorized subscribe delivered no relayed frame: %v", receiveErr)
 	}
-	got := stream.Msg()
 	if got.GetSessionId() != f.sessionID {
 		cancel()
 		t.Fatalf("frame session_id = %q, want %q (stamped from the routing key)", got.GetSessionId(), f.sessionID)
@@ -292,26 +292,24 @@ func TestSubscribeAgentSessionSendsLeadingRegistrationAck(t *testing.T) {
 	f := newAgentSessionFixture(t)
 
 	req := &compassv1.SubscribeAgentSessionRequest{SessionId: f.sessionID}
-	req.Header().Set("Authorization", "Bearer "+f.ownerToken)
-	stream, err := f.client.SubscribeAgentSession(t.Context(), req)
+	ctx := clientContextWithBearer(t.Context(), "Bearer "+f.ownerToken)
+	stream, err := f.client.SubscribeAgentSession(ctx, req)
 	if err != nil {
 		t.Fatalf("authorized owner SubscribeAgentSession: %v", err)
 	}
 	defer func() { _ = stream.Close() }() // test cleanup; Close error not actionable
 
-	// No relay is ever issued: the ONLY frame that can arrive is the leading ack.
-	// A handler without the ack Send blocks here forever → deadline red.
-	if !recvAgentFrameOrTimeout(t, stream) {
-		t.Fatalf("no leading registration-ack: first Receive = false, err = %v", stream.Err())
+	frame, receiveErr := receiveAgentFrameOrTimeout(t, stream)
+	if receiveErr != nil {
+		t.Fatalf("no leading registration-ack: %v", receiveErr)
 	}
-	ack := stream.Msg()
-	if ack.GetSessionId() != f.sessionID {
-		t.Fatalf("ack session_id = %q, want %q (stamped from the routing key)", ack.GetSessionId(), f.sessionID)
+	if frame.GetSessionId() != f.sessionID {
+		t.Fatalf("ack session_id = %q, want %q (stamped from the routing key)", frame.GetSessionId(), f.sessionID)
 	}
-	if ack.GetEvent() != nil {
-		t.Fatalf("ack carries an event %v, want nil (the ack is a zero-payload registration marker)", ack.GetEvent())
+	if frame.GetEvent() != nil {
+		t.Fatalf("ack carries an event %v, want nil (the ack is a zero-payload registration marker)", frame.GetEvent())
 	}
-	if st := ack.GetState(); st != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+	if st := frame.GetState(); st != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
 		t.Fatalf("ack state = %v, want UNSPECIFIED (the ack carries no transition)", st)
 	}
 }

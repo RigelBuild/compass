@@ -28,10 +28,9 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -122,7 +121,7 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 // not sent until the client's first Send), then it drains every command the
 // Server pushes and answers each Start with a session id encoding the command's
 // request id, so the dispatcher can prove per-call correlation of the payload.
-func echoSessionsLoop(stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse], done chan<- error) {
+func echoSessionsLoop(stream compassv1internalconnect.RunnerServiceSessionsClientStream, done chan<- error) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		done <- err
 		return

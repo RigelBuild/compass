@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -37,9 +38,10 @@ func TestWhoAmIReflectsAmbientCallerIdentity(t *testing.T) {
 	// interceptor the socket and dev doors mount (serve.go). Built inline (rather
 	// than via the pgtest-lane newH2CTestServerWithInterceptors) so this stays in
 	// the default test lane.
-	path, handler := compassv1connect.NewCompassServiceHandler(svc, connect.WithInterceptors(auth.AmbientIdentity(account)))
+	server := connect.NewServer(auth.AmbientIdentity(account))
+	compassv1connect.RegisterCompassServiceHandler(server, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

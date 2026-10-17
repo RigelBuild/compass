@@ -733,13 +733,12 @@ func provisionWhenSeamLiveE2E(t *testing.T, ctx context.Context, hub *runnerhub.
 // closes AFTER the Sessions loop has been cancelled (see runnerloop.RunSessionsLoop).
 func mountRunnerServerE2E(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.TokenResolver) string {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	runnerhub.Mount(mux, hub, resolve, nil, nil, otelIC)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2() // the server-package helper (serve.go)
 	srv.Start()

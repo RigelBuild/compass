@@ -59,9 +59,9 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 		CORSAllowedOrigin: corsOrigin,
 	}
 	secretsSvc := newSecretsService(st, nil, nil, nil)
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	usageSvc := newUsageService(usage.NewPostgres(st), st)
 	srv, err := buildNetworkServer(
@@ -180,9 +180,9 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 	svc := newService("linear-link-test", bus, st, nil, nil, nil, nil)
 	commsSvc := comms.NewComms(ctx, st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	previousProvider := otel.GetTracerProvider()
 	recorder := tracetest.NewSpanRecorder()

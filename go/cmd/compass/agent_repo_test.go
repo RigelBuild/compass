@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -29,24 +30,24 @@ type fakeAgentRepositoryService struct {
 	gotAuth       string
 }
 
-func (f *fakeAgentRepositoryService) GrantAgentRepository(_ context.Context, req *compassv1.GrantAgentRepositoryRequest) (*compassv1.GrantAgentRepositoryResponse, error) {
-	f.grantRequest, f.gotAuth = req, req.Header().Get("Authorization")
+func (f *fakeAgentRepositoryService) GrantAgentRepository(ctx context.Context, req *compassv1.GrantAgentRepositoryRequest) (*compassv1.GrantAgentRepositoryResponse, error) {
+	f.grantRequest, f.gotAuth = req, requestAuth(ctx)
 	if f.grantErr != nil {
 		return nil, f.grantErr
 	}
 	return &compassv1.GrantAgentRepositoryResponse{Added: f.grantAdded}, nil
 }
 
-func (f *fakeAgentRepositoryService) RevokeAgentRepository(_ context.Context, req *compassv1.RevokeAgentRepositoryRequest) (*compassv1.RevokeAgentRepositoryResponse, error) {
-	f.revokeRequest, f.gotAuth = req, req.Header().Get("Authorization")
+func (f *fakeAgentRepositoryService) RevokeAgentRepository(ctx context.Context, req *compassv1.RevokeAgentRepositoryRequest) (*compassv1.RevokeAgentRepositoryResponse, error) {
+	f.revokeRequest, f.gotAuth = req, requestAuth(ctx)
 	if f.revokeErr != nil {
 		return nil, f.revokeErr
 	}
 	return &compassv1.RevokeAgentRepositoryResponse{Removed: f.revokeRemoved}, nil
 }
 
-func (f *fakeAgentRepositoryService) ListAgentRepositories(_ context.Context, req *compassv1.ListAgentRepositoriesRequest) (*compassv1.ListAgentRepositoriesResponse, error) {
-	f.listRequest, f.gotAuth = req, req.Header().Get("Authorization")
+func (f *fakeAgentRepositoryService) ListAgentRepositories(ctx context.Context, req *compassv1.ListAgentRepositoriesRequest) (*compassv1.ListAgentRepositoriesResponse, error) {
+	f.listRequest, f.gotAuth = req, requestAuth(ctx)
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -55,9 +56,10 @@ func (f *fakeAgentRepositoryService) ListAgentRepositories(_ context.Context, re
 
 func startFakeAgentRepositoryServer(t *testing.T, fake *fakeAgentRepositoryService) compassv1connect.AgentRepositoryServiceClient {
 	t.Helper()
-	path, handler := compassv1connect.NewAgentRepositoryServiceHandler(fake)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	compassv1connect.RegisterAgentRepositoryServiceHandler(server, fake)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	client, err := newAgentRepositoryClient(connConfig{serverAddr: srv.URL, token: "test-token"})

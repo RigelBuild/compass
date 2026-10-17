@@ -54,21 +54,20 @@ func (spanRelayServer) RelayCommsCall(
 
 func newSpanRelayClient(t *testing.T) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	clientInterceptor, err := otelconnect.NewInterceptor()
+	clientInterceptor, err := otelconnect.NewClientInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewClientInterceptor: %v", err)
 	}
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(spanRelayServer{})
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, spanRelayServer{})
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewUnstartedServer(mux)
-	server.Config.Protocols = cleartextHTTP2()
-	server.Start()
-	t.Cleanup(server.Close)
-	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
-		h2cHTTPClient(t), server.URL, connecthttp.WithReadMaxBytes(0),
-	), clientInterceptor,
-	))
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	httpServer := httptest.NewUnstartedServer(mux)
+	httpServer.Config.Protocols = cleartextHTTP2()
+	httpServer.Start()
+	t.Cleanup(httpServer.Close)
+	transport := connecthttp.NewTransport(h2cHTTPClient(t), httpServer.URL, connecthttp.WithReadMaxBytes(0))
+	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(transport, clientInterceptor))
 }
 
 func closeGatewaySocket(t *testing.T, listener *SocketListener) func() {

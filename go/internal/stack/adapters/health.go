@@ -46,7 +46,8 @@ func (p *HealthProber) Probe(ctx context.Context, socketPath string) (stack.Serv
 	}
 	defer transport.CloseIdleConnections()
 
-	client := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, "http://unix", connecthttp.WithReadMaxBytes(0))))
+	httpClient := connecthttp.HTTPClient(&http.Client{Transport: transport})
+	client := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://unix", connecthttp.WithReadMaxBytes(0))))
 	resp, err := client.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		return stack.ServerInfo{}, err

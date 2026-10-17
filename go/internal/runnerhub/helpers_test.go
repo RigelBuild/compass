@@ -635,24 +635,37 @@ func newMountedH2CServerWithConfig(t *testing.T, hub *Hub, resolve TokenResolver
 	return newMountedH2CServerWith(t, hub, resolve, nil, configStore)
 }
 
-// newMountedH2CServerWith mounts the handler with both delegate surfaces (either
-// may be nil) on an httptest h2c server and returns its base URL. The
-// otelconnect interceptor is real (NewMountedHandler forbids nil) but inert:
-// these tests install no tracer provider, so it reads the no-op global.
+// newMountedH2CServerWith mounts the RunnerService on an httptest h2c server
+// with its inert tracing interceptor and returns the base URL.
 func newMountedH2CServerWith(t *testing.T, hub *Hub, resolve TokenResolver, resolver secretResolver, configStore AgentConfigStore) string {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := NewMountedHandler(hub, resolve, resolver, configStore, otelIC)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	Mount(mux, hub, resolve, resolver, configStore, otelIC)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// clientBearer stamps a bearer token on every outbound RPC.
+func clientBearer(token string) connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "runnerhub test client: no call info")
+			}
+			if token != "" {
+				info.RequestHeader().Set("Authorization", "Bearer "+token)
+			}
+			return next(ctx, spec)
+		}
+	}
 }
 
 // newRawRunnerClient builds the real generated RunnerServiceClient dialing
@@ -662,37 +675,7 @@ func newRawRunnerClient(t *testing.T, baseURL, token string) compassv1internalco
 	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		h2cHTTPClient(t), baseURL,
 		connecthttp.WithReadMaxBytes(0),
-	), &clientBearer{token: token},
-	))
-}
-
-// clientBearer stamps a bearer token on every outbound RPC (unary + streaming),
-// mirroring the Runner-side interceptor so the door authenticates the client.
-type clientBearer struct {
-	token string
-}
-
-func (b *clientBearer) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if b.token != "" {
-			req.Header().Set("Authorization", "Bearer "+b.token)
-		}
-		return next(ctx, req)
-	}
-}
-
-func (b *clientBearer) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		conn := next(ctx, spec)
-		if b.token != "" {
-			conn.RequestHeader().Set("Authorization", "Bearer "+b.token)
-		}
-		return conn
-	}
-}
-
-func (b *clientBearer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
+	), clientBearer(token)))
 }
 
 // staticHeader is a minimal header for driving authenticate() directly: it

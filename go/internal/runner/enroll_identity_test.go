@@ -10,8 +10,6 @@ package runner
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +18,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -37,24 +38,45 @@ type recordingEnroll struct {
 	authorization    []string
 }
 
-func (r *recordingEnroll) Enroll(_ context.Context, req *compassv1internal.EnrollRequest) (*compassv1internal.EnrollResponse, error) {
+func (r *recordingEnroll) Enroll(ctx context.Context, req *compassv1internal.EnrollRequest) (*compassv1internal.EnrollResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.req = req
-	r.authorization = append(r.authorization, req.Header().Get("Authorization"))
+	info, ok := connect.CallInfoForServerContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeInternal, "recording enroll: no call info")
+	}
+	r.authorization = append(r.authorization, info.RequestHeader().Get("Authorization"))
 	return &compassv1internal.EnrollResponse{
 		Reattached: false,
 		RunnerId:   r.assignedRunnerID,
 	}, nil
 }
 
-func (r *recordingEnroll) FetchSecrets(_ context.Context, req *compassv1internal.FetchSecretsRequest) (*compassv1internal.FetchSecretsResponse, error) {
+func (r *recordingEnroll) FetchSecrets(ctx context.Context, req *compassv1internal.FetchSecretsRequest) (*compassv1internal.FetchSecretsResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.authorization = append(r.authorization, req.Header().Get("Authorization"))
+	info, ok := connect.CallInfoForServerContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeInternal, "recording fetch secrets: no call info")
+	}
+	r.authorization = append(r.authorization, info.RequestHeader().Get("Authorization"))
 	return &compassv1internal.FetchSecretsResponse{}, nil
 }
 
+// recordingEnrollServer stands up an h2c RunnerService for a Dial test.
+func recordingEnrollServer(t *testing.T, rec *recordingEnroll) string {
+	t.Helper()
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterRunnerServiceHandler(server, rec)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = cleartextHTTP2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
 func (r *recordingEnroll) authRequests() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -65,20 +87,6 @@ func (r *recordingEnroll) enrolled() *compassv1internal.EnrollRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.req
-}
-
-// recordingEnrollServer stands up an h2c httptest RunnerService serving rec and
-// returns its base URL, torn down via t.Cleanup.
-func recordingEnrollServer(t *testing.T, rec *recordingEnroll) string {
-	t.Helper()
-	path, handler := compassv1internalconnect.NewRunnerServiceHandler(rec)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	srv := httptest.NewUnstartedServer(mux)
-	srv.Config.Protocols = cleartextHTTP2()
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return srv.URL
 }
 
 // TestDialDeclaresEngineTierAndPosture pins the enrollment declaration: dialing
@@ -176,62 +184,5 @@ func TestFileTokenChangesBetweenRPCs(t *testing.T) {
 	want := []string{"Bearer first", "Bearer second"}
 	if got := rec.authRequests(); !slices.Equal(got, want) {
 		t.Fatalf("RPC authorization headers = %v, want %v", got, want)
-	}
-}
-
-type errorAfterEnrollToken struct {
-	mu    sync.Mutex
-	calls int
-}
-
-func (s *errorAfterEnrollToken) Token(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calls++
-	if s.calls == 1 {
-		return "enroll-token", nil
-	}
-	return "", errors.New("projected token unavailable")
-}
-
-type sessionsHeaderRecorder struct {
-	recordingEnroll
-	authorization chan string
-}
-
-func (h *sessionsHeaderRecorder) Sessions(_ context.Context, stream compassv1internalconnect.RunnerServiceSessionsServerStream) error {
-	h.authorization <- stream.RequestHeader().Get("Authorization")
-	_, err := stream.Receive()
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	return err
-}
-
-func TestSessionsOmitsAuthorizationWhenTokenSourceErrors(t *testing.T) {
-	handler := &sessionsHeaderRecorder{authorization: make(chan string, 1)}
-	path, service := compassv1internalconnect.NewRunnerServiceHandler(handler)
-	mux := http.NewServeMux()
-	mux.Handle(path, service)
-	server := httptest.NewUnstartedServer(mux)
-	server.Config.Protocols = cleartextHTTP2()
-	server.Start()
-	t.Cleanup(server.Close)
-
-	link, err := Dial(context.Background(), RunnerConfig{
-		RunnerID:   "runner-1",
-		ServerAddr: server.URL,
-		Token:      &errorAfterEnrollToken{},
-		Engine:     runtime.NewHostRuntime(t.TempDir()),
-		HTTPClient: h2cHTTPClient(t),
-	})
-	if err != nil {
-		t.Fatalf("Dial = %v, want successful enrollment", err)
-	}
-	if err := link.RunSessions(context.Background(), nil, discardLoggerRunner()); err != nil {
-		t.Fatalf("RunSessions = %v, want clean end", err)
-	}
-	if got := <-handler.authorization; got != "" {
-		t.Fatalf("Sessions Authorization = %q, want absent after Token error", got)
 	}
 }

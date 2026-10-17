@@ -43,50 +43,31 @@ func (g *Gateway) Publish(
 	epoch := g.control.Epoch(sessionID)
 
 	for {
-		msg, err2 := stream.Receive()
-		if err2 != nil {
-			if errors.Is(err2, io.EOF) {
+		msg, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
 				break
 			}
-			_ = g.releasePublisher(pub)
-			return nil, err2
+			return nil, errors.Join(err, g.releasePublisher(pub))
 		}
 		frame := msg.GetFrame()
 		if frame == nil {
-			// An empty PublishFrameRequest (no frame set) carries nothing to
-			// forward and is not an ack — skip it, matching the stdout relay's
-			// tolerance of an undecodable line (relay.go:152-155), never tearing
-			// the stream down.
 			continue
 		}
-		// Control-plane acks ride the Publish spine beside telemetry but are
-		// routed to the control lane, never relayed upstream.
 		switch f := frame.GetFrame().(type) {
 		case *compassv1internal.AgentFrame_ReplayCompleteAck:
 			g.control.ReleaseReplayBarrier(sessionID, epoch)
 			continue
 		case *compassv1internal.AgentFrame_ControlAck:
-			if f == nil {
+			if f == nil || f.ControlAck == nil {
 				continue
 			}
 			ack := f.ControlAck
-			if ack == nil {
-				// A ControlAck wrapper with no ack payload — a frame contract
-				// skew; skip it like an empty frame rather than tear the stream.
-				continue
-			}
 			g.control.AckControl(sessionID, epoch, ack.GetAckedSeq(), ack.GetAppliedAbove(), ack.GetAppliedAboveRanges())
 			continue
 		}
-		// Trace/session telemetry: forward Runner-sequenced. A durable conversation
-		// frame belongs on the CommitConversationFrame unary, but if one arrives here
-		// it is still a valid AgentFrame — forward rather than drop it, since
-		// dropping a durable frame silently is the loss the split exists to prevent.
 		if err := pub.forward(frame); err != nil {
-			// A mid-stream upstream failure ends the relay; the agent reconnects.
-			// Release the shared upstream stream on the way out.
-			_ = g.releasePublisher(pub)
-			return nil, err
+			return nil, errors.Join(err, g.releasePublisher(pub))
 		}
 	}
 

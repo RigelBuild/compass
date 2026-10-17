@@ -30,7 +30,7 @@ func (g *Gateway) Board(
 		Call:      req,
 	})
 	if err != nil {
-		return nil, err
+		return nil, relayedError(err)
 	}
 	result := resp.GetResult()
 	if result == nil {

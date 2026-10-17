@@ -48,26 +48,19 @@ const (
 
 // --- fixtures ----------------------------------------------------------------
 
-// serveTracedCommsDoor mounts the CommsService over commsSvc behind the
-// PRODUCTION socket-door interceptor chain (serve.go:698-699,708-710) on an h2c
-// httptest server, attributing every RPC to actor via the ambient-identity pair
-// — so a post over this door is authored by actor and runs under a real
-// otelconnect handler span whose trace id the response's traceresponse header
-// carries. Returns the base URL; torn down via t.Cleanup.
-//
-// MUST be called only AFTER installGlobalSpanExporter: otelconnect captures the
-// global tracer provider and propagator once, at NewInterceptor().
+// serveTracedCommsDoor mounts CommsService on the socket-door h2c test server
+// with otel tracing and ambient identity. Call it only after installing the
+// global span exporter because the interceptor captures the provider at creation.
 func serveTracedCommsDoor(t *testing.T, commsSvc *comms.Comms, actor store.AccountID) string {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := compassv1connect.NewCommsServiceHandler(commsSvc,
-		otelx.HandlerInterceptors(otelIC,
-			auth.AmbientIdentity(actor), auth.AmbientStreamInterceptor(actor)))
+	server := connect.NewServer(otelx.HandlerInterceptors(otelIC, auth.AmbientIdentity(actor)))
+	compassv1connect.RegisterCommsServiceHandler(server, commsSvc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -88,43 +81,28 @@ func newTracedCommsClient(t *testing.T, baseURL string) compassv1connect.CommsSe
 	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL, connecthttp.WithReadMaxBytes(0))))
 }
 
-// newRelayRunnerClient mounts a SECOND RunnerService door over the wire's OWN
-// hub — the production mount (runnerhub.NewMountedHandler: otelconnect
-// outermost, then the bearer pair) — and returns a RunnerService client that
-// mounts otelconnect outermost of the fake Runner's bearer, mirroring the real
-// ServerLink client (internal/runner/runner.go:112-115), so a RelayCommsCall
-// traverses a real door and runs under a real otelconnect handler span.
+// newRelayRunnerClient mounts a RunnerService door over this wire's hub. It
+// keeps the production interceptor order so RelayCommsCall runs under a real
+// otelconnect span with trace propagation.
 //
-// The CLIENT interceptor is load-bearing, not decoration. otelconnect's client
-// branch injects a traceparent request header, and its server branch then
-// extracts it and — because trustRemote defaults false — mints the span with
-// WithNewRoot + a link to that transport context (otelconnect interceptor.go:
-// 110-117). Omit it and the door sees no inbound traceparent at all: the span
-// is a root because nobody offered a parent, so (h)'s fresh-root assertion
-// passes for a trivial reason, and the origin span's link set holds only what
-// linkTrigger put there — a topology that never ships.
+// The client interceptor injects traceparent, which the door extracts and links
+// to its new root span. The isolated door is separate from attachFakeRunner
+// because that helper carries the live Sessions stream; RelayCommsCall needs
+// none because bringSessionLive has already promoted the hub binding.
 //
-// A second door rather than a change to attachFakeRunner: that helper's door
-// carries the recordingRunner's live Sessions stream, and RelayCommsCall needs
-// none of it — the hub resolves session_id -> account from its own binding
-// (runnerhub/relay_comms.go, Hub.RelayCommsCall), which bringSessionLive has
-// already promoted. Mounting here also keeps this door's interceptor
-// construction inside the subtest,
-// AFTER installGlobalSpanExporter, which is the load-bearing half:
-// otelconnect captures the global tracer provider once, at NewInterceptor()
-// (otelconnect interceptor.go:56-60).
+// Build the interceptor here, after the global span exporter, because
+// otelconnect captures the tracer provider at NewServerInterceptor().
 func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := runnerhub.NewMountedHandler(hub,
+	mux := http.NewServeMux()
+	runnerhub.Mount(mux, hub,
 		func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 			return auth.ResolveToken(ctx, st, presented, want)
 		}, nil, nil, otelIC)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -135,14 +113,14 @@ func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) com
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
-	clientIC, err := otelconnect.NewInterceptor()
+	clientIC, err := otelconnect.NewClientInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor (client): %v", err)
+		t.Fatalf("otelconnect.NewClientInterceptor: %v", err)
 	}
 	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: tr}, srv.URL,
 		connecthttp.WithReadMaxBytes(0),
-	), clientIC, runnerBearer(fakeRunnerToken),
+	), clientIC, runnerBearer(fakeRunnerToken).ClientInterceptor,
 	))
 }
 
@@ -190,8 +168,9 @@ func relayAgentPost(t *testing.T, ctx context.Context, client compassv1internalc
 // traceresponse) plus the created message id. It is postOverSocket's sibling for
 // this file's mounted door and per-case body text (that helper hardcodes its
 // body, so a mention case needs this one rather than a change over there).
-func postOverTracedDoor(t *testing.T, ctx context.Context, client compassv1connect.CommsServiceClient, channel store.ChannelID, body string) (*compassv1.PostMessageResponse, string) {
+func postOverTracedDoor(t *testing.T, ctx context.Context, client compassv1connect.CommsServiceClient, channel store.ChannelID, body string) (*connect.Header, string) {
 	t.Helper()
+	ctx, info := connect.NewClientContext(ctx)
 	resp, err := client.PostMessage(ctx, &compassv1.PostMessageRequest{
 		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: string(channel)},
 		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
@@ -205,7 +184,7 @@ func postOverTracedDoor(t *testing.T, ctx context.Context, client compassv1conne
 	if msgID == "" {
 		t.Fatalf("PostMessage(%q) returned an empty message id", body)
 	}
-	return resp, msgID
+	return info.ResponseHeader(), msgID
 }
 
 // postAsk authors an ask message as the admin in-process (no span needed — only
@@ -733,7 +712,7 @@ func traceContinuityA(t *testing.T) {
 	}
 	// The response header is (c)'s subject; asserting it is set here keeps
 	// this fixture's own precondition honest.
-	if resp.Header().Get(traceResponseHdr) == "" {
+	if resp.Get(traceResponseHdr) == "" {
 		t.Fatal("enabled path set no traceresponse header on the post")
 	}
 }
@@ -792,7 +771,7 @@ func traceContinuityC(t *testing.T) {
 
 	want := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID().String()
 
-	hdr := resp.Header().Get(traceResponseHdr)
+	hdr := resp.Get(traceResponseHdr)
 	if hdr == "" {
 		t.Fatal("response carried no traceresponse header on the enabled path")
 	}
@@ -860,7 +839,7 @@ func traceContinuityD(t *testing.T) {
 	if op.traceparent != "" {
 		t.Fatalf("disabled-path op traceparent = %q, want EMPTY (no provider ⇒ no span ⇒ nothing to stamp)", op.traceparent)
 	}
-	if hdr := resp.Header().Get(traceResponseHdr); hdr != "" {
+	if hdr := resp.Get(traceResponseHdr); hdr != "" {
 		t.Fatalf("disabled path set traceresponse = %q, want none", hdr)
 	}
 	if got := offExp.GetSpans(); len(got) != 0 {
@@ -1013,7 +992,7 @@ func traceContinuityH(t *testing.T) {
 	bringSessionLive(t, w, exp, author.ID, containerFor("relayauthor"), authorSess)
 
 	// The door is built HERE, after the exporter: otelconnect captures the
-	// global tracer provider once, at NewInterceptor().
+	// global tracer provider once at NewServerInterceptor().
 	relay := newRelayRunnerClient(t, w.hub, w.store)
 	msgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "agent speaks first", "")
 

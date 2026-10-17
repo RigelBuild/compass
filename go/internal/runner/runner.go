@@ -61,7 +61,7 @@ type RunnerConfig struct {
 	AgentBatching string
 	// HTTPClient dials the Server. Nil uses a default HTTP/2 client; tests inject
 	// one wired to an httptest server.
-	HTTPClient connect.HTTPClient
+	HTTPClient connecthttp.HTTPClient
 }
 
 // ServerLink is a live connection to the Server: the RunnerService client plus
@@ -85,35 +85,22 @@ func (l *ServerLink) Reattached() bool { return l.reattached }
 // RunnerID reports the identity assigned by the Server during enrollment.
 func (l *ServerLink) RunnerID() string { return l.runnerID }
 
-// bearerToken asks its source for a fresh token on every outbound RPC.
-type bearerToken struct {
-	source TokenSource
-}
-
-func (b *bearerToken) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		token, err := b.source.Token(ctx)
-		if err != nil {
-			return nil, err
+// bearerTokenFrom asks its source for a fresh token before opening each outbound RPC.
+func bearerTokenFrom(source TokenSource) connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			token, err := source.Token(ctx)
+			if err != nil {
+				return nil, err
+			}
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "bearer token: no client call info")
+			}
+			info.RequestHeader().Set("Authorization", "Bearer "+token)
+			return next(ctx, spec)
 		}
-		req.Header().Set("Authorization", "Bearer "+token)
-		return next(ctx, req)
 	}
-}
-
-func (b *bearerToken) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		conn := next(ctx, spec)
-		conn.RequestHeader().Del("Authorization")
-		if token, err := b.source.Token(ctx); err == nil {
-			conn.RequestHeader().Set("Authorization", "Bearer "+token)
-		}
-		return conn
-	}
-}
-
-func (b *bearerToken) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }
 
 // Dial constructs the RunnerService client for serverAddr, authenticated with
@@ -129,17 +116,15 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	otelInterceptor, err := otelconnect.NewInterceptor()
+	otelInterceptor, err := otelconnect.NewClientInterceptor()
 	if err != nil {
 		return nil, &dialConfigurationError{err: fmt.Errorf("otel: connect interceptor: %w", err)}
 	}
-	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(
-		httpClient, cfg.ServerAddr,
-		connecthttp.WithReadMaxBytes(0),
-		// otelconnect goes first (outermost) so enroll/Sessions dials emit
-		// client spans; it is a no-op when no global provider is installed.
-
-	), otelInterceptor, &bearerToken{source: cfg.Token},
+	transport := connecthttp.NewTransport(httpClient, cfg.ServerAddr, connecthttp.WithReadMaxBytes(0))
+	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(
+		transport,
+		otelInterceptor,
+		bearerTokenFrom(cfg.Token),
 	))
 	resp, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{
 		RunnerId:      cfg.RunnerID,

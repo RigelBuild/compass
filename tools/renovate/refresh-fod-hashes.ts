@@ -4,10 +4,10 @@
 // red on a "hash mismatch in fixed-output derivation" build break (RIG-2432,
 // PR #579's failure class).
 
-// Compass pins three FOD hash VALUES. The Go vendorHash lives in two files that
-// share it by design: guest-image/default.nix and flake.nix — the SAME
-// proxyVendor hash over go/, both moved by a go.mod|go.sum bump. The vehicle
-// realises only guestd's FOD; flake.nix is a MIRROR (FodEntry.mirrorFiles).
+// Compass pins three files with the same Go vendorHash: guest-image/default.nix,
+// flake.nix, and the Connect plugin derivation. They use the SAME proxyVendor
+// hash over go/, all moved by a go.mod|go.sum bump, and are refreshed in lockstep.
+// The guest image realises the FOD; flake.nix and the plugin are mirrors.
 
 // agent-image/entrypoint.nix's outputHash content-addresses compass-agent's
 // installed node_modules (a bun install FOD) built by the pinned bun. Invalidated
@@ -96,7 +96,7 @@ export const FOD_ENTRIES: FodEntry[] = [
 		buildTarget: "compass-guest-rootfs",
 		vehicleChannelLock: "devenv.lock",
 		triggers: ["go/go.mod", "go/go.sum"],
-		mirrorFiles: ["flake.nix"],
+		mirrorFiles: ["flake.nix", "tools/toolchain/protoc-gen-connect-go.nix"],
 	},
 	// One entry per system pin: `bun install --cpu` lets one host refresh both.
 	...(["x86_64-linux", "aarch64-linux"] as const).map(

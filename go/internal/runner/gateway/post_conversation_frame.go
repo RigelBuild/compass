@@ -53,7 +53,7 @@ func (g *Gateway) PostConversationFrame(
 		Frame:          frame,
 		IdempotencyKey: key,
 	}); err != nil {
-		return nil, err
+		return nil, relayedError(err)
 	}
 
 	// The commit was acknowledged. Record the key so a retry whose response was

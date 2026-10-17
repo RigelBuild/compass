@@ -121,5 +121,13 @@ func GuestClient(vsockSocket string, port uint32) compassv1internalconnect.Guest
 			},
 		},
 	}
-	return compassv1internalconnect.NewGuestControlClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://guest", connecthttp.WithReadMaxBytes(0))))
+	return compassv1internalconnect.NewGuestControlClient(
+		connect.NewClient(
+			connecthttp.NewTransport(
+				httpClient,
+				"http://guest",
+				connecthttp.WithReadMaxBytes(0),
+			),
+		),
+	)
 }

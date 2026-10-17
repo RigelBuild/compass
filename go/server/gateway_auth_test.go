@@ -37,9 +37,10 @@ func (f fakeGatewayVerifier) Verify(_ context.Context, token string) (store.Gate
 
 func newGatewayAuthClient(t *testing.T, v gatewayTokenVerifier) compassv1internalconnect.GatewayAuthClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewGatewayAuthHandler(newGatewayAuthService(v))
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterGatewayAuthHandler(server, newGatewayAuthService(v))
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

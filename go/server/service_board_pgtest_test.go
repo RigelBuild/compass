@@ -108,16 +108,16 @@ func TestSearchIssuesRoundTripsTenantScopedResults(t *testing.T) {
 	svc := newService("test", bus, st, nil, nil, nil, nil)
 	// Bearer auth does not yet set a tenant on ctx, so arm one here to prove the
 	// handler's store call stays RLS-scoped on the wire path.
-	withTenant := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			return next(store.WithTenant(ctx, tenantBID), req)
+	withTenant := connect.ServerInterceptor(func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			return next(store.WithTenant(ctx, tenantBID), spec, stream)
 		}
 	})
 	client := newH2CClient(t, newH2CTestServerWithInterceptors(t, svc, auth.BearerInterceptor(st), withTenant))
 	request := &compassv1.SearchIssuesRequest{Query: "falcon", Limit: 10}
-	ctx, info := connect.NewClientContext(ctx)
+	authedCtx, info := connect.NewClientContext(ctx)
 	info.RequestHeader().Set("Authorization", "Bearer "+token)
-	response, err := client.SearchIssues(ctx, request)
+	response, err := client.SearchIssues(authedCtx, request)
 	if err != nil {
 		t.Fatalf("SearchIssues: %v", err)
 	}

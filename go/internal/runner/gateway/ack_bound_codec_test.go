@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -17,15 +18,20 @@ import (
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
-func testGatewayInterceptor(t *testing.T) *otelconnect.Interceptor {
+func newAgentGatewayMux(t *testing.T, handler compassv1internalconnect.AgentGatewayHandler) *http.ServeMux {
 	t.Helper()
-	ic, err := newAgentGatewayInterceptor()
+	ic, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("newAgentGatewayInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	return ic
+	server := connect.NewServer(otelx.HandlerInterceptors(ic))
+	compassv1internalconnect.RegisterAgentGatewayHandler(server, handler)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server, agentGatewayHandlerOptions()...)
+	return mux
 }
 
 // oversizedAckFrame is a ControlAck whose packed applied_above is one-byte varints,
@@ -93,7 +99,7 @@ func TestAckBoundCodecCountsSplitOccurrences(t *testing.T) {
 			&compassv1internal.PublishFrameRequest{},
 			&compassv1internal.PostConversationFrameRequest{},
 		} {
-			if err := (ackBoundCodec{}).Unmarshal(data, msg); !errors.Is(err, errControlAckTooLarge) {
+			if err := (ackBoundCodec{}).UnmarshalRead(context.Background(), bytes.NewReader(data), msg); !errors.Is(err, errControlAckTooLarge) {
 				t.Errorf("%s into %T: err = %v, want errControlAckTooLarge", name, msg, err)
 			}
 		}
@@ -111,8 +117,8 @@ func TestAckBoundCodecAcceptsHonestAck(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	var got compassv1internal.PublishFrameRequest
-	if err := (ackBoundCodec{}).Unmarshal(data, &got); err != nil {
-		t.Fatalf("Unmarshal(honest ack) = %v", err)
+	if err := (ackBoundCodec{}).UnmarshalRead(context.Background(), bytes.NewReader(data), &got); err != nil {
+		t.Fatalf("UnmarshalRead(honest ack) = %v", err)
 	}
 	if n := len(got.GetFrame().GetControlAck().GetAppliedAbove()); n != maxRetainedOps {
 		t.Fatalf("decoded %d seqs, want %d", n, maxRetainedOps)
@@ -124,33 +130,31 @@ func TestAckBoundCodecAcceptsBinaryPutSessionBlob(t *testing.T) {
 		Sha256: "abababababababababababababababababababababababababababababababab",
 		Data:   []byte{0, 1, 0xfe, 0xff},
 	}
-	wire, err := (ackBoundCodec{}).Marshal(want)
-	if err != nil {
-		t.Fatalf("Marshal(PutSessionBlobRequest) = %v", err)
+	var wire bytes.Buffer
+	if err := (ackBoundCodec{}).MarshalWrite(context.Background(), &wire, want); err != nil {
+		t.Fatalf("MarshalWrite(PutSessionBlobRequest) = %v", err)
 	}
 	var got compassv1internal.PutSessionBlobRequest
-	if err := (ackBoundCodec{}).Unmarshal(wire, &got); err != nil {
-		t.Fatalf("Unmarshal(PutSessionBlobRequest) = %v", err)
+	if err := (ackBoundCodec{}).UnmarshalRead(context.Background(), &wire, &got); err != nil {
+		t.Fatalf("UnmarshalRead(PutSessionBlobRequest) = %v", err)
 	}
 	if !proto.Equal(&got, want) {
 		t.Fatalf("binary round trip = %v, want %v", &got, want)
 	}
-	if _, err := (frameJSONCodec{name: "json"}).Marshal(want); err != nil {
+	jsonCodec := newFrameJSONCodec("json")
+	if err := jsonCodec.MarshalWrite(context.Background(), io.Discard, want); err != nil {
 		t.Fatalf("blob request JSON marshal = %v, want success", err)
 	}
 }
 
-// JSON would bypass the binary pre-scan, so the mount refuses it outright.
 // RED without the JSON codec overrides: protojson decodes the ack and routes it.
 func TestAgentGatewayRejectsJSON(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	router := &fakeControlRouter{}
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	g.SetControlRouter(router)
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	mux := newAgentGatewayMux(t, g)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
@@ -189,12 +193,11 @@ func TestControlAckBytesDoesNotAllocate(t *testing.T) {
 
 // Both JSON content types Connect registers by default refuse a frame request.
 // RED without either override: protojson decodes and the handler answers instead.
+// Both JSON content types Connect registers by default refuse a frame request.
+// RED without the JSON codec overrides: protojson decodes and the handler answers instead.
 func TestAgentGatewayRejectsJSONContentTypes(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions()})
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(newAgentGatewayMux(t, g))
 	t.Cleanup(srv.Close)
 
 	for _, contentType := range []string{"application/json", "application/json; charset=utf-8"} {
@@ -225,12 +228,8 @@ func TestAgentGatewayRejectsJSONContentTypes(t *testing.T) {
 // Non-frame unaries keep JSON: the in-guest microVM probe calls Comms as a JSON
 // POST. RED if the JSON override refuses every request type.
 func TestAgentGatewayKeepsJSONForNonFrameCalls(t *testing.T) {
-	// Unbound: Comms answers FailedPrecondition after decoding, with no relay.
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: staticSessions{}})
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(newAgentGatewayMux(t, g))
 	t.Cleanup(srv.Close)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,

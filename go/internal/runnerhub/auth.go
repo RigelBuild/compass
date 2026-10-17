@@ -95,55 +95,19 @@ type bearerAuth struct {
 	resolve TokenResolver
 }
 
-// unaryInterceptor authenticates a unary call (Enroll) before it reaches the
-// handler, setting the Runner subject on the context it forwards.
-func (b *bearerAuth) unaryInterceptor() connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			authed, err := b.authenticate(ctx, req.Header())
-			if err != nil {
-				return nil, err
+// interceptor authenticates every RunnerService call before it reaches its handler.
+func (b *bearerAuth) interceptor() connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			var header *connect.Header
+			if info, ok := connect.CallInfoForServerContext(ctx); ok {
+				header = info.RequestHeader()
 			}
-			return next(authed, req)
+			authed, err := b.authenticate(ctx, header)
+			if err != nil {
+				return err
+			}
+			return next(authed, spec, stream)
 		}
-	}
-}
-
-// streamInterceptor authenticates a streaming call (Sessions bidi, PublishEvents
-// client-stream) at connect, before the handler runs, setting the Runner subject
-// on the stream's context.
-func (b *bearerAuth) streamInterceptor() connect.Interceptor {
-	return &streamAuth{auth: b}
-}
-
-// streamAuth is the streaming half of the bearer interceptor. It authenticates
-// the handler side (the Runner dials in, so the server always terminates the
-// stream) and passes client-side calls through untouched.
-type streamAuth struct {
-	auth *bearerAuth
-}
-
-// WrapUnary passes unary calls through — the unary path is handled by
-// unaryInterceptor; a streamAuth used in a stream-only chain must still satisfy
-// the full Interceptor interface.
-func (s *streamAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return next
-}
-
-// WrapStreamingClient passes client-side streaming through — this door only
-// terminates server-side streams (the Runner is the client).
-func (s *streamAuth) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-// WrapStreamingHandler authenticates the incoming stream via its request header,
-// then serves it on a context carrying the Runner subject.
-func (s *streamAuth) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		authed, err := s.auth.authenticate(ctx, conn.RequestHeader())
-		if err != nil {
-			return err
-		}
-		return next(authed, conn)
 	}
 }

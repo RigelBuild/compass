@@ -193,17 +193,19 @@ func (d *dispatcher) runConfigWorker(ctx context.Context) {
 // empty bootstrap frame to flush the headers; the Server's router ignores a result frame
 // with no matching in-flight id, so the bootstrap is a harmless no-op.
 func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost, log *slog.Logger) error {
-	return runSessions(ctx, l.client.Sessions(ctx), host, log)
+	stream, err := l.client.Sessions(ctx)
+	if err != nil {
+		return err
+	}
+	return runSessions(ctx, stream, host, log)
 }
 
-// sessionStream is the Sessions client bidi stream surface the dispatch loop drives: the
-// real *connect.BidiStreamForClient satisfies it directly. It is the seam RunSessions
-// wraps around the live stream so the loop runs over the real wire in production and is
-// drivable with a scripted stream in a loop-level unit test.
+// sessionStream is the generated Sessions client stream surface the dispatch loop drives.
+// The seam also lets loop-level tests use a scripted stream.
 type sessionStream interface {
 	Send(result *compassv1internal.SessionsRequest) error
 	Receive() (*compassv1internal.SessionsResponse, error)
-	CloseResponse() error
+	Close() error
 }
 
 // runSessions runs the dispatch loop over stream until it ends or ctx is cancelled. Each
@@ -236,12 +238,13 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
-	// Unblock the blocking Receive below on ctx cancel: closing the response
-	// side makes an in-flight Receive return, so a cancelled Runner shuts the
-	// Sessions loop down promptly instead of parking until the stream drops.
+	// Unblock Receive when ctx is cancelled. Unexpected close errors are logged
+	// because the watcher cannot return them through runSessions.
 	go func() {
 		<-ctx.Done()
-		_ = stream.CloseResponse()
+		if err := stream.Close(); err != nil && !errors.Is(err, context.Canceled) {
+			d.log.WarnContext(ctx, "closing Sessions stream after cancellation", slog.Any("error", err))
+		}
 	}()
 	for {
 		cmd, err := stream.Receive()

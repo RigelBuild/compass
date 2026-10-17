@@ -111,9 +111,9 @@ func newGatewayDoorFixture(t *testing.T) gatewayDoorFixture {
 	if err != nil {
 		t.Fatalf("seed owner Y credential: %v", err)
 	}
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	resolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)

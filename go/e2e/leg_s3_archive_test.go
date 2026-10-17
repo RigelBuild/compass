@@ -4,13 +4,12 @@ package e2e
 
 import (
 	"context"
-	"strings"
-	"testing"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
+	"strings"
+	"testing"
 )
 
 // Every fixture here takes WithForgeStub: the server declares the forge secrets

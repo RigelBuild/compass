@@ -396,16 +396,18 @@ func TestFreshStartSendsReplayCompleteFirst(t *testing.T) {
 	}
 	defer func() { _ = stream.Close() }()
 
-	if !stream.Receive() {
-		t.Fatalf("no first op reached the agent (stream err %v): fresh Start did not send replay_complete", stream.Err())
+	first, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no first op reached the agent: fresh Start did not send replay_complete: %v", err)
 	}
-	if stream.Msg().GetReplayComplete() == nil {
-		t.Fatalf("first op = %v, want replay_complete first on a fresh start", stream.Msg())
+	if first.GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete first on a fresh start", first)
 	}
-	if !stream.Receive() {
-		t.Fatalf("no second op reached the agent (stream err %v): sentinel did not follow replay_complete", stream.Err())
+	second, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no second op reached the agent: sentinel did not follow replay_complete: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "after-barrier" {
+	if input := second.GetPrompt().GetInput(); input != "after-barrier" {
 		t.Fatalf("second op input = %q, want the sentinel %q (ordinary ops follow the barrier lift)", input, "after-barrier")
 	}
 }
@@ -458,16 +460,18 @@ func TestResumeStartSendsReplayCompleteFirst(t *testing.T) {
 	}
 	defer func() { _ = stream.Close() }()
 
-	if !stream.Receive() {
-		t.Fatalf("no first op reached the agent (stream err %v): resume Start did not send replay_complete", stream.Err())
+	first, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no first op reached the agent: resume Start did not send replay_complete: %v", err)
 	}
-	if stream.Msg().GetReplayComplete() == nil {
-		t.Fatalf("first op = %v, want replay_complete first on a resume start", stream.Msg())
+	if first.GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete first on a resume start", first)
 	}
-	if !stream.Receive() {
-		t.Fatalf("no second op reached the agent (stream err %v): sentinel did not follow replay_complete", stream.Err())
+	second, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no second op reached the agent: sentinel did not follow replay_complete: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "after-barrier" {
+	if input := second.GetPrompt().GetInput(); input != "after-barrier" {
 		t.Fatalf("second op input = %q, want the sentinel %q (ordinary ops follow the barrier lift)", input, "after-barrier")
 	}
 }

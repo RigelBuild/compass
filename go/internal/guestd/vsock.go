@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/mdlayher/vsock"
@@ -85,14 +86,13 @@ func serveVsock(ctx context.Context, port uint32, svc *supervisor) error {
 
 // serveHandshake mounts the GuestControl handler on an h2c server over the given
 // listener and serves until ctx is cancelled. It is split from serveVsock so the
-// h2c wiring is exercisable over any net.Listener; the AF_VSOCK bind and
-// peer-CID gate are serveVsock's job. An explicit 16 MiB request ReadMaxBytes
-// (OQ-E) lets large agent-file stdin writes exceed connect's 4 MiB default.
+// AF_VSOCK bind and peer-CID gate stay in serveVsock. Its explicit 16 MiB
+// request read limit lets large agent-file stdin writes exceed Connect's default.
 func serveHandshake(ctx context.Context, ln net.Listener, svc *supervisor) error {
 	mux := http.NewServeMux()
-	path, handler := compassv1internalconnect.NewGuestControlHandler(svc,
-		connecthttp.WithReadMaxBytes(16<<20))
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	compassv1internalconnect.RegisterGuestControlHandler(server, svc)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(16<<20))
 
 	srv := &http.Server{Handler: mux, Protocols: cleartextHTTP2()} //nolint:gosec // vsock-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply
 

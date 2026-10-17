@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -24,8 +27,8 @@ type fakeServerSecrets struct {
 	gotAuth string
 }
 
-func (f *fakeServerSecrets) ListServerSecrets(_ context.Context, req *compassv1.ListServerSecretsRequest) (*compassv1.ListServerSecretsResponse, error) {
-	f.gotAuth = req.Header().Get("Authorization")
+func (f *fakeServerSecrets) ListServerSecrets(ctx context.Context, req *compassv1.ListServerSecretsRequest) (*compassv1.ListServerSecretsResponse, error) {
+	f.gotAuth = requestAuth(ctx)
 	list := f.list
 	if list == nil {
 		list = &compassv1.ListServerSecretsResponse{}
@@ -38,9 +41,10 @@ func (f *fakeServerSecrets) ListServerSecrets(_ context.Context, req *compassv1.
 // interceptor.
 func startFakeServerSecretsServer(t *testing.T, fake *fakeServerSecrets) compassv1connect.SecretsServiceClient {
 	t.Helper()
-	path, handler := compassv1connect.NewSecretsServiceHandler(fake)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	compassv1connect.RegisterSecretsServiceHandler(server, fake)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	client, err := newSecretsClient(connConfig{serverAddr: srv.URL, token: "test-token"})

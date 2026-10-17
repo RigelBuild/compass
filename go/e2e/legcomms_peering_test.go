@@ -3,13 +3,13 @@
 package e2e
 
 import (
+	"connectrpc.com/connect/v2"
 	"context"
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect/v2"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 const (
@@ -36,9 +36,9 @@ func registerPeeringFixtureOptions() {
 	)
 }
 
-type commsStream = *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse]
+type commsStream = compassv1connect.CommsServiceSubscribeCommsClientStream
 
-type sessionTail = *connect.ServerStreamForClient[compassv1.AgentSessionFrame]
+type sessionTail = compassv1connect.CompassServiceSubscribeAgentSessionClientStream
 
 // peerAgent is one T5 agent. Agents 1 and 2 run sessions; 3 and 4 never do.
 type peerAgent struct {

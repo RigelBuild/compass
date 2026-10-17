@@ -134,7 +134,6 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 	svc := newSecretsService(st, resolver, serverResolver, signaler)
 	url := newSecretsH2CServer(t, svc,
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(admin.ID),
 	)
 	adminTok, err := auth.IssueAccountToken(ctx, st, admin.ID)
@@ -172,41 +171,35 @@ func secretsFixtureKey(t *testing.T) envelope.Key {
 	return k
 }
 
-func setReq(bearer, name, value string) *compassv1.SetSecretRequest {
-	req := &compassv1.SetSecretRequest{
+func setReq(name, value string) *compassv1.SetSecretRequest {
+	return &compassv1.SetSecretRequest{
 		Name:     name,
 		Value:    value,
 		Delivery: compassv1.SecretDelivery_SECRET_DELIVERY_ENV,
 		Kind:     compassv1.SecretKind_SECRET_KIND_GENERIC,
 	}
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	return req
 }
 
-func delReq(bearer, name string) *compassv1.DeleteSecretRequest {
-	req := &compassv1.DeleteSecretRequest{Name: name}
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	return req
+func delReq(name string) *compassv1.DeleteSecretRequest {
+	return &compassv1.DeleteSecretRequest{Name: name}
 }
 
 // scopedSetReq is setReq with an explicit D9 scope selector. setReq deliberately
 // leaves scope unset, so it exercises the unspecified-means-user default.
-func scopedSetReq(bearer, name, value string, scope compassv1.SecretScope) *compassv1.SetSecretRequest {
-	req := setReq(bearer, name, value)
+func scopedSetReq(name, value string, scope compassv1.SecretScope) *compassv1.SetSecretRequest {
+	req := setReq(name, value)
 	req.Scope = scope
 	return req
 }
 
-func scopedDelReq(bearer, name string, scope compassv1.SecretScope) *compassv1.DeleteSecretRequest {
-	req := delReq(bearer, name)
+func scopedDelReq(name string, scope compassv1.SecretScope) *compassv1.DeleteSecretRequest {
+	req := delReq(name)
 	req.Scope = scope
 	return req
 }
 
-func listReq(bearer string) *compassv1.ListSecretsRequest {
-	req := &compassv1.ListSecretsRequest{}
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	return req
+func listReq() *compassv1.ListSecretsRequest {
+	return &compassv1.ListSecretsRequest{}
 }
 
 // TestSetSecretUserOnly is the load-bearing regression (record §927): an
@@ -217,7 +210,7 @@ func TestSetSecretUserOnly(t *testing.T) {
 	ctx := context.Background()
 
 	// Agent: rejected, and no row is written (nothing resolves for the agent).
-	_, err := f.client.SetSecret(ctx, setReq(f.agentToken, "AGENT_TRY", "v"))
+	_, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.agentToken), setReq("AGENT_TRY", "v"))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("SetSecret as agent code = %v, want PermissionDenied", got)
 	}
@@ -228,7 +221,7 @@ func TestSetSecretUserOnly(t *testing.T) {
 	// User: succeeds and the value is written — resolved back through the same
 	// production read the Runner uses, decrypted under the fixture key.
 	const secretValue = "postgres://x"
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", secretValue)); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", secretValue)); err != nil {
 		t.Fatalf("SetSecret as user = %v, want success", err)
 	}
 	got := resolvedValues(t, ctx, f, f.agentID)
@@ -239,11 +232,11 @@ func TestSetSecretUserOnly(t *testing.T) {
 
 func TestSetSecretRejectsGitHubKind(t *testing.T) {
 	f := newSecretsFixture(t)
-	req := setReq(f.userToken, "GH_TOKEN", "user-token")
+	req := setReq("GH_TOKEN", "user-token")
 	req.Kind = compassv1.SecretKind_SECRET_KIND_GH
 	req.Host = "github.com"
 
-	_, err := f.client.SetSecret(context.Background(), req)
+	_, err := f.client.SetSecret(clientContextWithBearer(context.Background(), "Bearer "+f.userToken), req)
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("SetSecret with GH kind code = %v, want InvalidArgument", got)
 	}
@@ -259,7 +252,7 @@ func TestSetSecretRejectsReservedGitHubEnvNames(t *testing.T) {
 	f := newSecretsFixture(t)
 	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR", "GIT_ASKPASS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_GLOBAL"} {
 		t.Run(name, func(t *testing.T) {
-			_, err := f.client.SetSecret(context.Background(), setReq(f.userToken, name, "user-token"))
+			_, err := f.client.SetSecret(clientContextWithBearer(context.Background(), "Bearer "+f.userToken), setReq(name, "user-token"))
 			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 				t.Fatalf("SetSecret(%q) code = %v, want InvalidArgument", name, got)
 			}
@@ -279,13 +272,13 @@ func TestSetSecretBumpsSecretsVersion(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
 
-	if _, err := f.client.SetSecret(ctx, setReq(f.agentToken, "NOPE", "v")); err == nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.agentToken), setReq("NOPE", "v")); err == nil {
 		t.Fatal("SetSecret as agent = nil, want PermissionDenied")
 	}
 	if f.signaler.calls != 0 {
 		t.Fatalf("secrets version bumped %d times on a rejected write, want 0", f.signaler.calls)
 	}
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "v")); err != nil {
 		t.Fatalf("SetSecret as user = %v, want success", err)
 	}
 	if f.signaler.calls != 1 {
@@ -300,10 +293,10 @@ func TestSetSecretBumpsSecretsVersion(t *testing.T) {
 func TestSetSecretReSetRewrites(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v1")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "v1")); err != nil {
 		t.Fatalf("first SetSecret = %v, want success", err)
 	}
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v2")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "v2")); err != nil {
 		t.Fatalf("re-SetSecret (value rewrite) = %v, want success", err)
 	}
 	got := resolvedValues(t, ctx, f, f.agentID)
@@ -332,13 +325,13 @@ func TestDeleteSecretUserOnly(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
 	// Seed a declared secret as the user.
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "v")); err != nil {
 		t.Fatalf("seed SetSecret = %v", err)
 	}
 	versionBefore := f.signaler.calls
 
 	// Agent: rejected, and the row survives (still resolves for the owning agent).
-	_, err := f.client.DeleteSecret(ctx, delReq(f.agentToken, "DB_URL"))
+	_, err := f.client.DeleteSecret(clientContextWithBearer(ctx, "Bearer "+f.agentToken), delReq("DB_URL"))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("DeleteSecret as agent code = %v, want PermissionDenied", got)
 	}
@@ -347,7 +340,7 @@ func TestDeleteSecretUserOnly(t *testing.T) {
 	}
 
 	// User: succeeds, bumps the version, and the row is gone (no longer resolves).
-	if _, err := f.client.DeleteSecret(ctx, delReq(f.userToken, "DB_URL")); err != nil {
+	if _, err := f.client.DeleteSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), delReq("DB_URL")); err != nil {
 		t.Fatalf("DeleteSecret as user = %v, want success", err)
 	}
 	if f.signaler.calls != versionBefore+1 {
@@ -363,7 +356,7 @@ func TestDeleteSecretUserOnly(t *testing.T) {
 func TestDeleteSecretNotFound(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
-	_, err := f.client.DeleteSecret(ctx, delReq(f.userToken, "NEVER_DECLARED"))
+	_, err := f.client.DeleteSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), delReq("NEVER_DECLARED"))
 	if got := connect.CodeOf(err); got != connect.CodeNotFound {
 		t.Fatalf("DeleteSecret of an undeclared name code = %v, want NotFound", got)
 	}
@@ -377,7 +370,7 @@ func TestDeleteSecretNotFound(t *testing.T) {
 func TestListSecretsUserAndAgent(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "v")); err != nil {
 		t.Fatalf("seed SetSecret = %v", err)
 	}
 
@@ -389,7 +382,7 @@ func TestListSecretsUserAndAgent(t *testing.T) {
 		{"agent", f.agentToken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := f.client.ListSecrets(ctx, listReq(tc.bearer))
+			resp, err := f.client.ListSecrets(clientContextWithBearer(ctx, "Bearer "+tc.bearer), listReq())
 			if err != nil {
 				t.Fatalf("ListSecrets as %s = %v, want success", tc.name, err)
 			}
@@ -411,10 +404,8 @@ func TestListSecretsUserAndAgent(t *testing.T) {
 	}
 }
 
-func listServerReq(bearer string) *compassv1.ListServerSecretsRequest {
-	req := &compassv1.ListServerSecretsRequest{}
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	return req
+func listServerReq() *compassv1.ListServerSecretsRequest {
+	return &compassv1.ListServerSecretsRequest{}
 }
 
 // TestListServerSecretsReportsDeclaredButUnset is the core contract of the verb
@@ -444,7 +435,7 @@ func TestListServerSecretsReportsDeclaredButUnset(t *testing.T) {
 		{Name: "SERVER_WEBHOOK_SECRET", IsSet: false},
 	}
 
-	resp, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken))
+	resp, err := f.client.ListServerSecrets(clientContextWithBearer(ctx, "Bearer "+f.adminToken), listServerReq())
 	if err != nil {
 		t.Fatalf("ListServerSecrets: %v", err)
 	}
@@ -483,7 +474,7 @@ func TestListServerSecretsProviderFailureIsNotAllUnset(t *testing.T) {
 	}
 	f.serverResolver.statusesErr = errors.New("provider unreachable")
 
-	resp, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken))
+	resp, err := f.client.ListServerSecrets(clientContextWithBearer(ctx, "Bearer "+f.adminToken), listServerReq())
 	if err == nil {
 		t.Fatalf("want an error on a provider fault, got a list: %v", resp.GetServerSecrets())
 	}
@@ -506,12 +497,12 @@ func TestListServerSecretsAdminOnly(t *testing.T) {
 		{"user", f.userToken},
 		{"agent", f.agentToken},
 	} {
-		_, err := f.client.ListServerSecrets(ctx, listServerReq(tc.token))
+		_, err := f.client.ListServerSecrets(clientContextWithBearer(ctx, "Bearer "+tc.token), listServerReq())
 		if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 			t.Fatalf("%s token: want CodePermissionDenied, got %v (err=%v)", tc.name, got, err)
 		}
 	}
-	if _, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken)); err != nil {
+	if _, err := f.client.ListServerSecrets(clientContextWithBearer(ctx, "Bearer "+f.adminToken), listServerReq()); err != nil {
 		t.Fatalf("admin token: %v", err)
 	}
 }
@@ -523,12 +514,12 @@ func TestSetSecretOmittedScopeLandsAtCallerUserCoordinate(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
 
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "v")); err != nil {
 		t.Fatalf("SetSecret(omitted scope): %v", err)
 	}
 	// An EXPLICIT user scope must reach the same coordinate as an omitted one;
 	// otherwise the default and the named tier could drift apart unnoticed.
-	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.userToken, "API_KEY", "v", compassv1.SecretScope_SECRET_SCOPE_USER)); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), scopedSetReq("API_KEY", "v", compassv1.SecretScope_SECRET_SCOPE_USER)); err != nil {
 		t.Fatalf("SetSecret(explicit user scope): %v", err)
 	}
 
@@ -561,16 +552,16 @@ func TestTenantScopeWriteRequiresAdmin(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
 
-	_, err := f.client.SetSecret(ctx, scopedSetReq(f.userToken, "DB_URL", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT))
+	_, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), scopedSetReq("DB_URL", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("SetSecret tenant scope as member: code = %v, want PermissionDenied (err %v)", got, err)
 	}
-	_, err = f.client.DeleteSecret(ctx, scopedDelReq(f.userToken, "DB_URL", compassv1.SecretScope_SECRET_SCOPE_TENANT))
+	_, err = f.client.DeleteSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), scopedDelReq("DB_URL", compassv1.SecretScope_SECRET_SCOPE_TENANT))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("DeleteSecret tenant scope as member: code = %v, want PermissionDenied (err %v)", got, err)
 	}
 
-	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.adminToken, "DB_URL", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.adminToken), scopedSetReq("DB_URL", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
 		t.Fatalf("SetSecret tenant scope as admin: %v", err)
 	}
 }
@@ -591,10 +582,10 @@ func TestUserScopedSecretIsNotVisibleToAnotherUsersAgent(t *testing.T) {
 		t.Fatalf("CreateAgent(other): %v", err)
 	}
 
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "PRIVATE_ONE", "v")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("PRIVATE_ONE", "v")); err != nil {
 		t.Fatalf("SetSecret(user scope): %v", err)
 	}
-	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.adminToken, "SHARED_ONE", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.adminToken), scopedSetReq("SHARED_ONE", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
 		t.Fatalf("SetSecret(tenant scope): %v", err)
 	}
 
@@ -624,10 +615,10 @@ func TestUserScopeResetDoesNotRetireTheTenantRow(t *testing.T) {
 		t.Fatalf("CreateAgent(other): %v", err)
 	}
 
-	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.adminToken, "DB_URL", "shared", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.adminToken), scopedSetReq("DB_URL", "shared", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
 		t.Fatalf("SetSecret(tenant): %v", err)
 	}
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "private")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "private")); err != nil {
 		t.Fatalf("SetSecret(user re-set): %v", err)
 	}
 
@@ -668,10 +659,10 @@ func TestTwoUsersSameNameDoNotClobber(t *testing.T) {
 	}
 
 	// A writes DB_URL, then B writes DB_URL — same name, different callers.
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "a-value")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+f.userToken), setReq("DB_URL", "a-value")); err != nil {
 		t.Fatalf("SetSecret(a): %v", err)
 	}
-	if _, err := f.client.SetSecret(ctx, setReq(tokB, "DB_URL", "b-value")); err != nil {
+	if _, err := f.client.SetSecret(clientContextWithBearer(ctx, "Bearer "+tokB), setReq("DB_URL", "b-value")); err != nil {
 		t.Fatalf("SetSecret(b): %v", err)
 	}
 

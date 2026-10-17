@@ -100,16 +100,22 @@ type connectStub struct {
 }
 
 func (s connectStub) GetServerInfo(ctx context.Context, req *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
-	info, _ := connect.CallInfoForServerContext(ctx)
 	if s.rec != nil {
+		info, ok := connect.CallInfoForServerContext(ctx)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInternal, "missing Connect call info")
+		}
 		s.rec.set(info.RequestHeader().Get("Authorization"))
 	}
 	return s.getServerInfo(ctx, req)
 }
 
 func (s connectStub) WhoAmI(ctx context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
-	info, _ := connect.CallInfoForServerContext(ctx)
 	if s.rec != nil {
+		info, ok := connect.CallInfoForServerContext(ctx)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInternal, "missing Connect call info")
+		}
 		s.rec.set(info.RequestHeader().Get("Authorization"))
 	}
 	return s.whoAmI(ctx, req)
@@ -153,8 +159,9 @@ func unauthWhoAmI(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.Who
 func connectTLSStub(t *testing.T, stub connectStub) (srv *httptest.Server, certPEM []byte) {
 	t.Helper()
 	mux := http.NewServeMux()
-	path, handler := compassv1connect.NewCompassServiceHandler(stub)
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, stub)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 
 	srv = httptest.NewUnstartedServer(mux)
 	srv.EnableHTTP2 = true
@@ -209,11 +216,23 @@ func staticWhoAmI(h func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.
 // header (so a success row can assert the probe was armed) and replies with id.
 func recordingWhoAmI(id string) func(*authRecorder) func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
 	return func(rec *authRecorder) func(context.Context, *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
-		return func(_ context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
-			rec.set(req.Header().Get("Authorization"))
+		return func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+			info, ok := connect.CallInfoForServerContext(ctx)
+			if !ok {
+				return nil, connect.NewError(connect.CodeInternal, "missing Connect call info")
+			}
+			rec.set(info.RequestHeader().Get("Authorization"))
 			return &compassv1.WhoAmIResponse{AccountId: id}, nil
 		}
 	}
+}
+
+func requestAuthorization(ctx context.Context) (string, error) {
+	info, ok := connect.CallInfoForServerContext(ctx)
+	if !ok {
+		return "", connect.NewError(connect.CodeInternal, "missing Connect call info")
+	}
+	return info.RequestHeader().Get("Authorization"), nil
 }
 
 func connectClassificationCases() []connectCase {
@@ -380,7 +399,8 @@ func assertConnectSuccess(t *testing.T, svc *bridgeService, store tokenstore.Sto
 // asserts the success-armed bearer is still injected (SetBearer left armed).
 func assertStillArmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 	t.Helper()
-	cc := compassv1connect.NewCompassServiceClient(svc.conn.Load().target.Client())
+	client, serverURL := svc.conn.Load().target.Client()
+	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(client, serverURL, connecthttp.WithReadMaxBytes(0))))
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
 	if _, err := cc.WhoAmI(ctx, &compassv1.WhoAmIRequest{}); err != nil {
@@ -402,7 +422,8 @@ func assertDisarmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 	// still proves what the target injected — the RPC error itself is expected
 	// and ignored; only the recorded header is the assertion.
 	rec.set("<not-probed>")
-	cc := compassv1connect.NewCompassServiceClient(svc.conn.Load().target.Client())
+	client, serverURL := svc.conn.Load().target.Client()
+	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(client, serverURL, connecthttp.WithReadMaxBytes(0))))
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
 	_, _ = cc.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
@@ -429,8 +450,12 @@ func TestClientAPIVersionMatchesServer(t *testing.T) {
 func TestConnectConcurrentIsSerialized(t *testing.T) {
 	// The stub reads the forwarded Authorization and reflects the bearer token
 	// as the account id, so a mismatched (token, accountID) proves interleaving.
-	echoWhoAmI := func(_ context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
-		bearer := strings.TrimPrefix(req.Header().Get("Authorization"), "Bearer ")
+	echoWhoAmI := func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		authorization, err := requestAuthorization(ctx)
+		if err != nil {
+			return nil, err
+		}
+		bearer := strings.TrimPrefix(authorization, "Bearer ")
 		return &compassv1.WhoAmIResponse{AccountId: "acct-for-" + bearer}, nil
 	}
 	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: echoWhoAmI})
@@ -556,14 +581,21 @@ func setupTLSStub(t *testing.T, rpcReached chan<- struct{}) (*httptest.Server, [
 	t.Helper()
 	stub := connectStub{
 		getServerInfo: okServerInfo,
-		whoAmI: func(_ context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
-			if req.Header().Get("Authorization") != "Bearer "+probeToken {
+		whoAmI: func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+			authorization, err := requestAuthorization(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if authorization != "Bearer "+probeToken {
 				return nil, connect.NewError(connect.CodeUnauthenticated, "stub: no caller")
 			}
 			return &compassv1.WhoAmIResponse{AccountId: "setup-account"}, nil
 		},
 	}
-	_, connectHandler := compassv1connect.NewCompassServiceHandler(stub)
+	mux := http.NewServeMux()
+	server := connect.NewServer()
+	compassv1connect.RegisterCompassServiceHandler(server, stub)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc-web") {
 			if rpcReached != nil {
@@ -576,7 +608,7 @@ func setupTLSStub(t *testing.T, rpcReached chan<- struct{}) (*httptest.Server, [
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		connectHandler.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r)
 	})
 	srv := httptest.NewUnstartedServer(handler)
 	srv.EnableHTTP2 = true
@@ -726,8 +758,12 @@ func TestConnectServerChoiceValidationFailures(t *testing.T) {
 }
 
 func TestConnectServerChoiceRetriesSameCAPick(t *testing.T) {
-	whoAmI := func(_ context.Context, req *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
-		if req.Header().Get("Authorization") != "Bearer "+probeToken {
+	whoAmI := func(ctx context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
+		authorization, err := requestAuthorization(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if authorization != "Bearer "+probeToken {
 			return nil, connect.NewError(connect.CodeUnauthenticated, "stub: no caller")
 		}
 		return &compassv1.WhoAmIResponse{AccountId: "retry-account"}, nil

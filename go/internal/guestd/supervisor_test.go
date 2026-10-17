@@ -73,7 +73,15 @@ func newTestSupervisor(t *testing.T, provisioned bool, defaultUID uint32) (compa
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
 	h2cClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
-	client := compassv1internalconnect.NewGuestControlClient(connect.NewClient(connecthttp.NewTransport(h2cClient, "http://"+ln.Addr().String(), connecthttp.WithReadMaxBytes(0))))
+	client := compassv1internalconnect.NewGuestControlClient(
+		connect.NewClient(
+			connecthttp.NewTransport(
+				h2cClient,
+				"http://"+ln.Addr().String(),
+				connecthttp.WithReadMaxBytes(0),
+			),
+		),
+	)
 	return client, svc
 }
 

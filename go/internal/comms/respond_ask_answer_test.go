@@ -27,34 +27,37 @@ func twoEventsAfterBoundary(t *testing.T, h streamHarness, actor store.AccountID
 	t.Cleanup(cancel)
 	out := make(chan []*compassv1.SubscribeCommsResponse, 1)
 	connectReq := &compassv1.SubscribeCommsRequest{SinceSeq: 0}
+	connectCtx, info := connect.NewClientContext(ctx)
 	if actor != "" {
-		connectReq.Header().Set(commsTestActorHeader, string(actor))
+		info.RequestHeader().Set(commsTestActorHeader, string(actor))
 	}
 	go func() {
-		stream, err := h.client.SubscribeComms(ctx, connectReq)
+		stream, err := h.client.SubscribeComms(connectCtx, connectReq)
 		if err != nil {
 			t.Errorf("SubscribeComms: %v", err)
 			out <- nil
 			return
 		}
-		if !stream.Receive() {
-			t.Errorf("stream closed before boundary: %v", stream.Err())
+		boundary, err := stream.Receive()
+		if err != nil {
+			t.Errorf("stream closed before boundary: %v", err)
 			out <- nil
 			return
 		}
-		if b := stream.Msg(); b.GetSeq() != 0 || b.GetPayload() != nil {
-			t.Errorf("first frame = seq %d payload %T, want boundary", b.GetSeq(), b.GetPayload())
+		if boundary.GetSeq() != 0 || boundary.GetPayload() != nil {
+			t.Errorf("first frame = seq %d payload %T, want boundary", boundary.GetSeq(), boundary.GetPayload())
 			out <- nil
 			return
 		}
 		var got []*compassv1.SubscribeCommsResponse
 		for range 2 {
-			if !stream.Receive() {
-				t.Errorf("stream closed before two events: %v", stream.Err())
+			msg, err := stream.Receive()
+			if err != nil {
+				t.Errorf("stream closed before two events: %v", err)
 				out <- got
 				return
 			}
-			got = append(got, stream.Msg())
+			got = append(got, msg)
 		}
 		out <- got
 	}()

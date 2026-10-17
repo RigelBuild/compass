@@ -20,9 +20,40 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
+// authHeader is the wire key a real client sets; http.Header canonicalizes it to
+// the same form the door reads.
+const authHeader = "Authorization"
+
+func bearerRequest(value string) *connect.CallInfo {
+	info := &connect.CallInfo{}
+	if value != "" {
+		info.RequestHeader().Set(authHeader, value)
+	}
+	return info
+}
+
+func runInterceptor(interceptor connect.ServerInterceptor, req *connect.CallInfo) (*spyResult, error) {
+	rec := &spyResult{}
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: "/test.Auth/Call"}
+	err := runServerCall(interceptor, context.Background(), spec, req, recordingSpy(rec))
+	return rec, err
+}
+
+func wantUnauthenticated(t *testing.T, rec *spyResult, err error, what string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected a rejection, got nil error", what)
+	}
+	if code := connect.CodeOf(err); code != connect.CodeUnauthenticated {
+		t.Fatalf("%s: expected CodeUnauthenticated, got %v", what, code)
+	}
+	if rec.called {
+		t.Fatalf("%s: the handler must not run when the door rejects", what)
+	}
+}
+
 // openTestStore returns a Store connected to a fresh, migrated database and a
-// bootstrap-admin plus a non-admin member account created in it — the two
-// identities the bearer/stream door tests mint tokens for. It skips the test
+// bootstrap-admin plus a non-admin member account created in it. It skips the test
 // when no DSN and no container runtime are available.
 func openTestStore(t *testing.T) (*store.Store, store.AccountID, store.AccountID) {
 	t.Helper()
@@ -42,33 +73,4 @@ func openTestStore(t *testing.T) (*store.Store, store.AccountID, store.AccountID
 		t.Fatalf("CreateUser(member): %v", err)
 	}
 	return st, admin.ID, member.ID
-}
-
-// runInterceptor drives interceptor over a spy handler with req, returning what
-// the handler observed and the door's error. Lives in the pgtest lane because its
-// only callers are the store-backed bearer tests (interceptor_pgtest_test.go); it
-// reuses the default-lane spy helpers (recordingSpy, spyResult), which the pgtest
-// build includes.
-func runInterceptor(interceptor connect.UnaryInterceptorFunc, req connect.AnyRequest) (*spyResult, error) {
-	rec := &spyResult{}
-	wrapped := interceptor(recordingSpy(rec))
-	_, err := wrapped(context.Background(), req)
-	return rec, err
-}
-
-// wantUnauthenticated asserts the door rejected before the handler ran, with
-// CodeUnauthenticated. Shared by the store-backed unary and streaming bearer
-// reject matrices (interceptor_pgtest_test.go, stream_test.go), so it lives in
-// the pgtest lane with them.
-func wantUnauthenticated(t *testing.T, rec *spyResult, err error, what string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("%s: expected a rejection, got nil error", what)
-	}
-	if code := connect.CodeOf(err); code != connect.CodeUnauthenticated {
-		t.Fatalf("%s: expected CodeUnauthenticated, got %v", what, code)
-	}
-	if rec.called {
-		t.Fatalf("%s: the handler must not run when the door rejects", what)
-	}
 }

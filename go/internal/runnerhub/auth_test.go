@@ -26,6 +26,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -86,18 +87,24 @@ func TestAuthenticateNoOracleAcrossCauses(t *testing.T) {
 func TestAuthenticateLookupFailureIsUnavailable(t *testing.T) {
 	cause := errors.New("connection failed with db-password-secret")
 	lookupErr := fmt.Errorf("%w: %w", auth.ErrTokenLookupFailed, cause)
-	b := &bearerAuth{resolve: func(context.Context, string, store.SubjectKind) (store.Subject, error) {
+	var presented string
+	b := &bearerAuth{resolve: func(_ context.Context, token string, _ store.SubjectKind) (store.Subject, error) {
+		presented = token
 		return store.Subject{}, lookupErr
 	}}
 	handlerCalled := false
-	next := b.unaryInterceptor()(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
-		handlerCalled = true
-		return nil, errors.New("unexpected handler invocation")
+	server := connect.NewServer(b.interceptor())
+	const procedure = "/compass.v1.RunnerService/Enroll"
+	server.Register(connect.Method{
+		Spec: connect.Spec{Procedure: procedure, StreamType: connect.StreamTypeUnary},
+		Handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+			handlerCalled = true
+			return nil
+		},
 	})
-
-	request := &compassv1internal.EnrollRequest{}
-	request.Header().Set("Authorization", "Bearer runner-tok")
-	_, err := next(context.Background(), request)
+	var info connect.CallInfo
+	info.RequestHeader().Set("Authorization", "Bearer runner-tok")
+	err := server.Call(context.Background(), procedure, &info, nil)
 	if err == nil {
 		t.Fatal("Enroll during resolver failure succeeded, want Unavailable")
 	}
@@ -109,6 +116,9 @@ func TestAuthenticateLookupFailureIsUnavailable(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), cause.Error()) {
 		t.Fatalf("wire error %q contains lookup cause", err)
+	}
+	if presented != "runner-tok" {
+		t.Fatalf("resolver token = %q, want runner-tok", presented)
 	}
 	if handlerCalled {
 		t.Fatal("Enroll handler ran despite resolver failure")
@@ -190,7 +200,7 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 		if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("Send = %v, want nil or io.EOF-wrapped", err)
 		}
-		_, err := stream.Receive()
+		_, err = stream.Receive()
 		assertUnauthenticated(t, err)
 	})
 
@@ -204,7 +214,7 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 		if err := stream.Send(&compassv1internal.PublishEventsRequest{}); err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("Send = %v, want nil or io.EOF-wrapped", err)
 		}
-		_, err := stream.CloseAndReceive()
+		_, err = stream.CloseAndReceive()
 		assertUnauthenticated(t, err)
 	})
 
@@ -233,10 +243,11 @@ func TestSessionBlobRPCsRejectNonRunnerSubject(t *testing.T) {
 		assertUnauthenticated(t, err)
 		return
 	}
-	if stream.Receive() {
-		t.Fatal("FetchSessionBlobs account token unexpectedly received a frame")
+	_, err = stream.Receive()
+	assertUnauthenticated(t, err)
+	if closeErr := stream.Close(); closeErr != nil {
+		t.Errorf("close FetchSessionBlobs stream: %v", closeErr)
 	}
-	assertUnauthenticated(t, stream.Err())
 }
 
 // Direct handler calls also enforce SubjectRunner, independent of the door.
@@ -245,7 +256,7 @@ func TestSessionBlobHandlersRejectAccountSubject(t *testing.T) {
 	ctx := withRunnerSubject(context.Background(), store.Subject{Kind: store.SubjectAccount, ID: "account-1"})
 	_, err := handler.RelaySessionBlob(ctx, &compassv1internal.RelaySessionBlobRequest{})
 	assertUnauthenticated(t, err)
-	err = handler.FetchSessionBlobs(ctx, &compassv1internal.FetchSessionBlobsRequest{}, nil)
+	err = handler.FetchSessionBlobs(ctx, &compassv1internal.FetchSessionBlobsRequest{}, compassv1internalconnect.RunnerServiceFetchSessionBlobsServerStream{})
 	assertUnauthenticated(t, err)
 }
 
@@ -258,11 +269,18 @@ func TestSessionBlobRPCsRegisteredOverWire(t *testing.T) {
 		t.Fatalf("RelaySessionBlob without store = %v, want Unavailable (err %v)", got, err)
 	}
 	stream, err := client.FetchSessionBlobs(context.Background(), &compassv1internal.FetchSessionBlobsRequest{})
-	if err == nil {
-		if stream.Receive() {
-			t.Fatal("FetchSessionBlobs without store unexpectedly received a frame")
+	if err != nil {
+		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+			t.Fatalf("FetchSessionBlobs without store = %v, want Unavailable (err %v)", got, err)
 		}
-		err = stream.Err()
+		return
+	}
+	_, err = stream.Receive()
+	if err == nil {
+		t.Fatal("FetchSessionBlobs without store unexpectedly received a frame")
+	}
+	if closeErr := stream.Close(); closeErr != nil {
+		t.Errorf("close FetchSessionBlobs stream: %v", closeErr)
 	}
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Fatalf("FetchSessionBlobs without store = %v, want Unavailable (err %v)", got, err)

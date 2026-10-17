@@ -39,8 +39,7 @@ func TestServerHealthCheck(t *testing.T) {
 		var dialer net.Dialer
 		return dialer.DialContext(ctx, network, addr)
 	})
-	t.Cleanup(transport.CloseIdleConnections)
-	client := grpchealth.NewClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	client := grpchealth.NewClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, server.URL, connecthttp.WithGRPC())))
 
 	for _, service := range []string{"", "compass.v1.CompassService"} {
 		response, err := client.Check(t.Context(), &grpchealth.CheckRequest{Service: service})
@@ -159,25 +158,24 @@ func newServerHealthRunnerServer(t *testing.T) (*serverHealth, *runnerhub.Hub, *
 	health := newServerHealth(hub)
 	attached := make(chan struct{}, 2)
 	hub.SetRunnerReadyHook(func() { attached <- struct{}{} })
-	interceptor, err := otelconnect.NewInterceptor()
+	interceptor, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
-	path, handler := runnerhub.NewMountedHandler(hub,
-		func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
-			if presented != "runner-tok" || want != store.SubjectRunner {
-				return store.Subject{}, store.ErrNotFound
-			}
-			return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, nil
-		}, nil, nil, interceptor)
 	mux := http.NewServeMux()
+	runnerhub.Mount(mux, hub, func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
+		if presented != "runner-tok" || want != store.SubjectRunner {
+			return store.Subject{}, store.ErrNotFound
+		}
+		return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, nil
+	}, nil, nil, interceptor)
 	health.mount(mux)
-	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return health, hub, srv, attached
+
 }
 
 func TestHealthzStatusMapping(t *testing.T) {

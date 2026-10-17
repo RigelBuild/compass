@@ -25,16 +25,13 @@ const runnerHealthService = "compass.runner"
 
 type serverHealth struct {
 	draining atomic.Bool
-	grpcPath string
-	grpc     http.Handler
+	grpc     *connect.Server
 	hub      *runnerhub.Hub
 }
 
 func newServerHealth(hub *runnerhub.Hub) *serverHealth {
-	health := &serverHealth{hub: hub}
-	health.grpcPath, health.grpc = grpchealth.NewHandler(health,
-		connecthttp.WithReadMaxBytes(healthMaxReadBytes),
-	)
+	health := &serverHealth{hub: hub, grpc: connect.NewServer()}
+	grpchealth.Register(health.grpc, health)
 	return health
 }
 
@@ -81,6 +78,6 @@ func (h *serverHealth) serveHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *serverHealth) mount(mux *http.ServeMux) {
-	mux.Handle(h.grpcPath, h.grpc)
+	connecthttp.Mount(mux, h.grpc, connecthttp.WithReadMaxBytes(healthMaxReadBytes))
 	mux.HandleFunc(healthzPattern, h.serveHealthz)
 }

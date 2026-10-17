@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -61,10 +62,10 @@ func TestTourRPCsRejectInvalidInput(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	service := newService("tour-test", bus, nil, nil, nil, nil, nil)
-	path, handler := compassv1connect.NewCompassServiceHandler(service,
-		connect.WithInterceptors(auth.AmbientIdentity("tour-account")))
+	server := connect.NewServer(auth.AmbientIdentity("tour-account"))
+	compassv1connect.RegisterCompassServiceHandler(server, service)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Config.Protocols = cleartextHTTP2()
 	srv.Start()

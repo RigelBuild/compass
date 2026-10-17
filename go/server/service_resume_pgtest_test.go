@@ -79,7 +79,6 @@ func newResumeFixture(t *testing.T) resumeFixture {
 
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(admin.ID),
 	)
 	return resumeFixture{

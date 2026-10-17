@@ -104,7 +104,7 @@ func forwardComms(
 	actor store.AccountID,
 	vis eventVisibility,
 	sub events.Subscription[*compassv1.SubscribeCommsResponse],
-	stream *connect.ServerStream[compassv1.SubscribeCommsResponse],
+	stream compassv1connect.CommsServiceSubscribeCommsServerStream,
 ) error {
 	// send reports (visErr, ok): visErr is a store fault resolving visibility —
 	// propagate it. ok is false on a clean end (a stream.Send failure or a

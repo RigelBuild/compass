@@ -65,10 +65,7 @@ func TestRetireSessionReachesTheServedProducer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l.Close(context.Background()) })
 
-	p, err := l.producer(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := l.producer(t)
 
 	// The lifecycle binds the session at Start, through the same listener seam
 	// the retirement uses at Stop.
@@ -97,10 +94,11 @@ func TestRetireSessionReachesTheServedProducer(t *testing.T) {
 	// the Gateway's drain over the real socket. A listener holding a DIFFERENT
 	// producer than the Gateway serves would deliver nothing here, so retiring
 	// through it could never touch the served session.
-	if !stream.Receive() {
-		t.Fatalf("no op reached the agent over the socket (stream err %v): the listener's producer is not the one the Gateway serves", stream.Err())
+	msg, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no op reached the agent over the socket: the listener's producer is not the one the Gateway serves: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "bound" {
+	if input := msg.GetPrompt().GetInput(); input != "bound" {
 		t.Fatalf("op off the socket = %q, want %q", input, "bound")
 	}
 
@@ -190,12 +188,14 @@ func TestSendControlReachesTheServedProducer(t *testing.T) {
 	}
 	defer func() { _ = stream.Close() }()
 
-	if !stream.Receive() {
-		t.Fatalf("no op reached the agent over the socket (stream err %v): SendControl did not delegate to the served producer", stream.Err())
+	msg, err := stream.Receive()
+	if err != nil {
+		t.Fatalf("no op reached the agent over the socket: SendControl did not delegate to the served producer: %v", err)
 	}
-	if input := stream.Msg().GetPrompt().GetInput(); input != "relayed" {
+	if input := msg.GetPrompt().GetInput(); input != "relayed" {
 		t.Fatalf("op off the socket = %q, want %q", input, "relayed")
 	}
+
 }
 
 // TestSendControlOnUnwiredListenerErrors pins the nil-producer guard: unlike

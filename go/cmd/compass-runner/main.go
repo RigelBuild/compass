@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/otel/otelsetup"
@@ -141,7 +141,7 @@ func run() error {
 	// trusted CA — the local dogfood path, where the Server's self-signed
 	// 127.0.0.1 cert is the trust anchor. Unset leaves HTTPClient nil, so Dial
 	// uses http.DefaultClient (system roots) for a Server behind a public CA.
-	var httpClient connect.HTTPClient
+	var httpClient connecthttp.HTTPClient
 	if ca := orEnv(*caPath, "COMPASS_RUNNER_CA"); ca != "" {
 		httpClient, err = runner.NewCATrustClient(ca)
 		if err != nil {

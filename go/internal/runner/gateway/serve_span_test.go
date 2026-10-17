@@ -6,11 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
-
-	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // ctxRecordingRelay records the ctx each shared stream opens on, then delegates.
@@ -19,7 +17,7 @@ type ctxRecordingRelay struct {
 	opened chan context.Context
 }
 
-func (r ctxRecordingRelay) PublishEvents(ctx context.Context) *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse] {
+func (r ctxRecordingRelay) PublishEvents(ctx context.Context) (compassv1internalconnect.RunnerServicePublishEventsClientStream, error) {
 	r.opened <- ctx
 	return r.inner.PublishEvents(ctx)
 }

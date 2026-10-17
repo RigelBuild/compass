@@ -22,12 +22,12 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-func verifyAgentTokenRequest(bearer, token string) *compassv1internal.VerifyAgentTokenRequest {
-	req := &compassv1internal.VerifyAgentTokenRequest{Token: token}
+func verifyAgentTokenRequest(ctx context.Context, bearer, token string) (context.Context, *compassv1internal.VerifyAgentTokenRequest) {
+	ctx, info := connect.NewClientContext(ctx)
 	if bearer != "" {
-		req.Header().Set("Authorization", "Bearer "+bearer)
+		info.RequestHeader().Set("Authorization", "Bearer "+bearer)
 	}
-	return req
+	return ctx, &compassv1internal.VerifyAgentTokenRequest{Token: token}
 }
 
 // The network door serves VerifyAgentToken to the llm-gateway service only, and
@@ -62,9 +62,9 @@ func TestGatewayAuthDoorVerifiesAgentTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	otelIC, err := otelconnect.NewInterceptor()
+	otelIC, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	resolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)
@@ -79,7 +79,8 @@ func TestGatewayAuthDoorVerifiesAgentTokens(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := compassv1internalconnect.NewGatewayAuthClient(connect.NewClient(connecthttp.NewTransport(http.DefaultClient, server.URL, connecthttp.WithReadMaxBytes(0))))
 
-	got, err := client.VerifyAgentToken(ctx, verifyAgentTokenRequest(serviceToken, agentToken))
+	ctx, req := verifyAgentTokenRequest(ctx, serviceToken, agentToken)
+	got, err := client.VerifyAgentToken(ctx, req)
 	if err != nil {
 		t.Fatalf("VerifyAgentToken as gateway: %v", err)
 	}
@@ -87,18 +88,20 @@ func TestGatewayAuthDoorVerifiesAgentTokens(t *testing.T) {
 		t.Fatalf("VerifyAgentToken = %v, want agent %q owner %q", got, agent.ID, owner.ID)
 	}
 	for name, bearer := range map[string]string{"no bearer": "", "account bearer": ownerToken, "other service": otherServiceToken} {
-		if _, err := client.VerifyAgentToken(ctx, verifyAgentTokenRequest(bearer, agentToken)); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		ctx, req := verifyAgentTokenRequest(ctx, bearer, agentToken)
+		if _, err := client.VerifyAgentToken(ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
 			t.Errorf("%s: VerifyAgentToken error = %v, want Unauthenticated", name, err)
 		}
 	}
-	oversized := verifyAgentTokenRequest(serviceToken, strings.Repeat("a", gatewayAuthMaxReadBytes))
+	ctx, oversized := verifyAgentTokenRequest(ctx, serviceToken, strings.Repeat("a", gatewayAuthMaxReadBytes))
 	if _, err := client.VerifyAgentToken(ctx, oversized); connect.CodeOf(err) != connect.CodeResourceExhausted {
 		t.Errorf("oversized VerifyAgentToken error = %v, want ResourceExhausted", err)
 	}
 	if err := tokens.Revoke(ctx, string(agent.ID)); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if _, err := client.VerifyAgentToken(ctx, verifyAgentTokenRequest(serviceToken, agentToken)); connect.CodeOf(err) != connect.CodeUnauthenticated {
+	ctx, req = verifyAgentTokenRequest(ctx, serviceToken, agentToken)
+	if _, err := client.VerifyAgentToken(ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("VerifyAgentToken after revoke error = %v, want Unauthenticated", err)
 	}
 }

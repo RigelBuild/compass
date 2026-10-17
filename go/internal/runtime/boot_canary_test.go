@@ -30,8 +30,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
@@ -212,8 +210,8 @@ func (c *canaryFakeClient) Health(context.Context, *compassv1.HealthRequest) (*c
 	return nil, errors.New("canaryFakeClient: Health not used on the canary path")
 }
 
-func (c *canaryFakeClient) ExecStream(context.Context) *connect.BidiStreamForClient[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse] {
-	return nil
+func (c *canaryFakeClient) ExecStream(context.Context) (compassv1internalconnect.GuestControlExecStreamClientStream, error) {
+	return compassv1internalconnect.GuestControlExecStreamClientStream{}, nil
 }
 
 func (c *canaryFakeClient) Signal(context.Context, *compassv1.SignalRequest) (*compassv1.SignalResponse, error) {

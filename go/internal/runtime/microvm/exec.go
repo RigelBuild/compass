@@ -101,16 +101,13 @@ type ExitStatus struct {
 	Signal int
 }
 
-// bidiStream is the subset of *connect.BidiStreamForClient the exec pumps use.
-// It exists so a hermetic test can inject a stream whose Receive blocks until
-// CloseResponse — proving the ctx-cancel watcher forces the receive side down —
-// since the concrete connect stream is unfakeable. *connect.BidiStreamForClient
-// satisfies it.
+// bidiStream is the subset of the generated client stream used by the exec pumps.
+// A narrow interface keeps the cancellation path testable with a blocking fake.
 type bidiStream interface {
 	Send(req *compassv1.ExecStreamRequest) error
 	Receive() (*compassv1.ExecStreamResponse, error)
-	CloseRequest() error
-	CloseResponse() error
+	CloseSend() error
+	Close() error
 }
 
 // GuestExec is the host-side exec layer over a GuestControl client.
@@ -178,14 +175,17 @@ func isDeadline(err error) bool {
 // goroutine: stdin is framed as stdin frames and stdout/stderr are demuxed
 // onto the read pipes, which close when ExecExit arrives.
 func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestStream, retErr error) {
-	stream, err := g.openBidi(ctx)
-	if err != nil {
-		return nil, err
+	var stream bidiStream
+	if g.openStream != nil {
+		stream = g.openStream(ctx)
+	} else {
+		clientStream, err := g.openBidi(ctx)
+		if err != nil {
+			return nil, err
+		}
+		stream = clientStream
 	}
-	// Until the pumps take ownership, any early-error return must reap both
-	// halves itself — the bidi stream is already open, so a bare `return nil,
-	// err` leaks its response-body reader / makeRequest goroutine. The pumps own
-	// the reap once they start (a no-op on the success path).
+	// Until the pumps take ownership, an early-error return must close the stream.
 	defer func() {
 		if retErr != nil {
 			_ = stream.CloseSend()
@@ -244,12 +244,10 @@ func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestSt
 	return gs, nil
 }
 
-// openBidi opens the bidi ExecStream, honoring an injected openStream (tests)
-// and otherwise dialing the real GuestControl client.
-func (g *GuestExec) openBidi(ctx context.Context) bidiStream {
-	if g.openStream != nil {
-		return g.openStream(ctx)
-	}
+// openBidi opens the generated GuestControl ExecStream client stream.
+func (g *GuestExec) openBidi(
+	ctx context.Context,
+) (compassv1internalconnect.GuestControlExecStreamClientStream, error) {
 	return g.client.ExecStream(ctx)
 }
 
@@ -312,11 +310,8 @@ func (s *GuestStream) Wait() ExitStatus {
 	return s.status
 }
 
-// pumpStdin reads the caller's Stdin pipe and frames it as stdin frames; when
-// the caller closes Stdin (pipe EOF) it sends a stdin_close half-close and
-// closes the request direction of the stream. Kill rides the separate Signal
-// RPC, not this stream, so closing the request side here never races a
-// teardown.
+// pumpStdin frames data from the caller's Stdin pipe. EOF sends stdin_close
+// and closes the request direction; Kill uses the separate Signal RPC.
 func (s *GuestStream) pumpStdin() {
 	buf := make([]byte, stdinChunk)
 	for {
@@ -327,41 +322,27 @@ func (s *GuestStream) pumpStdin() {
 			if sendErr := s.stream.Send(&compassv1.ExecStreamRequest{
 				Frame: &compassv1.ExecStreamRequest_Stdin{Stdin: frame},
 			}); sendErr != nil {
-				// The stream is gone; the response pump observes the same break
-				// and unblocks Wait. Nothing further to do on the stdin side.
 				return
 			}
 		}
 		if readErr != nil {
-			// EOF is the caller closing Stdin (the common path); any other read
-			// error means the pipe was closed with an error. Either way, signal
-			// the guest to half-close the child's stdin, then close the request
-			// direction.
+			// EOF or another read error ends the child's stdin.
 			if sendErr := s.stream.Send(&compassv1.ExecStreamRequest{
 				Frame: &compassv1.ExecStreamRequest_StdinClose{StdinClose: &compassv1.StdinClose{}},
 			}); sendErr != nil {
 				return
 			}
-			// Half-close the request side; the response side stays open to carry
-			// stdout/stderr and the terminal exit frame. A CloseRequest error is
-			// not actionable here — the response pump surfaces any real break.
-			_ = s.stream.CloseRequest()
+			// The response pump remains open to read stdout and the exit frame.
+			_ = s.stream.CloseSend()
 			return
 		}
 	}
 }
 
-// pumpResponses demuxes stdout/stderr frames onto the read pipes and, on the
-// terminal exit frame (or a stream break), records the exit status, closes both
-// read pipes, and closes done to unblock Wait. Writing to a pipe blocks until
-// the caller reads, so a full pipe applies backpressure rather than dropping
-// bytes — matching the runner's continuous-drain model.
+// pumpResponses demuxes stdout/stderr frames onto the read pipes and records
+// the exit status or stream failure before unblocking Wait.
 func (s *GuestStream) pumpResponses() {
 	defer close(s.done)
-	// On any terminal exit, reap the stdin pump and free the response half:
-	// pumpStdin may be parked in stdinR.Read, and the muxed response half must
-	// not leak per exec. This defer runs before close(s.done), so by the time
-	// Wait returns the pump's reader end is closed.
 	defer s.reapStdinPump()
 	for {
 		resp, err := s.stream.Receive()
@@ -417,20 +398,12 @@ func (s *GuestStream) pumpResponses() {
 	}
 }
 
-// watchCancel forces the receive side down when the stream ctx is cancelled so
-// a deliberate teardown reaps promptly. pumpResponses blocks synchronously in
-// stream.Receive() and cannot itself select on ctx; the h2c transport's
-// propagation of a request-ctx cancel to a blocked Receive is unbounded
-// (observed >30s under CI load, and indefinite in-process), so this watcher
-// calls CloseResponse — a local response-body close that aborts the blocked
-// Receive at once and RST_STREAMs the server, whose bound child guestd then
-// SIGKILL-reaps. On a normal terminal exit (done closed first) it returns
-// without touching the stream, so it never closes a still-live receive half;
-// CloseResponse is idempotent, so racing reapStdinPump's own call is safe.
+// watchCancel closes the client stream to interrupt a blocked Receive.
 func (s *GuestStream) watchCancel() {
 	select {
 	case <-s.ctx.Done():
-		_ = s.stream.CloseResponse()
+		// Close interrupts any blocked Receive and cancellation tears down the stream.
+		_ = s.stream.Close()
 	case <-s.done:
 	}
 }
@@ -443,17 +416,9 @@ func (s *GuestStream) closePipes(cause error) {
 	_ = s.stderrW.CloseWithError(cause) // signalled to the caller's Stderr reader
 }
 
-// reapStdinPump unblocks and terminates pumpStdin and frees the response half
-// on a stream's terminal exit. pumpStdin blocks in stdinR.Read until the caller
-// writes or closes Stdin; on a clean child exit (or a break) where the caller
-// did neither, nothing else wakes it, so closing the pump's reader end makes
-// that Read return and the goroutine exit. It touches only the pipe, never the
-// stream send half, so it does not race pumpStdin's own Send/CloseRequest (the
-// send half stays single-owner). CloseResponse frees the receive half for
-// connection reuse; it is safe here because pumpResponses is the sole Receiver
-// and has already stopped. A caller that closed Stdin already drove pumpStdin's
-// own CloseRequest, so the extra reader close is a harmless idempotent no-op.
+// reapStdinPump unblocks the stdin pump and closes the response stream after
+// pumpResponses has stopped receiving.
 func (s *GuestStream) reapStdinPump() {
-	_ = s.stdinR.CloseWithError(io.ErrClosedPipe)
-	_ = s.stream.CloseResponse()
+	_ = s.stdinR.CloseWithError(io.ErrClosedPipe) // read end is no longer used
+	_ = s.stream.Close()                          // terminal stream cannot be reused
 }

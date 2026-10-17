@@ -304,11 +304,10 @@ func TestServeNetworkDoorTLSHandshakeAndRPC(t *testing.T) {
 	// a real authenticated RPC and returns the configured version.
 	token := readAdminToken(t, stateDir)
 	client := newTLSClient(t, addr, pool)
-	req := &compassv1.GetServerInfoRequest{}
-	req.Header().Set("Authorization", "Bearer "+token)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	resp, err := client.GetServerInfo(ctx, req)
+	ctx = clientContextWithBearer(ctx, "Bearer "+token)
+	resp, err := client.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo over TLS: %v", err)
 	}
@@ -358,11 +357,10 @@ func TestServeWithInheritedListenerServesTLSAndRPC(t *testing.T) {
 		t.Fatalf("close TLS connection: %v", err)
 	}
 	client := newTLSClient(t, addr, pool)
-	req := &compassv1.GetServerInfoRequest{}
-	req.Header().Set("Authorization", "Bearer "+readAdminToken(t, stateDir))
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	resp, err := client.GetServerInfo(ctx, req)
+	ctx = clientContextWithBearer(ctx, "Bearer "+readAdminToken(t, stateDir))
+	resp, err := client.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{})
 	if err != nil {
 		t.Fatalf("GetServerInfo through inherited listener: %v", err)
 	}
@@ -448,7 +446,6 @@ func networkDoorHandler(t *testing.T, svc *service, st *store.Store, adminID sto
 	t.Helper()
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(adminID),
 	)
 	return newH2CClient(t, url)
@@ -503,22 +500,18 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	// issue calls IssueToken (adminOnly) carrying the given bearer value (""
 	// leaves the Authorization header absent), returning connect's error code.
 	issue := func(bearer string) connect.Code {
-		req := &compassv1.IssueTokenRequest{AccountHandle: "admin"}
-		if bearer != "" {
-			req.Header().Set("Authorization", bearer)
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		_, err := client.IssueToken(ctx, req)
+		ctx = clientContextWithBearer(ctx, bearer)
+		_, err := client.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: "admin"})
 		return connect.CodeOf(err)
 	}
 
 	t.Run("valid admin token on adminOnly RPC succeeds", func(t *testing.T) {
-		req := &compassv1.IssueTokenRequest{AccountHandle: "admin"}
-		req.Header().Set("Authorization", "Bearer "+adminTok)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		resp, err := client.IssueToken(ctx, req)
+		ctx = clientContextWithBearer(ctx, "Bearer "+adminTok)
+		resp, err := client.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: "admin"})
 		if err != nil {
 			t.Fatalf("admin token on IssueToken: %v", err)
 		}
@@ -553,11 +546,10 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	})
 
 	t.Run("non-admin token on open RPC succeeds", func(t *testing.T) {
-		req := &compassv1.GetServerInfoRequest{}
-		req.Header().Set("Authorization", "Bearer "+memberTok)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		if _, err := client.GetServerInfo(ctx, req); err != nil {
+		ctx = clientContextWithBearer(ctx, "Bearer "+memberTok)
+		if _, err := client.GetServerInfo(ctx, &compassv1.GetServerInfoRequest{}); err != nil {
 			t.Fatalf("non-admin token on the open GetServerInfo RPC: %v", err)
 		}
 	})
@@ -612,11 +604,10 @@ func TestNetworkDoorRejectionIsOracleSafe(t *testing.T) {
 	// the bearer resolve — no admin-gate step to confound the comparison) with the
 	// given bearer and returns the client-visible connect.Error.
 	reject := func(bearer string) *connect.Error {
-		req := &compassv1.GetServerInfoRequest{}
-		req.Header().Set("Authorization", "Bearer "+bearer)
 		rpcCtx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		_, err := client.GetServerInfo(rpcCtx, req)
+		rpcCtx = clientContextWithBearer(rpcCtx, "Bearer "+bearer)
+		_, err := client.GetServerInfo(rpcCtx, &compassv1.GetServerInfoRequest{})
 		ce, ok := errors.AsType[*connect.Error](err)
 		if !ok {
 			t.Fatalf("expected a connect.Error rejection, got %v", err)
@@ -677,21 +668,19 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 	// before the handler runs). recvStreamOrTimeout is the deadline net, not a sleep.
 	rejectCode := func(t *testing.T, bearer string) connect.Code {
 		t.Helper()
-		req := &compassv1.SubscribeEventsRequest{SinceSeq: 0}
-		if bearer != "" {
-			req.Header().Set("Authorization", bearer)
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		stream, err := client.SubscribeEvents(ctx, req)
+		ctx = clientContextWithBearer(ctx, bearer)
+		stream, err := client.SubscribeEvents(ctx, &compassv1.SubscribeEventsRequest{SinceSeq: 0})
 		if err != nil {
 			return connect.CodeOf(err)
 		}
 		defer func() { _ = stream.Close() }()
-		if recvStreamOrTimeout(t, stream) {
-			t.Fatalf("a rejected stream delivered an event: %+v", stream.Msg())
+		_, err = recvStreamOrTimeout(t, stream)
+		if err == nil {
+			t.Fatalf("a rejected stream delivered an event")
 		}
-		return connect.CodeOf(stream.Err())
+		return connect.CodeOf(err)
 	}
 
 	t.Run("no bearer is Unauthenticated", func(t *testing.T) {
@@ -724,19 +713,21 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 		}
 		defer func() { _ = stream.Close() }()
 
-		if !recvStreamOrTimeout(t, stream) {
-			t.Fatalf("valid non-admin bearer opened no stream: first Receive = false, err = %v", stream.Err())
+		msg, err := recvStreamOrTimeout(t, stream)
+		if err != nil {
+			t.Fatalf("valid non-admin bearer opened no stream: first Receive = %v", err)
 		}
 		// since_seq==0 leads with the boundary frame (seq 0, no payload); the
 		// primed Ready snapshot follows it.
-		if b := stream.Msg(); b.GetSeq() != 0 || b.GetPayload() != nil {
+		if b := msg; b.GetSeq() != 0 || b.GetPayload() != nil {
 			t.Fatalf("first frame = seq %d payload %T, want the boundary (seq 0 / nil)", b.GetSeq(), b.GetPayload())
 		}
-		if !recvStreamOrTimeout(t, stream) {
-			t.Fatalf("no snapshot after the boundary: Receive = false, err = %v", stream.Err())
+		msg, err = recvStreamOrTimeout(t, stream)
+		if err != nil {
+			t.Fatalf("no snapshot after the boundary: Receive = %v", err)
 		}
-		if stream.Msg().GetServerStatus() == nil {
-			t.Fatalf("second event payload = %T, want the Ready snapshot (ServerStatus)", stream.Msg().GetPayload())
+		if msg.GetServerStatus() == nil {
+			t.Fatalf("second event payload = %T, want the Ready snapshot (ServerStatus)", msg.GetPayload())
 		}
 		// Deferred cancel closes the stream: the handler's forward loop selects on
 		// ctx.Done, returns, and releases the bus subscriber — no goroutine leak.
@@ -1132,11 +1123,10 @@ func TestServeWithListenWritesAdminToken0600(t *testing.T) {
 	}
 
 	client := newTLSClient(t, addr, pool)
-	req := &compassv1.IssueTokenRequest{AccountHandle: unknownHandle}
-	req.Header().Set("Authorization", "Bearer "+token)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	_, err = client.IssueToken(ctx, req)
+	ctx = clientContextWithBearer(ctx, "Bearer "+token)
+	_, err = client.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: unknownHandle})
 	if code := connect.CodeOf(err); code != connect.CodeNotFound {
 		t.Fatalf("file's admin token on IssueToken{unknown} = %v, want CodeNotFound (proves it resolves to the admin and clears the gate)", code)
 	}
@@ -1313,11 +1303,10 @@ func TestServeWithListenNeverLogsSuppliedAdminToken(t *testing.T) {
 	waitServing(t, socketPath)
 
 	client := newTLSClient(t, addr, pool)
-	req := &compassv1.IssueTokenRequest{AccountHandle: unknownHandle}
-	req.Header().Set("Authorization", "Bearer "+token)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	if _, err := client.IssueToken(ctx, req); connect.CodeOf(err) != connect.CodeNotFound {
+	ctx = clientContextWithBearer(ctx, "Bearer "+token)
+	if _, err := client.IssueToken(ctx, &compassv1.IssueTokenRequest{AccountHandle: unknownHandle}); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("supplied token on admin-only IssueToken = %v, want CodeNotFound (proves it resolves to the admin and clears the gate)", err)
 	}
 	logs := sb.String()

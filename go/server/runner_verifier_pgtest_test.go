@@ -45,9 +45,8 @@ func TestServeEnrollsProjectedRunnerTokenOverNetworkDoor(t *testing.T) {
 
 	token := signTestTokenAt(t, key, testClusterIssuer, time.Now())
 	client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(newTLSRunnerHTTPClient(t, pool), "https://"+addr, connecthttp.WithReadMaxBytes(0))))
-	req := &compassv1internal.EnrollRequest{}
-	req.Header().Set("Authorization", "Bearer "+token)
-	resp, err := client.Enroll(t.Context(), req)
+	ctx := clientContextWithBearer(t.Context(), "Bearer "+token)
+	resp, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{})
 	if err != nil {
 		t.Fatalf("Enroll with a projected token over the network door: %v", err)
 	}

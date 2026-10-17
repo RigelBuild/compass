@@ -157,50 +157,22 @@ func classifyProcedure(procedure string) (privilege, bool) {
 }
 
 // AdminGate is the method-level authorization guard over the network door's
-// privileged CompassService session RPCs — distinct from BearerInterceptor's
-// authentication. BearerInterceptor runs first (outer) and injects the caller;
-// this gate reads that caller and, for an adminOnly procedure, rejects any
-// account other than the bootstrap admin with CodePermissionDenied. Open
-// procedures pass through untouched.
-//
-// Unlike the Rust tower Layer this re-realizes, it is a plain connect interceptor:
-// connect exposes the RPC method path on Spec().Procedure inside the interceptor,
-// so the method-aware gate needs no lower-level middleware.
+// privileged CompassService session RPCs. BearerInterceptor runs first and
+// injects the caller; open procedures pass through untouched.
 type AdminGate struct {
 	admin store.AccountID
 }
 
-// NewAdminGate returns an admin gate parameterized by the bootstrap-admin
-// account, mirroring AmbientIdentity; the network door hands the same admin id to
-// both.
-func NewAdminGate(admin store.AccountID) *AdminGate {
-	return &AdminGate{admin: admin}
-}
-
-// WrapUnary enforces the gate on unary RPCs.
-func (g *AdminGate) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if err := g.check(ctx, req.Spec().Procedure); err != nil {
-			return nil, err
+// NewAdminGate returns a gate parameterized by the bootstrap-admin account.
+func NewAdminGate(admin store.AccountID) connect.ServerInterceptor {
+	gate := &AdminGate{admin: admin}
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			if err := gate.check(ctx, spec.Procedure); err != nil {
+				return err
+			}
+			return next(ctx, spec, stream)
 		}
-		return next(ctx, req)
-	}
-}
-
-// WrapStreamingClient is a pass-through: the gate guards inbound handler calls,
-// not the server's own outbound clients.
-func (g *AdminGate) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-// WrapStreamingHandler enforces the gate on streaming RPCs before the handler
-// runs.
-func (g *AdminGate) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		if err := g.check(ctx, conn.Spec().Procedure); err != nil {
-			return err
-		}
-		return next(ctx, conn)
 	}
 }
 

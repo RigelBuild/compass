@@ -84,7 +84,7 @@ func (t *streamQueryTracer) spanContexts(name string) []trace.SpanContext {
 	return append([]trace.SpanContext(nil), t.contexts[name]...)
 }
 
-func installStreamSpanRecorder(t *testing.T) (*tracetest.SpanRecorder, *otelconnect.Interceptor) {
+func installStreamSpanRecorder(t *testing.T) (*tracetest.SpanRecorder, connect.ServerInterceptor) {
 	t.Helper()
 	previous := otel.GetTracerProvider()
 	recorder := tracetest.NewSpanRecorder()
@@ -96,9 +96,9 @@ func installStreamSpanRecorder(t *testing.T) (*tracetest.SpanRecorder, *otelconn
 			t.Errorf("shutdown tracer provider: %v", err)
 		}
 	})
-	ic, err := otelconnect.NewInterceptor()
+	ic, err := otelconnect.NewServerInterceptor()
 	if err != nil {
-		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
 	}
 	return recorder, ic
 }
@@ -151,10 +151,11 @@ func TestSubscribeAgentSessionStoreQueryHasNoSpan(t *testing.T) {
 	t.Cleanup(bus.Close)
 	tail := newSessionTail()
 	svc := newService("trace-stream-test", bus, st, nil, nil, nil, tail)
-	path, handler := compassv1connect.NewCompassServiceHandler(svc, otelx.HandlerInterceptors(ic,
-		auth.BearerInterceptor(st), auth.BearerStreamInterceptor(st), auth.NewAdminGate(admin.ID)))
+	serverService := connect.NewServer(otelx.HandlerInterceptors(ic,
+		auth.BearerInterceptor(st), auth.NewAdminGate(admin.ID)))
+	compassv1connect.RegisterCompassServiceHandler(serverService, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, serverService)
 	server := tracedStreamServer(t, mux)
 	client := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(newH2CStreamClient(t), server.URL, connecthttp.WithReadMaxBytes(0))))
 	ctx, cancel := context.WithCancel(t.Context())
@@ -166,13 +167,14 @@ func TestSubscribeAgentSessionStoreQueryHasNoSpan(t *testing.T) {
 		cancel()
 		t.Fatalf("SubscribeAgentSession: %v", err)
 	}
-	if !recvAgentFrameOrTimeout(t, stream) || stream.Msg().GetSessionId() != sessionID {
+	frame, receiveErr := receiveAgentFrameOrTimeout(t, stream)
+	if receiveErr != nil || frame.GetSessionId() != sessionID {
 		cancel()
-		t.Fatalf("registration acknowledgement = %+v, err=%v", stream.Msg(), stream.Err())
+		t.Fatalf("registration acknowledgement = %+v, err=%v", frame, receiveErr)
 	}
 	cancel()
-	if stream.Receive() {
-		t.Fatalf("SubscribeAgentSession delivered unexpected post-cancel frame: %+v", stream.Msg())
+	if extra, receiveErr := receiveAgentFrameOrTimeout(t, stream); receiveErr == nil {
+		t.Fatalf("SubscribeAgentSession delivered unexpected post-cancel frame: %+v", extra)
 	}
 	_ = stream.Close()
 	waitTailSubscribers(t, tail, sessionID, 0)
@@ -230,10 +232,10 @@ func TestSubscribeCommsHeadQueryHasNoSpan(t *testing.T) {
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(bus.Close)
 	service := comms.NewComms(t.Context(), st, bus, nil, admin.ID)
-	path, handler := compassv1connect.NewCommsServiceHandler(service, otelx.HandlerInterceptors(ic,
-		auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
+	serverService := connect.NewServer(otelx.HandlerInterceptors(ic, auth.AmbientIdentity(admin.ID)))
+	compassv1connect.RegisterCommsServiceHandler(serverService, service)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, serverService)
 	queries.reset()
 	server := tracedStreamServer(t, mux)
 	client := compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(newH2CStreamClient(t), server.URL, connecthttp.WithReadMaxBytes(0))))
@@ -244,14 +246,15 @@ func TestSubscribeCommsHeadQueryHasNoSpan(t *testing.T) {
 		cancel()
 		t.Fatalf("SubscribeComms: %v", err)
 	}
-	if !stream.Receive() || stream.Msg().GetSnapshotSeq() != 0 {
+	boundary, receiveErr := stream.Receive()
+	if receiveErr != nil || boundary.GetSnapshotSeq() != 0 {
 		cancel()
 		_ = stream.Close()
-		t.Fatalf("snapshot boundary = %+v, err=%v", stream.Msg(), stream.Err())
+		t.Fatalf("snapshot boundary = %+v, err=%v", boundary, receiveErr)
 	}
 	cancel()
-	if stream.Receive() {
-		t.Fatalf("SubscribeComms delivered unexpected post-cancel frame: %+v", stream.Msg())
+	if extra, receiveErr := stream.Receive(); receiveErr == nil {
+		t.Fatalf("SubscribeComms delivered unexpected post-cancel frame: %+v", extra)
 	}
 	_ = stream.Close()
 

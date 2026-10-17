@@ -62,8 +62,8 @@
       # proxyVendor: the backend pulls wails, whose //go:embed patterns
       # reference darwin/windows-only files a vendor-tree build fails on;
       # proxyVendor touches only compiled packages. vendorHash pins the whole
-      # module graph (matches guestd's); recompute with lib.fakeHash on a go.sum move.
-      vendorHash = "sha256-G6X5L63seWWC7iduVH56K6Y3aQG+cdPZkfxC4WHYURs=";
+      # module graph (matches guestd's and the plugin's); recompute with lib.fakeHash on a go.sum move.
+      vendorHash = "sha256-v0zuDnkA7VkXyDvz6/1ZiObYxtld15ZBI7Pbl3415WE=";
     in
     {
       packages = forAllSystems (

@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"log/slog"
 	"runtime"
 	"testing"
@@ -113,7 +114,6 @@ func newSkipBatchWindowFixture(t *testing.T, liveRunner bool) skipBatchWindowFix
 	svc := newService("test", bus, st, hub, brd, nil, tail)
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
-		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(admin.ID),
 	)
 	var runner *recordingRunner
@@ -203,7 +203,7 @@ func TestSkipBatchWindowNotFoundParityDoesNotDispatch(t *testing.T) {
 			if got := connect.CodeOf(err); got != connect.CodeNotFound {
 				t.Fatalf("SkipBatchWindow error = %v, want NotFound", got)
 			}
-			ce, ok := err.(*connect.Error)
+			ce, ok := errors.AsType[*connect.Error](err)
 			if !ok {
 				t.Fatalf("SkipBatchWindow error = %v, want connect.Error", err)
 			}

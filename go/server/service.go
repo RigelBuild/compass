@@ -793,7 +793,7 @@ func (s *service) abandonStartedSession(ctx context.Context, containerName, sess
 func forward(
 	ctx context.Context,
 	sub events.Subscription[busPayload],
-	stream *connect.ServerStream[compassv1.SubscribeEventsResponse],
+	stream compassv1connect.CompassServiceSubscribeEventsServerStream,
 ) error {
 	for _, event := range sub.Replay {
 		select {
@@ -802,7 +802,8 @@ func forward(
 		default:
 		}
 		if err := stream.Send(toResponse(event)); err != nil {
-			return nil //nolint:nilerr // client hung up mid-replay: ending the stream cleanly on a send error IS the contract, so the non-nil send error is intentionally not propagated
+			slog.DebugContext(ctx, "event stream replay send stopped", "err", err)
+			return nil // The client hung up mid-replay; ending the stream cleanly is the contract.
 		}
 	}
 
@@ -815,7 +816,9 @@ func forward(
 				// Live closed: an overrun (emit terminal resync) vs a clean bus
 				// shutdown (end silently).
 				if sub.Lagged() {
-					_ = stream.Send(resyncRequired(sub.Epoch))
+					if err := stream.Send(resyncRequired(sub.Epoch)); err != nil {
+						slog.DebugContext(ctx, "event stream resync send stopped", "err", err)
+					}
 				}
 				return nil
 			}

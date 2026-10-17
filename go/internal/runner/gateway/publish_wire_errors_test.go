@@ -13,26 +13,35 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/otelconnect"
 	"google.golang.org/protobuf/proto"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
-const expectedMalformedPublishCode = "invalid_argument"
+const expectedMalformedPublishCode = "internal"
 
 func newRawPublishGatewayServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	upstream := newRunnerServiceServer(t, newCapturePublish())
 	g := NewGateway(t.Context(), "container-1", Deps{Sessions: boundSessions(), Events: upstream})
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions(testGatewayInterceptor(t))...)
+	ic, err := otelconnect.NewServerInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewServerInterceptor: %v", err)
+	}
+	server := connect.NewServer(otelx.HandlerInterceptors(ic))
+	compassv1internalconnect.RegisterAgentGatewayHandler(server, g)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewUnstartedServer(mux)
-	server.Config.Protocols = cleartextHTTP2()
-	server.Start()
-	t.Cleanup(server.Close)
-	return server
+	connecthttp.Mount(mux, server, agentGatewayHandlerOptions()...)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = cleartextHTTP2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 func publishEnvelope(payload []byte) []byte {

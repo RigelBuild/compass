@@ -740,36 +740,42 @@ func TestForgeMirrorSettingsHandlersEnforceTenantAdmin(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	client := networkDoorHandler(t, newService("forge-mirror-settings", bus, st, nil, nil, nil, nil), st, admin)
-	setRequest := func(token string, mode compassv1.ForgeMirrorMode) *compassv1.SetForgeMirrorSettingRequest {
+	setRequest := func(ctx context.Context, token string, mode compassv1.ForgeMirrorMode) (context.Context, *compassv1.SetForgeMirrorSettingRequest) {
+		rpcCtx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+token)
 		req := &compassv1.SetForgeMirrorSettingRequest{Setting: &compassv1.ForgeMirrorSetting{
 			Forge: &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com"},
 			Repo:  "owner/settings", Mode: mode,
 		}}
-		req.Header().Set("Authorization", "Bearer "+token)
-		return req
+		return rpcCtx, req
 	}
-	if _, err := client.SetForgeMirrorSetting(ctx, setRequest(memberToken, compassv1.ForgeMirrorMode_FORGE_MIRROR_MODE_AUTO)); connect.CodeOf(err) != connect.CodePermissionDenied {
+	rpcCtx, req := setRequest(ctx, memberToken, compassv1.ForgeMirrorMode_FORGE_MIRROR_MODE_AUTO)
+	if _, err := client.SetForgeMirrorSetting(rpcCtx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("member SetForgeMirrorSetting code = %v, err = %v; want permission_denied", connect.CodeOf(err), err)
 	}
-	if _, err := client.SetForgeMirrorSetting(ctx, setRequest(adminToken, compassv1.ForgeMirrorMode_FORGE_MIRROR_MODE_UNSPECIFIED)); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	rpcCtx, req = setRequest(ctx, adminToken, compassv1.ForgeMirrorMode_FORGE_MIRROR_MODE_UNSPECIFIED)
+	if _, err := client.SetForgeMirrorSetting(rpcCtx, req); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("UNSPECIFIED SetForgeMirrorSetting code = %v, err = %v; want invalid_argument", connect.CodeOf(err), err)
 	}
-	if _, err := client.SetForgeMirrorSetting(ctx, setRequest(adminToken, compassv1.ForgeMirrorMode_FORGE_MIRROR_MODE_AUTO)); err != nil {
+	rpcCtx, req = setRequest(ctx, adminToken, compassv1.ForgeMirrorMode_FORGE_MIRROR_MODE_AUTO)
+	if _, err := client.SetForgeMirrorSetting(rpcCtx, req); err != nil {
 		t.Fatalf("admin SetForgeMirrorSetting: %v", err)
 	}
-	listRequest := func(token string) *compassv1.ListForgeMirrorSettingsRequest {
-		req := &compassv1.ListForgeMirrorSettingsRequest{}
-		req.Header().Set("Authorization", "Bearer "+token)
-		return req
+	listRequest := func(ctx context.Context, token string) (context.Context, *compassv1.ListForgeMirrorSettingsRequest) {
+		rpcCtx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+token)
+		return rpcCtx, &compassv1.ListForgeMirrorSettingsRequest{}
 	}
-	memberList, err := client.ListForgeMirrorSettings(ctx, listRequest(memberToken))
+	memberCtx, memberRequest := listRequest(ctx, memberToken)
+	memberList, err := client.ListForgeMirrorSettings(memberCtx, memberRequest)
 	if err != nil {
 		t.Fatalf("member ListForgeMirrorSettings: %v", err)
 	}
 	if memberList.GetCanEdit() || len(memberList.GetSettings()) != 1 || memberList.GetSettings()[0].GetMode() != compassv1.ForgeMirrorMode_FORGE_MIRROR_MODE_AUTO {
 		t.Fatalf("member settings response = %+v, want auto setting and can_edit=false", memberList)
 	}
-	adminList, err := client.ListForgeMirrorSettings(ctx, listRequest(adminToken))
+	adminCtx, adminRequest := listRequest(ctx, adminToken)
+	adminList, err := client.ListForgeMirrorSettings(adminCtx, adminRequest)
 	if err != nil {
 		t.Fatalf("admin ListForgeMirrorSettings: %v", err)
 	}

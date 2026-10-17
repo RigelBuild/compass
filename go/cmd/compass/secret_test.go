@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
@@ -25,14 +28,14 @@ type fakeSecrets struct {
 	gotAuth     string
 }
 
-func (f *fakeSecrets) SetSecret(_ context.Context, req *compassv1.SetSecretRequest) (*compassv1.SetSecretResponse, error) {
+func (f *fakeSecrets) SetSecret(ctx context.Context, req *compassv1.SetSecretRequest) (*compassv1.SetSecretResponse, error) {
 	f.gotSet = req
-	f.gotAuth = req.Header().Get("Authorization")
+	f.gotAuth = requestAuth(ctx)
 	return &compassv1.SetSecretResponse{}, nil
 }
 
-func (f *fakeSecrets) ListSecrets(_ context.Context, req *compassv1.ListSecretsRequest) (*compassv1.ListSecretsResponse, error) {
-	f.gotAuth = req.Header().Get("Authorization")
+func (f *fakeSecrets) ListSecrets(ctx context.Context, req *compassv1.ListSecretsRequest) (*compassv1.ListSecretsResponse, error) {
+	f.gotAuth = requestAuth(ctx)
 	list := f.list
 	if list == nil {
 		list = &compassv1.ListSecretsResponse{}
@@ -40,10 +43,10 @@ func (f *fakeSecrets) ListSecrets(_ context.Context, req *compassv1.ListSecretsR
 	return list, nil
 }
 
-func (f *fakeSecrets) DeleteSecret(_ context.Context, req *compassv1.DeleteSecretRequest) (*compassv1.DeleteSecretResponse, error) {
+func (f *fakeSecrets) DeleteSecret(ctx context.Context, req *compassv1.DeleteSecretRequest) (*compassv1.DeleteSecretResponse, error) {
 	f.deleteCalls++
 	f.gotDelete = req.GetName()
-	f.gotAuth = req.Header().Get("Authorization")
+	f.gotAuth = requestAuth(ctx)
 	return &compassv1.DeleteSecretResponse{}, nil
 }
 
@@ -51,9 +54,10 @@ func (f *fakeSecrets) DeleteSecret(_ context.Context, req *compassv1.DeleteSecre
 // httptest server and returns a client wired to it with the bearer interceptor.
 func startFakeSecretsServer(t *testing.T, fake *fakeSecrets) compassv1connect.SecretsServiceClient {
 	t.Helper()
-	path, handler := compassv1connect.NewSecretsServiceHandler(fake)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	compassv1connect.RegisterSecretsServiceHandler(server, fake)
+	connecthttp.Mount(mux, server)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	client, err := newSecretsClient(connConfig{serverAddr: srv.URL, token: "test-token"})
