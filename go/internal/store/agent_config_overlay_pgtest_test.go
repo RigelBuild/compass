@@ -454,7 +454,7 @@ func TestEffectiveProfileAgentOrphansAreWarned(t *testing.T) {
 	}
 	defaultBundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
 		tarEntry{name: "agents/impl.md", content: "---\nname: impl\n---\n"},
-		tarEntry{name: "profiles/default/profile.yml", content: "models:\n  agents:\n    impl: selector\n"},
+		tarEntry{name: "profiles/default/profile.yml", content: "models:\n  agents:\n    impl: openrouter/anthropic/claude\n"},
 	)
 	if _, err := s.PutAgentConfig(ctx, admin.ID, defaultBundle); err != nil {
 		t.Fatalf("PutAgentConfig: %v", err)
@@ -474,6 +474,7 @@ func TestEffectiveProfileAgentOrphansAreWarned(t *testing.T) {
 		t.Fatalf("orphan warning = %q, want warning naming missing agent impl", log.String())
 	}
 }
+
 func TestAgentConfigOverlayUserAndAgentIsolation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
