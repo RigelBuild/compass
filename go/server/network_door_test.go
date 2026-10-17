@@ -710,7 +710,7 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 		// the bearer resolve and the admin gate. The bus must carry one event before
 		// subscribing: with an empty ring the handler never Sends and the first
 		// Receive blocks on headers that never flush. One primed snapshot fixes it.
-		bus.Publish(statusEvent())
+		bus.Publish(t.Context(), statusEvent())
 
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()

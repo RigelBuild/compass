@@ -465,7 +465,7 @@ func TestBoardChangedUsesBoardVisibilityAndHasNoAsks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel(canary): %v", err)
 	}
-	h.bus.Publish(&compassv1.SubscribeCommsResponse{
+	h.bus.Publish(t.Context(), &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_ChannelChanged{
 			ChannelChanged: &compassv1.ChannelChanged{Channel: &compassv1.Channel{Id: string(canary.ID)}},
 		},

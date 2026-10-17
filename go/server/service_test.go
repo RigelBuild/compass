@@ -185,8 +185,8 @@ func TestSubscribeEventsSnapshotThenTail(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	// Two events pre-subscribe: they must arrive as the snapshot replay.
-	bus.Publish(statusEvent())
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 
 	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
@@ -220,7 +220,7 @@ func TestSubscribeEventsSnapshotThenTail(t *testing.T) {
 	// Live tail: a post-subscribe publish arrives with the next seq. Publishing
 	// only after both snapshot events were received is the event gate — no
 	// sleep, no race with the replay drain.
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 	live := recvOne(t, stream)
 	if live.GetSeq() != 3 {
 		t.Fatalf("live msg seq = %d, want 3 (the seq after the snapshot's)", live.GetSeq())
@@ -233,9 +233,9 @@ func TestSubscribeEventsSnapshotThenTail(t *testing.T) {
 func TestSubscribeEventsUnderflowCursorYieldsSingleTerminalResync(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	bus.Publish(statusEvent())
-	bus.Publish(statusEvent())
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
+	bus.Publish(t.Context(), statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 
 	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
@@ -275,7 +275,7 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 	// single replay event makes the handler Send once, so the client stream
 	// opens; the server-side subscriber is then registered and ready to be
 	// flooded on its live tail.
-	bus.Publish(statusEvent())
+	bus.Publish(t.Context(), statusEvent())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -301,7 +301,7 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 	const eventBytes = 16 * 1024
 	const flood = 8192 // >> transport ceiling (~256) + liveBufferCapacity (1024)
 	for range flood {
-		bus.Publish(chunkEvent(eventBytes))
+		bus.Publish(t.Context(), chunkEvent(eventBytes))
 	}
 
 	// Drain the stream. Whatever the server managed to buffer comes through;

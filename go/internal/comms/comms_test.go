@@ -17,8 +17,61 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
+
+func TestRespondToAskPublishesMessageUpdatedTraceparent(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := t.Context()
+	author := mustUser(t, h.store, "author")
+	ch, err := h.store.CreateChannel(ctx, author.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: testTopic, Create: true}, ""); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	sub, err := h.bus.Subscribe(0, h.bus.InstanceEpoch())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(sub.Cancel)
+
+	provider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() {
+		if err := provider.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("shutdown tracer provider: %v", err)
+		}
+	})
+	spanCtx, span := provider.Tracer("comms-test").Start(ctx, "respond-to-ask")
+	t.Cleanup(func() { span.End() })
+	wantTraceparent := otelx.Traceparent(spanCtx)
+	if wantTraceparent == "" {
+		t.Fatal("precondition: active span produced an empty traceparent")
+	}
+
+	if _, err := h.svc.RespondToAsk(WithActor(spanCtx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-1",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err != nil {
+		t.Fatalf("RespondToAsk: %v", err)
+	}
+
+	select {
+	case event := <-sub.Live:
+		if event.Payload.GetMessageUpdated() == nil {
+			t.Fatalf("event payload = %T, want MessageUpdated", event.Payload.GetPayload())
+		}
+		if event.Traceparent != wantTraceparent {
+			t.Fatalf("MessageUpdated Traceparent = %q, want %q", event.Traceparent, wantTraceparent)
+		}
+	default:
+		t.Fatal("RespondToAsk emitted no MessageUpdated event")
+	}
+}
 
 // testTopic is the topic tests post under when the topic itself is not under
 // test. A test that needs a second topic uses another name, never this literal.

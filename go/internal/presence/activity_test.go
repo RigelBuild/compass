@@ -20,8 +20,8 @@ import (
 // omitted (the hub defaults it to OFFLINE).
 func TestPresenceForProjectsLastPublishedSubset(t *testing.T) {
 	p, _, _ := newTestPublisherWithStatus(t, newFakeStatus())
-	p.publishIfChanged("a-1", compassv1.AgentPresence_AGENT_PRESENCE_WORKING)
-	p.publishIfChanged("a-2", compassv1.AgentPresence_AGENT_PRESENCE_IDLE)
+	p.publishIfChanged(t.Context(), "a-1", compassv1.AgentPresence_AGENT_PRESENCE_WORKING)
+	p.publishIfChanged(t.Context(), "a-2", compassv1.AgentPresence_AGENT_PRESENCE_IDLE)
 
 	got := p.PresenceFor([]store.AccountID{"a-1", "a-never"})
 	if len(got) != 1 {
@@ -43,7 +43,7 @@ func TestPresenceForProjectsLastPublishedSubset(t *testing.T) {
 func TestPublishActivityCarriesActivityAndCurrentPresence(t *testing.T) {
 	p, _, _, bus := newTestPublisher(t)
 	// Seed a current presence so PublishActivity carries a non-OFFLINE enum.
-	p.publishIfChanged("a-1", compassv1.AgentPresence_AGENT_PRESENCE_WORKING)
+	p.publishIfChanged(t.Context(), "a-1", compassv1.AgentPresence_AGENT_PRESENCE_WORKING)
 
 	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
 	if err != nil {
@@ -51,7 +51,7 @@ func TestPublishActivityCarriesActivityAndCurrentPresence(t *testing.T) {
 	}
 	t.Cleanup(sub.Cancel)
 
-	p.PublishActivity("a-1", "reviewing the diff")
+	p.PublishActivity(t.Context(), "a-1", "reviewing the diff")
 
 	for ev := range sub.Live {
 		pc := ev.Payload.GetAgentPresenceChanged()
@@ -75,7 +75,7 @@ func TestPublishActivityAbsentPresenceIsOffline(t *testing.T) {
 	p, _, _, bus := newTestPublisher(t)
 	rec := startRecorder(t, bus)
 
-	p.PublishActivity("a-fresh", "just starting")
+	p.PublishActivity(t.Context(), "a-fresh", "just starting")
 	rec.waitForPublishes(t, 1)
 
 	last := rec.snapshot()[0]

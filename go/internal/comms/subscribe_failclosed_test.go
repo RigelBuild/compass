@@ -119,7 +119,7 @@ func subscriptionOf(t *testing.T, events_ ...*compassv1.SubscribeCommsResponse) 
 	t.Helper()
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	for _, e := range events_ {
-		bus.Publish(e)
+		bus.Publish(t.Context(), e)
 	}
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
@@ -404,7 +404,7 @@ func overrunSubscription(t *testing.T) events.Subscription[*compassv1.SubscribeC
 	// lagged. Derived from the constant, never a literal — a capacity bump must
 	// keep overrunning rather than silently stop.
 	for i := range events.RingCapacity + 1 {
-		bus.Publish(messagePostedOn(fmt.Sprintf("chan-%d", i)))
+		bus.Publish(t.Context(), messagePostedOn(fmt.Sprintf("chan-%d", i)))
 	}
 	if !sub.Lagged() {
 		t.Fatalf("subscription not lagged after 1025 undrained publishes, want lagged")
@@ -503,7 +503,7 @@ func driveUnderflowResync(t *testing.T, bus *events.Bus[*compassv1.SubscribeComm
 // is the black-box confirmation that THIS trigger reaches a client as a resync.
 func TestSubscribeCommsCursorAtOrBeyondHeadResyncs(t *testing.T) {
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
-	bus.Publish(messagePostedOn("chan-a")) // seq 1, so nextSeq is 2
+	bus.Publish(t.Context(), messagePostedOn("chan-a")) // seq 1, so nextSeq is 2
 
 	got := driveUnderflowResync(t, bus, &compassv1.SubscribeCommsRequest{
 		SinceSeq: 5, InstanceEpoch: bus.InstanceEpoch(),
@@ -538,7 +538,7 @@ func TestSubscribeCommsCursorOlderThanRetainedResyncs(t *testing.T) {
 	// sinceSeq+1, so any N >= 2 works. Derived from the constant so a capacity
 	// bump still evicts rather than quietly registering a live tail.
 	for i := range events.RingCapacity + 10 {
-		bus.Publish(messagePostedOn(fmt.Sprintf("chan-%d", i)))
+		bus.Publish(t.Context(), messagePostedOn(fmt.Sprintf("chan-%d", i)))
 	}
 
 	got := driveUnderflowResync(t, bus, &compassv1.SubscribeCommsRequest{
@@ -570,7 +570,7 @@ func TestSubscribeCommsCursorOlderThanRetainedResyncs(t *testing.T) {
 // to >=) would put that event first, ahead of the sentinel.
 func TestForwardCommsCursorAtHeadReplaysNothingBeforeLiveTail(t *testing.T) {
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
-	headSeq := bus.Publish(messagePostedOn("chan-before")) // the at-head event
+	headSeq := bus.Publish(t.Context(), messagePostedOn("chan-before")) // the at-head event
 
 	sub, err := bus.Subscribe(headSeq, bus.InstanceEpoch())
 	if err != nil {
@@ -581,7 +581,7 @@ func TestForwardCommsCursorAtHeadReplaysNothingBeforeLiveTail(t *testing.T) {
 	}
 	// Published after Subscribe registered the live subscriber, so it lands on
 	// the live tail: it must be the first thing forwardComms sends.
-	sentinelSeq := bus.Publish(messagePostedOn("chan-sentinel"))
+	sentinelSeq := bus.Publish(t.Context(), messagePostedOn("chan-sentinel"))
 	bus.Close()
 
 	got := driveForwardComms(t, visibleAlways{}, sub)
@@ -630,7 +630,7 @@ func TestForwardCommsConcurrentPublishesObserveOneTotalSeqOrder(t *testing.T) {
 	for p := range publishers {
 		wg.Go(func() {
 			for i := range perPublisher {
-				bus.Publish(messagePostedOn(fmt.Sprintf("chan-%d-%d", p, i)))
+				bus.Publish(t.Context(), messagePostedOn(fmt.Sprintf("chan-%d-%d", p, i)))
 			}
 		})
 	}

@@ -100,7 +100,7 @@ type fakeLifecycleSink struct {
 	statuses []*compassv1.AgentSessionStatus
 }
 
-func (f *fakeLifecycleSink) PublishSessionStatus(status *compassv1.AgentSessionStatus) {
+func (f *fakeLifecycleSink) PublishSessionStatus(_ context.Context, status *compassv1.AgentSessionStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.statuses = append(f.statuses, status)

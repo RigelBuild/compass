@@ -68,7 +68,7 @@ func (c *Comms) UpdateBoardAsAccount(
 		if !ok {
 			slog.ErrorContext(ctx, "comms: board event clone has unexpected type", "agent_account_id", string(caller))
 		} else {
-			c.bus.Publish(&compassv1.SubscribeCommsResponse{
+			c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 				Payload: &compassv1.SubscribeCommsResponse_AgentBoardChanged{
 					AgentBoardChanged: &compassv1.AgentBoardChanged{
 						AgentAccountId: string(caller),

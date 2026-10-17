@@ -167,24 +167,14 @@ func NewBus[P any]() *Bus[P] {
 	}
 }
 
-// Publish stamps the next seq and a wall-clock timestamp onto payload, pushes it
-// into the ring (evicting the oldest at capacity), and forwards it to every live
-// subscriber. Returns the seq assigned to this event. A subscriber whose buffer
-// is full is marked lagged and dropped — the ring still retains the event, so a
-// re-subscribe within the ring window recovers it.
-func (b *Bus[P]) Publish(payload P) uint64 {
-	return b.publish("", payload)
-}
-
-// PublishCtx behaves exactly like Publish but stamps the W3C traceparent of
-// ctx's active span (empty when there is none) onto the enqueued Stamped, so
-// the publisher's trace can be re-linked to downstream dispatch across the bus.
-func (b *Bus[P]) PublishCtx(ctx context.Context, payload P) uint64 {
+// Publish stamps the next seq, timestamp, and ctx's traceparent onto payload,
+// pushes it into the ring, and forwards it to every live subscriber.
+func (b *Bus[P]) Publish(ctx context.Context, payload P) uint64 {
 	return b.publish(otelx.Traceparent(ctx), payload)
 }
 
-// publish is the shared body: it stamps the next seq, a wall-clock timestamp,
-// and the given traceparent onto payload, then fans out to live subscribers.
+// publish stamps the next seq, a wall-clock timestamp, and traceparent onto
+// payload, then fans out to live subscribers.
 func (b *Bus[P]) publish(traceparent string, payload P) uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()

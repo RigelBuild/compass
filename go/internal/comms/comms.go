@@ -104,14 +104,14 @@ func NewComms(ctx context.Context, st *store.Store, bus commsBus, fab fabric.Eve
 // channels, and manager coordination channels. Each event carries committed state.
 func (c *Comms) PublishAccountRename(ctx context.Context, account store.Account, channelIDs []store.ChannelID) {
 	ctx = context.WithoutCancel(ctx)
-	c.publishAccountChanged(account)
+	c.publishAccountChanged(ctx, account)
 	for _, channelID := range channelIDs {
 		channel, err := c.store.GetChannel(ctx, channelID)
 		if err != nil {
 			slog.ErrorContext(ctx, "comms: reading renamed channel for event", "channel_id", channelID, "err", err)
 			continue
 		}
-		c.publishChannelChanged(channel, nil)
+		c.publishChannelChanged(ctx, channel, nil)
 	}
 }
 
@@ -160,7 +160,7 @@ func (c *Comms) CreateUser(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishAccountChanged(acc)
+	c.publishAccountChanged(ctx, acc)
 	return connect.NewResponse(&compassv1.CreateUserResponse{Account: accountToWire(acc)}), nil
 }
 
@@ -212,7 +212,7 @@ func (c *Comms) CreateAgent(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishAccountChanged(acc)
+	c.publishAccountChanged(ctx, acc)
 	c.emitCoordChanges(ctx, coordChanges)
 	return connect.NewResponse(&compassv1.CreateAgentResponse{Account: accountToWire(acc)}), nil
 }
@@ -251,7 +251,7 @@ func (c *Comms) CreateChannelGroup(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishChannelGroupChanged(grp)
+	c.publishChannelGroupChanged(ctx, grp)
 	return connect.NewResponse(&compassv1.CreateChannelGroupResponse{Group: groupToWire(grp)}), nil
 }
 
@@ -321,7 +321,7 @@ func (c *Comms) CreateChannel(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishChannelChanged(ch, nil)
+	c.publishChannelChanged(ctx, ch, nil)
 	return connect.NewResponse(&compassv1.CreateChannelResponse{Channel: channelToWire(ch)}), nil
 }
 
@@ -349,7 +349,7 @@ func (c *Comms) UpdateChannelMembers(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishChannelChanged(ch, removed)
+	c.publishChannelChanged(ctx, ch, removed)
 	return connect.NewResponse(&compassv1.UpdateChannelMembersResponse{Channel: channelToWire(ch)}), nil
 }
 
@@ -395,7 +395,7 @@ func (c *Comms) ReparentAgent(
 		}
 		return nil, edgeError(err)
 	}
-	c.publishAccountChanged(acc)
+	c.publishAccountChanged(ctx, acc)
 	c.emitCoordChanges(ctx, coordChanges)
 	return connect.NewResponse(&compassv1.ReparentAgentResponse{Account: accountToWire(acc)}), nil
 }
@@ -417,7 +417,7 @@ func (c *Comms) ReparentChannel(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishChannelChanged(ch, c.lostAnchorViewers(ctx, priorParent, ch.ParentAgentID, channelID))
+	c.publishChannelChanged(ctx, ch, c.lostAnchorViewers(ctx, priorParent, ch.ParentAgentID, channelID))
 	return connect.NewResponse(&compassv1.ReparentChannelResponse{Channel: channelToWire(ch)}), nil
 }
 
@@ -446,7 +446,7 @@ func (c *Comms) OpenAgentWorkspace(
 		}
 		return nil, edgeError(err)
 	}
-	c.publishAgentWorkspaceChanged(ws)
+	c.publishAgentWorkspaceChanged(ctx, ws)
 	return connect.NewResponse(&compassv1.OpenAgentWorkspaceResponse{Workspace: workspaceToWire(ws)}), nil
 }
 
@@ -548,7 +548,7 @@ func (c *Comms) RespondToAsk(
 	// delivery trigger. MessagePosted for the answer message IS the trigger — it
 	// fans out on the normal message rail, so an offline asker gets the answer via
 	// the ack-gated cursor + resweep (RIG-2257: no bespoke ask wake).
-	c.publishMessageUpdated(askMsg)
+	c.publishMessageUpdated(ctx, askMsg)
 	c.publishMessagePosted(ctx, answerMsg)
 	c.driveCommittedAsks(ctx, askMsg)
 	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
@@ -623,7 +623,7 @@ func (c *Comms) UpdateTopic(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishTopicUpserted(topic)
+	c.publishTopicUpserted(ctx, topic)
 	return connect.NewResponse(&compassv1.UpdateTopicResponse{Topic: topicToWire(topic)}), nil
 }
 
@@ -671,7 +671,7 @@ func (c *Comms) SetChannelPolicy(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishChannelChanged(ch, nil)
+	c.publishChannelChanged(ctx, ch, nil)
 	return connect.NewResponse(&compassv1.SetChannelPolicyResponse{Channel: channelToWire(ch)}), nil
 }
 
@@ -724,7 +724,7 @@ func (c *Comms) UpdatePinnedBoard(
 	// ChannelChanged carries the updated board (design.md:637). channelToWire
 	// does not project pinned_entries (the board is maintained only here), so the
 	// event is published from the same board-carrying wire the response returns.
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_ChannelChanged{
 			ChannelChanged: &compassv1.ChannelChanged{Channel: wire},
 		},
@@ -778,7 +778,7 @@ func (c *Comms) OpenDM(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.emitDMCreated(ch, created)
+	c.emitDMCreated(ctx, ch, created)
 	return connect.NewResponse(&compassv1.OpenDMResponse{
 		Channel: channelToWire(ch),
 		Created: created,

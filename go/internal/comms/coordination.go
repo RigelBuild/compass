@@ -148,7 +148,7 @@ func (c *Comms) emitCoordChanges(ctx context.Context, cc *coordChanges) {
 				"channel_id", string(ch.channelID), "error", err.Error())
 			continue
 		}
-		c.publishChannelChanged(channel, ch.removed)
+		c.publishChannelChanged(ctx, channel, ch.removed)
 	}
 }
 

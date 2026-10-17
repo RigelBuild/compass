@@ -70,9 +70,9 @@ func (c *Comms) openDMTx(ctx context.Context, owner, callerOwner, peerOwner stor
 // is a no-op event-wise (nothing changed). It takes the channel the caller
 // already read for the response, so the create path does not re-read the same row
 // a second time. NEVER call before the commit.
-func (c *Comms) emitDMCreated(ch store.Channel, created bool) {
+func (c *Comms) emitDMCreated(ctx context.Context, ch store.Channel, created bool) {
 	if !created {
 		return
 	}
-	c.publishChannelChanged(ch, nil)
+	c.publishChannelChanged(ctx, ch, nil)
 }

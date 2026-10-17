@@ -867,7 +867,7 @@ func (h *Hub) executeCall(
 		if err != nil {
 			return nil, err
 		}
-		h.PublishActivity(account, truncated)
+		h.PublishActivity(ctx, account, truncated)
 		return &compassv1internal.CommsCallResult{
 			Result: &compassv1internal.CommsCallResult_SetStatus{SetStatus: &compassv1internal.SetAgentStatusResponse{}},
 		}, nil

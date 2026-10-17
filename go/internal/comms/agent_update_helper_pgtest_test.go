@@ -42,7 +42,7 @@ func commitAgentUpdate(
 	// Write first, then fan out — the same write-through order PostMessage and
 	// RespondToAsk use, so a subscriber never sees an event for a row that did
 	// not commit.
-	c.publishMessageUpdated(stored)
+	c.publishMessageUpdated(ctx, stored)
 	return &compassv1.MessageUpdated{Message: MessageToWire(stored)}, nil
 }
 

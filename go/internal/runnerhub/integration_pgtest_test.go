@@ -329,7 +329,7 @@ func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Sto
 // reaches Deliver on this path.
 type noopLifecycleSink struct{}
 
-func (noopLifecycleSink) PublishSessionStatus(*compassv1.AgentSessionStatus) {}
+func (noopLifecycleSink) PublishSessionStatus(context.Context, *compassv1.AgentSessionStatus) {}
 
 // noopTail is the observation-pane tail sink; nothing relays session frames on
 // this path, so the tail is a no-op here.

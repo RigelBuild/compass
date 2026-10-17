@@ -83,7 +83,7 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 		res.bind(agentA, "sess-a")
 		startConsumer(t, c)
 
-		// A plain Publish (no span, no PublishCtx) ⇒ empty envelope traceparent.
+		// A plain publish (no span) leaves the envelope traceparent empty.
 		postMessage(t, c, reads, textMessage("m1", human, "hi"))
 		disp.waitForDispatches(t, 1)
 

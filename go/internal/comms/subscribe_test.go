@@ -351,7 +351,7 @@ func TestSubscribeCommsAgentPresenceSharedChannelScoping(t *testing.T) {
 
 	// The sharer receives the agent's presence (shares a channel with it).
 	sharerEvents := firstEventAfterBoundary(t, h, sharer.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	h.bus.Publish(presence)
+	h.bus.Publish(t.Context(), presence)
 	got := awaitFirst(t, sharerEvents)
 	pc := got.GetAgentPresenceChanged()
 	if pc == nil {
@@ -370,7 +370,7 @@ func TestSubscribeCommsAgentPresenceSharedChannelScoping(t *testing.T) {
 		t.Fatalf("CreateChannel(stranger): %v", err)
 	}
 	strangerEvents := firstEventAfterBoundary(t, h, stranger.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	h.bus.Publish(presence)
+	h.bus.Publish(t.Context(), presence)
 	posted, err := h.svc.PostMessage(WithActor(ctx, stranger.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(strangerCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible to me"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(stranger): %v", err)

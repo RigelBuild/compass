@@ -3,6 +3,8 @@
 package runnerhub
 
 import (
+	"context"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -25,7 +27,7 @@ type PresenceSnapshot struct {
 // SetPresenceSource. Absent-from-map agents are OFFLINE at the caller.
 type presenceSource interface {
 	PresenceFor(accountIDs []store.AccountID) map[store.AccountID]compassv1.AgentPresence
-	PublishActivity(agentAccountID store.AccountID, activity string)
+	PublishActivity(ctx context.Context, agentAccountID store.AccountID, activity string)
 }
 
 // SetPresenceSource wires the T8 presence projection as the hub's presence READ
@@ -72,11 +74,11 @@ func (h *Hub) PresenceFor(accountIDs []store.AccountID) map[store.AccountID]Pres
 // NOT storage; a lost publish self-heals on the next set_status. A hub with no
 // presence source wired drops it (best-effort, matching the durability contract:
 // the table is the source of record).
-func (h *Hub) PublishActivity(agentAccountID store.AccountID, activity string) {
+func (h *Hub) PublishActivity(ctx context.Context, agentAccountID store.AccountID, activity string) {
 	h.mu.Lock()
 	src := h.presenceSource
 	h.mu.Unlock()
 	if src != nil {
-		src.PublishActivity(agentAccountID, activity)
+		src.PublishActivity(ctx, agentAccountID, activity)
 	}
 }
