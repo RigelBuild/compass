@@ -283,6 +283,7 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 			"go/server/github_webhook.go",
 			"go/server/linear_webhook.go",
 			"go/server/webhook_tunnel_live_test.go",
+			"go/internal/linearagent/data_event.go",
 		]) {
 			expect(
 				generate(prInput({ affectedIds: [], changedPaths: [path] }))

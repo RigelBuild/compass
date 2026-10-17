@@ -8,6 +8,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -35,6 +36,10 @@ const tunnelRelayURL = "https://hook.pipelinesascode.com"
 // tunnelDeliveryWait bounds how long a leg waits for the forge to deliver.
 const tunnelDeliveryWait = 2 * time.Minute
 
+// linearTunnelWait stays inside the Linear handler's 60s timestamp window: a
+// later delivery is acked and dropped, so waiting longer cannot succeed.
+const linearTunnelWait = 45 * time.Second
+
 func requireTunnelEnv(t *testing.T, names ...string) []string {
 	t.Helper()
 	vals := make([]string, len(names))
@@ -47,9 +52,9 @@ func requireTunnelEnv(t *testing.T, names ...string) []string {
 }
 
 // liveTunnel subscribes to the relay channel before the caller triggers an event.
-func liveTunnel(t *testing.T, channel string) (*tunnelSub, context.Context) {
+func liveTunnel(t *testing.T, channel string, wait time.Duration) (*tunnelSub, context.Context) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelDeliveryWait)
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	t.Cleanup(cancel)
 	sub, err := tunnelSubscribe(ctx, tunnelRelayURL, channel)
 	if err != nil {
@@ -85,7 +90,7 @@ func TestLiveWebhookTunnelGitHub(t *testing.T) {
 	}
 	gh := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: ts})
 
-	sub, ctx := liveTunnel(t, channel)
+	sub, ctx := liveTunnel(t, channel, tunnelDeliveryWait)
 	title := liveRunTitle("gh")
 	iss, err := gh.CreateIssue(ctx, repo, forge.CreateIssue{Title: title})
 	if err != nil {
@@ -118,7 +123,7 @@ func TestLiveWebhookTunnelLinear(t *testing.T) {
 	tok := &staticLiveToken{token: env[2]}
 	ln := forge.NewLinear(forge.LinearConfig{Token: tok})
 
-	sub, ctx := liveTunnel(t, channel)
+	sub, ctx := liveTunnel(t, channel, linearTunnelWait)
 	title := liveRunTitle("linear")
 	iss, err := ln.CreateIssue(ctx, team, forge.CreateIssue{Title: title})
 	if err != nil {
@@ -165,8 +170,19 @@ func archiveLiveLinear(t *testing.T, token, ident string) {
 		t.Logf("teardown: archive %s: %v", ident, err)
 		return
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Logf("teardown: archive %s: HTTP %d", ident, resp.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		Data struct {
+			IssueArchive struct {
+				Success bool `json:"success"`
+			} `json:"issueArchive"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || resp.StatusCode != http.StatusOK ||
+		len(out.Errors) > 0 || !out.Data.IssueArchive.Success {
+		t.Logf("teardown: archive %s: HTTP %d, errors %v, decode %v", ident, resp.StatusCode, out.Errors, err)
 	}
 }
