@@ -268,3 +268,85 @@ func TestCreateWithBackoffDoesNotRetryUpstreamTransient(t *testing.T) {
 		}
 	}
 }
+
+// fakeTracker is an issue store whose creates commit and then may time out.
+// visible[i] is how many committed issues the i-th find sees (list lag).
+type fakeTracker struct {
+	issues    []Issue
+	timeouts  int
+	visible   []int
+	creates   int
+	finds     int
+	discarded []uint64
+}
+
+func (f *fakeTracker) find(context.Context) ([]Issue, error) {
+	n := len(f.issues)
+	if f.finds < len(f.visible) {
+		n = f.visible[f.finds]
+	}
+	f.finds++
+	return f.issues[:n], nil
+}
+
+func (f *fakeTracker) create() (Issue, error) {
+	f.creates++
+	issue := Issue{Number: uint64(len(f.issues) + 1)}
+	f.issues = append(f.issues, issue)
+	if f.creates <= f.timeouts {
+		return Issue{}, errClientTimeout
+	}
+	return issue, nil
+}
+
+func (f *fakeTracker) run(t *testing.T) (Issue, error) {
+	t.Helper()
+	createRetryDelay = 0
+	t.Cleanup(func() { createRetryDelay = 30 * time.Second })
+	var got Issue
+	var err error
+	t.Run("leg", func(t *testing.T) {
+		got, err = createIssueWithBackoff(context.Background(), t, f.find, f.create,
+			func(n uint64) { f.discarded = append(f.discarded, n) })
+	})
+	return got, err
+}
+
+// A create that times out after the provider committed it must not leak: the
+// re-issue is kept and only the committed first attempt is discarded.
+func TestCreateIssueWithBackoffDiscardsCommittedTimeout(t *testing.T) {
+	f := &fakeTracker{timeouts: 1}
+	got, err := f.run(t)
+	if err != nil || got.Number != 2 {
+		t.Fatalf("createIssueWithBackoff = %+v, %v; want issue 2", got, err)
+	}
+	if f.creates != 2 || len(f.discarded) != 1 || f.discarded[0] != 1 {
+		t.Fatalf("creates=%d discarded=%v; want 2 creates and only issue 1 discarded", f.creates, f.discarded)
+	}
+}
+
+// Both attempts can time out after committing, and list lag can reveal them one
+// poll apart; the sweep keeps polling until both are discarded.
+func TestCreateIssueWithBackoffDiscardsBothUnderLag(t *testing.T) {
+	saved := listLagDelays
+	listLagDelays = zeroDelays(4)
+	t.Cleanup(func() { listLagDelays = saved })
+	f := &fakeTracker{timeouts: 2, visible: []int{0, 1, 1}}
+	if _, err := f.run(t); !errors.Is(err, errClientTimeout) {
+		t.Fatalf("err = %v; want the second timeout", err)
+	}
+	if len(f.discarded) != 2 || f.discarded[0] != 1 || f.discarded[1] != 2 {
+		t.Fatalf("discarded=%v after %d finds; want [1 2] once each", f.discarded, f.finds)
+	}
+}
+
+// A clean create pays no extra list call.
+func TestCreateIssueWithBackoffNoTimeoutNoSweep(t *testing.T) {
+	f := &fakeTracker{}
+	if _, err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.finds != 0 || len(f.discarded) != 0 {
+		t.Fatalf("finds=%d discarded=%v; want no sweep", f.finds, f.discarded)
+	}
+}
