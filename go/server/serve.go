@@ -284,7 +284,11 @@ func prepareMergeQueueSweeper(ctx context.Context, cfg ServeConfig, st *store.St
 	if fc.TrunkTokenSecretName == "" {
 		return mergeQueueRunner{}, errors.New("--forge-trunk-token-secret is required when merge queues are configured")
 	}
-	queues := mergeQueueProviders(fc.Host, newTrunkTokenResolver(resolver, fc.TrunkTokenSecretName), fc.TrunkHTTP)
+	trunkHTTP := fc.TrunkHTTP
+	if trunkHTTP == nil {
+		trunkHTTP = tracedHTTPClient(30 * time.Second)
+	}
+	queues := mergeQueueProviders(fc.Host, newTrunkTokenResolver(resolver, fc.TrunkTokenSecretName), trunkHTTP)
 	cfgs := &mergeQueueConfigStore{st: st, host: fc.Host}
 	storeAdapter := mergeQueuePullRequestStore{st: st, host: fc.Host}
 	sink := mergeQueueProjection{brd: issueBrd}
@@ -365,6 +369,11 @@ func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool 
 	return havePrimary && haveReviewer
 }
 
+// tracedHTTPClient builds an outbound client with the requested timeout and client spans.
+func tracedHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Transport: otel.HTTPTransport(nil), Timeout: timeout}
+}
+
 // forgeHTTPClient returns the Forge clients' HTTP client. With no CA configured
 // it keeps http.DefaultTransport, so the primary and reviewer clients go on
 // sharing one connection pool exactly as they did before this knob existed; a
@@ -372,7 +381,7 @@ func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool 
 // plus the operator's PEM. Linear and unrelated clients never use it.
 func forgeHTTPClient(path string) (*http.Client, error) {
 	if path == "" {
-		return &http.Client{Timeout: 30 * time.Second}, nil
+		return tracedHTTPClient(30 * time.Second), nil
 	}
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
@@ -399,7 +408,7 @@ func forgeHTTPClient(path string) (*http.Client, error) {
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	}
 	transport.TLSClientConfig.RootCAs = roots
-	return &http.Client{Transport: transport, Timeout: 30 * time.Second}, nil
+	return &http.Client{Transport: otel.HTTPTransport(transport), Timeout: 30 * time.Second}, nil
 }
 
 // forgeWriteAppsConfigured reports which of the two required write Apps — the
@@ -725,6 +734,7 @@ func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
 		return nil, fmt.Errorf("opening store: %w", err)
 	}
 	if cfg.S3.Endpoint != "" && cfg.S3.Bucket != "" {
+		cfg.S3.WrapTransport = otel.HTTPTransport
 		objStore, err := store.NewS3ObjectStore(cfg.S3)
 		if err != nil {
 			st.Close()
@@ -1580,7 +1590,11 @@ func buildBoardIngestLane(
 	var queues map[string]forge.MergeQueue
 	var queueConfigs ingest.QueueConfigs
 	if len(fc.MergeQueues) > 0 {
-		queues = mergeQueueProviders(fc.Host, newTrunkTokenResolver(buildServerSecretResolver(st, cfg), fc.TrunkTokenSecretName), fc.TrunkHTTP)
+		trunkHTTP := fc.TrunkHTTP
+		if trunkHTTP == nil {
+			trunkHTTP = tracedHTTPClient(30 * time.Second)
+		}
+		queues = mergeQueueProviders(fc.Host, newTrunkTokenResolver(buildServerSecretResolver(st, cfg), fc.TrunkTokenSecretName), trunkHTTP)
 		queueConfigs = &mergeQueueConfigStore{st: st, host: fc.Host}
 	}
 	ref := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: fc.Host}
@@ -2027,7 +2041,7 @@ func buildLinearNotifyLane(
 		provider = store.ForgeProviderLinear
 		host     = forge.LinearHost
 	)
-	client := forge.NewLinear(forge.LinearConfig{Token: tokens, Log: log})
+	client := forge.NewLinear(forge.LinearConfig{Token: tokens, Client: tracedHTTPClient(30 * time.Second), Log: log})
 
 	notifyStore := &forgeNotifyStore{st: st, provider: provider, host: host}
 	dispatcher := &forgeNotifyDispatcher{hub: hub}
@@ -2274,7 +2288,7 @@ func buildForgeWriteService(
 	// One client serves both roles, riding the SAME linearTokens instance (DEC-4).
 	// isDefault=false: GitHub is the default, Linear is selected explicitly.
 	if linearTokens != nil {
-		if err := registerLinearForgeCoordinate(registry, forge.NewLinear(forge.LinearConfig{Token: linearTokens, Log: log})); err != nil {
+		if err := registerLinearForgeCoordinate(registry, forge.NewLinear(forge.LinearConfig{Token: linearTokens, Client: tracedHTTPClient(30 * time.Second), Log: log})); err != nil {
 			return nil, err
 		}
 	}
@@ -2370,7 +2384,7 @@ func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secre
 	// boot-time mint below (an unbounded doer would let a half-open TCP to
 	// api.linear.app wedge Serve's whole boot, defeating this fail-fast check)
 	// and the same instance the notify lane + write coordinate later reuse.
-	tokens := linearagent.NewTokenSource(clientID, clientSecret, &http.Client{Timeout: 30 * time.Second}, "")
+	tokens := linearagent.NewTokenSource(clientID, clientSecret, tracedHTTPClient(30*time.Second), "")
 	// Boot-time mint check: a Token(ctx) call proves the pair mints (the DL-204
 	// degrade probe guards only attribution, not the mint path), so a bad secret
 	// or a disabled client_credentials toggle fails Serve here, not on first write.
