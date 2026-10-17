@@ -226,7 +226,7 @@ func TestRunSessionsCommandSpanParentPrecedence(t *testing.T) {
 	}{
 		"malformed deliver op falls back to envelope": {deliver("00-not-a-traceparent"), envelope},
 		"steer op wins over envelope":                 {steer(commandOpTraceparent), op},
-		"config version inline uses envelope":         {configVersionCommand("v1"), envelope},
+		"config nudge inline uses envelope":           {configVersionCommand(), envelope},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tc.cmd.Traceparent = commandEnvelopeTraceparent

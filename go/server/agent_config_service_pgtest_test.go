@@ -3,7 +3,7 @@
 package server
 
 // Store-gated CompassService config-declaration handler contracts (RIG-1625 T2):
-// PutAgentConfig persists + returns the version and emits a ConfigVersion signal;
+// PutAgentConfig persists + returns the version and emits a config-change nudge.
 // GetAgentConfigInfo returns member NAMES (never content); DeleteAgentConfig clears
 // the fleet. Driven through the production bearer interceptor. Behind `pgtest && unix`.
 
@@ -25,14 +25,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// recordingConfigSignaler records SignalConfigVersion calls so a test asserts a
-// successful Put/Delete emitted the right version to live sessions.
+// recordingConfigSignaler records SignalConfigChanged calls so a test asserts
+// successful config writes emitted a nudge.
 type recordingConfigSignaler struct {
-	versions []string
+	calls int
 }
 
-func (r *recordingConfigSignaler) SignalConfigVersion(_ context.Context, version string) error {
-	r.versions = append(r.versions, version)
+func (r *recordingConfigSignaler) SignalConfigChanged(_ context.Context) error {
+	r.calls++
 	return nil
 }
 
@@ -111,8 +111,7 @@ func mkConfigBundle(t *testing.T, files map[string]string) []byte {
 }
 
 // TestPutAgentConfigReturnsVersionAndSignals: a valid bundle is persisted, the
-// handler returns the store's content version, and the same version is emitted on
-// the ConfigVersion signal (live Runners re-fetch).
+// handler returns the store's content version, and emits a payload-free nudge.
 func TestPutAgentConfigReturnsVersionAndSignals(t *testing.T) {
 	f := newConfigFixture(t)
 	bundle := mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})
@@ -125,18 +124,14 @@ func TestPutAgentConfigReturnsVersionAndSignals(t *testing.T) {
 	if resp.GetVersion() == "" {
 		t.Fatal("PutAgentConfig returned an empty version")
 	}
-	if len(f.signaler.versions) != 1 {
-		t.Fatalf("signaler saw %d emits, want 1", len(f.signaler.versions))
-	}
-	if f.signaler.versions[0] != resp.GetVersion() {
-		t.Fatalf("signalled version %q != returned version %q", f.signaler.versions[0], resp.GetVersion())
+	if f.signaler.calls != 1 {
+		t.Fatalf("signaler saw %d emits, want 1", f.signaler.calls)
 	}
 }
 
 // TestPutAgentConfigIdempotentRePutDoesNotResignal: a re-Put of byte-identical
 // content is idempotent at the content-hash store — it yields the same version and
-// replaces the row in place, so the handler must NOT re-prod the fleet with a
-// second ConfigVersion signal for a version it already holds.
+// replaces the row in place, so the handler must NOT emit a second nudge.
 func TestPutAgentConfigIdempotentRePutDoesNotResignal(t *testing.T) {
 	f := newConfigFixture(t)
 	bundle := mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})
@@ -156,13 +151,13 @@ func TestPutAgentConfigIdempotentRePutDoesNotResignal(t *testing.T) {
 	if resp2.GetVersion() != v {
 		t.Fatalf("re-Put version %q != first version %q", resp2.GetVersion(), v)
 	}
-	if len(f.signaler.versions) != 1 {
-		t.Fatalf("signaler saw %d emits after an identical re-Put, want 1", len(f.signaler.versions))
+	if f.signaler.calls != 1 {
+		t.Fatalf("signaler saw %d emits after an identical re-Put, want 1", f.signaler.calls)
 	}
 }
 
 // TestPutAgentConfigChangedContentResignals: a Put whose content DIFFERS from the
-// stored bundle yields a new version and MUST re-prod the fleet — this pins the
+// stored bundle yields a new version and MUST nudge the fleet — this pins the
 // guard's signalling true-branch over a real (non-empty) prior version, the exact
 // path a dedupe regression would silently break (leaving the fleet on stale config
 // while the idempotent-case test stays green).
@@ -186,11 +181,8 @@ func TestPutAgentConfigChangedContentResignals(t *testing.T) {
 	if v2 == v1 {
 		t.Fatalf("changed content yielded the same version %q — expected a new one", v2)
 	}
-	if len(f.signaler.versions) != 2 {
-		t.Fatalf("signaler saw %d emits after a changed-content Put, want 2", len(f.signaler.versions))
-	}
-	if f.signaler.versions[1] != v2 {
-		t.Fatalf("second signal version %q != changed-content version %q", f.signaler.versions[1], v2)
+	if f.signaler.calls != 2 {
+		t.Fatalf("signaler saw %d emits after a changed-content Put, want 2", f.signaler.calls)
 	}
 }
 
@@ -203,8 +195,8 @@ func TestPutAgentConfigInvalidBundleIsInvalidArgument(t *testing.T) {
 	if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
 		t.Fatalf("invalid bundle code = %v, want InvalidArgument", code)
 	}
-	if len(f.signaler.versions) != 0 {
-		t.Fatalf("signaler fired on a rejected Put: %v", f.signaler.versions)
+	if f.signaler.calls != 0 {
+		t.Fatalf("signaler fired on a rejected Put: %d emits", f.signaler.calls)
 	}
 }
 
@@ -265,9 +257,9 @@ func TestGetAgentConfigInfoReturnsBucketedNames(t *testing.T) {
 	}
 }
 
-// TestDeleteAgentConfigClearsAndSignalsEmpty: Delete clears the fleet (a
-// subsequent GetInfo is empty) and emits an EMPTY-version ConfigVersion signal.
-func TestDeleteAgentConfigClearsAndSignalsEmpty(t *testing.T) {
+// TestDeleteAgentConfigClearsAndSignals: Delete clears the fleet (a subsequent
+// GetInfo is empty) and emits a payload-free config-change nudge.
+func TestDeleteAgentConfigClearsAndSignals(t *testing.T) {
 	f := newConfigFixture(t)
 	bundle := mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})
 	ctx := authReq(f, context.Background())
@@ -279,12 +271,8 @@ func TestDeleteAgentConfigClearsAndSignalsEmpty(t *testing.T) {
 	if _, err := f.client.DeleteAgentConfig(ctx, &compassv1.DeleteAgentConfigRequest{}); err != nil {
 		t.Fatalf("DeleteAgentConfig: %v", err)
 	}
-	// The Put emitted the content version; the Delete emitted the empty marker.
-	if n := len(f.signaler.versions); n != 2 {
-		t.Fatalf("signaler saw %d emits, want 2 (put + delete)", n)
-	}
-	if last := f.signaler.versions[1]; last != "" {
-		t.Fatalf("delete emitted version %q, want the empty cleared-marker", last)
+	if f.signaler.calls != 2 {
+		t.Fatalf("signaler saw %d emits, want 2 (put + delete)", f.signaler.calls)
 	}
 
 	ctx = authReq(f, context.Background())

@@ -3,7 +3,7 @@
 // The fleet agent-config declaration handlers on CompassService (RIG-1625 T2).
 // PutAgentConfig / DeleteAgentConfig are admin-gated on the network door;
 // GetAgentConfigInfo is value-free (names only) and authenticatedOpen. A Put/Delete
-// emits a ConfigVersion signal so live Runners re-fetch the credential-free bundle.
+// nudges live Runners to re-fetch the credential-free bundle.
 package server
 
 import (
@@ -19,23 +19,20 @@ import (
 )
 
 // configSignaler is the narrow hub surface the config write handlers need to emit
-// a ConfigVersion signal after a bundle write. *runnerhub.Hub satisfies it; the
+// a ConfigVersion nudge after a bundle write. *runnerhub.Hub satisfies it; the
 // service depends on the interface (not the concrete hub) so a test drives the
 // emit path with a recorder, mirroring secretsService's secretsSignaler.
 type configSignaler interface {
-	// SignalConfigVersion pushes a ConfigVersion signal carrying the given
-	// version to every live session (best-effort). An empty version marks the
-	// fleet cleared to no config.
-	SignalConfigVersion(ctx context.Context, version string) error
+	// SignalConfigChanged nudges every live session to re-fetch the fleet config.
+	SignalConfigChanged(ctx context.Context) error
 }
 
 // PutAgentConfig declares the fleet config bundle: it validates + hashes + upserts
-// the singleton at the store door, then signals every live session with the new
-// version so Runners re-fetch. Admin-gated on the network door (adminOnly); the
-// authenticated caller is the operator-scoped writer the store records. A bundle
-// that fails the door's validation (not a gzip tarball, path escapes, size/count
-// caps, invalid mcp JSON) is CodeInvalidArgument; the bundle bytes are never
-// logged.
+// the singleton at the store door, then nudges live Runners to re-fetch. Admin-gated
+// on the network door (adminOnly); the authenticated caller is the operator-scoped
+// writer the store records. A bundle that fails the door's validation (not a gzip
+// tarball, path escapes, size/count caps, invalid mcp JSON) is CodeInvalidArgument;
+// the bundle bytes are never logged.
 //
 // The signal fires only when the written version differs from the one already
 // stored. The store is content-hash-versioned, so a re-Put of byte-identical
@@ -73,7 +70,7 @@ func (s *service) PutAgentConfig(
 		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if version != currentVersion {
-		s.signalConfigVersion(ctx, version)
+		s.signalConfigChanged(ctx)
 	}
 	return &compassv1.PutAgentConfigResponse{Version: version}, nil
 }
@@ -116,9 +113,8 @@ func (s *service) GetAgentConfigInfo(
 }
 
 // DeleteAgentConfig clears the fleet config bundle back to unconfigured, then
-// signals every live session with an EMPTY version so Runners re-materialize the
-// empty config dir. Admin-gated (adminOnly). Idempotent at the store: deleting an
-// already-empty fleet succeeds.
+// nudges live sessions to re-fetch and re-materialize it. Admin-gated (adminOnly).
+// Idempotent at the store: deleting an already-empty fleet succeeds.
 func (s *service) DeleteAgentConfig(
 	ctx context.Context,
 	_ *compassv1.DeleteAgentConfigRequest,
@@ -126,9 +122,7 @@ func (s *service) DeleteAgentConfig(
 	if err := s.store.DeleteAgentConfig(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	// Empty version: the fleet-cleared marker (record §514-519) — Runners
-	// re-fetch and materialize an empty dir.
-	s.signalConfigVersion(ctx, "")
+	s.signalConfigChanged(ctx)
 	return &compassv1.DeleteAgentConfigResponse{}, nil
 }
 
@@ -143,17 +137,14 @@ func (s *service) requireCaller(ctx context.Context) (store.AccountID, error) {
 	return callerID, nil
 }
 
-// signalConfigVersion emits the ConfigVersion signal after a successful config
-// write. Best-effort: a nil signaler (socket-only server, no Runner door) is a
-// no-op, and a push failure is logged, never surfaced to the caller — the write
-// already committed, and the Runner re-fetches on reconnect regardless (the
-// signal is only a "re-fetch now" prod, not the source of truth), the same
-// posture as bumpSecretsVersion.
-func (s *service) signalConfigVersion(ctx context.Context, version string) {
+// signalConfigChanged nudges the Runner after a successful config write.
+// Best-effort: a nil signaler (socket-only server, no Runner door) is a no-op,
+// and a push failure is logged, never surfaced after the write commits.
+func (s *service) signalConfigChanged(ctx context.Context) {
 	if s.signaler == nil {
 		return
 	}
-	if err := s.signaler.SignalConfigVersion(ctx, version); err != nil {
-		slog.WarnContext(ctx, "emitting config version signal", "err", err)
+	if err := s.signaler.SignalConfigChanged(ctx); err != nil {
+		slog.WarnContext(ctx, "emitting config changed signal", "err", err)
 	}
 }

@@ -4,27 +4,25 @@ package runnerhub
 
 // The ConfigVersion emit seam (config_signal.go). Every case pins a behavior a
 // plausible bug would break:
-//   - SignalConfigVersion pushes ONE fleet-wide ConfigVersion frame per stream
-//     (regardless of live-session count) carrying the store's version verbatim
-//     (NOT minted) — a Put emits the content hash.
-//   - An empty version (the Delete/cleared marker) rides through unchanged.
+//   - SignalConfigChanged pushes ONE payload-free fleet-wide frame per stream,
+//     regardless of the number of live sessions.
 //   - No live sessions, and no Runner enrolled, are clean no-op successes.
 
 import (
 	"context"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// TestSignalConfigVersionPushesStoreVersion pins the emit seam: after binding two
-// live sessions and attaching a live send, SignalConfigVersion pushes exactly ONE
-// fleet-wide ConfigVersion frame (the count is independent of live-session count),
-// and the version is exactly the caller-supplied string (the store's content
-// version), never a minted token.
-func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
+// TestSignalConfigChangedNudgesAttachedRouter pins the emit seam: after binding
+// two live sessions and attaching a live send, SignalConfigChanged pushes exactly
+// ONE payload-free ConfigVersion frame for the fleet.
+func TestSignalConfigChangedNudgesAttachedRouter(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	bindSession(hub, "sess-a")
@@ -37,56 +35,23 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
-	const version = "deadbeefcafe"
-	if err := hub.SignalConfigVersion(context.Background(), version); err != nil {
-		t.Fatalf("SignalConfigVersion = %v, want nil", err)
+	if err := hub.SignalConfigChanged(context.Background()); err != nil {
+		t.Fatalf("SignalConfigChanged = %v, want nil", err)
 	}
 	// The fleet-wide frame is queued-not-pushed; gate on the sender draining it.
 	waitRecorded(t, rec, 1)
 	pushed := configVersionsPushed(t, rec)
-	// One fleet-wide frame per stream, regardless of how many sessions are live —
-	// ConfigVersion carries no session_id (record §527-528, §563).
 	if len(pushed) != 1 {
-		t.Fatalf("pushed %d ConfigVersion frames, want 1 (one fleet-wide frame per stream regardless of live session count)", len(pushed))
+		t.Fatalf("pushed %d ConfigVersion frames, want 1 (one fleet-wide frame per stream)", len(pushed))
 	}
-	for _, cv := range pushed {
-		if cv.GetVersion() != version {
-			t.Fatalf("ConfigVersion version = %q, want the store version %q (not minted)", cv.GetVersion(), version)
-		}
+	if !proto.Equal(pushed[0], &compassv1internal.ConfigVersion{}) {
+		t.Fatalf("ConfigVersion frame = %v, want an empty nudge", pushed[0])
 	}
 }
 
-// TestSignalConfigVersionEmptyVersionIsTheClearedMarker pins the Delete path: an
-// empty version rides through the single fleet-wide frame unchanged — the
-// fleet-cleared marker the Runner reads as "materialize an empty dir".
-func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
-	hub := newHubOnly()
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	bindSession(hub, "sess-a")
-	router, _, err := hub.routerFor("any")
-	if err != nil {
-		t.Fatalf("routerFor after enroll = %v, want a router", err)
-	}
-	rec := newRecordingSend()
-	router.attach(t.Context(), rec.send)
-	defer router.detach(errStreamClosed)
-
-	if err := hub.SignalConfigVersion(context.Background(), ""); err != nil {
-		t.Fatalf("SignalConfigVersion(empty) = %v, want nil", err)
-	}
-	waitRecorded(t, rec, 1)
-	pushed := configVersionsPushed(t, rec)
-	if len(pushed) != 1 {
-		t.Fatalf("pushed %d ConfigVersion frames, want 1", len(pushed))
-	}
-	if got := pushed[0].GetVersion(); got != "" {
-		t.Fatalf("cleared-marker version = %q, want empty", got)
-	}
-}
-
-// TestSignalConfigVersionNoLiveSessionsIsNoop: a signal with no live sessions
+// TestSignalConfigChangedNoLiveSessionsIsNoop: a signal with no live sessions
 // (nothing bound) pushes nothing and is a clean success.
-func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
+func TestSignalConfigChangedNoLiveSessionsIsNoop(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
@@ -94,20 +59,20 @@ func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
 	router.attach(t.Context(), rec.send)
 	defer router.detach(errStreamClosed)
 
-	if err := hub.SignalConfigVersion(context.Background(), "v1"); err != nil {
-		t.Fatalf("SignalConfigVersion with no live sessions = %v, want nil", err)
+	if err := hub.SignalConfigChanged(context.Background()); err != nil {
+		t.Fatalf("SignalConfigChanged with no live sessions = %v, want nil", err)
 	}
 	if got := len(configVersionsPushed(t, rec)); got != 0 {
 		t.Fatalf("pushed %d frames with no live sessions, want 0", got)
 	}
 }
 
-// TestSignalConfigVersionNoRunnerIsNoop: with no Runner enrolled, a signal is a
+// TestSignalConfigChangedNoRunnerIsNoop: with no Runner enrolled, a signal is a
 // clean no-op (best-effort — the Runner re-fetches on reconnect).
-func TestSignalConfigVersionNoRunnerIsNoop(t *testing.T) {
+func TestSignalConfigChangedNoRunnerIsNoop(t *testing.T) {
 	hub := newHubOnly() // no enroll
-	if err := hub.SignalConfigVersion(context.Background(), "v1"); err != nil {
-		t.Fatalf("SignalConfigVersion with no runner = %v, want nil", err)
+	if err := hub.SignalConfigChanged(context.Background()); err != nil {
+		t.Fatalf("SignalConfigChanged with no runner = %v, want nil", err)
 	}
 }
 

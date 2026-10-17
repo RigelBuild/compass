@@ -482,8 +482,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		// fan-out over every live session is slow, so the arm only marks a pass pending on
 		// the coalescing config worker and returns. Best-effort: the worker logs and swallows
 		// any failure. No result frame (no session id, not request_id-correlated).
-		d.log.InfoContext(ctx, "received ConfigVersion signal",
-			slog.String("version", c.ConfigVersion.GetVersion()))
+		d.log.InfoContext(ctx, "received ConfigVersion signal")
 		d.signalConfig()
 		return nil
 	case *compassv1internal.SessionsResponse_DeliverControl:

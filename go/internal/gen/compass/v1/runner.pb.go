@@ -703,13 +703,12 @@ type SessionsResponse_SecretsVersion struct {
 }
 
 type SessionsResponse_ConfigVersion struct {
-	// config_version (tag 9): the Server signals the fleet that the config
-	// bundle changed; the Runner re-fetches via FetchAgentConfig, re-materializes
-	// the new version dir, and Reloads live agents in place (RIG-1568 T3/T6).
-	// Fleet-wide, no per-account key. Signal-only — never carries bytes, and,
-	// like secrets_version, is NOT request_id-correlated and has NO
-	// SessionsRequest result variant: it is a notification, not a command, so the
-	// Runner sends no result frame for it. Sibling to secrets_version (tag 8).
+	// config_version (tag 9): the Server nudges the fleet that the config bundle
+	// changed; the Runner re-fetches it via FetchAgentConfig and Reloads live
+	// agents. Fleet-wide, with no per-account key or payload. Signal-only — like
+	// secrets_version, it is NOT request_id-correlated and has NO SessionsRequest
+	// result variant: it is a notification, not a command. Sibling to
+	// secrets_version (tag 8).
 	ConfigVersion *ConfigVersion `protobuf:"bytes,9,opt,name=config_version,json=configVersion,proto3,oneof"`
 }
 
@@ -1365,15 +1364,12 @@ func (*FetchAgentConfigResponse_Version) isFetchAgentConfigResponse_Frame() {}
 
 func (*FetchAgentConfigResponse_Chunk) isFetchAgentConfigResponse_Frame() {}
 
-// ConfigVersion: a Server->Runner signal that the fleet config bundle changed.
-// Signal only — carries no bytes; the Runner re-fetches via FetchAgentConfig on
-// it. Fleet-wide, no per-account key. Mirrors SecretsVersion: not
-// request_id-correlated, no result variant.
+// ConfigVersion: a payload-free Server->Runner nudge that the fleet config bundle
+// changed. The Runner re-fetches it via FetchAgentConfig. Fleet-wide, no
+// per-account key. Mirrors SecretsVersion: not request_id-correlated, no result
+// variant.
 type ConfigVersion struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The new bundle version (content hash). An empty version means the fleet was
-	// cleared to no config — the Runner re-fetches and materializes an empty dir.
-	Version       string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1406,13 +1402,6 @@ func (x *ConfigVersion) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ConfigVersion.ProtoReflect.Descriptor instead.
 func (*ConfigVersion) Descriptor() ([]byte, []int) {
 	return file_compass_v1_runner_proto_rawDescGZIP(), []int{14}
-}
-
-func (x *ConfigVersion) GetVersion() string {
-	if x != nil {
-		return x.Version
-	}
-	return ""
 }
 
 // An in-band command failure carried in a SessionsRequest result oneof. The
@@ -2541,9 +2530,8 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x18FetchAgentConfigResponse\x12\x1a\n" +
 	"\aversion\x18\x01 \x01(\tH\x00R\aversion\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\a\n" +
-	"\x05frame\")\n" +
-	"\rConfigVersion\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\tR\aversion\"X\n" +
+	"\x05frame\"\x1e\n" +
+	"\rConfigVersionJ\x04\b\x01\x10\x02R\aversion\"X\n" +
 	"\vRunnerError\x12/\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x1b.compass.v1.RunnerErrorCodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\xab\x01\n" +
