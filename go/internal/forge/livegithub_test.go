@@ -756,56 +756,9 @@ func TestLiveLinearSelfDelegateProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve Linear team: %v", err)
 	}
-	var created struct {
-		IssueCreate struct {
-			Issue struct {
-				ID     string  `json:"id"`
-				Number float64 `json:"number"`
-			} `json:"issue"`
-		} `json:"issueCreate"`
-	}
-	createQuery := `mutation CompassSelfDelegateProbeCreate($input: IssueCreateInput!) {
-  issueCreate(input: $input) { issue { id number } }
-}`
-	if err := linearDirectGraphQL(ctx, ts, createQuery, map[string]any{"input": map[string]any{
-		"teamId": teamID, "title": "compass-live-delegate-probe-" + newRunID(), "delegateId": viewer.Viewer.ID,
-	}}, &created); err != nil {
-		t.Fatalf("create self-delegated Linear issue: %v", err)
-	}
-	if created.IssueCreate.Issue.Number == 0 {
-		t.Fatalf("issueCreate returned no issue number: %+v", created.IssueCreate.Issue)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, uint64(created.IssueCreate.Issue.Number)) })
-
-	readIssue := func(id string) struct {
-		Issue struct {
-			Delegate *struct {
-				ID string `json:"id"`
-			} `json:"delegate"`
-			Assignee *struct {
-				ID string `json:"id"`
-			} `json:"assignee"`
-		} `json:"issue"`
-	} {
-		var result struct {
-			Issue struct {
-				Delegate *struct {
-					ID string `json:"id"`
-				} `json:"delegate"`
-				Assignee *struct {
-					ID string `json:"id"`
-				} `json:"assignee"`
-			} `json:"issue"`
-		}
-		query := `query CompassSelfDelegateProbeRead($id: String!) {
-  issue(id: $id) { delegate { id } assignee { id } }
-}`
-		if err := linearDirectGraphQL(ctx, ts, query, map[string]any{"id": id}, &result); err != nil {
-			t.Fatalf("read Linear delegate slots: %v", err)
-		}
-		return result
-	}
-	createdSlots := readIssue(created.IssueCreate.Issue.ID).Issue
+	created := liveRawCreateLinearIssue(ctx, t, ts, teamID, "compass-live-delegate-probe-", viewer.Viewer.ID)
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, created.Number) })
+	createdSlots := liveReadLinearSlots(ctx, t, ts, created.ID)
 	if createdSlots.Delegate == nil || createdSlots.Delegate.ID != viewer.Viewer.ID {
 		t.Errorf("created delegate = %+v, want viewer id %q", createdSlots.Delegate, viewer.Viewer.ID)
 	}
@@ -813,38 +766,79 @@ func TestLiveLinearSelfDelegateProbe(t *testing.T) {
 		t.Errorf("created assignee = %+v, want null", createdSlots.Assignee)
 	}
 
-	var second struct {
-		IssueCreate struct {
-			Issue struct {
-				ID     string  `json:"id"`
-				Number float64 `json:"number"`
-			} `json:"issue"`
-		} `json:"issueCreate"`
-	}
-	if err := linearDirectGraphQL(ctx, ts, createQuery, map[string]any{"input": map[string]any{
-		"teamId": teamID, "title": "compass-live-delegate-update-" + newRunID(),
-	}}, &second); err != nil {
-		t.Fatalf("create Linear issue for update leg: %v", err)
-	}
-	if second.IssueCreate.Issue.Number == 0 {
-		t.Fatalf("issueCreate returned no issue number: %+v", second.IssueCreate.Issue)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, uint64(second.IssueCreate.Issue.Number)) })
+	second := liveRawCreateLinearIssue(ctx, t, ts, teamID, "compass-live-delegate-update-", "")
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, second.Number) })
 	updateQuery := `mutation CompassSelfDelegateProbeUpdate($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) { issue { id } }
 }`
 	if err := linearDirectGraphQL(ctx, ts, updateQuery, map[string]any{
-		"id": second.IssueCreate.Issue.ID, "input": map[string]any{"delegateId": viewer.Viewer.ID},
+		"id": second.ID, "input": map[string]any{"delegateId": viewer.Viewer.ID},
 	}, &struct{}{}); err != nil {
 		t.Fatalf("update Linear issue delegate: %v", err)
 	}
-	updatedSlots := readIssue(second.IssueCreate.Issue.ID).Issue
+	updatedSlots := liveReadLinearSlots(ctx, t, ts, second.ID)
 	if updatedSlots.Delegate == nil || updatedSlots.Delegate.ID != viewer.Viewer.ID {
 		t.Errorf("updated delegate = %+v, want viewer id %q", updatedSlots.Delegate, viewer.Viewer.ID)
 	}
 	if updatedSlots.Assignee != nil {
 		t.Errorf("updated assignee = %+v, want null", updatedSlots.Assignee)
 	}
+}
+
+// linearRawIssue is the node id and number a raw issueCreate returns.
+type linearRawIssue struct {
+	ID     string `json:"id"`
+	Number uint64 `json:"number"`
+}
+
+// linearSlots is the raw delegate/assignee read-back; forge.Issue does not carry them.
+type linearSlots struct {
+	Delegate *struct {
+		ID string `json:"id"`
+	} `json:"delegate"`
+	Assignee *struct {
+		ID string `json:"id"`
+	} `json:"assignee"`
+}
+
+// liveRawCreateLinearIssue creates an issue on the raw API, bypassing the
+// provider, with delegateID set only when non-empty.
+func liveRawCreateLinearIssue(ctx context.Context, t *testing.T, ts TokenSource, teamID, titlePrefix, delegateID string) linearRawIssue {
+	t.Helper()
+	input := map[string]any{"teamId": teamID, "title": titlePrefix + newRunID()}
+	if delegateID != "" {
+		input["delegateId"] = delegateID
+	}
+	var out struct {
+		IssueCreate struct {
+			Issue linearRawIssue `json:"issue"`
+		} `json:"issueCreate"`
+	}
+	const query = `mutation CompassSelfDelegateProbeCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) { issue { id number } }
+}`
+	if err := linearDirectGraphQL(ctx, ts, query, map[string]any{"input": input}, &out); err != nil {
+		t.Fatalf("raw Linear issueCreate: %v", err)
+	}
+	if out.IssueCreate.Issue.Number == 0 {
+		t.Fatalf("issueCreate returned no issue number: %+v", out.IssueCreate.Issue)
+	}
+	return out.IssueCreate.Issue
+}
+
+// liveReadLinearSlots reads an issue's delegate and assignee by node id.
+func liveReadLinearSlots(ctx context.Context, t *testing.T, ts TokenSource, id string) linearSlots {
+	t.Helper()
+	var out struct {
+		Issue linearSlots `json:"issue"`
+	}
+	const query = `query CompassSelfDelegateProbeRead($id: String!) {
+  issue(id: $id) { delegate { id } assignee { id } }
+}`
+	if err := linearDirectGraphQL(ctx, ts, query, map[string]any{"id": id}, &out); err != nil {
+		t.Fatalf("read Linear delegate slots: %v", err)
+	}
+	return out.Issue
 }
 
 // linearDirectGraphQL is the raw-API path used to pin Linear's unadapted capabilities.

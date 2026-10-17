@@ -197,6 +197,12 @@ type CreateIssue struct {
 	Body string
 	// Labels are the label names to apply on creation.
 	Labels []string
+	// DelegateSelf asks Linear to delegate the issue to the acting app user.
+	// GitHub ignores this Linear-only field.
+	DelegateSelf bool
+	// Assignee is a Linear user UUID for assigneeId; empty leaves it unset.
+	// GitHub ignores this Linear-only field.
+	Assignee string
 }
 
 // CreatePR is the input to Provider.CreatePullRequest.
