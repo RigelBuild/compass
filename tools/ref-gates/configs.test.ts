@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	findViolations,
-	gitGrep,
 	loadRefGateConfig,
 	type RefGateConfig,
 } from "@rigelbuild/ref-gate";
@@ -22,12 +21,30 @@ const here = import.meta.dir;
 const repoRoot = join(here, "../..");
 const privateName = loadRefGateConfig(join(here, "private-name.json"));
 const sea = loadRefGateConfig(join(here, "sea.json"));
+const configPath = new Map([
+	[privateName, join(here, "private-name.json")],
+	[sea, join(here, "sea.json")],
+]);
 const scratch: string[] = [];
 afterAll(() => {
 	for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
 });
 
-// Commits each file into a fresh repo and returns the paths the gate flags.
+// Hook-exported GIT_DIR and friends would aim git at the outer checkout. Bun's
+// spawn ignores `delete process.env`, so every git call gets an explicit env.
+const gitEnv = Object.fromEntries(
+	Object.entries(process.env).filter(
+		([key]) => !["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"].includes(key),
+	),
+);
+
+function run(cmd: string[]): string {
+	const r = Bun.spawnSync({ cmd, env: gitEnv, stderr: "pipe" });
+	if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+	return r.stdout.toString();
+}
+
+// Stages each file in a fresh repo and returns the paths the gate flags.
 function flagged(cfg: RefGateConfig, files: Record<string, string>): string[] {
 	const root = mkdtempSync(join(tmpdir(), "ref-gates-"));
 	scratch.push(root);
@@ -35,16 +52,12 @@ function flagged(cfg: RefGateConfig, files: Record<string, string>): string[] {
 		mkdirSync(dirname(join(root, path)), { recursive: true });
 		writeFileSync(join(root, path), `${text}\n`);
 	}
-	const git = (...args: string[]) => {
-		const r = Bun.spawnSync({
-			cmd: ["git", "-C", root, ...args],
-			stderr: "pipe",
-		});
-		if (r.exitCode !== 0) throw new Error(r.stderr.toString());
-	};
-	git("init", "-q");
-	git("add", "-A");
-	const hits = gitGrep(root, cfg.prefilter);
+	run(["git", "-C", root, "init", "-q"]);
+	run(["git", "-C", root, "add", "-A"]);
+	const scan = [process.execPath, join(here, "scan.fixture.ts"), root];
+	const hits = JSON.parse(
+		run([...scan, configPath.get(cfg) ?? ""]),
+	) as string[];
 	return [...new Set(findViolations(cfg, hits).map((v) => v.file))].sort();
 }
 

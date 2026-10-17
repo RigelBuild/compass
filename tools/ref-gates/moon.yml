@@ -8,7 +8,7 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/tsconfig.base.json', '/bun.lock']
   test:
     inputs:
       - '*.ts'

@@ -1712,13 +1712,17 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 	});
 	test("the token-bearing preflight package keeps the release soak", () => {
 		expect(bunfigExcludes()).not.toContain(tokenBearingPackage);
-		// Glob-aware so a wildcard rule such as "@rigelbuild/*" also trips this.
-		const matches = (pattern: string) =>
-			new Bun.Glob(pattern).match(tokenBearingPackage);
+		// Glob-aware on both axes so a wildcard rule such as "@rigelbuild/*" also trips this.
+		const glob = (value: string) => (pattern: string) =>
+			new Bun.Glob(pattern).match(value);
 		for (const rule of cfg.packageRules) {
 			if (rule.minimumReleaseAge !== null) continue;
-			if (rule.matchFileNames && !rule.matchFileNames.includes("package.json"))
+			if (
+				rule.matchFileNames &&
+				!rule.matchFileNames.some(glob("package.json"))
+			)
 				continue;
+			const matches = glob(tokenBearingPackage);
 			expect((rule.matchPackageNames ?? []).filter(matches)).toEqual([]);
 		}
 	});
