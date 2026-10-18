@@ -10,12 +10,8 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// The RunnerHub's RIG-2732 W3 forge-ack arm: the RECEIVE side of the forge
-// notification lane. A forge_notification_ack frame (the agent's turn-end flush
-// receipt) advances that subscription's delivered_revision through the delivery
-// store, resolving session->agent from the hub's own binding exactly as
-// deliverAck does. Each test pins the observable contract a plausible regression
-// would break, reusing the fakeDeliveryStore in deliveryarm_test.go.
+// Forge-ack frames advance a subscription's delivered revision using the agent resolved from its live binding.
+// Tests reuse fakeDeliveryStore to pin the receive-side contract.
 
 // testForgeRevision is the revision every forge-ack frame in these tests carries
 // — the value the arm advances delivered_revision to. Fixed because these tests

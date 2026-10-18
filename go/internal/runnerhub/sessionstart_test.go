@@ -2,14 +2,8 @@
 
 package runnerhub
 
-// RIG-1569 T6 — the hub's session-start-edge sink, fired at promoteSession when
-// StartAgentSession binds a live agent session. The delivery consumer subscribes
-// to this edge (SetSessionStartSink) to run the reconnect sweep for the freshly
-// -live session. White-box (package runnerhub) so the tests drive the unexported
-// binding lifecycle (bindContainer/promoteSession/enroll) directly and assert the
-// edge through a fake sink. Sleep-free: promoteSession fires the sink inline (the
-// sink itself only enqueues and returns), so every assertion reads a
-// synchronously-recorded fact.
+// promoteSession notifies SessionStartSink so the delivery consumer can sweep a newly live session.
+// Tests drive the lifecycle directly and verify the synchronous sink record.
 
 import (
 	"context"
@@ -25,11 +19,7 @@ type startRecord struct {
 	account   store.AccountID
 }
 
-// fakeSessionStartSink records OnSessionStarted calls — the hub's
-// session-start-edge sink. It records synchronously and returns immediately (as
-// the real consumer's hook does: it only enqueues and wakes its loop), so a test
-// asserting promoteSession does not block on store work reads the recorded fact
-// right after the call.
+// fakeSessionStartSink records notifications synchronously so tests can verify promotion does not wait on store work.
 type fakeSessionStartSink struct {
 	mu     sync.Mutex
 	starts []startRecord

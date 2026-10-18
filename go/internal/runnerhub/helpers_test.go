@@ -2,13 +2,8 @@
 
 package runnerhub
 
-// Shared scaffolding for the runnerhub seam tests: hand-written fakes for the
-// three write-through sinks, a fake TokenResolver that models the real
-// auth.ResolveToken kind-gate contract, protobuf frame builders, and the in-
-// process h2c transport (the same cleartext-HTTP/2 door serve.go ships) so the
-// RunnerService handler is exercised through a real connect-go client rather
-// than called directly. White-box (package runnerhub) so tests can reach the
-// unexported router/dispatch/auth internals while still driving the wire.
+// Shared scaffolding provides fakes, protobuf builders, and an in-process h2c transport.
+// Tests exercise the RunnerService handler through Connect while reaching package internals.
 
 import (
 	"context"
@@ -38,12 +33,7 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
-// waitRouterAttached blocks until the enrolled Runner's command router has a
-// live send bound (the Sessions handler ran router.attach), or fails at the
-// deadline. It event-gates on the observed attach state — a monotonic signal
-// set exactly once when the handler binds the stream — using runtime.Gosched to
-// yield to the handler goroutine between probes, never a wall-clock sleep. This
-// is the same readiness-gate shape as the server suite's waitListening.
+// waitRouterAttached waits for the observed router attachment, yielding between probes without sleeping.
 func waitRouterAttached(t *testing.T, hub *Hub) {
 	t.Helper()
 	deadline := timeAfter()
@@ -65,20 +55,12 @@ func waitRouterAttached(t *testing.T, hub *Hub) {
 	}
 }
 
-// testTimeout bounds every blocking wait so a wedged handler fails fast instead
-// of hanging the suite. It is a deadline safety net, never a synchronization
-// device: tests event-gate on channel sends and observed calls, not elapsed
-// time.
+// testTimeout bounds blocking waits; tests synchronize on events, not elapsed time.
 const testTimeout = 15 * time.Second
 
 func timeAfter() <-chan time.Time { return time.After(testTimeout) }
 
-// waitRecorded blocks until the recording send has observed at least n frames,
-// or fails at the deadline. Since attach now drains an outbound queue on a
-// sender goroutine, a frame is queued-not-pushed: a test asserting a signal
-// reached the wire must gate on the recorder observing it rather than assuming
-// the enqueue call pushed synchronously. Channel-gated on the deadline, never a
-// wall-clock sleep.
+// waitRecorded gates on queued frames reaching the wire, with a deadline only as a failure bound.
 func waitRecorded(t *testing.T, rec *recordingSend, n int) {
 	t.Helper()
 	deadline := timeAfter()
@@ -146,29 +128,19 @@ func newHub() (*Hub, *fakeLifecycleSink, *fakeTailSink) {
 	return NewHub(life, tail, nil, discardLogger()), life, tail
 }
 
-// newHubOnly builds a hub over two fresh fake sinks and returns just the hub,
-// for a test that drives Deliver/enroll/routing and asserts through the wire or
-// the hub's own accessors rather than reaching into a specific sink.
+// newHubOnly builds a hub with fake sinks for wire and accessor tests.
 func newHubOnly() *Hub {
 	return NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, nil, discardLogger())
 }
 
-// testAgentAccount is the account every conversation test binds its session to.
-// The tests assert WHICH account the hub attributed a frame to, so the value
-// has to be nameable at the assertion site; it is a constant rather than a
-// bindSession parameter because no test needs a second account — a cross
-// -account case is built by binding this one and asserting a refusal, not by
-// binding a different one.
+// testAgentAccount is the fixed account used to verify hub attribution.
+// Cross-account tests assert refusal and do not need another account.
 const testAgentAccount store.AccountID = "acct-agent"
 
-// bindSession binds sessionID to testAgentAccount through the real
-// Provision->Start promotion path, the same two-step the command handlers
-// drive. Deliver's conversation arms resolve against this binding and fail
-// closed without it, so any conversation test that expects a write-through must
-// bind first.
+// bindSession uses the production Provision-to-Start path, enrolling the Runner when needed.
+// Conversation tests must bind first because the hub fails closed without a binding.
 func bindSession(hub *Hub, sessionID string) {
-	// Promotion records the enrolled Runner as the owner, as in production where
-	// only an enrolled Runner can Start; re-enrolling would clear earlier binds.
+	// Enroll before promotion because a real Start can only come from an enrolled Runner.
 	hub.mu.Lock()
 	enrolled := hub.runner != nil
 	hub.mu.Unlock()
@@ -180,10 +152,7 @@ func bindSession(hub *Hub, sessionID string) {
 	hub.promoteSession(context.Background(), container, sessionID)
 }
 
-// commsCall records one CommsCaller invocation: the account the hub resolved
-// the session to, and exactly one of the post/list request it dispatched. It is
-// the fake's proof of WHICH account attribution the hub applied — the security
-// invariant the RelayCommsCall tests defend.
+// commsCall records the resolved account and request variant passed to CommsCaller for attribution tests.
 type commsCall struct {
 	account     store.AccountID
 	post        *compassv1.PostMessageRequest
@@ -201,12 +170,8 @@ type commsCall struct {
 	openDM             *compassv1.OpenDMRequest
 }
 
-// fakeCommsCaller is a hand-written CommsCaller: it records every call (account
-// + request) so a test asserts the hub attributed to the bound account and
-// forwarded the exact request, and returns a configurable canned response or
-// error per method so a test drives both the success and the in-band tool-error
-// path without a real store. Concurrency-safe for parity with the real caller,
-// though the hub calls it inline.
+// fakeCommsCaller records requests and returns configurable results or errors for relay tests.
+// It is concurrency-safe, though the hub calls it inline.
 type fakeCommsCaller struct {
 	mu    sync.Mutex
 	calls []commsCall
@@ -399,23 +364,16 @@ func newHubWithComms() (*Hub, *fakeCommsCaller) {
 	return NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, comms, discardLogger()), comms
 }
 
-// lifecycleCall records one LifecycleCaller invocation: the account the hub
-// attributed it to plus the request forwarded, one of spawn/despawn set. A test
-// asserts the hub delegated under the RESOLVED caller account (never the
-// Runner's, never admin) and dispatched the right variant.
+// lifecycleCall records the resolved account and request variant passed to LifecycleCaller.
+// Tests verify delegation uses the caller account, not the Runner or admin.
 type lifecycleCall struct {
 	account store.AccountID
 	spawn   *compassv1internal.SpawnPeerRequest
 	despawn *compassv1internal.DespawnPeerRequest
 }
 
-// fakeLifecycleCaller is a hand-written LifecycleCaller mirroring
-// fakeCommsCaller: it records every call (account + request) so a test asserts
-// the hub attributed to the bound account and forwarded the exact request, and
-// returns a configurable canned response or error per method so a test drives
-// both the success and the in-band tool-error path without a real service.
-// Concurrency-safe for parity with the real caller, though the hub calls it
-// inline.
+// fakeLifecycleCaller records requests and returns configurable results or errors for relay tests.
+// It is concurrency-safe, though the hub calls it inline.
 type fakeLifecycleCaller struct {
 	mu    sync.Mutex
 	calls []lifecycleCall
@@ -452,11 +410,6 @@ func (f *fakeLifecycleCaller) snapshot() []lifecycleCall {
 	return append([]lifecycleCall(nil), f.calls...)
 }
 
-// newHubWithLifecycle builds a hub whose LifecycleCaller is the returned fake
-// (wired post-construction via SetLifecycleCaller, the real wiring path), so a
-// RelayLifecycleCall test drives the resolve->attribute->delegate path and
-// asserts on the caller account the fake was called with. Like newHubOnly
-// otherwise.
 func newHubWithLifecycle() (*Hub, *fakeLifecycleCaller) {
 	fake := &fakeLifecycleCaller{}
 	hub := newHubOnly()
@@ -472,12 +425,8 @@ type boardCall struct {
 	setIssueState *compassv1internal.SetIssueStateRequest
 }
 
-// fakeBoardCaller is a hand-written BoardCaller mirroring fakeLifecycleCaller:
-// it records every call (account + request) so a test asserts the hub attributed
-// to the bound account and forwarded the exact request, and returns a
-// configurable canned response or error so a test drives both the success and
-// the in-band tool-error path without a real service. Concurrency-safe for
-// parity with the real caller, though the hub calls it inline.
+// fakeBoardCaller records requests and returns configurable results or errors for relay tests.
+// It is concurrency-safe, though the hub calls it inline.
 type fakeBoardCaller struct {
 	mu    sync.Mutex
 	calls []boardCall
@@ -520,12 +469,8 @@ type resolverEntry struct {
 	revoked bool
 }
 
-// fakeResolver is a hand-written TokenResolver that models the T3
-// auth.ResolveToken contract verbatim: an unknown token is store.ErrNotFound, a
-// revoked one is store.ErrTokenRevoked, and a token whose stored kind differs
-// from the wanted kind is a wrong-kind error. The door under test collapses all
-// three to a bare Unauthenticated — the no-oracle contract the cross-door tests
-// pin. Keyed by the presented plaintext token.
+// fakeResolver models token lookup, revocation, and wrong-kind errors for auth tests.
+// The door collapses each failure to bare Unauthenticated; tokens are keyed by plaintext.
 type fakeResolver struct {
 	tokens map[string]resolverEntry
 }

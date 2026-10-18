@@ -2,12 +2,7 @@
 
 package runnerhub
 
-// Deliver classification + the OQ6 rows the hub owns. Every test names the
-// observable contract a plausible regression would break: a session frame's
-// DISCONNECTED state must reach the lifecycle sink verbatim (not collapse to
-// ERRORED); a session frame reaches the tail+lifecycle; an unknown frame must be
-// counted, never dropped or errored; and a Runner-sequence gap must be flagged
-// (in-transit loss the board surfaces).
+// Deliver tests pin lifecycle forwarding, unknown-frame accounting, and Runner-sequence gap reporting.
 
 import (
 	"context"

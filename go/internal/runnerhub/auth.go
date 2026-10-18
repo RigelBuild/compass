@@ -60,11 +60,8 @@ var errLookupUnavailable = connect.NewError(connect.CodeUnavailable, "credential
 // registered cluster whose keys are unusable; retryable, unlike a bad token.
 var errKeysUnavailable = connect.NewError(connect.CodeUnavailable, "runner cluster keys unavailable")
 
-// authenticate extracts the bearer token from the request header, resolves it as
-// a SubjectRunner token, and returns a context carrying the subject. Any
-// credential failure — missing/malformed header, not-found, revoked, wrong kind —
-// returns errUnauthenticated with no distinguishing detail; a store fault returns
-// errLookupUnavailable.
+// authenticate resolves the bearer token as SubjectRunner and returns its subject in context.
+// Credential failures share errUnauthenticated; store faults return errLookupUnavailable.
 func (b *bearerAuth) authenticate(ctx context.Context, header interface{ Get(key string) string }) (context.Context, error) {
 	raw := header.Get("Authorization")
 	if !strings.HasPrefix(raw, bearerPrefix) {

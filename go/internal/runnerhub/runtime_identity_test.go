@@ -2,17 +2,9 @@
 
 package runnerhub
 
-// The enrollment-carried runtime tier + egress posture reach BOTH production
-// render paths. A Runner declares its tier and posture ONCE at enrollment; the
-// hub stamps them onto every session status it publishes. These tests drive a
-// session lifecycle frame through the REAL hub wired to the REAL Bridge board
-// (board.Projection as the LifecycleSink), so one delivery exercises the two
-// surfaces off one source of truth:
-//   - the UI's SubscribeEvents fan-out (bus.Subscribe -> Live), and
-//   - the CLI's GetAgentStatus snapshot (board.Snapshot).
-// White-box (package runnerhub) so the test drives the unexported enroll/bind
-// lifecycle directly. Sleep-free: the delivery records+fans synchronously under
-// the projection's lock, so every assertion reads a settled fact.
+// Enrollment's runtime tier and egress posture reach both production status surfaces.
+// Tests publish one lifecycle frame and check the UI event and CLI snapshot.
+// Synchronous projection updates make the assertions sleep-free.
 
 import (
 	"context"

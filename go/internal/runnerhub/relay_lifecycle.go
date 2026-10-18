@@ -116,11 +116,8 @@ func (h *Hub) executeLifecycleCall(
 	}
 }
 
-// lifecycleCallError maps a lifecycle execution error onto the in-band
-// LifecycleCallError the agent renders. The code is the Connect status token
-// (e.g. "already_exists" for a duplicate handle — the same collapse a human
-// caller gets); the message is the error text. A non-Connect error is
-// CodeUnknown's token.
+// lifecycleCallError maps execution failures to the in-band error rendered by the agent.
+// Connect failures retain their status token; other errors use Unknown.
 func lifecycleCallError(err error) *compassv1internal.LifecycleCallError {
 	return &compassv1internal.LifecycleCallError{
 		Code:    connect.CodeOf(err).String(),

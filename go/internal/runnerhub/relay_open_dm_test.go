@@ -2,11 +2,8 @@
 
 package runnerhub
 
-// The peer-DM relay arm (RIG-2962 T3): RelayCommsCall dispatches an open_dm call
-// to OpenDMAsAccount under the bound account, wrapping the open_dm result oneof
-// with call_id round-tripped. A tool error on the arm is rendered in-band as a
-// CommsCallError, never a transport teardown. Driven through the fakeCommsCaller,
-// no store. context.Background() is the test root (test-root ctx exemption).
+// RelayCommsCall's open_dm arm uses the bound account and wraps the matching result.
+// Tool errors stay in-band; tests use a fake caller without a store.
 
 import (
 	"context"

@@ -38,20 +38,8 @@ func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID
 	h.containerAccounts[containerName] = sessionBinding{account: agentAccountID, runnerID: runnerID}
 }
 
-// promoteSession binds the container's provisioned account to the live session.
-// A provision without an account creates no session binding.
-// RIG-3108: the maps are a read-through cache, so the durable binding is written
-// FIRST (RecordSessionBinding, on the request ctx so it lands tenant-scoped),
-// and only then are the maps updated under h.mu. The store returns the session
-// this account DISPLACED — the prior session now resolving nowhere — which is
-// evicted from the forward map here (without it, sess-old would keep resolving
-// to the account it no longer speaks for) and invalidated on peer instances via
-// a BindingUnbound publish. A BindingBound publish for the new session lets peer
-// instances drop any stale cache entry for it. The store write and the publish
-// both run with h.mu RELEASED — never hold the lock across a store call or a
-// sink — exactly the lock-then-store-then-map discipline the design requires.
-// bindingWriteMu spans the lookup, write and map update, so a whole enroll orders
-// before or after this promotion, never inside it.
+// promoteSession persists the tenant-scoped binding before updating caches.
+// It invalidates displaced and peer cache entries with h.mu released; bindingWriteMu orders promotion against enroll.
 func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID string) {
 	if containerName == "" || sessionID == "" {
 		return
@@ -143,11 +131,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	}
 }
 
-// publishBindingChange fans one binding invalidation to peer instances over the
-// routing fabric (RIG-3108 §T4), logging a publish failure rather than
-// propagating it: the fabric rides core NATS (at-most-once), and a dropped
-// invalidation degrades to a peer's cache-miss re-read against Postgres — the
-// arbiter — so a publish failure never fails the operation that caused it.
+// publishBindingChange logs failures; peers can re-read the authoritative Postgres row on cache miss.
 func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, tenant, sessionID string, op fabric.BindingOp) {
 	if err := routing.PublishBindingChange(ctx, tenant, fabric.BindingChange{
 		Tenant:    tenant,
@@ -159,25 +143,15 @@ func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, t
 	}
 }
 
-// unbindSession removes a live binding and drives presence offline.
-// An old terminal frame cannot resolve the account after unbind, so this edge
-// marks it offline only when the reverse mapping still names this session.
-// A promoted replacement stays online; sinks run after releasing h.mu.
+// unbindSession removes the binding and marks presence offline unless a replacement session is already promoted.
 func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 	h.releaseSession(ctx, sessionID, nil)
 }
 
-// releaseSession is unbindSession limited, when only is non-nil, to that one
-// binding of sessionID, so a release from an older lifetime leaves a re-bind
-// alone. It reports whether the binding was released.
+// releaseSession removes only the matching binding, so an old lifetime cannot release a rebind.
 func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessionBinding) bool {
-	// The maps are a cache, so the durable row is deleted FIRST (on the request ctx
-	// so it stays tenant-scoped), then the maps are evicted under h.mu. Delete is
-	// by session id and idempotent — a session already displaced has no row, so a
-	// stale release matches nothing and leaves the live binding alone.
-	// A Stop's release takes bindingWriteMu so it orders wholly before or after an
-	// enroll's map-clear through reap. A limited release skips it: mid-reap no binding
-	// is cached (promotion waits here, read-through is refused), so it releases nothing.
+	// Delete the tenant-scoped durable row before evicting caches; stale releases then match nothing.
+	// bindingWriteMu orders full releases against enroll's map-clear, while limited reap releases skip it.
 	unlockWrite := func() {}
 	if only == nil {
 		h.bindingWriteMu.Lock()
@@ -302,31 +276,21 @@ func (h *Hub) newBindingLocked(account store.AccountID, runnerID, version string
 	return sessionBinding{account: account, runnerID: runnerID, version: version, lifetime: h.lastLifetime}
 }
 
-// unbindContainer drops a container's provisioned account binding. Remove is the
-// only normal-lifecycle clear, so without it the binding would keep authorizing a
-// pre-exec FetchSecrets (AccountForContainer) for a container that is gone.
+// unbindContainer removes the provisioned binding so a deleted container cannot authorize FetchSecrets.
 func (h *Hub) unbindContainer(containerName string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.containerAccounts, containerName)
 }
 
-// accountForSession resolves a session's binding; false covers all read misses.
-// The read-through is refused under a system-role ctx: SessionBindingStore's
-// reads are single-valued only because RLS narrows them to the acting tenant,
-// and a BYPASSRLS read could return a plausible row from an ARBITRARY tenant
-// (store/session_bindings_pgtest_test.go::TestSessionForAccountUnderSystemRoleIsUnscoped).
-// The ack arms resolve BEFORE escalating to the system role, so they never reach
-// this refusal; the guard is defence in depth against a future system-role
-// caller.
+// accountForSession refuses read-through under a system-role context because BYPASSRLS can expose another tenant's row.
+// Ack arms resolve before escalating; this guard protects future callers.
 func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.AccountID, bool) {
 	binding, ok := h.resolveSessionBinding(ctx, sessionID)
 	return binding.account, ok
 }
 
-// accountForRunnerSession is accountForSession for a Runner-originated call: a
-// session owned by another Runner reads as unbound, so a foreign Runner token
-// cannot act as that agent nor learn which session ids are live.
+// accountForRunnerSession hides sessions owned by another Runner from foreign tokens.
 func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID string) (store.AccountID, bool) {
 	if runnerID == "" {
 		return "", false
@@ -338,7 +302,7 @@ func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID s
 	return binding.account, true
 }
 
-// accountForRunnerSessionError preserves whether a binding miss was verifiable.
+// accountForRunnerSessionError distinguishes unverifiable reads from absent or foreign bindings.
 func (h *Hub) accountForRunnerSessionError(ctx context.Context, runnerID, sessionID string) (store.AccountID, error) {
 	if runnerID == "" {
 		return "", connect.NewError(connect.CodeFailedPrecondition, errSessionUnbound.Error()).WithCause(errSessionUnbound)
@@ -354,12 +318,8 @@ func (h *Hub) accountForRunnerSessionError(ctx context.Context, runnerID, sessio
 	}
 }
 
-// frameSession resolves the binding a published session frame speaks for and
-// whether runnerID may publish it. An unbound session is allowed only from the
-// enrolled Runner: frames precede Start's bind, but an unverifiable owner (no
-// Runner enrolled, a refused read-through) must not let any token through.
-// A trace-only frame from a Runner that is not enrolled is dropped on a cache
-// miss without a store read, keeping a foreign output stream off the table.
+// frameSession allows an unbound frame only from the enrolled Runner, before Start binds it.
+// Unverifiable owners and foreign trace-only frames are rejected.
 func (h *Hub) frameSession(ctx context.Context, runnerID, sessionID string, lifecycle bool) (binding sessionBinding, bound, allowed bool) {
 	if runnerID == "" {
 		return sessionBinding{}, false, false
@@ -711,12 +671,7 @@ func (h *Hub) CommitConversationFrame(
 	}, nil
 }
 
-// commitFrame dispatches one durable frame to the transcript store by its set
-// oneof variant. The durable lane carries only the RIG-1570 transcript_entry
-// variant (the conversation_posted / conversation_updated write-through was
-// removed with the Zulip threading model), so a frame with any other variant —
-// or none — is CodeInvalidArgument. A store error is mapped through
-// transcriptCommitError. entryJSON is opaque and forwarded verbatim.
+// commitFrame accepts only transcript entries, forwards entry JSON verbatim, and maps store errors.
 func (h *Hub) commitFrame(
 	ctx context.Context,
 	transcripts TranscriptStore,
@@ -765,39 +720,14 @@ func transcriptCommitError(err error) error {
 	}
 }
 
-// linkKindAttr marks the link linkTrigger adds, so a reader selects the
-// cross-turn causal edge by attribute instead of by position — the span also
-// carries otelconnect's transport link. The mark lives in the link's
-// ATTRIBUTES, so a deployment that zeroes OTEL_LINK_ATTRIBUTE_COUNT_LIMIT
-// exports the edge but strips its kind — present, and unselectable.
+// linkKindAttr lets trace consumers identify the trigger link even when otelconnect adds a transport link.
+// If the exporter strips link attributes, that edge remains present but unselectable.
 var linkKindAttr = attribute.String("compass.link.kind", "cross_turn_trigger")
 
-// linkTrigger records the cross-turn causal edge from the agent's reply to the
-// turn that triggered it: a span LINK on the current RelayCommsCall origin span
-// (the otelconnect handler span mounted in handler.go) pointing at the remote
-// span context tp names. A LINK, never a parent — the reply is a fresh root that
-// REFERENCES its trigger instead of nesting under it, which is what lets a
-// conversation's traces terminate rather than growing one unbounded tree.
-//
-// An empty tp adds no link at all. A malformed tp adds none either: parsing goes
-// through the one shipped W3C helper (otelx.ContextWithTraceparent), and because
-// that helper returns its INPUT context unchanged on a parse failure — whose span
-// context here would be the local handler span — the parse is run against a
-// context.Context deliberately stripped of any span. That keeps a bad
-// traceparent from linking the span to itself, and keeps one traceparent parser
-// in the tree.
-//
-// Only the traceparent crosses this seam: the proto carries no trigger_tracestate
-// half, so any vendor tracestate the trigger held is not on the link.
-//
-// The link is STAMPED with linkKindAttr so a reader can find it by attribute
-// rather than by position. It is not the only link on this span: otelconnect's
-// server branch mints one from the inbound transport context whenever the
-// caller propagated a traceparent, which the production Runner's client
-// interceptor always does (internal/runner/runner.go:112-115, otelconnect
-// interceptor.go:110-117). So the trigger link is neither the only nor
-// reliably the first element of Links, and a positional or count-based read of
-// it is wrong.
+// linkTrigger adds a stamped link to the triggering trace; replies remain independent roots.
+// Empty or malformed traceparents add no link, avoiding self-links from the parser's unchanged-context fallback.
+// Only traceparent crosses the proto seam, so trigger tracestate is not preserved.
+// otelconnect may add another link; consumers must select this one by its attribute, not position.
 func linkTrigger(ctx context.Context, tp string) {
 	if tp == "" {
 		return

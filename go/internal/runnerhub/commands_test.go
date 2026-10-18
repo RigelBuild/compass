@@ -2,11 +2,8 @@
 
 package runnerhub
 
-// The Server-facing command surface: the RunnerError→Connect code mapping and
-// the no-Runner→Unavailable path. Every row pins the exact Connect code a client
-// sees, so a mis-mapping (an ALREADY_RUNNING surfaced as Internal, a NOT_FOUND
-// swallowed) is caught. The end-to-end relay test drives the mapping through the
-// real router so the wiring, not just the pure function, is proven.
+// These tests pin RunnerError-to-Connect mappings and the no-Runner Unavailable path.
+// The relay case exercises the mapping through the real router.
 
 import (
 	"context"

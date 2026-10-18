@@ -2,11 +2,8 @@
 
 package runnerhub
 
-// The RunnerHub's RIG-1569 T3 arms: the send-only DispatchControl relay (§5, the
-// crux: a successful deliver must NOT block on a result), the delivery_ack cursor
-// arm (§6), and the settle-edge sink fired at deliverSession (§2). Each test pins
-// the observable contract a plausible regression would break, with a fake
-// DeliveryStore / settle recorder mirroring the seam fakes in helpers_test.go.
+// Tests cover send-only dispatch, delivery acknowledgements, and the settle edge.
+// Fakes record store calls and settlement without a real store.
 
 import (
 	"context"
@@ -36,13 +33,8 @@ type forgeAdvance struct {
 	revision       string
 }
 
-// fakeDeliveryStore records the ack arm's channel resolution + cursor advance
-// (comms) AND the forge-ack arm's delivered-revision advance (RIG-2732 W3).
-// channels maps message id -> channel (the ack-arm resolution); an id absent
-// from it resolves ErrNotFound (a foreign/fabricated ack). forgeAdvances
-// records each forge cursor advance; forgeErr, when set, is returned by
-// AdvanceForgeDeliveredRevision (a store fault or an unsubscribed-mid-flight
-// ErrNotFound). Concurrency-safe for parity with the real store.
+// fakeDeliveryStore records comms and forge cursor operations for acknowledgement tests.
+// It can return store faults and is concurrency-safe like the real store.
 type fakeDeliveryStore struct {
 	mu            sync.Mutex
 	channels      map[string]store.ChannelID

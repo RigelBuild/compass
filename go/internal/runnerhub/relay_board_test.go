@@ -2,19 +2,9 @@
 
 package runnerhub
 
-// The agent-board Server leg (agent primary lifecycle T3-a, fail-closed authz —
-// the load-bearing security leg, exactly as RelayLifecycleCall / RelayCommsCall).
-// Every test here defends one invariant of the session->account resolution +
-// RelayBoardCall handler: the Runner asserts no account, so the SERVER's binding
-// is the sole authority for whose account a relayed board write runs under. A
-// regression that let an unbound, stopped, or reconnect-dropped session resolve
-// to ANY account — or delegated under the wrong account, or turned a tool
-// failure into a transport teardown — must redden a test below.
-//
-// White-box (package runnerhub) so the tests drive the unexported binding
-// lifecycle and the resolution edge directly, asserting the account attribution
-// through the fake BoardCaller. Sleep-free: the hub calls the caller inline, so
-// every assertion reads a synchronously-recorded fact.
+// RelayBoardCall tests ensure the server attributes board writes to the agent resolved from the session binding.
+// They cover fail-closed authorization and tool errors without transport teardown.
+// The white-box tests drive binding directly and inspect the fake BoardCaller synchronously.
 
 import (
 	"context"

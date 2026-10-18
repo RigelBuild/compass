@@ -2,17 +2,8 @@
 
 package runnerhub
 
-// The commandRouter: OQ6 rows 2/3 (request-id idempotency) plus correlation and
-// detach. Every test pins a behavior a plausible bug would break: a retry with a
-// live id must JOIN the in-flight call (one send, both callers the same result),
-// distinct ids must each send; complete() must deliver by id; detach() must fail
-// every in-flight call so the disconnect path takes over.
-//
-// The concurrent cases run under testing/synctest: synctest.Wait() blocks until
-// every dispatch goroutine is DURABLY blocked (registered + waiting on its
-// pendingCall), so the test advances on that observed state — never a sleep, and
-// never a retry. That makes "the second caller joined before we completed"
-// deterministic rather than a scheduling race.
+// Router tests cover request-id idempotency, result correlation, and detach cleanup.
+// synctest observes blocked dispatch goroutines so concurrent joins are deterministic without sleeps.
 
 import (
 	"context"

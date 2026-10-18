@@ -59,13 +59,8 @@ type AgentConfigStore interface {
 	CurrentAgentConfig(ctx context.Context) (version string, bundle []byte, err error)
 }
 
-// secretResolver is the Server-side per-agent secret resolve surface FetchSecrets
-// delegates to — the A9 scoped read. Narrow by design, the AgentConfigStore
-// pattern: the handler depends on this one method, not the whole resolver, so the
-// concrete *secrets.StoreResolver satisfies it and a server built with no secrets
-// surface passes nil. It replaces the old value-free secrets.Resolver the handler
-// carried: FetchSecrets no longer injects the whole declared set, it resolves the
-// most-specific row per name for one agent account.
+// secretResolver exposes the scoped per-agent read used by FetchSecrets.
+// It remains optional when the Server has no secrets surface.
 type secretResolver interface {
 	// ResolveFor resolves the one most-specific row per name visible to agent
 	// (A9: agent > user > tenant), decrypted. reason is audit context.
@@ -328,11 +323,8 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *compassv1internal.Fetch
 	if h.resolver == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoResolver.Error()).WithCause(errNoResolver)
 	}
-	// Authorize against whichever binding the selector names AND take the agent
-	// account it resolves to — the read is scoped to that agent (A9). A
-	// container_name authorizes the PROVISION-time initial materialize; a
-	// session_id authorizes the post-Start rotation re-fetch. A foreign/unknown
-	// selector — or none — is rejected CodePermissionDenied.
+	// Resolve the selected live-session or provisioned-container binding to its agent account.
+	// Foreign or missing selectors are rejected.
 	var agent store.AccountID
 	switch sessionID, containerName := req.GetSessionId(), req.GetContainerName(); {
 	case sessionID != "" && containerName != "":
@@ -368,12 +360,8 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *compassv1internal.Fetch
 	return &compassv1internal.FetchSecretsResponse{Secrets: out}, nil
 }
 
-// errNoResolver is the fail-closed cause when FetchSecrets reaches a handler
-// built with no resolver (a server with no secrets surface). It maps to
-// CodeFailedPrecondition — distinct from the CodeUnavailable of a transport
-// fault, so the Runner tolerates a no-secrets-surface server (skip materialize,
-// start the agent) without tolerating a transient outage. Never a silent empty
-// set.
+// errNoResolver makes a missing secret surface fail closed with FailedPrecondition,
+// distinct from Unavailable for transport faults. It never returns an empty set.
 var errNoResolver = errors.New("runnerhub: no secret resolver wired to serve FetchSecrets")
 
 // configChunkBytes bounds each FetchAgentConfig tarball chunk frame. Well under
@@ -381,12 +369,8 @@ var errNoResolver = errors.New("runnerhub: no secret resolver wired to serve Fet
 // fixed-size frames the Runner reassembles in receive order.
 const configChunkBytes = 512 * 1024
 
-// errNoConfigStore is the fail-closed cause when FetchAgentConfig reaches a
-// handler built with no config store (a server with no config surface). Like
-// errNoResolver it maps to CodeFailedPrecondition — distinct from the transport
-// CodeUnavailable — so the Runner tolerates a genuine no-config-surface server
-// (materialize an empty dir, provision anyway) without tolerating a transient
-// outage.
+// errNoConfigStore makes a missing config surface fail closed with FailedPrecondition,
+// distinct from Unavailable for transport faults.
 var errNoConfigStore = errors.New("runnerhub: no config store wired to serve FetchAgentConfig")
 
 // FetchAgentConfig streams the fleet config bundle to the Runner: the first frame
@@ -463,11 +447,7 @@ func (h *Handler) FetchSessionBlobs(ctx context.Context, req *compassv1internal.
 	return h.hub.FetchSessionBlobs(ctx, subj.ID, req, stream.Send)
 }
 
-// resolvedSecretToProto maps a secrets.ResolvedSecret to the wire ResolvedSecret,
-// translating the resolve-surface delivery/kind enums to the public proto enums
-// at this edge (the same store↔proto enum discipline the secrets package uses at
-// its own edge). The value/version ride through verbatim; they are the no-log
-// targets ([debug_redact] on the wire), so this mapping never stringifies them.
+// resolvedSecretToProto maps enums at the wire edge and passes value/version through without stringifying them.
 func resolvedSecretToProto(s secrets.ResolvedSecret) *compassv1internal.ResolvedSecret {
 	return &compassv1internal.ResolvedSecret{
 		Name:     s.Name,

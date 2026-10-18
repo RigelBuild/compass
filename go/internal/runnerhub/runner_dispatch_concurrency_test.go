@@ -2,25 +2,10 @@
 
 package runnerhub
 
-// Concurrency tests that drive the REAL Runner-side dispatch loop
-// (runner.RunSessions) over the in-memory h2c Sessions wire against a fake
-// runner.SessionHost, exercising the per-command goroutine dispatch, its
-// leak-free shutdown join, and the Provision-arm concurrency cap
-// (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
-// (a)/(e) + Plan T1 tests 1 & 4, T-cap).
-//
-// Why here and not package runner: the record's T1 note drives RunSessions "over
-// the in-memory wire the existing dispatch tests use". The live server handler +
-// command router + mounted h2c wire all live in runnerhub (router.go,
-// handler.go, helpers_test.go), and the hub's exported Provision/Stop/Status
-// methods are how a command is pushed down the Sessions stream and its result
-// awaited. runnerhub does not import runner in non-test code, so a white-box test
-// importing runner introduces no cycle. This also keeps the seam honest: these
-// tests exercise the SAME runSessions the production RunSessions wraps.
-//
-// Every wait is event-gated on a channel — the fake host's park gates and the
-// dispatch result channels — with testTimeout only as a fail-fast ceiling, never
-// as synchronization (no sleeps, no polling, no retries).
+// Drive the real Runner dispatch loop over h2c against a fake SessionHost.
+// Tests cover per-command goroutines, joined shutdown, and the Provision concurrency cap.
+// The live handler and router are in runnerhub, so this white-box test imports runner without a cycle.
+// Channel events synchronize the cases; testTimeout only bounds failure.
 
 import (
 	"context"
@@ -157,12 +142,8 @@ func (f *fakeSessionHost) leaveProvision() {
 	f.mu.Unlock()
 }
 
-// runnerLoopFixture stands up the hub + mounted h2c wire, dials a real Runner in,
-// and drives runner.RunSessions over the live Sessions stream against host. It
-// returns the hub (to push commands via its exported relay methods), the loop's
-// cancel, and a channel carrying RunSessions' return. The caller gates on host
-// park channels; waitRouterAttached ensures the router is bound before the first
-// command is pushed.
+// runnerLoopFixture mounts the hub, dials a real Runner, and returns the loop cancellation and result.
+// Callers wait for host gates and router attachment before pushing commands.
 func runnerLoopFixture(t *testing.T, host runner.SessionHost) (hub *Hub, cancel context.CancelFunc, loopDone <-chan error) {
 	t.Helper()
 	hub = newHubOnly()

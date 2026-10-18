@@ -2,17 +2,9 @@
 
 package runnerhub
 
-// OQ7 cross-door authentication (the RunnerService side). The two mandatory
-// contracts:
-//   1. NO ORACLE: an account-subject token, an unknown token, and a revoked
-//      token all fail with the identical bare CodeUnauthenticated — the client
-//      cannot distinguish the three causes.
-//   2. A valid SubjectRunner token is accepted and its subject is set on ctx.
-//
-// The reject side is exercised on every RPC path (Enroll unary + Sessions/
-// PublishEvents streaming + RelayCommsCall unary) over the real generated client
-// and the mounted door, so the whole interceptor chain is proven, not just the
-// pure authenticate().
+// Runner authentication rejects account, unknown, and revoked tokens with the same bare status.
+// A Runner token succeeds and sets its subject on context.
+// Tests exercise unary and streaming RPCs through the mounted door.
 
 import (
 	"context"
@@ -244,13 +236,8 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The interceptor rejects at connect (before the handler). Per the
-		// connect-go contract, if the server has already closed when Send runs,
-		// Send returns an io.EOF-wrapped error and the authoritative status is
-		// retrieved via Receive; if Send wins the race it returns nil and the
-		// status surfaces on Receive directly. Either way the real code is on
-		// Receive, so always drain there — asserting on Send's return is racy
-		// (it can be a transport-level Unknown on the closed-stream write).
+		// The interceptor can reject at connect before the handler. Send may return nil or EOF,
+		// while Receive carries the authoritative status; checking only Send is racy.
 		if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("Send = %v, want nil or io.EOF-wrapped", err)
 		}

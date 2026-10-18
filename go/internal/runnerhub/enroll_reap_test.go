@@ -2,14 +2,8 @@
 
 package runnerhub
 
-// RIG-1569 T3 — enroll (the Runner-reconnect teardown) fires the hub's
-// SessionReapSink with the session ids whose bindings it just cleared, so the
-// delivery consumer can reap held-deliver registry entries a no-frame author
-// death left behind (design.md:172-175). White-box (package runnerhub) so the
-// test drives the unexported bind/enroll lifecycle directly and asserts the edge
-// through a fake sink. Sleep-free: enroll fires the sink inline after releasing
-// h.mu (the sink only records and returns), so every assertion reads a
-// synchronously-recorded fact.
+// Enroll reports cleared bindings through SessionReapSink so delivery entries can be reaped.
+// The test checks the sink's synchronous record without sleeping.
 
 import (
 	"context"

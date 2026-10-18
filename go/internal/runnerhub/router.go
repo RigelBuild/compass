@@ -29,11 +29,7 @@ type deliverRefusal struct {
 	traceparent string
 }
 
-// frameClass tags an outbound frame with its overflow/teardown contract. The
-// three classes share one FIFO — they share the wire, and a command gains
-// nothing by overtaking a deliver — but their full-queue and detach-time
-// semantics differ. See
-// RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runnerhub-send-queue/design.md.
+// frameClass tags frames with per-class queue and teardown behavior; all share one FIFO wire.
 type frameClass int
 
 const (
@@ -109,14 +105,9 @@ type pendingCall struct {
 	err    error
 }
 
-// deliverRefusalsMax bounds the send1 refusal registry (deliverRefusals). A
-// successful deliver's entry is never removed by complete() — no refusal ever
-// lands for it — so an unbounded set would grow one entry per lifetime
-// successful deliver for a long-lived Runner, a leak proportional to delivery
-// volume (RIG-1610). Sized generously so a normal session's recent send1 ids all
-// stay resident (a refusal within one control round-trip is always still
-// present); an evicted id is a long-past successful deliver that will never be
-// looked up for a refusal, so eviction is safe, never a correctness loss.
+// deliverRefusalsMax bounds the refusal registry, which successful sends never
+// leave. Size it so every id that can still be refused (one control round-trip)
+// stays resident; eviction is safe only for long-past successful sends.
 const deliverRefusalsMax = 16384
 
 func newCommandRouter() *commandRouter {
@@ -139,11 +130,7 @@ func (r *commandRouter) RefusedDelivers() uint64 {
 	return r.refusedDelivers.Load()
 }
 
-// attach binds the router to a live Sessions stream's send function. Called when
-// the Runner opens its Sessions stream; detached when it closes. It builds a
-// fresh senderState (queue + done) and spawns runSender, the sole caller of send
-// for this attachment. See
-// RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runnerhub-send-queue/design.md.
+// attach creates a fresh sender queue and starts runSender as the attachment's sole stream sender.
 func (r *commandRouter) attach(ctx context.Context, send func(*compassv1internal.SessionsResponse) error) {
 	s := &senderState{
 		queue: make(chan outFrame, sendQueueCap),
@@ -162,13 +149,8 @@ func (r *commandRouter) setSessionUnknown(fn func(sessionID, traceparent string)
 	r.mu.Unlock()
 }
 
-// detach tears down the live attachment: it nils and closes the outbound queue
-// under mu, fails every in-flight call (the Runner's Sessions stream dropped, so
-// no pending command can complete — callers observe the cause and the OQ6
-// disconnect path takes over), then joins the sender goroutine on its done
-// channel outside mu. Closing the queue is safe: every enqueue is a non-blocking
-// send performed under mu after a non-nil sender check, so no send can race the
-// close.
+// detach closes the queue under mu, fails in-flight calls, then joins the sender outside mu.
+// Enqueues also hold mu, so none can race queue closure.
 func (r *commandRouter) detach(cause error) {
 	r.mu.Lock()
 	s := r.sender
@@ -187,15 +169,8 @@ func (r *commandRouter) detach(cause error) {
 	}
 }
 
-// runSender drains the attachment's queue into the stream in FIFO order. It is
-// the ONLY caller of send for this attachment — the single-sender invariant that
-// replaces the old sendMu (connect's server-side BidiStream.Send is not safe for
-// concurrent use). It exits when the queue is closed (detach) or when a Send
-// fails: a failed Send means the stream is dead, and the handler's
-// defer router.detach tears down the rest (frames still queued then follow the
-// detach semantics — a command's pendingCall is failed by detach, a deliver's
-// cursor was never advanced, a signal is best-effort). See
-// RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runnerhub-send-queue/design.md.
+// runSender preserves FIFO order and is the only caller of stream Send.
+// A send failure ends the stream; detach applies the per-class cleanup to remaining frames.
 func (r *commandRouter) runSender(ctx context.Context, s *senderState, send func(*compassv1internal.SessionsResponse) error) {
 	defer close(s.done)
 	for f := range s.queue {
@@ -206,15 +181,8 @@ func (r *commandRouter) runSender(ctx context.Context, s *senderState, send func
 	}
 }
 
-// failFrameOnSendError applies the per-class teardown for the one frame whose
-// Send failed. A command's pendingCall is COMPLETED with the error (set err,
-// close done, delete from inflight — all under mu and presence-checked, exactly
-// as detach and complete finish a waiting call, NOT a delete-only: the caller
-// is parked in waitCall since the real Send now happens here, so a delete-only
-// would hang it to ctx timeout; the presence check keeps this from
-// double-closing against detach's in-flight sweep). A deliver's refusal entry is
-// removed and the failure warn-logged (no command reached the Runner, so no
-// refusal can arrive). A signal is warn-logged only, best-effort by contract.
+// failFrameOnSendError completes commands so waiters wake, removes refused-deliver tracking, and logs failures.
+// Signals remain best-effort.
 func (r *commandRouter) failFrameOnSendError(ctx context.Context, f outFrame, err error) {
 	id := f.cmd.GetRequestId()
 	// The stream is dying, so drop its cancel; log under the trace that enqueued the frame.
@@ -264,11 +232,7 @@ func (r *commandRouter) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// dispatch pushes cmd (already carrying its request id) to the Runner and waits
-// for the correlated result or ctx cancellation. A retry with an id already
-// in-flight does NOT re-push: it joins the existing call and returns the same
-// result (OQ6 idempotency). The command variant is set by the caller; dispatch
-// only stamps correlation + waits.
+// dispatch waits for the correlated result; retries of an in-flight id share one call.
 func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, error) {
 	id := cmd.GetRequestId()
 	if id == "" {
@@ -301,15 +265,8 @@ func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.Ses
 	return waitCall(ctx, call)
 }
 
-// push enqueues cmd onto the outbound queue WITHOUT registering a pendingCall or
-// waiting for a result — the fire-and-forget counterpart to dispatch, for a
-// signal-only Server->Runner push (SecretsVersion/ConfigVersion) that has no
-// result variant on the request stream. A nil sender (no attached Runner) is a
-// no-op success: the signal is best-effort, and the Runner re-fetches its secret
-// set on reconnect regardless, so a session whose stream is momentarily detached
-// loses nothing permanent. A full queue is the same best-effort outcome with a
-// warn log for observability — the signal is advisory. A real Send error is
-// handled asynchronously in runSender.
+// push sends best-effort signals without registering a pending call; the Runner refetches on reconnect.
+// A full queue drops the signal, and Send failures are handled by runSender.
 func (r *commandRouter) push(ctx context.Context, cmd *compassv1internal.SessionsResponse) error {
 	r.mu.Lock()
 	live := r.sender != nil
@@ -321,28 +278,9 @@ func (r *commandRouter) push(ctx context.Context, cmd *compassv1internal.Session
 	return nil
 }
 
-// send1 enqueues a single send-only DELIVER command onto the outbound queue
-// WITHOUT registering a blocking pendingCall — the crux of RIG-1569 §5. A
-// successful deliver returns NO synchronous result (success rides a later
-// AgentFrame.delivery_ack), so reusing dispatch — which registers an inflight
-// call and blocks on waitCall for a result that never comes — would hang until
-// ctx timeout on EVERY successful delivery. send1 enqueues and returns nil the
-// instant the frame is queued; nil now means "queued", no longer "pushed", but
-// success still rides the later delivery_ack exactly as before.
-//
-// It DOES register a lightweight refusal-only entry for cmd's request id: a
-// refused deliver rides the Sessions request stream as a RunnerError result
-// (SessionsRequest.error, correlated by request id, §5), which complete() would
-// otherwise drop as "unknown". The entry makes such a refusal observable
-// (logged + counted) rather than silently lost; it is NOT a pendingCall and no
-// caller ever blocks on it.
-//
-// A nil sender (no attached Runner / detached stream) OR a FULL queue returns
-// the "no live stream"-class refusal error: the consumer already treats any
-// error as "no live session" and leaves the cursor unadvanced for the D2 sweep.
-// On a full queue the refusal entry is removed (no frame will reach the Runner,
-// so no refusal can arrive for it). See
-// RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runnerhub-send-queue/design.md.
+// send1 queues a deliver without waiting for a result; successful delivery is acknowledged asynchronously.
+// It tracks request ids so refused sends remain observable, but registers no pending call.
+// Missing stream or full queue returns an error, leaving the cursor for the later sweep.
 func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 	id := cmd.GetRequestId()
 	if id == "" {
@@ -371,9 +309,7 @@ func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 	return nil
 }
 
-// waitCall blocks until the call completes or ctx is cancelled. A ctx timeout
-// leaves the call in-flight on purpose: a retry with the same id joins it, so a
-// timeout-then-retry is idempotent rather than orphaning the original.
+// waitCall leaves timed-out calls in-flight so retries with the same id can join them.
 func waitCall(ctx context.Context, call *pendingCall) (*compassv1internal.SessionsRequest, error) {
 	select {
 	case <-call.done:
@@ -383,17 +319,7 @@ func waitCall(ctx context.Context, call *pendingCall) (*compassv1internal.Sessio
 	}
 }
 
-// complete delivers a result the Runner returned on its request stream to the
-// waiting call, keyed by request id. Three id classes, in order:
-//   - an inflight blocking call (dispatch): hand it the result and wake it.
-//   - a send-only deliver awaiting a possible async refusal (send1): the result
-//     is a RunnerError refusal — count + log it and clear the entry, so the
-//     refusal is observable and not dropped (RIG-1569 §5). The cursor was never
-//     advanced on send, so no rollback is needed; the D2 sweep redelivers.
-//   - a truly-unknown id (a duplicate result, or a reaped call): ignored, the
-//     original contract.
-//
-// Called by the Sessions handler for each SessionsRequest result.
+// complete routes results to blocking calls, counts and logs send-only refusals, and ignores unknown ids.
 func (r *commandRouter) complete(ctx context.Context, result *compassv1internal.SessionsRequest) {
 	id := result.GetRequestId()
 	r.mu.Lock()

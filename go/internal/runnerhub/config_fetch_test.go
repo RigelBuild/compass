@@ -2,19 +2,8 @@
 
 package runnerhub
 
-// FetchAgentConfig handler: the RunnerService server-streaming surface the Runner
-// dials out to for the fleet config bundle. Every case pins a behavior a
-// plausible bug would break, driven over the real wire through
-// newMountedH2CServerWithConfig + the raw generated client:
-//   - a handler built with NO config store fails CodeFailedPrecondition (the
-//     no-config-surface server the Runner tolerates), distinct from a transport
-//     fault — never a silent empty stream.
-//   - a declared bundle streams as a version frame FIRST, then the tarball in
-//     chunks the client reassembles byte-identically (including a bundle larger
-//     than one chunk).
-//   - an unconfigured fleet (store.ErrNotFound) streams an EMPTY version frame and
-//     no chunks — a valid state, not an error.
-//   - an if_version MATCH ends the stream after the version frame (no chunks).
+// FetchAgentConfig is exercised over the real wire with a generated client.
+// Tests cover a missing store, chunked bundles, an unconfigured fleet, and matching if_version.
 
 import (
 	"bytes"

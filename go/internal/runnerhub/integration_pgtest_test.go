@@ -2,31 +2,8 @@
 
 package runnerhub_test
 
-// End-to-end T5 seam integration, gated behind the `pgtest` tag and SKIPPING
-// cleanly when no Postgres/podman runtime is available (via internal/pgtest, the
-// same gate serve_pgtest_test.go uses). It drives the WHOLE public path — an
-// agent-initiated comms call over the real per-container AgentGateway socket —
-// against a real store + real comms bus:
-//
-//	hub.Provision → Sessions relay → real Runner (runner.RunSessions) →
-//	AgentRuntime.Launch (stub container) + gateway.Serve (the per-container Unix
-//	socket) → hub.Start (binds session→account) → the agent dials the socket →
-//	Gateway.Comms → RelayCommsCall → hub → comms.PostAsAccount → the real store
-//	+ the real comms bus.
-//
-// Post-#16 the retired stdout→PublishEvents relay is gone: the agent's protocol
-// no longer rides stdout (that pipe is diagnostics-only), so a conversation is
-// no longer a stdout frame written through Deliver. It is now a CommsCallRequest
-// Post the in-container agent makes over its socket. The Server resolves the
-// relayed session_id to the bound agent account (fail-closed) and executes the
-// Post under it through the SAME PostMessage handler a human takes — so it
-// commits a Message row to Postgres (observed by reading it back under the agent
-// account) AND fans MessagePosted onto the comms bus (observed on a live
-// subscription). The container is a stub WorkloadRuntime (no real compass-agent
-// image exists in CI) whose ExecStreaming spawns a live, terminatable child so
-// host.Stop reaps a real process. This is the seam terminating a real
-// agent-initiated wire and committing to a real store — an external-package
-// (black-box) test, driving only exported APIs.
+// Exercise the agent-initiated comms path over a real AgentGateway socket, Runner, store, and bus.
+// The container runtime is stubbed, but its child process is real and terminatable.
 
 import (
 	"context"
@@ -64,34 +41,20 @@ const relayText = "e2e reply over the AgentGateway socket"
 
 func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	dsn := pgtest.RequireDSN(t) // SKIPs when no podman/DSN — never fails hard.
-	// First cleanup registered, so LIFO removes the tree LAST — after
-	// runnerloop.RunSessionsLoop's drain has confirmed the loop left dispatch (see there).
+	// Register cleanup first so LIFO removes the runtime tree after the Runner loop drains.
 	runtimeDir := runnertest.ShortRuntimeDir(t, agentNamePrefix, accountIDHexLen)
 	ctx, cancel := context.WithCancel(context.Background())
-	// Registered adjacent to WithCancel so the ~60 lines of fixture setup below
-	// (openStoreFixture, runner.Dial, NewConfigSpecBuilder) cannot t.Fatalf out
-	// with the context never cancelled. runnerloop.RunSessionsLoop registers cancel again,
-	// later, so LIFO still runs its copy FIRST and the drain ordering the loop
-	// documents is unchanged; context.CancelFunc is idempotent, so the second
-	// call here is a no-op.
+	// Cancel on every exit; runnerloop registers an idempotent copy for drain ordering.
 	t.Cleanup(cancel)
 
 	st, agent, commsSvc, commsSub := openStoreFixture(t, ctx, dsn)
 	homeChannel := agent.Agent.HomeChannelID
-	// runnertest.ShortRuntimeDir budgeted the path against a MODEL of the account id
-	// (accountIDHexLen "f"s), because it runs before an account exists. Tie the
-	// model to the real minted value now that it does: widen store ids and this
-	// reddens here, rather than silently invalidating that budget and letting
-	// the real socket path overrun.
+	// Verify the minted account id still matches the width used to budget the socket path.
 	if got := len(agent.ID); got != accountIDHexLen {
 		t.Fatalf("minted account id is %d chars, but ShortRuntimeDir budgeted for %d; update accountIDHexLen", got, accountIDHexLen)
 	}
 
-	// comms is the hub's CommsCaller — the real agent-comms execution leg over
-	// the real store + bus. Deliver never runs on this path (the stdout relay
-	// #16 retired is gone, so no relayed frame reaches the write-through sinks),
-	// so the two write-through sinks are no-ops; only the RelayCommsCall leg is
-	// exercised.
+	// The real Comms service exercises the agent write path; Deliver is not used here.
 	hub := runnerhub.NewHub(noopLifecycleSink{}, noopTail{}, commsSvc, discardLog())
 
 	// Mount the RunnerService door on an h2c server, accepting one Runner token.
@@ -212,14 +175,8 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	assertCleanShutdown(t, ctx, cancel, host, sessionID, loopDone)
 }
 
-// assertCleanShutdown mirrors production shutdown (run.go): stop the session,
-// cancel the loop, then close the host (draining the per-container socket). The
-// child the stub exec spawned dies on host.Stop's Terminate, closing its pipes
-// so StartAgent's drains end on EOF; cancel then unwinds RunSessions' blocking
-// Receive.
-//
-// This is the CLEAN path, asserted as its own property. The cleanup registered
-// by runnerloop.RunSessionsLoop covers the failing paths, where a t.Fatalf skips this.
+// assertCleanShutdown stops the session, cancels the loop, and closes the host.
+// Its explicit clean path complements the registered cleanup for failing paths.
 func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.CancelFunc, host runner.SessionHost, sessionID string, loopDone <-chan error) {
 	t.Helper()
 	if err := host.Stop(ctx, sessionID); err != nil {
@@ -228,20 +185,14 @@ func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.Cance
 	cancel()
 	select {
 	case err := <-loopDone:
-		// A cancelled ctx is the expected end; anything else is a real stream
-		// failure, and discarding it here would let the loop die of a genuine
-		// error while this assertion still reads as a clean shutdown.
+		// Cancellation is expected; another error would indicate a genuine stream failure.
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("RunSessions = %v, want a clean end after ctx cancel", err)
 		}
 	case <-time.After(integrationTimeout):
 		t.Fatal("RunSessions loop did not end after ctx cancel")
 	}
-	// Mirror run.go's deferred host.Close after RunSessions returns: drain the
-	// AgentGateway socket Provision served so its listener goroutine is torn down
-	// deterministically rather than left serving until the runtime dir is
-	// removed. ctx is cancelled by now, so the bounded drain detaches from its
-	// cancellation and carries its own short deadline.
+	// Close the socket after RunSessions exits, with a bounded context detached from cancellation.
 	if closer, ok := host.(interface{ Close(ctx context.Context) }); ok {
 		closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), integrationTimeout)
 		defer cancelClose()
@@ -249,18 +200,8 @@ func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.Cance
 	}
 }
 
-// provisionWhenSeamLive provisions the workspace through the public hub path →
-// the Runner launches the (stub) container and returns its name.
-//
-// The Sessions stream is server-speaks-first: RunSessions' bootstrap Send
-// flushes the headers that run the server handler's router.attach, and that
-// round-trip is async to the loop goroutine. A command dispatched into the
-// pre-attach window gets a retriable Unavailable ("no live runner sessions
-// stream") — the same transient a production client rides out. So gate on the
-// seam being live by retrying, idempotent on the stable request id "prov-1" so
-// there is no double-provision, yielding to the handler goroutine between
-// probes. A deadline bounds it, so a genuinely wedged seam fails fast rather
-// than spinning, and nothing here is a sleep.
+// provisionWhenSeamLive retries the stable request id until the Sessions handler attaches.
+// The deadline bounds failure; yielding lets the handler run without sleeping.
 func provisionWhenSeamLive(t *testing.T, ctx context.Context, hub *runnerhub.Hub, agentID store.AccountID) string {
 	t.Helper()
 	deadline := time.After(integrationTimeout)
@@ -285,16 +226,8 @@ func provisionWhenSeamLive(t *testing.T, ctx context.Context, hub *runnerhub.Hub
 	}
 }
 
-// openStoreFixture opens the store and builds the account + comms fixture the
-// seam writes through: a real agent account and its home channel (the agent is a
-// member of its home channel, so PostAsAccount authorizes), plus the real comms
-// bus, a live subscription observing the MessagePosted the seam fans, and the
-// real comms.Comms that is the hub's CommsCaller — it executes the
-// agent-initiated Post under the resolved account over the same PostMessage
-// handler a human takes (store commit + MessagePosted fan-out).
-//
-// Its cleanups register here, so under LIFO they run after everything the caller
-// registers later: the store and bus outlive the Runner loop that talks to them.
+// openStoreFixture creates an agent, home channel, live bus subscription, and real Comms service.
+// Register cleanup here so the store and bus outlive the Runner loop.
 func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Store, store.Account, *comms.Comms, events.Subscription[*compassv1.SubscribeCommsResponse]) {
 	t.Helper()
 	st, err := store.Open(ctx, dsn)
@@ -314,9 +247,7 @@ func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Sto
 
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(bus.Close)
-	// adminID is the comms handler's ambient fallback; the agent-initiated leg
-	// (PostAsAccount) overrides it per-call with the resolved agent account, so
-	// the post attributes to the agent, never the admin.
+	// The handler's admin fallback is overridden per call with the resolved agent account.
 	commsSvc := comms.NewComms(ctx, st, bus, nil, admin.ID)
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
@@ -350,13 +281,8 @@ func (r *integResolver) resolve(_ context.Context, presented string, want store.
 	return r.subj, nil
 }
 
-// integStubRuntime is the fake WorkloadRuntime backing the Runner: its
-// ExecStreaming spawns a real, terminatable child (a shell-stub `podman`
-// exec-ing `sleep`) so host.Stop's Terminate reaps a live process and
-// StartAgent's pipe drains end on that reap. Post-#16 nothing rides
-// stdout/stderr — the agent's protocol travels the AgentGateway socket — so the
-// child's own (empty) pipes are what StartAgent drains and no frame is injected.
-// Lifecycle methods are no-op successes so Launch registers a handle.
+// integStubRuntime launches a real child process for termination tests.
+// Agent protocol traffic uses the socket; the child's pipes stay empty.
 type integStubRuntime struct {
 	cli *runtime.PodmanCLI // shell-stub podman → a real terminatable Process
 }
@@ -380,9 +306,7 @@ func (f *integStubRuntime) Exec(context.Context, runtime.WorkloadID, runtime.Exe
 	return runtime.ExecOutput{}, nil
 }
 func (f *integStubRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
-	// A real streaming exec against the shell stub: a live, terminatable Process
-	// (host.Stop → Terminate) whose stdout/stderr pipes StartAgent drains. The
-	// stub just sleeps, so the pipes stay empty until Terminate closes them.
+	// ExecStreaming launches a terminatable child whose pipes remain empty until Stop.
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
 func (f *integStubRuntime) Stop(context.Context, runtime.WorkloadID, time.Duration) error {
@@ -400,20 +324,14 @@ func (f *integStubRuntime) Resize(context.Context, runtime.WorkloadID, runtime.R
 
 // --- helpers -----------------------------------------------------------------
 
-// agentSocketPath is the host path the Runner serves a container's AgentGateway
-// socket at: RuntimeDir/containers/<container>/agent.sock (host.go's
-// agentSocketDir/agentSocketFile layout). Reconstructed here rather than read
-// off the host — h.sockets is unexported and this is an external test package —
-// so it is the exact socket an in-container agent bind-mounts and dials.
+// agentSocketPath reconstructs the externally visible socket path from the host layout.
+// The test cannot inspect the unexported host socket map.
 func agentSocketPath(runtimeDir, containerName string) string {
 	return filepath.Join(runtimeDir, "containers", containerName, "agent.sock")
 }
 
-// waitMessagePosted returns the first MessagePosted the comms bus fans out,
-// checking Replay first (the publish is synchronous within the socket Post's
-// round-trip, so it has already landed on the ring by the time client.Comms
-// returns) then Live. The deadline bounds a wedged fan so it fails fast; nothing
-// here is a sleep.
+// waitMessagePosted checks replay before live because the synchronous publish is already in the ring.
+// Its deadline only bounds failure.
 func waitMessagePosted(t *testing.T, sub events.Subscription[*compassv1.SubscribeCommsResponse]) *compassv1.MessagePosted {
 	t.Helper()
 	deadline := time.After(integrationTimeout)
@@ -457,17 +375,10 @@ func textOf(m store.Message) string {
 
 func discardLog() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-// agentNamePrefix is the container-name prefix this test wires into its
-// SpecDefaults, hoisted so runnertest.ShortRuntimeDir models the same name the Runner
-// actually builds (BuildSpec in spec.go joins it with the account id). Editing
-// the prefix in one place would otherwise silently shrink the modelled path and
-// turn the budget assertion into a false negative.
+// agentNamePrefix is shared with SpecDefaults so the runtime-path budget uses the Runner's actual prefix.
 const agentNamePrefix = "compass-agent-"
 
-// accountIDHexLen is the width of a store account id: 16 random bytes
-// hex-encoded (internal/store/ids.go:21-28). Fixed at that minting site — the
-// only one — rather than validated where the path is built, so it is the right
-// width to model the tail with and the wrong thing to call a guarantee.
+// accountIDHexLen matches the 16-byte, hex-encoded store account ID used for path budgeting.
 const accountIDHexLen = 32
 
 func mountRunnerServer(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.TokenResolver) string {
