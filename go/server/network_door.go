@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -490,14 +492,33 @@ func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store
 }
 
 func readSuppliedAdminToken(path string) (string, error) {
-	info, err := os.Lstat(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0) //nolint:gosec // G304: the operator-configured path is opened directly
+	if err != nil {
+		return "", fmt.Errorf("opening supplied admin token file %q: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	info, err := file.Stat()
 	if err != nil {
 		return "", fmt.Errorf("checking supplied admin token file %q: %w", path, err)
 	}
-	if info.Mode()&(os.ModeType|0o077) != 0 {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", fmt.Errorf("checking supplied admin token file %q: cannot read file group", path)
+	}
+	effectiveGID := os.Getegid()
+	var groups []int
+	if info.Mode().Perm()&0o040 != 0 && int64(stat.Gid) != int64(effectiveGID) {
+		groups, err = os.Getgroups()
+		if err != nil {
+			return "", fmt.Errorf("checking supplied admin token file %q group membership: %w", path, err)
+		}
+	}
+	if !suppliedAdminTokenModeAllowed(info.Mode(), stat.Gid, effectiveGID, groups) {
 		return "", fmt.Errorf("supplied admin token file %q must be a private regular file", path)
 	}
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: the operator-configured path was Lstat'd above
+
+	raw, err := io.ReadAll(file)
 	if err != nil {
 		return "", fmt.Errorf("reading supplied admin token file %q: %w", path, err)
 	}
@@ -507,6 +528,25 @@ func readSuppliedAdminToken(path string) (string, error) {
 		return "", fmt.Errorf("supplied admin token file %q must contain a base64url token encoding exactly 32 bytes", path)
 	}
 	return token, nil
+}
+
+func suppliedAdminTokenModeAllowed(mode os.FileMode, gid uint32, effectiveGID int, groups []int) bool {
+	if !mode.IsRegular() || mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		return false
+	}
+	permissions := mode.Perm()
+	if permissions&0o037 != 0 {
+		return false
+	}
+	if permissions&0o040 == 0 || int64(gid) == int64(effectiveGID) {
+		return true
+	}
+	for _, group := range groups {
+		if int64(group) == int64(gid) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeSuppliedAdminTokenFile(dir, token string) error {

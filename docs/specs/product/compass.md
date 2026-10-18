@@ -1381,21 +1381,20 @@ SHALL admit any valid bearer.
 
 ### Requirement: The network door mints and persists a bootstrap admin token
 
-When the network door is opened, the server SHALL ensure a bootstrap admin
-bearer token exists in a file under the state directory at mode `0600`, so an
-operator can authenticate the first admin client. If that file is a regular
-file with no group or other permission bits and its token (ignoring surrounding
-whitespace) still authenticates as the bootstrap admin, the server SHALL reuse
-it unchanged; otherwise (missing, revoked, unknown, another account's, a
-symlink, or readable by others) it SHALL mint a new one. A newly minted token
-file SHALL be written atomically (a temp file `0600`, synced, then renamed into
-place; the temp file removed on any error), and the token itself SHALL NOT be
-logged — only its path. A socket-only start (no `--listen`) SHALL write no
-token file. When `--admin-token-file` or `COMPASS_ADMIN_TOKEN_FILE` is set, it
-SHALL name a private regular file containing a whitespace-trimmed base64url
-encoding of exactly 32 bytes. The server SHALL register the supplied token for
-the bootstrap admin and persist it under the state directory; a revoked token or
-one registered to another subject SHALL fail startup.
+Opening the network door SHALL ensure a bootstrap admin bearer token file at
+mode `0600` under the state directory. The server SHALL reuse that file when it
+is itself a regular file, not a symlink, with no group or other bits, and its
+whitespace-trimmed token still authenticates as the bootstrap admin; otherwise
+it SHALL mint a new one. A minted file SHALL be written atomically (temp file
+`0600`, synced, renamed; removed on error), and the token SHALL NOT be logged,
+only its path. A socket-only start SHALL write no token file. A file set by
+`--admin-token-file` or `COMPASS_ADMIN_TOKEN_FILE` SHALL resolve, possibly
+through symlinks, to a regular file with no setuid, setgid, sticky,
+group-write, group-execute or others bit, and SHALL be group-readable only by
+a group the process holds. It SHALL contain a whitespace-trimmed base64url
+encoding of exactly 32 bytes. The server SHALL register that token for the
+bootstrap admin and persist it under the state directory; a revoked token or
+another subject's SHALL fail startup.
 
 #### Scenario: Opening the network door writes the admin token 0600
 

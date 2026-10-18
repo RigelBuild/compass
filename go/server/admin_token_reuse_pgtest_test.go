@@ -6,11 +6,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -292,36 +295,169 @@ func TestIssueAndWriteAdminTokenRejectsMalformedSuppliedFiles(t *testing.T) {
 		name    string
 		mode    os.FileMode
 		body    string
+		fifo    bool
 		symlink bool
 	}{
 		{name: "malformed", mode: 0o600, body: "not-base64!"},
 		{name: "embedded newline", mode: 0o600, body: "AAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAA"},
 		{name: "wrong length", mode: 0o600, body: base64.RawURLEncoding.EncodeToString([]byte("short"))},
-		{name: "group readable", mode: 0o640, body: newSuppliedAdminToken(t)},
-		{name: "symlink input", symlink: true},
+		{name: "group writable", mode: 0o660, body: newSuppliedAdminToken(t)},
+		{name: "other readable", mode: 0o604, body: newSuppliedAdminToken(t)},
+		{name: "fifo", fifo: true},
+		{name: "symlink to fifo", fifo: true, symlink: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tokenFile := filepath.Join(t.TempDir(), "operator-token")
-			if tc.symlink {
-				target := filepath.Join(t.TempDir(), "valid-token")
-				writeAdminTokenFile(t, target, newSuppliedAdminToken(t))
-				if err := os.Symlink(target, tokenFile); err != nil {
-					t.Fatalf("create supplied token symlink: %v", err)
-				}
+			if tc.fifo {
+				makeSuppliedTokenFIFO(t, tokenFile, tc.symlink)
 			} else {
-				if err := os.WriteFile(tokenFile, []byte(tc.body), 0o600); err != nil {
-					t.Fatalf("write supplied token file: %v", err)
-				}
-				if err := os.Chmod(tokenFile, tc.mode); err != nil {
-					t.Fatalf("chmod supplied token file: %v", err)
-				}
+				writeSuppliedTokenFile(t, tokenFile, tc.body, tc.mode)
 			}
-			_, _, err := issueAndWriteAdminToken(ctx, st, adminID, t.TempDir(), tokenFile)
+
+			check := func() error {
+				_, _, err := issueAndWriteAdminToken(ctx, st, adminID, t.TempDir(), tokenFile)
+				return err
+			}
+			var err error
+			if tc.fifo {
+				err = checkSuppliedAdminTokenFIFO(t, tokenFile, check)
+				if err == nil || !strings.Contains(err.Error(), "must be a private regular file") {
+					t.Fatalf("issueAndWriteAdminToken error = %v, want private regular-file failure for %q", err, tokenFile)
+				}
+				return
+			}
+			err = check()
 			if err == nil || !strings.Contains(err.Error(), tokenFile) {
 				t.Fatalf("issueAndWriteAdminToken error = %v, want failure naming path %q", err, tokenFile)
 			}
 		})
+	}
+}
+
+func makeSuppliedTokenFIFO(t *testing.T, tokenFile string, symlink bool) {
+	t.Helper()
+	target := tokenFile
+	if symlink {
+		target = filepath.Join(t.TempDir(), "fifo-token")
+	}
+	if err := syscall.Mkfifo(target, 0o600); err != nil {
+		t.Fatalf("create supplied token FIFO: %v", err)
+	}
+	if !symlink {
+		return
+	}
+	if err := os.Symlink(target, tokenFile); err != nil {
+		t.Fatalf("create supplied token symlink: %v", err)
+	}
+}
+
+func writeSuppliedTokenFile(t *testing.T, tokenFile, body string, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(tokenFile, []byte(body), 0o600); err != nil {
+		t.Fatalf("write supplied token file: %v", err)
+	}
+	if err := os.Chmod(tokenFile, mode); err != nil {
+		t.Fatalf("chmod supplied token file: %v", err)
+	}
+}
+
+func checkSuppliedAdminTokenFIFO(t *testing.T, tokenFile string, check func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		done <- check()
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		writer, err := os.OpenFile(tokenFile, os.O_WRONLY, 0)
+		if err != nil {
+			t.Errorf("open FIFO to release timed-out reader: %v", err)
+			return errors.New("supplied admin token FIFO read exceeded 5 seconds")
+		}
+		if err := writer.Close(); err != nil {
+			t.Errorf("close FIFO writer: %v", err)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("supplied admin token FIFO reader did not stop after release")
+		}
+		return errors.New("supplied admin token FIFO read exceeded 5 seconds")
+	}
+}
+
+func TestIssueAndWriteAdminTokenRegistersSecretVolumeToken(t *testing.T) {
+	cases := []struct {
+		name string
+		gid  func(t *testing.T) int
+	}{
+		{name: "effective gid", gid: func(*testing.T) int { return os.Getegid() }},
+		{name: "supplementary gid", gid: supplementaryGID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSecretVolumeTokenBoots(t, tc.gid(t))
+		})
+	}
+}
+
+// supplementaryGID returns a held group other than the effective one, as
+// kubelet's fsGroup is when it differs from runAsGroup.
+func supplementaryGID(t *testing.T) int {
+	t.Helper()
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatalf("read supplementary groups: %v", err)
+	}
+	for _, gid := range groups {
+		if gid != os.Getegid() {
+			return gid
+		}
+	}
+	t.Skip("process holds no supplementary group besides its effective gid")
+	return 0
+}
+
+func assertSecretVolumeTokenBoots(t *testing.T, gid int) {
+	t.Helper()
+	ctx := context.Background()
+	st, adminID, _ := newNetworkStore(t)
+	volumeDir := t.TempDir()
+	dataDir := filepath.Join(volumeDir, "..data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatalf("create projected Secret data dir: %v", err)
+	}
+	token := newSuppliedAdminToken(t)
+	target := filepath.Join(dataDir, "token")
+	if err := os.WriteFile(target, []byte(token), 0o440); err != nil {
+		t.Fatalf("write projected Secret token: %v", err)
+	}
+	if err := os.Chown(target, -1, gid); err != nil {
+		t.Fatalf("set projected Secret group: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..data", "token"), filepath.Join(volumeDir, "token")); err != nil {
+		t.Fatalf("create projected Secret symlink: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	path, minted, err := issueAndWriteAdminToken(ctx, st, adminID, stateDir, filepath.Join(volumeDir, "token"))
+	if err != nil || minted || path != filepath.Join(stateDir, adminTokenFile) {
+		t.Fatalf("Secret-volume boot = (%q, minted=%v, %v), want state path and minted=false", path, minted, err)
+	}
+	if err := assertAdminTokenAuthenticates(ctx, st, adminID, token); err != nil {
+		t.Fatalf("projected Secret token does not authenticate as bootstrap admin: %v", err)
+	}
+	info := lstat(t, path)
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("persisted token mode = %v, want regular 0600 file", info.Mode())
+	}
+	if got := readAdminToken(t, stateDir); got != token {
+		t.Fatal("state-dir token file does not match projected Secret token")
 	}
 }
 
