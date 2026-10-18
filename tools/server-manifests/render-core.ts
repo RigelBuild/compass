@@ -1,21 +1,21 @@
 import { createHash, createPublicKey } from "node:crypto";
 
-import type { renderRunnerManifests } from "../runner-manifests/render-core.ts";
 import { assertRunnerImageDigest } from "../runner-manifests/render-core.ts";
 
 const SERVER_NAME = "compass-server";
 const NATS_NAME = "compass-nats";
-const POSTGRES_NAME = "compass-postgres";
 const RUN_AS_UID = 65532;
 const COMPASS_RUN_VOLUME = "compass-run";
 const RUN_ROOT = "/run/compass";
 const NATS_STORE_DIR = "/var/lib/nats";
+const ADMIN_TOKEN_PATH = "/var/run/compass/admin-token/token";
 const SERVER_LABEL = { "app.kubernetes.io/name": SERVER_NAME };
 const NATS_LABEL = { "app.kubernetes.io/name": NATS_NAME };
-const POSTGRES_LABEL = { "app.kubernetes.io/name": POSTGRES_NAME };
 const RESOURCE_LABELS = { "app.kubernetes.io/part-of": "compass" };
 
 type JsonObject = Record<string, unknown>;
+
+export type ServerManifest = Record<string, unknown>;
 
 export type RunnerClusterValues = {
 	name: string;
@@ -29,12 +29,24 @@ export type RunnerClusterValues = {
 	caFile?: string;
 };
 
+export type ForgeValues = {
+	host?: string;
+	repos?: string[];
+	appId: number;
+	installationId: number;
+	appKeySecret: string;
+	appWebhookSecret: string;
+	reviewer?: {
+		appId: number;
+		installationId: number;
+		appKeySecret: string;
+	};
+};
+
 export type ServerDeployValues = {
 	namespace: string;
 	serverImage: string;
 	natsImage: string;
-	initImage: string;
-	postgres?: { image: string; storage: string; secretName: string };
 	natsStorage: string;
 	tlsSecretName: string;
 	dsnSecretName: string;
@@ -45,6 +57,13 @@ export type ServerDeployValues = {
 	corsAllowedOrigin?: string;
 	otlpEndpoint?: string;
 	external?: { port: number; loadBalancerClass?: string };
+	nodeSelector?: { key: string; value: string };
+	toleration?: {
+		key: string;
+		value: string;
+		effect: "NoSchedule" | "PreferNoSchedule" | "NoExecute";
+	};
+	forge?: ForgeValues;
 	runnerClusters: RunnerClusterValues[];
 };
 
@@ -67,6 +86,11 @@ function objectValue(value: unknown, name: string): Record<string, unknown> {
 		throw new Error(`${name} must be an object`);
 	}
 	return value as Record<string, unknown>;
+}
+
+function assertPositiveInteger(value: number, field: string): void {
+	if (!Number.isSafeInteger(value) || value < 1)
+		throw new Error(`${field} must be a positive integer`);
 }
 
 function stringValue(
@@ -406,18 +430,143 @@ export function parseServerDeployValues(raw: unknown): ServerDeployValues {
 	return values;
 }
 
+function parseRunnerClusters(raw: unknown): RunnerClusterValues[] {
+	if (!Array.isArray(raw)) throw new Error("runnerClusters must be an array");
+	return raw.map((value, index) => {
+		const item = objectValue(value, `runnerClusters[${index}]`);
+		assertOnlyKeys(
+			item,
+			[
+				"name",
+				"issuer",
+				"namespace",
+				"serviceAccount",
+				"audience",
+				"maxTokenLifetime",
+				"jwksURI",
+				"jwks",
+				"caFile",
+			],
+			`runnerClusters[${index}]`,
+		);
+		const cluster: RunnerClusterValues = {
+			name: stringValue(item, "name", `runnerClusters[${index}].name`),
+			issuer: stringValue(item, "issuer", `runnerClusters[${index}].issuer`),
+			namespace: stringValue(
+				item,
+				"namespace",
+				`runnerClusters[${index}].namespace`,
+			),
+			serviceAccount: stringValue(
+				item,
+				"serviceAccount",
+				`runnerClusters[${index}].serviceAccount`,
+			),
+		};
+		for (const key of [
+			"audience",
+			"maxTokenLifetime",
+			"jwksURI",
+			"jwks",
+			"caFile",
+		] as const) {
+			const field = `runnerClusters[${index}].${key}`;
+			const value = optionalStringValue(item, key, field);
+			if (value !== undefined) cluster[key] = value;
+		}
+		return cluster;
+	});
+}
+
+function numberValue(
+	record: Record<string, unknown>,
+	key: string,
+	field: string,
+): number {
+	const value = record[key];
+	if (typeof value !== "number") throw new Error(`${field} must be a number`);
+	return value;
+}
+
+function parseForgeValues(input: unknown): ForgeValues {
+	const record = objectValue(input, "forge");
+	assertOnlyKeys(
+		record,
+		[
+			"host",
+			"repos",
+			"appId",
+			"installationId",
+			"appKeySecret",
+			"appWebhookSecret",
+			"reviewer",
+		],
+		"forge",
+	);
+	const values: ForgeValues = {
+		appId: numberValue(record, "appId", "forge.appId"),
+		installationId: numberValue(
+			record,
+			"installationId",
+			"forge.installationId",
+		),
+		appKeySecret: stringValue(record, "appKeySecret", "forge.appKeySecret"),
+		appWebhookSecret: stringValue(
+			record,
+			"appWebhookSecret",
+			"forge.appWebhookSecret",
+		),
+	};
+	const host = optionalStringValue(record, "host", "forge.host");
+	if (host !== undefined) values.host = host;
+	if (record.repos !== undefined) {
+		if (
+			!Array.isArray(record.repos) ||
+			!record.repos.every((repo) => typeof repo === "string")
+		)
+			throw new Error("forge.repos must be an array of strings");
+		values.repos = record.repos;
+	}
+	if (record.reviewer !== undefined) {
+		const reviewer = objectValue(record.reviewer, "forge.reviewer");
+		assertOnlyKeys(
+			reviewer,
+			["appId", "installationId", "appKeySecret"],
+			"forge.reviewer",
+		);
+		values.reviewer = {
+			appId: numberValue(reviewer, "appId", "forge.reviewer.appId"),
+			installationId: numberValue(
+				reviewer,
+				"installationId",
+				"forge.reviewer.installationId",
+			),
+			appKeySecret: stringValue(
+				reviewer,
+				"appKeySecret",
+				"forge.reviewer.appKeySecret",
+			),
+		};
+	}
+	return values;
+}
+
 function parseServerDeployValuesWithoutValidation(
 	raw: unknown,
 ): ServerDeployValues {
 	const root = objectValue(raw, "values");
+	if (Object.hasOwn(root, "postgres"))
+		throw new Error(
+			"postgres: removed value; Postgres must be operator-provided",
+		);
+	if (Object.hasOwn(root, "initImage"))
+		throw new Error("initImage: removed value");
 	assertOnlyKeys(
 		root,
 		[
 			"namespace",
 			"serverImage",
 			"natsImage",
-			"initImage",
-			"postgres",
 			"natsStorage",
 			"tlsSecretName",
 			"dsnSecretName",
@@ -428,83 +577,40 @@ function parseServerDeployValuesWithoutValidation(
 			"corsAllowedOrigin",
 			"otlpEndpoint",
 			"external",
+			"nodeSelector",
+			"toleration",
+			"forge",
 			"runnerClusters",
 		],
 		"",
 	);
-	const postgresInput =
-		root.postgres === undefined
-			? undefined
-			: objectValue(root.postgres, "postgres");
-	const externalInput =
-		root.external === undefined
-			? undefined
-			: objectValue(root.external, "external");
-	if (postgresInput !== undefined)
-		assertOnlyKeys(
-			postgresInput,
-			["image", "storage", "secretName"],
-			"postgres",
-		);
-	if (externalInput !== undefined)
-		assertOnlyKeys(externalInput, ["port", "loadBalancerClass"], "external");
-	const clustersRaw = root.runnerClusters;
-	if (!Array.isArray(clustersRaw))
-		throw new Error("runnerClusters must be an array");
-	const runnerClusters: RunnerClusterValues[] = clustersRaw.map(
-		(value, index) => {
-			const item = objectValue(value, `runnerClusters[${index}]`);
-			assertOnlyKeys(
-				item,
-				[
-					"name",
-					"issuer",
-					"namespace",
-					"serviceAccount",
-					"audience",
-					"maxTokenLifetime",
-					"jwksURI",
-					"jwks",
-					"caFile",
-				],
-				`runnerClusters[${index}]`,
-			);
-			const cluster: RunnerClusterValues = {
-				name: stringValue(item, "name", `runnerClusters[${index}].name`),
-				issuer: stringValue(item, "issuer", `runnerClusters[${index}].issuer`),
-				namespace: stringValue(
-					item,
-					"namespace",
-					`runnerClusters[${index}].namespace`,
-				),
-				serviceAccount: stringValue(
-					item,
-					"serviceAccount",
-					`runnerClusters[${index}].serviceAccount`,
-				),
-			};
-			for (const key of [
-				"audience",
-				"maxTokenLifetime",
-				"jwksURI",
-				"jwks",
-				"caFile",
-			] as const) {
-				const value = optionalStringValue(
-					item,
-					key,
-					`runnerClusters[${index}].${key}`,
-				);
-				if (value !== undefined) cluster[key] = value;
-			}
-			return cluster;
-		},
-	);
-	const values: ServerDeployValues = {
+	return {
+		...parseRequiredServerValues(root),
+		...parseOptionalServerValues(root),
+	};
+}
+
+type RequiredServerDeployValues = Pick<
+	ServerDeployValues,
+	| "namespace"
+	| "serverImage"
+	| "natsImage"
+	| "natsStorage"
+	| "tlsSecretName"
+	| "dsnSecretName"
+	| "natsSecretName"
+	| "serverSecretsSecretName"
+	| "adminTokenSecretName"
+	| "runnerClusters"
+>;
+
+function parseRequiredServerValues(
+	root: Record<string, unknown>,
+): RequiredServerDeployValues {
+	return {
 		namespace: stringValue(root, "namespace", "namespace"),
 		serverImage: stringValue(root, "serverImage", "serverImage"),
 		natsImage: stringValue(root, "natsImage", "natsImage"),
-		initImage: stringValue(root, "initImage", "initImage"),
 		natsStorage: stringValue(root, "natsStorage", "natsStorage"),
 		tlsSecretName: stringValue(root, "tlsSecretName", "tlsSecretName"),
 		dsnSecretName: stringValue(root, "dsnSecretName", "dsnSecretName"),
@@ -519,8 +625,25 @@ function parseServerDeployValuesWithoutValidation(
 			"adminTokenSecretName",
 			"adminTokenSecretName",
 		),
-		runnerClusters,
+		runnerClusters: parseRunnerClusters(root.runnerClusters),
 	};
+}
+
+type OptionalServerDeployValues = Pick<
+	ServerDeployValues,
+	| "s3SecretName"
+	| "corsAllowedOrigin"
+	| "otlpEndpoint"
+	| "external"
+	| "nodeSelector"
+	| "toleration"
+	| "forge"
+>;
+
+function parseOptionalServerValues(
+	root: Record<string, unknown>,
+): OptionalServerDeployValues {
+	const values: OptionalServerDeployValues = {};
 	for (const key of [
 		"s3SecretName",
 		"corsAllowedOrigin",
@@ -529,40 +652,93 @@ function parseServerDeployValuesWithoutValidation(
 		const value = optionalStringValue(root, key, key);
 		if (value !== undefined) values[key] = value;
 	}
-	if (externalInput !== undefined) {
-		const port = externalInput.port;
-		if (
-			typeof port !== "number" ||
-			!Number.isSafeInteger(port) ||
-			port < 1 ||
-			port > 65535
-		) {
-			throw new Error("external.port must be an integer from 1 through 65535");
-		}
-		const external: NonNullable<ServerDeployValues["external"]> = { port };
-		const loadBalancerClass = optionalStringValue(
-			externalInput,
-			"loadBalancerClass",
-			"external.loadBalancerClass",
-		);
-		if (loadBalancerClass !== undefined)
-			external.loadBalancerClass = loadBalancerClass;
-		values.external = external;
-	}
-	if (postgresInput !== undefined) {
-		values.postgres = {
-			image: stringValue(postgresInput, "image", "postgres.image"),
-			storage: stringValue(postgresInput, "storage", "postgres.storage"),
-			secretName: stringValue(
-				postgresInput,
-				"secretName",
-				"postgres.secretName",
-			),
-		};
-	}
+	const external = parseExternal(root.external);
+	const nodeSelector = parseNodeSelector(root.nodeSelector);
+	const toleration = parseToleration(root.toleration);
+	if (external !== undefined) values.external = external;
+	if (nodeSelector !== undefined) values.nodeSelector = nodeSelector;
+	if (toleration !== undefined) values.toleration = toleration;
+	if (root.forge !== undefined) values.forge = parseForgeValues(root.forge);
 	return values;
 }
 
+function parseExternal(input: unknown): ServerDeployValues["external"] {
+	if (input === undefined) return undefined;
+	const record = objectValue(input, "external");
+	assertOnlyKeys(record, ["port", "loadBalancerClass"], "external");
+	const port = record.port;
+	if (
+		typeof port !== "number" ||
+		!Number.isSafeInteger(port) ||
+		port < 1 ||
+		port > 65535
+	)
+		throw new Error("external.port must be an integer from 1 through 65535");
+	const external: NonNullable<ServerDeployValues["external"]> = { port };
+	const loadBalancerClass = optionalStringValue(
+		record,
+		"loadBalancerClass",
+		"external.loadBalancerClass",
+	);
+	if (loadBalancerClass !== undefined)
+		external.loadBalancerClass = loadBalancerClass;
+	return external;
+}
+
+function parseNodeSelector(input: unknown): ServerDeployValues["nodeSelector"] {
+	if (input === undefined) return undefined;
+	const record = objectValue(input, "nodeSelector");
+	assertOnlyKeys(record, ["key", "value"], "nodeSelector");
+	return {
+		key: stringValue(record, "key", "nodeSelector.key"),
+		value: stringValue(record, "value", "nodeSelector.value"),
+	};
+}
+
+function parseToleration(input: unknown): ServerDeployValues["toleration"] {
+	if (input === undefined) return undefined;
+	const record = objectValue(input, "toleration");
+	assertOnlyKeys(record, ["key", "value", "effect"], "toleration");
+	const effect = stringValue(record, "effect", "toleration.effect");
+	if (
+		effect !== "NoSchedule" &&
+		effect !== "PreferNoSchedule" &&
+		effect !== "NoExecute"
+	)
+		throw new Error(
+			"toleration.effect must be NoSchedule, PreferNoSchedule, or NoExecute",
+		);
+	return {
+		key: stringValue(record, "key", "toleration.key"),
+		value: stringValue(record, "value", "toleration.value"),
+		effect,
+	};
+}
+function validateImages(values: ServerDeployValues): void {
+	assertServerImageDigest(values.serverImage);
+	try {
+		assertRunnerImageDigest(values.natsImage);
+	} catch {
+		throw new Error(
+			"natsImage must be an untagged repository@sha256 digest reference",
+		);
+	}
+}
+
+function validateScheduling(values: ServerDeployValues): void {
+	if (values.nodeSelector !== undefined) {
+		if (values.nodeSelector.key.trim() === "")
+			throw new Error("nodeSelector.key must not be empty");
+		if (values.nodeSelector.value.trim() === "")
+			throw new Error("nodeSelector.value must not be empty");
+	}
+	if (values.toleration !== undefined) {
+		if (values.toleration.key.trim() === "")
+			throw new Error("toleration.key must not be empty");
+		if (values.toleration.value.trim() === "")
+			throw new Error("toleration.value must not be empty");
+	}
+}
 function validateServerDeployValues(values: ServerDeployValues): void {
 	assertDNS1123(values.namespace, "namespace");
 	for (const [field, name] of [
@@ -574,58 +750,28 @@ function validateServerDeployValues(values: ServerDeployValues): void {
 		...(values.s3SecretName === undefined
 			? []
 			: [["s3SecretName", values.s3SecretName]]),
-		...(values.postgres === undefined
-			? []
-			: [["postgres.secretName", values.postgres.secretName]]),
 	] as const)
 		assertDNS1123(name, field);
-	assertServerImageDigest(values.serverImage);
-	for (const [field, image] of [
-		["natsImage", values.natsImage],
-		["initImage", values.initImage],
-		...(values.postgres === undefined
-			? []
-			: [["postgres.image", values.postgres.image]]),
-	] as const) {
-		try {
-			assertRunnerImageDigest(image);
-		} catch {
-			throw new Error(
-				`${field} must be an untagged repository@sha256 digest reference`,
-			);
-		}
-	}
+	validateImages(values);
 	assertKubernetesQuantity(values.natsStorage, "natsStorage");
-	if (values.postgres !== undefined) {
-		assertKubernetesQuantity(values.postgres.storage, "postgres.storage");
-	}
+	validateScheduling(values);
+	if (values.forge !== undefined) validateForgeValues(values.forge);
 	validateRunnerClusters(values.runnerClusters);
+}
+
+function validateForgeValues(forge: ForgeValues): void {
+	assertPositiveInteger(forge.appId, "forge.appId");
+	assertPositiveInteger(forge.installationId, "forge.installationId");
+	if (forge.reviewer === undefined) return;
+	assertPositiveInteger(forge.reviewer.appId, "forge.reviewer.appId");
+	assertPositiveInteger(
+		forge.reviewer.installationId,
+		"forge.reviewer.installationId",
+	);
 }
 
 function secretEnv(name: string, secretName: string, key: string): JsonObject {
 	return { name, valueFrom: { secretKeyRef: { name: secretName, key } } };
-}
-
-function postgresNetworkPolicy(namespace: string): JsonObject {
-	return {
-		apiVersion: "networking.k8s.io/v1",
-		kind: "NetworkPolicy",
-		metadata: {
-			name: `${POSTGRES_NAME}-ingress`,
-			namespace,
-			labels: RESOURCE_LABELS,
-		},
-		spec: {
-			podSelector: { matchLabels: POSTGRES_LABEL },
-			policyTypes: ["Ingress"],
-			ingress: [
-				{
-					from: [{ podSelector: { matchLabels: SERVER_LABEL } }],
-					ports: [{ protocol: "TCP", port: 5432 }],
-				},
-			],
-		},
-	};
 }
 
 function natsNetworkPolicy(namespace: string): JsonObject {
@@ -715,7 +861,7 @@ function serverDeployment(
 		"--socket",
 		`${RUN_ROOT}/state/server.sock`,
 		"--admin-token-file",
-		`${RUN_ROOT}/bootstrap/admin-token`,
+		ADMIN_TOKEN_PATH,
 		"--runner-clusters",
 		"/etc/compass/runner-clusters/clusters.yaml",
 		"--secret-provider",
@@ -723,6 +869,24 @@ function serverDeployment(
 	];
 	if (values.corsAllowedOrigin !== undefined)
 		args.push("--cors-allowed-origin", values.corsAllowedOrigin);
+	if (values.forge !== undefined) {
+		const forge = values.forge;
+		if (forge.host !== undefined) args.push("--forge-host", forge.host);
+		args.push("--forge-app-id", String(forge.appId));
+		args.push("--forge-installation-id", String(forge.installationId));
+		args.push("--forge-app-key-secret", forge.appKeySecret);
+		args.push("--forge-app-webhook-secret", forge.appWebhookSecret);
+		if (forge.repos !== undefined)
+			args.push("--forge-repos", forge.repos.join(","));
+		if (forge.reviewer !== undefined) {
+			args.push("--forge-reviewer-app-id", String(forge.reviewer.appId));
+			args.push(
+				"--forge-reviewer-app-installation-id",
+				String(forge.reviewer.installationId),
+			);
+			args.push("--forge-reviewer-app-key-secret", forge.reviewer.appKeySecret);
+		}
+	}
 	const volumes: JsonObject[] = [
 		{ name: COMPASS_RUN_VOLUME, emptyDir: {} },
 		{ name: "tls", secret: { secretName: values.tlsSecretName } },
@@ -742,33 +906,6 @@ function serverDeployment(
 			configMap: { name: `${SERVER_NAME}-runner-clusters` },
 		},
 	];
-	const init: JsonObject = {
-		name: "init-admin-token",
-		image: values.initImage,
-		imagePullPolicy: "IfNotPresent",
-		command: [
-			"sh",
-			"-c",
-			"mkdir -p /run/compass/bootstrap /run/compass/xdg-state && cp /var/run/compass/admin-token/token /run/compass/bootstrap/admin-token && chmod 0600 /run/compass/bootstrap/admin-token",
-		],
-		securityContext: {
-			runAsNonRoot: true,
-			runAsUser: RUN_AS_UID,
-			runAsGroup: RUN_AS_UID,
-			allowPrivilegeEscalation: false,
-			readOnlyRootFilesystem: true,
-			capabilities: { drop: ["ALL"] },
-			seccompProfile: { type: "RuntimeDefault" },
-		},
-		volumeMounts: [
-			{ name: COMPASS_RUN_VOLUME, mountPath: RUN_ROOT },
-			{
-				name: "admin-token",
-				mountPath: "/var/run/compass/admin-token",
-				readOnly: true,
-			},
-		],
-	};
 	const server: JsonObject = {
 		name: SERVER_NAME,
 		image: values.serverImage,
@@ -795,6 +932,11 @@ function serverDeployment(
 			{
 				name: "server-secrets",
 				mountPath: "/etc/compass/secrets",
+				readOnly: true,
+			},
+			{
+				name: "admin-token",
+				mountPath: "/var/run/compass/admin-token",
 				readOnly: true,
 			},
 			{
@@ -835,8 +977,26 @@ function serverDeployment(
 						fsGroup: RUN_AS_UID,
 						seccompProfile: { type: "RuntimeDefault" },
 					},
+					...(values.nodeSelector === undefined
+						? {}
+						: {
+								nodeSelector: {
+									[values.nodeSelector.key]: values.nodeSelector.value,
+								},
+							}),
+					...(values.toleration === undefined
+						? {}
+						: {
+								tolerations: [
+									{
+										key: values.toleration.key,
+										operator: "Equal",
+										value: values.toleration.value,
+										effect: values.toleration.effect,
+									},
+								],
+							}),
 					serviceAccountName: SERVER_NAME,
-					initContainers: [init],
 					containers: [server],
 					volumes,
 				},
@@ -992,118 +1152,11 @@ function natsResources(values: ServerDeployValues): JsonObject[] {
 	];
 }
 
-function postgresResources(values: ServerDeployValues): JsonObject[] {
-	const postgres = values.postgres;
-	if (postgres === undefined) return [];
-	return [
-		{
-			apiVersion: "apps/v1",
-			kind: "StatefulSet",
-			metadata: {
-				name: POSTGRES_NAME,
-				namespace: values.namespace,
-				labels: RESOURCE_LABELS,
-			},
-			spec: {
-				serviceName: POSTGRES_NAME,
-				replicas: 1,
-				selector: { matchLabels: POSTGRES_LABEL },
-				template: {
-					metadata: { labels: POSTGRES_LABEL },
-					spec: {
-						securityContext: {
-							runAsNonRoot: true,
-							runAsUser: RUN_AS_UID,
-							runAsGroup: RUN_AS_UID,
-							fsGroup: RUN_AS_UID,
-							seccompProfile: { type: "RuntimeDefault" },
-						},
-						containers: [
-							{
-								name: POSTGRES_NAME,
-								image: postgres.image,
-								ports: [
-									{ name: "postgres", containerPort: 5432, protocol: "TCP" },
-								],
-								securityContext: {
-									allowPrivilegeEscalation: false,
-									readOnlyRootFilesystem: true,
-									capabilities: { drop: ["ALL"] },
-								},
-								env: [
-									{ name: "POSTGRES_USER", value: "compass" },
-									secretEnv(
-										"POSTGRES_PASSWORD",
-										postgres.secretName,
-										"password",
-									),
-									{
-										name: "POSTGRES_INITDB_ARGS",
-										value: "--auth=scram-sha-256",
-									},
-									{ name: "POSTGRES_HOST_AUTH_METHOD", value: "scram-sha-256" },
-								],
-								// Postgres 18 images keep PGDATA in a versioned child of
-								// /var/lib/postgresql; the read-only root needs the socket
-								// and temp dirs writable.
-								volumeMounts: [
-									{
-										name: "postgres-data",
-										mountPath: "/var/lib/postgresql",
-									},
-									{ name: "postgres-run", mountPath: "/var/run/postgresql" },
-									{ name: "postgres-tmp", mountPath: "/tmp" },
-								],
-							},
-						],
-						volumes: [
-							{ name: "postgres-run", emptyDir: {} },
-							{ name: "postgres-tmp", emptyDir: {} },
-						],
-					},
-				},
-				volumeClaimTemplates: [
-					{
-						metadata: { name: "postgres-data", labels: RESOURCE_LABELS },
-						spec: {
-							accessModes: ["ReadWriteOnce"],
-							resources: { requests: { storage: postgres.storage } },
-						},
-					},
-				],
-			},
-		},
-		{
-			apiVersion: "v1",
-			kind: "Service",
-			metadata: {
-				name: POSTGRES_NAME,
-				namespace: values.namespace,
-				labels: RESOURCE_LABELS,
-			},
-			spec: {
-				clusterIP: "None",
-				selector: POSTGRES_LABEL,
-				ports: [
-					{ name: "postgres", port: 5432, targetPort: 5432, protocol: "TCP" },
-				],
-			},
-		},
-	];
-}
-
-export function renderServerManifests(
-	v: ServerDeployValues,
-): ReturnType<typeof renderRunnerManifests> {
+export function renderServerManifests(v: ServerDeployValues): ServerManifest[] {
 	const validated = parseServerDeployValues(v);
 	const runnerClusters = runnerClustersConfigMapData(validated.runnerClusters);
-	const networkPolicies = [
-		natsNetworkPolicy(validated.namespace),
-		...(validated.postgres === undefined
-			? []
-			: [postgresNetworkPolicy(validated.namespace)]),
-	];
-	const manifests: ReturnType<typeof renderRunnerManifests> = [
+	const networkPolicies = [natsNetworkPolicy(validated.namespace)];
+	const manifests: ServerManifest[] = [
 		{
 			apiVersion: "v1",
 			kind: "ServiceAccount",
@@ -1127,7 +1180,6 @@ export function renderServerManifests(
 		serverDeployment(validated, runnerClusters),
 		...serverServices(validated),
 		...natsResources(validated),
-		...postgresResources(validated),
 		...networkPolicies,
 	];
 	return manifests;

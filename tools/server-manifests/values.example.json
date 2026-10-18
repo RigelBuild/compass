@@ -2,12 +2,6 @@
 	"namespace": "compass",
 	"serverImage": "ghcr.io/example/compass-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	"natsImage": "docker.io/library/nats@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-	"initImage": "busybox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-	"postgres": {
-		"image": "docker.io/library/postgres@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-		"storage": "20Gi",
-		"secretName": "compass-postgres"
-	},
 	"natsStorage": "8Gi",
 	"tlsSecretName": "compass-server-tls",
 	"dsnSecretName": "compass-dsn",
@@ -20,6 +14,25 @@
 	"external": {
 		"port": 7443,
 		"loadBalancerClass": "example.test/external"
+	},
+	"nodeSelector": { "key": "compass.example.test/role", "value": "server" },
+	"toleration": {
+		"key": "compass.example.test/dedicated",
+		"value": "server",
+		"effect": "NoSchedule"
+	},
+	"forge": {
+		"host": "github.com",
+		"repos": ["rigelbuild/compass"],
+		"appId": 123456,
+		"installationId": 234567,
+		"appKeySecret": "compass-forge-app-key",
+		"appWebhookSecret": "compass-forge-app-webhook",
+		"reviewer": {
+			"appId": 345678,
+			"installationId": 456789,
+			"appKeySecret": "compass-forge-reviewer-app-key"
+		}
 	},
 	"runnerClusters": [
 		{
