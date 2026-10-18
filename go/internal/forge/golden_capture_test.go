@@ -47,28 +47,9 @@ const (
 // type encoding/json decodes every JSON number to.
 var canonNumber = float64(42)
 
-// volatileFields names the forge DOMAIN JSON keys (domain types marshal to their
-// Go field names — no json tags) that are NOT asserted against the committed
-// fixture, because the forge assigns them per run/identity or a hygiene-unique
-// artifact name perturbs them. It is the single source of truth the oracle's
-// stripVolatile (livegithub_test.go) strips against AND that the -update capture
-// path canonicalizes against (via domainToWire). It lives in this untagged file
-// so BOTH the untagged canonicalization battery and the //go:build livegithub
-// oracle share one definition (a tagged build compiles untagged files too).
-//
-//   - Forge-assigned per run: Number (issue/PR number), ID (comment/review id),
-//     URL (canonical web url), UpdatedAt (server timestamp), HeadSHA (commit),
-//     HeadRef / BaseRef (branch names).
-//   - Forge-assigned per identity: ForgeAccount / Author (the live bot account
-//     differs from the fixture's captured account).
-//   - Run-supplied uniquely: Title / Body — hygiene requires run-id-suffixed
-//     artifact names, so a live create's title/body never equals the fixture's
-//     captured input; the state fold, label passthrough, verdict mapping, draft
-//     flag and structural shape (everything NOT listed here) ARE asserted.
-//
-// Rate-limit headers are volatile too but never reach a decoded domain value,
-// so there is nothing to strip for them here (they live on the HTTP response,
-// which the oracle does not compare).
+// volatileFields lists domain JSON keys that vary per run or identity. The
+// oracle strips these and capture canonicalizes them; both share this table.
+// All other domain values remain asserted in fixtures.
 var volatileFields = map[string]struct{}{
 	"Number":       {},
 	"ID":           {},
@@ -85,12 +66,8 @@ var volatileFields = map[string]struct{}{
 	"RepoFullName": {},
 }
 
-// wireVolatile maps a provider wire JSON key to the sentinel that replaces its
-// value during canonicalization. Each entry is a func of the current node so a
-// key whose JSON type varies (id: numeric on GitHub, a UUID string on Linear)
-// picks a type-appropriate sentinel; the fixed-value keys ignore the node. The
-// keyset is the union of the wire keys every domainToWire entry references plus
-// wireOnlyVolatile (asserted coherent in TestUpdateCanonicalizeCoversVolatileFields).
+// wireVolatile maps provider wire keys to type-aware sentinel functions; its
+// keyset is the union used by domainToWire and wireOnlyVolatile.
 var wireVolatile = map[string]func(node any) any{
 	"number":      fixedSentinel(canonNumber),
 	"id":          canonID,
@@ -130,26 +107,9 @@ func canonCursor(node any) any {
 	return canonCursorValue
 }
 
-// domainToWire maps each forge DOMAIN volatile key (the Go field names in
-// volatileFields, which the domain types marshal to verbatim — no json tags) to
-// the provider wire key(s) it decodes from. It is the explicit, reviewed
-// correspondence that ties the canonicalization table back to the oracle's
-// allowlist; its keyset MUST equal volatileFields (asserted below).
-//
-// Grounded against github.go / linear.go toX funcs:
-//   - Number   <- number       (ghIssue/ghPull/ghPullDetail.Number, linearIssue.Number)
-//   - ID       <- id           (ghComment.ID numeric; Linear comment id is a UUID string)
-//   - URL      <- html_url,url,target_url (GitHub HTMLURL + ghStatus.TargetURL -> Check.URL; Linear URL)
-//   - UpdatedAt<- updated_at,updatedAt (GitHub updated_at; Linear updatedAt)
-//   - CreatedAt<- created_at   (ghPull/ghPullDetail.CreatedAt)
-//   - HeadSHA  <- sha           (ghPullDetail.Head.SHA)
-//   - HeadRef  <- ref           (ghPull/ghPullDetail.Head.Ref)
-//   - BaseRef  <- ref           (ghPull/ghPullDetail.Base.Ref) — same wire key as HeadRef
-//   - ForgeAccount <- login,displayName (GitHub user.login; Linear creator/user displayName)
-//   - Author   <- login        (ghReviewRow.User.Login on the reviews leg; ghGQLActor.Login on
-//     the GraphQL thread comments, which gets a "[bot]" suffix for a Bot)
-//   - Title    <- title
-//   - Body     <- body,description (GitHub body, incl. GraphQL thread comments; Linear description)
+// domainToWire maps volatile domain keys to their provider wire keys. It keeps
+// canonicalization aligned with the oracle allowlist and is checked for equal
+// keysets with volatileFields.
 var domainToWire = map[string][]string{
 	"Number":       {"number"},
 	"ID":           {"id"},
@@ -171,14 +131,8 @@ func fixedSentinel(v any) func(any) any {
 	return func(any) any { return v }
 }
 
-// canonID sentinels a numeric id (GitHub comment/review id) to canonNumber and a
-// string/UUID id (Linear) to canonIDString, by JSON type. Canonicalizing string
-// ids is SAFE here because the request half is re-derived from the canonicalized
-// prelude (deriveFixtureHalves), not recorded from the live wire: a Linear
-// resolveTeamID/resolveIssueID reads the canonicalized prelude id -> canonIDString
-// and emits it as the request coordinate, which golden replay re-derives
-// identically. Recording the live request (the discarded first cut) is what would
-// have desynced a canonicalized id from a verbatim request coordinate.
+// canonID chooses a number or UUID sentinel by JSON type. Request halves are
+// re-derived from canonicalized responses, keeping IDs aligned on replay.
 func canonID(node any) any {
 	switch node.(type) {
 	case float64:
@@ -190,12 +144,8 @@ func canonID(node any) any {
 	}
 }
 
-// canonicalizeWire recursively rewrites a wire-JSON tree, substituting a fixed
-// sentinel for the value of every key in wireVolatile (matched by name at any
-// depth) while preserving key, structure, and type. A non-JSON or empty input is
-// returned unchanged. It is a pure function: same input -> same output, so a
-// per-run-only change canonicalizes to identical bytes and a genuine shape change
-// survives.
+// canonicalizeWire replaces volatile values by key while preserving JSON
+// shape and type. Non-JSON input is returned unchanged.
 func canonicalizeWire(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
@@ -235,12 +185,8 @@ func canonNode(v any) any {
 	}
 }
 
-// canonicalizeCoordinates canonicalizes the run-supplied request coordinates
-// (Number and the create-op inputs) to the same sentinels the wire canonicalizer
-// uses, so a request derived from these coordinates agrees with a Want derived
-// from a canonicalized response. It copies Input so a caller's live coordinates
-// are untouched. Repo, Filter, Labels, and Draft are NOT volatile (they are
-// asserted or stable), so they pass through.
+// canonicalizeCoordinates replaces run-specific request values with the same
+// sentinels used for responses, without mutating the caller's input.
 func canonicalizeCoordinates(req fixtureRequest) fixtureRequest {
 	if req.Number != 0 {
 		req.Number = 42
@@ -268,21 +214,15 @@ func canonicalizeCoordinates(req fixtureRequest) fixtureRequest {
 	return req
 }
 
-// capturedResponse is one scripted response the live capture recorded, in wire
-// order: the status and the raw provider body canonicalizeWire rewrites before a
-// fixture stores it. The request is deliberately NOT captured — it is re-derived
-// (deriveFixtureHalves) so the committed request matches golden replay by
-// construction.
+// capturedResponse is one recorded response in wire order. Requests are
+// re-derived so captured fixtures match replay by construction.
 type capturedResponse struct {
 	status int
 	body   json.RawMessage
 }
 
-// assembleFixture builds a candidate fixture from a recording: the captured
-// responses (canonicalized, in wire order) become Prelude/Body/Extra with the
-// asserted response at index prelude, the coordinates are canonicalized, and
-// BOTH request halves and Want are derived by replay (deriveFixtureHalves) so the
-// load-bearing golden invariants hold by construction.
+// assembleFixture canonicalizes captured responses and coordinates, then
+// derives both request halves and Want by replay.
 func assembleFixture(t *testing.T, provider, name string, prelude int, coords fixtureRequest, responses []capturedResponse) fixture {
 	t.Helper()
 	if len(responses) <= prelude {
@@ -303,13 +243,9 @@ func assembleFixture(t *testing.T, provider, name string, prelude int, coords fi
 	return deriveFixtureHalves(t, provider, f)
 }
 
-// deriveFixtureHalves replays a fixture's scripted responses (Prelude, Body,
-// Extra, in wire order) through the real client via invoke(), capturing BOTH the
-// emitted asserted request (Method/Path/Query/Headers/Body) and the decoded value
-// (Want). Because golden replayFixture runs the IDENTICAL invoke() over the
-// identical scripted responses and coordinates, the committed request halves match
-// what replay emits by construction, and marshal(decode(Body))==Want. It mirrors
-// replayFixture's response scripting exactly.
+// deriveFixtureHalves replays scripted responses through invoke to capture the
+// emitted request and decoded value. Replay uses the same path, so both fixture
+// halves are derived rather than copied from live requests.
 func deriveFixtureHalves(t *testing.T, provider string, f fixture) fixture {
 	t.Helper()
 	responses := make([]scriptedResponse, 0, len(f.Response.Prelude)+1+len(f.Response.Extra))

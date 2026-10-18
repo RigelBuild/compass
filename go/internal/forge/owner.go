@@ -1,14 +1,9 @@
 package forge
 
-// The owner-header stamp/strip chokepoint (#995 Decision 2 + T3, DL-050). The
-// ONLY non-test file carrying the literal owner-header sentinel — the one place
-// attribution is written and read.
+// This file is the sole non-test owner-header stamp/strip chokepoint.
 
-// Security property: an agent CANNOT forge attribution. StampOwner strips any
-// pre-existing header before writing exactly one of its own, so a hand-written
-// header naming a victim never survives — last stamp wins, only the Server
-// stamps. On read a parsed header is a display CLAIM only and MUST NOT reach any
-// authz/routing/ownership decision (DL-094).
+// StampOwner replaces existing headers before stamping. Parsed headers are
+// display claims only and must never affect authorization or routing.
 
 import (
 	"errors"
@@ -30,11 +25,8 @@ type Author struct{ AgentHandle, OwnerHandle, SessionID string }
 // model shortens and retries.
 var ErrBodyTooLarge = errors.New("forge: body exceeds the limit once the owner header is reserved")
 
-// handleGrammar is the grammar every header field (agent, owner, session) must
-// match. It admits a leading lowercase letter or digit, then up to 38 more
-// lowercase letters, digits, or dashes — so a hostile field can contain no
-// space, no '>', no "-->" run beyond a bare dash, and no newline, and therefore
-// cannot break out of the HTML comment it is interpolated into.
+// handleGrammar prevents fields from containing whitespace, comment delimiters,
+// or newlines that could escape the stamped HTML comment.
 var handleGrammar = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}$`)
 
 // commentRe matches one owner-header comment line (up to the first "-->" on the
@@ -42,12 +34,8 @@ var handleGrammar = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}$`)
 // to detect a forged bare comment on write.
 var commentRe = regexp.MustCompile(`<!-- compass:owner [^\n]*?-->`)
 
-// fullBlockRe matches the complete stamped scaffold: the comment line, the
-// human-readable attribution line, the blank line, the "---" rule, and the
-// trailing blank line — everything StampOwner prepends before the agent body.
-// The `\r?\n` separators tolerate both LF and CRLF line endings, because forge
-// bodies arrive CRLF (GitHub returns issue/PR bodies with CRLF); an LF-only
-// pattern would miss the block and leak the scaffold into the stripped body.
+// fullBlockRe matches the stamped scaffold. Its separators accept LF and CRLF
+// because forge bodies can use CRLF.
 var fullBlockRe = regexp.MustCompile(`<!-- compass:owner [^\n]*?-->\r?\n🧭 Written by [^\n]*\r?\n\r?\n---\r?\n\r?\n`)
 
 // bareCommentRe matches a lone owner-header comment (a forged or human-mangled

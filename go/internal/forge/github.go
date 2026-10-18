@@ -85,15 +85,8 @@ type GitHub struct {
 	// across the HTTP round-trip.
 	mu sync.Mutex
 
-	// resetAt is the rate-budget gate, one per GitHub rate-limit resource
-	// (REST core vs GraphQL are separate buckets, so draining one must not block
-	// the other). When non-zero and now() is before it, the next call on that
-	// resource fails fast with ErrBudgetExhausted rather than burning the tail of
-	// the window. It is derived from the last response's x-ratelimit-reset (or a
-	// 403/429 Retry-After / reset signal). A zero value means the gate is OPEN.
-	// Absent/malformed headers leave it open (treat unknown budget as available —
-	// never wedge the gate). Once now() passes resetAt the gate re-opens, so a
-	// wedged window self-clears after the reset. Guarded by mu.
+	// resetAt is a per-resource rate-budget gate. Zero or unusable rate headers
+	// leave it open; an armed gate self-clears after resetAt. Guarded by mu.
 	resetAt [numRateResources]time.Time
 
 	// now is the clock seam (defaults to time.Now in NewGitHub); tests override
@@ -771,11 +764,8 @@ func (g *GitHub) GetIssue(ctx context.Context, repo string, number uint64) (Issu
 	return row.toIssue(), nil
 }
 
-// ghPullDetail is the wire shape of the GitHub pull-detail endpoint, extending
-// ghPull with the diff-size roll-up, the merged discriminator, and the head SHA
-// (the checks roll-up runs against it). GitHub's pulls endpoint returns state
-// open|closed plus a separate merged bool; toPullRequest folds them into the
-// forge domain's open|closed|merged.
+// ghPullDetail extends ghPull with diff-size totals, merge status, and head SHA.
+// GitHub's separate state and merged fields map to the domain's three states.
 type ghPullDetail struct {
 	Number         uint64 `json:"number"`
 	Title          string `json:"title"`
@@ -960,15 +950,9 @@ func (g *GitHub) Checks(ctx context.Context, repo string, number uint64) (Checks
 // as bytes — StampOwner reserves bytes via len — with no conversion anywhere).
 func (g *GitHub) BodyLimit() int { return 65536 }
 
-// getJSON carries the read-path plumbing once for all one-shot GET reads
-// (GetIssue/GetPullRequest/Checks and their sub-fetches): the resetAt fail-fast
-// gate, token auth, budget recording, and error mapping. It is the read-side
-// analogue of doJSON (which is POST) and mirrors the inline plumbing in
-// ListIssuesPage — but these are UNCONDITIONAL one-shot reads, so it carries no
-// If-None-Match / 304 handling (that belongs to the poll-cursor page fetch). It
-// decodes a 2xx body into out and reports whether the response carried an
-// RFC-5988 Link rel="next" (getAllPages follows it; single-resource callers
-// ignore it).
+// getJSON handles unconditional one-shot GETs with auth, budget gating, error
+// mapping, and JSON decoding. It reports a next-page Link for getAllPages;
+// single-resource callers ignore it.
 func (g *GitHub) getJSON(ctx context.Context, url string, out any) (bool, error) {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
@@ -1013,12 +997,9 @@ func (g *GitHub) getJSON(ctx context.Context, url string, out any) (bool, error)
 	return hasNextLink(resp.Header.Get("Link")), nil
 }
 
-// getAllPages walks the RFC-5988 Link rel="next" chain from baseURL, decoding
-// each page into a fresh envelope E and concatenating the rows it yields, until
-// no rel="next" remains. It sets per_page/page on every request (mirroring
-// ListIssues' full walk) so a >perPage result set is never silently truncated
-// to page 1 — a truncated checks fold would let a failing check on a later page
-// roll up green. baseURL may already carry a query string (or none).
+// getAllPages follows Link rel="next", decoding each page and appending its
+// rows. It sets per_page/page to avoid truncation; baseURL may already have a
+// query string.
 func getAllPages[E, T any](ctx context.Context, g *GitHub, baseURL string, rows func(E) []T) ([]T, error) {
 	sep := "?"
 	if strings.Contains(baseURL, "?") {
@@ -1042,14 +1023,9 @@ func getAllPages[E, T any](ctx context.Context, g *GitHub, baseURL string, rows 
 	}
 }
 
-// checksForSHA folds the check-runs endpoint (modern) and the combined-status
-// endpoint (legacy) into one forge.Checks for the given head SHA. Both sources
-// are walked to completion via getAllPages (a >perPage result set on either is
-// concatenated, never truncated to page 1). The roll-up State is "failure" if
-// ANY check is a terminal-bad outcome (failure or cancelled), else "pending" if
-// ANY is non-terminal or unknown, else "success" (only when every check is a
-// terminal pass; an empty set rolls up to success). Required is left false: it
-// is per pull request, not per SHA, so checksForPull sets it.
+// checksForSHA combines modern check-runs and legacy statuses, walking every
+// page so later failures cannot be missed. Failure or cancellation dominates;
+// otherwise pending or unknown checks stay pending. Required is set per PR.
 func (g *GitHub) checksForSHA(ctx context.Context, repo, sha string) (Checks, error) {
 	commitBase := g.apiBase() + "/repos/" + repo + "/commits/" + sha
 
@@ -1085,13 +1061,9 @@ func (g *GitHub) checksForSHA(ctx context.Context, repo, sha string) (Checks, er
 	return Checks{HeadSHA: sha, State: rollupChecksState(out), Checks: out}, nil
 }
 
-// mapCheckRunState maps a check-run's (status, conclusion) to the forge Check
-// state, always inside the domain enum (queued|in_progress|success|failure|
-// neutral|cancelled — provider.go). An incomplete run maps its status: queued
-// and in_progress pass through; every other non-terminal status GitHub may add
-// (waiting, requested, pending) normalizes to queued so an unrecognized
-// in-flight state never escapes the enum and never rolls up as a pass. A
-// completed run maps its conclusion, defaulting unknown conclusions to neutral.
+// mapCheckRunState maps GitHub status and conclusion into the forge enum.
+// Unknown in-flight statuses become queued; unknown completed conclusions
+// become neutral, so no unknown state escapes the enum.
 func mapCheckRunState(status, conclusion string) string {
 	if status != "completed" {
 		switch status {
@@ -1129,15 +1101,9 @@ func mapCommitStatusState(state string) string {
 	}
 }
 
-// rollupChecksState reduces a check set to the domain roll-up
-// (pending|success|failure), biased fail-safe: an unrecognized state never
-// silently rolls up green against a merge gate. Any terminal-bad check (failure
-// or cancelled) dominates -> "failure"; else any in-flight or unrecognized
-// check -> "pending"; else "success". A terminal pass is success or neutral
-// (GitHub treats a neutral conclusion as non-blocking for branch protection);
-// an empty set rolls up to success. A cancelled check counts as non-passing
-// (mirrors mapCommitStatusState folding legacy "error" to failure): an aborted
-// or superseded required run must not read green.
+// rollupChecksState is fail-safe: failure or cancellation dominates, unknown
+// or in-flight states remain pending, and success/neutral pass. An empty set
+// rolls up to success.
 func rollupChecksState(checks []Check) string {
 	pending := false
 	for _, c := range checks {
@@ -1157,12 +1123,8 @@ func rollupChecksState(checks []Check) string {
 	return checkStateSuccess
 }
 
-// gateBlocked reports whether the fail-fast budget gate for resource is
-// currently armed and, when armed, the remaining wait until it re-opens
-// (resetAt-now, clamped >= 0) so the caller can surface the hint. It clears a
-// gate whose reset instant has passed (re-opening it) as a side effect. Guarded
-// by mu — the gate is shared between the poll driver and the write-RPC
-// goroutines (OQ-6).
+// gateBlocked reports whether resource is gated and the remaining wait. It
+// clears expired gates; mu protects the state shared by poll and write paths.
 func (g *GitHub) gateBlocked(resource rateResource) (time.Duration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1183,16 +1145,9 @@ func (g *GitHub) doJSON(ctx context.Context, method, url string, in, out any) er
 	return g.doJSONOn(ctx, resourceCore, method, url, in, out)
 }
 
-// doJSONOn carries the JSON-body plumbing once for every write method and the
-// GraphQL read (graphQL): resource's fail-fast gate (a write burst respects the
-// same reserve as the poll driver, so it cannot starve it), token auth, budget
-// recording, and error mapping. It marshals in to a JSON request body and
-// decodes a 2xx response into out. The REST reads use getJSON instead.
-//
-// method is the HTTP verb: the create/comment/review writes and the GraphQL
-// query POST, the state transitions and comment edits PATCH, and comment delete
-// DELETE. These calls are unconditional (no If-None-Match). A nil in sends no
-// body; a nil out drains and discards the response (a 204 delete).
+// doJSONOn handles REST writes and the GraphQL POST: gate, auth, budget, error
+// mapping, and JSON encoding/decoding. Requests are unconditional; nil input
+// sends no body, and nil output drains the response.
 func (g *GitHub) doJSONOn(ctx context.Context, resource rateResource, method, url string, in, out any) error {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
@@ -1302,12 +1257,9 @@ func (g *GitHub) queryParams(f IssueFilter, page int) url.Values {
 	return q
 }
 
-// recordBudget updates the fail-fast gate of the bucket the response was
-// charged to (x-ratelimit-resource, else fallback) from its x-ratelimit-*
-// headers. remaining <= reserve arms the gate until x-ratelimit-reset (unix
-// seconds); absent/malformed headers leave it open (treat unknown budget as
-// available — never wedge the gate). A missing/unparseable reset with a
-// low remaining falls back to a bounded skip so the gate still self-clears.
+// recordBudget updates the charged resource's gate from rate-limit headers.
+// Low remaining arms it until reset; absent or malformed headers leave it
+// open, and a missing reset uses a bounded skip.
 func (g *GitHub) recordBudget(resp *http.Response, fallback rateResource) {
 	resource := resourceOf(resp, fallback)
 	g.mu.Lock()
@@ -1368,12 +1320,8 @@ func resetFromHeader(raw string) time.Time {
 	return time.Unix(secs, 0)
 }
 
-// mapErrorResponse classifies a non-2xx/non-304 response. A 403/429 carrying
-// retry-after OR a zeroed x-ratelimit-remaining is a rate-limit skip
-// (ErrBudgetExhausted, arms the gate of the bucket it names — else fallback —
-// no token re-resolve). A 401, or a 403 without rate-limit headers
-// (bad-credentials/permission), is a *StatusError AND invalidates the
-// TokenSource so the next batch re-resolves. Any other non-2xx is a *StatusError only.
+// mapErrorResponse maps rate limits to a gated skip. Auth failures invalidate
+// the token; other non-2xx responses return StatusError without invalidation.
 func (g *GitHub) mapErrorResponse(resp *http.Response, fallback rateResource) error {
 	body, _ := io.ReadAll(resp.Body) // best-effort: message is diagnostic; a read error just yields an empty message
 	var ge ghError
@@ -1424,11 +1372,8 @@ func isRateLimited(resp *http.Response) bool {
 	return false
 }
 
-// rateLimitReset derives a reset instant from a 403/429 rate-limit response: a
-// Retry-After value maps to now()+seconds (RFC-7231 delta-seconds) or the
-// parsed HTTP-date; otherwise an x-ratelimit-reset (unix seconds) is used. A
-// zero time (neither present/usable) lets armGate fall back to the bounded
-// default skip.
+// rateLimitReset prefers Retry-After seconds or HTTP-date, then the reset
+// header. If neither is usable, armGate applies its bounded default skip.
 func (g *GitHub) rateLimitReset(resp *http.Response) time.Time {
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if secs, err := strconv.Atoi(ra); err == nil {

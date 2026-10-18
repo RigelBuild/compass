@@ -53,11 +53,8 @@ const liveLinearAssigneeSkipMessage = "live linear oracle: LINEAR_FORGE_ASSIGNEE
 // fixtures), so a bare tagged run skips it cleanly with this one-line literal.
 const liveUpdateSkipMessage = "live update capture: -update unset; skipping fixture regeneration"
 
-// Env contract (design T2 interfaces, RIG-3096 App-credential cutover).
-// The GitHub live legs now authenticate as two GitHub Apps (author + reviewer),
-// each an App id + installation id + PEM private key, so the oracle exercises
-// the production installation-token mint path (githubapp.go NewAppTokenSource)
-// the deployed server uses after the RIG-3090 cutover — never a bot PAT.
+// Env contract: GitHub legs use author and reviewer App credentials to exercise
+// the installation-token mint path used by the server.
 const (
 	envRepo = "LIVEGITHUB_REPO" // "owner/name" of the throwaway repo
 
@@ -75,17 +72,8 @@ const (
 	envAssignee = "LINEAR_FORGE_ASSIGNEE"
 )
 
-// requireLive reads the GitHub App credential set for both identities and
-// t.Skips (never fails) when any is unset, mirroring go/e2e/harness_test.go's
-// podmanUsable() skip. It returns the throwaway repo coordinate and real App
-// installation-token sources for the author and reviewer identities — each an
-// *appTokenSource behind the TokenSource seam (Token mints an installation
-// access token from the App JWT; Invalidate drops the cache), so the oracle
-// drives the same mint path as the deployed server. It eagerly builds BOTH
-// identities regardless of which the caller uses, so a reviewer-side misconfig
-// is caught even by an author-only test: an unset reviewer trio skips the test
-// (which CI's assert-ran guard, ci.yml, turns into a hard red), and a malformed
-// one fails it outright — the all-creds-or-skip gate.
+// requireLive builds both App identities or skips when credentials are absent.
+// Requiring both catches reviewer misconfiguration even in author-only tests.
 func requireLive(t *testing.T) (repo string, author, reviewer TokenSource) {
 	t.Helper()
 	repo = os.Getenv(envRepo)
@@ -97,15 +85,8 @@ func requireLive(t *testing.T) (repo string, author, reviewer TokenSource) {
 	return repo, author, reviewer
 }
 
-// liveAppSource builds a real App installation-token source from the id /
-// installation / PEM env trio, t.Skipping (never failing) when any is unset so
-// a credential-less run skips cleanly, and t.Fataling when the id or
-// installation is present but non-numeric, or NewAppTokenSource rejects the
-// config (a misconfigured secret, not a skip). A present-but-malformed PEM is
-// NOT caught here: NewAppTokenSource resolves the key lazily, so a bad PEM
-// surfaces as a mint failure on the first live GitHub leg (still red, never
-// silent-green). The PEM is captured by value into the PrivateKey resolver —
-// no per-mint env read.
+// liveAppSource builds an installation-token source. Missing credentials skip;
+// malformed numeric IDs/config fail. PEM parsing is lazy and fails on mint.
 func liveAppSource(t *testing.T, idEnv, installEnv, keyEnv string) TokenSource {
 	t.Helper()
 	idStr := os.Getenv(idEnv)
@@ -135,11 +116,8 @@ func liveAppSource(t *testing.T, idEnv, installEnv, keyEnv string) TokenSource {
 	return ts
 }
 
-// requireLinear reads the Linear credential AND the test team key, t.Skipping
-// independently of the GitHub trio when EITHER is unset (no-team-no-run,
-// co-equal with the credential gate — the migrated workspace has no default
-// team, so a TEAM-unset run would fail opaquely at resolveTeamID). Returns an
-// env-backed token source and the test team key.
+// requireLinear skips independently when its token or dedicated team key is
+// absent, avoiding an opaque failure during team resolution.
 func requireLinear(t *testing.T) (token *fakeTokenSource, team string) {
 	t.Helper()
 	tok := os.Getenv(envLinear)
@@ -542,13 +520,8 @@ func TestLiveGitHubAuthFailureInvalidates(t *testing.T) {
 	}
 }
 
-// --- transition oracle (design §T7, DL-210) ----------------------------------
-//
-// These legs cover every transition fixture reproducible live. Three are
-// golden-replay-only, each needing live state a test cannot create:
-// transition_pull_request_reopen_merged (a merged PR), transition_issue_duplicate_name
-// (two states sharing a name), transition_issue_ambiguous_default (two
-// completed-type states).
+// --- transition oracle -------------------------------------------------------
+// Merged PRs, duplicate names, and ambiguous defaults remain replay-only.
 
 // TestLiveGitHubTransitionIssueClose closes a freshly-created issue (default
 // reason) and asserts the decoded issue matches the committed fixture.
@@ -1215,23 +1188,8 @@ func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
 
 // --- transient-condition backoff ---------------------------------------------
 
-// createWithBackoff wraps ANY live content-creating call (GitHub or Linear) with
-// a single bounded backoff on a TRANSIENT live-API condition, then re-issues once.
-// Two conditions qualify, both real live-API timing behavior on the network path,
-// neither a code bug the retry would mask (rule://no-retries):
-//
-//   - GitHub's SECONDARY rate limit (403 abuse-detection on rapid content
-//     creation — issue/PR/comment creates and the H3 branch-seed commit trip it);
-//     it clears in seconds.
-//   - A transient network timeout — the HTTP client's deadline elapsing while
-//     awaiting response headers (a third-party latency/availability blip against
-//     api.github.com / api.linear.app). RIG-2909: a single such blip on a Linear
-//     setup create was failing the whole forge-oracle gate on unrelated PRs.
-//
-// It is a bounded ONE-SHOT ctx-aware backoff, not a retry loop: exactly one
-// re-issue, and if the condition persists the second attempt's error propagates
-// and the test fails loud (a genuine outage or a real bug is not papered over).
-// It never executes on the skip path (no credentials -> the caller t.Skips first).
+// createWithBackoff retries one time for secondary rate limits or transient
+// network timeouts. A second failure propagates; skipped tests never reach it.
 func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T, error) {
 	got, err := create()
 	if isSecondaryRateLimit(err) || isTransientNetworkTimeout(err) {
@@ -1565,14 +1523,8 @@ func isSecondaryRateLimit(err error) bool {
 	return strings.Contains(strings.ToLower(se.Message), "secondary rate limit")
 }
 
-// isTransientNetworkTimeout reports whether err is a transient network timeout:
-// the HTTP client's deadline elapsing while awaiting response headers (the
-// `Post "...": context deadline exceeded (Client.Timeout exceeded while awaiting
-// headers)` shape). The client wraps this as a *url.Error whose Timeout() is
-// true and which wraps context.DeadlineExceeded; the provider then wraps that as
-// `do request: %w`, so both errors.AsType[net.Error](err) and errors.Is(DeadlineExceeded)
-// see through the chain. This is a third-party latency/availability blip, not a
-// bug in our client — exactly the class createWithBackoff re-issues once.
+// isTransientNetworkTimeout recognizes client header timeouts through wrapped
+// url.Error and provider errors; this is the transient class retried once.
 func isTransientNetworkTimeout(err error) bool {
 	if err == nil {
 		return false
@@ -1636,12 +1588,8 @@ func githubREST(ctx context.Context, ts TokenSource, method, path string, body i
 	return nil
 }
 
-// seedHeadBranch prepares a head branch for a PR create: GitHub 422s a
-// CreatePullRequest ("No commits between main and <head>") unless the head ref
-// exists AND diverges from main by at least one commit. It (1) GETs main's SHA,
-// (2) creates refs/heads/<head> at that SHA, then (3) PUTs a unique file on
-// <head> to make it diverge. Authored by the same identity that opens the PR.
-// The create-content PUT is wrapped in the shared secondary-rate-limit backoff.
+// seedHeadBranch creates a branch from main and adds one commit, as GitHub
+// rejects PRs without a diverging commit. The PUT uses shared rate-limit backoff.
 func seedHeadBranch(t *testing.T, ctx context.Context, ts TokenSource, repo, head string) {
 	t.Helper()
 
@@ -1703,12 +1651,8 @@ func githubRESTJSON(ctx context.Context, ts TokenSource, method, path string, bo
 	return nil
 }
 
-// archiveLinearIssue archives a Linear issue via the GraphQL API for teardown.
-// Linear's issueArchive takes the issue NODE UUID, not the team-scoped number,
-// so this resolves the UUID first (reusing the client's own resolveIssueID) and
-// archives by UUID — archiving by number is a permanent no-op that leaks every
-// issue. A failure is logged, never fatal; the dedicated test team plus unique
-// run-ids keep any leaked issue harmless.
+// archiveLinearIssue resolves the node UUID before archiving; issueArchive
+// does not accept the team-scoped number. Teardown failures are nonfatal.
 func archiveLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, number uint64) {
 	t.Helper()
 	ctx := context.Background()
@@ -1736,13 +1680,8 @@ func archiveLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, n
 
 // --- -update live capture (RIG-2229 T2) --------------------------------------
 
-// recordingRoundTripper wraps a real http.RoundTripper and records every
-// response (status + raw body) in wire order. Only the RESPONSE is recorded:
-// the request half of each fixture is re-derived (deriveFixtureHalves) by
-// replaying the canonicalized responses through the real client, so a committed
-// request matches what golden replay emits BY CONSTRUCTION instead of carrying
-// live per-run coordinates. Bodies are buffered and re-wrapped so the real
-// client still reads them intact.
+// recordingRoundTripper records responses only. Fixture requests are re-derived
+// from canonicalized responses, avoiding live run-specific request values.
 type recordingRoundTripper struct {
 	inner     http.RoundTripper
 	responses []capturedResponse
@@ -1781,12 +1720,8 @@ func (rt *recordingRoundTripper) record(r capturedResponse, err error) {
 	rt.responses = append(rt.responses, r)
 }
 
-// captureSpec is one fixture-regeneration recipe: the committed fixture it
-// rewrites, the number of leading responses that are prelude probes (resolve/
-// actor round-trips before the asserted request), and a run func that drives the
-// live op through a client built on the recording transport. run returns the
-// fixtureRequest coordinates (op + inputs); both request halves and the responses
-// are (re-)derived from the recording by assembleFixture.
+// captureSpec describes a fixture, prelude response count, and live operation.
+// assembleFixture derives request halves and the expected result from responses.
 type captureSpec struct {
 	provider string
 	name     string
@@ -1831,15 +1766,8 @@ func updateCaptureSpecs() []captureSpec {
 	return append(githubUpdateSpecs(), linearUpdateSpecs()...)
 }
 
-// githubUpdateSpecs is the GitHub half of the capture table (prelude 0 — GitHub
-// writes/reads are single-shot; get_pull_request's reviews+checks legs are EXTRA
-// after the asserted detail GET, not prelude).
-//
-// The App token source deliberately does NOT share the recording transport — it
-// builds its own client (githubapp.go), so the installation-token mint is never
-// captured. Keep it that way: a recorded mint body would serialize a live token
-// into committed testdata and into the bot PR this lane opens, and would break
-// the prelude accounting the specs assert.
+// githubUpdateSpecs lists GitHub scenarios with no prelude. The App token source
+// uses its own transport so installation tokens are never captured in fixtures.
 func githubUpdateSpecs() []captureSpec {
 	return append(githubCreateReadSpecs(), githubTransitionSpecs()...)
 }
@@ -2118,12 +2046,8 @@ func githubTransitionSpecs() []captureSpec {
 	}
 }
 
-// linearUpdateSpecs is the Linear half of the capture table. create/comment run
-// resolveTeamID|resolveIssueID + the actor probe BEFORE the mutation (prelude 2);
-// a transition runs resolveTeamID + workflowStates + resolveIssueID (prelude 3, no
-// actor probe — a transition creates no content to attribute); get/list issue
-// reads are single-shot (prelude 0). Each run drives the SAME live op its sibling
-// oracle scenario runs, with the same teardown hygiene.
+// linearUpdateSpecs lists Linear scenarios and their resolve/probe prelude
+// counts. Each operation mirrors its oracle scenario and teardown hygiene.
 func linearUpdateSpecs() []captureSpec {
 	return append(linearCreateReadSpecs(), linearTransitionSpecs()...)
 }

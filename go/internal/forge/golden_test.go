@@ -95,12 +95,8 @@ type fixtureFilter struct {
 	Labels []string `json:"labels,omitempty"`
 }
 
-// fixtureError is the expected FAILURE of an op — the only expectation a
-// rejection arm can carry, since it decodes no domain value. Status is the
-// *StatusError status the provider returns (422 is what the Service's
-// flattening turns into an in-band invalid_argument carrying the message), and
-// Contains pins the substrings the message must name, so a rejection that stops
-// telling the caller WHICH states collided reddens.
+// fixtureError is the expected rejection when an op produces no domain value.
+// Contains pins message details so callers retain actionable collision context.
 type fixtureError struct {
 	Status   int      `json:"status"`
 	Contains []string `json:"contains,omitempty"`
@@ -113,12 +109,8 @@ type fixtureStep struct {
 	Body    json.RawMessage   `json:"body,omitempty"`
 }
 
-// fixtureResponse is the scripted response for the asserted request plus, for
-// multi-request operations, the helper responses served before (Prelude) and
-// after (Extra) it, and the expected decoded domain value (Want). Prelude
-// covers a provider's resolve/probe round-trips (Linear team-id + actor probe);
-// Extra covers a composite read's follow-on fetches (GitHub GetPullRequest's
-// reviews, check-run, status and GraphQL legs). The asserted request is the one at index len(Prelude).
+// fixtureResponse scripts the asserted response, any prelude/extra requests,
+// and expected domain value. The asserted request index is len(Prelude).
 type fixtureResponse struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
@@ -342,16 +334,9 @@ func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTok
 	return nil, errUnknownFixtureOp
 }
 
-// assertRequest checks the emitted request against the fixture's expectation:
-// method, path, query, and any named non-auth headers; the body is compared as
-// semantic JSON when the fixture pins one. Authorization is never asserted.
-//
-// The query and header checks are subset assertions — each pinned key must
-// match, but an unpinned key the client also emits is not flagged — and only
-// the asserted request at index len(Prelude) is checked. A composite op's
-// prelude/extra legs are locked by count (replayFixture) and by the decoded
-// value, not by per-leg method/path assertions; T2's live capture re-grounds
-// the fixture values against the real APIs.
+// assertRequest checks the asserted request's method, path, query, pinned
+// headers, and semantic JSON body. Query and header checks allow extra keys;
+// prelude and extra legs are checked by count and decoded value.
 func assertRequest(t *testing.T, got *http.Request, want fixtureRequest) {
 	t.Helper()
 	if got.Method != want.Method {
