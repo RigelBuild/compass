@@ -1383,17 +1383,18 @@ SHALL admit any valid bearer.
 
 Opening the network door SHALL ensure a bootstrap admin bearer token file at
 mode `0600` under the state directory. The server SHALL reuse that file when it
-is a regular file with no group or other bits and its whitespace-trimmed token
-still authenticates as the bootstrap admin; otherwise it SHALL mint a new one.
-A minted file SHALL be written atomically (temp file `0600`, synced, renamed;
-removed on error), and the token SHALL NOT be logged, only its path. A
-socket-only start SHALL write no token file. A file set by `--admin-token-file`
-or `COMPASS_ADMIN_TOKEN_FILE` SHALL resolve, possibly through symlinks, to a
-regular file with no setuid, setgid, sticky, group-write, group-execute or
-others bit; group-read only for a group the process holds. It SHALL contain a
-trimmed base64url encoding of exactly 32 bytes. The server SHALL register it
-for the bootstrap admin and persist it under the state directory; a revoked
-token or another subject's SHALL fail startup.
+is itself a regular file, not a symlink, with no group or other bits, and its
+whitespace-trimmed token still authenticates as the bootstrap admin; otherwise
+it SHALL mint a new one. A minted file SHALL be written atomically (temp file
+`0600`, synced, renamed; removed on error), and the token SHALL NOT be logged,
+only its path. A socket-only start SHALL write no token file. A file set by
+`--admin-token-file` or `COMPASS_ADMIN_TOKEN_FILE` SHALL resolve, possibly
+through symlinks, to a regular file with no setuid, setgid, sticky,
+group-write, group-execute or others bit, and SHALL be group-readable only by
+a group the process holds. It SHALL contain a whitespace-trimmed base64url
+encoding of exactly 32 bytes. The server SHALL register that token for the
+bootstrap admin and persist it under the state directory; a revoked token or
+another subject's SHALL fail startup.
 
 #### Scenario: Opening the network door writes the admin token 0600
 
