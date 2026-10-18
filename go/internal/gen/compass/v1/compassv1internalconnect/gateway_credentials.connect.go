@@ -1,4 +1,4 @@
-// Only this internal bearer-protected service carries credentials from the triggering agent.
+// Internal-only: credentials cross only this service, behind the llm-gateway SubjectService bearer.
 // The Server resolves agent, owner, and tenant; handlers never log req.Msg.
 // debug_redact is metadata only in protobuf-go.
 
