@@ -506,6 +506,8 @@ type ghReviewMarker struct {
 
 // FindByWriteMarker recovers GitHub issues, comments, or reviews by their marker.
 func (g *GitHub) FindByWriteMarker(ctx context.Context, repo string, kind WriteKind, parent uint64, intentID string, since time.Time) (WrittenRef, bool, error) {
+	// GitHub timestamps are whole seconds; an object made in the intent's own second must still match.
+	since = since.Truncate(time.Second)
 	sinceQ := url.QueryEscape(since.UTC().Format(time.RFC3339))
 	switch kind {
 	case WriteKindIssue:

@@ -2213,3 +2213,23 @@ func TestFindByWriteMarkerGitHubKinds(t *testing.T) {
 		})
 	}
 }
+
+// GitHub stamps whole seconds, so an object made in the intent's own second reads as earlier than it.
+func TestFindByWriteMarkerGitHubSameSecond(t *testing.T) {
+	since := time.Date(2026, 10, 17, 12, 0, 0, 750_000_000, time.UTC)
+	bodies := map[WriteKind]string{
+		WriteKindIssue:   `[{"number":41,"body":"<!-- compass:write intent-1 -->","created_at":"2026-10-17T12:00:00Z"}]`,
+		WriteKindComment: `[{"id":99,"body":"<!-- compass:write intent-1 -->","created_at":"2026-10-17T12:00:00Z"}]`,
+		WriteKindReview:  `[{"id":77,"body":"<!-- compass:write intent-1 -->","submitted_at":"2026-10-17T12:00:00Z"}]`,
+	}
+	for kind, body := range bodies {
+		t.Run(kind.String(), func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: body}}}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+			_, found, err := g.FindByWriteMarker(t.Context(), "org/repo", kind, 13, "intent-1", since)
+			if err != nil || !found {
+				t.Fatalf("FindByWriteMarker found=%v err=%v, want a hit", found, err)
+			}
+		})
+	}
+}
