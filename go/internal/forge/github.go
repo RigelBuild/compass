@@ -178,6 +178,7 @@ type ghIssue struct {
 	State     string `json:"state"`
 	HTMLURL   string `json:"html_url"`
 	UpdatedAt string `json:"updated_at"`
+	CreatedAt string `json:"created_at"`
 	User      struct {
 		Login string `json:"login"`
 	} `json:"user"`
@@ -313,10 +314,11 @@ func (g *GitHub) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]
 // and the read shape share this envelope). Only the fields forge.Comment needs
 // are decoded.
 type ghComment struct {
-	ID      uint64 `json:"id"`
-	HTMLURL string `json:"html_url"`
-	Body    string `json:"body"`
-	User    struct {
+	ID        uint64 `json:"id"`
+	HTMLURL   string `json:"html_url"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+	User      struct {
 		Login string `json:"login"`
 	} `json:"user"`
 }
@@ -342,7 +344,10 @@ type ghPull struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
 	Base struct {
-		Ref string `json:"ref"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"base"`
 	User struct {
 		Login string `json:"login"`
@@ -358,6 +363,7 @@ func (r ghPull) toPullRequest() PullRequest {
 		Body:         r.Body,
 		State:        r.State,
 		URL:          r.HTMLURL,
+		RepoFullName: r.Base.Repo.FullName,
 		HeadRef:      r.Head.Ref,
 		BaseRef:      r.Base.Ref,
 		ForgeAccount: r.User.Login,
@@ -419,6 +425,140 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR
 		return PullRequest{}, fmt.Errorf("forge: github create pull request %q: %w", repo, err)
 	}
 	return out.toPullRequest(), nil
+}
+
+// UpdatePullRequest replaces the PR title, body, and base, then optionally marks it ready.
+func (g *GitHub) UpdatePullRequest(ctx context.Context, repo string, number uint64, u UpdatePR) (PullRequest, error) {
+	body := struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+		Base  string `json:"base"`
+	}{Title: u.Title, Body: u.Body, Base: u.BaseRef}
+	url := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10)
+	var detail ghPullDetail
+	if err := g.doJSON(ctx, http.MethodPatch, url, body, &detail); err != nil {
+		return PullRequest{}, fmt.Errorf("forge: github update pull request %q#%d: %w", repo, number, err)
+	}
+	pr := detail.toPullRequest()
+	if u.Ready && pr.Draft {
+		if detail.NodeID == "" {
+			return PullRequest{}, fmt.Errorf("forge: github update pull request %q#%d: response missing node_id", repo, number)
+		}
+		const query = `mutation CompassMarkPullRequestReady($input: MarkPullRequestReadyForReviewInput!) {
+  markPullRequestReadyForReview(input: $input) {
+    pullRequest { isDraft }
+  }
+}`
+		data, err := graphQL[struct {
+			MarkPullRequestReadyForReview struct {
+				PullRequest struct {
+					IsDraft bool `json:"isDraft"`
+				} `json:"pullRequest"`
+			} `json:"markPullRequestReadyForReview"`
+		}](ctx, g, query, map[string]any{"input": map[string]any{"pullRequestId": detail.NodeID}})
+		if err != nil {
+			return PullRequest{}, fmt.Errorf("forge: github mark pull request ready %q#%d: %w", repo, number, err)
+		}
+		pr.Draft = data.MarkPullRequestReadyForReview.PullRequest.IsDraft
+	}
+	return pr, nil
+}
+
+// FindPullRequestByHead returns the exact source branch match, including closed and merged PRs.
+func (g *GitHub) FindPullRequestByHead(ctx context.Context, repo, headRef string) (PullRequest, bool, error) {
+	owner, _, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || strings.Count(repo, "/") != 1 {
+		return PullRequest{}, false, fmt.Errorf("forge: github find pull request by head: malformed repo %q", repo)
+	}
+	query := url.Values{"state": {"all"}, "head": {owner + ":" + headRef}}
+	requestURL := g.apiBase() + "/repos/" + repo + "/pulls?" + query.Encode()
+	rows, err := getAllPages[[]ghPullDetail](ctx, g, requestURL, func(rows []ghPullDetail) []ghPullDetail { return rows })
+	if err != nil {
+		return PullRequest{}, false, fmt.Errorf("forge: github find pull request by head %q: %w", headRef, err)
+	}
+	for _, row := range rows {
+		if row.Head.Ref == headRef {
+			return row.toPullRequest(), true, nil
+		}
+	}
+	return PullRequest{}, false, nil
+}
+
+const writeMarkerPrefix = "<!-- compass:write "
+
+func hasWriteMarker(body, intentID string) bool {
+	return strings.Contains(body, writeMarkerPrefix+intentID+" -->")
+}
+
+type ghIssueComment struct {
+	ID        uint64 `json:"id"`
+	HTMLURL   string `json:"html_url"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+}
+
+type ghReviewMarker struct {
+	ID          uint64 `json:"id"`
+	HTMLURL     string `json:"html_url"`
+	Body        string `json:"body"`
+	SubmittedAt string `json:"submitted_at"`
+}
+
+// FindByWriteMarker recovers GitHub issues, comments, or reviews by their marker.
+func (g *GitHub) FindByWriteMarker(ctx context.Context, repo string, kind WriteKind, parent uint64, intentID string, since time.Time) (WrittenRef, bool, error) {
+	// GitHub timestamps are whole seconds; an object made in the intent's own second must still match.
+	since = since.Truncate(time.Second)
+	sinceQ := url.QueryEscape(since.UTC().Format(time.RFC3339))
+	switch kind {
+	case WriteKindIssue:
+		u := g.apiBase() + "/repos/" + repo + "/issues?state=all&since=" + sinceQ
+		rows, err := getAllPages[[]ghIssue](ctx, g, u, func(rows []ghIssue) []ghIssue { return rows })
+		if err != nil {
+			return WrittenRef{}, false, fmt.Errorf("forge: github find issue write marker: %w", err)
+		}
+		for _, row := range rows {
+			if row.CreatedAt != "" && parseGHTime(row.CreatedAt).Before(since) {
+				continue
+			}
+			if hasWriteMarker(row.Body, intentID) {
+				return WrittenRef{Number: row.Number, URL: row.HTMLURL}, true, nil
+			}
+		}
+	case WriteKindComment:
+		u := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(parent, 10) + "/comments?since=" + sinceQ
+		rows, err := getAllPages[[]ghIssueComment](ctx, g, u, func(rows []ghIssueComment) []ghIssueComment { return rows })
+		if err != nil {
+			return WrittenRef{}, false, fmt.Errorf("forge: github find comment write marker: %w", err)
+		}
+		for _, row := range rows {
+			if row.CreatedAt != "" && parseGHTime(row.CreatedAt).Before(since) {
+				continue
+			}
+			if hasWriteMarker(row.Body, intentID) {
+				return WrittenRef{Key: strconv.FormatUint(row.ID, 10), URL: row.HTMLURL}, true, nil
+			}
+		}
+	case WriteKindReview:
+		u := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(parent, 10) + "/reviews"
+		rows, err := getAllPages[[]ghReviewMarker](ctx, g, u, func(rows []ghReviewMarker) []ghReviewMarker { return rows })
+		if err != nil {
+			return WrittenRef{}, false, fmt.Errorf("forge: github find review write marker: %w", err)
+		}
+		for _, row := range rows {
+			if row.SubmittedAt != "" && parseGHTime(row.SubmittedAt).Before(since) {
+				continue
+			}
+			if hasWriteMarker(row.Body, intentID) {
+				return WrittenRef{Key: strconv.FormatUint(row.ID, 10), URL: row.HTMLURL}, true, nil
+			}
+		}
+	case WriteKindPullRequest:
+		// A PR is found by its head ref (FindPullRequestByHead), not a body marker.
+		return WrittenRef{}, false, fmt.Errorf("forge: github write marker lookup: unsupported kind %q", kind)
+	default:
+		return WrittenRef{}, false, fmt.Errorf("forge: github write marker lookup: unsupported kind %q", kind)
+	}
+	return WrittenRef{}, false, nil
 }
 
 // CommentOnPullRequest posts a conversation comment on PR number in repo. GitHub
@@ -642,11 +782,13 @@ type ghPullDetail struct {
 	Body           string `json:"body"`
 	State          string `json:"state"`
 	HTMLURL        string `json:"html_url"`
+	NodeID         string `json:"node_id"`
 	Draft          bool   `json:"draft"`
 	Additions      uint32 `json:"additions"`
 	Deletions      uint32 `json:"deletions"`
 	ChangedFiles   uint32 `json:"changed_files"`
 	Merged         bool   `json:"merged"`
+	MergedAt       string `json:"merged_at"`
 	MergeableState string `json:"mergeable_state"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
@@ -655,7 +797,10 @@ type ghPullDetail struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
-		Ref string `json:"ref"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"base"`
 	User struct {
 		Login string `json:"login"`
@@ -668,7 +813,7 @@ type ghPullDetail struct {
 // read roll-ups Checks/Reviews/Threads are populated by GetPullRequest, not here.
 func (r ghPullDetail) toPullRequest() PullRequest {
 	state := r.State
-	if r.Merged {
+	if r.Merged || r.MergedAt != "" {
 		state = prStateMerged
 	}
 	return PullRequest{
@@ -677,8 +822,10 @@ func (r ghPullDetail) toPullRequest() PullRequest {
 		Body:           r.Body,
 		State:          state,
 		URL:            r.HTMLURL,
+		RepoFullName:   r.Base.Repo.FullName,
 		HeadRef:        r.Head.Ref,
 		HeadSHA:        r.Head.SHA,
+		NodeID:         r.NodeID,
 		MergeableState: r.MergeableState,
 		BaseRef:        r.Base.Ref,
 		ForgeAccount:   r.User.Login,
@@ -1125,14 +1272,15 @@ func (r ghIssue) toIssue() Issue {
 		labels = append(labels, l.Name)
 	}
 	return Issue{
-		Number:       r.Number,
-		Title:        r.Title,
-		Body:         r.Body,
-		State:        r.State,
-		URL:          r.HTMLURL,
-		ForgeAccount: r.User.Login,
-		Labels:       labels,
-		UpdatedAt:    parseGHTime(r.UpdatedAt),
+		Number:        r.Number,
+		Title:         r.Title,
+		Body:          r.Body,
+		State:         r.State,
+		URL:           r.HTMLURL,
+		ForgeAccount:  r.User.Login,
+		Labels:        labels,
+		UpdatedAt:     parseGHTime(r.UpdatedAt),
+		IsPullRequest: r.PullRequest != nil && len(*r.PullRequest) > 0 && string(*r.PullRequest) != jsonNull,
 	}
 }
 

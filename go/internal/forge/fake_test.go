@@ -204,6 +204,28 @@ func TestFakeScriptedUnsupported(t *testing.T) {
 	}
 }
 
+func TestFakeNewProviderMethods(t *testing.T) {
+	f := NewFakeProvider("test-forge")
+	f.UpdatePRResult = PullRequest{Number: 9, Title: "updated"}
+	f.FindPRResult = PullRequest{Number: 10, HeadRef: "feature"}
+	f.FindPRFound = true
+	f.FindWriteResult = WrittenRef{Number: 11, Key: "12"}
+	f.FindWriteFound = true
+
+	updated, err := f.UpdatePullRequest(t.Context(), "org/repo", 9, UpdatePR{Title: "updated"})
+	if err != nil || updated.Number != 9 {
+		t.Fatalf("UpdatePullRequest = (%+v, %v)", updated, err)
+	}
+	foundPR, found, err := f.FindPullRequestByHead(t.Context(), "org/repo", "feature")
+	if err != nil || !found || foundPR.Number != 10 {
+		t.Fatalf("FindPullRequestByHead = (%+v, %v, %v)", foundPR, found, err)
+	}
+	foundRef, found, err := f.FindByWriteMarker(t.Context(), "org/repo", WriteKindReview, 10, "intent", time.Time{})
+	if err != nil || !found || foundRef.Key != "12" {
+		t.Fatalf("FindByWriteMarker = (%+v, %v, %v)", foundRef, found, err)
+	}
+}
+
 // TestFakeConcurrentUse exercises the "safe for concurrent use" contract: many
 // goroutines drive record-mutating methods while others read Calls() and mutate
 // SetError(). It relies on `go test -race` to catch an unsynchronized access;

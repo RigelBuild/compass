@@ -296,6 +296,9 @@ func (l *Linear) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 		return Issue{}, fmt.Errorf("forge: linear create issue %q: %w", repo, err)
 	}
 	input := map[string]any{"teamId": teamID, "title": in.Title, "description": in.Body}
+	if in.ID != "" {
+		input["id"] = in.ID
+	}
 	l.applyAttribution(ctx, input)
 	if in.Assignee != "" {
 		input["assigneeId"] = in.Assignee
@@ -616,6 +619,63 @@ func (l *Linear) GetPullRequest(ctx context.Context, repo string, number uint64)
 // Checks is unsupported (Linear has no PR head checks).
 func (l *Linear) Checks(ctx context.Context, repo string, number uint64) (Checks, error) {
 	return Checks{}, ErrUnsupported
+}
+
+// UpdatePullRequest is unsupported because Linear has no pull requests.
+func (l *Linear) UpdatePullRequest(context.Context, string, uint64, UpdatePR) (PullRequest, error) {
+	return PullRequest{}, ErrUnsupported
+}
+
+// FindPullRequestByHead is unsupported because Linear has no pull requests.
+func (l *Linear) FindPullRequestByHead(context.Context, string, string) (PullRequest, bool, error) {
+	return PullRequest{}, false, ErrUnsupported
+}
+
+// FindByWriteMarker resolves Linear issues and comments by their intent UUID.
+func (l *Linear) FindByWriteMarker(ctx context.Context, repo string, kind WriteKind, parent uint64, intentID string, _ time.Time) (WrittenRef, bool, error) {
+	switch kind {
+	case WriteKindIssue:
+		const query = `query CompassIssueByID($id: ID!) {
+  issue(id: $id) { ...CompassIssueFields }
+}` + issueFieldsFragment
+		var out struct {
+			Issue *linearIssue `json:"issue"`
+		}
+		if err := l.doGraphQL(ctx, query, map[string]any{"id": intentID}, &out); err != nil {
+			if statusErr, ok := errors.AsType[*StatusError](err); ok && strings.Contains(statusErr.Message, "Entity not found") {
+				return WrittenRef{}, false, nil
+			}
+			return WrittenRef{}, false, fmt.Errorf("forge: linear find issue by id %q: %w", intentID, err)
+		}
+		if out.Issue == nil {
+			return WrittenRef{}, false, nil
+		}
+		return WrittenRef{Number: uint64(out.Issue.Number), Key: out.Issue.ID, URL: out.Issue.URL}, true, nil
+	case WriteKindComment:
+		const query = `query CompassCommentByID($id: String!) {
+  comment(id: $id) { id url }
+}`
+		var out struct {
+			Comment *struct {
+				ID  string `json:"id"`
+				URL string `json:"url"`
+			} `json:"comment"`
+		}
+		if err := l.doGraphQL(ctx, query, map[string]any{"id": intentID}, &out); err != nil {
+			if statusErr, ok := errors.AsType[*StatusError](err); ok && strings.Contains(statusErr.Message, "Entity not found") {
+				return WrittenRef{}, false, nil
+			}
+			return WrittenRef{}, false, fmt.Errorf("forge: linear find comment by id %q: %w", intentID, err)
+		}
+		if out.Comment == nil {
+			return WrittenRef{}, false, nil
+		}
+		return WrittenRef{Key: out.Comment.ID, URL: out.Comment.URL}, true, nil
+	case WriteKindPullRequest, WriteKindReview:
+		return WrittenRef{}, false, ErrUnsupported
+	default:
+		return WrittenRef{}, false, ErrUnsupported
+	}
 }
 
 // BodyLimit is the max body size (BYTES) the Service enforces before a write.

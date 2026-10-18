@@ -55,6 +55,8 @@ type Issue struct {
 	// the LIST row's updated_at. PR-C's DL-129 recency guard reads it off this
 	// same fetch (one-fetch-path guarantee); the board sink ignores it.
 	UpdatedAt time.Time
+	// IsPullRequest is true for a GitHub pull request returned by /issues.
+	IsPullRequest bool `json:",omitempty"`
 	// Project is the artifact's container project id (Linear issue project;
 	// empty on GitHub, which has no project container). Populated only by the
 	// notify-reader container walk (ListNewArtifacts) so a routed OPENED event
@@ -94,12 +96,16 @@ type PullRequest struct {
 	State string
 	// URL is the forge's canonical web URL for the PR.
 	URL string
+	// RepoFullName is the canonical repository name from the PR's base repo.
+	RepoFullName string
 	// HeadRef is the source branch name.
 	HeadRef string
 	// BaseRef is the target branch name.
 	BaseRef string
 	// HeadSHA is the commit currently at the source branch head.
 	HeadSHA string
+	// NodeID is GitHub's GraphQL node id for PR mutations.
+	NodeID string
 	// MergeableState is the forge's mergeability assessment for the PR.
 	MergeableState string
 	// ForgeAccount is the native forge login that authored the PR.
@@ -195,6 +201,8 @@ type CreateIssue struct {
 	// Body is the new issue's body, PRE-stamp: the Service stamps it via
 	// StampOwner before the Provider ever sees it.
 	Body string
+	// ID is the write-intent UUID; Linear uses it as IssueCreateInput.id.
+	ID string
 	// Labels are the label names to apply on creation.
 	Labels []string
 	// DelegateSelf asks Linear to delegate the issue to the acting app user.
@@ -217,6 +225,21 @@ type CreatePR struct {
 	BaseRef string
 	// Draft requests a draft PR.
 	Draft bool
+}
+
+// UpdatePR is the input to Provider.UpdatePullRequest.
+type UpdatePR struct {
+	Title   string
+	Body    string
+	BaseRef string
+	Ready   bool
+}
+
+// WrittenRef identifies an object recovered from a write marker or intent id.
+type WrittenRef struct {
+	Number uint64
+	Key    string
+	URL    string
 }
 
 // SubmitReview is the input to Provider.SubmitReview. Body is PRE-stamp
@@ -286,6 +309,12 @@ type Provider interface { //nolint:interfacebloat // one method per forge operat
 	GetIssue(ctx context.Context, repo string, number uint64) (Issue, error)
 	ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error)
 	CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error)
+	// UpdatePullRequest changes the text/base of a pull request and may leave draft.
+	UpdatePullRequest(ctx context.Context, repo string, number uint64, u UpdatePR) (PullRequest, error)
+	// FindPullRequestByHead searches for a PR with this branch, regardless of state.
+	FindPullRequestByHead(ctx context.Context, repo, headRef string) (PullRequest, bool, error)
+	// FindByWriteMarker locates an object created by the matching write intent.
+	FindByWriteMarker(ctx context.Context, repo string, kind WriteKind, parent uint64, intentID string, since time.Time) (WrittenRef, bool, error)
 	// CommentOnPullRequest creates a PR comment; clientID has the same semantics.
 	CommentOnPullRequest(ctx context.Context, repo string, number uint64, body, clientID string) (Comment, error)
 	// SubmitReview submits a pull-request review (verdict + optional body +

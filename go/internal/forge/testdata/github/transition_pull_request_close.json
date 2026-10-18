@@ -32,7 +32,7 @@
 			"merged": false,
 			"mergeable_state": "blocked",
 			"head": { "ref": "feature", "sha": "abc123" },
-			"base": { "ref": "main" },
+			"base": { "ref": "main", "repo": { "full_name": "org/repo" } },
 			"user": { "login": "octocat" }
 		},
 		"want": {
@@ -41,7 +41,9 @@
 			"Body": "stamped body",
 			"State": "closed",
 			"URL": "https://github.com/org/repo/pull/7",
+			"RepoFullName": "org/repo",
 			"HeadRef": "feature",
+			"NodeID": "",
 			"HeadSHA": "abc123",
 			"MergeableState": "blocked",
 			"BaseRef": "main",

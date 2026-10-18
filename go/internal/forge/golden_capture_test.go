@@ -36,6 +36,7 @@ const (
 	canonUpdatedAt   = "2026-08-01T12:30:00Z"              // updated_at, updatedAt -> UpdatedAt
 	canonCreatedAt   = "2026-08-01T12:00:00Z"              // created_at -> CreatedAt
 	canonSHA         = "canonicalsha"                      // sha -> HeadSHA
+	canonRepo        = "org/repo"                          // full_name -> RepoFullName
 	canonRef         = "canonical-ref"                     // ref -> HeadRef/BaseRef
 	canonTitle       = "canonical title"                   // title -> Title
 	canonBody        = "canonical body"                    // body, description -> Body
@@ -81,6 +82,7 @@ var volatileFields = map[string]struct{}{
 	"Author":       {},
 	"Title":        {},
 	"Body":         {},
+	"RepoFullName": {},
 }
 
 // wireVolatile maps a provider wire JSON key to the sentinel that replaces its
@@ -101,6 +103,7 @@ var wireVolatile = map[string]func(node any) any{
 	"login":       fixedSentinel(canonAccount),
 	"displayName": fixedSentinel(canonAccount),
 	"sha":         fixedSentinel(canonSHA),
+	"full_name":   fixedSentinel(canonRepo),
 	"oid":         fixedSentinel(canonSHA),
 	"ref":         fixedSentinel(canonRef),
 	"title":       fixedSentinel(canonTitle),
@@ -160,6 +163,7 @@ var domainToWire = map[string][]string{
 	"Author":       {"login"},
 	"Title":        {"title"},
 	"Body":         {"body", "description"},
+	"RepoFullName": {"full_name"},
 }
 
 // fixedSentinel returns a sentinel func that ignores the node and yields v.

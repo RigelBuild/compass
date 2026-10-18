@@ -22,7 +22,7 @@
 			"merged": true,
 			"mergeable_state": "blocked",
 			"head": { "ref": "feature", "sha": "abc123" },
-			"base": { "ref": "main" },
+			"base": { "ref": "main", "repo": { "full_name": "org/repo" } },
 			"user": { "login": "octocat" }
 		},
 		"extra": [
@@ -167,7 +167,9 @@
 			"Body": "raw <!--owner--> pr body",
 			"State": "merged",
 			"URL": "https://github.com/org/repo/pull/42",
+			"RepoFullName": "org/repo",
 			"HeadRef": "feature",
+			"NodeID": "",
 			"HeadSHA": "abc123",
 			"MergeableState": "blocked",
 			"BaseRef": "main",
