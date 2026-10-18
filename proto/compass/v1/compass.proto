@@ -1,10 +1,6 @@
-// The compass.v1 contract: the single, owned door between any UI and the
-// Compass server — a gRPC service served over Connect so native (gRPC over the
-// local transport) and browser (gRPC-Web) clients share it. The generated
-// clients are the only sanctioned way to reach the server.
-//
-// Versioned `compass.v1` so a future v2 schema bump doesn't have to retrofit a
-// version segment.
+// compass.v1 is the single owned server door for native and browser clients.
+// Generated clients are the only sanctioned way to reach the server.
+// Versioning lets a future v2 schema bump avoid retrofitting a version segment.
 
 syntax = "proto3";
 
