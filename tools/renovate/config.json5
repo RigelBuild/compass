@@ -1122,11 +1122,12 @@
       "tools/toolchain/versions/node.nix",
       "tools/toolchain/versions/moon.nix",
       "guest-image/default.nix",
-      // flake.nix carries the SAME Go vendorHash as guest-image/default.nix
-      // (both buildGoModule + proxyVendor over go/); refresh-fod-hashes.ts mirrors
-      // the recomputed value into it, so it must be committable too or a gomod
-      // bump lands with flake.nix's vendorHash stale → `nix flake check` red.
+      // flake.nix and the Connect plugin derivation carry the SAME Go vendorHash as
+      // guest-image/default.nix (buildGoModule + proxyVendor over go/);
+      // refresh-fod-hashes.ts mirrors the recomputed value into both, so they must be
+      // committable too or a gomod bump lands with a stale mirror and CI red.
       "flake.nix",
+      "tools/toolchain/protoc-gen-connect-go.nix",
       "agent-image/entrypoint.nix",
       "apps/ui/dist.nix",
     ],

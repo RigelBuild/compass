@@ -376,6 +376,15 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 		expect(topLevel?.fileFilters).toContain("agent-image/entrypoint.nix");
 	});
 
+	test("the top-level task commits every Go vendorHash mirror the refresher writes", () => {
+		// gomod writes go.mod itself, so the derived guard below never checks this site.
+		const go = FOD_ENTRIES.find((e) => e.file === "guest-image/default.nix");
+		expect(go?.mirrorFiles?.length).toBeGreaterThan(0);
+		for (const mirror of go?.mirrorFiles ?? []) {
+			expect(topLevel?.fileFilters).toContain(mirror);
+		}
+	});
+
 	test("the catalog rule runs the fod refresh in UPDATE mode (eviction-proof)", () => {
 		// A catalog-first rollup branch evicts the top-level branch task, so the
 		// refresh must also ride the catalog rule's per-upgrade update pass.
