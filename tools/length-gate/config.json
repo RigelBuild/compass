@@ -17,7 +17,14 @@
 		".css",
 		".proto"
 	],
-	"exclude": ["**/decisions/**", "**/DECISIONS.md", "**/references/**"],
+	"exclude": [
+		"go/gen/**",
+		"go/internal/gen/**",
+		"packages/*/src/gen/**",
+		"**/decisions/**",
+		"**/DECISIONS.md",
+		"**/references/**"
+	],
 	"docs": [
 		{
 			"name": "design record",
