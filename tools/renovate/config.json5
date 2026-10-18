@@ -489,6 +489,13 @@
       groupName: null,
     },
     {
+      // Renovate self-pin: a bump also needs a hand-verified
+      // REVIEWABLE_CUT_VERIFIED_AT edit, so keep it out of the TS rollup.
+      matchManagers: ["custom.regex"],
+      matchDepNames: ["renovate"],
+      groupName: null,
+    },
+    {
       // ── First-party toolchain age-gate exemption ──
       // The repo-wide `minimumReleaseAge: "5 days"` + `internalChecksFilter:
       // "strict"` (top of file) is a supply-chain cooldown for the compromised-

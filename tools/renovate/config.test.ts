@@ -1673,6 +1673,17 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 		const match = /bunx renovate@(?<version>\S+)/.exec(runLines);
 		expect(match?.groups?.version).toBe(REVIEWABLE_CUT_VERIFIED_AT);
 	});
+	// A self-pin bump needs a matching REVIEWABLE_CUT_VERIFIED_AT edit, so it must
+	// not ride the TS rollup, where it would red every unrelated bump.
+	test("a self-pin patch bump un-groups (null), not the TS rollup", () => {
+		const group = resolveGroupName({
+			manager: "custom.regex",
+			fileName: ".github/workflows/renovate.yml",
+			depName: "renovate",
+			updateType: "patch",
+		});
+		expect(group).toBeNull();
+	});
 
 	// The preflight uses GH_TOKEN to probe the repo and RENOVATE_TOKEN for its
 	// token-presence guard. Both env vars must be set or the workflow fails before
