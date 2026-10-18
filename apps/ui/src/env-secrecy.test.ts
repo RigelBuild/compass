@@ -92,13 +92,7 @@ describe("env-secrecy gate (no new committable .env; tracked env set pinned to d
 	});
 
 	test("the only tracked apps/ui env file is the dev defaults", async () => {
-		// Ground truth for what ships: what git actually tracks under apps/ui,
-		// regardless of the ignore rules. `git ls-files` from apps/ui lists tracked
-		// paths relative to that dir; filter to env-shaped basenames (`.env`,
-		// `.env.<mode>`, and any nested one, but not a `.env.d.ts` type stub) and
-		// assert the set is exactly the dev-defaults file. A force-added or pre-rule
-		// secret lands here as a new entry and reddens this test even though layer 1
-		// would still pass. The file's contents are the next test's job.
+		// Inspect tracked paths directly so forced secrets cannot hide in gitignore.
 		const tracked = (await $`git ls-files`.cwd(UI_DIR).quiet().text())
 			.split("\n")
 			.filter((line) => line.length > 0);

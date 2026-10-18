@@ -1,13 +1,6 @@
-/* Badge / Pip / Chip (D3).
-   - .cx-badge[data-status] — CI + review status labels (display).
-   - .cx-pip — unread-count / small numeric indicator (display).
-   - .cx-chip — tracker chips (interactive: selectable / removable).
-   Consumes only --cx-* tiers. */
+/* Badges are display labels, pips are counters, and chips are interactive. */
 
-/* ==========================================================================
-   Badge — a small labelled status token. data-status maps CI + review states.
-   Non-interactive (display), so no hover/active/focus is required.
-   ========================================================================== */
+/* Non-interactive status labels map CI and review states. */
 .cx-badge {
 	display: inline-flex;
 	align-items: center;

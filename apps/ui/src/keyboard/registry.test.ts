@@ -83,12 +83,7 @@ describe("createCommandRegistry", () => {
 	});
 
 	describe("dev-mode duplicate warning", () => {
-		// `import.meta.env` is the process-wide Vite env, read directly by
-		// registry.ts's dev gate. Under Bun ≥1.4 an ASSIGNMENT coerces the value
-		// to a string — `env.DEV = false` stores the truthy string "false" — so
-		// the falsy ("not a dev build") case MUST be simulated by DELETE, not by
-		// assigning `false`. This mirrors provider.test.ts's env handling. Restore
-		// deletes when DEV was originally absent so nothing leaks into a sibling.
+		// Delete DEV to simulate absence; Bun coerces assigned values to strings.
 		const env = import.meta.env as MutableEnv;
 		const realWarn = console.warn;
 		let hadDev = false;

@@ -1,20 +1,4 @@
-// Shared test mount helper (record A4). Component tests route via a
-// `memoryHistory` adapter — Solid Router's in-memory history — never real
-// `location.hash`, which is shared global state that would leak across tests
-// and break `bun test --conditions browser` determinism.
-//
-// It mirrors mount.tsx's production shape: the store in a `StoreContext`
-// provider wrapping the router instance, whose render-prop child is the `App`
-// root layout rendering the SAME `appRoutes` table (one shared route module —
-// no prod/test drift). `initialPath` seeds the memory history so a test can
-// mount straight onto a deep-link. Router 2 builds one instance per mount, so
-// each `mountApp` gets a fresh `memoryHistory(initialPath)`.
-//
-// Under the memory router navigation is ASYNCHRONOUS: an action
-// (`openChannel`/`openAgent`/`show*`) navigates, the location updates, and the
-// store's route-sync effect writes `view`/`selectedChannelId`/`selectedAgentId`
-// one reactive tick later. Tests await `flush()` between an action and a routed
-// read (record A2/A4).
+// Use memory history and flush async navigation before routed reads.
 
 import {
 	createRouter,
@@ -35,9 +19,7 @@ export const flush = async (): Promise<void> => {
 	for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
-/** Mount the full App shell over a fixture-backed store on `initialPath`,
- *  through the shared route table on a memory-history router. Returns the live
- *  store (to drive actions), container (to query the DOM) and history (Back). */
+/** Mount the App shell on memory history and return its store, DOM, and history. */
 export function mountApp(
 	initialPath = "/",
 	options: Partial<AppStoreOptions> = {},

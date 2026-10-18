@@ -1,15 +1,4 @@
-/* State dot — .cx-state-dot[data-state] (D3). The brand eight-glyph
-   agent-state vocabulary (brand/state-icons.md), rendered as a 9×9 1-bit bitmap
-   (glyph geometry lives in components.md; compass-ui emits the inline SVG on
-   this box). This file carries: the 9×9 sizing, per-state color via --cx-st-*,
-   the crispEdges 1-bit rendering rule, and the working-only pulse hook.
-
-   This is now the sole source of state-dot styling: RIG-2118 deleted the legacy
-   flat-dot `.state-dot[data-state=…]` block from app.css. Class + data-* variant
-   modifiers, keyed off the AgentState enum. Only `working` animates, in the
-   working-state green (--cx-st-working), NEVER the purple phosphor
-   (--cx-pulse-color). The other seven are static, distinguished by glyph + color
-   alone (CVD-safe, reduced-motion-safe by brand contract). */
+/* State dots use eight 1-bit glyphs; only working animates, never in purple. */
 
 .cx-state-dot {
 	display: inline-block;
@@ -17,24 +6,15 @@
 	height: 9px;
 	flex: none;
 	color: var(--cx-st-idle);
-	/* 1-bit cells, hard edges — brand/spine.md §Rendering. These are inherited
-	   backstops: compass-ui emits an inline SVG child inside this box, and these
-	   properties inherit into the child SVG's shapes so nothing anti-aliases —
-	   not a guarantee on the empty wrapper itself. */
+	/* Hints inherit into the emitted SVG, preserving crisp edges. */
 	image-rendering: pixelated;
 	shape-rendering: crispedges;
 }
 
-/* Seat the inline SVG glyph at the wrapper's top edge. Without this the SVG is a
-   replaced inline-level box sitting on the parent's text baseline, and the app's
-   inherited line-height pushes it down so the 9×9 glyph overflows the 9px box by
-   ~5px (5 of 9 rows); the box does not clip (overflow is visible), so those rows
-   render outside it and collide with adjacent content. `display: block` seats it
-   at offset 0. badge-glyph.css is the sizing precedent (a 9×9 glyph box); this
-   `> svg` rule is the seating counterpart. */
+/* Block layout prevents the SVG from overflowing the wrapper baseline. */
 .cx-state-dot > svg {
 	display: block;
-	/* Fill the box so the 2× wrapper scales the 9×9 grid to whole 2px cells. */
+	/* Fill the wrapper so the 9×9 grid scales to whole 2px cells. */
 	width: 100%;
 	height: 100%;
 }
@@ -74,11 +54,7 @@
 	color: var(--cx-st-disconnected);
 }
 
-/* --- The working pulse: the ONLY animated state. data-alive="1" is set on
-   `working` alone. The pulse runs at the brand pulse cadence
-   (--cx-pulse-period) in the working-state green (--cx-st-working) — never the
-   purple phosphor. Reduced motion zeroes --cx-pulse-period upstream (tokens.css
-   + data-reduce="on"), collapsing this to a static glyph. --- */
+/* Only working pulses; reduced motion makes it static. */
 @keyframes cx-state-dot-pulse {
 	0%,
 	100% {

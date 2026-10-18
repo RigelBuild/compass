@@ -1,29 +1,6 @@
-/*
- * Compass engineering docs — public Starlight theme override.
- *
- * Maps Starlight's CSS-variable tokens onto the Rigel brand system (the Night
- * Owl palette + Space/Departure Mono type) so the docs site reads as part of
- * the same brand family as the Compass product surface without being a
- * pixel-clone (the product is app-shaped; the docs site is multi-page
- * reference-shaped).
- *
- * Dark-only: the Rigel aesthetic is Night Owl, and light mode is treated as a
- * mere polarity inversion rather than a distinct design. The Starlight token
- * mapping is asserted under every data-theme so an OS-light visitor still gets
- * Night Owl; the now-inert theme toggle is hidden below.
- *
- * The one-accent rule: purple appears only inside the brand mark. This surface
- * has no mark, so purple appears NOWHERE — links, accents, and active states
- * all use the blue flow color (--rigel-blue).
- *
- * Token reference:
- *   https://starlight.astro.build/guides/css-and-tailwind/#theming
- */
+/* Public docs use the Night Owl palette, without app layout or a brand mark. */
 
-/* ── Rigel Night Owl palette (the subset of the brand surface tokens this
-      docsite consumes). The state/syntax tiers (cyan/green/amber/red/faint) are
-      omitted — this reference surface has no state or syntax UI (code token
-      colors come from the night-owl Shiki theme, not these vars). ─────────── */
+/* Night Owl tokens used by the docs; syntax colors come from Shiki instead. */
 :root {
 	--rigel-night: #011627;
 	--rigel-night-2: #0b2942;
@@ -41,8 +18,7 @@
 	--rigel-display: "Departure Mono", "Space Mono", monospace;
 }
 
-/* ── Starlight token mapping — Night Owl under every data-theme so the brand
-      holds regardless of the OS light/dark preference. ─────────────────────── */
+/* Keep the Night Owl surface dark regardless of OS theme preference. */
 :root,
 :root[data-theme="dark"],
 :root[data-theme="light"] {
@@ -94,11 +70,7 @@ starlight-theme-select {
 	--sl-line-height-headings: 1.2;
 }
 
-/* The site title is the one brand-display moment on this surface: the wordmark,
-   in Departure Mono at 22px (an even multiple of the 11px bitmap grid, so it
-   stays crisp). Everything else is Space Mono — docs page titles are long and
-   off-grid, so per the type rule they stay in the crisp-at-any-size body face
-   rather than the bitmap display face. */
+/* Use Departure Mono for the site title; long, off-grid page titles stay in Space Mono. */
 .site-title {
 	font-family: var(--rigel-display);
 	font-size: 22px;
@@ -109,14 +81,13 @@ starlight-theme-select {
 	font-synthesis: none;
 }
 
-/* Body copy in Space Mono — the retro-futurist workhorse the whole brand runs
-   on, matching the Compass product surface. */
+/* Body text matches the product's Space Mono typeface. */
 .sl-markdown-content {
 	font-family: var(--rigel-mono);
 	font-size: 15px;
 }
 
-/* Headings in Space Mono (crisp at any size), bright for emphasis. */
+/* Headings use crisp Space Mono in the bright text color. */
 .sl-markdown-content :is(h1, h2, h3, h4, h5, h6) {
 	font-family: var(--rigel-mono);
 	font-weight: 700;
@@ -124,10 +95,7 @@ starlight-theme-select {
 	letter-spacing: 0;
 }
 
-/* ── Code frames — Shiki is pinned to the `night-owl` theme (see
-      astro.config.mjs `expressiveCode.themes`), whose background is Night Owl
-      navy, so code blocks sit flush on the surface. Hard edges, hairline
-      border, no radius — the 1-bit dot-matrix shape discipline. ──────────── */
+/* Shiki's Night Owl background matches the site; retain hard, square frames. */
 .expressive-code .frame pre,
 .expressive-code .frame.has-title:not(.is-terminal) .header {
 	border-radius: 0;

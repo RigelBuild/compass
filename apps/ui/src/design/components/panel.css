@@ -1,9 +1,4 @@
-/* Panel / Pane — .cx-panel, .cx-pane[data-focused] (D3). The workspace's two
-   fixed panes (home channel · session trace). A focused pane draws an accent
-   1px inner rule (spatial-focus signal), not a raised background. Panes are
-   focus zones rather than single tab-stops, so the accent rule — not
-   :focus-visible — carries pane focus; interactive children own their own
-   :focus-visible ring. Consumes only --cx-* tiers. */
+/* Panes mark focus with an accent rule; their interactive children keep focus rings. */
 
 .cx-panel,
 .cx-pane {

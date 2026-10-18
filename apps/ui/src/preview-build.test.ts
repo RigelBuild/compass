@@ -14,19 +14,11 @@ import { $ } from "bun";
 // same way env-secrecy.test.ts anchors UI_DIR.
 const UI_DIR = resolve(import.meta.dir, "..");
 
-// Sentinels chosen to be impossible to collide with any real string in the
-// source tree: a `.invalid` TLD (RFC 2606, never resolves) and a unique token
-// literal. If either shows up in dist/, it came from the build env, not the
-// source. A `.invalid` door also means an accidental boot never dials anywhere.
+// Unique .invalid sentinels expose build-time env leaks without dialing a real service.
 const PREVIEW_BASE_URL = "https://sea2011-preview-door.invalid:8443";
 const PREVIEW_TOKEN = "sea2011-preview-bearer-SENTINEL";
 
-// The tracked dev default (.env.development, VITE_COMPASS_BASE_URL). Vite ignores
-// .env.development in build mode, so a production `vite build` must NOT carry it.
-// This is a cheap tripwire, not the load-bearing assertion: absent a new
-// hardcoded loopback fallback (in connection.ts or a vite.config `define`) its
-// absence follows from the mode-loading rule the two positive assertions already
-// exercise. It stays as a regression guard against exactly that wrong-default bake.
+// Production builds must not bake the ignored development door default.
 const DEV_DEFAULT_BASE_URL = "127.0.0.1:50051";
 
 // Concatenate every emitted JS chunk once so each assertion greps the whole
@@ -49,11 +41,7 @@ describe("previewable build bakes the configured door + bearer into dist/", () =
 
 	beforeAll(async () => {
 		outDir = await mkdtemp(join(tmpdir(), "compass-preview-build-"));
-		// The real production build, parameterized by the two preview env keys —
-		// exactly what a preview-hosting environment runs. `--outDir` keeps it out
-		// of the tracked `dist/` so a dev's working tree is untouched;
-		// `--emptyOutDir` because the outDir is outside the project root (Vite
-		// otherwise refuses to clear it without confirmation).
+		// Build with preview env in a temporary output directory.
 		await $`bunx vite build --outDir ${outDir} --emptyOutDir`
 			.cwd(UI_DIR)
 			.env({

@@ -3,11 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { bootBrowser, defaultBrowserBootDeps } from "./boot-browser";
 import type { ResolvedConnection } from "./live/provider";
 
-// The browser gate picks "boot", "ask for a token", or "let boot report it" from a
-// WhoAmI probe. The probe here is the PRODUCTION one (real clients, real bearer
-// interceptor, real ConnectError); only the network is faked, by a gRPC-Web fetch
-// that answers WhoAmI for an accepted bearer and Unauthenticated (16, what the
-// network door answers) otherwise.
+// Exercise the production WhoAmI probe with a fake network transport.
 
 const DOOR = "https://compass.example:8443";
 const VALID = "good-token";

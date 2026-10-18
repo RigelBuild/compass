@@ -3,15 +3,9 @@ import { cleanup } from "@solidjs/testing-library";
 import type { CommandId } from "./keyboard/commands";
 import { flush, mountApp } from "./test-router";
 
-// Real-wiring global-chord tests (RIG-2456 T2/A6). These mount the FULL shell
-// through `mountApp` — store + StoreContext + MemoryRouter root={App} +
-// AppRoutes, the production shape — and register NOTHING: they prove App.tsx
-// installs the keymap at the root over `store.keyboard` and that
-// `createKeyboardSpine` registered `view.bridge → store.showBridge()`. If either
-// were missing, `Mod+B` would be a dead chord and these red.
+// Mount the production shell to test global chords through the shared keyboard spine.
 
-// Force the platform installKeymap detects (read once at install from navigator),
-// mirroring dispatch.test.ts's technique.
+// Stub the platform detected by installKeymap.
 function setPlatform(platform: "mac" | "other"): void {
 	Object.defineProperty(navigator, "platform", {
 		value: platform === "mac" ? "MacIntel" : "X11; Linux x64",
@@ -63,8 +57,7 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		expect(store.view()).toBe("bridge");
-		// Focus the board cursor stop (the sole tabindex=0): the board declines the
-		// global Mod+B at tier 1, so it must fall through to the global view.bridge.
+		// Focus the board stop; tier 1 declines Mod+B so the global command handles it.
 		container
 			.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')
 			?.focus();
@@ -80,12 +73,7 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 		const { store } = mountApp("/backlog");
 		expect(store.view()).toBe("backlog");
 
-		// Spy the shared `view.bridge` command on the app-lifetime registry (a
-		// plain Map that outlives the reactive root). Observing the command
-		// directly — not the frozen store view — is what discriminates here: a
-		// leaked listener still resolves the chord and calls run() even though the
-		// disposed store's view() can no longer update, so a store-view assertion
-		// would pass on the very uninstall bug it purports to catch.
+		// Count dispatches directly because disposed stores do not update.
 		let viewBridgeRuns = 0;
 		store.keyboard.registry.register({
 			id: "view.bridge" as CommandId,
@@ -95,9 +83,7 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 			run: () => viewBridgeRuns++,
 		});
 
-		// Unmount the shell — App's onCleanup runs the keymap uninstaller.
 		cleanup();
-
 		press({ key: "b", ctrlKey: true });
 		await flush();
 		expect(viewBridgeRuns).toBe(0);
@@ -108,9 +94,7 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 		const { store } = mountApp("/");
 		expect(store.view()).toBe("bridge");
 
-		// `Mod+,` (keymap.ts:66) was a dead chord until the RIG-2483 seed registered
-		// `view.settings`; this proves the chord now resolves at tier 3 and runs
-		// showSettings. Registers nothing — real App wiring only.
+		// Mod+, now resolves to Settings through the registered command.
 		press({ key: ",", ctrlKey: true });
 		await flush();
 
@@ -122,9 +106,7 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 		const { store } = mountApp("/");
 		expect(store.view()).toBe("bridge");
 
-		// The `G S` sequence (keymap.ts) resolves through the same tier-3 path as
-		// `Mod+,` once the T3 runtime arms the leader. Registers nothing — the
-		// spine already registered view.settings.
+		// G then S reaches the same Settings command through the leader sequence.
 		press({ key: "g" });
 		press({ key: "s" });
 		await flush();
@@ -358,18 +340,12 @@ describe("shortcuts overlay (RIG-2482)", () => {
 
 		const event = press({ key: "Enter" });
 		await flush();
-		// The scope gate: list.openOrSelect is scope:"main", the active zone is
-		// not main (a topbar button), so tier 3 declines — native activation
-		// survives (no preventDefault).
+		// A non-main focus zone declines the main-scoped command.
 		expect(event.defaultPrevented).toBe(false);
 	});
 });
 
-// Coached-chord dispatch (RIG-2530 T2). Every command id the adoption sweep
-// coaches must resolve in the command REGISTRY (dispatch path), not merely the
-// keymap (display path) — the drift the A4 boundary exists to prevent. The two
-// sidebar toggles are the load-bearing case: T2 registered them beside their
-// store behavior, so their coached chord now actually fires.
+// Coached commands must exist in the dispatch registry, not only the display keymap.
 describe("coached-chord dispatch (RIG-2530 T2)", () => {
 	// Every command id the sweep coaches; each must resolve in the registry.
 	const COACHED_COMMANDS = [

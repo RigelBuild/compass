@@ -4,14 +4,7 @@ import * as compassClient from "@compass/client";
 import { createLiveClients, resolveCaller } from "./client";
 import type { Connection } from "./connection";
 
-// createLiveClients must build ONE gRPC-Web transport and dial both clients over
-// it — the invariant the query layer rests on: connect-query-core embeds a
-// Transport reference in every query key, so cache identity requires the clients
-// and the query layer to share the single instance (query record §A2/§T1). A
-// `Client` hides its transport, so the sharing is proven at the seam: the two
-// client factories are spied and the transport each was handed is compared to
-// the one createLiveClients exposes. `spyOn` (not `mock.module`) keeps the real
-// module intact — a whole-module mock leaks process-wide into sibling suites.
+// Both clients share one transport so their query keys remain aligned.
 
 describe("createLiveClients (query record T1)", () => {
 	const conn: Connection = {

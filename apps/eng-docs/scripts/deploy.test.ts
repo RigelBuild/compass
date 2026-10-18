@@ -147,11 +147,8 @@ test("wranglerArgs builds the exact preview argv for a feature branch", () => {
 // ── changedFilesArgs ─────────────────────────────────────────────────────────
 
 test("changedFilesArgs builds the exact GET argv with per_page in the query string", () => {
-	// The whole shape is regression-locked: per_page rides the URL query string,
-	// NOT a -F flag. `pulls/{n}/files` is GET-only; `gh api` switches to POST the
-	// moment any parameter flag (-F/-f/--field/--raw-field) is present, which
-	// 404s and (behind fetchChangedDocPages's fail-soft) silently drops the whole
-	// changed-pages section.
+	// Keep `per_page` in the URL: parameter flags make `gh api` use POST.
+	// POST fails here, and fail-soft handling would silently omit changed pages.
 	expect(changedFilesArgs("RigelBuild/compass", "634")).toEqual([
 		"api",
 		"--paginate",

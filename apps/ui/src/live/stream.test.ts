@@ -21,26 +21,12 @@ import {
 import type { CommsState, MapMessage } from "./comms-state";
 import { fetchSnapshot, runCommsStream } from "./stream";
 
-// stream.ts is the SubscribeComms driver: it applies the established
-// snapshot+tail+resync protocol over a CommsClient, pushing each reduced state
-// to onState. It owns the TWO transport cursors kept out of the reducer
-// (RIG-1333): the read-RPC boundary `snapshotSeq` (an opaque token forwarded
-// verbatim to every list call, NEVER a tail cursor) and the stream tail cursor,
-// which advances from `SubscribeCommsResponse.seq` (the stream's own counter).
-// These tests drive it against a hand-written fake client (no network, no
-// timers) and defend the protocol contracts a refactor could silently break:
-// since_seq=0 snapshot-then-tail with the boundary snapshotSeq threaded to every
-// read RPC, boundary-overlap dedup, resyncRequired reset to a full re-snapshot,
-// gap-free clean-drop resubscribe from the STREAM seq (never snapshotSeq),
-// abort termination, onError-then-reconnect, and fetchSnapshot's backward paging
-// with the opaque-token contract. Termination is always event-gated (a finite
-// generator or an AbortController), never a wall-clock wait, so the suite is
-// deterministic and hermetic.
+// Exercise SubscribeComms snapshot, tail, resync, and reconnect behavior with a fake client.
+// Event-gated termination keeps the suite deterministic without wall-clock waits.
 
 const CALLER = "acc-me";
 
-// ── The injected message mapper. Narrows the opaque wire object (never an inline
-//    cast) — we author the fake wire below, so `id`/`atUnixMs` are always present.
+// The fake wire mapper requires an id and timestamp for every message.
 interface FakeWireMessage {
 	readonly id: string;
 	readonly atUnixMs: number;
@@ -671,11 +657,7 @@ describe("runCommsStream — channel removal (ghost channel)", () => {
 describe("runCommsStream — home-channel derivation ordering", () => {
 	test("an accountChanged (new agent) before a channelChanged for its home channel makes that channel alwaysSubscribed — home set derived from CURRENT accounts", async () => {
 		const controller = new AbortController();
-		// The ordering invariant: decodeEvent derives the agent home-channel set
-		// from state.accounts AT DECODE TIME. An accountChanged introducing an
-		// agent whose home is chan-home, THEN a channelChanged for chan-home,
-		// must flag it alwaysSubscribed — proving the home set reflects the prior
-		// accountChanged, not a stale snapshot-time set.
+		// The following channel event must see the newly added agent account.
 		const { client } = createFakeClient(controller, {
 			accounts: [wireUserAccount(CALLER)],
 			channels: [],
@@ -705,11 +687,8 @@ describe("runCommsStream — home-channel derivation ordering", () => {
 
 describe("runCommsStream — body-less event guards", () => {
 	test("channelChanged/accountChanged with no channel/account are skipped (no state change) but still advance the tail cursor", async () => {
+		// Ignore malformed bodies but advance the cursor so reconnect stays gap-free.
 		const controller = new AbortController();
-		// A malformed (body-less) channelChanged/accountChanged decodes to null —
-		// the driver skips it (no onState, no crash) but MUST still advance the
-		// tail cursor, so a resubscribe after a clean drop resumes gap-free from
-		// past the skipped seqs (mirrors the gap-free resubscribe contract).
 		const { client, calls } = createFakeClient(controller, {
 			accounts: [wireUserAccount(CALLER)],
 			channels: [wireChannel("chan-1")],
@@ -744,17 +723,8 @@ describe("runCommsStream — body-less event guards", () => {
 	});
 });
 
-// Instrument the signal to observe the driver entering (or NOT entering) its
-// abort-aware backoff wait WITHOUT elapsing wall-clock. abortableDelay (stream.ts)
-// is the ONLY code on the reconnect path that registers an "abort" listener on
-// the signal — the fake client and fetchSnapshot ignore their { signal } option
-// — so a registered abort listener is a one-to-one proxy for "a backoff wait is
-// in progress". `onBackoff` (if given) fires synchronously at registration, i.e.
-// AFTER abortableDelay has armed its setTimeout + abort listener but BEFORE the
-// timer macrotask can run; scheduling controller.abort() as a MICROTASK from
-// there lands the abort DURING the wait (microtasks drain before the setTimeout),
-// so the listener path — never the timer — resolves it. Mirrors test F's ordering
-// but hooks the wait itself, since a clean close has no onError to piggyback on.
+// Observe abort-aware backoff without waiting on a wall-clock timer.
+// The abort listener is registered only while the delay is active.
 function watchBackoff(
 	signal: AbortSignal,
 	onBackoff?: () => void,
@@ -774,20 +744,13 @@ function watchBackoff(
 	}) as typeof signal.addEventListener;
 	return tracker;
 }
-
+// Observe backoff via its abort listener without waiting for a timer.
 describe("runCommsStream — reconnect backoff", () => {
 	test("an abort DURING the backoff wait resolves it early — the run terminates without hanging out the jittered delay", async () => {
 		const controller = new AbortController();
 		const boom = new Error("stream boom");
-		// One subscribe throws → the driver enters its backoff wait
-		// (abortableDelay over Math.random()*ceiling, up to RECONNECT_CAP_MS=30s).
-		// onError schedules the abort as a MICROTASK: it lands AFTER abortableDelay
-		// has already registered its setTimeout + abort listener (so the signal is
-		// NOT pre-aborted — the listener path, not the early-return, is what fires)
-		// but BEFORE the timer macrotask can run (microtasks drain first). So the
-		// abort listener is the ONLY thing that resolves the wait: if abortableDelay
-		// didn't listen for abort, this test would hang out the full jittered delay
-		// and time out. Fully hermetic — no wall-clock delay ever elapses.
+		// Abort after the wait listener registers but before the timer fires.
+		// The run must finish through that listener, not the jittered delay.
 		const { client, calls } = createFakeClient(controller, {
 			accounts: [wireUserAccount(CALLER)],
 			channels: [wireChannel("chan-1")],
@@ -821,26 +784,17 @@ describe("runCommsStream — reconnect backoff", () => {
 
 	test("a zero-progress clean close (subscribe accepted then dropped with no response) backs off before resubscribing — an abort during that wait ends the run", async () => {
 		const controller = new AbortController();
-		// The first subscribe is accepted then closes cleanly having yielded
-		// NOTHING — the accept-then-drop spin the fix guards against. The driver
-		// must treat a zero-progress close as a failed attempt and enter the
-		// abort-aware backoff, NOT resubscribe in a tight loop.
+		// A clean close without responses must back off instead of spinning.
 		const { client, calls } = createFakeClient(controller, {
 			accounts: [wireUserAccount(CALLER)],
 			channels: [wireChannel("chan-1")],
 			messagesByChannel: { "chan-1": [] },
 			subscribeScripts: [
-				// A zero-progress clean close: yields nothing then returns — the
-				// accept-then-drop the driver must back off on, not resubscribe.
+				// Zero progress: the stream closes without yielding a response.
 				async function* () {},
 			],
 		});
-		// Land the abort DURING the backoff wait: when the driver backs off,
-		// abortableDelay registers its abort listener, we abort from a microtask,
-		// and the wait resolves via that listener (no wall-clock elapses). If the
-		// driver did NOT back off (the bug), no listener registers, the abort is
-		// never armed, and the immediate resubscribe hits the exhausted() safety
-		// net — a SECOND subscribe at sinceSeq 0 → subscribeSinceSeqs [0n, 0n].
+		// Abort during backoff and assert no immediate retry occurs.
 		const backoff = watchBackoff(controller.signal, () =>
 			queueMicrotask(() => controller.abort()),
 		);
@@ -852,23 +806,14 @@ describe("runCommsStream — reconnect backoff", () => {
 			signal: controller.signal,
 		});
 
-		// The zero-progress close entered exactly one backoff wait…
+		// One backoff wait and no resubscribe prove zero-progress closes back off.
 		expect(backoff.waits).toBe(1);
-		// …and the abort during that wait ended the loop BEFORE any resubscribe:
-		// exactly one subscribeComms, no tight-loop retry. Removing the
-		// `if (!sawResponse)` guard (or forcing sawResponse true) reverts this to
-		// an immediate resubscribe — a second (unscripted) subscribe → [0n, 0n].
 		expect(calls.subscribeSinceSeqs).toEqual([0n]);
 	});
 
 	test("a boundary-only clean close (snapshot replayed, no forward tail event) backs off before resubscribing — the boundary positions the tail but is not progress", async () => {
 		const controller = new AbortController();
-		// First subscribe is accepted, replays ONLY the snapshot boundary, then
-		// closes cleanly. The boundary positions the tail (seq 3) but is NOT
-		// forward progress: a server that accepts → replays only the boundary →
-		// drops, repeatedly, is the cold-start tight loop the fix now guards
-		// against. The driver must treat this as a failed attempt and enter the
-		// abort-aware backoff, NOT resubscribe immediately.
+		// Boundary replay sets the tail but is not progress, so retry backs off.
 		const { client, calls } = createFakeClient(controller, {
 			accounts: [wireUserAccount(CALLER)],
 			channels: [wireChannel("chan-1")],
@@ -876,16 +821,9 @@ describe("runCommsStream — reconnect backoff", () => {
 			subscribeScripts: [
 				async function* () {
 					yield boundary(100n, 3n);
-					// Boundary-only clean close — must back off (no tail progress).
 				},
 			],
 		});
-		// Land the abort DURING the backoff wait: when the driver backs off,
-		// abortableDelay registers its abort listener, we abort from a microtask,
-		// and the wait resolves via that listener (no wall-clock elapses). If the
-		// driver did NOT back off (the OLD bug — boundary counted as progress), no
-		// listener registers, the immediate resubscribe hits the exhausted() safety
-		// net, and a SECOND subscribe goes out at the boundary tail → [0n, 3n].
 		const backoff = watchBackoff(controller.signal, () =>
 			queueMicrotask(() => controller.abort()),
 		);
@@ -897,22 +835,14 @@ describe("runCommsStream — reconnect backoff", () => {
 			signal: controller.signal,
 		});
 
-		// The boundary-only close entered exactly one backoff wait…
+		// One backoff wait and no resubscribe prove the boundary was not progress.
 		expect(backoff.waits).toBe(1);
-		// …and the abort during that wait ended the loop BEFORE any resubscribe:
-		// exactly one subscribeComms, no tight-loop retry. Mutating the source
-		// progress guard `if (!isBoundary)` to `if (true)` (boundary counts as
-		// progress again) reverts this to an immediate resubscribe → [0n, 3n].
 		expect(calls.subscribeSinceSeqs).toEqual([0n]);
 	});
 
 	test("a clean close after a genuine forward tail event resubscribes IMMEDIATELY — no backoff wait — resuming from the advanced tail", async () => {
 		const controller = new AbortController();
-		// First subscribe yields the boundary (snapshotSeq 100, tail seq 3) AND
-		// THEN a real tail event that advances the cursor past it (channelChanged
-		// at seq 6 > boundary seq 3, non-boundary), then closes cleanly. Genuine
-		// forward tail progress: it must resubscribe with NO backoff, resuming
-		// gap-free from the advanced tail (seq 6), NOT the boundary token (100).
+		// A genuine tail event advances the cursor and allows immediate reconnect.
 		const { client, calls } = createFakeClient(controller, {
 			accounts: [wireUserAccount(CALLER)],
 			channels: [wireChannel("chan-1")],
@@ -929,11 +859,7 @@ describe("runCommsStream — reconnect backoff", () => {
 				},
 			],
 		});
-		// No abort is armed: watchBackoff only COUNTS backoff waits. A genuine-
-		// progress close must not enter one, so the run reaches the second
-		// subscribe on its own — the immediate resubscribe — which aborts.
-		// Immediate-resubscribe vs backoff is distinguished purely by the listener
-		// count; no timer elapses on either branch, so the assertion is hermetic.
+		// No backoff listener means forward progress reconnected immediately.
 		const backoff = watchBackoff(controller.signal);
 		await runCommsStream({
 			client,
@@ -943,9 +869,7 @@ describe("runCommsStream — reconnect backoff", () => {
 			signal: controller.signal,
 		});
 
-		// Zero backoff waits — the genuine-progress close resubscribed immediately
-		// from the advanced stream tail (seq 6), not the boundary seq (3) or the
-		// boundary token (100). Real tail progress keeps the resubscribe immediate.
+		// Real tail progress reconnects immediately from seq 6, not the boundary.
 		expect(backoff.waits).toBe(0);
 		expect(calls.subscribeSinceSeqs).toEqual([0n, 6n]);
 	});
@@ -1105,11 +1029,7 @@ describe("runCommsStream — presence seed + tail", () => {
 			signal: controller.signal,
 		});
 
-		// The tail arm builds its AgentPresenceInfo through presenceLifecycle, the
-		// same path the roster seed uses — so an UNSPECIFIED delta yields the
-		// defensive `lifecycle: undefined`, never a bare enum leaking past the
-		// vocabulary. A regression that bypassed presenceLifecycle would red here
-		// while T1's isolated adapt tests stayed green.
+		// Tail deltas use the roster seed's presenceLifecycle path.
 		expect(states.at(-1)?.presence.get("acc-x")).toEqual({
 			lifecycle: undefined,
 			activity: undefined,
@@ -1146,9 +1066,7 @@ describe("runCommsStream — presence seed + tail", () => {
 			signal: controller.signal,
 		});
 
-		// The roster read is in the snapshot failure domain: its rejection threw,
-		// surfaced to onError, and no state (empty presence or otherwise) was
-		// pushed from the failed snapshot round.
+		// Roster read failure reaches onError before any state is published.
 		expect(errors).toContain(boom);
 		expect(states).toHaveLength(0);
 	});

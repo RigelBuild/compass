@@ -2,12 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup } from "@solidjs/testing-library";
 import { flush, mountApp } from "./test-router";
 
-// Real-wiring palette tests (RIG-2483, A7). These mount the FULL shell through
-// `mountApp` — the production shape — and register NOTHING: they prove App.tsx
-// renders <Palette> behind store.paletteOpen(), that createKeyboardSpine
-// registered palette.open → store.togglePalette(), and that the Mod+K chord
-// rides the one App-root dispatcher. If any were missing, Ctrl+K would be a dead
-// chord and these red. Mirrors keyboard-e2e.test.tsx's technique.
+// Real-wiring tests verify palette rendering and its keyboard command in the full shell.
 
 function setPlatform(platform: "mac" | "other"): void {
 	Object.defineProperty(navigator, "platform", {

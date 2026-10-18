@@ -1,8 +1,4 @@
-/* Agent tree — the site's Manager tree as a main view (AgentsView). Rows indent
-   26px per depth with a 1px elbow spine up to the parent; each row holds one
-   .agent-card. A spine into a working child carries data-flow="1" and a 1×6px
-   accent pip runs down it at --cx-spine-flow-period, which reduced motion
-   zeroes in tokens.css. Consumes only --cx-* tokens. */
+/* Agent rows show hierarchy with a spine and a reduced-motion-safe working accent. */
 
 .agent-tree {
 	list-style: none;

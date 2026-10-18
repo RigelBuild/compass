@@ -5,11 +5,7 @@ import {
 	type SessionEvent,
 } from "./session-events";
 
-// RED until session-events.ts lands (T-U1 impl). The `./session-events` module
-// does not exist yet — this import fails to resolve, so every test here is red.
-// These tests defend the observable fold contract (record §431-438): the pure
-// foldSession(events) -> TraceItem[] reduction. Inputs are built inline (small,
-// per-edge) so each assertion pins a fold rule, not today's stub values.
+// Pin the pure fold from session events to trace items with small fixtures.
 
 // ── Minimal event builders. `id` and `atUnixMs` are required on every
 //    SessionEvent, so they are always supplied explicitly; the kind-specific
@@ -250,12 +246,7 @@ describe("foldSession — notice and ordering", () => {
 });
 
 describe("foldSession — purity (inputs never mutated)", () => {
-	// The fold is documented pure: it never mutates an input event and builds
-	// every TraceItem fresh (session-events.ts §"Pure: input events are never
-	// mutated"). Freezing every event AND the array proves no in-place write
-	// happens (a mutating refactor throws in strict mode / on the frozen object),
-	// and a deep before/after comparison proves nothing was reshaped. Reddens if
-	// any future refactor folds by mutating the incoming event.
+	// Frozen inputs and a deep comparison prove the fold does not mutate events.
 	test("frozen inputs are neither thrown on nor mutated by the fold", () => {
 		const diff: FileDiff = {
 			path: "src/foo.ts",

@@ -14,11 +14,7 @@ if (!root) {
 	throw new Error("missing #root element");
 }
 
-// Dispatch on fixture build mode, then shell-injected mode, before IPC.
-// Client, embedded, and browser-dev share main(); fixture mounts offline.
-//
-// Keep the fixture comparison inline: Vite folds it in production, eliminating
-// the fixture branch and its dynamically imported chunk.
+// Fixture mode branches here so Vite can remove its dynamically imported chunk.
 if (import.meta.env.MODE === "fixture") {
 	void import("./boot-fixture")
 		.then((m) => m.bootFixture(root))

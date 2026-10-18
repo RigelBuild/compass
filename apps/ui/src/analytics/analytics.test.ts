@@ -2,11 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { PostHog } from "posthog-js";
 import { createAnalytics } from "./analytics";
 
-// analytics.ts wraps posthog-js behind a small headless interface. These tests
-// inject a FAKE posthog client (recording calls) so both paths are exercised
-// without real network. The load-bearing contract: the disabled path (undefined
-// config) makes ZERO posthog calls — the off-by-default gate — and the enabled
-// path initializes once and delegates capture/identify through to the client.
+// Disabled analytics must not call PostHog.
 
 interface FakePostHog {
 	calls: Array<{ method: string; args: unknown[] }>;

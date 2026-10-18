@@ -1,12 +1,6 @@
-/* Menu + Dialog (Kobalte-driven; styled entirely by our classes, D3).
-   - .cx-menu — elev-2 float on the panel surface; keyboard per WAI-ARIA via
-     Kobalte. .cx-menu-item is the interactive row (six mandatory states).
-   - .cx-dialog — elev-3 float; scrim via --cx-scrim on the backdrop.
-   Consumes only --cx-* tiers. No Kobalte default styles ship. */
+/* Menus and dialogs use Kobalte behavior with Compass-owned styling. */
 
-/* ==========================================================================
-   Menu — a floating command list.
-   ========================================================================== */
+/* Menu is a floating command list. */
 .cx-menu {
 	display: flex;
 	flex-direction: column;

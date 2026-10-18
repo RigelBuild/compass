@@ -1,15 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolveConnection } from "./connection";
 
-// connection.ts resolves the live-daemon connection (door URL + optional bearer)
-// from a Vite-style env record. `resolveConnection` is pure over its input, so
-// these tests exercise it directly with plain env objects — no `import.meta`.
-// They defend the load-bearing rules the client factory downstream trusts:
-// baseUrl is required (a missing/blank one is a misconfiguration that throws, not
-// a silent wrong default), and token is normalized to undefined when absent/blank
-// (never the empty string the factory rejects). The caller's account id is no
-// longer resolved here — it is learned from the server via WhoAmI after connect
-// (live/client.ts resolveCaller), so this module no longer reads or asserts it.
+// Require a base URL and normalize blank tokens to undefined.
 
 describe("resolveConnection", () => {
 	test("resolves baseUrl and leaves token undefined when no token is set", () => {

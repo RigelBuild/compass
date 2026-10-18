@@ -1,18 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// Visual-smoke harness (RIG-2034 T1). Navigates the HashRouter surfaces of the
-// app and asserts one screenshot per surface against committed in-repo
-// baselines, failing when rendered pixels drift. The webServer boots the app
-// under `--mode fixture`, so the app boots fully on the in-memory fixture store
-// (stub-data.ts) with no daemon on :50051 and no VITE_COMPASS_BASE_URL — offline
-// by construction, not by accident of un-wired live paths. Each assertion
-// awaits a stable per-surface selector (never a fixed sleep) so the shot is
-// taken after content renders, and pins determinism (animations disabled,
-// css-scaled raster, fonts settled) so the artifact is byte-stable across
-// same-box runs.
-//
-// A real stub agent id (acc-compass-ui) drives the /#/agent/:agentId route; it
-// is defined in src/stub-data.ts (STUB_AGENTS).
+// Stable selectors and disabled animations keep screenshots reproducible.
 
 const AGENT_ID = "acc-compass-ui";
 
@@ -222,12 +210,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			state: "detached",
 		});
 		expect(await tabSeg.boundingBox()).toEqual(onIssues);
-		// Wait on a populated PR card in the board (Bridge.tsx `.bridge-grid` >
-		// `.bridge-cell` > `.cx-card`), not the grid container — the grid renders
-		// even with no cards, so gating on a card guarantees the populated board is
-		// captured. After clicking the PRs tab only the PRs board is mounted, so
-		// `.bridge-grid .cx-card` is unambiguous. Mirrors the backlog test's
-		// wait-on-a-card pattern.
+		// Wait for a populated card; the grid can render before its data does.
 		await page
 			.locator(".bridge-grid .cx-card")
 			.first()

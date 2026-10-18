@@ -7,11 +7,7 @@ import { defineConfig, devices } from "@playwright/test";
 // The repo's first browser harness (RIG-2034 T1). Drives `vite dev` against the in-memory
 // stub store and pixel-diffs full-page screenshots of the core surfaces.
 
-// Both of these come from the dev shell (devenv.nix) or CI, which realize them from the
-// same pinned helper. There is no fallback on purpose: development is devenv-only, and
-// every default here is silently wrong. The cached ms-playwright binaries are unpatched
-// for NixOS (they fail on libnspr4.so), and an unpinned browser or font universe makes the
-// committed baselines a function of the box rather than the repo.
+// Require the pinned browser and fonts so screenshot baselines do not vary by host.
 function requirePinnedEnv(name: string): string {
 	const value = process.env[name];
 	if (value === undefined || value === "") {
