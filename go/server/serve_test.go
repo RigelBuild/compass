@@ -16,8 +16,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+func TestConfigureVCSMirrorOffPreservesInjectedMirror(t *testing.T) {
+	var mirror forge.Mirror = forge.NewGitMirror(t.TempDir(), 1, 1, nil)
+	cfg := ServeConfig{Mirror: mirror}
+	if err := configureVCSMirror(t.Context(), &cfg, nil, nil, boundListeners{}); err != nil {
+		t.Fatalf("configureVCSMirror with mirror disabled: %v", err)
+	}
+	if cfg.Mirror != mirror {
+		t.Fatal("configureVCSMirror cleared an injected mirror while disabled")
+	}
+}
 
 func TestServeRejectsNonLoopbackDevHTTPUpFront(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")

@@ -503,3 +503,33 @@ func TestBuildServeConfigUsageEventRetention(t *testing.T) {
 		})
 	}
 }
+func TestBuildServeConfigVCSMirrorFlags(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222")
+	cfg, _, err := buildServeConfig([]string{
+		"--database", "postgres://x/db", "--socket", "/tmp/x.sock",
+		"--vcs-mirror-dir", "/var/lib/compass/vcs",
+		"--vcs-mirror-repo-cap-bytes", "1073741824",
+		"--vcs-mirror-total-cap-bytes", "8589934592",
+	})
+	if err != nil {
+		t.Fatalf("buildServeConfig = %v, want nil", err)
+	}
+	if cfg.VCSMirrorDir != "/var/lib/compass/vcs" || cfg.VCSMirrorRepoCapBytes != 1<<30 || cfg.VCSMirrorTotalCapBytes != 8<<30 {
+		t.Fatalf("VCS mirror config = {%q, %d, %d}, want directory and both byte caps",
+			cfg.VCSMirrorDir, cfg.VCSMirrorRepoCapBytes, cfg.VCSMirrorTotalCapBytes)
+	}
+}
+
+func TestBuildServeConfigVCSMirrorOffByDefault(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222")
+	cfg, _, err := buildServeConfig([]string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"})
+	if err != nil {
+		t.Fatalf("buildServeConfig = %v, want nil", err)
+	}
+	if cfg.VCSMirrorDir != "" || cfg.VCSMirrorRepoCapBytes != 0 || cfg.VCSMirrorTotalCapBytes != 0 {
+		t.Fatalf("VCS mirror config = {%q, %d, %d}, want disabled zero values",
+			cfg.VCSMirrorDir, cfg.VCSMirrorRepoCapBytes, cfg.VCSMirrorTotalCapBytes)
+	}
+}

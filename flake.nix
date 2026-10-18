@@ -98,8 +98,9 @@
           # devenv.lock (this nixpkgs has 0.14.0), and it wins over a host copy.
           compass-server = (goBin "compass-server").overrideAttrs (old: {
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.makeWrapper ];
+            buildInputs = (old.buildInputs or [ ]) ++ [ pkgs.git ];
             postFixup = ''
-              wrapProgram $out/bin/compass-server --prefix PATH : ${secretspec}/bin
+              wrapProgram $out/bin/compass-server --prefix PATH : ${secretspec}/bin --prefix PATH : ${pkgs.git}/bin
             '';
           });
           compass-runner = goBin "compass-runner";
