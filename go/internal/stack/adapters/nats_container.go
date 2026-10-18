@@ -14,12 +14,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
-// natsConfigDir is the in-container directory the generated nats-server config
-// is bind-mounted into, and natsConfigPath the file within it the server is
-// pointed at via its `-c` argument. A dedicated compass-owned path (rather than
-// the image's own /etc/nats) keeps our generated config from colliding with the
-// image's default nats-server.conf, which the entrypoint's default CMD reads —
-// the explicit `-c` overrides that CMD entirely.
+// natsConfigDir keeps generated config separate from the image default, which the entrypoint reads.
+// The explicit -c path overrides that default.
 const (
 	natsConfigDir  = "/etc/compass-nats"
 	natsConfigFile = "nats-server.conf"
@@ -147,32 +143,10 @@ func (c *NatsContainer) ProbeNats(ctx context.Context, monitorEndpoint string) e
 	return nil
 }
 
-// natsRunArgs assembles the NATS `podman run` argv (detached). Split out as a
-// pure function so the full flag/publish/mount set is unit-tested without
-// spawning podman, mirroring collectorRunArgs. The contract (verified against
-// docker.io/library/nats:2.14.6-alpine):
-//
-//   - --rm: the container auto-removes when it exits, so a graceful `podman stop`
-//     (the SIGTERM teardown tier) both stops AND removes it. The
-//     ContainerController.Remove (`podman rm -f`) escalation tier stays for the
-//     stop-ignored case and is idempotent on an already-removed container. The
-//     JetStream store survives regardless: it lives on the host bind-mount, not
-//     the container layer.
-//   - --replace: idempotent name reuse — a survivor of this name (a crash before
-//     --rm fired, an escalation race) is cleared so a fresh up never collides on
-//     the stable per-state-dir name.
-//   - --stop-timeout: the safe default for any `podman stop` that names no -t,
-//     sized to let nats-server flush its JetStream store (natsStopTimeout).
-//   - -p host:port:container-port for the client and monitoring ports, published
-//     on the loopback only (the spec endpoints carry the 127.0.0.1 host) — a
-//     trusted-tier local broker, never network-exposed.
-//   - -v config file -> the in-container config path, read-only: the server reads
-//     exactly the core-rendered config.
-//   - -v data dir -> the in-container JetStream store dir, read-WRITE: unlike the
-//     collector, NATS holds durable state that must survive a container replace.
-//   - server args: an explicit `-c <path>`, which overrides the image's default
-//     CMD (`nats-server --config /etc/nats/nats-server.conf`) so the server reads
-//     our generated config rather than the image's stock one.
+// natsRunArgs builds the detached podman command; its flags are covered without spawning podman.
+// Graceful stop removes the container, but the host-mounted JetStream store survives replacement.
+// Stop timeout allows store flush; client and monitoring ports bind only on loopback.
+// Config is read-only and data is read-write; -c overrides the image's config.
 func natsRunArgs(spec stack.NatsContainerSpec, configFile string) []string {
 	return []string{
 		cmdPodmanRun, flagPodmanDetach,

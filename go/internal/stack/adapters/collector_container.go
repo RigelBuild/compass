@@ -134,27 +134,10 @@ func (c *CollectorContainer) ProbeCollector(ctx context.Context, healthEndpoint 
 	return nil
 }
 
-// collectorRunArgs assembles the T4 `podman run` argv (detached). Split out as a
-// pure function so the full flag/publish/mount set is unit-tested without
-// spawning podman, mirroring the postgres adapter's runArgs. The contract
-// (verified against otel/opentelemetry-collector-contrib):
-//
-//   - --rm: the container auto-removes when it exits, so a graceful `podman stop`
-//     (the SIGTERM teardown tier) both stops AND removes it. The
-//     ContainerController.Remove (`podman rm -f`) escalation tier stays for the
-//     stop-ignored case and is idempotent on an already-removed container.
-//   - --replace: idempotent name reuse — a survivor of this name (a crash before
-//     --rm fired, an escalation race) is cleared so a fresh up never collides on
-//     the stable per-state-dir name.
-//   - --stop-timeout: the safe default for any `podman stop` that names no -t.
-//   - -p host:port:container-port for each of grpc/http/health, published on the
-//     loopback only (spec endpoints carry the 127.0.0.1 host) — a local fan-in
-//     endpoint, never network-exposed.
-//   - -v config file -> the in-container config path, read-only: the container
-//     reads exactly the core-rendered D3-posture config. No data volume: D3 drops
-//     rather than buffering to disk, so the collector holds no on-disk state.
-//   - no server args: the image entrypoint's `--config <path>` CMD is inherited,
-//     pointing at the bind-mounted config.
+// collectorRunArgs builds the detached podman command; the arguments are covered without spawning podman.
+// Graceful stop removes the container, replacement clears stale names, and loopback ports stay private.
+// The read-only config mount needs no data volume because the collector drops telemetry by default.
+// The image entrypoint already points at the mounted config.
 func collectorRunArgs(spec stack.CollectorContainerSpec, configFile string) []string {
 	return []string{
 		cmdPodmanRun, flagPodmanDetach,

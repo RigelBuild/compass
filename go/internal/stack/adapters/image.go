@@ -12,12 +12,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
-// imagePullTimeout is the per-command timeout the ImageEnsurer gives podman for
-// a pull. A cold pull of the agent image (a multi-hundred-MB layer set over a
-// slow link) can far exceed PodmanCLI's default per-command timeout, so the
-// generous window is set here at the callsite rather than baked into Pull —
-// Pull stays a plain passthrough usable under the default timeout for cheap
-// re-pulls, and only the ensure path pays for the cold-pull headroom.
+// imagePullTimeout gives cold pulls more time than PodmanCLI's default; only the ensure path needs this headroom.
+// Pull remains a passthrough for cheap re-pulls under the default timeout.
 const imagePullTimeout = 10 * time.Minute
 
 // imageCLI is the narrow surface the ensure logic needs from the container CLI:

@@ -18,19 +18,13 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
-// The re-exec-self pattern: the test binary doubles as the child process. When
-// STACK_TEST_HELPER is set, TestMain routes into helperProcess instead of the
-// normal test run, so a started child is this same binary behaving as a stub —
-// no external binaries, fully deterministic.
+// The test binary re-executes itself as a deterministic child when STACK_TEST_HELPER is set.
+// TestMain dispatches helper invocations by STACK_TEST_HELPER mode.
 const (
 	helperEnvVar   = "STACK_TEST_HELPER"
 	helperEchoKey  = "STACK_TEST_ECHO"
 	helperReadyKey = "STACK_TEST_READY"
-	// helperEchoOutKey names a file the trapecho helper writes the OBSERVED
-	// helperEchoKey value into on SIGTERM, so a test proves env-threading by
-	// positive observation (read the file) rather than by exit code — the drain
-	// normalization in Wait now folds any post-SIGTERM exit code to nil, so an
-	// exit-code-keyed negative control would silently pass.
+	// helperEchoOutKey proves env-threading by recording its value; Wait normalizes exit codes.
 	helperEchoOutKey = "STACK_TEST_ECHO_OUT"
 	// helperMemberReadyKey names the ready file the forkmember helper's group
 	// member writes once its SIGTERM handler is armed.
@@ -44,18 +38,11 @@ func TestMain(m *testing.M) {
 	case "exit0":
 		os.Exit(0)
 	case "trap":
-		// Arm, signal readiness, block until SIGTERM, then exit 0 — a plain
-		// graceful-stop stand-in (self-converts SIGTERM to a clean exit, like
-		// compass-server/postgres).
+		// The trap helper converts SIGTERM to a clean exit to model graceful child shutdown.
 		helperTrap()
 		os.Exit(0)
 	case "trapecho":
-		// Graceful-stop stand-in that PROVES env-threading by positive
-		// observation: on SIGTERM it writes the value it observed for
-		// helperEchoKey to the helperEchoOutKey file, then exits 0. The test
-		// reads that file (env-present → "expected", env-absent → empty) rather
-		// than keying on the exit code, which Wait now folds to nil after our
-		// SIGTERM.
+		// trapecho writes its observed environment value on SIGTERM; the test reads the file because Wait normalizes exit codes.
 		helperTrap()
 		if out := os.Getenv(helperEchoOutKey); out != "" {
 			if err := os.WriteFile(out, []byte(os.Getenv(helperEchoKey)), 0o600); err != nil {

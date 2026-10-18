@@ -31,67 +31,21 @@ type Deps struct {
 	// Prober probes GetServerInfo over the server socket for readiness and the
 	// attach version check.
 	Prober HealthProber
-	// DBProber probes Postgres reachability between starting postgres and
-	// compass-server, so the store opens on the first try (devenv.nix:362 defines
-	// services.postgres, :386 the compass-server process).
+	// DBProber checks postgres before the server starts.
 	DBProber DBProber
-	// GroupSignaller signals and liveness-checks a persisted child process
-	// group by pgid for the cross-process teardown (DownDetached). It is the
-	// only seam that touches groups this process did not spawn (and thus holds
-	// no Process handle for); the real adapter targets the negative pgid, the
-	// same primitive the in-process escalation uses.
+	// GroupSignaller checks and signals process groups during detached teardown.
 	GroupSignaller GroupSignaller
-	// Containers tears down container children by their stable name for the
-	// cross-process teardown (DownDetached), the container analogue of
-	// GroupSignaller. Nil until the container-backed postgres adapter (T8) wires
-	// the real podman-exec adapter; a record with no container entries never
-	// dereferences it.
+	// Containers tears down persisted container children by stable name during detached down.
 	Containers ContainerController
-	// PostgresContainer starts the container-backed postgres child (S4): the
-	// installed-stack default when Config.PostgresImage is set. Start runs
-	// `podman run` per the S4 contract and returns a Process handle whose Pid
-	// the caller does NOT persist as a pgid (a rootless container runs beneath
-	// conmon, outside the client's group) — the container's teardown identity
-	// is its stable name, recorded as a v2 container entry and torn down via
-	// Containers on a fresh down. Nil on the dev/process path (empty
-	// PostgresImage) and on the external-database path, where no container
-	// starts; the core dereferences it only when it dispatches to the container
-	// path.
+	// PostgresContainer starts bundled postgres; nil is valid on process and external-database paths.
 	PostgresContainer PostgresContainer
-	// CollectorContainer starts the container-backed Plane-B fan-in OTel
-	// Collector child (T4 / D3): the installed-stack default when
-	// Config.ExternalOTLPEndpoint is empty. Start runs `podman run` (detached)
-	// per the T4 contract and returns a Process handle whose Pid the caller does
-	// NOT persist as a pgid (a rootless container runs beneath conmon, outside
-	// the client's group) — the container's teardown identity is its stable
-	// name, recorded as a v2 container entry and torn down via Containers on a
-	// fresh down, exactly like PostgresContainer. Nil on the --otel-external
-	// path, where no collector container starts; the core dereferences it only
-	// when it dispatches to the collector start.
+	// CollectorContainer starts the bundled collector; nil is valid on the external endpoint path.
 	CollectorContainer CollectorContainer
-	// CollectorProber probes the collector's health_check extension for
-	// readiness between launching the collector and the components that emit to
-	// it — the collector analogue of DBProber, since CollectorContainer.Start
-	// returns at launch, not at readiness. Nil on the --otel-external path,
-	// where no collector component starts; the core dereferences it only on the
-	// collector-readiness gate.
+	// CollectorProber waits for collector health after launch; nil is valid on the external path.
 	CollectorProber CollectorProber
-	// NatsContainer starts the container-backed NATS child: the default when
-	// Config.ExternalNatsURL is empty. Start runs `podman run` (detached) and
-	// returns a Process handle whose Pid the caller does NOT persist as a pgid
-	// (a rootless container runs beneath conmon, outside the client's group) —
-	// the container's teardown identity is its stable name, recorded as a v2
-	// container entry and torn down via Containers on a fresh down, exactly like
-	// CollectorContainer. Nil on the --nats-external path, where no nats
-	// container starts; the core dereferences it only when it dispatches to the
-	// nats start.
+	// NatsContainer starts bundled NATS; nil is valid on the external URL path.
 	NatsContainer NatsContainer
-	// NatsProber probes the bundled NATS server's HTTP monitoring endpoint for
-	// readiness between launching it and the components that connect to it —
-	// the nats analogue of CollectorProber, since NatsContainer.Start returns at
-	// launch, not at readiness. Nil on the --nats-external path, where no nats
-	// component starts; the core dereferences it only on the nats-readiness
-	// gate.
+	// NatsProber waits for NATS health after launch; nil is valid on the external URL path.
 	NatsProber NatsProber
 	// GatewayContainer starts the bundled LLM gateway; nil on --gateway-external.
 	GatewayContainer GatewayContainer
@@ -100,11 +54,7 @@ type Deps struct {
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 
-	// ExpectedVersion is the version this build of the stack drives. On
-	// attach-if-live it is compared against the probed server version; a mismatch
-	// surfaces ErrVersionMismatch (an upgraded app must not silently drive a
-	// lingering older stack). It lives here rather than being pulled from the
-	// server package so the core imports nothing red.
+	// ExpectedVersion rejects attach to a live stack built by a different version.
 	ExpectedVersion string
 }
 
