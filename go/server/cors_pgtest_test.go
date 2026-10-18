@@ -85,6 +85,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 		nil,
 		gatewayServices{},
 		newServerHealth(nil),
+		newStreamDrain(),
 	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
@@ -222,6 +223,7 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 		nil,
 		gatewayServices{},
 		newServerHealth(nil),
+		newStreamDrain(),
 	)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)

@@ -976,25 +976,26 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, doors.gitCredentials, forgeWiring.notifyLane, doors.linearNotify)
 	// The Linear session responder drains on the same group; nil when Linear is off.
 	startLinearResponder(gctx, g, doors.linearResponder, commsBus)
-	// The comms consumers: delivery fan-out on the event fabric and the presence
-	// projection on the comms bus, both on the serve group rooted on gctx
-	// (cancels at shutdown; presence also ends when drainDoors closes the bus).
+	// The comms consumers (delivery fan-out, presence projection) run on the serve
+	// group rooted on gctx; presence also ends when drainDoors closes the comms bus.
 	startCommsConsumers(gctx, g, commsBus, fab, st, hub, hubLog)
 	// Background usage upkeep: the daily raw-log prune and the hourly orphan-interval close.
 	startUsageSweepers(gctx, g, st, cfg.UsageEventRetention, hubLog)
-	startServeDrain(g, gctx, drainSet{
+	startServeDrain(g, gctx, doors.drainSet(drainSet{
 		bus:         bus,
 		commsBus:    commsBus,
-		uds:         doors.uds,
-		dev:         doors.dev,
-		net:         doors.net,
 		hub:         hub,
 		log:         hubLog,
 		cancelHooks: cancelSeed,
-		health:      doors.health,
-	})
+	}))
 
 	return g.Wait()
+}
+
+// drainSet fills the door fields of d from the built doors.
+func (s serveDoors) drainSet(d drainSet) drainSet {
+	d.uds, d.dev, d.net, d.streams, d.health = s.uds, s.dev, s.net, s.streams, s.health
+	return d
 }
 
 func startServeDoors(g *errgroup.Group, ctx context.Context, doors serveDoors, uds, dev, network net.Listener, mergeQueue mergeQueueRunner) {
@@ -1026,10 +1027,12 @@ func startServeDrain(g *errgroup.Group, ctx context.Context, d drainSet) {
 // optional authenticated network door. dev and net are nil when their listener
 // is off (dev unless --dev-http, network unless --listen or cfg.ListenListener).
 type serveDoors struct {
-	uds    *http.Server
-	dev    *http.Server
-	net    *http.Server
-	health *serverHealth
+	uds *http.Server
+	dev *http.Server
+	net *http.Server
+	// streams cuts stalled server-stream writes across every door during drain.
+	streams *streamDrain
+	health  *serverHealth
 	// The net door must use the container StoreResolver or deployment secrets reach agents.
 	netResolver *brokeredSecretResolver
 	// gitCredentials refreshes the brokered App tokens; nil without a GitHub App.
@@ -1078,6 +1081,7 @@ func buildDoors(
 	masterKey envelope.Key,
 	keyVersion int16,
 ) (serveDoors, error) {
+	streams := newStreamDrain()
 	health := newServerHealth(hub)
 	// Built even without a network door, so a bad cluster file or a reserved-ID
 	// clash refuses start the same way on every topology.
@@ -1135,7 +1139,7 @@ func buildDoors(
 	connecthttp.Mount(udsMux, usageSocketServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	connecthttp.Mount(udsMux, agentRepositoryServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	health.mount(udsMux)
-	udsServer := newLocalDoorServer(udsMux, localDoorHeaderTimeout, localDoorIdleTimeout)
+	udsServer := newLocalDoorServer(streams.wrap(udsMux), localDoorHeaderTimeout, localDoorIdleTimeout)
 	// Dev-only browser door: the same services with permissive CORS on the
 	// loopback listener, off unless DevHTTP is passed. AdminGate must precede
 	// ambient identity so adminOnly RPCs fail closed.
@@ -1157,7 +1161,7 @@ func buildDoors(
 		connecthttp.Mount(devMux, devUsageServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 		connecthttp.Mount(devMux, devAgentRepositoryServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 		health.mount(devMux)
-		devServer = newLocalDoorServer(devCORS().Handler(devMux), localDoorHeaderTimeout, localDoorIdleTimeout)
+		devServer = newLocalDoorServer(streams.wrap(devCORS().Handler(devMux)), localDoorHeaderTimeout, localDoorIdleTimeout)
 	}
 	linear, err := buildLinearWiring(ctx, cfg, st, hub, commsSvc, serverResolver, adminID, linearBridgeID, linearTokens)
 	if err != nil {
@@ -1174,7 +1178,7 @@ func buildDoors(
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
 		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, agentRepositorySvc, hub, st, adminID,
-			netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gateway, health)
+			netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gateway, health, streams)
 		if err != nil {
 			return serveDoors{}, err
 		}
@@ -1186,7 +1190,8 @@ func buildDoors(
 	// `server_secrets`, handing every deployment secret to every agent container.
 	doors := serveDoors{
 		health: health,
-		uds:    udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
+		uds:    udsServer, dev: devServer, net: netServer, streams: streams,
+		netResolver: netResolver, gitCredentials: gitCredentials,
 		linearNotify: linear.notify, linearResponder: linear.responder,
 	}
 	// GitHub refs link wherever the App reads the forge, writes or not.
@@ -1220,6 +1225,7 @@ func newServeGroup(ctx context.Context, v keyRefresher) (*errgroup.Group, contex
 type drainSet struct {
 	bus      *events.Bus[busPayload]
 	commsBus *events.Bus[*compassv1.SubscribeCommsResponse]
+	streams  *streamDrain
 	uds      *http.Server
 	dev      *http.Server
 	net      *http.Server
@@ -1243,6 +1249,8 @@ func drainDoors(ctx context.Context, d drainSet) error {
 	// wedge a SubscribeComms subscriber (Shutdown does not cancel its ctx). Both closes idempotent.
 	d.bus.Close()
 	d.commsBus.Close()
+	// Shutdown neither cancels handler ctx nor unblocks a stalled Send, so cut stream writes.
+	d.streams.abort(ctx)
 	// Stop the runner-ready seed first: bar new fires and cancel its ctx, so it unwinds
 	// while the doors drain. A drain woken by a group error has a live parent ctx.
 	hooksDone := d.hub.StopReadyHooks()

@@ -299,6 +299,7 @@ func buildNetworkServer(
 	runnerVerifier *auth.RunnerVerifier,
 	gateway gatewayServices,
 	health *serverHealth,
+	streams *streamDrain,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -404,6 +405,8 @@ func buildNetworkServer(
 	// Outermost: bound the request-body read so a slow-body drip cannot tie up a
 	// connection (RIG-1298). Long-lived Runner request streams are exempt.
 	netRoot = withBodyReadDeadline(netRoot, networkBodyReadTimeout)
+	// Shutdown does not unblock a stalled stream write; drain cuts it via this registry.
+	netRoot = streams.wrap(netRoot)
 	return &http.Server{
 		Handler:   netRoot,
 		TLSConfig: netTLS,
