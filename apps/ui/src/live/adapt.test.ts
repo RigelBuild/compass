@@ -68,18 +68,9 @@ import {
 	presenceLifecycle,
 } from "./adapt";
 
-// adapt.ts is the wire→domain adapter: it flattens protobuf-es oneofs/enums into
-// the UI's flat domain shapes and derives the caller-relative fields the wire
-// does not carry (membership, always-subscribed). These tests defend the
-// structural bridges a plausible refactor could silently break — oneof
-// flattening, empty-string→undefined normalization, enum totality, and the
-// join/subscribe derivation — by constructing real generated messages and
-// asserting the mapped domain value, never restating the mapping. Fixtures are
-// built per-case via `create(...)` so an assertion pins behavior, not defaults.
+// Tests pin protobuf oneof, enum, and caller-relative wire-to-domain mapping.
 
-// ── Wire fixture builders — only the fields a case exercises carry meaning; the
-//    generated defaults fill the rest so a shape change never perturbs an
-//    assertion. ────────────────────────────────────────────────────────────────
+// Generated defaults fill fields not exercised by each wire fixture.
 function wireUser(id: string, handle: string, displayName: string) {
 	return create(AccountSchema, {
 		id,
@@ -877,16 +868,10 @@ describe("adaptTopic", () => {
 	});
 });
 
-// ── Board (RIG-1729 read slice): adaptIssue / adaptPullRequest ───────────────
-// These defend the wire→domain bridges the board read path depends on: the
-// total IssueState/ForgeProvider enum maps, the empty-string→null assignee seam,
-// the forge-truth string narrowing, and the nested PR/review/thread mapping.
-// The maps are asserted MEMBER-BY-MEMBER so a mis-wired entry fails loudly.
+// Verify enum mapping, assignee normalization, and nested PR conversion.
 
 describe("ISSUE_STATE map (adaptIssue)", () => {
-	// The wire enum member → the domain lifecycle string it must map to. Every
-	// member is asserted so a swapped or dropped entry fails; UNSPECIFIED (the
-	// proto zero / malformed row) degrades to the earliest stage, "backlog".
+	// Assert every enum entry, including the UNSPECIFIED fallback.
 	const cases: ReadonlyArray<[IssueState, DomainIssueState]> = [
 		[IssueState.UNSPECIFIED, "backlog"],
 		[IssueState.BACKLOG, "backlog"],

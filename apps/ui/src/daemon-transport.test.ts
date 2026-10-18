@@ -1,20 +1,5 @@
 /// <reference types="bun" />
-// Contracts defended here (the webview→daemon fetch adapter, daemon-transport.ts):
-//  - createDaemonFetch(ipc) forwards the request the gRPC-Web transport built to
-//    the ShellIpc `rpc` call: the URL's *path+query only* (origin dropped), the
-//    headers, and the body as a byte array.
-//  - the ordered head→body→end frames reassemble into a `Response` whose
-//    status/headers come from the head frame and whose streamed body is the
-//    base64-decoded body chunks concatenated in order; `end` closes the stream.
-//    A multi-body stream yields each decoded chunk in order (SubscribeEvents).
-//  - a caller-minted `requestId` correlates the `rpc` call with the proxy task;
-//    cancelling the response stream, or aborting the request's signal, fires
-//    `ipc.cancel` with that *same* id.
-//
-// The seam is driven by a hand-written fake `ShellIpc` — no Tauri, no
-// `window.__TAURI_INTERNALS__`, no network — exactly the way any shell binding
-// would drive it: it captures the `rpc` args + the `onFrame` callback so the
-// test can push response frames, and records `cancel(requestId)` calls.
+// Fake ShellIpc frames test request forwarding, cancellation, and response order.
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import {

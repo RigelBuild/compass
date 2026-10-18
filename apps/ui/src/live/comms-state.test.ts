@@ -22,18 +22,7 @@ import {
 	reduceSnapshot,
 } from "./comms-state";
 
-// comms-state.ts is the pure live-comms reducer: reduceSnapshot turns a raw
-// snapshot into a fresh CommsState (wire→domain adaptation + (atUnixMs,id)
-// message sort), and applyEvent folds one already-decoded stream event into the
-// next state. The reducer is now CURSOR-FREE (RIG-1333 correction): the stream
-// `seq` and instance epoch are driver-local transport bookkeeping in stream.ts,
-// deliberately kept OUT of the reduced domain state, so there is no cursor to
-// carry or assert here. These tests defend the contracts a plausible refactor
-// could silently break — dedup-by-id (the at-least-once redelivery guard),
-// (atUnixMs,id) insert ordering, per-collection upsert, and value immutability —
-// by asserting the observed next state, never restating the reducer body. The
-// wire→domain derivation itself is covered exhaustively in adapt.test.ts; here
-// one integration case proves reduceSnapshot wires it.
+// Reducer tests pin deduplication, ordering, upserts, and immutability.
 
 // ── Domain fixtures (applyEvent consumes pre-adapted domain objects) ──────────
 const CALLER = "acc-me";

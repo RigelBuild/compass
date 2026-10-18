@@ -3,17 +3,9 @@ import * as compassClient from "@compass/client";
 import { createLiveClients } from "./client";
 import { envConnectionProvider, type ResolvedConnection } from "./provider";
 
-// The provider seam (design §A1, §Plan T1): boot resolves a Connection through a
-// ConnectionProvider, and the ONLY mode difference above the transport boundary
-// is the fetch that provider carries. Two things are proven here:
-//   - the default env provider wraps connectionFromEnv() unchanged and leaves
-//     fetchImpl undefined (the browser dev path uses the platform fetch);
-//   - a provider that DOES carry a fetchImpl threads it into the single shared
-//     transport createLiveClients builds — the shell's injected transport.
+// The provider passes fetchImpl to the shared client transport.
 
-// import.meta.env is the process-wide Vite env; the env provider reads it via
-// connectionFromEnv(). Set the required var for the resolve, then restore the
-// prior value so no key leaks into a sibling suite.
+// Restore env after each test to avoid leaking config.
 type MutableEnv = Record<string, string | undefined>;
 
 describe("envConnectionProvider (browser dev path — env unchanged)", () => {
@@ -21,11 +13,7 @@ describe("envConnectionProvider (browser dev path — env unchanged)", () => {
 	let priorBaseUrl: string | undefined;
 
 	afterEach(() => {
-		// Restore by DELETE when the var was originally absent: under Bun ≥1.4
-		// `import.meta.env` coerces an assigned value to a string, so writing an
-		// `undefined` priorBaseUrl back would leave the literal string
-		// "undefined" and leak into sibling suites. Assigning a real prior value
-		// is fine; only the absent case needs the delete.
+		// Delete absent env vars because Bun coerces assigned values to strings.
 		if (priorBaseUrl === undefined) {
 			delete env.VITE_COMPASS_BASE_URL;
 		} else {
@@ -39,23 +27,17 @@ describe("envConnectionProvider (browser dev path — env unchanged)", () => {
 
 		const resolved = await envConnectionProvider().resolve();
 
-		// A Connection (baseUrl from the env resolver) plus an explicit undefined
-		// fetchImpl — the seam's signal that boot should use the platform fetch.
+		// The explicit undefined fetchImpl selects platform fetch.
 		expect(resolved.baseUrl).toBe("https://compass.example:8443");
 		expect(resolved.fetchImpl).toBeUndefined();
 	});
 
 	test("preserves the env-required-var throw (missing baseUrl)", async () => {
 		priorBaseUrl = env.VITE_COMPASS_BASE_URL;
-		// DELETE (not assign undefined): under Bun ≥1.4 `import.meta.env` coerces
-		// an assigned value to a string, so `= undefined` would leave the literal
-		// "undefined" — a truthy door URL that resolves instead of throwing.
-		// Deleting the key is the faithful "var absent" simulation and matches
-		// 1.3 behavior too.
+		// Delete rather than assign undefined to simulate a missing required value.
 		delete env.VITE_COMPASS_BASE_URL;
 
-		// Env parity with today: a missing door URL still throws by design, so
-		// boot's bootConnection catches it at the same boundary as before.
+		// A missing door URL still fails at the env resolver boundary.
 		await expect(envConnectionProvider().resolve()).rejects.toThrow(
 			/VITE_COMPASS_BASE_URL/,
 		);
@@ -69,9 +51,7 @@ describe("createLiveClients threads a provider's fetchImpl (native shell seam)",
 	});
 
 	test("a resolved fetchImpl is passed into the one shared transport", () => {
-		// The transport factory is spied so we can read exactly what boot handed
-		// it: a fake shell fetch, threaded straight through to the single
-		// transport both clients dial over.
+		// Inspect the fake fetch passed to the single shared transport.
 		const transportSpy = spyOn(compassClient, "createCompassWebTransport");
 		spies.push(transportSpy);
 

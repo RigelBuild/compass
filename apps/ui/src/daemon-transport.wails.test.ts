@@ -1,16 +1,5 @@
 /// <reference types="bun" />
-// Contracts defended here (the Wails binding of the shell IPC seam,
-// daemon-transport.ts):
-// - rpc subscribes before calling the shell, preserves frame order, and removes
-//   its listener after a terminal frame.
-// - Invalid runtime frames reach the transport as an error before unsubscription.
-// - Shell calls keep the established binding names and request arguments.
-// - Client provider connections never carry a bearer token (DL-109).
-// - shellConnect maps current Go results, including those without serverUrl.
-//
-// The Wails runtime is a hand-installed fake via mock.module. Events.On records
-// subscriptions and returns an unsubscribe function for each event.
-// Call.ByName records invocations that each test settles.
+// Fake Wails bindings test event flow, shell calls, and connection mapping.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import * as realRuntime from "@wailsio/runtime";
 import {

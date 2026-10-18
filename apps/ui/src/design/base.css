@@ -1,8 +1,4 @@
-/* Compass global base layer (D7). Reset, body type ramp, scrollbar,
-   :focus-visible ring, and the `.cx-md` prose surface — all re-expressed
-   against the semantic + scale --cx-* tokens authored in tokens.css.
-   Consumption rule (D2): every value here is a --cx-* var() or a scale
-   token; no raw hex, no --rigel-*, no literal durations/easings. */
+/* Base elements consume semantic and scale tokens; no primitive values belong here. */
 
 /* --- Reset --- */
 * {
@@ -148,24 +144,10 @@ button {
 	border-top: 1px solid var(--cx-border);
 }
 
-/* ==========================================================================
-   Streamed-text motion — the trace-surface signature (D9; brand motion.md
-   §"The one motion accent"). Agent token-streaming reveals characters at a
-   steady visual cadence (--cx-stream-char-ms, decoupled from the bursty
-   network): a freshly-revealed character IGNITES at the phosphor
-   --cx-pulse-color and COOLS to fog behind the write-head, and a block cursor
-   blinks at the write-head at --cx-cursor-blink.
+/* Streaming text ignites at the phosphor, then cools at a cadence independent of network bursts.
+   The UI render loop owns draining and markdown safety; aria-live remains the status signal. */
 
-   This file owns the VISUAL contract + keyframes only. The network-buffer →
-   steady-drain decoupling, rate adaptation, and partial-markdown/code-fence
-   safety are compass-ui render-loop responsibilities; the streaming region is
-   aria-live / aria-busy so motion is never the sole "streaming" signal.
-   ========================================================================== */
-
-/* One freshly-revealed character. compass-ui wraps the bounded trailing window
-   of just-drained characters in .cx-stream-char; each ignites at the phosphor
-   then cools to fog over one step of the drain cadence. The settled prefix is a
-   plain text node (no span), so only a bounded trailing window animates. */
+/* Animate only the bounded trailing window; settled text stays plain. */
 .cx-stream-char {
 	animation: cx-stream-ignite var(--cx-stream-char-ms) var(--cx-ease-out) both;
 }

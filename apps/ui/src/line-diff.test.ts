@@ -6,13 +6,7 @@ import {
 	splitLines,
 } from "./line-diff";
 
-// RED acceptance spec for T1 (design record §235-339): the pure line-diff
-// module `line-diff.ts` does not exist yet, so the import above fails and this
-// whole file is RED until the implementer builds it. The fixtures below are
-// committed VERBATIM from the design record and pin the P1/P2 defects the real
-// jsdiff-backed diff fixes: reordered lines, duplicate lines, trailing-newline
-// handling, new-file all-adds, and the edit-distance budget guard (full
-// granularity under budget vs. coarse fallback over budget).
+// Pin the line-diff contract for reordered, duplicate, and newline-terminated text.
 
 describe("splitLines", () => {
 	// Newline-terminated split: a trailing "\n" does NOT yield a phantom empty

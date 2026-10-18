@@ -427,8 +427,7 @@ export interface AppStore {
 	isAgentCollapsed: (agentId: string) => boolean;
 	toggleAgent: (agentId: string) => void;
 
-	// ── Right sidebar: activity-bar tabs + pins + repos (T6; dock-in-sidebar D1;
-	//    Record A §T2/T3; unreachable-pin amendment RIG-1645) ──
+	// ── Right sidebar: activity tabs, pins, and repo selection ──
 	/** The active right-sidebar tab: a pinned agent conversation
 	 *  (`agent:${accountId}`), the `status` fleet pane, or an issue tab (Files /
 	 *  VCS / PR). */
@@ -477,7 +476,6 @@ export interface AppStore {
 	 *  belongs to an issue of the selected agent. */
 	setActiveBranch: (branch: string) => void;
 
-	// ── Daemon: server liveness/version banner ──
 	/** The daemon liveness/version the top-bar banner shows (compass.v1
 	 *  GetServerInfo). A store built with `options.compass` probes once at boot
 	 *  and flips this to the live info; an offline store keeps STUB_DAEMON
@@ -1384,24 +1382,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const pinnedAgentIds = createMemo<readonly string[]>(() =>
 		pinnedAgents().map((p) => p.id),
 	);
-	// The single agent-resolution seam (RIG-1645 P5): resolve an account id to its
-	// visible agent. A REACTIVE closure over the `agents` memo, so every consumer
-	// re-runs when the agent set changes. `agents` is the live join memo below, so a
-	// presence/account tick flips resolution live→reachable through this one seam.
+	// Resolve account ids through the reactive agents memo.
 	const agentById = (accountId: string): Agent | undefined =>
 		agents().find((a) => a.account.id === accountId);
-	// ── Comms: the channel surface (design: architecture-lineage) ──
-	// ONE reduced CommsState drives all four comms accessors, starting at `initialComms`
-	// (EMPTY by default) and replaced wholesale by each push — bar the local ask picks
-	// `preserveLocalAsks` carries across. Accessors are memos, so a message event is absorbed.
+	// One reduced state feeds comms accessors and preserves local ask picks.
 	const [comms, setComms] = createSignal<CommsState>(
 		options.initialComms ?? EMPTY_COMMS_STATE,
 	);
-	// CommsState's collections are `readonly` (a pure value the reducer rebuilds each
-	// transition) and the accessors keep that: every write goes through setComms with a
-	// fresh array. The `readonly` signature is what lets the compiler hold that true.
-	// Each merged accessor reads its own raw-slice memo, so a push that leaves a
-	// slice's identity alone (structural sharing) leaves the merged view alone too.
+	// Structural sharing keeps unchanged collections stable.
 	const withDemo = <T>(
 		slice: Accessor<readonly T[]>,
 		demo: readonly T[],

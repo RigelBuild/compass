@@ -23,19 +23,9 @@ import {
 import { BOARD_LANES } from "./constants";
 import type { Agent, Issue, IssueState, PullRequest } from "./stub-data";
 
-// board.ts is the pure core of the D1 issue state model: it partitions the
-// lifecycle into the active board columns vs the pre-active Backlog tier vs the
-// terminal `archived` sink (off-board), and derives every board query (lanes,
-// swimlane rows, cells, counts) from that one partition. These tests defend the
-// partition invariants against a future union edit or lane reorder silently
-// desyncing the surfaces that read it.
-
-// The complete lifecycle (stub-data IssueState). Enumerated here on purpose: if
-// the union grows a state, TypeScript reddens this literal against the
-// exhaustiveness assertion below, forcing the new state to be classified.
-// `archived` (DL-071) is the terminal, off-board third tier — neither active
-// nor backlog.
+// Keep lifecycle classification exhaustive across board surfaces.
 const ALL_STATES: readonly IssueState[] = [
+	// New states need explicit board classification.
 	"backlog",
 	"todo",
 	"queued",
@@ -46,9 +36,7 @@ const ALL_STATES: readonly IssueState[] = [
 	"archived",
 ];
 
-// Minimal valid Issue — only the fields board.ts reads (state, assignee) carry
-// meaning; the rest are present to satisfy the interface and are held constant
-// so a fixture-shape change never perturbs a partition assertion.
+// Only state and assignee affect board helpers; remaining fields satisfy Issue.
 function ws(over: Partial<Issue> & Pick<Issue, "id" | "state">): Issue {
 	return {
 		forge: { provider: "github", host: "github.com" },
@@ -89,34 +77,26 @@ function agent(id: string, parentAgentId?: string): Agent {
 }
 
 describe("state partition (D1 + DL-071)", () => {
-	// Invariant 1 — the core partition contract. Every working lifecycle state is
-	// classified by exactly one predicate: active XOR backlog. The terminal
-	// `archived` tier is off-board — neither active nor backlog — so it is
-	// excluded from the XOR and checked separately below. A future edit that adds
-	// a working state without updating both predicates would break exhaustiveness
-	// or disjointness here.
+	// Active and backlog partition working states; archived belongs to neither.
 	test("active/backlog partition is exhaustive and disjoint over the 7 working states", () => {
 		for (const state of ALL_STATES) {
 			if (state === "archived") continue;
 			const active = isActiveState(state);
 			const backlog = isBacklogState(state);
-			// exactly one is true (XOR): never both, never neither.
+			// Exactly one predicate holds (XOR).
 			expect(active !== backlog).toBe(true);
 		}
-		// exactly 8 states enumerated, no duplicates.
+		// Keep the state list unique and complete.
 		expect(new Set(ALL_STATES).size).toBe(8);
 	});
 
-	// Invariant 1b — the terminal tier. `archived` (DL-071) is off-board: neither
-	// an active column nor a pre-active backlog state. It is the third tier.
+	// Archived is off-board, neither active nor backlog.
 	test("archived is off-board — neither active nor backlog", () => {
 		expect(isActiveState("archived")).toBe(false);
 		expect(isBacklogState("archived")).toBe(false);
 	});
 
-	// Invariant 2a — the red→green flip. `backlog` and `todo` were board columns
-	// in the old 6-state model; under D1 they are the pre-active tier and must
-	// NOT be active. This assertion fails against the old model.
+	// Backlog and todo belong to the pre-active tier.
 	test("backlog and todo are NOT active (moved off the board)", () => {
 		expect(isActiveState("backlog")).toBe(false);
 		expect(isActiveState("todo")).toBe(false);
@@ -124,8 +104,7 @@ describe("state partition (D1 + DL-071)", () => {
 		expect(isBacklogState("todo")).toBe(true);
 	});
 
-	// Invariant 2b — the renamed states. `queued`/`done` replace the old
-	// `dispatched`/`merged` and are active board columns.
+	// Queued and done belong to active columns.
 	test("queued and done ARE active (renamed from dispatched/merged)", () => {
 		expect(isActiveState("queued")).toBe(true);
 		expect(isActiveState("done")).toBe(true);
@@ -716,14 +695,8 @@ describe("prCount", () => {
 		expect(prCount(all, new Set<string>())).toBe(0);
 	});
 
-	// Contract edge (Record B §T2): unscoped prCount is prRows(all).length —
-	// it counts every open-PR row and is deliberately NOT agent-aware (the signature
-	// takes no agent set). prRowGroups, by contrast, only emits rows whose assignee
-	// is null or matches a known agent, so an issue with a non-null assignee that is
-	// absent from the agent set is counted by the badge yet dropped from the render.
-	// This is out of contract for real data — assignee is a trusted account id and a
-	// miss is a store bug — but the asymmetry is intentional and pinned here so a
-	// future change to either side is a conscious one.
+	// The unscoped badge counts every open-PR row, even when rendering drops an unknown assignee.
+	// This mismatch is intentional for trusted IDs; a missing agent indicates a store bug.
 	test("unscoped: an orphan (unknown) assignee is still counted (== prRows length)", () => {
 		const all = [
 			ws({
@@ -741,10 +714,7 @@ describe("prCount", () => {
 	});
 });
 
-// prBoardRows / prBoardGroups build the PRs-BOARD partition: one row per PR that
-// is not closed (MERGED included, for the Merged column), grouped by assignee in
-// treeOrder with a trailing Unassigned group. Contract mirrors prRows/prRowGroups
-// except the row predicate is forgeState !== "closed" (not open-only).
+// PR board rows include merged but exclude closed requests, grouped by assignee.
 describe("prBoardRows", () => {
 	test("includes merged, excludes closed, preserves issue-then-prs order", () => {
 		const open = prOf({ number: 1, forgeState: "open" });

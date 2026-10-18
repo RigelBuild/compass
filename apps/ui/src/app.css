@@ -310,11 +310,7 @@
 	background: var(--cx-bg-hover);
 }
 
-/* The agent-leaf row: the select button (.tree-agent) plus its hover pin/unpin
- *  affordance (Record A §T4). Flex:1 + min-width:0 so it absorbs the remaining
- *  width inside a branch row (beside the caret) and shrinks below its content;
- *  as a plain leaf it fills the row. The pin button reveals on row hover, so the
- *  tree stays calm — except a pinned row, which shows a filled star always. */
+/* Let the row shrink beside the caret; reveal pin controls on hover. */
 .tree-agent-row {
 	display: flex;
 	align-items: center;
@@ -685,11 +681,7 @@
 		transform: translateX(320%);
 	}
 }
-/* Load-bearing (F12): --cx-pulse-period is zeroed under reduced motion, which
-   would leave a zero-duration infinite animation spinning in place — so hiding
-   ::after is not redundant with the zeroed token. Both triggers, mirroring the
-   house convention (base.css / loader.css) and surfaces.md:111: the OS media
-   query AND the manual data-reduce="on" toggle. Do not strip either. */
+/* Hide the zero-duration infinite animation under reduced motion. */
 @media (prefers-reduced-motion: reduce) {
 	.bridge-cell > .cx-card[data-advancing="1"]::after {
 		display: none;

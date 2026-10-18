@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolveAnalyticsConfig } from "./config";
 
-// config.ts resolves the product-analytics embed config (PostHog key + host)
-// from a Vite-style env record. `resolveAnalyticsConfig` is pure over its input,
-// so these tests exercise it directly with plain env objects — no `import.meta`.
-// They defend the load-bearing gate: analytics is OFF by default, so a missing or
-// blank key resolves to undefined (never a throw — analytics is optional, unlike
-// the required baseUrl), and an enabled build defaults the host to the standard
-// PostHog US cloud when none is supplied.
+// Missing keys disable analytics; enabled config defaults to the US host.
 
 describe("resolveAnalyticsConfig", () => {
 	test("resolves key + given host when both are set", () => {

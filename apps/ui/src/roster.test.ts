@@ -5,13 +5,7 @@ import type { AccountSession } from "./live/events";
 import { joinAgents } from "./roster";
 import type { Account, RuntimeMarker } from "./stub-data";
 
-// roster.ts is the pure join at the store's seam: it composes the board's live
-// `Agent` view-models from the durable `accounts` (identity) and the ephemeral
-// presence map (lifecycle/activity; T2). These tests defend the two contracts a
-// naive join would silently break: the miss rule (R2/DL-194 — an account absent
-// from the presence map is at-rest, so `"stopped"`, NOT the components'
-// `?? "idle"` false-live fallback, and NOT undefined) and the preserved account
-// order (the `agentTree` stable-order contract, stub-data.ts:372-377).
+// An account without presence is stopped; preserve account order through the join.
 
 // A minimal agent-kind account — joinAgents reads only `id` and `kind`; the rest
 // satisfies the shape.

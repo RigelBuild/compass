@@ -178,12 +178,7 @@ describe("issueKey + isMultiForge", () => {
 	});
 });
 
-// authorLabel renders the boarded artifact's Compass agent as a bare `@handle`.
-// Only Compass artifacts from trusted agent accounts are boarded (Matt's
-// 2026-07-31 ruling), so there is no untrusted owner-header spoof surface: the
-// label carries no owner text and no verified/claims hedge. This golden string
-// guards that copy — any re-introduction of the owner suffix or a hedge reddens
-// here.
+// Trusted agents render by handle without an owner claim.
 describe("authorLabel", () => {
 	const agent = (agentHandle: string, verified: boolean): AgentAttribution => ({
 		agentHandle,
@@ -195,9 +190,7 @@ describe("authorLabel", () => {
 		expect(authorLabel(agent("atlas", true))).toBe("@atlas");
 	});
 
-	// A different handle with verified=false proves the label is DERIVED from
-	// agentHandle (not a hardcoded "@atlas") AND is independent of the verified
-	// bit — one assertion carrying both facts.
+	// A different unverified handle proves the label uses agentHandle, not a constant.
 	test("tracks agentHandle and ignores the verified bit", () => {
 		expect(authorLabel(agent("nemo", false))).toBe("@nemo");
 	});

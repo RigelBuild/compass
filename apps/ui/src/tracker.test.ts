@@ -6,17 +6,9 @@ import {
 	toTrackerStatus,
 } from "./tracker";
 
-// tracker.ts is the pure D2 projection between Compass state (canonical) and a
-// tracker's native status, through a user-editable mapping. These tests defend
-// the projection's two structural invariants — `toTracker` is TOTAL over the
-// WorkingIssueState domain (the seven working states), `fromTracker` is
-// MANY-TO-ONE with a `backlog` fallback — independent of any reactive root (the
-// functions are pure).
+// Pin total status mapping and backlog fallback without a reactive root.
 
-// The seven WORKING states (stub-data WorkingIssueState). Enumerated on purpose:
-// a future working-state addition reddens this literal against the
-// exhaustiveness type, forcing the new state to be given a tracker projection.
-// `archived` carries no tracker status (DL-071), so it is not in this domain.
+// Enumerate states so new members need an explicit tracker projection.
 const ALL_STATES: readonly WorkingIssueState[] = [
 	"backlog",
 	"todo",

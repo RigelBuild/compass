@@ -22,12 +22,7 @@ import { flush, mountApp } from "./test-router";
 import { testQueryClient } from "./test-support";
 import { DEMO_AGENTS } from "./tour/demo";
 
-// Route-behavior tests (record A4 / T3): the URL is the source of truth. These
-// exercise the shared route table (routes.tsx) on a memory-history router — the
-// same table mount.tsx mounts under hash history — through the real App shell + store
-// route-sync effect. Navigation is asynchronous (record A2): an action or a
-// deep-link updates the location, and the effect writes the routed signals one
-// reactive tick later, so every routed read follows a `flush()`.
+// Route tests use the shared table and memory history; flush before routed reads.
 
 // A standalone (kind "channel") channel that exists in the fixture — the target
 // of an in-app openChannel. Derived so a fixture reshuffle can't stale it.
@@ -189,11 +184,7 @@ describe("pending-aware channel deep-link (record A3)", () => {
 		return { store, container, fake, history };
 	}
 
-	// A deep-link to a valid channel that the first snapshot DOES carry: it is
-	// held through the empty first run, then resolves to that channel once the
-	// snapshot lands — never bounced to "/". Mutation-check: gating the redirect
-	// on non-emptiness (or omitting the first-snapshot guard) would bounce it on
-	// the empty first effect run and leave view "bridge".
+	// Hold valid channel deep links until the initial snapshot resolves.
 	test("a valid deep-link is held until the snapshot, then resolves", async () => {
 		const { store, fake } = mountLive(`/channel/${DEEP}`, [DEEP]);
 
@@ -233,12 +224,7 @@ describe("pending-aware channel deep-link (record A3)", () => {
 	});
 });
 
-// The topic deep-link (/channel/:channelId/topic/:topicId) carries the SAME
-// pending-aware pattern as the channel route, plus a topic-specific second
-// fallback: an absent-after-snapshot topic drops back to the channel index
-// rather than stranding on a blank topic view (store.ts applyTopicRoute). A LIVE
-// store is required for both — the topic set arrives asynchronously via the
-// snapshot, so a valid topic deep-link must be HELD across the empty first run.
+// Topic links wait for the snapshot; missing topics fall back to the channel index.
 describe("pending-aware topic deep-link (record A3)", () => {
 	const CALLER = "acc-me";
 	const CHAN = "chan-deep";
@@ -346,19 +332,11 @@ describe("demo-route teardown on the real router", () => {
 	});
 });
 
-// Store-only route-sync unit checks (no <App> — the default in-memory seam
-// applies routes synchronously, so createAppStore stays test-constructible with
-// no router; record A3). These pin the seam's synchronous contract the fragment
-// suites rely on.
+// The default route-sync seam applies synchronously without an App router.
 describe("route-sync seam (no router)", () => {
-	// Kept intentionally light — the transition matrix lives in store.test.ts;
-	// this only asserts the default seam applies a route without a bound router.
+	// Transition details are covered in store.test.ts.
 	test("show* navigate the view synchronously through the default seam", () => {
-		// createAppStore opens a solid-query (issuesQuery) that Solid 2 requires a
-		// reactive owner for (a bare call throws NoOwnerError); wrap in createRoot
-		// like store.test.ts's withStore. Under Solid 2 a signal write commits on
-		// the next scheduler tick, so a routed read follows a synchronous
-		// `flushSync()` (the store.test.ts show*-transition pattern).
+		// Solid 2 needs a reactive owner; flush before reading signal updates.
 		createRoot((dispose) => {
 			const store = createAppStore({
 				initialComms: STUB_COMMS_STATE,

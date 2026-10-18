@@ -1,22 +1,6 @@
-// Gather the reviewed monorepo markdown into the Starlight content collection
-// (RIG-1764). The canonical sources carry no frontmatter and open with a `# H1`;
-// Starlight's docsSchema requires a `title`. This mirrors each source into
-// apps/eng-docs/src/content/docs/ with a derived `title:` block, the now-
-// duplicated body H1 removed, and in-repo links rewritten to site routes /
-// GitHub blobs.
-//
-// Coverage is the whole monorepo: every tracked `*.md` except the canonical
-// top-level exclusion set (`.rumdl.toml` `[global] exclude`, the single
-// source of truth), generated `outputs/`, the docsite's own `apps/eng-docs/`,
-// and `docs/designs/` (records now live in RigelBuild/docs). Each file is
-// classified into one
-// nav SECTION (Specs, Architecture, Packages, Contributing); the
-// section drives both its dest path under the content root and the generated
-// sidebar. This file stays the single gather entry point and emits
-// `src/sidebar.generated.ts` for astro.config.mjs to import.
-//
-// The pipeline splits pure construction (the exported functions below, unit-
-// tested in gather.test.ts) from execution (main(), a thin fs runner).
+// Gather canonical monorepo Markdown into Starlight with derived frontmatter and rewritten links.
+// `.rumdl.toml` supplies exclusions; generated outputs, this docsite, and design records are skipped.
+// The section classification drives both content paths and the generated sidebar.
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";

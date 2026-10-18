@@ -19,14 +19,8 @@ import type { Issue as DomainIssue, RuntimeMarker } from "../stub-data";
 import type { AccountSession } from "./events";
 import { runEventStream } from "./events";
 
-// The SubscribeEvents read-driver seam (RIG-1729 read slice). A fake server is a
-// `createRouterTransport` handler serving CompassService.SubscribeEvents — the
-// vendor's documented no-HTTP test path — so the round-trip exercises the real
-// driver + adapt boundary, never a mock. The handler is an async generator that
-// yields a SCRIPTED sequence of responses, then blocks until the test aborts so
-// the driver tails (never re-subscribes) meanwhile. Each assertion drains the
-// microtask queue until the driver's OWN output (the onIssues sink) satisfies
-// the predicate — no wall-clock timer.
+// Exercise the SubscribeEvents driver and adapter through an in-memory server.
+// Scripted responses and microtask drains keep the tests deterministic.
 
 // A partial Issue init, matching what `create(IssueSchema, ...)` accepts.
 type IssueInit = Parameters<typeof create<typeof IssueSchema>>[1];
@@ -58,10 +52,7 @@ function resyncResp(): SubscribeEventsResponse {
 	});
 }
 
-// A positioned NON-issue tail payload (serverStatus): the class of response the
-// shared SubscribeEvents stream is dominated by. The board driver ignores it —
-// never mapped, never thrown on — but it still advances the cursor and counts
-// as connection-liveness progress (the backoff anti-spin signal).
+// Non-issue events still advance the cursor and count as connection progress.
 function serverStatusResp(seq: bigint): SubscribeEventsResponse {
 	return create(SubscribeEventsResponseSchema, {
 		seq,
@@ -76,13 +67,7 @@ function boardIssue(id: string, overrides: IssueInit = {}): WireIssue {
 	return create(IssueSchema, { id, ...overrides });
 }
 
-// A transport whose SubscribeEvents yields `script` then holds the stream open
-// (the live tail) until the client aborts, at which point the generator unwinds.
-// `catchUp` scripts the ListBoardIssues durable re-snapshot the driver reads at
-// the cold-start boundary: an issue array serves that board; `catchUpError`
-// makes the read reject (the server-has-not-wired-it-yet path). With neither,
-// ListBoardIssues is left unimplemented — the driver's best-effort read fails
-// and it tails on, the pre-catch-up behavior.
+// Keep the fake stream open until abort; catch-up can succeed or fail independently.
 function scriptedTransport(
 	script: readonly SubscribeEventsResponse[],
 	opts: { catchUp?: WireIssue[]; catchUpError?: Error } = {},
@@ -585,11 +570,7 @@ describe("runEventStream (RIG-1729 read driver)", () => {
 	});
 
 	test("a non-issue tail payload is ignored without disturbing the board", async () => {
-		// The shared stream interleaves agent-lifecycle / server-status frames the
-		// board doesn't consume. One lands here between two issue upserts: it must
-		// not throw, not blank the board, and not stop the later issue landing.
-		// A successful (empty) catch-up isolates the variable under test to the
-		// interleaved non-issue frame — no Unimplemented read to muddy `errors`.
+		// Interleaved non-issue events must not interrupt issue updates or the board.
 		const transport = scriptedTransport(
 			[
 				issueResp(1n, "a", { state: IssueState.TODO }),

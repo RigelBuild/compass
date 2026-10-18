@@ -586,12 +586,7 @@ describe("adoptComms vs an in-progress ask", () => {
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			// The refusal really happened, so the user is told …
 			expect(store.askError("ask-1")).toBe("connection reset");
-			// … and the ask is not left falsely in flight — it is left CLOSED, so
-			// the write gates refuse a further click and nothing more ships. The
-			// count is read rather than written as a literal because the double
-			// records a respond only on its ACCEPT path: the refused one above was
-			// thrown ahead of the bookkeeping, so the baseline here is zero and the
-			// contract under test is that it does not GROW.
+			// The failed submit keeps the ask closed and sends no later response.
 			expect(store.isAskSubmitted("ask-1")).toBe(false);
 			const shipped = fake.askResponses.length;
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-b");
@@ -601,9 +596,7 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// A submit HELD in flight, then a blank push adopted over the submitted ask, then the
-	// respond refused: the shipped answers restage over the blank, and the ask is retryable.
-	// Mutation-check: a catch that omits the restage leaves the adopted blank ask.
+	// A refused in-flight submit restages the local draft over a blank push.
 	test("a refused submit restages the clicked answer over a blank push", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -760,11 +753,7 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The typed half of the refusal restage. A submit HELD in flight, a
-	// blank push adopted over the submitted ask, then the respond refused: the
-	// shipped answers restage over the blank, so BOTH the click and the typed
-	// draft come back. Mutation-check: a catch that omits the restage leaves the
-	// draft blank.
+	// A rejected submit restores both selected options and typed draft text.
 	test("a refused submit restages the typed draft alongside the click", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -811,13 +800,7 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// A question's ARITY is part of its shape, not a label. On a multi-select an
-	// option and typed text legally coexist; if a push flips that question to
-	// single-select, carrying the local pair forward would ship an option plus
-	// text the server now rejects — and re-adopt it on every later push, so it
-	// never self-heals. The pushed shape wins instead, exactly as a revised
-	// option id already does. Mutation-check: dropping `allowMultiple` from
-	// `sameQuestions` carries the stale pair and reddens every leg below.
+	// A pushed single-select shape invalidates a local option/text combination.
 	test("a pushed ask that flipped a question to single-select beats the local pair", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -828,27 +811,25 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 
 		await withLiveStore(fake, async (store, settled) => {
-			// Legal on a multi-select: a chosen option AND a typed answer.
+			// Multi-select permits a selected option and typed text together.
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
 			store.answerAskText("m-ask", "ask-1", "q-1", "typed");
 			await settled();
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			expect(customTextIn(store, "q-1")).toBe("typed");
 
-			// The agent restates the ask single-select, same question and option ids.
+			// The agent restates the ask as single-select with the same ids.
 			await fake.emit(
 				{ case: "messageUpdated", value: { message: askMessage(["q-1"]) } },
 				1n,
 			);
 			await settled();
 
-			// The pushed shape is adopted and the now-illegal pair is gone.
+			// The pushed shape wins, so the now-illegal pair is removed.
 			expect(askIn(store)?.questions[0]?.allowMultiple).toBe(false);
 			expect(chosenIn(store, "q-1")).toEqual([]);
 			expect(customTextIn(store, "q-1")).toBe("");
 
-			// Nothing was staged, so a submit says nothing rather than shipping a
-			// respond the server would refuse with ErrInvalidArgument.
 			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toEqual([]);

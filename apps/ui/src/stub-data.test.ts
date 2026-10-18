@@ -2,18 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type { Channel } from "./comms-stub";
 import { type Agent, agentTree } from "./stub-data";
 
-// agentTree derives the nested sidebar tree from each account's parentAgentId
-// (Record C / DL-095, §T4). These tests defend the derivation's contract:
-// roots = empty/absent OR dangling parentAgentId (promoted, never dropped),
-// children nested under their parent, and — the point C-T5's treeOrder
-// consumes — roots and siblings preserve the stable INPUT ORDER of the agents
-// array. Depth-first alone is not a total order, so this tie-break is the
-// determinism guarantee for a fixed input. The derivation is also total: a
-// cycle (self-parent or a link back to a descendant) promotes its members to
-// roots rather than silently dropping them.
+// Preserve input order and promote dangling parents while keeping cycles visible.
 
-// A minimal Agent fixture: only account.id and account.parentAgentId matter to
-// the derivation, so the other fields are filled with inert stubs.
+// The minimal fixture sets only the fields used by agentTree.
 const agent = (id: string, parentAgentId?: string): Agent => ({
 	account: {
 		id,
@@ -119,11 +110,7 @@ describe("agentTree", () => {
 	});
 
 	test("a two-node cycle survives: both members become roots", () => {
-		// x.parent = y and y.parent = x. Neither can be a child without
-		// dropping the other, so the total derivation promotes both to roots —
-		// collected in the same input-order loop as any other root, so the
-		// input order [x, y] is preserved (the C-T5 determinism contract holds
-		// for cycle-promoted roots too).
+		// Both nodes in a cycle become roots in their original input order.
 		const agents = [agent("x", "y"), agent("y", "x")];
 		const tree = agentTree(agents);
 		expect(ids(tree)).toEqual(["x", "y"]);

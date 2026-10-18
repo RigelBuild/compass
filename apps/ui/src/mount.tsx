@@ -1,15 +1,4 @@
-// The shared shell-mount, extracted from index.tsx's `main()` (T1). Both boot
-// paths call it with the same arguments in the same order: the live boot
-// (`index.tsx main()`) and the offline fixture boot (`boot-fixture.ts`). Keeping
-// the render tree in ONE place is what lets the fixture boot mount the identical
-// shell without duplicating the JSX block.
-//
-// Named `mountShell`, NOT `mountApp` — `test-router.tsx:37` already exports a
-// test-only `mountApp` (MemoryRouter, `{store,container}` return); a second
-// same-named export in the `src` tree would be a grep/import trap.
-//
-// `newAppQueryClient` is the SINGLE source of the app's query defaults so the
-// fixture boot (T2) cannot silently drift from the live client.
+// Live and fixture boot share this shell mount and query defaults.
 
 import { createRouter, hashHistory, type RouterHistory } from "@solidjs/router";
 import { render } from "@solidjs/web";

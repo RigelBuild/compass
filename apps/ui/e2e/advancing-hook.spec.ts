@@ -1,25 +1,8 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
-// Advancing-card hook: the chase-light and its reduced-motion guard.
-//
-// The board paints a blue chase-light on a card mid-advance via
-// `.bridge-cell > .cx-card[data-advancing="1"]::after`. The Bridge sets the flag
-// from `Issue.state_changed_at`; the fixture issues carry no stamp, so this
-// spec toggles the attribute directly to exercise the CSS.
-//
-// These are computed-style + stylesheet assertions, not screenshots: the
-// affordance is an animation, and a committed pixel of a moving bar is timing-
-// dependent (it would break the smoke harness's byte-stable contract). What is
-// deterministic — and what actually regresses if someone strips the F12 guard —
-// is (a) the ::after renders and runs `card-advance` under normal motion, and
-// (b) it is display:none under BOTH reduced-motion triggers. That guard is
-// load-bearing: `--cx-pulse-period` is zeroed under reduced motion, so without
-// hiding ::after a 0s-infinite animation would spin in place.
-//
-// NOTE: this suite runs via the `test:visual` playwright harness, not the moon
-// `compass-ui:ci` battery (which is typecheck/build/test/stylelint) — so it is a
-// local / on-demand guard, not part of the required GHA `CI` gate.
+// Reduced-motion coverage must hide the pseudo-element; a zero-duration
+// infinite animation can still spin in place. Tests isolate both guard paths.
 
 const SEL = ".bridge-cell > .cx-card";
 
@@ -74,11 +57,7 @@ test.describe("advancing hook — normal motion", () => {
 
 test.describe("advancing hook — reduced motion (F12 guard)", () => {
 	test.describe("manual data-reduce=on mirror (no OS preference)", () => {
-		// Isolate from the OS-media guard: the global reducedMotion:"reduce"
-		// (playwright.config.ts) otherwise keeps @media(prefers-reduced-motion)
-		// active, so stripping the manual :root[data-reduce="on"] mirror would
-		// leave ::after hidden by the media path and this test would not redden.
-		// Under no-preference ONLY the manual toggle can hide ::after.
+		// Disable OS reduced-motion so this test isolates the manual toggle.
 		test.use({ reducedMotion: "no-preference" });
 		test("the manual data-reduce=on mirror hides the chase-light", async ({
 			page,

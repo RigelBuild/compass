@@ -355,12 +355,7 @@ describe("installKeymap", () => {
 	});
 
 	test("scope gate: a scope:'main' command does NOT run at tier 3 when a DIFFERENT zone is active", () => {
-		// Locks the `command.scope === zone` EQUALITY, not merely `zone != null`:
-		// a main-scoped command must stay inert while another zone holds focus
-		// (the cross-zone leak D1 chose this predicate over an isGroupRelative
-		// skip to prevent — e.g. a scope:'right' sidebar command bound unscoped).
-		// Not reachable in production today (single main-zone group ⇒ activeZone()
-		// is only ever "main" or null), but the gate is the general contract.
+		// Equality matters: a main command must not run while another zone is active.
 		const registry = createCommandRegistry();
 		let ran = 0;
 		registry.register(

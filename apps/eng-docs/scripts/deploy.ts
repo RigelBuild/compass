@@ -1,38 +1,7 @@
-// Deploy the built docsite (dist/) to Cloudflare Pages, then on a PR upsert a
-// preview-URL comment. Invoked by the compass-eng-docs:deploy /
-// compass-eng-docs:deploy-preview moon tasks (CD, runInCI:false) — gated to
-// push:main / pull_request by the standalone .github/workflows/eng-docs-deploy.yml
-// GitHub Actions workflow (RIG-1765). The engineering docsite lives on
-// Cloudflare Pages under the compass-eng-docs project.
+// Deploy the engineering docsite to Cloudflare Pages; PR runs also publish a
+// preview comment with changed source-page links.
 //
-// Shares the same Cloudflare Pages deploy + PR-preview-comment shape as the
-// prior art, including the three constants
-// below (PROJECT_NAME, COMMENT_MARKER, SITE_LABEL). This docsite build gathers
-// the compass repo's markdown, so its preview comment also deep-links the .md
-// pages a PR changed (changedDocPages + commentBody's "Changed pages" section).
-//
-// Construction vs execution: the pure functions below build typed arg arrays +
-// parse output; a thin `$` runner at the bottom executes. The pure parts are
-// unit-tested (deploy.test.ts) with no live wrangler/gh.
-//
-// Env (GitHub Actions injects the GITHUB_* set; PR_* are passed explicitly from
-// github.event.pull_request; the CLOUDFLARE_*/GH_TOKEN are declared secrets):
-//   CLOUDFLARE_API_TOKEN   — wrangler auth (secret).
-//   CLOUDFLARE_ACCOUNT_ID  — Cloudflare account (secret).
-//   GITHUB_EVENT_NAME      — "push" (production) or "pull_request" (preview).
-//   GITHUB_HEAD_REF        — PR source branch (the preview branch name; PR only).
-//   GITHUB_SHA             — the checked-out commit; the branch head on push, but
-//                            the ephemeral merge commit on a PR (NOT recorded).
-//   PR_HEAD_SHA            — github.event.pull_request.head.sha, the PR branch
-//                            head — the commit recorded in the preview comment.
-//   GITHUB_REPOSITORY      — owner/name, for the gh comment + changed-files lookup.
-//   PR_NUMBER              — PR number, for the gh comment + changed-files lookup.
-//   GH_TOKEN               — gh auth for the preview comment + the PR changed-files
-//                            lookup (PR only).
-//
-// Cloudflare Pages keys deployments by --branch: "main" is the production
-// alias; any other branch is a preview deployment with its own stable URL.
-
+// Pure argv and output helpers are tested without invoking wrangler or gh.
 import { dirname, join } from "node:path";
 import { $ } from "bun";
 import { classify, isExcluded, parseExclusions, routeSlug } from "./gather.ts";
@@ -177,13 +146,7 @@ export function changedDocPages(
 	for (const { filename, status } of changed) {
 		// Deleted files no longer render — linking them would 404.
 		if (status === "removed") continue;
-		// Only files the gather actually renders become pages. Match its
-		// membership test exactly (gather.ts main()): a case-SENSITIVE `.md`
-		// (Bun's `**/*.md` glob does not match `.MD`, and routeSlug strips `.md`
-		// case-sensitively — a `/i` gate here would link a page the gather never
-		// produced), minus node_modules/dist and the VCS/tooling dotdirs the
-		// gather skips, minus the shared exclusion set. Keeping these in lockstep
-		// is what makes the docstring's "route guaranteed to resolve" true.
+		// Match gather.ts's membership rules so every emitted route exists.
 		if (!/\.md$/.test(filename)) continue;
 		if (filename.includes("node_modules/") || filename.includes("/dist/")) {
 			continue;
@@ -437,13 +400,8 @@ async function fetchChangedDocPages(
 		);
 		return [];
 	}
-	// The exclusion set's single source of truth is the repo-root `.rumdl.toml`
-	// (the same file gather.ts reads). This file is apps/eng-docs/scripts/
-	// deploy.ts, so the repo root is three dirname hops up from its path
-	// (scripts → eng-docs → apps → root), matching gather.ts's own walk.
-	// Guarded like the gh call above: a missing/renamed config, a TOML parse
-	// failure, or a classify throw must also omit the section, never fail the
-	// deploy — the docstring's "any lookup failure" contract covers this half too.
+	// Read the same repo-root exclusions as gather.ts to keep page selection aligned.
+	// Config or classification failures omit this optional section, not the deploy.
 	try {
 		const repoRoot = dirname(
 			dirname(dirname(dirname(Bun.fileURLToPath(import.meta.url)))),
@@ -471,11 +429,8 @@ async function upsertPreviewComment(opts: {
 	body: string;
 }): Promise<void> {
 	const ghEnv = { ...process.env, GH_TOKEN: opts.token };
-	// Find an existing marker comment to edit; else create one. A failed
-	// lookup (rate-limit, transient network, auth) must not be read as "no
-	// comment found" — that would create a duplicate every push, breaking the
-	// single-marker contract. Fail loud on a non-zero exit; only an empty
-	// stdout on exit 0 means no existing comment.
+	// Only a successful empty lookup permits creating the marker comment.
+	// Treat lookup failures as errors to avoid duplicate comments on later pushes.
 	const existing =
 		await $`gh api --paginate ${`repos/${opts.repo}/issues/${opts.pr}/comments`} --jq ${`.[] | select(.body | startswith("${COMMENT_MARKER}")) | .id`}`
 			.env(ghEnv)

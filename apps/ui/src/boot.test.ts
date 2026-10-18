@@ -4,27 +4,7 @@ import { resolveCaller } from "./live/client";
 import { createFakeCompass, type FakeCompass } from "./live/compass-fake";
 import { resolveConnection } from "./live/connection";
 
-// boot.ts guards the one unrecoverable step that runs BEFORE render(): resolving
-// the connection from the env. `resolveConnection` throws by design on a missing
-// VITE_COMPASS_BASE_URL (connection.ts), and that throw used to escape module
-// initialization in index.tsx — killing the module before render() ever ran, so
-// the developer got a BLANK #root and a console error nobody looks at. (The
-// caller's account id is no longer an env throw: it is learned from the server
-// via WhoAmI after connect, so a failure to learn it is a post-connect RPC
-// failure handled in index.tsx, not a resolve-time throw guarded here.)
-//
-// `bootConnection` is the pure, testable half (the same split connection.ts made
-// between `resolveConnection` and `connectionFromEnv`): it takes the root element
-// and a connect thunk, so these tests drive it with plain env objects — no
-// `import.meta`, no real DOM document. What it defends:
-//   - the failure is VISIBLE in #root, and names the exact variable, by
-//     SURFACING the thrown Error's own message rather than restating it;
-//   - a successful resolve is passed through untouched and writes nothing;
-//   - requiredness is preserved — a failed boot returns undefined, so the caller
-//     cannot fall through and boot the app against a wrong default.
-// `renderBootError` is the shared screen-painter both boot failure paths use
-// (env-resolve here, WhoAmI failure in index.tsx); its own test defends that it
-// paints legible DOM nodes and replaces prior content.
+// Missing connection or caller identity must show an error and stop boot.
 
 const VALID = {
 	VITE_COMPASS_BASE_URL: "http://127.0.0.1:50051",
@@ -47,10 +27,7 @@ describe("bootConnection", () => {
 		expect(el.childNodes.length).toBe(0);
 	});
 
-	// The one required-env leg. It asserts the rendered text carries the
-	// resolver's OWN message (recomputed here from the same thrown Error, never a
-	// copied literal) — so rewording connection.ts's guidance can never silently
-	// leave the boot screen showing stale instructions.
+	// Compare rendered text with the resolver's own missing-value message.
 	test("renders the resolver's message into the root when baseUrl is missing", async () => {
 		const el = document.createElement("div");
 		const env = { VITE_COMPASS_TOKEN: "tok" };
@@ -68,9 +45,9 @@ describe("bootConnection", () => {
 			fetchImpl: undefined,
 		}));
 
-		// Requiredness preserved: no connection, so the caller cannot boot on.
+		// A missing connection prevents caller boot.
 		expect(connection).toBeUndefined();
-		// Visible, not blank — and naming the exact variable to set.
+		// Show the missing variable, not a blank root.
 		expect(el.childNodes.length).toBeGreaterThan(0);
 		expect(el.textContent).toContain("VITE_COMPASS_BASE_URL");
 		expect(el.textContent).toContain(thrown.message);
@@ -147,19 +124,12 @@ describe("bootCaller (post-connect caller-identity guard)", () => {
 
 		const callerId = await bootCaller(el, () => resolveCaller(fake.client));
 
-		// The id main() threads into the store + workspaceKey is exactly what the
-		// server resolved, and the happy path writes nothing — the real render()
-		// owns the root.
+		// The returned id is server-derived; boot leaves rendering to its caller.
 		expect(callerId).toBe("acc-x");
 		expect(el.childNodes.length).toBe(0);
 	});
 
-	// The load-bearing failure contract this PR exists to hold: an unlearnable
-	// "me" must paint the boot screen and STOP boot (return undefined, so main()
-	// returns without rendering) rather than boot the app against no caller. Two
-	// ways it fails — the RPC rejects, or the server answers with an empty id
-	// resolveCaller rejects (live/client.ts) — must both stop here, through the
-	// fake's own scaffolding.
+	// A failed or empty WhoAmI result must show an error and prevent rendering.
 	for (const [label, arm, detail] of [
 		[
 			"the WhoAmI RPC rejects",
@@ -181,10 +151,8 @@ describe("bootCaller (post-connect caller-identity guard)", () => {
 
 			const callerId = await bootCaller(el, () => resolveCaller(fake.client));
 
-			// Undefined is the stop signal — main() returns without rendering.
+			// Undefined stops boot; the visible error includes its cause.
 			expect(callerId).toBeUndefined();
-			// Visible, not blank, naming the caller-identity boundary, and
-			// carrying the specific cause (the thrown message / the empty-id guard).
 			expect(el.childNodes.length).toBeGreaterThan(0);
 			expect(el.textContent).toContain("could not learn the caller identity");
 			expect(el.textContent).toContain(detail);

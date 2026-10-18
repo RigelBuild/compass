@@ -22,25 +22,8 @@ import { type AppStore, createAppStore } from "./store";
 import { STUB_DAEMON } from "./stub-data";
 import { testQueryClient } from "./test-support";
 
-// The store's LIVE comms path: `createAppStore({ comms })` runs the
-// SubscribeComms driver and mirrors each reduced CommsState into the four comms
-// accessors, and the two comms writes (postMessage / answerAsk) issue real RPCs.
-// double (live/comms-fake.ts) — no network, no timers — and defend the contracts
-// that make the dogfood loop correct:
-//
-//   - a snapshot + a streamed MessagePosted land in the public accessors,
-//   - a REDELIVERED post does not duplicate (the at-least-once guard the whole
-//     no-optimistic-update design rests on),
-//   - postMessage issues a PostMessage carrying a clientRequestId and inserts
-//     NOTHING locally (the stream echo is what renders it),
-//   - answerAsk (and every recorder) keeps answers LOCAL and sends nothing;
-//     submitAsk is the ONE send path, issuing exactly one RespondToAsk (the ask
-//     is answerable once, server-side), and a refused respond restages the
-//     staged answers rather than rolling them back.
-//
-// The reduction itself (dedup, ordering, wire→domain adaptation) is covered in
-// live/comms-state.test.ts and live/adapt.test.ts; here the subject is the
-// STORE — that its accessors observe the stream and its actions reach the wire.
+// Verify live store reads and writes through SubscribeComms using a fake client.
+// The reducer and wire adaptation are covered by their focused suites.
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-1";
@@ -150,12 +133,7 @@ async function withLiveStore(
 }
 
 describe("store live read path", () => {
-	// The whole point of the swap: the store's public accessors are fed by the
-	// stream. After the snapshot the four collections hold the server's rows, and
-	// a streamed MessagePosted lands in messages() — with NO component or
-	// accessor change (the shape is the pre-existing seam). Mutation-check: a
-	// store that kept its own seed, or dropped the onState wiring, reddens both
-	// legs.
+	// Snapshot rows and streamed posts must reach the public accessors.
 	test("reduces a snapshot and a streamed MessagePosted into the accessors", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER), wireAccount("acc-compass-ui")],
@@ -224,11 +202,7 @@ describe("store live read path", () => {
 });
 
 describe("store live write path", () => {
-	// postMessage issues a real PostMessage to the named channel with the typed
-	// text as a single text block, the topic oneof (here an existing topic by id)
-	// and a non-empty clientRequestId (the server's idempotency key). And — the
-	// architecture ruling — it inserts NOTHING locally: messages() is unchanged
-	// until the stream echoes the stored message back.
+	// Posting sends one RPC and waits for the stream echo before updating messages.
 	test("postMessage issues a PostMessage with a clientRequestId and does not insert locally", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -414,12 +388,7 @@ describe("store live write path", () => {
 		});
 	});
 
-	// The skip affordance: a user who wants to SKIP a question would never
-	// complete the ask, so submitAsk sends what is answered and an EMPTY
-	// chosenOptionIds for the skipped one (the wire permits it — the atomic
-	// contract is coverage of every question, not a non-empty answer each).
-	// Mutation-check: a submitAsk that omitted the unanswered question drops the
-	// q-2 entry; one that refused to send an incomplete ask sends nothing.
+	// Submitting an incomplete ask includes unanswered questions with empty choices.
 	test("submitAsk sends an incomplete ask with the skipped question empty", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -738,12 +707,7 @@ describe("store live write path", () => {
 		});
 	});
 
-	// Single-select exclusivity, both directions. A pick clears any staged
-	// draft, so submit ships the id with customText ""; and once picked, a later
-	// answerAskText is a no-op. The pair (id + non-empty text) is what the server
-	// refuses, burning the one respond. Mutation-check: dropping the click-side
-	// clear reddens the cleared-draft leg; dropping the text-side gate reddens the
-	// no-op leg.
+	// Single-select choices clear typed drafts; later text input is ignored.
 	test("a single-select pick clears the draft, and text after a pick is a no-op", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -883,16 +847,8 @@ describe("store live write path", () => {
 });
 
 describe("store stream lifetime", () => {
-	// The stream is owned by the store's reactive owner: disposing it aborts the
-	// subscription, so a torn-down store leaves no live SubscribeComms call
-	// against the server. index.tsx's root is never disposed (the app-lifetime
-	// singleton), but a leaked stream per store is exactly the bug that bites a
-	// future multi-window shell, and a test root depends on it too.
-	//
-	// Asserted on the FAKE, not on the store's accessors: a disposed root's memos
-	// stop recomputing, so reading them post-dispose proves nothing about whether
-	// the subscription is still open. Mutation-check: dropping the onCleanup
-	// abort leaves `isStreaming()` true.
+	// Disposing the reactive owner must abort its SubscribeComms subscription.
+	// Assert on the fake because disposed store memos no longer recompute.
 	test("disposing the owner ends the SubscribeComms stream", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -962,26 +918,13 @@ describe("store offline construction", () => {
 });
 
 describe("store stopAgent (StopAgentSession)", () => {
-	// The workspace's Stop control is the one non-observational agent action, and
-	// it is CompassClient-backed (not comms): StopAgentSession takes exactly one
-	// field, the server-minted `session_id` (compass_pb.ts:831-836), so the store
-	// must issue it for the OBSERVED session — `agentSession()`, keyed off the
-	// selected agent — never for an account id.
-	//
-	// The RPC is Runner-backed: a server built with no RunnerHub answers
-	// `Unavailable` (go/server/service.go:152-154). That is a real condition on
-	// the socket-only path, so the refusal must reach `onCommsError` rather than
-	// vanish — a silently-dead Stop button is the failure mode these pin.
+	// StopAgentSession must use the observed server session id and report failures.
 	const runningAgentId = (): string => {
 		const entry = Object.values(STUB_SESSION_EVENTS).find((s) => s.running);
 		if (!entry) throw new Error("no running session in the fixture");
 		return entry.agentAccountId;
 	};
-	// A server-minted session, shaped the way the runner actually mints one
-	// (`"sess-" + <n>` via monotonicIDs, go/internal/runner/host.go:322-331) and
-	// WITHOUT the `fixture` marker — the only kind of session the store may put
-	// on the wire. The real-path tests below drive this, not the fixture, so
-	// they keep defending the live request after the fixture guard lands.
+	// Only server-minted sessions may be sent to StopAgentSession.
 	const serverSession = (agentId: string): AgentSession => ({
 		sessionId: "sess-7",
 		agentAccountId: agentId,
@@ -989,13 +932,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		events: [],
 	});
 
-	// THE GUARD. A fixture session (STUB_SESSION_EVENTS, passed explicitly since a
-	// compass store is otherwise live) carries ids no server minted. Issuing
-	// StopAgentSession for one is worse than a no-op: the server's
-	// unknown-session path is idempotent-success (go/internal/runner/host.go:
-	// 217-228), so the call returns OK, stops nothing, and never reaches
-	// onCommsError — a control inert in the one way indistinguishable from
-	// working. The store must refuse locally and SAY so.
+	// Refuse fixture sessions locally; unknown server ids can falsely succeed.
 	test("a fixture-sourced session issues no stop and reports through onCommsError", async () => {
 		const compass = createFakeCompass();
 		const errors: unknown[] = [];
@@ -1133,11 +1070,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		}
 	});
 
-	// SURFACING. Routing to `onCommsError` alone puts a refusal in the console:
-	// a refused Stop and a successful one are then observably identical (nothing
-	// happens either way — `running` is fixture-sourced and never transitions).
-	// `stopError` is the reactive hole the panel renders, the same shape
-	// `askError` gives the ask block. Additive: onCommsError still fires.
+	// Record refusals for the panel; console errors alone are not observable.
 	test("a refused stop records stopError for the panel to render", async () => {
 		const compass = createFakeCompass();
 		const errors: unknown[] = [];
@@ -1366,23 +1299,12 @@ describe("store skipBatchWindow (SkipBatchWindow)", () => {
 });
 
 describe("daemon banner (live GetServerInfo)", () => {
-	// The top-bar banner reads LIVE: a store built with `options.compass` fires a
-	// one-shot GetServerInfo probe at boot and flips `daemon()` to the server's
-	// liveness/version. An offline store keeps STUB_DAEMON (live:false), and a
-	// probe rejection (server down / RPC error) must leave the banner offline and
-	// route the error out — never gate boot, never surface a half-live banner.
-	// The probe chains through a few async boundaries (probeServer awaits the
-	// fake's async getServerInfo, then the store's .then/.catch runs), so flush
-	// several microtasks to let the whole chain settle — no timers, no sleeps.
+	// Probe live server info once; failures leave the offline banner and report errors.
 	const tick = async () => {
 		for (let i = 0; i < 5; i++) await Promise.resolve();
 	};
 
-	// A successful probe surfaces the server's OWN version/apiVersion with
-	// live:true. Mutation check: dropping live:true, or reading STUB_DAEMON's
-	// version/apiVersion instead of the probe's, reddens this — the fixture uses
-	// values (version 1.2.3, apiVersion compass.v2) distinct from STUB_DAEMON's
-	// (0.1.0-dev / compass.v1), so each field is pinned to the probe as source.
+	// The banner must use the probe's version values, not the offline fixture.
 	test("a successful probe surfaces the live server info", async () => {
 		const compass = createFakeCompass();
 		compass.serverInfo.version = "1.2.3";
@@ -1559,11 +1481,7 @@ const rosterEntry = (agentAccountId: string, presence: AgentPresence) =>
 	create(RosterEntrySchema, { agentAccountId, presence });
 
 describe("store agents() live join (§T3)", () => {
-	// The live seam: `agents()` joins the durable accounts (identity, from the
-	// snapshot) with the presence map (lifecycle/activity, from GetRoster) via
-	// joinAgents. A present roster entry projects its lifecycle; an agent account
-	// with NO roster entry is a map miss → "stopped" (R2/DL-194), never the
-	// components' false-live idle. Non-agent accounts (the caller) are filtered.
+	// Join durable agent accounts with presence; absent roster entries are stopped.
 	test("joins live accounts + presence into agents(), miss→stopped", async () => {
 		const fake = createFakeComms({
 			accounts: [
@@ -1622,11 +1540,7 @@ describe("store agents() live join (§T3)", () => {
 		});
 	});
 
-	// L3 (RIG-2100): a chat-message tail must NOT recompute the agents() join.
-	// The memo depends only on accounts()/presence(); a MessagePosted touches
-	// messages() with structural sharing, so accounts/presence keep identity and
-	// agents() returns the SAME array reference. Reference equality is the point:
-	// a message never re-joins the roster.
+	// Message updates must not recompute the roster join when its inputs are unchanged.
 	test("a message does not re-join the roster (agents() keeps identity)", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER), wireAgentAccount("acc-compass-ui")],

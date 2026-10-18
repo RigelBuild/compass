@@ -3,15 +3,9 @@ import { AgentSessionState } from "@compass/client";
 import { type AgentStreamRefinement, agentDotState } from "./agent-state";
 import type { AgentState } from "./stub-data";
 
-// agent-state.ts is the pure D9 projection: it maps the daemon's coarse,
-// authoritative `AgentSessionState` (compass.v1, #443) plus optional stream
-// refinements onto the fine-grained UI dot. These tests pin the projection
-// row-by-row so a future edit to the switch or a leaked refinement can't
-// silently render the wrong dot.
+// Pin daemon-state projection and stream refinements.
 
-// The complete UI dot union (stub-data AgentState) as a membership table.
-// Enumerated on purpose: the return-type guard below asserts every branch lands
-// inside it, so an edit returning an off-union string reddens instead of shipping.
+// Enumerate valid dot values so the projection guard rejects unknown states.
 const VALID_DOTS: Record<AgentState, true> = {
 	working: true,
 	idle: true,
@@ -23,8 +17,7 @@ const VALID_DOTS: Record<AgentState, true> = {
 	disconnected: true,
 };
 
-// Every live `AgentSessionState` variant. Iterated by the override and
-// return-type invariants so they hold across the whole enum, not one value.
+// Iterate every session enum value across the refinements.
 const ALL_SESSION_STATES: readonly AgentSessionState[] = [
 	AgentSessionState.UNSPECIFIED,
 	AgentSessionState.STARTING,
@@ -36,11 +29,7 @@ const ALL_SESSION_STATES: readonly AgentSessionState[] = [
 ];
 
 describe("agentDotState — base enum mapping (no refinement)", () => {
-	// The D9 mapping table, one row per enum value. This is the core contract:
-	// flipping any row (e.g. READY→working, ERRORED→idle) reddens exactly here.
-	// STOPPED now has its own distinct `stopped` dot (a terminated process, not a
-	// live idle one). Only UNSPECIFIED falls to idle — the defensive case a
-	// well-behaved daemon never sends as a live state.
+	// Keep an expected row for every session enum member.
 	const rows: readonly [
 		name: string,
 		state: AgentSessionState,
@@ -105,11 +94,7 @@ describe("awaitingInput refinement (WORKING → waiting)", () => {
 		).toBe("idle");
 	});
 
-	// Source behavior: STARTING shares the WORKING case, so STARTING+awaitingInput
-	// is ALSO waiting. This diverges slightly from the D9 doc table (which
-	// documents the refinement only on WORKING) — asserted here to match SOURCE
-	// and to pin the grouping: splitting STARTING into its own case that ignores
-	// awaitingInput would redden this.
+	// STARTING shares WORKING's awaiting-input refinement.
 	test("STARTING + awaitingInput → waiting (shares the WORKING case)", () => {
 		expect(
 			agentDotState(AgentSessionState.STARTING, { awaitingInput: true }),
@@ -118,18 +103,13 @@ describe("awaitingInput refinement (WORKING → waiting)", () => {
 });
 
 describe("turnDoneUnopened refinement (READY → done)", () => {
-	// A completed-but-unopened turn is `done` (emerald check), deliberately not
-	// idle grey. Dropping the refinement read reddens here.
+	// A completed but unopened turn maps to done, not idle.
 	test("lifts READY to done", () => {
 		expect(
 			agentDotState(AgentSessionState.READY, { turnDoneUnopened: true }),
 		).toBe("done");
 	});
-
-	// Negative row — turnDoneUnopened must NOT leak into WORKING. The WORKING
-	// case only reads awaitingInput, so a working agent with the flag set is
-	// still working. A `case WORKING:` that started honoring turnDoneUnopened
-	// would redden here.
+	// turnDoneUnopened must not change WORKING; only READY reads that flag.
 	test("does NOT change WORKING (stays working)", () => {
 		expect(
 			agentDotState(AgentSessionState.WORKING, { turnDoneUnopened: true }),
@@ -138,9 +118,8 @@ describe("turnDoneUnopened refinement (READY → done)", () => {
 });
 
 describe("return type is always a valid AgentState", () => {
-	// Totality guard: across every enum value and a spread of refinement combos,
-	// the result is one of the seven union members. Catches a future branch that
-	// returns an off-union string (a typo'd dot name) before it reaches the UI.
+	// Reject dot values outside the domain union across enum/refinement combinations.
+	// Reject outputs outside the domain union across state/refinement combinations.
 	const isValidDot = (dot: string): boolean => Object.hasOwn(VALID_DOTS, dot);
 	const refinements: readonly AgentStreamRefinement[] = [
 		{},
@@ -158,11 +137,7 @@ describe("return type is always a valid AgentState", () => {
 });
 
 describe("default branch (proto3-open enum)", () => {
-	// The daemon enum is proto3-open: a version-skewed daemon can send a numeric
-	// variant not in the modeled set, which slips past the compile-time `never`
-	// guard at runtime. The default branch throws rather than return the raw
-	// number, which would poison downstream Record<AgentState> lookups. Cast is
-	// required precisely because the typed enum makes this unreachable statically.
+	// Proto3 can carry unknown numeric values at runtime; reject them before UI use.
 	test("throws on an unmodeled AgentSessionState value", () => {
 		expect(() => agentDotState(999 as AgentSessionState)).toThrow(
 			"Unhandled AgentSessionState: 999",

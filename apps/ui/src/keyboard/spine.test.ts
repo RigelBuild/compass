@@ -7,11 +7,7 @@ import type { RovingGroupHandle } from "./roving";
 import { createKeyboardSpine } from "./spine";
 import type { FocusZone } from "./zones";
 
-// The keyboard spine (RIG-2456): the shared registry + the published roving-group
-// set, plus the tier-1/tier-2 accessors the root installKeymap reads. These units
-// defend the group-publication model (RD-2): register/unregister round-trip,
-// `activeGroup()` deriving the answer from `isFocused()` (never mount order), and
-// `view.bridge` registered with its behavior at spine creation (A4).
+// Pin registration and active roving-group behavior at the keyboard spine.
 
 const id = (s: string): CommandId => s as CommandId;
 

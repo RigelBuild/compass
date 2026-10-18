@@ -1,9 +1,4 @@
-/* Command palette — .cx-palette (D3/D5, Kobalte combobox). The full palette
-   surface: an elev-3 float above the scrim at --cx-z-palette, 560px wide in the
-   top third, a query input over a results list of groups and four-part result
-   rows (glyph · title · dim context · shortcut chip) at .cx-tree-row density,
-   plus empty and loading states. Loading hosts .cx-loader[data-topology="bar"]
-   by reference (the motion/keyframe is T8). Consumes only --cx-* tiers. */
+/* The palette is a grouped command surface; loading uses the shared bar loader. */
 
 .cx-palette {
 	display: flex;
@@ -41,9 +36,7 @@
 	border-bottom-color: var(--cx-border-focus);
 }
 
-/* The palette scrim backdrop. It also positions the float: horizontally
-   centered, offset into the top third of the viewport (the palette is a
-   reach-for-it surface, not a modal — it sits high, not dead-center). */
+/* Center the scrim's palette near the top for quick reach, not as a modal. */
 .cx-palette-backdrop {
 	position: fixed;
 	inset: 0;
@@ -55,11 +48,7 @@
 	z-index: var(--cx-z-palette);
 }
 
-/* ==========================================================================
-   Results — the scroll region below the input. Rows mirror the .cx-tree-row
-   density contract (26px height, the same padding rhythm) so palette results
-   and tree rows read as one row system.
-   ========================================================================== */
+/* Results scroll below the input and use the same row density as the tree. */
 .cx-palette-list {
 	display: flex;
 	flex-direction: column;
@@ -68,8 +57,7 @@
 	overflow-y: auto;
 }
 
-/* Group/section header — action-mode command groups + navigation-mode
-   destination groupings. A dim, quiet label row; never selectable. */
+/* Quiet, non-selectable labels separate command and navigation groups. */
 .cx-palette-group {
 	display: flex;
 	align-items: center;
@@ -83,8 +71,7 @@
 	white-space: nowrap;
 }
 
-/* Result row — the four-part anatomy left→right: type glyph · title · dim
-   context · shortcut chip. Density mirrors .cx-tree-row. */
+/* Result rows combine type, title, context, and shortcut. */
 .cx-palette-row {
 	display: flex;
 	align-items: center;

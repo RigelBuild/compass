@@ -30,17 +30,9 @@ import type {
 } from "./comms-stub";
 import { STUB_MESSAGES, STUB_TOPICS } from "./comms-stub";
 
-// comms.ts is the pure core of the comms model: it partitions channels
-// into the rail's sections/DMs/browse list, threads a channel's flat message
-// stream into roots+replies, and parses composer mentions. These tests defend
-// the observable contracts each surface reads — ordering, grouping, the
-// orphan/cycle threading rules, and the mention grammar — against a refactor or
-// a fixture edit silently changing the shape. Fixtures are built inline (small,
-// per-edge) so an assertion pins the behavior, not today's stub values.
+// Pin channel grouping, message threading, and mention parsing as UI contracts.
 
-// ── Minimal fixture builders — only the fields a helper reads carry meaning; the
-//    rest satisfy the interface and are held constant so a shape change never
-//    perturbs an assertion. ────────────────────────────────────────────────────
+// Fixture builders set only fields the helpers read; other fields satisfy types.
 function acc(over: Partial<Account> & Pick<Account, "id">): Account {
 	return { handle: over.id, displayName: over.id, kind: "user", ...over };
 }
@@ -161,9 +153,7 @@ describe("topicsOf", () => {
 		expect(grouped.length).toBe(3); // no duplication
 	});
 
-	// Fixture ground truth: ch-svc-compass carries two topics (top-compass-acp,
-	// top-compass-integration). Derived from the stub so a reshuffle can't stale
-	// the assertion.
+	// Derive both topic ids from the fixture so reshuffles do not stale the test.
 	test("fixture: ch-svc-compass groups its two topics", () => {
 		const groups = topicsOf(STUB_TOPICS, STUB_MESSAGES, "ch-svc-compass");
 		expect(new Set(groups.map((g) => g.topic.id))).toEqual(
@@ -171,12 +161,7 @@ describe("topicsOf", () => {
 		);
 	});
 
-	// An ARCHIVED topic is hidden from the channel index (the snapshot loads it so
-	// a deep link can open it), even though its messages are
-	// retained in the flat message set — a live `topicUpserted` archive event
-	// must not leave the archived topic showing as an index row. Its sibling
-	// active topic still groups, and the archived topic's messages are simply not
-	// surfaced through the index (TopicView reads them directly by id).
+	// Archived topics remain deep-linkable but must not appear in the channel index.
 	test("excludes an archived topic from the index but keeps the active sibling", () => {
 		const active = top({ id: "active", channelId: CH });
 		const gone = top({ id: "gone", channelId: CH, archived: true });
@@ -191,13 +176,9 @@ describe("topicsOf", () => {
 });
 
 describe("topicSummary", () => {
-	// topicSummary is the pure index-row derivation: message count, the DISTINCT
-	// author ids in first-post order, and the last-activity time. These pin the
-	// three observable numbers an index row renders — nothing here restates
-	// topicsOf.
+	// Summary derives message count, ordered distinct authors, and last activity.
 
-	// An empty topic is the neutral shape, exactly (count 0, no participants,
-	// time 0).
+	// Empty topics have no messages, participants, or activity time.
 	test("empty topic → neutral summary (count 0, no participants, time 0)", () => {
 		const group: TopicGroup = {
 			topic: top({ id: "t0", channelId: CH }),
@@ -210,11 +191,7 @@ describe("topicSummary", () => {
 		});
 	});
 
-	// The fixture topic (top-compass-acp): three messages, compass-ui(10)/compass-server(24)/
-	// compass-ui(27). messageCount counts messages; participantIds are the DISTINCT
-	// authors in first-post order (compass-ui posted first, then compass-server);
-	// lastActivityAtUnixMs is the max post time. Derived from topicsOf over the
-	// stub so a fixture reshuffle can't stale it.
+	// Derive participant order and activity time from the fixture's messages.
 	test("fixture topic: count, distinct participants in first-post order, max time", () => {
 		const group = topicsOf(STUB_TOPICS, STUB_MESSAGES, "ch-svc-compass").find(
 			(g) => g.topic.id === "top-compass-acp",
@@ -294,11 +271,7 @@ describe("topicSummary", () => {
 });
 
 describe("channelSections", () => {
-	// One section per group in the caller's group order; channel order within a
-	// group is fixture order (not sorted); DMs are excluded even when they carry a
-	// groupId. Input group order (g2,g1) differs from list order to prove the
-	// output follows `groups`, and within-g1 order is id-descending to prove it
-	// preserves fixture order.
+	// Group order follows the input groups; channels retain their fixture order.
 	test("sections follow group order; channel order within a group is fixture order; DMs excluded", () => {
 		const g1 = grp({ id: "g1" });
 		const g2 = grp({ id: "g2" });
@@ -317,9 +290,7 @@ describe("channelSections", () => {
 		);
 	});
 
-	// An empty group is omitted (no empty rail header); ungrouped channels — both
-	// no-group and unknown-group — fall into a single trailing `group: undefined`
-	// section, in fixture order.
+	// Omit empty groups and put ungrouped channels in one trailing section.
 	test("omits empty groups and routes no-group + unknown-group channels to a trailing ungrouped section", () => {
 		const g1 = grp({ id: "g1" });
 		const g2 = grp({ id: "g2" }); // no channels → omitted
@@ -742,18 +713,7 @@ describe("agentDmChannel", () => {
 	});
 });
 
-// ── Comms ask fixture integrity (refolded from the deleted ask-contract.test.ts,
-//    now over the CHANNEL asks in STUB_MESSAGES) ───────────────────────────────
-// The channel renders `ask` blocks as structured, multi-question question sets
-// (compass.v1 Ask: {askId, questions: [{questionId, question, options:
-// AskOption[], allowMultiple, chosenOptionIds}]}). These pin the load-bearing
-// invariants the AskBlock renderer (ChannelView) trusts without re-checking —
-// the ones a fixture edit or a widened type could silently break. They walk
-// EVERY question of EVERY ask in STUB_MESSAGES so a second production ask (there
-// is one today: msg-c4 `ask-s4-integration`) is held to the same contract. No
-// question/label strings are asserted (copy, not contract). This is
-// fixture-precondition coverage; the answerAsk MUTATION path lives in
-// store.test.ts and is not restated here.
+// Validate fixture Ask shapes trusted by the renderer; answer mutations are tested in store.test.ts.
 const COMMS_ASKS: readonly Ask[] = STUB_MESSAGES.flatMap((message) =>
 	message.blocks
 		.filter(
@@ -764,20 +724,14 @@ const COMMS_ASKS: readonly Ask[] = STUB_MESSAGES.flatMap((message) =>
 );
 
 describe("comms ask fixture is non-vacuous", () => {
-	// Guard against a silently-empty walk: if a refactor drops every ask block
-	// from STUB_MESSAGES, the per-ask invariants below iterate nothing and pass
-	// trivially, green-washing zero coverage. This reddens the moment the ask
-	// surface disappears from the channel fixture.
+	// Require at least one fixture ask so question checks are not vacuous.
 	test("STUB_MESSAGES contains at least one ask block", () => {
 		expect(COMMS_ASKS.length).toBeGreaterThan(0);
 	});
 });
 
 describe("comms ask chosen ids reference real options (referential integrity)", () => {
-	// The renderer marks an option selected via chosenOptionIds.includes(o.id). A
-	// chosen id that matches no option silently highlights nothing — an answered
-	// ask reads as unanswered, with no error anywhere. Reddens on a typo'd, stale,
-	// or renamed chosen id. Walked per question.
+	// Selected ids must refer to options or the UI appears unanswered.
 	for (const ask of COMMS_ASKS) {
 		test(`ask ${ask.askId}`, () => {
 			for (const question of ask.questions) {
@@ -791,9 +745,7 @@ describe("comms ask chosen ids reference real options (referential integrity)", 
 });
 
 describe("comms single-select asks hold at most one chosen id", () => {
-	// allowMultiple===false is a radio group. More than one chosen id then means
-	// two options render selected at once — an impossible state the UI never
-	// intends. Reddens if a single-select question accumulates >1 chosen id.
+	// Single-select questions cannot mark multiple options at once.
 	for (const ask of COMMS_ASKS) {
 		test(`ask ${ask.askId}`, () => {
 			for (const question of ask.questions) {
@@ -805,9 +757,7 @@ describe("comms single-select asks hold at most one chosen id", () => {
 });
 
 describe("comms ask option ids are unique within an ask", () => {
-	// Duplicate ids make chosenOptionIds.includes() light BOTH options, and a
-	// click on either resolves ambiguously. Reddens if two options in one
-	// question share an id (Set collapses the dup, so size < length).
+	// Option ids must be unique so selected lookup and clicks remain unambiguous.
 	for (const ask of COMMS_ASKS) {
 		test(`ask ${ask.askId}`, () => {
 			for (const question of ask.questions) {

@@ -2,11 +2,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { setShellServerUrl, shellMode, shellServerUrl } from "./shell-globals";
 
-// The two shell-injected startup globals are the synchronous, no-IPC source of
-// truth for launch mode + server URL (OQ-8). The readers must return whatever
-// the shell set, and tolerate their absence (a browser dev build sets neither)
-// without throwing. `window` exists here under happy-dom, so absence is the
-// undefined value, not a missing global object.
+// Shell globals provide synchronous startup mode and URL without IPC.
 
 const w = window;
 

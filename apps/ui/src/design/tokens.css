@@ -85,28 +85,14 @@
 	--rigel-stream-char-ms: 12ms;
 	--rigel-cursor-blink: 1s;
 
-	/* focus (single treatment). Blue — the interaction/flow colour — not purple:
-	   purple is reserved for the brand mark only (the /design one-accent rule). */
+	/* Blue marks focus; purple is reserved for the brand mark. */
 	--cx-focus-ring: 2px solid var(--rigel-blue);
 
-	/* fonts (loaded by the @font-face rules above).
-     Departure Mono is a bitmap pixel face with UPM 550 (= 11 × 50), so one
-     font-pixel = size/11 CSS px. It is razor-crisp only when (size/11) ×
-     devicePixelRatio is a whole number — so EVEN multiples of 11px
-     (22, 44, 66, 88…) stay crisp at 1.0/1.5/2.0 display scaling, while ODD
-     multiples like 33px smear at 125/150/175%. --rigel-display is therefore for
-     LARGE brand display at EVEN 11px multiples only (wordmark + h1 at 44px,
-     section titles at 22px); everything ≤16px and every off-grid size uses
-     --rigel-mono.
-     --rigel-mono is Space Mono (Colophon, OFL): retro-futurist body/UI face,
-     chosen over IBM Plex Mono (kept as the fallback) for brand character while
-     staying legible at 12px. Hinted TrueType, crisp at any size. */
+	/* Departure Mono stays crisp at even 11px multiples; use Space Mono otherwise. */
 	--rigel-mono: "Space Mono", "IBM Plex Mono", ui-monospace, monospace;
 	--rigel-display: "Departure Mono", "Space Mono", monospace;
 
-	/* Q2 interim: values from brand color.md not yet tokenized upstream in brand
-	   tokens.css; carried as raw hex here until brand adds names, then this swap
-	   is mechanical. */
+	/* Interim primitives remain raw until upstream brand tokens exist. */
 	--rigel-selection: #1d3b53; /* text/board selection surface */
 	--rigel-faint: #637777; /* faintest readable meta */
 	--rigel-magenta: #c792ea; /* syntax ramp — magenta */
@@ -115,11 +101,7 @@
 	--rigel-loading-empty: #0a2036; /* loading-track empty segment */
 }
 
-/* ==========================================================================
-   BLOCK 2 — Semantic tier (--cx-*), Compass-owned. Every UI rule consumes
-   ONLY this tier. Named by intent, not hue. Scoped to the night theme; a
-   [data-theme="day"] pair re-maps the same names later (D2 Theming).
-   ========================================================================== */
+/* Semantic tokens map the brand palette to Compass UI intent. */
 [data-theme="night"] {
 	/* --- Surfaces --- */
 	--cx-bg: var(--rigel-night);
@@ -127,8 +109,7 @@
 	--cx-bg-panel: var(--rigel-panel);
 	--cx-bg-hover: color-mix(in srgb, var(--rigel-panel) 88%, var(--rigel-fog));
 	--cx-bg-active: color-mix(in srgb, var(--rigel-panel) 80%, var(--rigel-fog));
-	/* interim derivation of the brand selection surface (Q2): low-alpha blue
-	   wash toward the brand selection primitive until brand tokenizes it. */
+	/* Blend the brand blue into the interim selection primitive. */
 	--cx-bg-selected: color-mix(
 		in srgb,
 		var(--rigel-blue) 18%,

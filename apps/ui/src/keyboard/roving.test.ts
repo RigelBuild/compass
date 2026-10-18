@@ -4,12 +4,7 @@ import type { CommandId } from "./commands";
 import { createRovingGroup, type Stop } from "./roving";
 import type { RovingGroup } from "./zones";
 
-// The roving-group primitive owns the one-tab-stop DOM invariant over a reactive
-// stop list. These defend: exactly one tabindex=0 across stops, a cursor move
-// refocuses + re-tabs the new stop WHEN focus is already in the group, no
-// focus-steal on mount or on a background stops-rebuild (WCAG 3.2.1), a stale
-// cursor (removed stop) falls back without crashing while keeping one
-// tabindex=0, and handleCommand delegates to onCommand verbatim.
+// Keep one tab stop and avoid focus theft on background updates.
 
 const GROUP: RovingGroup = { zone: "main", id: "board" };
 const id = (s: string): CommandId => s as CommandId;

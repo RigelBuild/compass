@@ -16,18 +16,7 @@ import { STUB_AGENTS, STUB_ASSIGNED_ISSUES } from "./stub-data";
 import { testQueryClient } from "./test-support";
 import { MAX_TABS } from "./window-layout";
 
-// The store exposes SolidJS `createMemo` accessors (selectedAgent,
-// selectedIssue, agentRepos, agentSession) that only
-// compute inside a reactive root. `withStore` builds a fresh store inside its own
-// `createRoot`, runs the body, then disposes. Actions are synchronous and memo
-// reads recompute on demand within the root, so every assertion runs inside the
-// root before it is torn down — no effects, no waiting, no cross-test leakage.
-//
-// The store no longer boots from the comms fixture — its comms surface is fed by
-// the live SubscribeComms stream. These tests are OFFLINE (no client), so they
-// seed the same fixture explicitly through `initialComms`: the behavior asserted
-// below (membership transitions, boot selection, ask recording, routing) is the
-// store's reduction over a populated comms state, whatever its origin.
+// Store tests run synchronously inside a fresh reactive root with explicit fixture state.
 function withStore(body: (store: AppStore) => void): void {
 	createRoot((dispose) => {
 		const store = createAppStore({
@@ -42,12 +31,7 @@ function withStore(body: (store: AppStore) => void): void {
 	});
 }
 
-// The async cousin of `withStore` for the seam-backed accessors. `assignedIssues`
-// loads through the TrackerSeam via a solid-query query on a microtask, so
-// its tests must await a tick INSIDE the live root before disposing. The store is
-// built inside `createRoot` (createMemo needs an owner); the body then runs and
-// awaits outside the callback but before dispose, so the reactive owner stays
-// alive across the whole async body — and the tick is a microtask, never a timer.
+// Keep async tracker reads inside the live root until their microtask settles.
 async function withStoreAsync(
 	body: (store: AppStore) => Promise<void>,
 ): Promise<void> {
@@ -196,11 +180,7 @@ describe("openAgent", () => {
 		});
 	});
 
-	// Opening a fresh agent resets the tab group to the single permanent chat tab.
-	// The chat pane's channel is derived from the selected agent via
-	// `workspaceChannel()` (the agent's home DM), independent of the global
-	// `selectedChannelId`. A terminal tab opened under the prior agent proves the
-	// reset drops it.
+	// Opening another agent resets tabs and derives the chat channel from its home DM.
 	test("resets tabs to the chat tab and points workspaceChannel at the agent's home DM", () => {
 		withStore((s) => {
 			const home = STUB_AGENTS.find(
@@ -876,15 +856,7 @@ describe("repo + branch selection (T6)", () => {
 		});
 	});
 
-	// The anti-drift invariant (the bug three review bots flagged, now fixed):
-	// the dropdown label (activeRepo().currentBranch) and the pane source
-	// (selectedIssue().branch) resolve to the SAME issue, so the
-	// Files/VCS/PR panes can never show a different issue than the dropdown.
-	// TEETH: under the OLD per-repo override model, setActiveBranch only wrote a
-	// private branchOverrides map and left selectedIssueId at the primary —
-	// so here it would still be "ws-1022", and the selectedIssueId() /
-	// selectedIssue().branch assertions below would fail (the dropdown shows
-	// compass-ui-965 while the panes still show ws-1022).
+	// Branch selection must keep the dropdown and detail panes on the same issue.
 	test("the dropdown and the detail panes resolve to one issue (no drift)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui"); // primary = ws-1022
@@ -902,9 +874,7 @@ describe("repo + branch selection (T6)", () => {
 		});
 	});
 
-	// The guard: a branch no issue of the selected agent owns is rejected,
-	// leaving BOTH the dropdown label and the selection untouched — so a
-	// stale/foreign branch can't move the panes.
+	// Reject branches with no issue owned by the selected agent.
 	test("setActiveBranch is a no-op for a branch no issue of the agent owns", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
@@ -915,19 +885,13 @@ describe("repo + branch selection (T6)", () => {
 			s.setActiveBranch("not-a-branch");
 			flush();
 
-			// Unchanged: the guard found no owning issue, so both the label
-			// and the selection stay on ws-965 / compass-ui-965.
+			// Both the branch label and issue selection remain unchanged.
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
 			expect(s.selectedIssueId()).toBe("ws-965");
 		});
 	});
 
-	// A branch owned by a DIFFERENT agent's issue is also rejected: the
-	// guard requires `w.assignee === selectedAgentId()`, so picking compass-server's
-	// branch while compass-ui is selected can't hijack the selection.
-	// TEETH: drop the `assignee === id` half of the guard and this would select
-	// ws-1023 (compass-server's), moving compass-ui's panes onto another agent's work —
-	// selectedIssueId() would become "ws-1023" and this assertion fails.
+	// Reject branches owned by another agent.
 	test("setActiveBranch is a no-op for a branch owned by a different agent", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui"); // selects ws-1022
@@ -935,13 +899,13 @@ describe("repo + branch selection (T6)", () => {
 			s.setActiveBranch("compass-server-1023-acp-session");
 			flush();
 
-			// compass-server's branch belongs to agent-compass-server, not compass-ui → ignored.
+			// compass-server's branch belongs to another agent, so ignore it.
 			expect(s.selectedIssueId()).toBe("ws-1022");
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 		});
 	});
 
-	// setActiveRepo only accepts an id that is actually among the agent's clones.
+	// setActiveRepo accepts only an id among the agent's clones.
 	test("setActiveRepo is a no-op for an id not among the agent's clones", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
@@ -951,26 +915,22 @@ describe("repo + branch selection (T6)", () => {
 			s.setActiveRepo("bogus-repo");
 			flush();
 
-			// The pick is untouched, so activeRepo still resolves to the real clone.
+			// An invalid choice leaves the active clone unchanged.
 			expect(s.activeRepoId()).toBe("acc-compass-ui-repo");
 			expect(s.activeRepo()?.id).toBe("acc-compass-ui-repo");
 		});
 	});
 
-	// Opening an agent resets the selection to that agent's primary (first-owned)
-	// issue — the branch follows the selected issue, and there is no
-	// remembered per-agent branch to restore. So navigating to compass-ui-965, away to
-	// compass-server, and back to compass-ui lands on compass-ui's primary (ws-1022), NOT the
-	// previously-navigated compass-ui-965.
+	// Returning to an agent restores its primary issue.
 	test("openAgent resets the selection to the agent's primary issue", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			// Primary issue first: ws-1022 / compass-ui-1022-bridge-ui.
+			// The primary issue is selected on first open.
 			expect(s.selectedIssueId()).toBe("ws-1022");
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 
-			// Navigate to compass-ui's other issue via the dropdown.
+			// Select the agent's other issue through the dropdown.
 			s.setActiveBranch("compass-ui-965-transport");
 			flush();
 			expect(s.selectedIssueId()).toBe("ws-965");
@@ -1668,16 +1628,10 @@ describe("sidebar section collapse", () => {
 	});
 });
 
-// ── Comms surface, folded onto the unified store (was comms-store.test.ts) ────
-// The comms accessors + mutations now live on AppStore (createAppStore). These
-// assert logical behavior + invariants over the fixture ("boots onto A subscribed
-// channel", not "boots onto ch-announcements"), so a stub edit can't falsely
-// redden them.
+// The unified store owns comms accessors and mutations; these assert fixture behavior.
 
 describe("comms boot selection", () => {
-	// Boots onto A subscribed channel (not a hardcoded id, not the first channel
-	// unconditionally). Bites a regression that selected the first channel
-	// regardless of membership, or booted into the empty state.
+	// Select a subscribed channel rather than the first channel or an empty state.
 	test("selects a subscribed channel on construction", () => {
 		withStore((s) => {
 			const id = s.selectedChannelId();
@@ -1690,19 +1644,9 @@ describe("comms boot selection", () => {
 	});
 });
 
-// Matt's ruling: joining/subscribing has NO wire RPC yet. The store used to
-// mutate `membership` locally, which was harmless against a fixture but a lie
-// against the live stream — `adoptComms` replaces the state wholesale and
-// `deriveMembership` re-derives membership from the server's member lists, so a
-// local toggle silently reverted mid-use (the composer enabling, then disabling
-// under a half-typed draft). Until the RPCs land the store MUST NOT fake
-// membership state, and the rail's controls render disabled
-// (LeftSidebar.test.tsx). These tests pin the store half: both functions keep
-// their shape (the rail's onClick seam still type-checks) and are inert.
+// No join/subscribe RPC exists yet; keep local membership unchanged.
 describe("joinChannel", () => {
-	// The transition the old local-only path produced (none → joined) must NOT
-	// happen: it is a state the server never agreed to. Mutation-check:
-	// restoring `setMembership(id, m => m === "none" ? "joined" : m)` reddens.
+	// Do not create a joined state that the server has not accepted.
 	test("does not fake a join — membership is unchanged (no wire RPC yet)", () => {
 		withStore((s) => {
 			const target = s.channels().find((c) => c.membership === "none");
@@ -1780,13 +1724,7 @@ describe("toggleSubscribe", () => {
 });
 
 describe("answerAsk", () => {
-	// First-responder-wins: a single-select ask settles on its FIRST answer, and
-	// a second answer is a NO-OP — the winner's chosenOptionIds is unchanged
-	// (design.md §202-217). This is the seam contract the @compass/client
-	// swap depends on (a second single-select answer matches CodeAlreadyExists
-	// without a rewrite). Mutation-check: the pre-first-wins "replace" behavior
-	// (second answer sets [second]) reddens the second toEqual; a guard that
-	// wrongly no-ops the FIRST answer too reddens the first toEqual.
+	// Single-select answers are first-wins, matching the server's duplicate-answer contract.
 	test("single-select is first-wins: a second answer is a no-op", () => {
 		const { messageId, ask, question } = firstCommsAsk();
 		expect(question.allowMultiple).toBe(false);
@@ -1809,8 +1747,7 @@ describe("answerAsk", () => {
 		});
 	});
 
-	// Answering does not mutate the shared fixture object in place — the store
-	// maps to fresh objects, so the module-level STUB_MESSAGES ask stays pending.
+	// Store updates must not mutate the shared fixture ask.
 	test("does not mutate the shared fixture in place (immutability)", () => {
 		const { messageId, ask, question } = firstCommsAsk();
 		const before = [...question.chosenOptionIds];
@@ -1833,10 +1770,7 @@ describe("answerAsk", () => {
 		expect(question.chosenOptionIds).toEqual(before);
 	});
 
-	// No-op for an unknown message / ask / option id — none of the three miss
-	// paths may alter the recorded choice. The option miss-path is the
-	// referential-integrity contract in produced form: answerAsk only ever
-	// records an id that names a real option, so a chosen id can never dangle.
+	// Unknown message, ask, or option ids must not alter a recorded choice.
 	test("is a no-op for an unknown message, ask, or option id", () => {
 		const { messageId, ask, question } = firstCommsAsk();
 		const good = question.options[0].id;
@@ -1857,11 +1791,7 @@ describe("answerAsk", () => {
 		});
 	});
 
-	// No-op for an unknown questionId — naming a question the ask doesn't carry
-	// leaves every question's chosenOptionIds untouched. The per-question seam
-	// (answerAsk keys on questionId) must never record a choice
-	// against a phantom question. Mutation-check: dropping the questionId guard
-	// (so the mapper answers the first/only question regardless) reddens this.
+	// Unknown question ids must not record a choice against a phantom question.
 	test("is a no-op for an unknown questionId", () => {
 		const { messageId, ask, question } = firstCommsAsk();
 		const good = question.options[0].id;
