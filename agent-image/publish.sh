@@ -118,7 +118,7 @@ guard_immutable() {
     return 1
   fi
 
-  # Only authenticated GHCR "manifest unknown" proves the tag is absent.
+  # Only an authenticated, write-scoped GHCR "manifest unknown" proves absence.
   # A bare gateway/CDN 404 or any transient/auth failure is ambiguous; abort
   # rather than risk overwriting an immutable tag.
   local msg

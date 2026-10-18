@@ -1,6 +1,6 @@
-# Runtime toolchain for agent coding, not project builds: Nix, devenv/direnv,
-# and repo-pinned Bun support in-container activation and compass-agent.
-# Git/gh/jj/jj-vine support repo work; nftables/getent/gawk support egress.
+# Runtime toolchain (not project builds): Nix/devenv/direnv and pinned Bun
+# support activation and compass-agent; Git/gh/jj/jj-vine support repo work.
+# nftables/getent/gawk support egress; getent is its own package, not in glibc.
 # coreutils/bash/cacert provide a usable shell and HTTPS trust.
 {
   pkgs,
@@ -26,10 +26,10 @@ let
     doCheck = false;
   };
 
-  # Single-user Nix owned by the agent: empty build-users-group (no daemon exists),
-  # no sandbox (nested userns is unreliable under rootless podman; agent is trusted).
-  # ssl-cert-file is a store path: nix's compiled-in default names a file
-  # `pkgs.cacert` does not ship, so substitution would fail TLS.
+  # Single-user Nix: no daemon, so build-users-group is empty; no sandbox, since
+  # nested userns is unreliable under rootless podman (agent is trusted). devenv
+  # needs flakes. ssl-cert-file is a store path: nix's compiled-in default names
+  # a file `pkgs.cacert` does not ship, so substitution would fail TLS.
   nixConf = pkgs.writeTextDir "etc/nix/nix.conf" ''
     experimental-features = nix-command flakes
     build-users-group =

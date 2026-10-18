@@ -33,9 +33,9 @@ let
   native =
     nativeBySystem.${system} or (throw "compass-agent entrypoint: unsupported system ${system}");
 
-  # Fetch and compile the locked dependency tree in the only network-enabled
-  # derivation. Use the repo-pinned Bun; the binary embeds it and the SDK needs
-  # Bun.Image, which nixpkgs' Bun lacks.
+  # Fetch the locked dependency tree in the only network-enabled derivation.
+  # Install and compile with repo-pinned Bun: the binary embeds it, and the SDK
+  # needs Bun.Image, which nixpkgs' Bun lacks.
   pinnedBun = (import ../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
 
   # Parameterized by TARGET system: `--cpu` selects that arch's optionalDependency,
