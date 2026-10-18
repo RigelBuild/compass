@@ -2,28 +2,10 @@
 
 package e2e
 
-// TestClientModeHeadlessChain is the T5.7 headless CI variant
-// (RigelBuild/docs:docs/designs/compass/ui/compass-native-client-mode/design.md §T5.7, lines
-// 582-598). The webview-dependent steps (connect screen renders, paste-token,
-// board renders, auto-connect-no-screen) are manual QA on the dev box with
-// T5.3's TestConnectClassification as the CI proxy, mirroring T4's split — they
-// are NOT automated here. This test drives the IMPORTABLE Go-side chain against
-// a REAL running stack, which is genuinely additive over T5.3: T5.3 proved the
-// bridge+tokenstore contract against an httptest stub, this proves it against
-// the fixture's real compass-server binary over its real self-signed TLS door
-// with its real minted admin token.
-//
-// runClient / bridgeService.Connect live in cmd/compass-app package main under
-// //go:build unix && gtk4 and need a webview/display, so they cannot run in
-// headless podman CI and are not importable — this test therefore composes the
-// importable pieces (bridge.NewTLSTarget, the generated compass.v1 connect
-// client, tokenstore) against the real server, never calling runClient nor
-// spawning the app binary.
-//
-// podmanUsable-guarded so a container-less sandbox SKIPS rather than fails. The
-// only waits are the fixture's own event-gated readiness (stand-up blocks on
-// runner enrollment) and per-RPC deadlines derived from the test-root ctx. No
-// time.Sleep, no polling, no retries.
+// TestClientModeHeadlessChain exercises the importable client connection against
+// a real podman stack, its TLS anchor, and its minted admin token. The app's
+// runClient requires GTK/webview and cannot run in headless CI, so this proves the
+// reusable bridge, Connect client, and tokenstore without spawning the app.
 
 import (
 	"bytes"
@@ -53,15 +35,8 @@ func TestClientModeHeadlessChain(t *testing.T) {
 
 	f := sharedFixture(t)
 
-	// ── Item 1: real-server happy path over the client bridge ──
-	//
-	// Build the SAME client-mode connection the app builds in runClient
-	// (embedded.go:137 NewTLSTarget + SetBearer), but against the fixture's REAL
-	// compass-server rather than T5.3's httptest stub: pin the real self-signed
-	// anchor, arm the real admin bearer, and make the two authenticated
-	// compass.v1 RPCs the Connect probe makes (bridge_service.go:229-250:
-	// GetServerInfo then WhoAmI). This exercises TLS-anchor-trust +
-	// bearer-injection end-to-end against the real server binary.
+	// Build the app's client target with the fixture's TLS anchor and bearer, then
+	// call GetServerInfo and WhoAmI over the real server connection.
 	caPEM, err := os.ReadFile(f.CAPath())
 	if err != nil {
 		t.Fatalf("read fixture CA PEM %q: %v", f.CAPath(), err)
@@ -114,26 +89,16 @@ func TestClientModeHeadlessChain(t *testing.T) {
 		t.Fatalf("unarmed WhoAmI: got code %v, want %v", got, connect.CodeUnauthenticated)
 	}
 
-	// ── Item 2: tokenstore round-trip against the real flow ──
-	//
-	// The keychain-fallback store the client mode relies on (T5.2, DL-109): key
-	// the real admin token by the real server URL, read it back over a FRESH
-	// store instance (item 4: a simulated relaunch — a re-opened store re-reads
-	// its persisted credential with no re-entry), and — when the file fallback
-	// is the bound backend (keyring absent in headless CI) — assert the 0600
-	// fallback-file mode. If the host keyring is available the store binds to it
-	// and no fallback file exists; the round-trip is the always-on contract, the
-	// 0600 assertion rides the fallback path per the record.
+	// Write and reopen the real admin token under this server URL. On keyring-backed
+	// hosts cleanup deletes the OS credential; TempDir removes file fallbacks, whose
+	// mode is also asserted.
 	storeDir := t.TempDir()
 	store := tokenstore.New(storeDir)
 	if err := store.Write(f.ServerURL(), f.AdminToken()); err != nil {
 		t.Fatalf("tokenstore Write: %v", err)
 	}
-	// The real admin bearer just landed in the store; on a keyring-equipped box
-	// (which podmanUsable() implies) that is the host OS keyring, not a temp dir,
-	// so delete it on teardown rather than leaking one dead credential entry per
-	// run — the file fallback already auto-reaps under t.TempDir(). A Delete
-	// error during cleanup is not actionable.
+	// On keyring-backed hosts the token is stored outside TempDir, so delete it on
+	// cleanup; the file fallback is already reaped with TempDir.
 	t.Cleanup(func() { _ = store.Delete(f.ServerURL()) })
 
 	relaunched := tokenstore.New(storeDir) // a fresh store == the client relaunching against the same state dir
@@ -163,13 +128,8 @@ func TestClientModeHeadlessChain(t *testing.T) {
 		t.Log("tokenstore bound to the OS keyring (no fallback file); 0600-mode assertion is the file-fallback path per the record")
 	}
 
-	// ── Item 3: process-level secret hygiene (DL-109, the process-hygiene half) ──
-	//
-	// The fixture spawned real compass child processes; scope the /proc scan to
-	// this fixture's own processes via its unique runtimeDir (fixture.go:44-47),
-	// so unrelated host processes are never matched, and assert the admin token
-	// substring appears in NONE of their cmdlines — the credential travels over
-	// the door as a bearer, never on a command line.
+	// Scope the /proc scan to this fixture's runtimeDir and ensure no child cmdline
+	// carries the admin token; it must travel only as a bearer.
 	assertTokenNotInCmdlines(t, f.RuntimeDir(), f.AdminToken())
 
 	assertClientAppToml(t, f.ServerURL(), f.AdminToken(), caPEM)
@@ -224,14 +184,9 @@ func assertClientAppToml(t *testing.T, serverURL, token string, caPEM []byte) {
 	}
 }
 
-// assertTokenNotInCmdlines scans /proc/<pid>/cmdline for every process whose
-// command line references scopeDir (this fixture's unique runtime-dir, so only
-// this fixture's own children match — never an unrelated host process) and fails
-// if any of them carries token on its command line. cmdline is NUL-separated;
-// the NULs are normalized to spaces for the substring check. A pid that exits
-// between the readdir and the read is skipped (ESRCH → the file vanishes), not a
-// failure. At least one scoped process must be found, else the assertion would
-// be vacuous.
+// assertTokenNotInCmdlines scans processes scoped by runtimeDir and rejects any
+// cmdline carrying the token. It skips processes that exit mid-scan and requires
+// at least one scoped process so the check is not vacuous.
 func assertTokenNotInCmdlines(t *testing.T, scopeDir, token string) {
 	t.Helper()
 

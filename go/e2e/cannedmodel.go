@@ -51,25 +51,16 @@ import (
 // openai-completions provider appends to its configured baseUrl.
 const cannedChatPath = "/chat/completions"
 
-// The openai-completions SSE wire values the stub emits, named so the two turn
-// branches (text and tool-call) share one source of truth. chunkObject is the
-// `object` every chat.completion.chunk carries; finishStop and finishToolCall
-// are the two finish_reason values the SDK's mapStopReason keys on ("stop" is a
-// clean settle, "tool_calls" maps to stopReason toolUse the agent loop gates
-// tool execution on).
+// These are the SSE object and finish_reason values shared by the text and
+// tool-call branches.
 const (
 	chunkObject    = "chat.completion.chunk"
 	finishStop     = "stop"
 	finishToolCall = "tool_calls"
 )
 
-// hostRoutableAddr returns the host's default-route source address — the
-// interface pasta forwards a container's host-gateway traffic to. A stub bound
-// to loopback (127.0.0.1) is unreachable from the container; it must bind THIS
-// address. Discovered by opening a UDP socket toward a public address (no
-// packet is sent) and reading the kernel-selected local IP, the same trick
-// `ip route get` performs. Returns an error rather than panicking so the caller
-// (a test) decides fatality.
+// hostRoutableAddr returns the source address the container's host-gateway
+// traffic reaches. A UDP route probe sends no packet; callers choose fatality.
 func hostRoutableAddr(ctx context.Context) (string, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "udp", "1.1.1.1:80")
 	if err != nil {
@@ -99,11 +90,8 @@ type CannedTurn struct {
 	isToolCall bool
 	// text is the assistant reply a text turn settles on.
 	text string
-	// toolName / toolArgs script a tool-call turn: the function name and its
-	// arguments already serialized as a JSON string (the OpenAI contract — the
-	// SDK parser reads function.arguments as a string it JSON-parses in one shot,
-	// openai-completions.ts:1208-1220). The call id is assigned deterministically
-	// per served turn by the handler, not carried here.
+	// toolName and toolArgs are the function name and its JSON-string arguments.
+	// The handler assigns each call id deterministically.
 	toolName string
 	toolArgs string
 }
@@ -125,62 +113,26 @@ func CannedToolCall(toolName, argsJSON string) CannedTurn {
 	return CannedTurn{isToolCall: true, toolName: toolName, toolArgs: argsJSON}
 }
 
-// cannedMarker is one off-script body-marker route the canned backend serves:
-// any request whose body contains marker settles on reply as a clean text turn
-// WITHOUT advancing the positional script counter. Build one with
-// newCannedMarker (via the WithCannedMarkerReply fixture option). It generalizes
-// the built-in setupTurnMarker mechanism to a
-// caller-supplied list, so a leg can route a turn it does not want drawn off its
-// ordered script (the mentioned peer's steer-driven turn and the subscriber's
-// deliver-driven turn in leg-4) the same way the root-supervisor Setup turn is
-// already routed.
+// cannedMarker routes body-matching requests to off-script turns without
+// advancing the positional counter. It supports single- and multi-turn scripts.
 type cannedMarker struct {
 	marker string
-	// turns is the ordered sequence this marker route serves, one per matching
-	// request. A one-element script is the single-text-reply form
-	// (newCannedMarker); a longer one is a multi-turn script
-	// (newCannedMarkerScript) whose TERMINAL element repeats once exhausted —
-	// see newCannedMarkerScript for why repeating (not 500ing) is the only
-	// terminating semantics for a marker route.
+	// turns is the ordered marker-route script; its terminal turn repeats after
+	// exhaustion so a multi-round tool call can settle on its follow-up request.
 	turns []CannedTurn
 }
 
-// newCannedMarker builds an off-script body-marker route: a request whose body
-// contains marker settles on reply as a clean text turn and does NOT consume a
-// positional script slot. It mirrors the built-in setupTurnMarker routing (which
-// keeps the root-supervisor Setup turn off every leg's script) but is
-// caller-supplied and additive — the Setup marker still routes unconditionally.
-// Use it via WithCannedMarkerReply to keep the ordered script drawn only by its
-// own scripted turns when a shared-backend turn (e.g. a mention-driven steer or
-// deliver) would otherwise race the counter.
-//
-// It is exactly the one-element case of newCannedMarkerScript: a single text
-// turn whose terminal element repeats, i.e. EVERY matching request settles on
-// reply — the pre-script behaviour, unchanged.
+// newCannedMarker builds a text route that settles matching requests off-script
+// and leaves positional slots untouched. It repeats one turn; use
+// newCannedMarkerScript when the route needs multiple turns.
 func newCannedMarker(marker, reply string) cannedMarker {
 	return cannedMarker{marker: marker, turns: []CannedTurn{CannedText(reply)}}
 }
 
-// newCannedMarkerScript builds an off-script body-marker route that serves an
-// ORDERED SEQUENCE of turns rather than one text reply (RIG-3528 T1): matching
-// request N of this marker draws turns[N], and once the sequence is exhausted
-// the TERMINAL element repeats for every later match. Like newCannedMarker it
-// never advances the positional `served` counter, so a marker script and an
-// ordered positional script coexist without racing.
-//
-// The per-marker counter and the repeating terminal element are BOTH
-// load-bearing, and this is the design's sharpest hazard. A tool-call turn needs
-// TWO model round-trips to settle — the tool-call turn, then the follow-up that
-// settles on text — while a marker route matches a substring of the WHOLE
-// request body and returns unconditionally. So a naive one-CannedTurn-per-marker
-// route DOES NOT TERMINATE: every POST re-matches the marker and re-serves the
-// tool call forever. Advancing a per-marker counter is what lets POST 2 draw the
-// text settle; repeating the terminal element (rather than 500ing on exhaustion,
-// as the positional path does) is what keeps a later re-match — a retry, a
-// re-steer, an extra loop iteration — settled instead of erroring the agent out.
-//
-// Use it via WithCannedMarkerScript. Registering a marker with no turns is a
-// construction error (startCannedModelServer): a route that can never settle.
+// newCannedMarkerScript serves an ordered off-script sequence, then repeats its
+// terminal turn without advancing the positional counter. Repeating is required
+// because a tool-call follow-up matches the same marker; serving turn zero again
+// would reissue the call instead of settling it.
 func newCannedMarkerScript(marker string, turns ...CannedTurn) cannedMarker {
 	return cannedMarker{marker: marker, turns: turns}
 }
@@ -192,47 +144,27 @@ type cannedModelServer struct {
 	srv    *http.Server
 	ln     net.Listener
 	script []CannedTurn
-	// markers are the caller-supplied off-script body-marker routes (see
-	// cannedMarker / newCannedMarker / newCannedMarkerScript): a request whose
-	// body contains a marker draws that route's next turn WITHOUT advancing the
-	// positional counter, generalizing setupTurnMarker. Checked after the
-	// built-in Setup marker, before the positional claim.
+	// markers are off-script routes with independent counters; the built-in Setup
+	// route is checked first.
 	markers  []cannedMarker
 	port     int
 	closeErr error
 	closeMu  sync.Mutex
 	closed   bool
-	// served counts requests handled so far; request N is served script[N]. It
-	// is read+incremented under servedMu so a pathological concurrent hit stays
-	// race-free (go test -race clean) — a real agent serializes its round-trips,
-	// but the stub guards the counter anyway.
+	// served counts claimed positional requests. servedMu prevents races if an
+	// unexpected concurrent request reaches the handler.
 	servedMu sync.Mutex
 	served   int
-	// markerServed is the PER-MARKER turn counter, parallel to markers by index:
-	// markerServed[i] is how many requests marker i has already served, so it
-	// draws markers[i].turns[markerServed[i]] and clamps to the terminal element
-	// once exhausted (newCannedMarkerScript). It is deliberately SEPARATE from
-	// served — a marker route must never consume a positional slot — and guarded
-	// by its own mutex for the same -race reason served is.
+	// markerServed stores each route's request count, independently of served, and
+	// clamps exhausted scripts to their terminal turn. markerMu protects the counts.
 	markerMu     sync.Mutex
 	markerServed []int
 }
 
-// setupTurnMarker is a stable substring of the server's root-supervisor Setup
-// thread (go/server/setup_thread.md, embedded as setupThreadBody). The e2e stack
-// boots on an empty agent tree, so the server's first-launch seed always creates
-// a root supervisor and posts that Setup thread into its home channel — driving
-// a REAL first turn on the supervisor that dials THIS shared canned backend,
-// concurrently with the test's own agent turn. That supervisor turn is not part
-// of any leg's script, and it races the test agent on the positional counter, so
-// left unrouted it would consume a scripted slot (or, for an ordered script,
-// the WRONG slot). The handler classifies a request as the supervisor's Setup
-// turn by this marker and serves it setupReply off a SEPARATE counter, leaving
-// each leg's ordered script drawn only by the test agent.
-//
-// It is a substring, not the whole body, so incidental copy edits below the
-// first line don't silently un-route the Setup turn; TestCannedSetupMarker
-// guards against drift by asserting it stays a substring of setup_thread.md.
+// setupTurnMarker identifies the root supervisor's first-launch Setup request,
+// which would otherwise race test agents for the positional script. Routing it
+// separately preserves each leg's turns; a test pins the marker to setup_thread.md
+// so content changes cannot silently unroute it.
 const setupTurnMarker = "you are the root Manager for this Compass workspace"
 
 // setupReply is the clean text turn the canned backend settles the supervisor's
@@ -240,21 +172,9 @@ const setupTurnMarker = "you are the root Manager for this Compass workspace"
 // the TEST agent's transcript), so it only needs to settle the turn cleanly.
 const setupReply = "canned setup turn settled OK"
 
-// startCannedModelServer binds a listener on bindAddr (host:port; port 0 lets
-// the kernel assign a free one) and serves the canned streaming SSE script on
-// /chat/completions until Close. script is the ordered per-request turn list:
-// request N settles on script[N] (a text or single-tool-call turn); a request
-// past the end is a test bug the handler answers with a loud 500. An empty
-// script is a construction error — a backend that can never settle a turn.
-// bindAddr must be an interface the model client can reach: in the container leg
-// it is the host's routable address (pasta forwards the container to it via the
-// host-gateway); in the hermetic unit test it is loopback. It returns an error
-// rather than panicking (rule://go-no-panic-in-lib) so the caller — a test —
-// decides fatality. markers are optional off-script body-marker routes
-// (newCannedMarker / newCannedMarkerScript): a request whose body carries one
-// draws that route's next turn without consuming a positional slot, additive to
-// the built-in Setup marker. A marker with no turns is a construction error, for
-// the same reason an empty script is — a route that can never settle a turn.
+// startCannedModelServer serves the ordered script and optional marker routes.
+// Marker requests leave positional turns untouched; empty scripts and routes are
+// rejected at construction. bindAddr must be reachable by the model client.
 func startCannedModelServer(ctx context.Context, bindAddr string, script []CannedTurn, markers ...cannedMarker) (*cannedModelServer, error) {
 	if len(script) == 0 {
 		return nil, errors.New("canned model server requires a non-empty script")
@@ -339,12 +259,8 @@ func (c *cannedModelServer) Close() error {
 	return c.closeErr
 }
 
-// chatChunk is the minimal ChatCompletionChunk the SDK's openai-completions
-// parser accepts: an object with a choices array whose first entry carries a
-// delta (with the streamed content) and, on the terminal chunk, a
-// finish_reason. Fields the parser tolerates as absent are omitempty so each
-// emitted chunk is exactly one concern (a content delta OR the finish), matching
-// how real hosts frame a stream.
+// chatChunk is the minimal completion shape the SDK accepts: choices[0] carries
+// a delta or the terminal finish_reason.
 type chatChunk struct {
 	ID      string       `json:"id"`
 	Object  string       `json:"object"`
@@ -385,15 +301,9 @@ type chatToolCallFunction struct {
 	Arguments string `json:"arguments"`
 }
 
-// claimMarkerTurn claims the next turn of marker route i and returns it plus the
-// 0-based sequence number of this match (which only disambiguates an emitted
-// tool-call id). Once the route's turns are exhausted the TERMINAL element is
-// returned for every later match, and the counter keeps climbing so successive
-// matches still get distinct call ids. The per-marker counter is guarded by
-// markerMu — never servedMu, and never the positional `served` counter, since a
-// marker route must not consume a positional slot. Callers hold no lock; the
-// index is in range by construction (markerServed is allocated one-per-marker,
-// and startCannedModelServer rejects a marker with no turns).
+// claimMarkerTurn advances a route's separate counter and returns its sequence.
+// Exhausted scripts repeat their terminal turn; the sequence still gives
+// tool-call IDs unique values.
 func (c *cannedModelServer) claimMarkerTurn(i int) (CannedTurn, int) {
 	c.markerMu.Lock()
 	seq := c.markerServed[i]
@@ -406,19 +316,10 @@ func (c *cannedModelServer) claimMarkerTurn(i int) (CannedTurn, int) {
 	return turns[seq], seq
 }
 
-// handleChatCompletions serves one turn per request. It rejects a non-POST with
-// 405 (the provider only ever POSTs) and writes an HTTP error — never panics —
-// on any failure (rule://go-no-panic-in-lib). Routing is: the built-in Setup
-// marker first, then the caller-supplied marker routes (each advancing its OWN
-// counter and clamping to its terminal turn — claimMarkerTurn), then the
-// positional script, whose next index is claimed under servedMu; a positional
-// request past the end of the script is a test bug answered with a loud 500
-// naming exhaustion (never a hang or a default turn). The turn's body is either
-// a text turn (a content chunk + a terminal finish_reason "stop") or a
-// single-tool-call turn (a chunk whose delta.tool_calls carries one entry + a
-// terminal finish_reason "tool_calls"), then the literal `data: [DONE]`
-// sentinel. Each event is flushed immediately so the client's first-event
-// watchdog sees bytes without waiting on the handler to return.
+// handleChatCompletions routes Setup first, then marker scripts, then positional
+// turns. Marker scripts clamp to their terminal turn; positional exhaustion is a
+// loud 500. Each SSE event is flushed immediately for the client's first-event
+// watchdog.
 func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "canned model backend only serves POST", http.StatusMethodNotAllowed)
@@ -439,30 +340,16 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 		return
 	}
 
-	// The root-supervisor Setup turn (see setupTurnMarker) is an out-of-script
-	// turn-driver the e2e stack's first-launch seed always fires, racing the
-	// test agent on the shared backend. Serve it a fixed clean reply WITHOUT
-	// advancing the script counter, so each leg's ordered script is drawn only by
-	// the test agent's turns — race-free regardless of which turn dials first.
+	// The root-supervisor Setup turn races test agents on this shared backend. Serve
+	// its fixed reply without advancing the positional script counter.
 	if strings.Contains(string(body), setupTurnMarker) {
 		c.writeTextTurn(w, flusher, setupReply)
 		return
 	}
 
-	// Caller-supplied off-script markers (newCannedMarker /
-	// newCannedMarkerScript), checked after the built-in Setup marker and BEFORE
-	// the positional claim: a request whose body carries one draws that route's
-	// next turn without advancing the positional script counter, so a
-	// shared-backend turn a leg does not want drawn off its ordered script (a
-	// mention-driven steer or deliver) is routed the same way the Setup turn is.
-	//
-	// Each marker advances its OWN counter and CLAMPS to its terminal turn once
-	// exhausted, which is what makes a multi-turn marker route terminate: a
-	// tool-call turn needs a second round-trip to settle, and that follow-up POST
-	// re-matches the same marker, so a route that always served turns[0] would
-	// re-serve the tool call forever (see newCannedMarkerScript). Clamping rather
-	// than 500ing keeps a later re-match settled — unlike the positional path, a
-	// marker route has no bounded request count to exhaust against.
+	// Marker routes run before the positional script and advance only their own
+	// counters. They clamp to the terminal turn because a tool-call follow-up matches
+	// the same marker and must settle instead of reissuing the call forever.
 	for i, m := range c.markers {
 		if strings.Contains(string(body), m.marker) {
 			turn, seq := c.claimMarkerTurn(i)
@@ -471,10 +358,8 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 		}
 	}
 
-	// Claim the next script index under the counter mutex so a pathological
-	// concurrent hit stays race-free. An index past the end is a test bug: fail
-	// loudly with a 500 naming exhaustion BEFORE writing the 200 stream header,
-	// so the client sees the error status rather than an empty stream.
+	// Claim the positional index under servedMu. Exhaustion returns 500 before the
+	// SSE header, while the mutex keeps unexpected concurrent hits race-free.
 	c.servedMu.Lock()
 	idx := c.served
 	c.served++
@@ -487,14 +372,8 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 	c.writeCannedTurn(w, flusher, turn, idx)
 }
 
-// writeCannedTurn serves one CannedTurn on the wire: a pure-text turn (a content
-// chunk + a terminal finish_reason "stop") or a single-tool-call turn (a chunk
-// whose delta.tool_calls carries one entry + a terminal finish_reason
-// "tool_calls", which maps to the stopReason toolUse the agent loop gates tool
-// execution on). callSeq only disambiguates the emitted tool-call id, so a
-// transcript can tell two served calls apart; it carries no routing meaning.
-// Shared by the positional-script path and the marker routes so both settle
-// identically on the wire.
+// writeCannedTurn emits one text or tool-call turn with its finish reason.
+// callSeq only gives tool calls unique IDs; both route types share this path.
 func (c *cannedModelServer) writeCannedTurn(w http.ResponseWriter, flusher http.Flusher, turn CannedTurn, callSeq int) {
 	if !turn.isToolCall {
 		c.writeTextTurn(w, flusher, turn.text)
@@ -544,12 +423,8 @@ func (c *cannedModelServer) writeTextTurn(w http.ResponseWriter, flusher http.Fl
 	})
 }
 
-// writeTurn writes the 200 SSE header, streams each event as a `data:` frame
-// flushed immediately (so the client's first-event watchdog sees bytes without
-// waiting on the handler to return), then the terminal `data: [DONE]` sentinel.
-// A marshal failure of a fixed in-memory struct is surfaced as a 500 rather than
-// swallowed; a mid-stream write error means the client hung up, so nothing
-// actionable remains.
+// writeTurn flushes each SSE frame immediately, then writes [DONE]. Marshal
+// errors become HTTP 500; a mid-stream write error means the client left.
 func (c *cannedModelServer) writeTurn(w http.ResponseWriter, flusher http.Flusher, events []chatChunk) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

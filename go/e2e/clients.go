@@ -41,13 +41,9 @@ func bearerToken(token string) connect.ClientInterceptor {
 	}
 }
 
-// newAuthedClients dials the stack's loopback TLS network door with the state
-// dir's self-signed anchor as the trust root and the admin bearer on every call,
-// returning the two authenticated Connect clients the harness consumes. caPath
-// anchors the self-signed dogfood cert (the server serves https on the door, so
-// a CA-trust client is required, never plain http); serverURL is the https door
-// URL; adminToken is the bootstrap-admin bearer read from disk. Both services
-// live in the same generated compassv1connect package.
+// newAuthedClients trusts the state directory's self-signed CA and adds the
+// bootstrap-admin bearer to both generated Connect clients. The server door is
+// HTTPS, so plain HTTP is not a valid alternative.
 func newAuthedClients(caPath, serverURL, adminToken string) (compassv1connect.CompassServiceClient, compassv1connect.CommsServiceClient, error) {
 	httpClient, err := runner.NewCATrustClient(caPath)
 	if err != nil {

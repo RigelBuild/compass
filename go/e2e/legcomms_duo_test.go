@@ -13,11 +13,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// The two container agents this leg stands up, plus the shared channel and the
-// topic their conversation lands on. Handles obey the account handle grammar
-// (store/handle.go `^[a-z0-9][a-z0-9._-]*$`) and every handle/channel/topic is
-// duo- namespaced: this leg shares ONE stack with the other comms legs, so a
-// bare name would collide with theirs.
+// The two agents, shared room, and topic used by this leg. Names are duo-
+// namespaced because all comms legs share one stack.
 const (
 	duoAgentAHandle = "duo-agent-a"
 	duoAgentBHandle = "duo-agent-b"
@@ -26,31 +23,16 @@ const (
 	duoDMTopic      = "duo-dm-topic"
 )
 
-// The two marker routes, one per agent, each carrying that agent's WHOLE ordered
-// turn script (RIG-3528 T1 marker scripts). Routing by marker — never the
-// positional script — is mandatory on the shared stack: the positional counter
-// is a single contended resource two legs drawing unmarked turns would race.
-//
-// duoMarkerA is a substring of every human trigger posted to A (never of
-// anything A posts), so it appears in every one of A's model requests and in NO
-// other agent's. duoMarkerB is a substring of the content A posts that B
-// RECEIVES (the room post and the DM), so it appears in B's requests.
-//
-// The registration ORDER below is load-bearing: A authors the content carrying
-// duoMarkerB (its own tool-call args), so duoMarkerB is also present in A's
-// request history — but duoMarkerA is present in the SAME requests and, matched
-// first, wins. B's requests never carry duoMarkerA, so they fall through to
-// duoMarkerB. Registering A before B is what disambiguates the two.
+// Each agent has a marker route for its full turn script. A's marker also
+// appears in its authored messages, so registering A first disambiguates those
+// requests; B's received messages carry only B's marker.
 const (
 	duoMarkerA = "duo-drive-alpha"
 	duoMarkerB = "duo-relay-beta"
 )
 
-// The distinctive message bodies the fan-out assertions select on. duoRoomPost
-// and duoDM both carry duoMarkerB (they are what B receives, so they must route
-// B's turns); duoReply carries neither marker (nothing is triggered by B's
-// reply — A is not in the room's deliver set). Each is unique so an AwaitDelivery
-// match cannot collide with a trigger post or the other agent's message.
+// Room and DM bodies carry B's marker to route B's turns; B's reply carries
+// neither marker and cannot trigger another scripted turn.
 const (
 	duoRoomPost = duoMarkerB + " channel post authored by agent A"
 	duoReply    = "duo agent B reply on the shared room topic"

@@ -50,14 +50,9 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision (container1): %v", err)
 	}
-	// Reap container1 (see TestLegTwoRealTurn): the reparented rootless conmon
-	// outlives stack Down, so an explicit RemoveWorkspace is the only reliable
-	// reap. Registered before StartSession so a later failure still tears it
-	// down. This is the safety net; the mid-test RemoveWorkspace below is the
-	// scenario's persist step — a second remove of an already-gone container is a
-	// best-effort no-op by RemoveWorkspace's idempotency contract, so the two do
-	// not fight. Best-effort — teardown, not an assertion — so the error is
-	// deliberately discarded.
+	// Reap container1 explicitly because rootless conmon outlives stack Down.
+	// Register before StartSession so a later failure still cleans it up; the
+	// mid-test remove is safe to repeat under RemoveWorkspace's idempotent contract.
 	t.Cleanup(func() {
 		_ = f.RemoveWorkspace(ctx, container1, "leg5-teardown-1")
 	})
@@ -73,26 +68,16 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Resolve the agent's home channel once; both the pre-teardown and resumed
-	// turns are driven by posts to it. Each post lands on the already-live
-	// session and is delivered via the LIVE delivery path — the delivery
-	// consumer tailing the comms bus dispatches it to the live session, which
-	// fires the turn AwaitTurnSettled waits on. The session-start sweep only
-	// redelivers messages left UNDELIVERED from a prior lifetime, which is
-	// exactly why post1 below must be acked (cursor advanced) before the resume:
-	// otherwise container2's start-sweep would redeliver it and consume the
-	// resumed lifetime's canned turn. So each post must precede its settle wait.
+	// Both turns are driven by posts to the home channel. Live delivery fires the
+	// current session; the resume sweep handles only messages still unacknowledged,
+	// so post1 must be acked before resume or it consumes the next canned turn.
 	acc, err := adminAgentByHandle(ctx, st, "leg5-persistresume")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
 	}
 	homeChannelID := string(acc.Agent.HomeChannelID)
-	// Open the tail on the ORIGINAL session BEFORE post1 drives the turn: the
-	// frame stream is live-fan with no replay ring, but OpenSessionTail returns on
-	// the leading registration-ack, so the subscription is provably live before
-	// the post — a server-guaranteed happens-before that keeps a fast canned
-	// turn's WORKING/READY edges from fanning into the post→subscribe gap. Its own
-	// defer Close bounds this lifetime's tail.
+	// Open the original session tail before post1; its registration ack guarantees
+	// the fast turn's state frames cannot be missed.
 	tail1, err := f.OpenSessionTail(ctx, originalSessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail (original): %v", err)
@@ -104,38 +89,26 @@ func TestLegFivePersistAndResume(t *testing.T) {
 		t.Fatalf("PostMessage(home, pre-teardown): %v", err)
 	}
 
-	// Event-gated settle on the first session's already-open tail — skip until
-	// WORKING, then return on the next READY: the canned turn0 (reply1) runs.
+	// Wait for the first turn to reach READY on the already-open tail.
 	if err := f.AwaitTurnSettled(ctx, tail1); err != nil {
 		t.Fatalf("AwaitTurnSettled (original): %v", err)
 	}
 
-	// Gate on the delivery cursor advancing past post1 BEFORE the container1
-	// teardown, so the resume start-sweep in container2 does not observe post1
-	// still owed and redeliver it. The cursor advances on the agent's
-	// delivery_ack, NOT on the settle above (AwaitTurnSettled returns on the
-	// WORKING→READY edge; it does not gate on the ack), so this is the event that
-	// actually proves post1 is consumed. See waitDeliveryCursorPast for the WHY.
+	// Wait for delivery_ack before teardown. READY does not prove the cursor moved,
+	// and resume would redeliver post1 if it remained owed.
 	if err := f.waitDeliveryCursorPast(ctx, st, acc.ID, acc.Agent.HomeChannelID, store.MessageID(post1ID)); err != nil {
 		t.Fatalf("waitDeliveryCursorPast (post1): %v", err)
 	}
 
-	// Gate on lifetime-1's reply1 being PERSISTED to the durable transcript before
-	// the teardown: the resume below reconstructs the session body from the stored
-	// transcript (ReconstructSessionBody → SessionResumeSnapshot), so if reply1's
-	// CommitConversationFrame is still in flight when we tear container1 down and
-	// resume, the reconstruction reads an empty transcript and the resume RPC fails
-	// not_found. The commit trails the WORKING→READY settle by one runner→server
-	// round-trip and is independent of the delivery-cursor ack gated above, so this
-	// is the event that actually proves reply1 is durable and resumable. Same
-	// keyed transcript the post-resume assertion reads (originalSessionID).
+	// Ensure reply1 reached the durable transcript before teardown; resume rebuilds
+	// session context from that transcript, and the commit is independent of READY
+	// and delivery acknowledgement.
 	if _, err := f.awaitTranscriptPersisted(ctx, st, originalSessionID, reply1); err != nil {
 		t.Fatalf("awaitTranscriptPersisted (pre-teardown reply1): %v", err)
 	}
 
-	// The persist boundary: tear container1 down mid-test (the leg-5 teardown
-	// step). The logical session's transcript survives in the store keyed under
-	// originalSessionID; container1's Cleanup above then no-ops idempotently.
+	// Remove container1 at the persist boundary; its logical session transcript
+	// remains under originalSessionID.
 	if err := f.RemoveWorkspace(ctx, container1, "leg5-teardown-1"); err != nil {
 		t.Fatalf("RemoveWorkspace (container1, persist boundary): %v", err)
 	}
@@ -146,62 +119,39 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision (container2): %v", err)
 	}
-	// Reap container2, same reparented-conmon reason as container1. Registered
-	// before Resume so a Resume/settle failure still tears it down. Best-effort —
-	// teardown, not an assertion — so the error is deliberately discarded.
+	// Reap container2 on failure too; register cleanup before Resume.
 	t.Cleanup(func() {
 		_ = f.RemoveWorkspace(ctx, container2, "leg5-teardown-2")
 	})
 
-	// Resume the ORIGINAL logical session into the fresh container. Resume REUSES
-	// the logical session id as the live id, so the resumed lifetime's transcript
-	// frames commit under the SAME key the first lifetime used — one durable
-	// lineage. resumedSessionID therefore equals originalSessionID.
+	// Resume the original logical session into a fresh container. Resume must reuse
+	// its id so both lifetimes append to one transcript lineage.
 	resumedSessionID, err := f.Resume(ctx, container2, originalSessionID)
 	if err != nil {
 		t.Fatalf("Resume (container2): %v", err)
 	}
 
-	// Open the tail on the RESUMED session BEFORE post2 drives the turn. The
-	// frame stream keys on the live id, which on resume equals the logical id
-	// (resumedSessionID == originalSessionID), and OpenSessionTail returns on the
-	// leading registration-ack — so the subscription is provably live before the
-	// post (a server-guaranteed happens-before) and a fast canned turn cannot fan
-	// its edges into the post→subscribe gap.
+	// Open the resumed session tail before post2; the reused id and registration ack
+	// guarantee the fast turn's state frames are observed.
 	tail2, err := f.OpenSessionTail(ctx, resumedSessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail (resumed): %v", err)
 	}
 	defer tail2.Close()
 
-	// Post 2 drives the resumed turn: same home channel, resolved once above.
+	// Post 2 drives the resumed turn on the same home channel.
 	if _, err := f.PostMessage(ctx, homeChannelID, "general", "say the resumed reply and stop "+leg5Marker); err != nil {
 		t.Fatalf("PostMessage(home, resumed): %v", err)
 	}
 
-	// Event-gated settle on the RESUMED session's already-open tail — skip until
-	// WORKING, then return on the next READY: the canned turn1 (reply2) runs. If
-	// the resumed turn never settled, this errors (the design.md:687 "resumed
-	// turn completes" leg).
+	// Wait for the resumed turn to reach READY on the already-open tail.
 	if err := f.AwaitTurnSettled(ctx, tail2); err != nil {
 		t.Fatalf("AwaitTurnSettled (resumed): %v", err)
 	}
 
-	// The carried transcript lives under the logical session id, which on resume
-	// IS the resumed live id (resumedSessionID == originalSessionID). The resumed
-	// lifetime's frames commit under that same key. The Runner's resume Start
-	// calls BindLifetime before the agent runs, which rebases the new lifetime's
-	// agent-stamped entry_seq onto the session's stored maximum, so the persisted
-	// sequence stays monotonic per session across the resume. This leg fails if
-	// the Server never wires the binder. Query originalSessionID
-	// (== resumedSessionID) for the one durable lineage.
-	// The resumed turn's transcript commits on the CommitConversationFrame unary,
-	// one runner→server round-trip AFTER the WORKING→READY settle above — so gate
-	// the read on reply2 (the resumed turn's own reply) converging rather than
-	// reading immediately, which races the commit and flakes on store: not found
-	// or a body still missing reply2. Once reply2 is present the earlier reply1
-	// (committed in lifetime-1, before the teardown) is necessarily already there,
-	// so this one gate covers both assertions below.
+	// Read the logical session's transcript after reply2 commits. Resume binds new
+	// entry sequences above the stored maximum, so the same transcript retains
+	// reply1 and appends reply2 rather than starting a new lineage.
 	transcript, err := f.awaitTranscriptPersisted(ctx, st, originalSessionID, reply2)
 	if err != nil {
 		t.Fatalf("awaitTranscriptPersisted(originalSessionID, reply2): %v", err)
@@ -211,30 +161,19 @@ func TestLegFivePersistAndResume(t *testing.T) {
 		joined.WriteString(e.EntryJSON)
 	}
 	body := joined.String()
-	// reply1 is durable across the persist boundary regardless of resume:
-	// RemoveWorkspace does not prune the transcript, so the pre-teardown row
-	// survives. Its presence here after resume confirms lifetime-2's start
-	// carried the reconstructed prior body forward rather than superseding it
-	// with a fresh-header checkpoint that prunes it. The primary rebase-onto-
-	// the-logical-id proof is the reply2 assertion below.
+	// reply1 must survive RemoveWorkspace and resume, proving the reconstructed
+	// prior context was carried forward.
 	if !strings.Contains(body, reply1) {
 		t.Fatalf("transcript under the original session id is missing the pre-teardown reply %q; the resumed session did not carry the persisted lineage", reply1)
 	}
-	// reply2 present proves the resumed turn's own settle landed in the SAME
-	// keyed transcript — i.e. the new lifetime's frames rebased onto the logical
-	// id rather than a fresh key; without it the resume would have appended
-	// nowhere the original id can see.
+	// reply2 must append under the original session id, proving the resumed lifetime
+	// shares the same durable transcript key.
 	if !strings.Contains(body, reply2) {
 		t.Fatalf("transcript under the original session id is missing the resumed reply %q; the resumed turn did not append to the logical lineage", reply2)
 	}
 
-	// The id-reuse contract: Resume REUSES the logical session id as the live id,
-	// so the durable transcript is one lineage keyed under that single id. Pin
-	// both halves: the returned id is non-empty (the resumed lifetime came
-	// online) AND equals originalSessionID (the reuse, not a fresh mint). A fresh
-	// mint would split the transcript across two keys — the exact bug this leg
-	// guards (frames would land under the minted id, orphaned from the logical
-	// lineage the reader queries).
+	// Resume returns the logical session id as the live id. An empty or fresh id
+	// would split the transcript and violate the single-lineage contract.
 	if resumedSessionID == "" {
 		t.Fatal("Resume returned an empty session id; the resumed lifetime did not come online")
 	}
@@ -243,11 +182,8 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	}
 }
 
-// leg5Marker routes two DISTINCT canned replies: the pre-teardown turn settles
-// on leg5Reply1, the resumed turn on leg5Reply2. Distinct strings are what let
-// the lineage assertion prove the resumed session carried prior context — a
-// fresh session would hold only leg5Reply2, so leg5Reply1's presence is the
-// load-of-reconstructed-body proof.
+// Distinct replies let the transcript prove that resume carried context from
+// before teardown, rather than containing only the second lifetime's reply.
 const (
 	leg5Marker = "e2e-route-leg5-resume"
 	leg5Reply1 = "canned leg-5 pre-teardown turn settled OK"

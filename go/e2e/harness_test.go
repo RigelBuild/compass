@@ -101,11 +101,7 @@ func TestHarnessCore(t *testing.T) {
 		}
 	}
 
-	// 5. The configured AgentModel/EgressAllow reached the runner's flags. The
-	// deterministic proof is the runnerSpec unit test (internal/stack); here we
-	// confirm end-to-end that the live runner process carries them, reading its
-	// argv from the process table. Scoped to THIS fixture's unique runtime-dir so
-	// a foreign compass-runner on this shared box cannot satisfy the assertion.
+	// Confirm the configured model and egress flags reached this fixture's runner.
 	assertRunnerHasConfiguredFlags(t, f)
 
 	// 6. The shared stack remains Ready after these authenticated and rejected
@@ -119,18 +115,9 @@ func TestHarnessCore(t *testing.T) {
 	}
 }
 
-// assertRunnerHasConfiguredFlags reads the live compass-runner's argv from the
-// process table and requires the configured --agent-model and comma-joined
-// --egress-allow to be present — end-to-end proof the A4 Config fields reached
-// the spawned runner, complementing the deterministic runnerSpec unit test.
-//
-// The match is scoped to runtimeDir — the shared fixture's unique run root,
-// forwarded to the runner as --runtime-dir. An unscoped scrape could match a
-// foreign compass-runner and either false-green or flake on a concurrent runner
-// with different flags.
-//
-// ps inspects the live Runner's argv; spawnChain waits for enrollment before
-// Up returns Ready, so the process exists by the time this assertion runs.
+// assertRunnerHasConfiguredFlags checks the live runner argv for the configured
+// model and egress flags. Scope the process match to this fixture's runtimeDir
+// to avoid matching another runner on the shared host.
 func assertRunnerHasConfiguredFlags(t *testing.T, f *Fixture) {
 	t.Helper()
 	runtimeDir := f.runtimeDir

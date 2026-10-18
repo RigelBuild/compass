@@ -107,11 +107,8 @@ func scrubForgeEnv(tb testing.TB) {
 	}
 }
 
-// agentImage is the REAL agent image the dogfood stack runs — present in the
-// local containers-storage on the dev/CI box, never a public stand-in. The
-// runner refuses to boot without it present; the stack pulls/validates it but
-// does not run it as a container at up (a per-agent container is on-demand via a
-// later RPC, out of H1 scope).
+// agentImage is the real dogfood image required by the runner; the stack
+// validates its presence, while per-agent containers start only on demand.
 const agentImage = "compass-agent:latest"
 
 // expectedVersion is the stack build version the fixture drives. It only gates
@@ -169,11 +166,8 @@ type Fixture struct {
 type fixtureConfig struct {
 	canned       bool
 	cannedScript []CannedTurn
-	// cannedMarkers are caller-supplied off-script body-marker routes threaded
-	// into the canned backend (WithCannedMarkerReply): a request whose body carries a
-	// marker settles on its reply without consuming a positional script slot,
-	// additive to the built-in Setup marker. Empty is the default (Setup marker
-	// only).
+	// cannedMarkers are off-script body routes; an empty slice leaves only the
+	// built-in Setup route.
 	cannedMarkers []cannedMarker
 	// cannedImageInput declares the canned model vision-capable, so the SDK keeps
 	// image tool results instead of an inspect_image metadata note.
@@ -347,12 +341,8 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 
 	dsn := fixtureDSN(fc, pgSockDir, pgPort)
 
-	// The server resolves the master key at boot and fails closed, so the fixture
-	// seeds its own provider instead of inheriting one. buildManifest marks every
-	// declared name required, so this file must carry the master key plus exactly
-	// the forge names declareServerSecretNames declares — configureForgeStub
-	// appends those three below when WithForgeStub is set, and a declared name
-	// with no line here fails the Load wholesale.
+	// The server requires declared secrets at boot. Write the master key and, when
+	// the forge stub is enabled, the forge names appended by configureForgeStub.
 	secretsPath := writeFixtureSecrets(tb)
 
 	var forgeStub *forgeStub
@@ -409,12 +399,8 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	cfg.TranscriptSafetyValveCapBytes = fc.safetyValveCap
 	cfg.ExternalDatabase = fc.externalDSN != ""
 
-	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a
-	// models.yml pointing the agent's custom openai-completions provider at it,
-	// and pin the three A4 knobs so the agent resolves that provider and its
-	// default-deny egress permits exactly the stub. Overrides the illustrative
-	// AgentModel/EgressAllow above (which only prove the forward path); a nil
-	// stub means plain mode and every canned field stays as set above.
+	// Canned mode replaces the illustrative model and egress settings with the
+	// deterministic stub's provider and its exact default-deny allowlist.
 	var stub *cannedModelServer
 	if fc.canned {
 		stub = configureCannedModel(ctx, tb, &cfg, root, fc.cannedScript, fc.cannedMarkers, fc.cannedImageInput)
@@ -536,12 +522,8 @@ func buildFixtureConfig(tb testing.TB, opts []fixtureOption) fixtureConfig {
 
 func acquireFixtureRoot(tb testing.TB, ctx context.Context, fc fixtureConfig) (root, stateDir string, pgPort int) {
 	tb.Helper()
-	// Acquire the root/stateDir/ports either fresh (the default ephemeral
-	// fixture) or from a persistent site (WithSite — the H6 cross-restart
-	// substrate). The site path reuses one root/stateDir/ports across two Ups so
-	// the second re-attaches the persisted postgres cluster; the ephemeral path
-	// mints per-call state exactly as before. Only the acquisition differs — the
-	// downstream cfg build is shared.
+	// Reuse a persistent site's root, state directory, and port when WithSite is
+	// set; otherwise allocate fresh ephemeral fixture state.
 	if fc.site != nil {
 		root = fc.site.root
 		stateDir = fc.site.stateDir
@@ -813,49 +795,26 @@ func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID s
 	return resp.GetGroup().GetId(), nil
 }
 
-// cannedAgentDir is the in-container path the canned models.yml is delivered
-// to: the agent user's SDK agent dir ($HOME/.omp/agent, getAgentDir() default),
-// where the ModelRegistry auto-discovers models.yml. $HOME is the runner's
-// --home-dir (cmd/compass-runner/main.go default /home/agent), so this is
-// /home/agent/.omp/agent.
+// cannedAgentDir is the agent's SDK discovery directory, where the mounted
+// models.yml is found.
 const cannedAgentDir = "/home/agent/.omp/agent"
 
-// cannedProvider / cannedModelID name the custom openai-completions provider the
-// canned models.yml declares; cannedSelector is the provider/id form COMPASS_MODEL
-// carries, which resolveProviderModelReference matches exactly (model-resolver.ts
-// findExactModelReferenceMatch).
+// cannedProvider and cannedModelID name the custom model; cannedSelector is the
+// exact provider/id form matched by COMPASS_MODEL.
 const (
 	cannedProvider = "cannedci"
 	cannedModelID  = "canned"
 	cannedSelector = cannedProvider + "/" + cannedModelID
 )
 
-// pastaHostGateway is the in-container alias for the host under rootless podman's
-// pasta networking (== host.containers.internal). Grounded firsthand on this box
-// (podman 5.8.4, rootlessNetworkCmd=pasta): a container reaches a host-side
-// listener at this address, NOT at 10.0.2.2 (slirp4netns's gateway) nor at the
-// host's own loopback (pasta does not forward 127.0.0.1). It is the address the
-// agent's model client dials AND the exact egress-allow entry the firewall must
-// permit for that dial to clear default-deny.
+// pastaHostGateway is the host alias reachable from rootless podman containers.
+// The agent dials this address, which must be allowed through default-deny egress.
 const pastaHostGateway = "169.254.1.2"
 
-// configureCannedModel starts the canned stub and rewrites cfg's three A4 knobs
-// so a real agent turn settles on the scripted reply with zero live egress:
-//   - the stub binds the host's routable interface (pasta forwards a container's
-//     host-gateway traffic there; a loopback bind is unreachable);
-//   - a models.yml declaring a custom openai-completions provider whose baseUrl
-//     is the stub reached THROUGH the pasta host-gateway is written to a host
-//     dir and bind-mounted read-write at the agent's ~/.omp/agent (rw, not ro:
-//     the SDK writes agent.db / sessions/ / models.db as siblings in that same
-//     dir — a ro mount over it would break boot; keep-id maps the host dir owner
-//     to the agent uid so the writes land);
-//   - AgentModel is the provider/id selector resolving to that entry, and
-//     EgressAllow is EXACTLY the host-gateway so default-deny permits only the
-//     stub.
-//
-// It returns the running stub; its Close rides a t.Cleanup so teardown never
-// leaks it. cfgRoot is the fixture's short root (the models.yml host dir lives
-// under it, short enough to stay clear of any path budget).
+// configureCannedModel starts the local stub, writes its provider config, and
+// mounts that config read-write at the agent's SDK directory. The rw mount is
+// required because the SDK writes sibling state files there; model egress is
+// limited to the host-gateway. The returned stub closes through t.Cleanup.
 func configureCannedModel(ctx context.Context, tb testing.TB, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker, imageInput bool) *cannedModelServer {
 	tb.Helper()
 
@@ -946,26 +905,17 @@ func shortRoot(tb testing.TB, suffix string) string {
 	return root
 }
 
-// fixtureSite is a persistent stack substrate — the root, state dir, and two
-// ports — that outlives a single NewFixture call so two Ups (WithSite) can share
-// it: the postgres data dir lives under stateDir, so the second Up re-attaches
-// the cluster the first initialized. Produced by newPersistentSite, consumed via
-// WithSite. The RIG-1790 H6 cross-restart leg is its only user.
+// fixtureSite holds a root, state directory, and port across two NewFixture
+// calls so the second Up can reattach the first run's postgres cluster.
 type fixtureSite struct {
 	root     string
 	stateDir string
 	pgPort   int
 }
 
-// newPersistentSite mints a persistent site whose lifetime spans a whole test —
-// two back-to-back Ups over it re-attach the same postgres cluster. It registers
-// exactly ONE end-of-test RemoveAll for the root (not per-Up), so run1's Down
-// cannot delete the persisted DB before run2; the state dir is a t.TempDir (the
-// framework reaps it after the test). The root stays short off shortRoot because
-// the runner's agent-socket path under it is sun_path-budgeted (run.go
-// validateRuntimeDir); the state dir is not budgeted, so a t.TempDir is fine
-// there. The pg port is allocated ONCE — run1's Down stops postgres before
-// run2's Up reuses it; the network door is bound fresh (:0) by each Up.
+// newPersistentSite allocates one short root and postgres port for two Ups.
+// Its single RemoveAll runs at test end, after both Downs; the state directory
+// uses TempDir because only the runner socket path requires a short path.
 func newPersistentSite(ctx context.Context, t *testing.T) fixtureSite {
 	t.Helper()
 	// A short, unique root — NOT via shortRoot: inlined to keep the site's single

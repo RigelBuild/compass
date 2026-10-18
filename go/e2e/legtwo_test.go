@@ -43,11 +43,8 @@ func TestLegTwoPrimitives(t *testing.T) {
 	if containerName == "" {
 		t.Fatal("Provision returned an empty container name")
 	}
-	// Reap the provisioned container: stack Down stops only the stack processes,
-	// and the rootless conmon holding this container is reparented, so without an
-	// explicit RemoveWorkspace it leaks past every green run. Registered before
-	// StartSession so a StartSession failure still tears the container down.
-	// Best-effort — teardown, not an assertion.
+	// Reap the container because rootless conmon outlives stack Down. Register
+	// before StartSession so startup failure still triggers best-effort cleanup.
 	t.Cleanup(func() {
 		_ = f.RemoveWorkspace(ctx, containerName, "leg2-primitives-teardown")
 	})
@@ -61,21 +58,9 @@ func TestLegTwoPrimitives(t *testing.T) {
 	}
 }
 
-// TestLegTwoRealTurn is the full leg-2 scenario: CreateAgent -> Provision ->
-// StartSession -> OpenSessionTail(sessionID) -> PostMessage(home) drives the
-// turn -> AwaitTurnSettled -> assert the session's transcript is non-empty. On
-// H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn cannot complete without a
-// deterministic model backend, so on the bare stack the settle would hang and
-// the transcript stay empty. H3 (RIG-1787) lands that backend — the canned stub
-// routed by leg2RealTurnMarker — so this same scenario now runs
-// GREEN with zero live-model egress.
-//
-// The turn is driven entirely by the canned stub (a fixed scripted reply). The
-// tail is opened BEFORE the post so a fast canned turn cannot fan its edges into
-// the post→subscribe gap, and the settle is event-gated on AwaitTurnSettled (the
-// WORKING→READY edge) — no sleeps, no polling, no retries. The split settle
-// primitives have no hermetic unit shape (they need a live settling session), so
-// their proof rides this scenario — deliberately NOT faking a frame stream.
+// TestLegTwoRealTurn exercises a full agent turn against the canned backend.
+// Open the live-only session tail before posting so fast state frames are not
+// missed; the transcript assertion proves the deterministic reply was stored.
 func TestLegTwoRealTurn(t *testing.T) {
 	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
@@ -94,11 +79,8 @@ func TestLegTwoRealTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	// Reap the provisioned container (see TestLegTwoPrimitives): the reparented
-	// rootless conmon outlives stack Down, so without an explicit RemoveWorkspace
-	// the container leaks past every green run. Registered before StartSession so
-	// a StartSession failure still tears it down. Best-effort — teardown, not an
-	// assertion.
+	// Reap the container at test end because rootless conmon outlives stack Down.
+	// Register before StartSession so failures still trigger best-effort cleanup.
 	t.Cleanup(func() {
 		_ = f.RemoveWorkspace(ctx, containerName, "leg2-realturn-teardown")
 	})
@@ -114,25 +96,16 @@ func TestLegTwoRealTurn(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Open the session tail BEFORE the post drives the turn: OpenSessionTail
-	// subscribes to the frame stream and returns on the leading registration-ack,
-	// so the subscription is provably live server-side before the post — a
-	// server-guaranteed happens-before. SubscribeAgentSession is live-fan (no
-	// replay ring), so were the tail opened AFTER the post a fast canned turn
-	// could fan its WORKING/READY edges into the post→subscribe gap and
-	// AwaitTurnSettled would hang. Must precede the post.
+	// Open the live-only tail before posting. Its registration ack proves the server
+	// subscribed before a fast canned turn can emit state frames.
 	tail, err := f.OpenSessionTail(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail: %v", err)
 	}
 	defer tail.Close()
 
-	// Post to the agent's home channel: this post lands on the already-live
-	// session and is delivered via the live fan-out (the delivery consumer
-	// tailing the comms bus), which fires the agent's first turn — the turn
-	// AwaitTurnSettled waits on. The session-start sweep only redelivers
-	// messages left undelivered from a prior lifetime (relevant only to leg-5's
-	// post1), not this one.
+	// The post reaches the already-live session and drives its first turn. The
+	// session-start sweep handles only messages left undelivered by a prior lifetime.
 	acc, err := adminAgentByHandle(ctx, st, "leg2-realturn")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
@@ -141,22 +114,14 @@ func TestLegTwoRealTurn(t *testing.T) {
 		t.Fatalf("PostMessage(home): %v", err)
 	}
 
-	// Event-gated settle on the already-open tail: skip until WORKING, then
-	// return on the next READY (WORKING→READY = one settled turn) — no sleeps.
+	// Wait for the turn's WORKING-to-READY transition on the open tail.
 	if err := f.AwaitTurnSettled(ctx, tail); err != nil {
 		t.Fatalf("AwaitTurnSettled: %v", err)
 	}
 
-	// The transcript persists on the CommitConversationFrame unary, INDEPENDENT
-	// of the PublishEvents session-state channel AwaitTurnSettled gates on, so it
-	// commits one runner→server round-trip AFTER the WORKING→READY settle. Gate
-	// the read on that convergence rather than reading immediately (which races
-	// the commit and flakes on store: not found). The turn is deterministic — the
-	// canned stub settles on exactly cannedReply — so the persisted transcript
-	// MUST contain that text verbatim; awaitTranscriptPersisted returns only once
-	// it does. Asserting the canned reply's presence (not a bare non-empty check)
-	// is what proves the canned model actually drove the settled turn (the
-	// record's "final settled entry is present", design.md §H2).
+	// Transcript commit uses a separate RPC and can trail READY. Wait for the exact
+	// canned reply rather than racing the commit with an immediate read; this proves
+	// the stub drove the turn.
 	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, cannedReply); err != nil {
 		t.Fatalf("awaitTranscriptPersisted: %v", err)
 	}
