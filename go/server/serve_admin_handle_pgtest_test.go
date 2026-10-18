@@ -17,11 +17,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// adminAccountRole reads the (handle -> user role) for the account named handle,
-// or (found=false) when no account carries it. A direct read of the store of
-// record: the observation that proves --admin-handle named the minted account,
-// not a log field. role is the user_accounts.role SMALLINT (1 = admin, 0 =
-// member); found=false means no account at that handle at all.
+// Reads a user's role to prove --admin-handle selected the minted account.
 func adminAccountRole(t *testing.T, ctx context.Context, dsn, handle string) (role int, found bool) {
 	t.Helper()
 	conn := connectPG(t, ctx, dsn)
@@ -119,11 +115,7 @@ func TestServeFailsWhenAdminHandleNamesExistingMember(t *testing.T) {
 	}
 	seed.Close()
 
-	// Drive Serve on a bounded ctx in a goroutine: the correct behavior is a fast
-	// ErrConflict return, but a regression that WRONGLY succeeds would reach the
-	// serving stage and block until ctx cancel — so the deadline turns that bug
-	// into a fast, legible failure rather than a hung suite. cancel on return
-	// tears down a wrongly-serving Serve.
+	// Bound Serve so a bad successful startup cannot block through serving.
 	serveCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	natsURL := startTestNats(t)

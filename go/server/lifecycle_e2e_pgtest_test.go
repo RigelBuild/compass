@@ -38,43 +38,27 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// e2eTimeout bounds every wire wait so a wedged seam fails fast rather than
-// hanging the suite. It is a deadline safety net, never a synchronization
-// device: the wire is event-gated (provisionWhenSeamLive's retry, the socket
-// round-trip's own blocking return), never slept on.
+// Bounds wire waits without synchronizing them; readiness uses event gates and
+// blocking round trips rather than sleeps.
 const e2eTimeout = 30 * time.Second
 
-// e2eNamePrefix is the container-name prefix this test wires into its
-// SpecDefaults, hoisted so runnertest.ShortRuntimeDir models the same name the Runner
-// actually builds (BuildSpec in spec.go joins it with the account id). Editing
-// the prefix in one place would otherwise silently shrink the modelled path and
-// turn the budget assertion into a false negative.
+// Socket-path budget modeling must match the Runner's BuildSpec name.
 const e2eNamePrefix = "compass-agent-"
 
-// e2eAccountIDHexLen is the width of a store account id: 16 random bytes
-// hex-encoded (internal/store/ids.go). Fixed at that minting site — the only one
-// — rather than validated where the socket path is built, so it is the right
-// width to model the tail with and the wrong thing to call a guarantee. Tied to
-// the real minted value in newE2EWire so widening store ids reddens there rather
-// than silently overrunning the socket path.
+// Account IDs encode 16 random bytes. Keep the fixture value aligned so path
+// budget checks catch any future widening.
 const e2eAccountIDHexLen = 32
 
-// peerPostText is the body a spawned peer posts over ITS OWN socket, asserted
-// back out of the store under the peer account — the proof that spawn wired a
-// genuinely independent bound session, not a shadow of the supervisor's.
+// Body posted by the peer over its own socket; the store assertion verifies an
+// independent session, not a shadow of the supervisor.
 const peerPostText = "peer speaking over its own AgentGateway socket"
 
-// TestSpawnDespawnOverTheWire drives the spawn happy-path, the spawned peer
-// acting under its own account, and the despawn happy-path (+ fail-closed after)
-// as one ordered wire: despawn genuinely needs a spawned peer, so the state
-// flows through the subtests over a single shared supervisor session — the shape
-// the runnerhub integration reference uses for its whole-wire test. Each subtest
-// pins ONE property with its own mutation comment.
+// Drives spawn, peer activity, and despawn over one shared supervisor session;
+// despawn depends on the peer state. Each subtest pins one property.
 func TestSpawnDespawnOverTheWire(t *testing.T) {
 	w := newE2EWire(t)
 
-	// The peer the whole test spawns, despawns, and asserts fail-closed on.
-	// Captured across subtests because the state is sequential.
+	// Captured across subtests because they share sequential state.
 	var (
 		peerID        store.AccountID
 		peerContainer string
@@ -107,11 +91,8 @@ func TestSpawnDespawnOverTheWire(t *testing.T) {
 	})
 }
 
-// e2eSpawnHappyPath drives the spawn happy-path over the wire and returns the
-// spawned peer's account id, container name, and home channel — the state the
-// later phases act on. It pins the F2 ownership frame (peer owned by the
-// supervisor's OWNER, never the caller agent, never admin) and that the spawn
-// chain provisioned + placed + started a session under the peer account.
+// Runs the spawn flow and returns its peer state. Pins supervisor ownership
+// and verifies the chain provisions, places, and starts the peer.
 func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerContainer string, peerHome store.ChannelID) {
 	t.Helper()
 	ctx := w.ctx
@@ -127,8 +108,7 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 	if err != nil {
 		t.Fatalf("Lifecycle(spawn) over the socket = %v, want the round-trip result", err)
 	}
-	// A spawn is a SUCCESS variant (never the in-band _Error): an _Error here
-	// means the happy-path spawn tripped a tool-level guard it should not.
+	// Spawn must return its success variant, not an in-band tool error.
 	if e := resp.GetError(); e != nil {
 		t.Fatalf("spawn returned in-band error {code=%q msg=%q}, want a spawn result", e.GetCode(), e.GetMessage())
 	}
@@ -148,10 +128,8 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 		t.Fatalf("spawned peer id = %q, want a fresh id distinct from the supervisor %q", peerID, w.supervisor.ID)
 	}
 
-	// F2 ownership — the load-bearing security frame. The peer is owned by the
-	// SUPERVISOR'S OWNER (a non-admin user), never the supervisor agent, never the
-	// bootstrap admin. Mutation: creating the peer under the caller agent id or a
-	// hard-coded admin id instead of the store-resolved caller owner reddens this.
+	// The peer belongs to the supervisor's non-admin owner, not the caller agent
+	// or bootstrap admin.
 	owner, err := w.store.AgentOwner(ctx, peerID)
 	if err != nil {
 		t.Fatalf("AgentOwner(peer) = %v", err)
@@ -166,15 +144,11 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 		t.Fatalf("peer is owned by the bootstrap ADMIN %q — the caller->owner resolution collapsed to the admin literal instead of the session-bound caller's owner", w.adminID)
 	}
 
-	// The chain completed: provisioned + placed. Mutation: skipping
-	// RecordAgentPlacement in provisionAndStart leaves the peer unplaced, so
-	// PlacementForAgent misses.
+	// The chain must record placement so the spawned peer resolves to its container.
 	if _, container, err := w.store.PlacementForAgent(ctx, peerID); err != nil || container != peerContainer {
 		t.Fatalf("PlacementForAgent(peer) = (%q, %v), want (%q, nil)", container, err, peerContainer)
 	}
-	// A real session was started and recorded under the PEER account.
-	// Mutation: recording the session under the wrong account (or not at all)
-	// reddens the session-owner read.
+	// The started session must be recorded under the peer account.
 	if got := sessionOwner(t, ctx, w.dsn, spawn.GetSessionId()); got != string(peerID) {
 		t.Fatalf("session owner = %q, want the spawned peer %q", got, peerID)
 	}
@@ -297,11 +271,8 @@ func e2ePeerFailsClosedAfterDespawn(t *testing.T, w *e2eWire, peerID store.Accou
 	}
 }
 
-// TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp pins the load-
-// bearing authz leg: a peer owned by a DIFFERENT owner, despawned by the
-// supervisor over the wire, is an INDISTINGUISHABLE in-band not_found — and the
-// foreign peer is UNCHANGED (still placed, still bound, still able to post). The
-// not-found/forbidden merge: a caller can never probe a foreign peer's existence.
+// Foreign-owner despawn must return indistinguishable not_found and leave the
+// placed, bound peer usable, so callers cannot probe its existence.
 func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	w := newE2EWire(t)
 	ctx := w.ctx
@@ -401,11 +372,8 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 
 // --- the assembled wire ------------------------------------------------------
 
-// e2eWire is the whole spawn/despawn wire stood up once per test: a real store,
-// the server-package hub (comms as CommsCaller, lifecycleService as
-// LifecycleCaller), a real Runner dialed into the mounted RunnerService door
-// over a stub engine that serves real per-container sockets, and a bound
-// SUPERVISOR session whose socket the tests drive Lifecycle over.
+// Full spawn/despawn wire: real store and Runner, stub engine with real sockets,
+// and a bound supervisor session whose socket the tests drive.
 type e2eWire struct {
 	ctx              context.Context
 	dsn              string
@@ -420,23 +388,16 @@ type e2eWire struct {
 	supervisorClient compassv1internalconnect.AgentGatewayClient
 }
 
-// newE2EWire assembles the full wire (option B): store + hub + real Runner over
-// a socket-serving stub engine, then provisions and starts a supervisor session
-// and returns a client dialed to its per-container socket. Cleanups are ordered
-// so the runtime-dir removal runs LAST (after the loop has left dispatch and the
-// host has drained its sockets) — see runnerloop.RunSessionsLoop and the host-Close cleanup
-// below.
+// Assembles the store, hub, Runner, and supervisor socket client. Cleanup removes
+// the runtime directory after the loop and host sockets drain.
 func newE2EWire(t *testing.T) *e2eWire {
 	t.Helper()
 	dsn := pgtest.RequireDSN(t) // hard-fails on infra-missing (RIG-1523), never skips silently.
-	// First cleanup registered, so LIFO removes the tree LAST — after the loop's
-	// drain and the host's socket close have both run (see below).
+	// Register cancellation before fixture setup so failed setup cannot leak Serve.
 	runtimeDir := runnertest.ShortRuntimeDir(t, e2eNamePrefix, e2eAccountIDHexLen)
 	ctx, cancel := context.WithCancel(context.Background()) // the test root context
-	// Registered adjacent to WithCancel so the fixture setup below cannot t.Fatalf
-	// out with the context never cancelled. runnerloop.RunSessionsLoop registers cancel again
-	// later; CancelFunc is idempotent, so the ordering the loop documents is
-	// unchanged.
+	// Register cancel before fixture setup can fail. Cleanup is idempotent, so the
+	// loop may register it again without changing shutdown ordering.
 	t.Cleanup(cancel)
 
 	st, err := store.Open(ctx, dsn)
@@ -449,10 +410,8 @@ func newE2EWire(t *testing.T) *e2eWire {
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
-	// Own the supervisor under a NON-admin user. This makes the F2 "never
-	// admin-literal" arm real: with supervisorOwner != admin.ID, a regression that
-	// hard-coded the bootstrap admin as the peer's owner reddens here instead of
-	// silently matching the fixture. (admin still exists, it just does not own it.)
+	// The supervisor belongs to a non-admin owner. A hard-coded bootstrap admin
+	// would then fail the ownership assertion instead of matching the fixture.
 	supervisorOwnerUser, err := st.CreateUser(ctx, store.NewUser{Handle: "supervisor-owner", DisplayName: "Supervisor Owner"})
 	if err != nil {
 		t.Fatalf("CreateUser(supervisor owner): %v", err)
@@ -461,9 +420,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	if err != nil {
 		t.Fatalf("CreateAgent(supervisor): %v", err)
 	}
-	// runnertest.ShortRuntimeDir budgeted the socket path against a MODEL of the
-	// account id, before an account existed. Tie the model to the real minted width:
-	// widen store ids and this reddens here rather than silently overrunning the path.
+	// Assert the minted account ID width matches the socket-path budget model.
 	if got := len(supervisor.ID); got != e2eAccountIDHexLen {
 		t.Fatalf("minted account id is %d chars, but ShortRuntimeDir budgeted for %d; update e2eAccountIDHexLen", got, e2eAccountIDHexLen)
 	}
@@ -586,22 +543,11 @@ func (r *e2eResolver) resolve(_ context.Context, presented string, want store.Su
 	return r.subj, nil
 }
 
-// e2eStubRuntime is the fake WorkloadRuntime backing the Runner: ExecStreaming
-// spawns a real, terminatable child (a shell-stub `podman` exec-ing `sleep`) so
-// the session's exec reaps on ctx cancel / Stop and StartAgent's pipe drains end
-// on that reap. Post-#16 nothing rides stdout/stderr — the agent's protocol
-// travels the AgentGateway socket — so the child's own (empty) pipes are what
-// StartAgent drains and no frame is injected.
-//
-// It DIFFERS from the reference stub in two load-bearing ways T7 needs:
-//   - Create returns a PER-CALL-UNIQUE engine id (the container name), not a
-//     fixed "fake-id". T7 provisions MULTIPLE containers through this one runner;
-//     a fixed id would alias every container's engine handle onto one id. The
-//     container NAME already differs per account (NamePrefix+accountID), so it is
-//     the natural disambiguator.
-//   - Remove is RECORDED (keyed by that engine id == container name), so
-//     "despawn removed the container" is an observed wire fact, not a mock
-//     expectation.
+// ExecStreaming runs a real terminatable child; the agent protocol uses its
+// socket while StartAgent drains the child's empty stdout/stderr pipes.
+
+// Each Create gets a unique engine ID because one Runner provisions multiple
+// containers. Remove is recorded by that ID so despawn is observed on the wire.
 type e2eStubRuntime struct {
 	cli *runtime.PodmanCLI // shell-stub podman → a real terminatable Process
 
@@ -622,8 +568,7 @@ func newE2EStubRuntime(t *testing.T) *e2eStubRuntime {
 }
 
 func (f *e2eStubRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
-	// Per-call-unique engine id: the container name (NamePrefix+accountID), which
-	// already differs per account — see the type doc for why a fixed id collides.
+	// Engine IDs use account-unique names so separate fixtures do not collide.
 	f.mu.Lock()
 	f.created[spec.Name] = true
 	delete(f.removed, spec.Name)
@@ -635,10 +580,8 @@ func (f *e2eStubRuntime) Exec(context.Context, runtime.WorkloadID, runtime.ExecS
 	return runtime.ExecOutput{}, nil
 }
 func (f *e2eStubRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
-	// A real streaming exec against the shell stub: a live, terminatable Process
-	// whose stdout/stderr pipes StartAgent drains. The stub just sleeps, so the
-	// pipes stay empty until the exec's context cancels (loop teardown) or Stop
-	// terminates it (despawn/Stop).
+	// Uses a real streaming Process so StartAgent drains live pipes. The shell stub
+	// produces no output and exits when its context is canceled or Stop terminates it.
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
 func (f *e2eStubRuntime) Stop(context.Context, runtime.WorkloadID, time.Duration) error {
@@ -683,26 +626,13 @@ func (f *e2eStubRuntime) removedIDs() []string {
 	return ids
 }
 
-// agentSocketPathE2E is the host path the Runner serves a container's
-// AgentGateway socket at: RuntimeDir/containers/<container>/agent.sock (host.go's
-// agentSocketDir/agentSocketFile layout). Reconstructed here rather than read off
-// the host — h.sockets is unexported and package-internal — so it is the exact
-// socket an in-container agent bind-mounts and dials.
+// Reconstructs the host-side AgentGateway socket path from the container layout.
 func agentSocketPathE2E(runtimeDir, containerName string) string {
 	return filepath.Join(runtimeDir, "containers", containerName, "agent.sock")
 }
 
-// provisionWhenSeamLiveE2E provisions the workspace through the public hub path →
-// the Runner launches the (stub) container and returns its name.
-//
-// The Sessions stream is server-speaks-first: RunSessions' bootstrap Send
-// flushes the headers that run the server handler's router.attach, and that
-// round-trip is async to the loop goroutine. A command dispatched into the
-// pre-attach window gets a retriable Unavailable ("no live runner sessions
-// stream"). So gate on the seam being live by retrying, idempotent on the stable
-// request id "prov-supervisor" so there is no double-provision, yielding to the
-// handler goroutine between probes. A deadline bounds it, so a genuinely wedged
-// seam fails fast rather than spinning, and nothing here is a sleep.
+// Retries provisioning until the Sessions stream attaches. The stable request ID
+// makes retries idempotent; a deadline bounds the wait.
 func provisionWhenSeamLiveE2E(t *testing.T, ctx context.Context, hub *runnerhub.Hub, agentID store.AccountID) string {
 	t.Helper()
 	deadline := time.After(e2eTimeout)
@@ -727,10 +657,8 @@ func provisionWhenSeamLiveE2E(t *testing.T, ctx context.Context, hub *runnerhub.
 	}
 }
 
-// mountRunnerServerE2E mounts the real RunnerService door on an httptest server
-// that speaks cleartext HTTP/2 (h2c + HTTP/1) and returns its base URL. The
-// server is torn down via t.Cleanup — registered here (early) so under LIFO it
-// closes AFTER the Sessions loop has been cancelled (see runnerloop.RunSessionsLoop).
+// Mounts the RunnerService over cleartext HTTP/2. Cleanup is registered early
+// so LIFO teardown closes the server after canceling the Sessions loop.
 func mountRunnerServerE2E(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.TokenResolver) string {
 	t.Helper()
 	otelIC, err := otelconnect.NewServerInterceptor()

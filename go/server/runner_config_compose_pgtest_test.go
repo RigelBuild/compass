@@ -29,22 +29,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// buildValidConfigBundle produces a gzip+tar config bundle that passes the store
-// door grammar (validateAndHashConfigBundle): one whitelisted skills/ member with
-// a deterministic mtime. FetchAgentConfig chunks the STORED bytes — the gzip
-// stream, not the decompressed content — so the member is filled with
-// incompressible bytes (a deterministic PRNG, fixed seed) sized so the compressed
-// bundle exceeds the door's 512 KiB chunk size several times over. The stream
-// then carries multiple chunk frames, exercising drainConfigStream's cross-frame
-// reassembly; a compressible filler would collapse to a single chunk and leave
-// that loop uncovered. Returned bytes are what a real `compass agent-config push`
-// would send.
+// Builds an incompressible config bundle that spans several 512 KiB chunks.
 func buildValidConfigBundle(t *testing.T) []byte {
 	t.Helper()
-	// ~1.5 MiB of incompressible content, so the gzip-compressed STORED bundle
-	// (what the door chunks) stays above 512 KiB by ~3x and streams as several
-	// chunk frames. A fixed seed keeps the bundle — and thus its content-hash
-	// version — deterministic across runs.
+	// Fixed-seed data keeps the chunked bundle and content hash deterministic.
 	body := make([]byte, 3*512*1024)
 	if _, err := rand.NewChaCha8([32]byte{1}).Read(body); err != nil {
 		t.Fatalf("fill random bundle body: %v", err)
@@ -87,11 +75,8 @@ func buildValidConfigBundle(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// drainConfigStream reassembles a FetchAgentConfig server stream into (version,
-// bundle, chunkFrames): the first frame carries the version, subsequent frames
-// carry the tarball in receive order, and chunkFrames counts the chunk frames so
-// a caller can assert the bundle actually streamed in more than one. Fails on a
-// chunk before the version frame.
+// Reassembles FetchAgentConfig frames into a version and bundle, counts chunks,
+// and rejects a chunk received before the version.
 func drainConfigStream(t *testing.T, stream compassv1internalconnect.RunnerServiceFetchAgentConfigClientStream) (string, []byte, int) {
 	t.Helper()
 	var (
@@ -123,12 +108,8 @@ func drainConfigStream(t *testing.T, stream compassv1internalconnect.RunnerServi
 	return version, bundle, chunkFrames
 }
 
-// TestRunnerFetchesConfigThroughNetworkDoor composes the fleet-config delivery seam
-// end to end: a bundle PUT through the store of record streams back over the
-// production RunnerService door to a real minted Runner token. The positive leg
-// reddens if buildNetworkServer drops the config store from the runner door (the
-// no-config-surface regression), and the version + byte-identical reassembly prove
-// it is the real stored bundle, not a vacuous empty stream.
+// A bundle stored through the real store must stream back through the production
+// Runner door to a minted token, with its version and bytes intact.
 func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

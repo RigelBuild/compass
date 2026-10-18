@@ -25,12 +25,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// newTLSCommsClient builds a CommsService connect client that speaks
-// HTTP/2-over-TLS to addr, trusting only pool — the CommsService counterpart to
-// network_door_test.go's newTLSClient (which serves CompassService). The network
-// door mounts both services on one door, so this reaches the comms RPCs over the
-// same TLS transport a real browser/native client uses. Idle conns close via
-// t.Cleanup.
+// Builds a CommsService client over HTTP/2 TLS, trusting only pool.
+// The network door hosts both services; cleanup closes idle connections.
 func newTLSCommsClient(t *testing.T, addr string, pool *x509.CertPool) compassv1connect.CommsServiceClient {
 	t.Helper()
 	p := new(http.Protocols)
@@ -44,15 +40,8 @@ func newTLSCommsClient(t *testing.T, addr string, pool *x509.CertPool) compassv1
 	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "https://"+addr, connecthttp.WithReadMaxBytes(0))))
 }
 
-// TestNetworkDoorCommsActorIsBearerCallerNotAdmin pins invariant #2 (the
-// comms-actor half of withCaller) through buildNetworkServer's real interceptor
-// chain: a non-admin account's bearer token, presented over the TLS network door
-// on CommsService.CreateChannelGroup, must own the resulting group as the CALLER,
-// not the bootstrap admin. comms exposes no context reader, so the store-recorded
-// owner is the only observable proof the comms actor was threaded from the bearer
-// interceptor into the comms handler on the door's mounted chain. If
-// buildNetworkServer dropped withCaller (or mounted comms without the bearer
-// interceptor), attribution would fall back to the admin and this reddens.
+// A non-admin bearer creating a group must be recorded as owner, not admin.
+// This exercises withCaller through the mounted TLS network door.
 func TestNetworkDoorCommsActorIsBearerCallerNotAdmin(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

@@ -31,12 +31,7 @@ const ownerHeaderSentinel = "<!-- compass:owner "
 
 // --- fake store -------------------------------------------------------------
 
-// fakeForgeStore is a faithful in-memory forgeStore. accounts resolves the
-// caller→Author identity; the memo map models the F3 dedup keyed by
-// (agent, client_request_id); RecordAuthoredArtifact writes both the coordinate
-// row and the memo in one step, exactly as the real store's single statement
-// does — so a create that never calls record (a failed create) leaves no memo,
-// and a retry re-attempts.
+// Models caller resolution, agent/request dedup, and paired artifact/memo writes.
 type fakeForgeStore struct {
 	accounts map[store.AccountID]store.Account
 	memo     map[string]store.AuthoredArtifact // key: agent|client_request_id
@@ -46,9 +41,7 @@ type fakeForgeStore struct {
 
 	prCreates []prCreate
 
-	// The state-transition actor memo: transitions records every
-	// RecordStateTransition in call order (so a test can prove it follows the
-	// provider call), and transErr forces a memo-write fault.
+	// Records transition order and can force a memo-write fault.
 	transitions []recordedTransition
 	transErr    error
 
@@ -720,11 +713,8 @@ func TestForgeF1DispatchReviewerVsAuthorClient(t *testing.T) {
 
 // --- tests: create_pull_request arm (M2) ------------------------------------
 
-// TestForgeCreatePullRequestStampsAndRecordsPRKind pins the PR-create twin of
-// createIssue: the body reaching the AUTHOR client is stamped exactly once, the
-// result is a PullRequest arm, and the DL-055 row lands with Kind=pull_request
-// and the returned coordinate's number — the copy-paste class of bug (wrong
-// role, missing stamp, wrong kind constant) a happy-path assertion catches.
+// The PR-create path must stamp the author body once and record a PullRequest
+// row with its returned coordinate and kind.
 func TestForgeCreatePullRequestStampsAndRecordsPRKind(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")
@@ -756,11 +746,8 @@ func TestForgeCreatePullRequestStampsAndRecordsPRKind(t *testing.T) {
 	}
 }
 
-// TestForgeCreateRetryMismatchedArmReturnsStoredKind pins the F3 mismatched-arm
-// property: a create_issue recorded under a client_request_id, then a
-// create_pull_request RETRIED with the SAME key, returns the ORIGINAL Issue
-// coordinate (the STORED kind), never a PR arm, with ZERO additional provider
-// calls — the memo keys on (agent, request id), not on the arm.
+// Retrying create_pull_request with a create_issue request ID returns the stored
+// Issue coordinate and makes no provider call; dedup keys on agent and request ID.
 func TestForgeCreateRetryMismatchedArmReturnsStoredKind(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")
@@ -790,12 +777,8 @@ func TestForgeCreateRetryMismatchedArmReturnsStoredKind(t *testing.T) {
 	}
 }
 
-// TestForgeNonAgentCallerIsInvalidArgumentZeroProviderCalls pins the security
-// guard: a caller AccountID that resolves to a NON-agent account (Agent==nil, a
-// plain user) cannot author a stamped forge artifact — the write fails in-band
-// with invalid_argument BEFORE any stamp or provider touch. Inverting or
-// dropping the guard would otherwise ship green while a user/service account
-// drove an attributed write.
+// A non-agent caller cannot create a stamped artifact: reject in-band before
+// stamping or calling the provider.
 func TestForgeNonAgentCallerIsInvalidArgumentZeroProviderCalls(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")
@@ -870,12 +853,8 @@ func TestForgeCommentArmsStampBodies(t *testing.T) {
 	})
 }
 
-// TestForgeBudgetExhaustedAnd429MapToResourceExhausted pins the rate-limit arm
-// of the single error-mapping function: both the ErrBudgetExhausted sentinel and
-// a *StatusError{429} flatten to an in-band resource_exhausted. It also pins the
-// retry_after_ms population: a *forge.RateLimitError carries its clamped hint
-// through to RetryAfterMs (an oversized hint saturates at math.MaxUint32), while
-// the bare sentinel, a zero/negative hint, and a *StatusError{429} stay at 0.
+// Budget exhaustion and HTTP 429 map to resource_exhausted. Rate-limit hints are
+// clamped into retry_after_ms; absent or nonpositive hints remain zero.
 func TestForgeBudgetExhaustedAnd429MapToResourceExhausted(t *testing.T) {
 	run := func(scripted error) *compassv1internal.ForgeCallError {
 		author := forge.NewFakeProvider("gh-author")
@@ -908,12 +887,8 @@ func TestForgeBudgetExhaustedAnd429MapToResourceExhausted(t *testing.T) {
 	}
 }
 
-// TestForgeRecordFailureAfterProviderSuccessIsInternal pins the record-after-
-// success fault path: the forge create SUCCEEDED (one provider call) but the
-// DL-055 row+memo write failed, so the call returns an in-band internal error
-// and NO row lands — documenting the inherent F3 consequence that a retry then
-// re-attempts (the artifact already exists forge-side, so a duplicate is
-// possible; the memo, not the row, is what a successful retry would dedup).
+// If provider creation succeeds but its row/memo write fails, return internal and
+// persist no row. A retry may create a duplicate because the memo was not stored.
 func TestForgeRecordFailureAfterProviderSuccessIsInternal(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")
@@ -1142,11 +1117,8 @@ func TestForgeUnsubscribeBogusIdIsInbandNotFound(t *testing.T) {
 	}
 }
 
-// TestForgeSubscribeUnsubscribeStoreFaultIsInbandInternal pins the store-fault
-// rail: a generic store failure on either the subscribe or unsubscribe path
-// renders as an in-band ForgeCallError (code "internal", via storeForgeError),
-// never a Connect stream teardown — the same tool-failure-is-not-a-teardown
-// contract the read/write arms hold.
+// Store failures in either subscription path return an in-band internal error,
+// not a Connect stream teardown.
 func TestForgeSubscribeUnsubscribeStoreFaultIsInbandInternal(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")

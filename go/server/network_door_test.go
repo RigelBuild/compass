@@ -44,18 +44,11 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// unknownHandle is a non-empty account handle deliberately distinct from the
-// bootstrap admin's and member's — the "account does not exist" reference for
-// the NotFound paths. A fixed literal keeps the assertion deterministic.
+// Deterministic handle absent from the seeded accounts for NotFound paths.
 const unknownHandle = "no-such-account"
 
-// writeSelfSignedCert generates an ECDSA P-256 self-signed cert/key valid for
-// 127.0.0.1 into dir (PEM), returning the two paths and a cert pool that trusts
-// it — the operator-provisioned keypair a TLS client and Serve share. The
-// validity window (±1h around now) is a certificate field, not a timing sync
-// device; the ±1h margin makes it robust to clock skew across the run. Key
-// generation is the one place randomness is required (any valid keypair works),
-// so it does not make an assertion nondeterministic.
+// Generates a self-signed ECDSA certificate for 127.0.0.1 and a trusting pool.
+// Its validity window tolerates clock skew; key randomness is irrelevant.
 func writeSelfSignedCert(t *testing.T, dir string) (certPath, keyPath string, pool *x509.CertPool) {
 	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -177,13 +170,8 @@ func serveInBackground(t *testing.T, cfg ServeConfig) boundAddrs {
 	return boundAddrs{}
 }
 
-// provisionMasterKeyProvider gives a full-Serve test a resolvable at-rest master
-// key. Serve now calls resolveMasterKey at boot (T4/T5) and fails closed with a
-// runbook when the key is absent, so a test that drives Serve MUST provision one.
-// It writes a dotenv holding COMPASS_MASTER_KEY and points cfg.SecretProvider at
-// it — the same production knob the CLI's --secret-provider flag sets — unless the
-// test already chose a provider. testMasterKeyHex is a fixed valid 64-hex key; the
-// value is irrelevant, only that boot resolves and pins it.
+// Configures a dotenv master key for full-Serve tests unless a provider is
+// already set.
 func provisionMasterKeyProvider(t *testing.T, cfg *ServeConfig) {
 	t.Helper()
 	if cfg.SecretProvider != "" {
@@ -197,16 +185,11 @@ func provisionMasterKeyProvider(t *testing.T, cfg *ServeConfig) {
 	cfg.SecretProvider = "dotenv://" + path
 }
 
-// testMasterKeyHex is a fixed, valid 64-hex-char (32-byte) master key for the
-// full-Serve tests' boot-time resolveMasterKey. Distinct from keyHexA/keyHexB so
-// a grep for those does not collide.
+// testMasterKeyHex is a fixed valid 32-byte key, distinct from keyHexA/keyHexB.
 const testMasterKeyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
-// waitServing event-gates on the server actually serving RPCs: it waits for the
-// socket to bind (waitListening), then round-trips GetServerInfo over the UDS.
-// A successful RPC proves Serve has reached the serving stage — which, in Serve's
-// ordering, is strictly after the admin-token write step — so any token-file
-// assertion after this call observes the final state, not a mid-startup one.
+// Waits for a successful RPC after the socket binds, proving Serve finished
+// startup before token-file assertions.
 func waitServing(t *testing.T, socketPath string) {
 	t.Helper()
 	waitListening(t, socketPath)
@@ -254,11 +237,8 @@ func TestBindListenersClosesInheritedListenerWhenTLSFails(t *testing.T) {
 	}
 }
 
-// TestServeNetworkDoorTLSHandshakeAndRPC: with --listen and a valid keypair, a
-// client that trusts the cert completes the TLS handshake with ALPN h2 and
-// round-trips GetServerInfo over TLS. This defends the whole network-door
-// termination path: a broken TLS load, a missing ALPN h2 advertisement, or a
-// door that never serves the RPC each reddens a distinct assertion below.
+// With a valid keypair, the network door negotiates TLS with ALPN h2 and serves
+// GetServerInfo; each assertion covers a distinct termination failure.
 func TestServeNetworkDoorTLSHandshakeAndRPC(t *testing.T) {
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "compass.sock")
@@ -369,11 +349,8 @@ func TestServeWithInheritedListenerServesTLSAndRPC(t *testing.T) {
 	}
 }
 
-// TestServeNetworkDoorBadCertFailsFastLeavingNoSocket: with --listen set but the
-// keypair unreadable, Serve must fail up front — before any on-disk state — so no
-// socket is left behind. loadNetworkTLS runs before the socket bind, so a bad
-// cert (missing file, or garbage bytes) fails Serve synchronously with nothing
-// created. Table-driven over the two unreadable shapes.
+// An unreadable keypair must make Serve fail before binding the socket. The table
+// covers missing and malformed credentials.
 func TestServeNetworkDoorBadCertFailsFastLeavingNoSocket(t *testing.T) {
 	garbageDir := t.TempDir()
 	garbageCert := filepath.Join(garbageDir, "garbage-cert.pem")
@@ -437,11 +414,8 @@ func TestServeNetworkDoorListenWithoutTLSRejected(t *testing.T) {
 
 // ---- Group 2: bearer accept/reject over the network-door chain ----
 
-// networkDoorHandler stands up the compass.v1 handler with the production
-// network-door interceptor chain (bearer outer, admin gate inner) over a real
-// connect client. Unlike the auth-package unit tests, this drives real generated
-// procedure paths, so the AdminGate reads a populated Spec().Procedure — the
-// integration seam a hand-built unary request cannot exercise.
+// Builds the network-door handler with production bearer and admin-gate
+// interceptors; generated procedures populate Spec().Procedure.
 func networkDoorHandler(t *testing.T, svc *service, st *store.Store, adminID store.AccountID) compassv1connect.CompassServiceClient {
 	t.Helper()
 	url := newH2CTestServerWithInterceptors(t, svc,
@@ -451,10 +425,7 @@ func networkDoorHandler(t *testing.T, svc *service, st *store.Store, adminID sto
 	return newH2CClient(t, url)
 }
 
-// newNetworkStore opens a store against an isolated pgtest schema (skips when no
-// runtime) and seeds the bootstrap admin plus a non-admin member — the two
-// identities the door's auth matrix mints tokens for. Returns the store and both
-// ids.
+// Opens an isolated store and seeds the admin and member used by the auth matrix.
 func newNetworkStore(t *testing.T) (*store.Store, store.AccountID, store.AccountID) {
 	t.Helper()
 	ctx := context.Background()
@@ -474,12 +445,9 @@ func newNetworkStore(t *testing.T) (*store.Store, store.AccountID, store.Account
 	return st, admin.ID, member.ID
 }
 
-// TestNetworkDoorBearerAuthAcceptAndReject is the door's authentication +
-// authorization matrix over the real interceptor chain. IssueToken is the
-// adminOnly probe (its target account id is irrelevant to the reject rows, which
-// short-circuit before the handler); GetServerInfo is the open probe. Each row
-// pins one credential class to its outcome, so a broken bearer resolve, an
-// inverted gate, or an open RPC wrongly gated reddens exactly that row.
+// Exercises authentication and authorization over the real interceptor chain.
+// IssueToken is admin-only; GetServerInfo is open. Each credential class pins one
+// outcome, catching resolve or gate regressions.
 func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	ctx := context.Background()
 	st, admin, member := newNetworkStore(t)
@@ -555,21 +523,9 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	})
 }
 
-// TestNetworkDoorRejectionIsOracleSafe is the compass-mandated no-oracle
-// guarantee (token.go's ORACLE RULE): the shared resolver distinguishes three
-// failure classes internally (ErrTokenNotFound / ErrTokenRevoked / ErrWrongKind)
-// for audit logging, but the DOOR MUST collapse all of them to ONE
-// indistinguishable client-visible response, or the response becomes an oracle
-// for whether a token is unknown, revoked, or issued for the other door. This
-// drives all three classes — a never-issued token (ErrTokenNotFound), a revoked
-// account token (ErrTokenRevoked), and a cross-door Runner token (ErrWrongKind) —
-// over the real bearer chain and asserts the client sees BYTE-IDENTICAL
-// rejections: same connect.Code (Unauthenticated) AND same message
-// (errInvalidToken's text), with no field distinguishing them. The revoked class
-// is the one a future maintainer is most tempted to special-case ("your token
-// was revoked, re-auth"); doing so would diverge its response and redden this. If
-// the door ever mapped any sentinel to a distinct code or leaked the reason into
-// the message, the responses would diverge and this reddens.
+// The door must map unknown, revoked, and wrong-kind tokens to identical
+// Unauthenticated responses. Any client-visible distinction would expose token
+// state as an oracle.
 func TestNetworkDoorRejectionIsOracleSafe(t *testing.T) {
 	ctx := context.Background()
 	st, admin, member := newNetworkStore(t)
@@ -639,16 +595,9 @@ func TestNetworkDoorRejectionIsOracleSafe(t *testing.T) {
 	}
 }
 
-// TestNetworkDoorStreamingBearerAuth is the streaming half of the door's auth
-// matrix: the server-stream SubscribeEvents RPC over the real interceptor chain
-// (BearerStreamInterceptor outer, AdminGate inner). The unary matrix
-// (TestNetworkDoorBearerAuthAcceptAndReject) cannot exercise it — connect routes
-// a server-stream through WrapStreamingHandler, a separate interceptor leg from
-// the unary WrapUnary path. Each row pins one credential class to its outcome:
-// SubscribeEvents is authenticatedOpen (not adminOnly), so a valid non-admin
-// bearer is admitted; a missing or garbage bearer is rejected Unauthenticated
-// before the handler runs. A dropped stream-auth wrapper, or an open stream RPC
-// wrongly gated, reddens exactly the affected row.
+// Exercises the separate server-stream auth interceptor: valid non-admin tokens
+// are admitted to SubscribeEvents, while missing or invalid tokens are rejected.
+// The unary matrix cannot cover this streaming path.
 func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 	ctx := context.Background()
 	st, admin, member := newNetworkStore(t)
@@ -736,15 +685,9 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 
 // ---- Group 3: IssueToken handler contract + bootstrap-token gating ----
 
-// TestIssueTokenHandlerInputContract pins the IssueToken handler's own
-// input/mint contract, isolated from the door's auth (covered in group 2) by
-// driving the bare handler: an EMPTY handle is InvalidArgument, an unknown handle
-// is NotFound naming the submitted handle, a user handle or an `owner/agent`
-// handle mints a token the store resolves back to that account, and the system
-// handle is PermissionDenied. The admin door is not visibility-scoped, so an
-// agent of another user that shares no channel with the admin still mints. A
-// flipped code mapping or a mint that does not register in the store reddens the
-// matching sub-case.
+// Tests IssueToken input and minting at the bare handler, separate from door auth:
+// invalid, unknown, user, owner-qualified agent, and system handles each have
+// distinct contracts. Admins may mint for agents outside their channels.
 func TestIssueTokenHandlerInputContract(t *testing.T) {
 	ctx := t.Context()
 	st, admin, member := newNetworkStore(t)
@@ -1082,13 +1025,9 @@ func TestRenameAccountErrorCodesAndProtectedAccounts(t *testing.T) {
 	}
 }
 
-// TestServeWithListenWritesAdminToken0600: on a --listen start, Serve mints the
-// bootstrap-admin bearer token and persists it under StateDir at mode exactly
-// 0600. The file's token must authenticate as the admin over the network door —
-// an adminOnly RPC (IssueToken) presenting it clears both the bearer resolve and
-// the admin gate, reaching the handler (NotFound for an unknown target). A token
-// that failed to resolve would be Unauthenticated; a non-admin token would be
-// PermissionDenied — so CodeNotFound uniquely proves "resolves to the admin".
+// Serve writes a mode-0600 bootstrap-admin token for the network door. Using it on
+// admin-only IssueToken must pass auth and reach the handler, proving the token
+// resolves to admin.
 func TestServeWithListenWritesAdminToken0600(t *testing.T) {
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "compass.sock")
@@ -1132,12 +1071,8 @@ func TestServeWithListenWritesAdminToken0600(t *testing.T) {
 	}
 }
 
-// TestServeSocketOnlyWritesNoAdminToken: a socket-only start (no --listen) mints
-// no bearer token — the 0600 socket is the credential, so no admin-token file is
-// written — yet the socket door still serves (the bootstrap-admin account is
-// created unconditionally, so Serve reaches the serving stage rather than erroring
-// on a missing admin). Guards the --listen gating of the token mint against a
-// regression that writes the credential on the socket-only path.
+// Socket-only Serve must not write a bearer token; the 0600 socket is its
+// credential, while the bootstrap-admin still allows serving to start.
 func TestServeSocketOnlyWritesNoAdminToken(t *testing.T) {
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "compass.sock")
@@ -1160,14 +1095,9 @@ func TestServeSocketOnlyWritesNoAdminToken(t *testing.T) {
 	}
 }
 
-// TestServeNetworkDoorRejectsTLS12: the network door enforces a TLS 1.3 floor
-// (loadNetworkTLS sets MinVersion: tls.VersionTLS13), so a client that offers at
-// most TLS 1.2 (MaxVersion pinned) MUST be rejected at version negotiation — the
-// bearer-token confidentiality rests entirely on TLS, so no 1.2 downgrade is
-// allowed onto the door. Reddens if the floor regresses (MinVersion lowered to
-// 1.2 or dropped): the 1.2-capped handshake would then succeed and err be nil.
-// err != nil is the load-bearing assertion — the exact stdlib version-mismatch
-// message is the runtime's, not our contract, so it is deliberately not pinned.
+// The network door enforces a TLS 1.3 minimum to protect bearer tokens. A TLS 1.2-
+// capped client must fail negotiation; the specific runtime error text is not a
+// contract.
 func TestServeNetworkDoorRejectsTLS12(t *testing.T) {
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "compass.sock")
@@ -1201,11 +1131,8 @@ func TestServeNetworkDoorRejectsTLS12(t *testing.T) {
 	}
 }
 
-// syncBuffer is a mutex-guarded bytes.Buffer used to capture slog output.
-// slog.SetDefault swaps a PROCESS-GLOBAL logger and Serve logs from multiple
-// goroutines, so the capture is written concurrently; the lock makes Write and
-// String data-race-free under -race. Without it the concurrent Write/String is a
-// flagged race, not merely a lost log line.
+// Mutex-guarded slog buffer. The process-global logger writes from Serve's
+// goroutines while assertions read it, so both operations require the lock.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -1223,17 +1150,9 @@ func (s *syncBuffer) String() string {
 	return s.buf.String()
 }
 
-// TestServeWithListenNeverLogsAdminToken: on a --listen start Serve mints the
-// bootstrap-admin bearer token and logs that it was written — but the log SHALL
-// carry only the token's PATH, never the token value (a logged credential lets
-// anyone reading process output or aggregated logs impersonate the admin).
-// Captures the process-global slog default into a mutex-guarded buffer for the
-// run and restores the prior default in Cleanup (global state shared with
-// sibling tests). Two assertions: the minted token string is ABSENT from the
-// captured logs (reddens if the value ever leaks), and the token file path is
-// PRESENT (reddens if the write is silently un-logged — which would make the
-// absence check vacuously pass because nothing was logged). Owns the global
-// logger for its duration, so it MUST NOT call t.Parallel().
+// Verifies Serve logs the token path, never its bearer value. The captured logs
+// must contain the path and omit the token, so an empty log cannot pass. This
+// test owns the process-global logger and must not run in parallel.
 func TestServeWithListenNeverLogsAdminToken(t *testing.T) {
 	prev := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prev) })

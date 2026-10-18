@@ -139,13 +139,8 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 			"(two independent gates would let it through as call 2)", rt.calls)
 	}
 
-	// (4) The AUTHOR WRITE leg rides the SAME shared primary client (the App
-	// cutover reuses buildBoardWebhookWiring's client as the author write client,
-	// NOT a fresh client over its token source — a fresh client would carry a
-	// SEPARATE resetAt gate). registerGitHubForgeCoordinate wires that exact
-	// client as the author role, so an author write now fast-fails on the armed
-	// gate and issues NO request. A regression that threaded only the token source
-	// into a new author client would let this write through as call 2.
+	// Author writes must share the primary client's budget gate; a new client would
+	// have an independent gate and allow another request.
 	reg := newForgeProviderRegistry()
 	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: host, Token: staticTokenSource{}})
 	if err := registerGitHubForgeCoordinate(reg, cfg.Forge.resolved(), client, reviewerClient); err != nil {

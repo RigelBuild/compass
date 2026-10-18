@@ -2,10 +2,8 @@
 
 package server
 
-// Store-gated proofs for the RIG-2732 T7 GitHub agent-notification serve assembly:
-// the pieces buildForgeNotifyLane composes, driven against a REAL Postgres with fake
-// checks roller + dispatcher. Contracts: App-gated (no App -> all-nil); routed notify
-// dispatches a ForgeNotification and advances FETCH but never delivered_revision (W3).
+// Store-gated proofs for GitHub notifications: App-gated wiring and routed
+// dispatch to a fake Runner over real Postgres. FETCH advances, not delivered_revision.
 
 import (
 	"context"
@@ -19,11 +17,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// recordingDispatcher is the notify dispatcher fake: it records every dispatched
-// ForgeNotification per account (no live hub). When noSession is true it returns
-// the same no-live-session sentinel the real forgeNotifyDispatcher returns, so
-// the router's log-and-move-on isolation is exercised without a hub. A non-nil
-// notified gets one send per recorded dispatch, so async callers can wait on it.
+// Records dispatched notifications by account; noSession returns the dispatcher's
+// sentinel, and notified gates async callers on recorded sends.
 type recordingDispatcher struct {
 	sent      []*compassv1internal.ForgeNotification
 	accounts  []string
@@ -141,12 +136,7 @@ func notifyCommentEvent(repo string, number uint64, url string) forge.ForgeEvent
 
 // --- test: App-config-absent boot leaves both forge lanes off -----------------
 
-// TestForgeNotifyLaneDisabledWithoutApp proves the App gate at the shared wiring
-// site (RIG-2991): buildBoardWebhookWiring with no App configured returns all-nil
-// — both the board lane and the notify lane are hard-off, so the caller composes
-// no notify sink onto the ingress. The App gate now lives on the shared wiring
-// (which builds the one client both lanes ride), not on buildForgeNotifyLane. A
-// nil hub is fine: the gate short-circuits before any lane assembly.
+// Without an App, shared wiring returns all nil: neither webhook lane is mounted.
 func TestForgeNotifyLaneDisabledWithoutApp(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
@@ -167,14 +157,8 @@ func TestForgeNotifyLaneDisabledWithoutApp(t *testing.T) {
 
 // --- test: routed notify advances the fetch cursor but NOT delivered_revision -
 
-// TestForgeNotifyRoutedAdvancesFetchCursorOnly drives the assembled lane's sink:
-// a COMMENT event fed through arm.Enqueue (the ForgeEventSink) drains through the
-// notify router over the REAL store adapters, which (1) dispatches a
-// ForgeNotification to the seeded subscriber and (2) advances the shared FETCH
-// cursor (forge_artifact_cursors) with the new snapshot + revision — while the
-// subscriber's delivered_revision stays unadvanced (W3: the ack arm owns that,
-// never the route). Only the dispatcher and the checks roller are fakes; the
-// store adapters + router + arm are the real assembled seams.
+// A routed comment dispatches and advances the shared fetch cursor, but not the
+// subscriber's delivered_revision; only the dispatcher and checks roller are fake.
 func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
@@ -262,13 +246,8 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 
 // --- test: no live session is non-fatal, fetch cursor still advances ----------
 
-// TestForgeNotifyNoLiveSessionIsNonFatal proves the no-session path: the
-// dispatcher returns the no-live-session sentinel, so the router logs and moves
-// on (no crash, no panic). The shared FETCH cursor still advances (fetch-side
-// truth is unconditional, DL-053's split), and delivered_revision stays
-// unadvanced (the reconcile sweep re-notifies from the durable gap). Driven
-// directly through router.Route (the arm's log-and-continue drain is covered in
-// the T7b ingest unit test), over the REAL store adapters.
+// With no live session, routing continues and advances the fetch cursor while
+// leaving delivered_revision unchanged for reconciliation.
 func TestForgeNotifyNoLiveSessionIsNonFatal(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
@@ -315,11 +294,8 @@ func TestForgeNotifyNoLiveSessionIsNonFatal(t *testing.T) {
 
 // --- test: Linear routed OPENED fans out to the matching project only ---------
 
-// seedLinearContainerSub creates an agent + owning user and a Linear
-// container-scope subscription at (LINEAR, "linear.app", repo/team, ISSUE) bound
-// to project, returning the agent account id and subscription id. A Linear
-// container subscription REQUIRES a project (store enforces it,
-// forge_subscriptions.go:108-111).
+// Seeds an agent and a Linear container subscription for project. Store rules
+// require a project for this subscription scope.
 func seedLinearContainerSub(t *testing.T, st *store.Store, handle, repo, project string) (store.AccountID, string) {
 	t.Helper()
 	ctx := context.Background() // test root
@@ -361,14 +337,8 @@ func linearOpenedEvent(repo string, number uint64, project, url string) forge.Fo
 	}
 }
 
-// TestLinearNotifyRoutedOpenedFansOutToProject drives the Linear notify lane's
-// assembled router over the REAL store adapters bound to (LINEAR, "linear.app"):
-// an OPENED Issue in project-alpha fans out to ONLY the alpha container
-// subscriber, never the beta one (W2 / DL-267: a Linear container is a PROJECT,
-// so an OPENED matches only its project's subscribers). The dispatcher + checks
-// roller are fakes; the store adapters + router are the real assembled seams. The
-// shared FETCH cursor advances (fetch-side truth); delivered_revision stays
-// unadvanced (W3). Runs in CI; compiles locally.
+// An OPENED Linear issue reaches only its matching project subscriber. Real store
+// adapters and router also advance the fetch cursor, not delivered_revision.
 func TestLinearNotifyRoutedOpenedFansOutToProject(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root

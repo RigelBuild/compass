@@ -72,11 +72,9 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 	})
 
 	t.Run("SubscribeAgentSession reaches the authz gate under the dev-door ambient admin (NotFound not Unauthenticated)", func(t *testing.T) {
-		// The dev door carries NO bearer, yet the ambient pair attaches
-		// caller=bootstrap admin AFTER AdminGate. SubscribeAgentSession is
-		// authenticatedOpen, so it passes the gate and proceeds PAST CallerFrom into
-		// RequireAgentSessionSubscriber; the unknown id resolves to CodeNotFound.
-		// Pre-fix (AdminGate only, no ambient) this returned CodeUnauthenticated.
+		// The dev door attaches the bootstrap caller after AdminGate. This
+		// authenticatedOpen RPC reaches subscriber authz, so an unknown session
+		// returns NotFound rather than Unauthenticated.
 		code := subscribeAgentSessionCode(t, compassClient, "no-such-session")
 		if code == connect.CodeUnauthenticated {
 			t.Fatalf("SubscribeAgentSession on the dev door = CodeUnauthenticated — the ambient caller is not attached; the ambient pair was dropped or ordered before AdminGate")

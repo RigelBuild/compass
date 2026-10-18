@@ -184,12 +184,8 @@ func TestPutModelRegistryOrphaningRemovalIsInvalidArgument(t *testing.T) {
 	}
 }
 
-// TestModelRegistryWriteRPCsDenyNonAdminToken pins the network-door admin gate:
-// a valid NON-admin (member) bearer is denied CodePermissionDenied on both
-// PutModelRegistry and DeleteModelRegistry, while GetModelRegistry (open) is
-// admitted. The gate short-circuits BEFORE the handler, so it uses the full
-// network-door chain via networkDoorHandler. Reddens if the gate ever stops
-// classifying either write adminOnly, or classifies Get anything but open.
+// A member bearer is denied on Put/Delete while Get remains open. The full door
+// chain is required because the admin gate rejects before either handler runs.
 func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	ctx := context.Background()
 	st, admin, member := newNetworkStore(t)
@@ -234,11 +230,8 @@ func TestModelRegistryWriteRPCsDenyNonAdminToken(t *testing.T) {
 	})
 }
 
-// TestPutModelRegistryMetadataRoundTripViaRPC is the M3 assertion at the wire
-// boundary: it drives a fully-populated Metadata through registryFromProto (Put)
-// and registryToProto (Get) — the four hand-mapped, transposition-prone fields —
-// with DISTINCT non-zero values so a swap of the two cost fields, or a dropped
-// field, reddens. It also pins the 2-candidate chain's read-back order (L4).
+// Distinct nonzero metadata values round-trip through Put/Get to catch dropped or
+// transposed fields; the RPC also pins candidate read-back order.
 func TestPutModelRegistryMetadataRoundTripViaRPC(t *testing.T) {
 	f := newConfigFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -294,13 +287,8 @@ func TestPutModelRegistryMetadataRoundTripViaRPC(t *testing.T) {
 	}
 }
 
-// TestDeleteModelRegistryClearsAndOrphaningIsInvalidArgument (L3a) drives the
-// DeleteModelRegistry handler + its mapModelRegistryErr path at the wire
-// boundary — the store-layer clear/orphaning pair is covered, but the handler
-// and error mapping were exercised only for the admin-gate denial. A clear on a
-// seeded registry succeeds and Get then reports version 0; a clear that would
-// strand a published profile's pin maps the store's ErrInvalidArgument to
-// CodeInvalidArgument.
+// Exercises delete and error mapping: clearing succeeds, but deleting a
+// registry pinned by a published profile returns CodeInvalidArgument.
 //
 //nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestDeleteModelRegistryClearsAndOrphaningIsInvalidArgument(t *testing.T) {

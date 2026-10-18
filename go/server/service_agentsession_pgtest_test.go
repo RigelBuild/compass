@@ -25,14 +25,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// agentSessionFixture seeds one full ownership chain (owner user -> agent ->
-// container -> session) plus a bootstrap admin (the AdminGate's admin param) and
-// an unrelated outsider, and stands up a service whose network door mounts the
-// real bearer + admin-gate chain. It returns the wired client, the live session
-// tail (to relay frames), the recorded session id, and bearer tokens for the
-// authorized owner (a member of the agent's home channel, seeded at CreateAgent)
-// and the outsider (a member of nothing relevant). Skips when no Postgres runtime
-// is available.
+// Seeds owner and outsider identities through production auth gates; returns
+// the client, session tail, and both bearer tokens.
 type agentSessionFixture struct {
 	client     compassv1connect.CompassServiceClient
 	tail       *sessionTail
@@ -97,11 +91,8 @@ func newAgentSessionFixture(t *testing.T) agentSessionFixture {
 	}
 }
 
-// subscribeErr opens a SubscribeAgentSession stream carrying the given bearer for
-// the given session id and returns the connect.Error the door surfaces on the
-// first Receive. A rejection (authz gate before any Send) surfaces there; a
-// delivered frame is a contract violation for the reject cases. It never sleeps —
-// recvAgentFrameOrTimeout is the deadline safety net.
+// Opens a stream and returns its rejection on first Receive; rejections send
+// no frame, and Receive has a deadline guard.
 func subscribeErr(t *testing.T, client compassv1connect.CompassServiceClient, bearer, sessionID string) *connect.Error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -125,11 +116,8 @@ func subscribeErr(t *testing.T, client compassv1connect.CompassServiceClient, be
 	return ce
 }
 
-// waitTailSubscribers event-gates on the tail's subscriber count for sessionID
-// reaching want. It is a monotonic readiness gate (runtime.Gosched yields to the
-// handler goroutine between probes; timeAfter is the deadline safety net), never
-// a wall-clock sleep — the handler registers its subscriber synchronously once
-// authz passes, so the count advances the instant the handler reaches the tail.
+// Waits on the monotonic subscriber count; authz registers synchronously and
+// the deadline bounds probes.
 func waitTailSubscribers(t *testing.T, tail *sessionTail, sessionID string, want int) {
 	t.Helper()
 	if !tailSubscribersReach(tail, sessionID, want, timeAfter()) {
@@ -140,11 +128,7 @@ func waitTailSubscribers(t *testing.T, tail *sessionTail, sessionID string, want
 	}
 }
 
-// tailSubscribersReach polls (yielding, never sleeping) until the tail's
-// subscriber count for sessionID equals want or the deadline fires, returning
-// whether it reached want. Safe to call off the test goroutine (no t.Fatal), so
-// the delivery test can gate a concurrent relay on the handler having
-// registered its subscriber.
+// Reads subscriber counts for concurrent relays waiting on handler registration.
 func tailSubscribersReach(tail *sessionTail, sessionID string, want int, deadline <-chan time.Time) bool {
 	for {
 		tail.mu.Lock()
@@ -162,15 +146,8 @@ func tailSubscribersReach(tail *sessionTail, sessionID string, want int, deadlin
 	}
 }
 
-// TestSubscribeAgentSessionNotFoundParity pins branch 3 (service.go:294-299): a
-// caller that fails RequireAgentSessionSubscriber with store.ErrNotFound —
-// whether the session is UNKNOWN or exists but the caller is NOT a member — is
-// refused with CodeNotFound, never PermissionDenied (which would confirm the
-// session exists). The message is a pure template of the presented session_id
-// (`agent session %q`), carrying no bit that distinguishes "unknown" from
-// "forbidden": asserting the exact message for both the foreign-real and the
-// unknown case proves the merge (D9). A two-step resolve-then-check that returned
-// a distinct forbidden error, or a message that leaked the reason, reddens this.
+// Unknown sessions and non-members both fail closed with CodeNotFound and the
+// same session-id template. The message must not reveal whether the session exists.
 func TestSubscribeAgentSessionNotFoundParity(t *testing.T) {
 	f := newAgentSessionFixture(t)
 
@@ -198,26 +175,14 @@ func TestSubscribeAgentSessionNotFoundParity(t *testing.T) {
 	}
 }
 
-// TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember pins branch 4
-// (service.go:302-318) and branch 5 (service.go:307-310 + the defer at :306): an
-// authorized home-channel member subscribes, receives the leading
-// registration-ack first (the FIRST frame is always the ack — session_id only,
-// nil event, UNSPECIFIED state), then a frame relayed AFTER the subscription is
-// live reaches the client stream faithfully repackaged, and cancelling the
-// client context ends the handler cleanly and frees the fan-out slot.
-// Deterministic: delivery is event-gated on the tail registering the subscriber
-// (no relay before a subscriber exists — that would be a silent no-op), and the
-// clean-exit half is gated on the slot count returning to zero.
+// Verifies the registration ack precedes a relayed frame and cancellation frees
+// the fan-out slot. Both delivery and cleanup are event-gated on subscriber count.
 func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) {
 	f := newAgentSessionFixture(t)
 
-	// connect's server-stream client call blocks in RoundTrip until the handler
-	// flushes response headers, which happens on its FIRST Send — i.e. only once a
-	// frame has been relayed. The handler registers its tail subscriber during
-	// that blocked call, so the relay must run concurrently: gate it on the
-	// subscriber appearing (no relay before a subscriber exists — that would be a
-	// silent no-op), then relay. This unblocks the client's subscribe. No sleep;
-	// the gate is the readiness signal and timeAfter is the deadline safety net.
+	// The client call waits for the handler's first Send, so relay must run
+	// concurrently. Wait until the handler registers before relaying; this
+	// avoids a silent no-op and uses a deadline instead of sleep.
 	go func() {
 		if tailSubscribersReach(f.tail, f.sessionID, 1, timeAfter()) {
 			f.tail.RelaySessionFrame(f.sessionID, traceFrame("live-trace"))
@@ -234,9 +199,8 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 		t.Fatalf("authorized owner SubscribeAgentSession: %v", err)
 	}
 
-	// First frame is ALWAYS the leading registration-ack: session_id stamped, no
-	// event, UNSPECIFIED state. It carries no history — a pure happens-before
-	// marker — so consume and assert it before the relayed trace frame.
+	// The leading ack stamps the session ID but carries no event or transition.
+	// Assert it before reading the relayed trace frame.
 	ack, receiveErr := receiveAgentFrameOrTimeout(t, stream)
 	if receiveErr != nil {
 		cancel()
@@ -279,15 +243,9 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 	waitTailSubscribers(t, f.tail, f.sessionID, 0)
 }
 
-// TestSubscribeAgentSessionSendsLeadingRegistrationAck is the deterministic
-// regression guard for the RIG-3044 fix: an authorized home-channel member
-// subscribes and the FIRST frame it receives is the leading registration-ack
-// (session_id stamped, nil event, UNSPECIFIED state) — sent the instant the
-// subscriber registers, with NO RelaySessionFrame call at all. This defends the
-// happens-before contract directly: OpenSessionTail must return on registration,
-// not on a driven frame, so a synchronous open-before-post cannot self-deadlock
-// on an idle session. RED without the Change-1 ack Send: the first Receive blocks
-// (nothing is ever relayed) and recvAgentFrameOrTimeout reddens on its deadline.
+// An authorized member's first frame must be the registration ack: session ID
+// set, no event, and unspecified state. It is sent at registration without a
+// relayed frame, so opening an idle session cannot deadlock.
 func TestSubscribeAgentSessionSendsLeadingRegistrationAck(t *testing.T) {
 	f := newAgentSessionFixture(t)
 

@@ -23,11 +23,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// newTLSRunnerHTTPClient builds an HTTP/2-over-TLS client that trusts only pool —
-// the Runner-side counterpart to network_door_test.go's newTLSClient, handed to
-// runner.Dial as its RunnerConfig.HTTPClient so the Runner reaches the door over
-// the same terminated TLS transport a real remote Runner uses. Idle conns close
-// via t.Cleanup.
+// Builds a TLS client for Runner.Dial, trusting only pool.
 func newTLSRunnerHTTPClient(t *testing.T, pool *x509.CertPool) *http.Client {
 	t.Helper()
 	p := new(http.Protocols)
@@ -41,11 +37,8 @@ func newTLSRunnerHTTPClient(t *testing.T, pool *x509.CertPool) *http.Client {
 	return &http.Client{Transport: tr}
 }
 
-// TestRunnerEnrollsThroughNetworkDoorWithMintedToken composes the enrollment seam
-// end-to-end: a real minted Runner token enrolls through the production
-// RunnerService door over TLS; an unminted token is rejected Unauthenticated at
-// the hash-lookup miss; and a valid ACCOUNT token is rejected at the Kind gate
-// (the OQ7 cross-door rule) — the leg that defends the cross-door contract.
+// A minted Runner token enrolls over TLS; an unknown token and a valid account
+// token are rejected at lookup and subject-kind checks, respectively.
 func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -53,11 +46,7 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
 
-	// Mint the Runner token against the SAME per-test schema Serve will open, so
-	// the door's bearer interceptor resolves it. Migration is idempotent, so
-	// Serve re-opening this DSN is a no-op; the token hash committed here is the
-	// credential the door then authenticates. Done synchronously before Serve
-	// starts so there is no concurrent-Open race.
+	// Mint before Serve opens the same test schema, avoiding concurrent DB opens.
 	const runnerID = "runner-e2e"
 	dsn := pgtest.RequireDSN(t)
 	st, err := store.Open(ctx, dsn)
@@ -127,11 +116,8 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 		t.Fatalf("unminted-token Dial code = %v, want CodeUnauthenticated", code)
 	}
 
-	// Negative leg 2 (the real Kind gate, OQ7 cross-door): present a VALID account
-	// token (the bootstrap admin's) to the RUNNER door. It resolves to a real
-	// subject, clears the hash-lookup branch, and reaches `subj.Kind != want`,
-	// which rejects it Unauthenticated. Goes red if the Kind gate is removed or
-	// inverted — the not-found leg would stay green through such a regression.
+	// A valid admin token resolves to a real subject, but the Runner door rejects
+	// its wrong kind.
 	adminToken := readAdminToken(t, stateDir)
 	kctx, kcancel := context.WithTimeout(ctx, testTimeout)
 	defer kcancel()

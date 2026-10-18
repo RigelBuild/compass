@@ -291,11 +291,8 @@ func TestSpawnResumeReprovisionThreadsStoredRolePersona(t *testing.T) {
 	f.runner.setFailStart(false) // the Runner accepts Start again: the resume can complete
 	f.runner.forget()            // drop the failed first attempt; assert only on the resume
 
-	// Re-spawn the same handle under a DISTINCT client_request_id (so it reaches
-	// CreateAgent, conflicts on the handle, and resumes the unplaced account)
-	// naming a DIFFERENT (still valid-taxonomy) role/persona — the injection
-	// attempt the resume must ignore. "owner" is a valid member; the resume must
-	// re-provision under the stored first-spawn values, never the retry's.
+	// Retry the handle with a new request ID to exercise resume conflict handling.
+	// New role/persona values must not replace the stored values.
 	second, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-resume-rp",
 		ClientRequestId: "spawn-resume-rp-2",

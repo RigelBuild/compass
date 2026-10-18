@@ -18,24 +18,16 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
-// newWakeFixture builds the placement fixture and a lifecycleService over its
-// real store + hub — the seam WakeAgent is a method on. The fixture agent
-// (f.agentID) is the wake target; the attach probe is already forgotten by
-// newPlacementFixture's caller path, but the wake tests seed their own state, so
-// each drops the probe explicitly before asserting.
+// Builds a lifecycle service over placement fixtures; wake tests discard the
+// attach probe because they seed their own state.
 func newWakeFixture(t *testing.T) (placementFixture, *lifecycleService) {
 	t.Helper()
 	pf := newPlacementFixture(t)
 	return pf, newLifecycleService(pf.store, pf.hub, nil)
 }
 
-// TestWakeAgentLiveIsNoOp pins the not-live pre-check: an agent with a LIVE
-// session is already awake, so WakeAgent pushes no Start, does no resume, and
-// logs outcome=already-live so the skip is visible.
-//
-// Mutation: dropping the CachedSessionForAccount not-live guard would run the
-// resume chain against a live agent — a redundant start — reddening the "no
-// Start" assertion.
+// A live agent is already awake: WakeAgent must not start again and logs
+// outcome=already-live.
 func TestWakeAgentLiveIsNoOp(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -69,13 +61,8 @@ func TestWakeAgentLiveIsNoOp(t *testing.T) {
 	}
 }
 
-// TestWakeAgentPriorSessionResumes pins the system-authorized internal resume: an
-// OFFLINE agent with a recorded prior session (and a placement + a stored
-// transcript) is woken by RESUMING that session — ReconstructSessionBody +
-// StartResume — NOT a fresh Start. Proven on the wire: the Start command carries
-// the reconstructed resume_body (the internal envelope only StartResume
-// attaches), and no second session row is recorded (resume reuses the logical id).
-//
+// Wakes an offline agent with a prior session by resuming its transcript, not
+// starting a new session. The wire carries resume_body and reuses the ID.
 // Mutation: routing a prior-session agent through the fresh hub.Start path (no
 // StartResume) leaves resume_body empty, reddening the body assertion.
 func TestWakeAgentPriorSessionResumes(t *testing.T) {
@@ -253,13 +240,8 @@ func TestWakeAgentLostContainerReprovisions(t *testing.T) {
 	}
 }
 
-// TestWakeAgentNeverStartedFreshStarts pins the no-prior-session fallback: an
-// OFFLINE agent that has NEVER had a session recorded, but DOES have a placement,
-// is woken by a FRESH hub.Start (no resume body) and its new session is recorded.
-//
-// Mutation: attempting a resume with no prior session (a StartResume /
-// ReconstructSessionBody against a nonexistent session) would error and log
-// outcome=failed, pushing no Start — reddening the "one fresh Start" assertion.
+// An offline placed agent with no prior session must use a fresh Start, with no
+// resume body, and record the new session.
 func TestWakeAgentNeverStartedFreshStarts(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -288,14 +270,8 @@ func TestWakeAgentNeverStartedFreshStarts(t *testing.T) {
 	}
 }
 
-// TestWakeAgentNoPlacementIsNoOp pins the no-placement logged no-op: an OFFLINE
-// agent with no recorded session AND no placement (never provisioned) cannot be
-// woken — the owed row / cursor waits for a future natural start — so WakeAgent
-// pushes no Start.
-//
-// Mutation: treating a placement miss as anything but a clean no-op (e.g.
-// panicking on the ErrNotFound, or pushing a Start with an empty container) would
-// redden this.
+// An offline agent with neither session nor placement is a logged no-op until
+// a natural start; it must not push a Runner Start.
 func TestWakeAgentNoPlacementIsNoOp(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -308,20 +284,8 @@ func TestWakeAgentNoPlacementIsNoOp(t *testing.T) {
 	}
 }
 
-// TestWakeAgentPriorSessionNoPlacementIsBenignNoPlacement pins the placement-miss
-// symmetry (RIG-1641 T3, §Decisions OQ-7): an OFFLINE agent with a RECORDED prior
-// session but NO current placement — the despawned-then-mentioned state, since
-// despawn deletes the placement while agent_sessions rows are never deleted — is
-// a BENIGN no-placement no-op, exactly like the never-provisioned agent. It
-// pushes no Start AND logs outcome=no-placement, NOT the ERROR outcome=failed a
-// real fault gets: the owed row waits for the agent's next natural start.
-//
-// Mutation: the pre-fix code wrapped PlacementForAgent's ErrNotFound on the
-// resume path into a returned error, so wakeOnce logged ERROR + outcome=failed
-// here (while freshStart mapped the identical miss to no-placement). Reverting
-// the errWakeNoPlacement sentinel reddens the outcome=no-placement assertion (the
-// log would carry outcome=failed) — mis-severity that trips error-rate alerting
-// on a routine path.
+// A prior session without current placement is a benign no-op, like an agent
+// never provisioned: it must log no-placement, not a failure, on a routine path.
 func TestWakeAgentPriorSessionNoPlacementIsBenignNoPlacement(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -355,14 +319,8 @@ func TestWakeAgentPriorSessionNoPlacementIsBenignNoPlacement(t *testing.T) {
 	}
 }
 
-// TestWakeAgentSingleflightCoalescesToOneStart is the load-bearing cost-control
-// test (§Decisions OQ-2): N concurrent WakeAgent calls for the SAME offline agent
-// must produce EXACTLY ONE underlying start, not N. The fake Runner blocks the
-// leader's Start in-flight on a gate while the other N-1 wakes pile onto the
-// singleflight; releasing the gate lets the one start complete. Counting Starts
-// on the wire is what makes "coalesced to one" an observed fact.
-//
-// Mutation: dropping the per-agent singleflight (wakeGroup.Do) makes each
+// Concurrent wakes for one offline agent must coalesce into one Start. The fake
+// Runner holds the leader until followers join, then records one wire call.
 // concurrent wake push its own Start — the start-storm this control prevents —
 // so startCount would be N, reddening the assertion.
 func TestWakeAgentSingleflightCoalescesToOneStart(t *testing.T) {
@@ -449,11 +407,8 @@ func waitForOneInflightStart(t *testing.T, r *recordingRunner) {
 	}
 }
 
-// waitForParkedSingleflightFollowers spins until n goroutines are parked as
-// registered followers of an in-flight singleflight call, read out of
-// runtime.Stack. That park is the only observable proof a follower has actually
-// JOINED the leader's call rather than merely being about to. Bounded by the
-// suite timeout, so a follower that never arrives fails loudly.
+// Waits for registered singleflight followers; their WaitGroup wait proves
+// they joined the leader before it completes.
 func waitForParkedSingleflightFollowers(t *testing.T, n int) {
 	t.Helper()
 	deadline := timeAfter()
@@ -471,18 +426,8 @@ func waitForParkedSingleflightFollowers(t *testing.T, n int) {
 	}
 }
 
-// countGoroutinesParkedInSingleflight counts goroutines parked as REGISTERED
-// followers of an in-flight singleflight call. Being somewhere inside
-// (*Group).Do is not enough to qualify, because Do's first act is g.mu.Lock():
-// a goroutine still blocked on that mutex has NOT yet incremented dups, so if
-// the leader completes and deletes the key before it acquires the lock it takes
-// the miss branch and becomes a second leader — exactly the second Start this
-// test forbids. Counting it as parked would release the gate early and reopen
-// the race. The leader also passes briefly through Do before entering doCall.
-//
-// A registered follower is therefore one parked in the WaitGroup wait reached
-// from Do (c.wg.Wait()), which lies AFTER dups++ under the lock and so is only
-// reachable once the goroutine is provably attached to the leader's call.
+// Counts followers parked after registration; Group.Do alone also includes
+// goroutines blocked on its mutex, which may become another leader.
 func countGoroutinesParkedInSingleflight(t *testing.T) int {
 	t.Helper()
 	buf := make([]byte, 1<<16)

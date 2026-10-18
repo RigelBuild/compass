@@ -44,12 +44,8 @@ type mentionE2EWire struct {
 	channelName string
 }
 
-// newMentionE2EWire stands up the store + hub + fake Runner door (via the shared
-// placement harness's attachFakeRunner), a comms service on a fresh comms bus,
-// and the delivery consumer wired exactly as startDeliveryConsumer does — real
-// waker included — with its Run loop on a goroutine bounded by the test ctx. It
-// also creates one shared OPEN channel the admin authors into, admin a member so
-// PostMessage's D9 membership gate admits the post.
+// Builds the store, hub, fake Runner, and real-waker delivery consumer. The
+// open channel lets the admin post as a member.
 func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	t.Helper()
 	w := newMentionE2EWireNoRunner(t)

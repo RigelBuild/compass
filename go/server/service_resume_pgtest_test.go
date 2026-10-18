@@ -27,12 +27,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// resumeFixture is placementFixture's shape but with the network-door
-// interceptor chain mounted (bearer + admin gate), so the resume handler reads a
-// real caller identity. The admin is the agent's owner and thus a member of its
-// home channel — the authorized resumer. These tests exercise the PG-only normal
-// resume path (no safety-valve segments), so the object store is never read and
-// is left unwired.
+// Resume fixture with the production bearer/admin-gate chain. The admin owns
+// the agent and can resume it; these tests use the PG-only path, so no object
+// store is wired.
 type resumeFixture struct {
 	dsn        string
 	store      *store.Store
@@ -288,11 +285,7 @@ func TestStartAgentSessionResumeKeyedOnStableLogicalIdAcrossResumes(t *testing.T
 	}
 }
 
-// memObjectStore is a tiny in-memory store.ObjectStore fake used by the S3
-// fallback end-to-end test: it holds segment bodies by key under a mutex so the
-// real store's safety-valve flush can PUT and the resume reconstructor can GET
-// against a genuine Postgres. Defined here (not the store package) so the S3 leg
-// runs against the real store + a real object seam, not the runnerhub unit fake.
+// Mutex-protected object-store fake for the S3 flush PUT and resume GET paths.
 type memObjectStore struct {
 	mu   sync.Mutex
 	blob map[string][]byte

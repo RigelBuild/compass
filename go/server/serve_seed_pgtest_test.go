@@ -30,13 +30,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// seedHarness is the seed seam reduced to what serve_seed touches: a store, a
-// hub with the root-supervisor seed wired as its runner-ready hook, a service
-// behind it, and a bootstrap admin. seedDone closes when the seed goroutine
-// returns (fired once, when the Runner's command stream attaches), so a test
-// gates on the seed having run rather than racing it. dsn is captured ONCE (each
-// pgtest.RequireDSN call mints a fresh schema) so raw store reads land in the
-// same schema store.Open migrated into.
+// Seed fixture with a runner-ready hook. seedDone gates on the seed goroutine
+// returning after attach; the captured DSN keeps reads in the migrated schema.
 type seedHarness struct {
 	store     *store.Store
 	hub       *runnerhub.Hub
@@ -49,10 +44,7 @@ type seedHarness struct {
 	seedDone  chan struct{}
 	// cancelSeed cancels the seed's ctx, as Serve's drain does via drainSet.
 	cancelSeed context.CancelFunc
-	// seedOnce guards the seedDone close: fireRunnerReady fires on EVERY Sessions
-	// attach, and close() on an already-closed channel panics, so the harness
-	// tolerates a second hook fire (the re-fire idempotency the feature is built
-	// around) as a safe no-op rather than crashing the test.
+	// fireRunnerReady may run on every attach; sync.Once makes later closes safe.
 	seedOnce sync.Once
 }
 

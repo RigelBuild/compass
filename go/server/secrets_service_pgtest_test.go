@@ -2,19 +2,9 @@
 
 package server
 
-// Store-gated SecretsService authz contracts: the user-only Set/Delete gate, the
-// user-AND-agent ListSecrets, the is_set-without-resolve invariant,
-// delete-not-found, the SecretsVersion bump, and the D9 scope model end to end.
-// Needs a real Postgres: the write path lands an encrypted row through the
-// DB-backed StoreResolver and the authz gate reads the caller's account KIND.
-// Driven through the production bearer + admin-gate interceptor chain over a real
-// connect client, so the handler reads a genuine caller identity.
-//
-// The USER resolver is the real StoreResolver, and a test observes its writes
-// through the same production read the Runner uses (ResolveFor /
-// SecretRecordsForAgent), not a fake. The SERVER resolver is a recording fake:
-// Resolve must never be hit (the list probe is value-free) and Statuses returns
-// a scripted report to assert against.
+// Store-gated SecretsService tests cover authz, value-free listing, deletion,
+// versioning, and scope with production interceptors and real Postgres.
+// A fake server resolver proves listing avoids value reads and reports faults.
 
 import (
 	"context"
@@ -32,11 +22,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// recordingResolver is a fake secrets.Resolver standing in for the SERVER-secret
-// resolver. Resolve fails loudly, so a test proves the list probe never resolves
-// values. Statuses returns a scripted value-free report — the ListServerSecrets
-// probe — and can be scripted to fail so a test proves a provider fault is not
-// flattened into all-unset.
+// Resolve marks forbidden value reads; Statuses returns a scripted report/error.
 type recordingResolver struct {
 	resolveHit  bool
 	statuses    []secrets.SecretStatus

@@ -70,15 +70,8 @@ func withGitHubPulls(p ingest.PullNumberResolver) notifyE2EOpt {
 	return func(c *notifyE2ECfg) { c.ghPulls = p }
 }
 
-// newNotifyE2EWire stands up the store + hub + fake Runner door, builds the
-// GitHub and Linear notify lanes directly over the unexported forgeNotifyStore +
-// forgeNotifyDispatcher + forgeIdentityResolver (NOT the App-gated
-// buildForgeNotifyLane), and mounts the real webhook handlers on a test server.
-// Each lane's arm Run loop is bounded by a child ctx cancelled at cleanup. The
-// real store-backed identity resolver is ALWAYS wired, so a plain (human-actored
-// or unstamped) event resolves an unqualified actor and delivers exactly as
-// before — self-origin suppression fires only for an owner-qualified stamped
-// actor that matches a subscriber.
+// Mounts store-backed notify lanes. Unstamped actors stay unqualified, so
+// self-origin suppression applies only to matching stamped owners.
 func newNotifyE2EWire(t *testing.T, opts ...notifyE2EOpt) *notifyE2EWire {
 	t.Helper()
 	ctx := context.Background() // the test root context (rule://go-thread-context _test.go exemption)
@@ -301,19 +294,8 @@ func (r *recordingRunner) forgeNotificationsForSession(sessionID string) []*comp
 	return out
 }
 
-// waitForNForgeNotifications event-gates until at least n ForgeNotification
-// frames are recorded on sessionID, then returns that session's slice — never a
-// sleep. Bounded by testTimeout so a wedged arm/dispatch fails fast.
-//
-// Gating a session to N frames is also the ORDERED-DRAIN BARRIER the scope cells
-// use to make an out-of-scope zero-read load-bearing: Route() enqueues every
-// per-subscriber dispatch of one event onto the single sender-goroutine FIFO
-// before returning, and the arm drains events one at a time on that goroutine,
-// so once a LATER in-scope frame is recorded, every frame an EARLIER event
-// enqueued — including any erroneous out-of-scope over-delivery — is already on
-// the wire. SubscribersForArtifact has no ORDER BY, so without this barrier a
-// fan-out over-delivery regression could hide behind poll timing; with it, the
-// subsequent zero-read on the out-of-scope session is race-proof.
+// Waits until n notifications arrive. Ordered draining makes prior fan-out
+// frames observable before asserting that an out-of-scope session got none.
 func waitForNForgeNotifications(t *testing.T, r *recordingRunner, sessionID string, n int) []*compassv1internal.ForgeNotification {
 	t.Helper()
 	deadline := timeAfter()
@@ -444,12 +426,8 @@ func TestForgeNotifyE2E_GitHubComment(t *testing.T) {
 	})
 }
 
-// TestForgeNotifyE2E_GitHubState covers close/merge/reopen STATE deliveries.
-// PR draft<->ready actions (ready_for_review / converted_to_draft) are
-// deliberately absent: they are unmapped in gitHubStateOrUpdateKind
-// (forge/githubapp_webhook.go) — falling to default -> ok=false and
-// counted-and-dropped at parse time — so by design they have no e2e delivery
-// cell, mirroring the documented CHECKS gap above.
+// Covers close, merge, and reopen state deliveries. Draft/ready changes are not
+// mapped by the webhook parser, so they have no delivery case here.
 func TestForgeNotifyE2E_GitHubState(t *testing.T) {
 	const inSession = "sess-gh-state-in"
 	cases := []struct {
@@ -505,11 +483,7 @@ func TestForgeNotifyE2E_GitHubState(t *testing.T) {
 	}
 }
 
-// TestForgeNotifyE2E_GitHubReview covers the REVIEW kind: a
-// pull_request_review.submitted webhook delivers a REVIEW notification carrying
-// the reviewer's verdict. parseGitHubReview sets base.Change=REVIEW and
-// base.State=wh.Review.State (forge/githubapp_webhook.go:233-234), so the
-// verdict must survive onto the wire.
+// A submitted review must deliver its reviewer verdict as a REVIEW notification.
 func TestForgeNotifyE2E_GitHubReview(t *testing.T) {
 	const inSession = "sess-gh-review-in"
 	w := newNotifyE2EWire(t)
@@ -579,17 +553,9 @@ func TestForgeNotifyE2E_GitHubUpdate(t *testing.T) {
 	}
 }
 
-// TestForgeNotifyE2E_GitHubCheckSuiteNoResolver asserts the NIL-RESOLVER arm of
-// the head_sha->PR-number step (RIG-2869): a check_suite webhook carries a head
-// SHA but Number==0, and this lane deliberately wires NO PullNumberResolver
-// (line 160), so Route's step 0 is skipped and the zero-number guard rejects —
-// NO notification is delivered and the arm logs a route error. That is the
-// pre-resolution behavior the router must preserve for any lane without a
-// resolver (the Linear lane in production); the resolving arm is
-// TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber. A following, in-scope comment
-// on the same GitHub arm is the ordered-drain sync point: the arm drains one
-// event at a time on a single goroutine, so the comment frame arriving proves
-// the check_suite was already routed to completion and produced nothing.
+// Without a PullNumberResolver, check_suite has no artifact number and must be
+// rejected without delivery. The trailing comment's frame proves ordered draining
+// completed the rejected event first.
 func TestForgeNotifyE2E_GitHubCheckSuiteNoResolver(t *testing.T) {
 	const inSession = "sess-gh-checks-in"
 	w := newNotifyE2EWire(t)
@@ -675,11 +641,7 @@ func TestForgeNotifyE2E_GitHubRepoContainer(t *testing.T) {
 
 // --- Linear cells ------------------------------------------------------------
 
-// TestForgeNotifyE2E_LinearComment is the Fork-1 anchor cell: the Linear COMMENT
-// is delivered end to end onto the subscriber's live session, identified by its
-// stable comment key. The phantom-diff (webhook-vs-sweep) proof stays with the
-// landed unit regression TestCrossProducerLinearCommentNoPhantomDiff (#768) — see
-// the file header for why the e2e asserts delivery-by-key, not a second sweep.
+// A Linear comment reaches its live session, identified by its stable comment key.
 func TestForgeNotifyE2E_LinearComment(t *testing.T) {
 	const (
 		inSession  = "sess-ln-comment-in"
@@ -856,11 +818,8 @@ func TestForgeNotifyE2E_LinearProjectContainer(t *testing.T) {
 	}
 }
 
-// TestForgeNotifyE2E_LinearRemoveDropped asserts an Issue/remove is
-// counted-and-dropped (no notification kind models deletion): it produces zero
-// frames. A trailing, in-scope comment on the same Linear arm is the ordered-drain
-// sync point — its frame arriving proves the remove was fully processed and
-// delivered nothing.
+// Issue/remove is dropped because deletion has no notification kind. The trailing
+// comment frame proves the ordered drain processed the remove without delivery.
 func TestForgeNotifyE2E_LinearRemoveDropped(t *testing.T) {
 	const inSession = "sess-ln-remove-in"
 	w := newNotifyE2EWire(t)
@@ -959,11 +918,8 @@ func waitForDeliveredRevisionChange(t *testing.T, st *store.Store, subID, from s
 	}
 }
 
-// TestForgeNotifyE2E_SelfOriginSuppressed is the T3 whole-wire proof of
-// self-origin suppression through the REAL store-backed forgeIdentityResolver:
-// a Compass agent's own stamped comment on an artifact it authored and
-// subscribes to is skipped for that agent (and its caught-up cursor advances),
-// while a SECOND agent on the same artifact still receives it.
+// A stamped self-origin comment is suppressed for its authoring subscriber, whose
+// caught-up cursor advances, while another subscriber on the artifact receives it.
 func TestForgeNotifyE2E_SelfOriginSuppressed(t *testing.T) {
 	const (
 		selfSession  = "sess-self-origin-self"
@@ -1043,12 +999,8 @@ func TestForgeNotifyE2E_SelfOriginSuppressed(t *testing.T) {
 	}
 }
 
-// TestForgeNotifyE2E_ChecksNeverSuppressed proves the CHECKS never-suppressed
-// invariant through the real resolver: even the artifact's OWN authoring,
-// subscribing agent receives a CHECKS event, because a CHECKS event carries no
-// actor (actorHandle returns the zero Handle for CHECKS regardless of what the
-// store would resolve). The check_suite webhook is head-SHA-keyed with Number==0,
-// so a real head_sha->PR-number resolver supplies the coordinate.
+// CHECKS events have no actor and must never be suppressed, even for their author.
+// The check_suite's head SHA is resolved to a PR number before delivery.
 func TestForgeNotifyE2E_ChecksNeverSuppressed(t *testing.T) {
 	const (
 		inSession = "sess-checks-never-suppress"
@@ -1080,12 +1032,8 @@ func TestForgeNotifyE2E_ChecksNeverSuppressed(t *testing.T) {
 	}
 }
 
-// TestForgeNotifyE2E_OwnerNamespaceNoCrossSuppress is the most important T3
-// assertion: two DIFFERENT owners' agents both named "atlas" must NOT
-// cross-suppress. A comment stamped for atlas@admin, routed to a subscriber that
-// is atlas@beta, is a genuine cross-agent notification — a BARE-handle match
-// would false-suppress it (a fail-closed bug). Owner-qualification keeps them
-// apart, so the beta atlas receives the comment.
+// Same-named agents under different owners must not cross-suppress. A comment
+// stamped for atlas@admin must still reach atlas@beta.
 func TestForgeNotifyE2E_OwnerNamespaceNoCrossSuppress(t *testing.T) {
 	const (
 		inSession = "sess-owner-namespace"
@@ -1121,12 +1069,8 @@ func TestForgeNotifyE2E_OwnerNamespaceNoCrossSuppress(t *testing.T) {
 	}
 }
 
-// TestForgeNotifyE2E_SelfOriginOpenedSuppressed drives the OPENED arm, whose
-// actor comes from the DL-055 ownership row through the real adapter's
-// AuthorHandle rather than a stamped comment header. Without it the adapter's
-// AuthorHandle success path is unexercised end to end: a resolver returning a
-// bogus populated handle there would suppress a real cross-agent notification
-// and every other cell would stay green.
+// OPENED self-origin resolution uses the ownership row's AuthorHandle, not a
+// stamped comment header; the real adapter must suppress the author's event.
 func TestForgeNotifyE2E_SelfOriginOpenedSuppressed(t *testing.T) {
 	const (
 		authorSession = "sess-self-origin-opened-author"
