@@ -18,9 +18,9 @@ export function publicVerdict(
 	if (result.exitCode === 0) return { ok: true };
 	const name = packageName(ref);
 	const detail = result.stderr.trim() || `skopeo exited ${result.exitCode}`;
-	const packagePath = name.replace(/^ghcr\.io\//, "");
+	const [org, ...rest] = name.replace(/^ghcr\.io\//, "").split("/");
 	return {
 		ok: false,
-		message: `${name} is not anonymously readable (${detail}). Set package visibility to public: https://github.com/orgs/${packagePath.split("/")[0]}/packages/container/package/${packagePath.split("/").slice(1).join("/")}/settings`,
+		message: `${name} is not anonymously readable (${detail}). Set package visibility to public: https://github.com/orgs/${org}/packages/container/${rest.join("/")}/settings`,
 	};
 }
