@@ -18,7 +18,7 @@ import (
 
 // Mirror applies agent bundles and pushes only refs approved by its caller.
 type Mirror interface {
-	ApplyBundle(ctx context.Context, repo string, bundle []byte) error
+	ApplyBundle(ctx context.Context, repo string, bundle []byte, refs []string) error
 	Push(ctx context.Context, repo string, refs map[string]string) error
 	Rebase(ctx context.Context, repo, ref, onto string) (newHead string, conflict bool, err error)
 }
@@ -55,13 +55,20 @@ func NewGitMirrorWithHost(dir, host string, perRepoCapBytes, totalCapBytes int64
 	}
 }
 
-func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte) (err error) {
+func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte, refs []string) (err error) {
 	lock := m.repoLock(repo)
 	lock.Lock()
 	defer lock.Unlock()
 	m.capMu.Lock()
 	defer m.capMu.Unlock()
-	path, remote, normalized, err := m.prepare(ctx, repo)
+	path, remote, normalized, created, err := m.prepare(ctx, repo)
+	defer func() {
+		if created && err != nil && path != "" {
+			if removeErr := os.RemoveAll(path); removeErr != nil {
+				err = errors.Join(err, fmt.Errorf("remove newly created git mirror for %s: %w", normalized, removeErr))
+			}
+		}
+	}()
 	if err != nil {
 		return err
 	}
@@ -87,13 +94,44 @@ func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte)
 			err = errors.Join(err, fmt.Errorf("remove temporary bundle: %w", removeErr))
 		}
 	}()
+	if len(refs) == 0 {
+		return nil
+	}
 	refsBeforeBundle, err := m.refHeads(ctx, path)
 	if err != nil {
 		return err
 	}
-	if _, err := m.run(ctx, path, "", "fetch", "--no-tags", "--force", bundlePath,
-		"+refs/heads/*:refs/heads/*"); err != nil {
-		return fmt.Errorf("apply git bundle for %s (bundle prerequisite may be missing): %w", normalized, err)
+	orderedRefs := append([]string(nil), refs...)
+	sort.Strings(orderedRefs)
+	args := []string{"fetch", "--no-tags", "--force", bundlePath}
+	for _, ref := range orderedRefs {
+		if !strings.HasPrefix(ref, "refs/heads/") {
+			return fmt.Errorf("bundle ref %q is not a branch ref", ref)
+		}
+		if _, err := m.run(ctx, path, "", "check-ref-format", ref); err != nil {
+			return fmt.Errorf("invalid bundle ref %q: %w", ref, err)
+		}
+		stageRef := "refs/compass-incoming/" + strings.TrimPrefix(ref, "refs/heads/")
+		args = append(args, "+"+ref+":"+stageRef)
+	}
+	if _, err := m.run(ctx, path, "", args...); err != nil {
+		return errors.Join(
+			fmt.Errorf("apply git bundle for %s (bundle prerequisite may be missing): %w", normalized, err),
+			m.rollbackRefs(ctx, path, refsBeforeBundle),
+		)
+	}
+	for _, ref := range orderedRefs {
+		stageRef := "refs/compass-incoming/" + strings.TrimPrefix(ref, "refs/heads/")
+		out, err := m.run(ctx, path, "", "rev-parse", "--verify", stageRef+"^{commit}")
+		if err != nil {
+			return errors.Join(fmt.Errorf("read staged bundle ref %s: %w", ref, err), m.rollbackRefs(ctx, path, refsBeforeBundle))
+		}
+		if _, err := m.runInput(ctx, path, "", "", "update-ref", ref, strings.TrimSpace(out)); err != nil {
+			return errors.Join(fmt.Errorf("install bundle ref %s: %w", ref, err), m.rollbackRefs(ctx, path, refsBeforeBundle))
+		}
+	}
+	if err := m.removeIncomingRefs(ctx, path); err != nil {
+		return errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeBundle))
 	}
 	if err := m.checkCaps(path); err != nil {
 		return errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeBundle))
@@ -109,7 +147,7 @@ func (m *gitMirror) Push(ctx context.Context, repo string, refs map[string]strin
 	lock := m.repoLock(repo)
 	lock.Lock()
 	defer lock.Unlock()
-	path, remote, normalized, err := m.prepare(ctx, repo)
+	path, remote, normalized, _, err := m.prepare(ctx, repo)
 	if err != nil {
 		return err
 	}
@@ -161,7 +199,9 @@ func (m *gitMirror) Rebase(ctx context.Context, repo, ref, onto string) (string,
 	lock := m.repoLock(repo)
 	lock.Lock()
 	defer lock.Unlock()
-	path, _, normalized, err := m.prepare(ctx, repo)
+	m.capMu.Lock()
+	defer m.capMu.Unlock()
+	path, _, normalized, _, err := m.prepare(ctx, repo)
 	if err != nil {
 		return "", false, err
 	}
@@ -177,6 +217,10 @@ func (m *gitMirror) Rebase(ctx context.Context, repo, ref, onto string) (string,
 	if _, err := m.run(ctx, path, "", "cat-file", "-e", ref+"^{commit}"); err != nil {
 		return "", false, fmt.Errorf("rebase ref %q is unavailable: %w", ref, err)
 	}
+	refsBefore, err := m.refHeads(ctx, path)
+	if err != nil {
+		return "", false, err
+	}
 	baseOut, err := m.run(ctx, path, "", "merge-base", ref, onto)
 	if err != nil {
 		return "", false, fmt.Errorf("find rebase base for %s: %w", normalized, err)
@@ -191,6 +235,9 @@ func (m *gitMirror) Rebase(ctx context.Context, repo, ref, onto string) (string,
 			return "", true, nil
 		}
 		return "", false, fmt.Errorf("replay %s onto %s in %s: %w", ref, onto, normalized, err)
+	}
+	if err := m.checkCaps(path); err != nil {
+		return "", false, errors.Join(err, m.rollbackRefs(ctx, path, refsBefore))
 	}
 	out, err := m.run(ctx, path, "", "rev-parse", "--verify", ref)
 	if err != nil {
@@ -214,16 +261,16 @@ func (m *gitMirror) repoLock(repo string) *sync.Mutex {
 	return lock
 }
 
-func (m *gitMirror) prepare(ctx context.Context, repo string) (path, remote, normalized string, err error) {
+func (m *gitMirror) prepare(ctx context.Context, repo string) (path, remote, normalized string, created bool, err error) {
 	if m.dir == "" {
-		return "", "", "", errors.New("git mirror directory is not configured")
+		return "", "", "", false, errors.New("git mirror directory is not configured")
 	}
 	if m.perRepoCapBytes <= 0 || m.totalCapBytes <= 0 || m.perRepoCapBytes > m.totalCapBytes {
-		return "", "", "", errors.New("git mirror size caps must be positive and the per-repository cap must not exceed the total cap")
+		return "", "", "", false, errors.New("git mirror size caps must be positive and the per-repository cap must not exceed the total cap")
 	}
 	parts := strings.Split(repo, "/")
 	if len(parts) != 2 || !validRepoPart(parts[0]) || !validRepoPart(parts[1]) {
-		return "", "", "", fmt.Errorf("invalid github repository %q", repo)
+		return "", "", "", false, fmt.Errorf("invalid github repository %q", repo)
 	}
 	normalized = strings.ToLower(repo)
 	parts[0] = strings.ToLower(parts[0])
@@ -234,30 +281,31 @@ func (m *gitMirror) prepare(ctx context.Context, repo string) (path, remote, nor
 	}
 	base, err := mirrorBaseURL(host)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", false, err
 	}
 	remote = strings.TrimSuffix(base, "/") + "/" + parts[0] + "/" + parts[1] + ".git"
 	path = filepath.Join(m.dir, parts[0], parts[1]+".git")
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
-		return "", "", "", fmt.Errorf("create git mirror directory: %w", err)
+		return "", "", "", false, fmt.Errorf("create git mirror directory: %w", err)
 	}
 	if _, err := os.Stat(filepath.Join(path, "HEAD")); errors.Is(err, os.ErrNotExist) {
+		created = true
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return "", "", "", fmt.Errorf("create git mirror parent: %w", err)
+			return path, remote, normalized, created, fmt.Errorf("create git mirror parent: %w", err)
 		}
 		if _, err := m.run(ctx, path, "", "init", "--bare", "--initial-branch=main", path); err != nil {
-			return "", "", "", fmt.Errorf("initialize git mirror for %s: %w", normalized, err)
+			return path, remote, normalized, created, fmt.Errorf("initialize git mirror for %s: %w", normalized, err)
 		}
 		if _, err := m.run(ctx, path, "", "remote", "add", "origin", remote); err != nil {
-			return "", "", "", fmt.Errorf("configure git mirror remote for %s: %w", normalized, err)
+			return path, remote, normalized, created, fmt.Errorf("configure git mirror remote for %s: %w", normalized, err)
 		}
 	} else if err != nil {
-		return "", "", "", fmt.Errorf("inspect git mirror for %s: %w", normalized, err)
+		return path, remote, normalized, false, fmt.Errorf("inspect git mirror for %s: %w", normalized, err)
 	}
 	if _, err := m.run(ctx, path, "", "config", "remote.origin.url", remote); err != nil {
-		return "", "", "", fmt.Errorf("update git mirror remote for %s: %w", normalized, err)
+		return path, remote, normalized, created, fmt.Errorf("update git mirror remote for %s: %w", normalized, err)
 	}
-	return path, remote, normalized, nil
+	return path, remote, normalized, created, nil
 }
 
 func (m *gitMirror) fetch(ctx context.Context, path, remote string) error {
@@ -435,6 +483,19 @@ func (m *gitMirror) refHeads(ctx context.Context, repoPath string) (map[string]s
 		}
 	}
 	return refs, nil
+}
+
+func (m *gitMirror) removeIncomingRefs(ctx context.Context, repoPath string) error {
+	refs, err := m.run(ctx, repoPath, "", "for-each-ref", "--format=%(refname)", "refs/compass-incoming")
+	if err != nil {
+		return fmt.Errorf("list temporary incoming bundle refs: %w", err)
+	}
+	for ref := range strings.FieldsSeq(refs) {
+		if _, err := m.run(ctx, repoPath, "", "update-ref", "-d", ref); err != nil {
+			return fmt.Errorf("remove temporary incoming bundle ref %s: %w", ref, err)
+		}
+	}
+	return nil
 }
 
 func (m *gitMirror) rollbackRefs(ctx context.Context, repoPath string, refsBefore map[string]string) error {

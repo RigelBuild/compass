@@ -2,12 +2,15 @@ package forge
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitMirrorApplyBundleRejectsMissingCommits(t *testing.T) {
@@ -18,16 +21,86 @@ func TestGitMirrorApplyBundleRejectsMissingCommits(t *testing.T) {
 	bundle := mirrorBundle(t, fixture.work, "refs/heads/agent", "^"+base)
 
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
-	err := m.ApplyBundle(t.Context(), "owner/repo", bundle)
+	err := m.ApplyBundle(t.Context(), "owner/repo", bundle, []string{"refs/heads/agent"})
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "prerequisite") {
 		t.Fatalf("ApplyBundle with missing prerequisite = %v, want prerequisite error", err)
+	}
+}
+
+func TestGitMirrorApplyBundleDoesNotInstallUnrequestedRefs(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mainHead := mirrorCommit(t, fixture.work, "main.txt", "main\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", nil, []string{"refs/heads/agent"}); err != nil {
+		t.Fatalf("initial ApplyBundle: %v", err)
+	}
+	path := filepath.Join(fixture.root, "mirrors", "owner", "repo.git")
+	mirrorGit(t, fixture.root, "--git-dir", path, "update-ref", "refs/heads/extra", mainHead)
+	mirrorGit(t, fixture.work, "switch", "-c", "agent")
+	agentHead := mirrorCommit(t, fixture.work, "agent.txt", "agent\n")
+	mirrorGit(t, fixture.work, "switch", "-c", "extra", mainHead)
+	mirrorCommit(t, fixture.work, "extra.txt", "unrequested\n")
+	bundle := mirrorBundle(t, fixture.work, "refs/heads/agent", "refs/heads/extra")
+
+	if err := m.ApplyBundle(t.Context(), "owner/repo", bundle, []string{"refs/heads/agent"}); err != nil {
+		t.Fatalf("ApplyBundle: %v", err)
+	}
+	if got := mirrorRef(t, path, "refs/heads/agent"); got != agentHead {
+		t.Fatalf("requested agent head = %s, want %s", got, agentHead)
+	}
+	if got := mirrorRef(t, path, "refs/heads/extra"); got != mainHead {
+		t.Fatalf("unrequested extra head = %s, want unchanged %s", got, mainHead)
+	}
+	if got := mirrorGit(t, fixture.root, "--git-dir", path, "for-each-ref", "--format=%(refname)", "refs/compass-incoming"); strings.TrimSpace(got) != "" {
+		t.Fatalf("temporary incoming refs remain: %s", got)
+	}
+}
+
+func TestGitMirrorFirstApplyRefusalRemovesRepository(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mirrorCommit(t, fixture.work, "main.txt", "main\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", nil, nil); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	path := filepath.Join(m.dir, "owner", "repo.git")
+	repoBytes, err := directoryBytes(path)
+	if err != nil {
+		t.Fatalf("measure seeded repository: %v", err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("remove seeded repository: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(m.dir, "owner", "other"), 0o700); err != nil {
+		t.Fatalf("create sibling mirror data: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(m.dir, "owner", "other", "accounted.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write sibling mirror data: %v", err)
+	}
+	m.perRepoCapBytes = repoBytes
+	m.totalCapBytes = repoBytes
+	err = m.ApplyBundle(t.Context(), "owner/repo", nil, nil)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "total") {
+		t.Fatalf("first ApplyBundle over aggregate cap = %v, want total cap refusal", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("first refused mirror repository stat error = %v, want not exist", err)
+	}
+	got, err := directoryBytes(m.dir)
+	if err != nil {
+		t.Fatalf("measure mirrors after first refusal: %v", err)
+	}
+	if got > m.totalCapBytes {
+		t.Fatalf("total mirror bytes after first refusal = %d, cap %d", got, m.totalCapBytes)
 	}
 }
 
 func TestGitMirrorRepositoryPathCanonicalizesCase(t *testing.T) {
 	fixture := newMirrorFixture(t)
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
-	path, _, normalized, err := m.prepare(t.Context(), "Owner/Repo")
+	path, _, normalized, _, err := m.prepare(t.Context(), "Owner/Repo")
 	if err != nil {
 		t.Fatalf("prepare mirror: %v", err)
 	}
@@ -46,7 +119,7 @@ func TestGitMirrorPushRejectsStaleLease(t *testing.T) {
 	bundle := mirrorBundle(t, fixture.work, "refs/heads/agent")
 
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
-	if err := m.ApplyBundle(t.Context(), "owner/repo", bundle); err != nil {
+	if err := m.ApplyBundle(t.Context(), "owner/repo", bundle, []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
 	competitor := filepath.Join(fixture.root, "competitor")
@@ -71,7 +144,7 @@ func TestGitMirrorPushOnlyPushesRequestedRefs(t *testing.T) {
 	mirrorGit(t, fixture.work, "switch", "-c", "agent")
 	agentHead := mirrorCommit(t, fixture.work, "agent.txt", "agent\n")
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
-	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent")); err != nil {
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
 	if err := m.Push(t.Context(), "owner/repo", map[string]string{"refs/heads/agent": agentHead}); err != nil {
@@ -104,7 +177,7 @@ func TestGitMirrorRebaseConflictDoesNotPush(t *testing.T) {
 	mirrorGit(t, mainline, "push", "origin", "main")
 
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
-	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent")); err != nil {
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
 	gotHead, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", mainHead)
@@ -123,6 +196,205 @@ func TestGitMirrorRebaseConflictDoesNotPush(t *testing.T) {
 	if got := mirrorRef(t, fixture.remote, "refs/heads/main"); got != mainHead {
 		t.Fatalf("remote main = %s, want unchanged %s", got, mainHead)
 	}
+}
+
+func TestGitMirrorRebaseRefusesOverCapAndRestoresRef(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mirrorCommit(t, fixture.work, "base.txt", "base\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	feature := filepath.Join(fixture.root, "feature")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, feature)
+	mirrorGit(t, feature, "switch", "-c", "agent")
+	oldHead := mirrorCommit(t, feature, "agent.txt", "agent\n")
+	mirrorGit(t, feature, "push", "origin", "agent")
+	mainline := filepath.Join(fixture.root, "mainline")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, mainline)
+	mirrorGit(t, mainline, "config", "user.name", "Owner")
+	mirrorGit(t, mainline, "config", "user.email", "owner@example.test")
+	onto := mirrorCommit(t, mainline, "main.txt", "main\n")
+	mirrorGit(t, mainline, "push", "origin", "main")
+
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
+		t.Fatalf("ApplyBundle: %v", err)
+	}
+	path := filepath.Join(m.dir, "owner", "repo.git")
+	mirrorGit(t, fixture.root, "--git-dir", path, "gc", "--prune=now")
+	before, err := directoryBytes(path)
+	if err != nil {
+		t.Fatalf("measure mirror before rebase: %v", err)
+	}
+	m.perRepoCapBytes = before + 1
+	if _, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", onto); err == nil || conflict || !strings.Contains(strings.ToLower(err.Error()), "per-repository") {
+		t.Fatalf("Rebase over cap = (conflict %t, err %v), want per-repository cap refusal", conflict, err)
+	}
+	if got := mirrorRef(t, path, "refs/heads/agent"); got != oldHead {
+		t.Fatalf("agent head after refused rebase = %s, want restored %s", got, oldHead)
+	}
+	after, err := directoryBytes(path)
+	if err != nil {
+		t.Fatalf("measure mirror after rebase refusal: %v", err)
+	}
+	if after > m.perRepoCapBytes {
+		t.Fatalf("mirror bytes after refused rebase = %d, cap %d", after, m.perRepoCapBytes)
+	}
+}
+
+func TestGitMirrorRebaseSerializesConcurrentApply(t *testing.T) {
+	m, firstPath, secondPath, oldHead, onto, base, otherBundle := newConcurrentMirrorFixture(t)
+	releaseFile, replayEventPath := gateGitReplay(t)
+	rebaseResult := make(chan error, 1)
+	go func() {
+		newHead, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", onto)
+		if err != nil {
+			rebaseResult <- err
+			return
+		}
+		if conflict || newHead == "" || newHead == oldHead {
+			rebaseResult <- errors.New("rebase did not install a new head")
+			return
+		}
+		rebaseResult <- nil
+	}()
+	deadline := time.NewTimer(30 * time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer tick.Stop()
+	for {
+		if _, err := os.Stat(replayEventPath); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect replay event: %v", err)
+		}
+		select {
+		case err := <-rebaseResult:
+			t.Fatalf("Rebase returned before its replay event: %v", err)
+		case <-deadline.C:
+			t.Fatal("timed out waiting for replay event")
+		case <-tick.C:
+		}
+	}
+	if m.capMu.TryLock() {
+		m.capMu.Unlock()
+		if err := os.Remove(releaseFile.Name()); err != nil {
+			t.Fatalf("release replay after failed lock check: %v", err)
+		}
+		t.Fatal("rebase did not hold the mirror cap lock during replay")
+	}
+	applyResult := make(chan error, 1)
+	go func() {
+		applyResult <- m.ApplyBundle(t.Context(), "owner/other", otherBundle, []string{"refs/heads/agent"})
+	}()
+	if err := os.Remove(releaseFile.Name()); err != nil {
+		t.Fatalf("release replay: %v", err)
+	}
+	if err := <-rebaseResult; err != nil {
+		t.Fatalf("Rebase: %v", err)
+	}
+	if err := <-applyResult; err == nil || !strings.Contains(strings.ToLower(err.Error()), "total") {
+		t.Fatalf("concurrent ApplyBundle error = %v, want total cap refusal", err)
+	}
+	if got := mirrorRef(t, firstPath, "refs/heads/agent"); got == oldHead {
+		t.Fatalf("rebased head = %s, want a new commit (base %s)", got, base)
+	}
+	if _, err := m.run(t.Context(), secondPath, "", "rev-parse", "--verify", "refs/heads/agent"); err == nil {
+		t.Fatal("refused concurrent bundle installed its agent branch")
+	}
+	after, err := directoryBytes(m.dir)
+	if err != nil {
+		t.Fatalf("measure mirror after concurrent operations: %v", err)
+	}
+	if after > m.totalCapBytes {
+		t.Fatalf("mirror bytes after concurrent operations = %d, total cap %d", after, m.totalCapBytes)
+	}
+}
+
+func newConcurrentMirrorFixture(t *testing.T) (*gitMirror, string, string, string, string, string, []byte) {
+	t.Helper()
+	fixture := newMirrorFixture(t)
+	base := mirrorCommit(t, fixture.work, "base.txt", "base\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	feature := filepath.Join(fixture.root, "feature")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, feature)
+	mirrorGit(t, feature, "switch", "-c", "agent")
+	oldHead := mirrorCommit(t, feature, "agent.txt", "agent\n")
+	mirrorGit(t, feature, "push", "origin", "agent")
+	mainline := filepath.Join(fixture.root, "mainline")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, mainline)
+	mirrorGit(t, mainline, "config", "user.name", "Owner")
+	mirrorGit(t, mainline, "config", "user.email", "owner@example.test")
+	onto := mirrorCommit(t, mainline, "main.txt", "main\n")
+	mirrorGit(t, mainline, "push", "origin", "main")
+
+	otherRemote := filepath.Join(fixture.root, "forge", "owner", "other.git")
+	mirrorGit(t, fixture.root, "init", "--bare", "--initial-branch=main", otherRemote)
+	otherWork := filepath.Join(fixture.root, "other-work")
+	mirrorGit(t, fixture.root, "init", "--initial-branch=main", otherWork)
+	mirrorGit(t, otherWork, "config", "user.name", "Agent")
+	mirrorGit(t, otherWork, "config", "user.email", "agent@example.test")
+	mirrorGit(t, otherWork, "remote", "add", "origin", otherRemote)
+	mirrorCommit(t, otherWork, "base.txt", "other base\n")
+	mirrorGit(t, otherWork, "push", "origin", "main")
+	mirrorGit(t, otherWork, "switch", "-c", "agent")
+	largeContent := make([]byte, 8<<10)
+	if _, err := rand.Read(largeContent); err != nil {
+		t.Fatalf("create large bundle content: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(otherWork, "large.bin"), largeContent, 0o600); err != nil {
+		t.Fatalf("write large bundle content: %v", err)
+	}
+	mirrorGit(t, otherWork, "add", "large.bin")
+	mirrorGit(t, otherWork, "commit", "-m", "large bundle")
+	otherBundle := mirrorBundle(t, otherWork, "refs/heads/agent")
+
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
+		t.Fatalf("seed first repository: %v", err)
+	}
+	if err := m.ApplyBundle(t.Context(), "owner/other", nil, nil); err != nil {
+		t.Fatalf("seed second repository: %v", err)
+	}
+	firstPath := filepath.Join(m.dir, "owner", "repo.git")
+	secondPath := filepath.Join(m.dir, "owner", "other.git")
+	for _, path := range []string{firstPath, secondPath} {
+		mirrorGit(t, fixture.root, "--git-dir", path, "gc", "--prune=now")
+	}
+	baseline, err := directoryBytes(m.dir)
+	if err != nil {
+		t.Fatalf("measure mirror baseline: %v", err)
+	}
+	m.totalCapBytes = baseline + 4096
+	m.perRepoCapBytes = m.totalCapBytes
+	return m, firstPath, secondPath, oldHead, onto, base, otherBundle
+}
+
+func gateGitReplay(t *testing.T) (*os.File, string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find Git executable: %v", err)
+	}
+	binDir := t.TempDir()
+	eventFile := filepath.Join(t.TempDir(), "replay-event")
+	releaseFile, err := os.CreateTemp(t.TempDir(), "replay-release-*")
+	if err != nil {
+		t.Fatalf("create replay release gate: %v", err)
+	}
+	if err := releaseFile.Close(); err != nil {
+		t.Fatalf("close replay release gate: %v", err)
+	}
+	wrapper := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = replay ]; then\n    printf x > \"$MIRROR_TEST_REPLAY_EVENT\"\n    while [ ! -f \"$MIRROR_TEST_REPLAY_RELEASE\" ]; do :; done\n  fi\ndone\nexec \"$MIRROR_TEST_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o700); err != nil {
+		t.Fatalf("write Git wrapper: %v", err)
+	}
+	t.Setenv("MIRROR_TEST_REAL_GIT", realGit)
+	t.Setenv("MIRROR_TEST_REPLAY_EVENT", eventFile)
+	t.Setenv("MIRROR_TEST_REPLAY_RELEASE", releaseFile.Name())
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got, err := exec.LookPath("git"); err != nil || got != filepath.Join(binDir, "git") {
+		t.Fatalf("Git wrapper lookup = (%q, %v), want %q", got, err, filepath.Join(binDir, "git"))
+	}
+	return releaseFile, eventFile
 }
 
 func TestGitMirrorRebaseUpdatesRef(t *testing.T) {
@@ -144,7 +416,7 @@ func TestGitMirrorRebaseUpdatesRef(t *testing.T) {
 	mirrorGit(t, mainline, "push", "origin", "main")
 
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
-	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent")); err != nil {
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
 	newHead, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", onto)
@@ -166,7 +438,7 @@ func TestGitMirrorReplayFailureIsNotConflict(t *testing.T) {
 	mirrorGit(t, fixture.work, "switch", "-c", "agent")
 	mirrorCommit(t, fixture.work, "agent.txt", "agent\n")
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
-	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent")); err != nil {
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
 	_, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", "refs/heads/unknown")
@@ -182,12 +454,15 @@ func TestGitMirrorReplayCommandFailureIsNotConflict(t *testing.T) {
 	mirrorGit(t, fixture.work, "switch", "-c", "agent")
 	mirrorCommit(t, fixture.work, "agent.txt", "agent\n")
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
-	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent")); err != nil {
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
-	path, _, _, err := m.prepare(t.Context(), "owner/repo")
+	path, _, normalized, _, err := m.prepare(t.Context(), "owner/repo")
 	if err != nil {
 		t.Fatalf("prepare mirror: %v", err)
+	}
+	if normalized == "" {
+		t.Fatal("prepared mirror returned empty repository name")
 	}
 	oldHead := mirrorRef(t, path, "refs/heads/agent")
 	realGit, err := exec.LookPath("git")
@@ -221,7 +496,7 @@ func TestGitMirrorRejectedBundleDoesNotLeaveObjects(t *testing.T) {
 			bundle := mirrorBundle(t, fixture.work, "refs/heads/agent")
 
 			m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
-			if err := m.ApplyBundle(t.Context(), "owner/repo", nil); err != nil {
+			if err := m.ApplyBundle(t.Context(), "owner/repo", nil, []string{"refs/heads/agent"}); err != nil {
 				t.Fatalf("initial ApplyBundle: %v", err)
 			}
 			path := filepath.Join(fixture.root, "mirrors", "owner", "repo.git")
@@ -235,7 +510,7 @@ func TestGitMirrorRejectedBundleDoesNotLeaveObjects(t *testing.T) {
 			} else {
 				m.totalCapBytes = before + 1
 			}
-			err = m.ApplyBundle(t.Context(), "owner/repo", bundle)
+			err = m.ApplyBundle(t.Context(), "owner/repo", bundle, []string{"refs/heads/agent"})
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), limit) {
 				t.Fatalf("ApplyBundle over %s cap = %v, want refusal", limit, err)
 			}
@@ -261,7 +536,7 @@ func TestGitMirrorFetchRefusalRollsBackRefsAndObjects(t *testing.T) {
 			initialHead := mirrorCommit(t, fixture.work, "main.txt", "initial\n")
 			mirrorGit(t, fixture.work, "push", "origin", "main")
 			m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
-			if err := m.ApplyBundle(t.Context(), "owner/repo", nil); err != nil {
+			if err := m.ApplyBundle(t.Context(), "owner/repo", nil, []string{"refs/heads/agent"}); err != nil {
 				t.Fatalf("initial ApplyBundle: %v", err)
 			}
 			path := filepath.Join(fixture.root, "mirrors", "owner", "repo.git")
@@ -278,7 +553,7 @@ func TestGitMirrorFetchRefusalRollsBackRefsAndObjects(t *testing.T) {
 			remoteHead := mirrorCommit(t, fixture.work, "large.txt", strings.Repeat("remote change ", 1000))
 			mirrorGit(t, fixture.work, "push", "origin", "main")
 
-			err = m.ApplyBundle(t.Context(), "owner/repo", nil)
+			err = m.ApplyBundle(t.Context(), "owner/repo", nil, []string{"refs/heads/agent"})
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), limit) {
 				t.Fatalf("ApplyBundle over %s cap = %v, want refusal", limit, err)
 			}
@@ -307,9 +582,12 @@ func TestGitMirrorPushErrorHidesToken(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	m := NewGitMirrorWithHost(filepath.Join(fixture.root, "mirrors"), "https://127.0.0.1:1", 1<<30, 1<<30,
 		func(context.Context, string) (string, error) { return token, nil }).(*gitMirror)
-	path, _, _, err := m.prepare(t.Context(), "owner/repo")
+	path, _, normalized, _, err := m.prepare(t.Context(), "owner/repo")
 	if err != nil {
 		t.Fatalf("prepare mirror: %v", err)
+	}
+	if normalized == "" {
+		t.Fatal("prepared mirror returned empty repository name")
 	}
 	if _, err := m.run(t.Context(), path, "", "fetch", fixture.work, "refs/heads/main:refs/heads/main"); err != nil {
 		t.Fatalf("seed mirror commit: %v", err)
@@ -355,7 +633,7 @@ func TestGitMirrorApplyBundleEnforcesCaps(t *testing.T) {
 			bundle := mirrorBundle(t, fixture.work, "refs/heads/agent")
 
 			m := newTestGitMirror(t, fixture, tc.perRepoCap, tc.totalCap)
-			err := m.ApplyBundle(t.Context(), "owner/repo", bundle)
+			err := m.ApplyBundle(t.Context(), "owner/repo", bundle, []string{"refs/heads/agent"})
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.wantMessage) {
 				t.Fatalf("ApplyBundle over %s cap = %v, want refusal naming %q", tc.name, err, tc.wantMessage)
 			}
