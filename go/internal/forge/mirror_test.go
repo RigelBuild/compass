@@ -57,6 +57,46 @@ func TestGitMirrorApplyBundleDoesNotInstallUnrequestedRefs(t *testing.T) {
 	}
 }
 
+func TestGitMirrorApplyBundleRemovesStaleIncomingRefs(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mainHead := mirrorCommit(t, fixture.work, "main.txt", "main\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", nil, nil); err != nil {
+		t.Fatalf("initial ApplyBundle: %v", err)
+	}
+	path := filepath.Join(m.dir, "owner", "repo.git")
+	staleRef := "refs/compass-incoming/stale"
+	mirrorGit(t, fixture.root, "--git-dir", path, "update-ref", staleRef, mainHead)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", nil, nil); err != nil {
+		t.Fatalf("ApplyBundle with empty refs: %v", err)
+	}
+	if got := mirrorGit(t, fixture.root, "--git-dir", path, "for-each-ref", "--format=%(refname)", "refs/compass-incoming"); strings.TrimSpace(got) != "" {
+		t.Fatalf("stale incoming refs remain after empty ApplyBundle: %s", got)
+	}
+}
+
+func TestGitMirrorApplyBundleRemovesStaleIncomingRefsOnCapRefusal(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mainHead := mirrorCommit(t, fixture.work, "main.txt", "main\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", nil, nil); err != nil {
+		t.Fatalf("initial ApplyBundle: %v", err)
+	}
+	path := filepath.Join(m.dir, "owner", "repo.git")
+	staleRef := "refs/compass-incoming/stale"
+	mirrorGit(t, fixture.root, "--git-dir", path, "update-ref", staleRef, mainHead)
+	m.perRepoCapBytes = 1
+	m.totalCapBytes = 1
+	if err := m.ApplyBundle(t.Context(), "owner/repo", nil, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "per-repository") {
+		t.Fatalf("ApplyBundle over cap = %v, want per-repository cap refusal", err)
+	}
+	if got := mirrorGit(t, fixture.root, "--git-dir", path, "for-each-ref", "--format=%(refname)", "refs/compass-incoming"); strings.TrimSpace(got) != "" {
+		t.Fatalf("stale incoming refs remain after refused ApplyBundle: %s", got)
+	}
+}
+
 func TestGitMirrorFirstApplyRefusalRemovesRepository(t *testing.T) {
 	fixture := newMirrorFixture(t)
 	mirrorCommit(t, fixture.work, "main.txt", "main\n")
@@ -240,9 +280,58 @@ func TestGitMirrorRebaseRefusesOverCapAndRestoresRef(t *testing.T) {
 	}
 }
 
+func TestGitMirrorRebaseRestoresRefWhenReadingHeadIsCancelled(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	_ = mirrorCommit(t, fixture.work, "base.txt", "base\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	feature := filepath.Join(fixture.root, "feature")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, feature)
+	mirrorGit(t, feature, "switch", "-c", "agent")
+	oldHead := mirrorCommit(t, feature, "agent.txt", "agent\n")
+	mainline := filepath.Join(fixture.root, "mainline")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, mainline)
+	mirrorGit(t, mainline, "config", "user.name", "Owner")
+	mirrorGit(t, mainline, "config", "user.email", "owner@example.test")
+	onto := mirrorCommit(t, mainline, "main.txt", "main\n")
+	mirrorGit(t, mainline, "push", "origin", "main")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	firstPath := filepath.Join(m.dir, "owner", "repo.git")
+	releaseFile, replayEventPath, readEventPath := gateGitReplay(t)
+	readReleasePath := filepath.Join(t.TempDir(), "read-release")
+	if err := os.WriteFile(readReleasePath, nil, 0o600); err != nil {
+		t.Fatalf("create read release gate: %v", err)
+	}
+	t.Setenv("MIRROR_TEST_REPLAY_READ_RELEASE", readReleasePath)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	rebaseResult := make(chan error, 1)
+	go func() {
+		_, _, err := m.Rebase(ctx, "owner/repo", "refs/heads/agent", onto)
+		rebaseResult <- err
+	}()
+	waitForMirrorTestFile(t, replayEventPath, rebaseResult)
+	if err := os.Remove(releaseFile.Name()); err != nil {
+		t.Fatalf("release replay: %v", err)
+	}
+	waitForMirrorTestFile(t, readEventPath, rebaseResult)
+	cancel()
+	if err := <-rebaseResult; err == nil || !strings.Contains(strings.ToLower(err.Error()), "read rebased head") {
+		t.Fatalf("Rebase after cancelled head read = %v, want read error", err)
+	}
+	if err := os.Remove(readReleasePath); err != nil {
+		t.Fatalf("release failed head read: %v", err)
+	}
+	if got := mirrorRef(t, firstPath, "refs/heads/agent"); got != oldHead {
+		t.Fatalf("agent head after failed read = %s, want restored %s", got, oldHead)
+	}
+}
+
 func TestGitMirrorRebaseSerializesConcurrentApply(t *testing.T) {
 	m, firstPath, secondPath, oldHead, onto, base, otherBundle := newConcurrentMirrorFixture(t)
-	releaseFile, replayEventPath := gateGitReplay(t)
+	releaseFile, replayEventPath, _ := gateGitReplay(t)
 	rebaseResult := make(chan error, 1)
 	go func() {
 		newHead, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", onto)
@@ -256,24 +345,7 @@ func TestGitMirrorRebaseSerializesConcurrentApply(t *testing.T) {
 		}
 		rebaseResult <- nil
 	}()
-	deadline := time.NewTimer(30 * time.Second)
-	tick := time.NewTicker(time.Millisecond)
-	defer deadline.Stop()
-	defer tick.Stop()
-	for {
-		if _, err := os.Stat(replayEventPath); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("inspect replay event: %v", err)
-		}
-		select {
-		case err := <-rebaseResult:
-			t.Fatalf("Rebase returned before its replay event: %v", err)
-		case <-deadline.C:
-			t.Fatal("timed out waiting for replay event")
-		case <-tick.C:
-		}
-	}
+	waitForMirrorTestFile(t, replayEventPath, rebaseResult)
 	if m.capMu.TryLock() {
 		m.capMu.Unlock()
 		if err := os.Remove(releaseFile.Name()); err != nil {
@@ -368,7 +440,7 @@ func newConcurrentMirrorFixture(t *testing.T) (*gitMirror, string, string, strin
 	return m, firstPath, secondPath, oldHead, onto, base, otherBundle
 }
 
-func gateGitReplay(t *testing.T) (*os.File, string) {
+func gateGitReplay(t *testing.T) (*os.File, string, string) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
@@ -376,6 +448,7 @@ func gateGitReplay(t *testing.T) (*os.File, string) {
 	}
 	binDir := t.TempDir()
 	eventFile := filepath.Join(t.TempDir(), "replay-event")
+	readEventFile := filepath.Join(t.TempDir(), "read-event")
 	releaseFile, err := os.CreateTemp(t.TempDir(), "replay-release-*")
 	if err != nil {
 		t.Fatalf("create replay release gate: %v", err)
@@ -383,18 +456,41 @@ func gateGitReplay(t *testing.T) (*os.File, string) {
 	if err := releaseFile.Close(); err != nil {
 		t.Fatalf("close replay release gate: %v", err)
 	}
-	wrapper := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = replay ]; then\n    printf x > \"$MIRROR_TEST_REPLAY_EVENT\"\n    while [ ! -f \"$MIRROR_TEST_REPLAY_RELEASE\" ]; do :; done\n  fi\ndone\nexec \"$MIRROR_TEST_REAL_GIT\" \"$@\"\n"
+	wrapper := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = replay ]; then\n    printf x > \"$MIRROR_TEST_REPLAY_EVENT\"\n    while [ -f \"$MIRROR_TEST_REPLAY_RELEASE\" ]; do :; done\n  fi\ndone\nprevious=\nfor arg do\n  if [ \"$previous\" = --verify ] && [ \"$arg\" = refs/heads/agent ] && [ -n \"$MIRROR_TEST_REPLAY_READ_RELEASE\" ] && [ -f \"$MIRROR_TEST_REPLAY_READ_RELEASE\" ]; then\n    printf x > \"$MIRROR_TEST_REPLAY_READ_EVENT\"\n    while [ -f \"$MIRROR_TEST_REPLAY_READ_RELEASE\" ]; do :; done\n  fi\n  previous=\"$arg\"\ndone\nexec \"$MIRROR_TEST_REAL_GIT\" \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o700); err != nil {
 		t.Fatalf("write Git wrapper: %v", err)
 	}
 	t.Setenv("MIRROR_TEST_REAL_GIT", realGit)
 	t.Setenv("MIRROR_TEST_REPLAY_EVENT", eventFile)
 	t.Setenv("MIRROR_TEST_REPLAY_RELEASE", releaseFile.Name())
+	t.Setenv("MIRROR_TEST_REPLAY_READ_EVENT", readEventFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if got, err := exec.LookPath("git"); err != nil || got != filepath.Join(binDir, "git") {
 		t.Fatalf("Git wrapper lookup = (%q, %v), want %q", got, err, filepath.Join(binDir, "git"))
 	}
-	return releaseFile, eventFile
+	return releaseFile, eventFile, readEventFile
+}
+
+func waitForMirrorTestFile(t *testing.T, path string, result <-chan error) {
+	t.Helper()
+	deadline := time.NewTimer(30 * time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer tick.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect mirror test event: %v", err)
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("mirror operation returned before event %s: %v", path, err)
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for mirror test event %s", path)
+		case <-tick.C:
+		}
+	}
 }
 
 func TestGitMirrorRebaseUpdatesRef(t *testing.T) {

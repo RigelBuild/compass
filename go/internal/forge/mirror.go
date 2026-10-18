@@ -72,7 +72,10 @@ func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte,
 	if err != nil {
 		return err
 	}
-	refsBeforeFetch, err := m.refHeads(ctx, path)
+	if err := m.removeIncomingRefs(ctx, path); err != nil {
+		return err
+	}
+	refsBeforeFetch, err := m.rollbackSnapshotRefs(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -97,7 +100,7 @@ func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte,
 	if len(refs) == 0 {
 		return nil
 	}
-	refsBeforeBundle, err := m.refHeads(ctx, path)
+	refsBeforeBundle, err := m.rollbackSnapshotRefs(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -217,7 +220,7 @@ func (m *gitMirror) Rebase(ctx context.Context, repo, ref, onto string) (string,
 	if _, err := m.run(ctx, path, "", "cat-file", "-e", ref+"^{commit}"); err != nil {
 		return "", false, fmt.Errorf("rebase ref %q is unavailable: %w", ref, err)
 	}
-	refsBefore, err := m.refHeads(ctx, path)
+	refsBefore, err := m.rollbackSnapshotRefs(ctx, path)
 	if err != nil {
 		return "", false, err
 	}
@@ -241,7 +244,10 @@ func (m *gitMirror) Rebase(ctx context.Context, repo, ref, onto string) (string,
 	}
 	out, err := m.run(ctx, path, "", "rev-parse", "--verify", ref)
 	if err != nil {
-		return "", false, fmt.Errorf("read rebased head for %s: %w", normalized, err)
+		return "", false, errors.Join(
+			fmt.Errorf("read rebased head for %s: %w", normalized, err),
+			m.rollbackRefs(context.WithoutCancel(ctx), path, refsBefore),
+		)
 	}
 	return strings.TrimSpace(out), false, nil
 }
@@ -480,6 +486,19 @@ func (m *gitMirror) refHeads(ctx context.Context, repoPath string) (map[string]s
 		fields := strings.Fields(line)
 		if len(fields) == 2 {
 			refs[fields[1]] = fields[0]
+		}
+	}
+	return refs, nil
+}
+
+func (m *gitMirror) rollbackSnapshotRefs(ctx context.Context, repoPath string) (map[string]string, error) {
+	refs, err := m.refHeads(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	for ref := range refs {
+		if strings.HasPrefix(ref, "refs/compass-incoming/") {
+			delete(refs, ref)
 		}
 	}
 	return refs, nil
