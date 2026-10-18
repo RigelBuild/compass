@@ -20,7 +20,7 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
       # All binaries share one version stamp; trim `version.txt` so its newline does
-      # not enter ldflags, and append the revision to identify non-release builds.
+      # not enter ldflags. Append the revision when the flake has one; else stamp the plain base.
       # Match devenv's accepted characters so the version guard keeps both paths aligned.
       versionBase =
         let

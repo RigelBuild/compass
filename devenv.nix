@@ -364,8 +364,8 @@ in
   // lib.optionalAttrs pkgs.stdenv.isLinux {
     # Remote runners use the authenticated TLS door and trust only gen-cert's CA.
     # Keep the enrollment token in env, not argv, to avoid process-table exposure.
-    # Per-container AF_UNIX sockets cap at 107 bytes; the deep state path is too long,
-    # so use `$XDG_RUNTIME_DIR`. Bounded enrollment failures trigger restarts.
+    # Agent sockets must fit the 107-byte AF_UNIX limit, so `$XDG_RUNTIME_DIR` must
+    # stay short (runner startup rejects a dir over 38 bytes). Enrollment failures restart.
     compass-runner = {
       exec = ''
         set -euo pipefail
@@ -445,8 +445,8 @@ in
 
     # Use the server's DSN so store precedence matches; wait for its readiness probe
     # to ensure migrations are complete.
-    # Idempotency keeps an existing registration for this runner, restores a lost
-    # one, and rotates a token held by another subject.
+    # Writes the token 0600. Idempotent: keeps this runner's registration, restores
+    # a lost one, and rotates a token held by another subject.
     "dogfood:mint-runner-token" = {
       exec = ''
         set -euo pipefail
