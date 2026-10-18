@@ -1,11 +1,7 @@
 {
-  # Compass distribution flake. Packages the four backend binaries + the native
-  # gtk4 app + the microVM stack-env from a bare checkout, so
-  # `nix profile install github:RigelBuild/compass#<pkg>` works with nothing but
-  # nix on PATH. Pin discipline: nixpkgs is pinned to the SAME rev devenv.lock
-  # resolves, but a flake carries its OWN flake.lock, so this is a SECOND
-  # independent nixpkgs lock; tools/toolchain/flake-parity.ts is the gate that
-  # fails CI on skew.
+  # A bare checkout can install the packages with only nix on PATH.
+  # `flake.lock` is independent of `devenv.lock`, so the parity gate keeps their
+  # nixpkgs revisions aligned.
   description = "Compass — binaries, native app, and microVM stack-env";
 
   # Pinned to the exact rev devenv.lock's nixpkgs node records (the URL is the
@@ -23,15 +19,9 @@
       systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
-      # ONE version string stamped into all four backend binaries + the app. The
-      # semver base comes from version.txt (the same source release.yml/ci.yml
-      # read), trimmed because a trailing newline would land in the ldflag. A
-      # `+g<shortRev>` suffix keeps a non-release artifact identifiable;
-      # dirtyShortRev carries its own `-dirty`, and a bare VCS-less tree stamps the
-      # plain base. Empty content throws rather than stamping a coreless `+g<rev>`.
-      # The character class is applied to the trimmed value, matching the devenv
-      # lane exactly so both accept the same file; the flake-gate:version-guard
-      # parity gate holds the two in agreement.
+      # All binaries share one version stamp; trim `version.txt` so its newline does
+      # not enter ldflags, and append the revision to identify non-release builds.
+      # Match devenv's accepted characters so the version guard keeps both paths aligned.
       versionBase =
         let
           v = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
@@ -119,12 +109,8 @@
           # and app-bundle can stage this store path instead of a working-tree dist.
           inherit compass-ui;
 
-          # The Linux gtk4 cgo native shell (Wails v3). Links the WebKitGTK
-          # closure through cgo — the same gtk-closure.nix the dev shell and e2e
-          # helper use, applied against this flake's pinned pkgs so the three
-          # cannot drift. tags=[gtk4] selects the gtk4 build.
-          # TODO(aarch64-darwin follow-up): the darwin app links system WebKit via
-          # frameworks, not this closure — out of scope while systems is x86_64-only.
+          # The Linux gtk4 app links the shared GTK closure through cgo, keeping the dev
+          # shell, e2e helper, and flake package aligned. `gtk4` selects the build variant.
           compass-app = pkgs.buildGoModule {
             pname = "compass-app";
             inherit version;
@@ -139,15 +125,10 @@
             ldflags = [ "-X main.version=${version}" ];
             doCheck = false;
 
-            # THE UI (RIG-3474). The gtk4 shell loads its front-end off disk:
-            # distDirForExecutable resolves `dist` BESIDE the executable, so a bare
-            # buildGoModule emitting only bin/compass-app installs a shell with no
-            # UI. Staging bin/dist is the SAME layout the release tarball builds,
-            # so both distribution channels resolve the UI identically. A real copy,
-            # not a symlink: a `nix profile` install materializes bin/ as symlinks
-            # into this store path, so the directory must BE there. `compass-ui`'s
-            # output IS the dist contents. `chmod -R u+w` because store sources are
-            # read-only.
+            # The shell loads UI from `dist` beside the executable, so stage it at `bin/dist`
+            # in the same layout as the release tarball.
+            # Copy instead of symlink: profile installs symlink `bin/` into the store, so the
+            # directory must exist in the package output. Make it writable for `chmod`.
             postInstall = ''
               cp -R ${compass-ui} $out/bin/dist
               chmod -R u+w $out/bin/dist
