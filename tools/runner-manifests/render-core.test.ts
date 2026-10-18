@@ -612,6 +612,23 @@ describe("renderRunnerManifests", () => {
 			{ path: values.hostPaths.runtimeRoot, type: "Directory" },
 		]);
 	});
+	test("sets the volume root below the session mount", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		const runner = containers(daemonSet)[0];
+		if (runner === undefined || !Array.isArray(runner.volumeMounts))
+			throw new Error("runner mounts are missing");
+		if (!Array.isArray(runner.env)) throw new Error("runner env is missing");
+		const sessionMount = runner.volumeMounts
+			.map(object)
+			.find((mount) => mount.name === "session-volumes");
+		if (sessionMount === undefined) throw new Error("session mount is missing");
+		const volumeRoot = runner.env
+			.map(object)
+			.find((entry) => entry.name === "COMPASS_MICROVM_VOLUME_ROOT");
+		if (volumeRoot === undefined) throw new Error("volume root is missing");
+
+		expect(volumeRoot.value).toBe(`${sessionMount.mountPath}/volumes`);
+	});
 	test("provisions the runtime host path and validates qualified device resources", () => {
 		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
 		const podSpec = nested(daemonSet, "spec", "template", "spec");
@@ -664,7 +681,7 @@ describe("renderRunnerManifests", () => {
 			"/run/compass/microvm",
 		);
 		expect(nested(env, "COMPASS_MICROVM_VOLUME_ROOT", "value")).toBe(
-			"/var/lib/compass/sessions",
+			"/var/lib/compass/sessions/volumes",
 		);
 		expect(nested(env, "COMPASS_MICROVM_MEMORY_MB", "value")).toBe("1024");
 		expect(nested(env, "COMPASS_MICROVM_CPUS", "value")).toBe("2");

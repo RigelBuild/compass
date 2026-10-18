@@ -53,10 +53,12 @@ RBAC binding. Rollout beyond one node waits for the multi-Runner hub.
   profile measured to boot, not yet minimized: `clone`, `clone3`, `unshare`
   and `mount` are allowed without argument filters. Narrow it with a
   remove-one test on a real node before production use.
-- Provide the session-volume host tree on a filesystem configured for project
-  quotas. Provide the separate runtime host tree for stale-session reaping.
-  Own both by uid and gid 65532: user-namespaced pods mount them idmapped. Not
-  yet verified on a real node.
+- Provide the `hostPaths.sessionVolumeRoot` directory on a filesystem
+  configured for project quotas. Leave that directory itself unprojected; put
+  the project quota on `<sessionVolumeRoot>/volumes`. Own both by uid and gid
+  65532. Provide the separate runtime host tree for stale-session reaping,
+  also owned by uid and gid 65532. User-namespaced pods mount both trees
+  idmapped. Not yet verified on a real node.
 
 Metrics: set `OTEL_EXPORTER_OTLP_ENDPOINT` to push them. The Runner serves no
 scrape endpoint.
