@@ -16,6 +16,7 @@ import (
 	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/bodydeadline"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -95,7 +96,7 @@ type bearerAuth struct {
 	resolve TokenResolver
 }
 
-// interceptor authenticates every RunnerService call before it reaches its handler.
+// interceptor authenticates every RunnerService call before releasing its body deadline.
 func (b *bearerAuth) interceptor() connect.ServerInterceptor {
 	return func(next connect.ServerFunc) connect.ServerFunc {
 		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
@@ -107,6 +108,7 @@ func (b *bearerAuth) interceptor() connect.ServerInterceptor {
 			if err != nil {
 				return err
 			}
+			bodydeadline.Release(authed)
 			return next(authed, spec, stream)
 		}
 	}

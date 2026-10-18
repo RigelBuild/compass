@@ -20,11 +20,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect/v2"
 
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/bodydeadline"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -163,6 +165,58 @@ func TestAuthenticateAcceptsRunnerTokenAndSetsSubject(t *testing.T) {
 	if got != want {
 		t.Fatalf("context subject = %+v, want %+v", got, want)
 	}
+}
+
+// TestInterceptorReleasesBodyDeadlineOnlyAfterAuthentication checks release ordering.
+func TestInterceptorReleasesBodyDeadlineOnlyAfterAuthentication(t *testing.T) {
+	want := store.Subject{Kind: store.SubjectRunner, ID: "runner-7"}
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{"good-tok": {subj: want}}}
+	interceptor := (&bearerAuth{resolve: resolver.resolve}).interceptor()
+
+	t.Run("successful authentication", func(t *testing.T) {
+		var releases atomic.Int32
+		ctx := bodydeadline.WithRelease(t.Context(), func(context.Context) { releases.Add(1) })
+		server := connect.NewServer(interceptor)
+		server.Register(connect.Method{
+			Spec: connect.Spec{Procedure: "/compass.v1.RunnerService/Enroll", StreamType: connect.StreamTypeUnary},
+			Handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+				if got := releases.Load(); got != 1 {
+					t.Fatalf("release calls before handler = %d, want 1", got)
+				}
+				return nil
+			},
+		})
+		var info connect.CallInfo
+		info.RequestHeader().Set("Authorization", "Bearer good-tok")
+		if err := server.Call(ctx, "/compass.v1.RunnerService/Enroll", &info, nil); err != nil {
+			t.Fatalf("authenticated Enroll = %v, want nil", err)
+		}
+		if got := releases.Load(); got != 1 {
+			t.Fatalf("release calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("failed authentication", func(t *testing.T) {
+		var releases atomic.Int32
+		ctx := bodydeadline.WithRelease(t.Context(), func(context.Context) { releases.Add(1) })
+		server := connect.NewServer(interceptor)
+		server.Register(connect.Method{
+			Spec: connect.Spec{Procedure: "/compass.v1.RunnerService/Enroll", StreamType: connect.StreamTypeUnary},
+			Handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+				t.Fatal("handler ran despite failed authentication")
+				return nil
+			},
+		})
+		var info connect.CallInfo
+		info.RequestHeader().Set("Authorization", "Bearer unknown-tok")
+		err := server.Call(ctx, "/compass.v1.RunnerService/Enroll", &info, nil)
+		if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
+			t.Fatalf("failed auth code = %v, want Unauthenticated", got)
+		}
+		if got := releases.Load(); got != 0 {
+			t.Fatalf("release calls = %d, want 0", got)
+		}
+	})
 }
 
 // End-to-end over the mounted door: an account token is rejected Unauthenticated
