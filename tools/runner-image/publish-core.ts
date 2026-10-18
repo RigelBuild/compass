@@ -117,7 +117,8 @@ export function tagArgs(
 	return [
 		"copy",
 		"--preserve-digests",
-		"--authfile",
+		"--src-no-creds",
+		"--dest-authfile",
 		authFile,
 		`docker://${digestRef(repo, digest)}`,
 		`docker://${buildTag(repo, sha12)}`,

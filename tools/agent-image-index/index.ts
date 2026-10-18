@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 
 export type CommandResult = {
 	exitCode: number;
@@ -134,12 +135,12 @@ function requireExpectedPlatforms(index: ImageIndex, prefix: string): void {
 	}
 }
 
-function inspectCommand(
-	authFile: string,
-	tag: string,
-	...args: string[]
-): string[] {
-	return ["skopeo", "inspect", ...args, "--authfile", authFile, tag];
+function inspectCommand(tag: string, ...args: string[]): string[] {
+	return ["skopeo", "inspect", ...args, "--no-creds", tag];
+}
+
+function destinationProbeCommand(authFile: string, tag: string): string[] {
+	return ["skopeo", "inspect", "--raw", "--authfile", authFile, tag];
 }
 
 function isManifestUnknown(message: string): boolean {
@@ -147,23 +148,16 @@ function isManifestUnknown(message: string): boolean {
 }
 
 async function resolveArchDigests(
-	authFile: string,
 	run: CommandRunner,
 	sha12: string,
 ): Promise<[string, string]> {
 	const amd64Tag = `${IMAGE_REF}:git-${sha12}-amd64`;
 	const arm64Tag = `${IMAGE_REF}:git-${sha12}-arm64`;
 	const amd64Digest = (
-		await runChecked(
-			run,
-			inspectCommand(authFile, amd64Tag, "--format", "{{.Digest}}"),
-		)
+		await runChecked(run, inspectCommand(amd64Tag, "--format", "{{.Digest}}"))
 	).trim();
 	const arm64Digest = (
-		await runChecked(
-			run,
-			inspectCommand(authFile, arm64Tag, "--format", "{{.Digest}}"),
-		)
+		await runChecked(run, inspectCommand(arm64Tag, "--format", "{{.Digest}}"))
 	).trim();
 	for (const digest of [amd64Digest, arm64Digest]) {
 		requireDigest(digest, "invalid per-arch manifest digest");
@@ -179,6 +173,8 @@ async function composeLocalIndex(
 	run: CommandRunner,
 ): Promise<{ localList: string; localDigest: string }> {
 	const localList = `${LOCAL_INDEX}:${sha12}`;
+	const anonymousAuthFile = `${runnerTemp}/anonymous-auth.json`;
+	writeFileSync(anonymousAuthFile, "{}");
 	await runChecked(run, ["podman", "manifest", "create", localList]);
 	for (const digest of [amd64Digest, arm64Digest]) {
 		await runChecked(run, [
@@ -186,7 +182,7 @@ async function composeLocalIndex(
 			"manifest",
 			"add",
 			"--authfile",
-			authFile,
+			anonymousAuthFile,
 			localList,
 			`${IMAGE_REF}@${digest}`,
 		]);
@@ -213,6 +209,8 @@ async function composeLocalIndex(
 		"oci",
 		"--digestfile",
 		digestFile,
+		"--authfile",
+		authFile,
 		localList,
 		`oci:${runnerTemp}/local-index:index`,
 	]);
@@ -229,7 +227,7 @@ async function guardImmutableTag(
 	run: CommandRunner,
 ): Promise<PublishResult> {
 	const tag = `${IMAGE_REF}:git-${sha12}`;
-	const result = await run(inspectCommand(authFile, tag, "--raw"));
+	const result = await run(destinationProbeCommand(authFile, tag));
 	const output: PublishResult = {
 		stdout: [],
 		stderr: result.stderr.trimEnd() ? [result.stderr.trimEnd()] : [],
@@ -265,7 +263,6 @@ async function guardImmutableTag(
 
 async function findNewerIndex(
 	sha: string,
-	authFile: string,
 	run: CommandRunner,
 ): Promise<string> {
 	const ancestor = await run([
@@ -290,7 +287,7 @@ async function findNewerIndex(
 		if (!commit) continue;
 		const newerSha12 = commit.slice(0, 12);
 		const probe = await run(
-			inspectCommand(authFile, `${IMAGE_REF}:git-${newerSha12}`, "--raw"),
+			inspectCommand(`${IMAGE_REF}:git-${newerSha12}`, "--raw"),
 		);
 		if (probe.exitCode === 0) return newerSha12;
 		if (!isManifestUnknown(probe.stderr)) {
@@ -303,13 +300,12 @@ async function findNewerIndex(
 }
 
 async function verifyMemberConfig(
-	authFile: string,
 	member: IndexMember,
 	run: CommandRunner,
 ): Promise<void> {
 	const configRaw = await runChecked(
 		run,
-		inspectCommand(authFile, `${IMAGE_REF}@${member.digest}`, "--config"),
+		inspectCommand(`${IMAGE_REF}@${member.digest}`, "--config"),
 	);
 	let config: unknown;
 	try {
@@ -336,7 +332,6 @@ async function verifyMemberConfig(
 }
 
 async function verifyPublishedIndex(
-	authFile: string,
 	sha12: string,
 	localDigest: string,
 	archDigests: [string, string],
@@ -344,7 +339,7 @@ async function verifyPublishedIndex(
 ): Promise<{ gitDigest: string; index: ImageIndex }> {
 	const gitRaw = await runChecked(
 		run,
-		inspectCommand(authFile, `${IMAGE_REF}:git-${sha12}`, "--raw"),
+		inspectCommand(`${IMAGE_REF}:git-${sha12}`, "--raw"),
 	);
 	const gitDigest = sha256(gitRaw);
 	if (gitDigest !== localDigest) {
@@ -370,13 +365,12 @@ async function verifyPublishedIndex(
 		);
 	}
 	for (const member of index.manifests) {
-		await verifyMemberConfig(authFile, member, run);
+		await verifyMemberConfig(member, run);
 	}
 	return { gitDigest, index };
 }
 
 async function verifyLatest(
-	authFile: string,
 	sha12: string,
 	newerIndex: string,
 	gitDigest: string,
@@ -387,13 +381,13 @@ async function verifyLatest(
 	if (newerIndex) {
 		const newerRaw = await runChecked(
 			run,
-			inspectCommand(authFile, `${IMAGE_REF}:${expectedTag}`, "--raw"),
+			inspectCommand(`${IMAGE_REF}:${expectedTag}`, "--raw"),
 		);
 		expectedDigest = sha256(newerRaw);
 	}
 	const latestRaw = await runChecked(
 		run,
-		inspectCommand(authFile, `${IMAGE_REF}:latest`, "--raw"),
+		inspectCommand(`${IMAGE_REF}:latest`, "--raw"),
 	);
 	const latestDigest = sha256(latestRaw);
 	if (latestDigest !== expectedDigest) {
@@ -413,7 +407,7 @@ export async function publishImageIndex(
 	const sha12 = sha.slice(0, 12);
 	const result: PublishResult = { stdout: [], stderr: [] };
 	try {
-		const archDigests = await resolveArchDigests(authFile, run, sha12);
+		const archDigests = await resolveArchDigests(run, sha12);
 		const { localList, localDigest } = await composeLocalIndex(
 			authFile,
 			runnerTemp,
@@ -430,7 +424,7 @@ export async function publishImageIndex(
 		);
 		result.stdout.push(...guarded.stdout);
 		result.stderr.push(...guarded.stderr);
-		const newerIndex = await findNewerIndex(sha, authFile, run);
+		const newerIndex = await findNewerIndex(sha, run);
 		if (!newerIndex) {
 			await runChecked(run, [
 				"podman",
@@ -449,19 +443,12 @@ export async function publishImageIndex(
 			);
 		}
 		const { gitDigest } = await verifyPublishedIndex(
-			authFile,
 			sha12,
 			localDigest,
 			archDigests,
 			run,
 		);
-		const expectedTag = await verifyLatest(
-			authFile,
-			sha12,
-			newerIndex,
-			gitDigest,
-			run,
-		);
+		const expectedTag = await verifyLatest(sha12, newerIndex, gitDigest, run);
 		result.stdout.push(
 			`verified OCI index ${gitDigest}: ${EXPECTED_PLATFORMS}; :latest matches :${expectedTag}`,
 		);

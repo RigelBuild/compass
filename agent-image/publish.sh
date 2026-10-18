@@ -175,13 +175,11 @@ for tag in "${TAGS[@]}"; do
 
   log "Copying nix:${SPEC} -> ${dest}"
   # --insecure-policy matches the fork module's own copy invocation.
-  "${SKOPEO[@]}" --insecure-policy copy "nix:$SPEC" "$dest" --authfile "$REGISTRY_AUTH_FILE"
+  "${SKOPEO[@]}" --insecure-policy copy --src-no-creds --dest-authfile "$REGISTRY_AUTH_FILE" "nix:$SPEC" "$dest"
 
-  # Post-copy assert: re-inspect the PUSHED tag and confirm its config digest
-  # equals the local spec's. Upgrades the guarantee from "skopeo exited 0" to
-  # "the artifact I built is the artifact now at that tag", and detects a
-  # racing overwrite in the check-then-copy window.
-  pushed_digest="$("${SKOPEO[@]}" inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$dest" | jq -r .config.digest)"
+  # Post-copy assert: the pushed tag's config digest equals the local spec's,
+  # which also detects a racing overwrite in the check-then-copy window.
+  pushed_digest="$("${SKOPEO[@]}" inspect --raw --no-creds "$dest" | jq -r .config.digest)"
   if [[ "$pushed_digest" != "$LOCAL_DIGEST" ]]; then
     err "post-copy verification failed for ${tag}: pushed ${pushed_digest} != local ${LOCAL_DIGEST}"
     exit 1

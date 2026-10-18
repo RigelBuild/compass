@@ -262,9 +262,49 @@ if [ "$1" = copy ]; then touch "${join(sandbox, "pushed")}"; exit 0; fi`);
 		expect(readFileSync(log, "utf8")).not.toContain("copy");
 	});
 
-	test("threads --authfile to every registry call when the login pinned one", () => {
-		const log = stubSkopeo('echo "manifest unknown" >&2; exit 1');
+	test("threads destination auth to the probe and copy, with an anonymous re-read", () => {
+		dryRun();
+		const index = JSON.parse(
+			readFileSync(join(layoutPath(), "index.json"), "utf8"),
+		);
+		const digest = index.manifests[0].digest.slice("sha256:".length);
+		writeFileSync(
+			join(sandbox, "manifest"),
+			readFileSync(join(layoutPath(), "blobs", "sha256", digest)),
+		);
+		const log = stubSkopeo(`if [ "$1" = inspect ]; then
+	  if [[ " $* " == *" --no-creds "* ]]; then cat "${join(sandbox, "manifest")}"; exit 0; fi
+	  if [[ " $* " == *" --authfile "* ]]; then echo "manifest unknown" >&2; exit 1; fi
+	  echo "403 Forbidden" >&2; exit 1
+	fi
+	if [ "$1" = copy ]; then touch "${join(sandbox, "pushed")}"; exit 0; fi`);
 		publish({ REGISTRY_AUTH_FILE: "/tmp/creds.json" });
-		expect(readFileSync(log, "utf8")).toContain("--authfile /tmp/creds.json");
+		const calls = readFileSync(log, "utf8").trim().split("\n");
+		expect(calls[0]).toBe(
+			`inspect --authfile /tmp/creds.json --raw docker://${REPO}:git-${SHA}`,
+		);
+		expect(calls[1]).toContain(
+			"copy --src-no-creds --dest-authfile /tmp/creds.json",
+		);
+		expect(calls[2]).toContain(
+			`inspect --no-creds --raw docker://${REPO}:git-${SHA}`,
+		);
+	});
+
+	test("an anonymous 403 does not hide a missing destination tag", () => {
+		const log = stubSkopeo(`if [ "$1" = inspect ]; then
+	  if [[ " $* " == *" --no-creds "* ]]; then cat "${join(sandbox, "manifest")}"; exit 0; fi
+	  if [[ " $* " == *" --authfile "* ]]; then echo "manifest unknown" >&2; exit 1; fi
+	  echo "403 Forbidden" >&2; exit 1
+	fi
+	if [ "$1" = copy ]; then
+	  digest=$(jq -r '.manifests[0].digest | split(":")[1]' "${join(layoutPath(), "index.json")}")
+	  cat "${join(layoutPath(), "blobs", "sha256")}/$digest" > "${join(sandbox, "manifest")}"
+	  touch "${join(sandbox, "pushed")}"; exit 0
+	fi`);
+		expect(publish({ REGISTRY_AUTH_FILE: "/tmp/creds.json" }).code).toBe(0);
+		expect(readFileSync(log, "utf8")).toContain(
+			"copy --src-no-creds --dest-authfile /tmp/creds.json",
+		);
 	});
 });

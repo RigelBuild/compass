@@ -4,20 +4,21 @@
 // The source is the newest published closure image at or before the release
 // sha (see retag-core.ts for what that does and does not guarantee).
 //
-// Needs `git` (full history), `skopeo`, and the lane's closure-path env var
-// (RUNNER_IMAGE_CLOSURE_PATHS or SERVER_IMAGE_CLOSURE_PATHS). Every call reads
-// REGISTRY_AUTH_FILE (the file `skopeo login` wrote), so private packages work.
+// Needs `git` (full history), `skopeo`, the lane closure-path env var and
+// REGISTRY_AUTH_FILE for destination writes and copies.
 //
 // Usage:
 //   bun tools/runner-image/retag.ts --lane <runner|server> --repo <ghcr.io/owner/name> \
-//     --tag <vX.Y.Z> --release-sha <40-hex sha>
+//     --tag <vX.Y.Z> --release-sha <40-hex sha> (REGISTRY_AUTH_FILE required)
 
 import { appendFileSync } from "node:fs";
 import { imageLaneConfig } from "./image-lane-core.ts";
 import {
 	assertCoherent,
 	assertNoClosureChange,
+	copyArgv,
 	EXIT,
+	inspectArgv,
 	MAX_WALK,
 	manifestIdentity,
 	type ProbeResult,
@@ -77,9 +78,10 @@ async function main(): Promise<number> {
 	const repo = arg("repo");
 	const tag = arg("tag");
 	const releaseSha = arg("release-sha");
-	if (!repo || tag === undefined || releaseSha === undefined) {
+	const authFile = process.env.REGISTRY_AUTH_FILE;
+	if (!repo || tag === undefined || releaseSha === undefined || !authFile) {
 		console.error(
-			"usage: bun tools/runner-image/retag.ts --lane <runner|server> --repo <ghcr.io/owner/name> --tag <vX.Y.Z> --release-sha <sha>",
+			"usage: bun tools/runner-image/retag.ts --lane <runner|server> --repo <ghcr.io/owner/name> --tag <vX.Y.Z> --release-sha <sha> (REGISTRY_AUTH_FILE is required)",
 		);
 		return EXIT.usage;
 	}
@@ -95,8 +97,7 @@ async function main(): Promise<number> {
 	]);
 	const resolved = await resolveAncestor(
 		ancestors.split("\n").filter((line) => line.length > 0),
-		(short) =>
-			run(["skopeo", "inspect", "--raw", `docker://${repo}:git-${short}`]),
+		(short) => run(["skopeo", ...inspectArgv(`${repo}:git-${short}`)]),
 		laneConfig.lane,
 	);
 	const source = manifestIdentity(resolved.raw);
@@ -126,16 +127,9 @@ async function main(): Promise<number> {
 	// Copy BY DIGEST so a re-push of the build tag between the probe and the
 	// copy cannot change the source. --preserve-digests fails the copy rather
 	// than let skopeo rewrite the manifest into different bytes.
-	await skopeo([
-		"copy",
-		"--preserve-digests",
-		`docker://${repo}@${source.manifestDigest}`,
-		`docker://${target}`,
-	]);
+	await skopeo(copyArgv(`${repo}@${source.manifestDigest}`, target, authFile));
 
-	const minted = manifestIdentity(
-		await skopeo(["inspect", "--raw", `docker://${target}`]),
-	);
+	const minted = manifestIdentity(await skopeo(inspectArgv(target)));
 	assertCoherent(source, minted);
 	console.log(
 		`verified: ${target} = ${repo}@${minted.manifestDigest} (from :git-${resolved.sha12})`,

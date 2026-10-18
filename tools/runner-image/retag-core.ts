@@ -9,6 +9,26 @@
 
 import { isImageDigest } from "./publish-core.ts";
 
+export function inspectArgv(ref: string): string[] {
+	return ["inspect", "--no-creds", "--raw", `docker://${ref}`];
+}
+
+export function copyArgv(
+	sourceRef: string,
+	destRef: string,
+	destAuthFile: string,
+): string[] {
+	return [
+		"copy",
+		"--preserve-digests",
+		"--src-no-creds",
+		"--dest-authfile",
+		destAuthFile,
+		`docker://${sourceRef}`,
+		`docker://${destRef}`,
+	];
+}
+
 /** Exit codes, numbered so a failed run names its own fault in CI. 3 means no
  * usable published ancestor exists (see REMEDIATION), 4 is a registry fault
  * to re-run, 5 means the release tag does not carry the source manifest, 6
