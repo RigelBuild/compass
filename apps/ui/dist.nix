@@ -189,7 +189,7 @@ let
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-NdqxiZrQP8E+dB+vqZkcBsZAyDp/JfBJonQi8BgRFP0=";
+    outputHash = "sha256-q+rXlF/fWKOoE1ELw84yw0Y9FjmHDMZp7slPxpmsgT4=";
   };
 
   # The two members' own source. Stated as a DENYLIST, not an allowlist of the

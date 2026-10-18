@@ -28,7 +28,7 @@
 			"@rigelbuild/biome-config": "1.0.1",
 			"@rigelbuild/comment-scan": "1.0.0",
 			"@rigelbuild/length-gate": "1.0.1",
-			"@rigelbuild/ref-gate": "1.0.0",
+			"@rigelbuild/ref-gate": "1.0.1",
 			"@rigelbuild/renovate-preflight": "1.0.0",
 			"@rigelbuild/tsconfig": "1.0.0",
 			"@types/bun": "^1.4.0",
@@ -41,7 +41,7 @@
 		}
 	},
 	"overrides": {
-		"@tanstack/virtual-core": "3.19.0",
+		"@tanstack/virtual-core": "3.19.4",
 		"@tanstack/query-core": "5.104.2",
 		"adm-zip": "0.6.1",
 		"postcss-selector-parser": "7.1.6",
