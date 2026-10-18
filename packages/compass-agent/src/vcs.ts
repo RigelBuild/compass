@@ -168,6 +168,8 @@ async function findWorkspace(
 	if (!workspace) return undefined;
 	const output = await runJj(deps, toolName, [
 		...JJ_FLAGS,
+		// A stale caller checkout must still list workspaces, so update-stale can run.
+		"--ignore-working-copy",
 		"workspace",
 		"list",
 		"-T",
@@ -552,8 +554,7 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 				],
 				deps.cwd,
 			);
-			const rebaseDetails = `${result.stderr}\n${result.stdout}`;
-			if (!/conflict/i.test(rebaseDetails)) failIfJjFailed("vcs_sync", result);
+			failIfJjFailed("vcs_sync", result);
 			const rebased = await runJj(deps, "vcs_sync", argsForLog(own));
 			const conflicts = parseRows(rebased.stdout, "vcs_sync")
 				.filter((row) => row.conflict)

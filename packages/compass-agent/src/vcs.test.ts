@@ -22,6 +22,17 @@ class FakeJj implements JjRunner {
 	}
 }
 
+// A stale caller checkout: listing fails unless it skips the working copy.
+class StaleJj extends FakeJj {
+	override async run(args: readonly string[], cwd: string): Promise<JjResult> {
+		this.calls.push({ args, cwd });
+		if (!args.includes("list")) return ok();
+		return args.includes("--ignore-working-copy")
+			? ok(workspaceList)
+			: failed("Error: The working copy is stale", 1);
+	}
+}
+
 const forge = new ForgeBroker({
 	async forge() {
 		throw new Error("unexpected forge call");
@@ -147,6 +158,7 @@ const logArgs = (revset: string): string[] => [
 ];
 const workspaceListArgs = (): string[] => [
 	...flags,
+	"--ignore-working-copy",
 	"workspace",
 	"list",
 	"-T",
@@ -508,5 +520,31 @@ describe("local VCS tools", () => {
 			call(logArgs(ownRevset)),
 			call(rebaseArgs("trunk()")),
 		]);
+	});
+
+	test("sync fails a nonzero rebase whose output mentions a conflict", async () => {
+		const stack = ownStackRows({ trunk: true, remoteBookmarks: [] });
+		const jj = new FakeJj(
+			ok(),
+			ok(stack),
+			failed("Error: cannot rebase: conflict marker limit exceeded", 1),
+			ok(stack),
+		);
+		const sync = tool(createVcsTools(deps(jj)), "vcs_sync");
+		await expect(exec(sync, { bookmark: "topic" })).rejects.toThrow(
+			"vcs_sync: Error: cannot rebase",
+		);
+	});
+
+	test("update-stale lists workspaces without snapshotting a stale caller", async () => {
+		const jj = new StaleJj();
+		await exec(tool(createVcsTools(deps(jj)), "vcs_workspace"), {
+			action: "update-stale",
+			name: "agent",
+		});
+		expect(jj.calls.at(-1)).toEqual({
+			args: [...flags, "workspace", "update-stale"],
+			cwd: workspaceRoot,
+		});
 	});
 });
