@@ -47,11 +47,8 @@ const appJWTSkew = 60 * time.Second
 // expiry, so an in-flight batch never carries a token that expires mid-fetch.
 const tokenRefreshLead = 5 * time.Minute
 
-// appTokenSource mints GitHub App installation access tokens behind the
-// TokenSource seam: an RS256 App JWT authenticates a POST to the installation
-// access-tokens endpoint, and the returned token is cached until shortly before
-// its expiry. Safe for concurrent use; the mint is singleflighted so N
-// concurrent Token calls trigger at most one HTTP round-trip.
+// appTokenSource mints and caches installation tokens via the TokenSource seam.
+// Singleflight ensures concurrent Token calls make at most one mint request.
 type appTokenSource struct {
 	cfg     GitHubAppConfig
 	client  *http.Client

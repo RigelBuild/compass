@@ -36,28 +36,16 @@ const (
 	// here later is a different key rather than a missed conversion.
 	gqlInputKey = "input"
 
-	// linearStaleStateMarker is the substring Linear's GraphQL error message
-	// carries when a mutation names a workflow state that no longer exists.
-	// It is the ONE HTTP-200 rejection invalidate-and-retry-once can fix, so
-	// TransitionIssueState's retry gate keys on it rather than on any
-	// GraphQL-level rejection.
+	// linearStaleStateMarker identifies the one HTTP-200 mutation rejection a
+	// fresh workflow-state lookup can repair.
 	linearStaleStateMarker = "Entity not found: WorkflowState"
 
-	// workflowStatePageCap bounds the single unpaginated workflowStates query.
-	// 250 is far above any real board (Rigel has eight), so a FULL page is
-	// read as truncation and rejected rather than resolved against: a
-	// truncated list would make a by-name resolve reject a state that really
-	// exists, and could make the default map resolve a candidate that is only
-	// apparently sole — the silent wrong-pick §The cross-provider state model
-	// exists to make structurally impossible.
+	// workflowStatePageCap bounds the unpaginated query. Reject a full page as
+	// truncated; otherwise state resolution may be incomplete.
 	workflowStatePageCap = 250
 
-	// linearBodyLimit is the max issue/comment body size (BYTES) the Service
-	// enforces before a Linear write. Linear does not publish a single pinned
-	// GraphQL body cap, so this is a CONSERVATIVE constant: 65536 bytes matches
-	// GitHub.BodyLimit, keeping the Service's cross-provider ceiling uniform and
-	// comfortably under any Linear description limit observed in practice. See
-	// the T6 summary — value is a choice, not a documented Linear cap.
+	// linearBodyLimit is a conservative byte cap matching GitHub.BodyLimit;
+	// Linear publishes no single pinned GraphQL body limit.
 	linearBodyLimit = 65536
 
 	// attributionUser and attributionIconURL are the ONE shared Compass app
@@ -84,22 +72,14 @@ const (
 	linearTypeUnstarted = "unstarted"
 	linearTypeBacklog   = "backlog"
 
-	// workflowStateTTL bounds how long a team's workflow-state list is reused.
-	// Unlike a team UUID, a workflow state is renamed, reordered and deleted
-	// from the Linear UI, so this cache expires where teamIDs never does. The
-	// TTL is a bound on how stale a resolution may be BEFORE the
-	// invalidate-and-retry-once path recovers it, not the only recovery — so a
-	// few minutes trades a rare extra query against a long staleness window.
+	// workflowStateTTL limits stale resolutions; unlike team IDs, workflow
+	// states can be renamed, reordered, or deleted in the Linear UI.
 	workflowStateTTL = 5 * time.Minute
 )
 
-// linearClosedStateTypes are the Linear workflow-state `type` values that map
-// to the forge's "closed" truth. Every other type maps to "open". Verified
-// against Linear SDL WorkflowState.type: "triage", "backlog", "unstarted",
-// "started", "completed", "canceled", "duplicate". "duplicate" is its own
-// system-managed terminal category (not a member of "completed"), applied when
-// an issue is marked a duplicate; Linear's own Active view is unstarted+started
-// only, so a duplicate is never live work (RIG-3590).
+// linearClosedStateTypes map Linear's completed, canceled, and duplicate
+// types to closed. Duplicate is terminal but distinct from completed;
+// all other workflow-state types map to open.
 var linearClosedStateTypes = []string{"completed", "canceled", "duplicate"}
 
 // LinearConfig configures a Linear client.
@@ -136,12 +116,8 @@ type Linear struct {
 	// teams query and reused for every subsequent CreateIssue.
 	teamIDs map[string]string
 
-	// workflowStates caches a team key -> that team's workflow states, with a
-	// TTL. It is DELIBERATELY separate from teamIDs: a team UUID is immutable,
-	// so teamIDs never invalidates, while a workflow state is renamed,
-	// reordered and deleted from the Linear UI. Reusing the invalidation-free
-	// cache would wedge every later transition to a renamed state until the
-	// process restarts.
+	// workflowStates caches mutable team states separately from immutable
+	// teamIDs, allowing stale state IDs to expire and refresh.
 	workflowStates map[string]workflowStateCacheEntry
 
 	// createdIDs maps "<team>-<number>" -> issue UUID for issues this client
@@ -749,11 +725,8 @@ func (l *Linear) doGraphQL(ctx context.Context, query string, variables map[stri
 	return l.handleResponse(resp, body, out)
 }
 
-// handleResponse classifies a Linear response and, on success, decodes data
-// into out. Precedence: rate limit (HTTP 429 or a RATELIMITED code) -> auth
-// (HTTP 401 or AUTHENTICATION_ERROR code, which invalidates the token) -> any
-// other GraphQL errors (even on HTTP 200) -> a non-2xx with no usable envelope
-// -> success.
+// handleResponse classifies rate limits, auth failures, other GraphQL errors,
+// non-2xx responses, and successful data in that precedence order.
 func (l *Linear) handleResponse(resp *http.Response, body []byte, out any) error {
 	var gr graphQLResponse
 	decodeErr := json.Unmarshal(body, &gr)
@@ -990,24 +963,16 @@ type workflowStateCacheEntry struct {
 	expiresAt time.Time
 }
 
-// workflowStatesQuery is the team workflow-state selection, built once so the
-// page cap has ONE source (workflowStatePageCap) shared by the query and the
-// truncation guard below rather than a literal repeated in both.
-//
-// $team is ID, not String: it lands in an IDComparator (`id: {eq:}`), and Linear
-// rejects a String! variable in that position outright (http 400).
+// workflowStatesQuery uses the shared page cap. $team must be ID because the
+// filter's id comparator rejects a String variable.
 var workflowStatesQuery = fmt.Sprintf(`query CompassTeamWorkflowStates($team: ID!) {
   workflowStates(filter: {team: {id: {eq: $team}}}, first: %d) {
     nodes { id name type }
   }
 }`, workflowStatePageCap)
 
-// workflowStatesFor returns the workflow states of the team keyed by repo, and
-// whether they came from cache (the discriminator TransitionIssueState's
-// retry-once arm keys on — a FRESH list that a mutation still rejects is not a
-// staleness the cache can fix). An expired or absent entry is refetched. The
-// cache is read and written under mu without holding it across the query; a
-// concurrent miss issues a redundant (idempotent) fetch at worst.
+// workflowStatesFor returns the team's state list and whether it was cached.
+// A fresh fetch rejection cannot be repaired by retrying against the cache.
 func (l *Linear) workflowStatesFor(ctx context.Context, repo string) ([]workflowState, bool, error) {
 	l.mu.Lock()
 	entry, ok := l.workflowStates[repo]
@@ -1063,27 +1028,15 @@ func (l *Linear) invalidateWorkflowStates(repo string) {
 	l.mu.Unlock()
 }
 
-// invalidWorkflowState builds the rejection every workflow-state resolution
-// failure returns. The status is 422 because that is the ONE status the
-// Service's flattening maps to an in-band `invalid_argument` carrying the
-// message (server/forge.go mapForgeError) — the code §The cross-provider state
-// model requires for an unknown name, an ambiguous name, a type contradiction
-// and a multi-candidate default. Every message names the team and what the
-// caller must do differently, since the caller cannot see the board.
+// invalidWorkflowState returns 422 so the Service exposes these resolution
+// failures as invalid_argument messages naming the team and required action.
 func invalidWorkflowState(format string, args ...any) error {
 	return &StatusError{Status: http.StatusUnprocessableEntity, Message: fmt.Sprintf(format, args...)}
 }
 
-// resolveWorkflowState picks the target workflow-state id from a team's states,
-// per §The cross-provider state model. It never touches the network, so every
-// rejection lands before the mutation.
-//
-// With in.WorkflowState set it resolves BY NAME: an unknown name, a name
-// matching two states on the one team (Linear does not enforce name uniqueness),
-// and a named state whose type contradicts the portable in.State target are each
-// a rejection, never a guess. With it empty it default-maps to the SOLE state of
-// the target type, and rejects when the team has more than one — naming every
-// candidate, so the caller knows exactly which name to pass.
+// resolveWorkflowState resolves names only when unique and consistent with the
+// requested portable state. Without a name, it requires one default candidate
+// and reports every candidate when ambiguous.
 func resolveWorkflowState(repo string, states []workflowState, in TransitionState) (string, error) {
 	if in.WorkflowState == "" {
 		return defaultWorkflowState(repo, states, in.State)
@@ -1114,15 +1067,9 @@ func resolveWorkflowState(repo string, states []workflowState, in TransitionStat
 	return matches[0].ID, nil
 }
 
-// defaultWorkflowState maps the portable target to the team's sole state of the
-// corresponding type. A close targets `completed` — NEVER `canceled`, the
-// deliberate asymmetry against the read-side fold: an agent closing its issue
-// means "done", and canceled stays reachable only by naming it. An open targets
-// `unstarted`, falling back to `backlog` for a team with no unstarted state.
-//
-// Two or more candidates is a rejection naming every one of them, not a
-// positional guess: silently picking a human-visible board column is the
-// behaviour this rule exists to make structurally impossible.
+// defaultWorkflowState maps close to completed (not canceled); open maps to
+// unstarted, falling back to backlog. Multiple candidates require an explicit
+// name rather than a positional guess.
 func defaultWorkflowState(repo string, states []workflowState, target string) (string, error) {
 	types := []string{linearTypeUnstarted, linearTypeBacklog}
 	if target == stateClosed {
@@ -1154,11 +1101,8 @@ func defaultWorkflowState(repo string, states []workflowState, target string) (s
 		repo, strings.Join(types, " or "), target)
 }
 
-// issueUpdateState runs the issueUpdate mutation moving issueID to stateID and
-// decodes the updated issue through the shared issueFieldsFragment — the same
-// decode every read uses, so the returned truth is shaped identically. No
-// attribution is applied: createAsUser attributes AUTHORSHIP of created content
-// (an issue, a comment), and a transition creates none.
+// issueUpdateState moves an issue and decodes it through the shared fragment.
+// Transitions create no content, so they do not use createAsUser attribution.
 func (l *Linear) issueUpdateState(ctx context.Context, issueID, stateID string) (Issue, error) {
 	const query = `mutation CompassIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) {
@@ -1177,16 +1121,9 @@ func (l *Linear) issueUpdateState(ctx context.Context, issueID, stateID string) 
 	return out.IssueUpdate.Issue.toIssue(), nil
 }
 
-// actorAttribution reports whether writes may set createAsUser, running the
-// capability probe on first call and caching an AUTHORITATIVE result. The probe
-// queries `viewer { id app }`: an actor=app OAuth token authenticates AS the app,
-// so viewer.app is true and viewer.id is the app user that self-delegation needs;
-// a plain user/API-key token reports false. The probe is
-// meant to reflect the token's NATURE, not a transient runtime state — so a
-// probe that ERRORS (network blip, HTTP 5xx, or an already-armed rate gate)
-// degrades THIS write to stamp-only WITHOUT caching, letting a later write
-// re-probe once the transient condition clears; only a clean answer
-// (probeErr == nil) is cached. On the first degrade it emits the named log line.
+// actorAttribution probes whether the token is an app and caches only clean
+// results. Probe errors degrade this write to stamp-only without caching, so a
+// later write can retry after a transient failure.
 func (l *Linear) actorAttribution(ctx context.Context) bool {
 	l.mu.Lock()
 	if l.probeDone {
@@ -1415,11 +1352,8 @@ func (r linearComment) toComment() Comment {
 	return Comment{Key: r.ID, URL: r.URL, Body: r.Body, ForgeAccount: account}
 }
 
-// teamIssueFilter builds the Linear IssueFilter for a team's issues, narrowed by
-// the forge IssueFilter. State maps to the workflow-state type ("open" ->
-// type nin closed, "closed" -> type in closed; "all"/"" -> unfiltered). Labels
-// require ALL given names (GitHub's AND semantics): an `and` of per-label
-// `some` sub-filters.
+// teamIssueFilter applies state and label filters. Labels require all names,
+// matching GitHub's AND semantics.
 func teamIssueFilter(key string, f IssueFilter) map[string]any {
 	filter := map[string]any{
 		varTeam: map[string]any{varKey: map[string]any{"eq": key}},

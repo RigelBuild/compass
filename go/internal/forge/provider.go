@@ -51,19 +51,11 @@ type Issue struct {
 	ForgeAccount string
 	// Labels are the forge label names on the issue.
 	Labels []string
-	// UpdatedAt is the forge's last-updated timestamp for the issue, parsed from
-	// the LIST row's updated_at. PR-C's DL-129 recency guard reads it off this
-	// same fetch (one-fetch-path guarantee); the board sink ignores it.
+	// UpdatedAt is parsed from the issue-list row for the recency guard.
 	UpdatedAt time.Time
 	// IsPullRequest is true for a GitHub pull request returned by /issues.
 	IsPullRequest bool `json:",omitempty"`
-	// Project is the artifact's container project id (Linear issue project;
-	// empty on GitHub, which has no project container). Populated only by the
-	// notify-reader container walk (ListNewArtifacts) so a routed OPENED event
-	// carries ForgeEvent.Project for the container project match (W2). The
-	// omitempty tag keeps it off every read that never sets it (the golden
-	// fixtures + provider reads), the one json tag on this otherwise tag-less
-	// value type.
+	// Project is set by container walks; GitHub has no project container.
 	Project string `json:",omitempty"`
 }
 

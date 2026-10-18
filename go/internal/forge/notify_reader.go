@@ -51,14 +51,9 @@ type NotifyReader interface {
 	// no webhook SHA); a non-empty headSHA (the webhook ChecksRoller path) skips
 	// that fetch.
 	ChecksConditional(ctx context.Context, repo string, number uint64, headSHA, etag string) (ConditionalResult[Checks], error)
-	// ListNewArtifacts reads the container-scope artifacts of kind opened above
-	// sinceNumber, newest-first. Two contract points (design.md:915-928):
-	//  (1) GitHub's /repos/{repo}/issues interleaves PRs with issues (each PR
-	//      row carries a pull_request marker); kind=ISSUE filters them out,
-	//      kind=PULL_REQUEST uses /repos/{repo}/pulls (a different endpoint).
-	//  (2) The ETag conditions page 1 only; on a miss the walk continues until a
-	//      page's OLDEST number is <= sinceNumber, so a >1-page burst is never
-	//      truncated to page 1.
+	// ListNewArtifacts reads newly opened container artifacts in descending order.
+	// Issues and PRs use separate endpoints; page 1 is conditioned, then all pages
+	// are read until the oldest number is at or below sinceNumber.
 	ListNewArtifacts(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, sinceNumber uint64, etag string) (ConditionalResult[[]Issue], error)
 }
 
@@ -98,12 +93,8 @@ var (
 	_ PullRequestResolver = (*GitHub)(nil)
 )
 
-// getJSONCond is the conditional sibling of getJSON: it sends If-None-Match when
-// etag != "", short-circuits a 304 (recording budget, no body parse — a 304 on
-// an authorized request is uncharged, github.go:60-67), and on a 2xx decodes
-// into out and reports the fresh ETag plus whether an RFC-5988 rel="next" Link
-// is present. On error it owns the budget decision via mapErrorResponse (no
-// budget record on error — the ListIssuesPage/getJSON rule).
+// getJSONCond is the conditional sibling of getJSON. It handles 304 without
+// parsing a body and returns the new ETag and next-page indicator on success.
 func (g *GitHub) getJSONCond(ctx context.Context, url, etag string, out any) (notModified bool, newETag string, hasNext bool, err error) {
 	if hint, blocked := g.gateBlocked(resourceCore); blocked {
 		return false, "", false, fmt.Errorf("GET %s: %w", url, &RateLimitError{RetryAfter: hint})
@@ -246,18 +237,9 @@ func (g *GitHub) ChecksConditional(ctx context.Context, repo string, number uint
 	return ConditionalResult[Checks]{V: checks, ETag: newETag}, nil
 }
 
-// pathSafeSegment reports whether s can be interpolated into a request path
-// without changing the path's SHAPE. It rejects the empty string and the three
-// URL-structural delimiters, which do not merely produce a 404: a "?" truncates
-// the path and shifts the remainder into the query string, silently addressing a
-// DIFFERENT endpoint than the caller named (and defeating the "?"-sniffing that
-// picks a page separator), while "/" and "#" re-segment or truncate it.
-//
-// It deliberately does NOT enforce a hex object id. The values are
-// GitHub-authenticated — they arrive on an HMAC-verified webhook — so this is
-// not a trust boundary; the goal is to turn a silently-wrong endpoint into a
-// named failure, and a stricter shape rule would encode a convention the
-// sibling reads in this file do not share.
+// pathSafeSegment rejects empty values and URL delimiters that could change the
+// addressed path. It does not enforce a hex ID: webhook values are authenticated,
+// and sibling reads do not share such a shape constraint.
 func pathSafeSegment(s string) bool {
 	return s != "" && !strings.ContainsAny(s, "?#/")
 }
