@@ -491,31 +491,90 @@ func testFailedReloadTraceparent(t *testing.T, openStream bool) {
 	server := newCapturePublish()
 	h := newTransportFixtureWithEngine(t, server, engine)
 	ctx := t.Context()
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	provisionCtx, provisionSpan := otel.Tracer("runner.provision-test").Start(ctx, "provision")
+	defer provisionSpan.End()
+	if got := otelx.Traceparent(provisionCtx); got == "" {
+		t.Fatal("Provision context has no active span")
+	}
+	name, err := h.Provision(provisionCtx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-traced-reload")
+	sessionID, err := h.Start(provisionCtx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-traced-reload")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
-
-	var publish compassv1internalconnect.AgentGatewayPublishClientStream
-	if openStream {
-		publish = openTelemetryPublisher(t, h, server, name, ctx)
-	}
-
 	engine.mu.Lock()
 	engine.execErr = errors.New("injected start failure")
 	engine.mu.Unlock()
-	frame, wantTraceparent := failReloadWithTraceparent(t, h, server, sessionID, ctx)
+
+	var publish compassv1internalconnect.AgentGatewayPublishClientStream
+	var publishClosed bool
+	var closePublish func()
+	if openStream {
+		publish = openTelemetryPublisher(t, h, server, name, ctx)
+		closePublish = func() {
+			if _, err := publish.CloseAndReceive(); err != nil {
+				t.Errorf("Publish.CloseAndReceive: %v", err)
+			}
+			publishClosed = true
+		}
+		defer func() {
+			if !publishClosed {
+				if _, err := publish.CloseAndReceive(); err != nil {
+					t.Errorf("cleanup Publish.CloseAndReceive: %v", err)
+				}
+			}
+		}()
+	}
+	frame, wantTraceparent := failReloadWithTraceparent(t, h, server, sessionID, ctx, closePublish)
 	if got := frame.GetTraceparent(); got != wantTraceparent {
 		t.Fatalf("ERRORED frame traceparent = %q, want command traceparent %q", got, wantTraceparent)
 	}
-	if openStream {
-		if _, err := publish.CloseAndReceive(); err != nil {
-			t.Fatalf("Publish.CloseAndReceive: %v", err)
+	if got, want := server.streamOpens(), uint64(1); got != want {
+		t.Fatalf("PublishEvents stream opens = %d, want %d", got, want)
+	}
+}
+
+func failReloadWithTraceparent(t *testing.T, h *agentHost, server *capturePublish, sessionID string, ctx context.Context, closePublish func()) (*compassv1internal.PublishEventsRequest, string) {
+	t.Helper()
+	parent := otelx.ContextWithTraceparent(ctx, commandEnvelopeTraceparent)
+	commandCtx, commandSpan := otel.Tracer("runner.reload-test").Start(parent, "reload")
+	wantTraceparent := otelx.Traceparent(commandCtx)
+	if wantTraceparent == commandEnvelopeTraceparent {
+		t.Fatal("Reload command span traceparent = parent traceparent, want the command span id")
+	}
+	if closePublish == nil {
+		err := h.Reload(commandCtx, sessionID)
+		commandSpan.End()
+		if err == nil {
+			t.Fatal("Reload = nil, want injected StartAgent failure")
 		}
+		return assertErroredFrame(t, server, sessionID), wantTraceparent
+	}
+	done := make(chan error, 1)
+	go func() { done <- h.Reload(commandCtx, sessionID) }()
+	select {
+	case frame := <-server.stateFrames:
+		if frame.GetSessionId() != sessionID || frame.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+			closePublish()
+			err := <-done
+			commandSpan.End()
+			t.Fatalf("terminal frame = %v, want ERRORED for %q (Reload = %v)", frame, sessionID, err)
+		}
+		closePublish()
+		err := <-done
+		commandSpan.End()
+		if err == nil {
+			t.Fatal("Reload = nil, want injected StartAgent failure")
+		}
+		return frame, wantTraceparent
+	case <-timeAfter():
+		closePublish()
+		err := <-done
+		commandSpan.End()
+		t.Fatalf("timed out waiting for failed Reload frame; Reload = %v", err)
+		return nil, ""
 	}
 }
 
@@ -540,21 +599,6 @@ func openTelemetryPublisher(t *testing.T, h *agentHost, server *capturePublish, 
 	return publish
 }
 
-func failReloadWithTraceparent(t *testing.T, h *agentHost, server *capturePublish, sessionID string, ctx context.Context) (*compassv1internal.PublishEventsRequest, string) {
-	t.Helper()
-	parent := otelx.ContextWithTraceparent(ctx, commandEnvelopeTraceparent)
-	commandCtx, commandSpan := otel.Tracer("runner.reload-test").Start(parent, "reload")
-	wantTraceparent := otelx.Traceparent(commandCtx)
-	if wantTraceparent == commandEnvelopeTraceparent {
-		t.Fatal("Reload command span traceparent = parent traceparent, want the command span id")
-	}
-	if err := h.Reload(commandCtx, sessionID); err == nil {
-		commandSpan.End()
-		t.Fatal("Reload = nil, want injected StartAgent failure")
-	}
-	commandSpan.End()
-	return assertErroredFrame(t, server, sessionID), wantTraceparent
-}
 func TestReloadStartFailureMarksErroredAndResumeWorks(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stay-up")
 	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nif [ -e '"+marker+"' ]; then exec sleep 120; fi\nexec sleep 120\n")

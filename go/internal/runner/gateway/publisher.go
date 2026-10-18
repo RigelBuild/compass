@@ -87,6 +87,8 @@ func (c *SeqCounter) rollback(seq uint64) {
 // to the Gateway; see its seq field.
 type sessionPublisher struct {
 	sessionID string
+	// traceparent is ctx's trace, read once; empty for the socket-lifetime publisher.
+	traceparent string
 
 	// mu guards this publisher's stream: connect client-streams are not safe for
 	// concurrent Send, and holding it across allocate-and-send makes allocation
@@ -122,18 +124,20 @@ type sessionPublisher struct {
 // reports use a bounded caller ctx. seq is the Gateway counter, carried across
 // publishers so the sequence never restarts.
 func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *SeqCounter) *sessionPublisher {
+	traceparent := otelx.Traceparent(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	stream, err := relay.PublishEvents(ctx)
 	if err != nil {
 		cancel()
 	}
 	return &sessionPublisher{
-		sessionID: sessionID,
-		seq:       seq,
-		ctx:       ctx,
-		cancel:    cancel,
-		stream:    stream,
-		openErr:   relayedError(err),
+		sessionID:   sessionID,
+		traceparent: traceparent,
+		seq:         seq,
+		ctx:         ctx,
+		cancel:      cancel,
+		stream:      stream,
+		openErr:     relayedError(err),
 	}
 }
 
@@ -164,7 +168,7 @@ func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 	if p.afterAdmit != nil {
 		p.afterAdmit(p.ctx)
 	}
-	return p.sendLocked(seq, frame, otelx.Traceparent(p.ctx))
+	return p.sendLocked(seq, frame, p.traceparent)
 }
 
 // forwardState sends a lifecycle state past the publish gate, which is already
