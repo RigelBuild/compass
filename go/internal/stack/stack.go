@@ -738,7 +738,8 @@ func (s *Stack) waitPostgres(ctx context.Context) error {
 	}
 }
 
-// waitCollector polls its health endpoint until ready or timeout; external mode skips the bundled collector gate.
+// waitCollector polls its health endpoint until ready, timeout, or context cancellation.
+// External mode skips the bundled collector gate.
 func (s *Stack) waitCollector(ctx context.Context) error {
 	if s.cfg.ExternalOTLPEndpoint != "" {
 		return nil
@@ -764,7 +765,8 @@ func (s *Stack) waitCollector(ctx context.Context) error {
 	}
 }
 
-// waitNats polls its monitoring endpoint until ready or timeout; external mode skips the bundled NATS gate.
+// waitNats polls its monitoring endpoint until ready, timeout, or context cancellation.
+// External mode skips the bundled NATS gate.
 func (s *Stack) waitNats(ctx context.Context) error {
 	if s.cfg.ExternalNatsURL != "" {
 		return nil

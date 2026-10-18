@@ -411,7 +411,8 @@ func clearLockFile(stateDir string) error {
 	return l.release()
 }
 
-// logSignalMiss: signal delivery errors are benign; per-component confirmation decides teardown and remains operator-visible.
+// logSignalMiss records signal-delivery failures at debug level; confirmation, not delivery,
+// decides teardown.
 func logSignalMiss(ctx context.Context, sig string, e pgidEntry, err error) {
 	slog.DebugContext(ctx, "group signal not delivered (group likely already gone)",
 		"signal", sig, "component", e.Component.String(), "pgid", e.Pgid, "error", err)

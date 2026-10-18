@@ -19,7 +19,7 @@ import (
 )
 
 // The test binary re-executes itself as a deterministic child when STACK_TEST_HELPER is set.
-// TestMain routes that invocation to helperProcess.
+// TestMain dispatches helper invocations by STACK_TEST_HELPER mode.
 const (
 	helperEnvVar   = "STACK_TEST_HELPER"
 	helperEchoKey  = "STACK_TEST_ECHO"

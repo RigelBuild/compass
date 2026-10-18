@@ -66,7 +66,8 @@ type Config struct {
 	GatewayImage string
 	// ExternalGatewayURL opts out of starting the bundled gateway.
 	ExternalGatewayURL string
-	// AgentImage is the container image ref every agent runs; the runner requires it in the local store.
+	// AgentImage is the agent container image; container backends require it in the local store,
+	// while microVM uses the guest rootfs.
 	AgentImage string
 	// RuntimeDir is the base for per-container agent sockets; Validate budgets its length against AF_UNIX sun_path.
 	RuntimeDir string
@@ -74,7 +75,8 @@ type Config struct {
 	Linger bool
 	// AgentModel pins the runner's COMPASS_MODEL; empty leaves model selection to the caller and agent.
 	AgentModel string
-	// EgressAllow is the default-deny container allowlist; empty permits no host access.
+	// EgressAllow is the default-deny container allowlist; empty allows only loopback,
+	// established flows, and resolver DNS on enforcing backends.
 	EgressAllow []string
 	// CheckoutDir is the workspace cwd; the image requires a writable path under HOME.
 	// Empty keeps the runner's non-writable /workspace default.

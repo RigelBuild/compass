@@ -63,7 +63,8 @@ func (e *TokenEnsurer) EnsureToken(ctx context.Context, stateDir, runnerID strin
 	return ensure(ctx, st, stateDir, runnerID)
 }
 
-// ensure reuses a registered token, re-registers one missing from the store, and mints when absent or bound elsewhere.
+// ensure reuses registered or revoked tokens, re-registers a token missing from the store,
+// and mints when absent or bound elsewhere.
 // It commits the token hash only after atomically writing the 0600 file; the returned plaintext is never logged.
 func ensure(ctx context.Context, st tokenStore, stateDir, runnerID string) (string, error) {
 	path := filepath.Join(stateDir, tokenFileName)

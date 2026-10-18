@@ -92,6 +92,7 @@ func natsContainerName(stateDir string) string {
 }
 
 // natsConfigYAML enables the container-local client and monitoring listeners plus persistent JetStream storage.
+// JetStream's 100ms sync_interval is a server-level setting, not a per-stream setting.
 func natsConfigYAML() string {
 	return `host: "0.0.0.0"
 port: ` + NatsContainerClientPort + `

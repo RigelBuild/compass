@@ -70,9 +70,10 @@ type pgidRecord struct {
 	Entries []pgidEntry
 }
 
-// writePgidFile atomically publishes a 0600 text record; each rewrite is a complete prefix of the start sequence.
-// Format v2: a version/writer/boot header followed by tagged proc or ctr entries.
-// V1 entries remain readable as untagged process records; unknown boot IDs disable only the reboot shortcut.
+// writePgidFile atomically publishes a 0600 text record: a version/writer/boot header,
+// then tagged proc or ctr entries. Spawn updates are complete prefixes; partial teardown
+// rewrites contain only survivors. V1 entries read as untagged process records;
+// unknown boot IDs disable only the reboot shortcut.
 func writePgidFile(ctx context.Context, stateDir string, rec pgidRecord) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %d", pgidFileVersion, rec.WriterPid)

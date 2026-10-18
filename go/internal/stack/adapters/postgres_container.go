@@ -120,7 +120,7 @@ func (c *PostgresContainer) Remove(ctx context.Context, name string) error {
 
 // runArgs builds the detached podman command; tests cover its flags without spawning podman.
 // Graceful stop removes the container; replacement clears stale names; keep-id maps the host data owner.
-// Stop timeout exceeds server drain grace, while the socket mounts and POSTGRES_USER match the user-less DSN.
+// Stop timeout matches server drain grace, while the socket mounts and POSTGRES_USER match the user-less DSN.
 // The bootstrap and DSN sockets are listed; the server listens only on sockets.
 func runArgs(spec stack.PostgresContainerSpec, superuser string) []string {
 	pgdata := "/pgdata"

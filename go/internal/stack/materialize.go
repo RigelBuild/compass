@@ -205,8 +205,8 @@ func materializeGuestImage(ctx context.Context, ref string, stateDir string) (Gu
 	return materializeGuestArtifact(ctx, reg, stateDir)
 }
 
-// parseGuestRef is shared by validation and fetching so accepted references cannot fail later during startup.
-// Strict parsing protects the content-addressed path and request path from malformed references.
+// parseGuestRef is shared by validation and fetching, so both enforce the same reference syntax.
+// Strict parsing protects the content-addressed directory and registry request path.
 func parseGuestRef(ref string) (guestRegistry, error) {
 	if ref == "" {
 		return guestRegistry{}, errors.New("guest artifact reference is empty")
