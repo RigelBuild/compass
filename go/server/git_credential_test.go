@@ -104,7 +104,6 @@ type fakeGitCredentialMinter struct {
 	calls           int
 	repos           [][]string
 	owners          []string
-	ownerMintCalls  int
 	perms           []map[string]string
 	mode            []string
 	grantedRepos    []string
@@ -139,9 +138,6 @@ func (m *fakeGitCredentialMinter) Revoke(_ context.Context, token string) error 
 func (m *fakeGitCredentialMinter) mint(ctx context.Context, owner string, repos []string, perms map[string]string, ownerSpecific bool) (forge.ScopedToken, error) {
 	m.mu.Lock()
 	m.calls++
-	if ownerSpecific {
-		m.ownerMintCalls++
-	}
 	m.mode = append(m.mode, map[bool]string{true: "owner", false: "default"}[ownerSpecific])
 	m.owners = append(m.owners, owner)
 	m.repos = append(m.repos, append([]string(nil), repos...))
@@ -374,7 +370,7 @@ func TestGitCredentialBrokerCachesMissingInstallation(t *testing.T) {
 	if got := minter.callCount(); got != 1 {
 		t.Fatalf("owner-specific mint calls = %d, want one negative-cached failure", got)
 	}
-	// An installation added later is retried after the short no-install TTL.
+	// The no-install failure is retried after the short TTL, not five minutes.
 	now = now.Add(gitCredentialNoInstallCache)
 	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
 		t.Fatalf("credential after TTL = (%q, %v), want a retried failure", token, ok)

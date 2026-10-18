@@ -290,6 +290,87 @@ func TestInstallationResolverInstallationListRateLimit(t *testing.T) {
 	}
 }
 
+func TestInstallationResolverFailedRefreshNeverServesExpiredSnapshot(t *testing.T) {
+	var fail atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		if _, err := fmt.Fprint(w, `[{"id":7,"account":{"login":"owner"}}]`); err != nil {
+			t.Errorf("write installation response: %v", err)
+		}
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	clock := &installationTestClock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+		AppID:      1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      clock.Now,
+	})
+	if id, err := resolver.InstallationFor(context.Background(), "owner"); err != nil || id != 7 {
+		t.Fatalf("initial lookup = (%d, %v), want 7", id, err)
+	}
+	fail.Store(true)
+	clock.Add(installationCacheTTL)
+	if _, err := resolver.InstallationFor(context.Background(), "owner"); err == nil {
+		t.Fatal("lookup with failing refresh succeeded, want an error")
+	}
+	clock.Add(time.Second)
+	if _, err := resolver.InstallationFor(context.Background(), "owner"); !errors.Is(err, errInstallationRefreshThrottled) {
+		t.Fatalf("lookup inside retry floor = %v, want errInstallationRefreshThrottled, not the expired snapshot", err)
+	}
+}
+
+func TestInstallationResolverRejectsOversizedPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fmt.Fprint(w, "["+strings.Repeat(" ", installationPageBodyLimit)+"]"); err != nil {
+			t.Errorf("write oversized response: %v", err)
+		}
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+		AppID:      1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+	})
+	if _, err := resolver.InstallationFor(context.Background(), "owner"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("InstallationFor error = %v, want oversized response error", err)
+	}
+}
+
+func TestInstallationResolverClassifiesStatusErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		credentials bool
+	}{
+		{"unauthorized", http.StatusUnauthorized, true},
+		{"forbidden without rate limit", http.StatusForbidden, true},
+		{"server error", http.StatusInternalServerError, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+			key := testAppKey(t)
+			resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+				AppID:      1,
+				PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+			})
+			_, err := resolver.InstallationFor(context.Background(), "owner")
+			if got := errors.Is(err, ErrAppCredentials); got != tc.credentials {
+				t.Fatalf("errors.Is(ErrAppCredentials) = %v for %v, want %v", got, err, tc.credentials)
+			}
+			if statusErr, ok := errors.AsType[*StatusError](err); !ok || statusErr.Status != tc.status {
+				t.Fatalf("StatusError = %v, want status %d", err, tc.status)
+			}
+		})
+	}
+}
+
 func TestInstallationResolverCapsPages(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

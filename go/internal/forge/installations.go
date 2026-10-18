@@ -52,36 +52,23 @@ func NewInstallationResolver(cfg GitHubAppConfig) (*InstallationResolver, error)
 // InstallationFor returns the installation id for owner, matching GitHub logins
 // case-insensitively. Hits are cached for ten minutes; misses refresh every 30s.
 func (r *InstallationResolver) InstallationFor(ctx context.Context, owner string) (int64, error) {
-	if installations, snapshotAt, ok := r.snapshot(); ok {
-		id, found := installations[strings.ToLower(owner)]
-		now := r.source.clock()
-		if found && now.Before(snapshotAt.Add(installationCacheTTL)) {
-			return id, nil
-		}
-		if !found && now.Before(snapshotAt.Add(installationMissRefreshFloor)) {
-			return 0, noInstallation(owner)
-		}
+	key := strings.ToLower(owner)
+	if installations, snapshotAt, ok := r.snapshot(); ok && snapshotFresh(installations, snapshotAt, key, r.source.clock()) {
+		return installationFor(installations, owner)
 	}
 
 	resultCh := r.group.DoChan("installations", func() (any, error) {
-		if installations, snapshotAt, ok := r.snapshot(); ok {
-			now := r.source.clock()
-			_, found := installations[strings.ToLower(owner)]
-			if found && now.Before(snapshotAt.Add(installationCacheTTL)) {
-				return installations, nil
-			} else if !found && now.Before(snapshotAt.Add(installationMissRefreshFloor)) {
-				return installations, nil
-			}
-		}
 		now := r.source.clock()
 		r.mu.Lock()
-		if !r.lastAttemptAt.IsZero() && now.Before(r.lastAttemptAt.Add(installationMissRefreshFloor)) {
-			installations, hasSnapshot := r.installations, r.installations != nil
+		installations, snapshotAt := r.installations, r.snapshotAt
+		if installations != nil && snapshotFresh(installations, snapshotAt, key, now) {
 			r.mu.Unlock()
-			if hasSnapshot {
-				return installations, nil
-			}
-			return nil, errors.New("forge: installation refresh is rate limited by cache")
+			return installations, nil
+		}
+		// A refresh failed within the floor; never answer from an expired snapshot.
+		if !r.lastAttemptAt.IsZero() && now.Before(r.lastAttemptAt.Add(installationMissRefreshFloor)) {
+			r.mu.Unlock()
+			return nil, errInstallationRefreshThrottled
 		}
 		r.lastAttemptAt = now
 		r.mu.Unlock()
@@ -115,6 +102,18 @@ func (r *InstallationResolver) InstallationFor(ctx context.Context, owner string
 		return 0, fmt.Errorf("forge: unexpected installation refresh result %T", result.Val)
 	}
 	return installationFor(installations, owner)
+}
+
+// errInstallationRefreshThrottled reports a lookup inside the retry floor after a failed refresh.
+var errInstallationRefreshThrottled = errors.New("forge: installation refresh failed recently; retry shortly")
+
+// snapshotFresh reports whether the snapshot can answer key: a hit within the
+// TTL, or a miss within the miss-refresh floor.
+func snapshotFresh(installations map[string]int64, snapshotAt time.Time, key string, now time.Time) bool {
+	if _, found := installations[key]; found {
+		return now.Before(snapshotAt.Add(installationCacheTTL))
+	}
+	return now.Before(snapshotAt.Add(installationMissRefreshFloor))
 }
 
 // DefaultInstallation returns the configured default installation id, or 0.
@@ -197,8 +196,14 @@ func (s *appTokenSource) installationPage(ctx context.Context, jwt string, page 
 	return result, hasNextLink(resp.Header.Get("Link")), nil
 }
 
+// installationPageBodyLimit bounds one installation-list page (100 entries is ~50 KiB).
+const installationPageBodyLimit = 1 << 20
+
 func readInstallationResponseBody(resp *http.Response) ([]byte, error) {
-	body, readErr := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, installationPageBodyLimit+1))
+	if readErr == nil && len(body) > installationPageBodyLimit {
+		readErr = fmt.Errorf("response exceeds %d bytes", installationPageBodyLimit)
+	}
 	closeErr := resp.Body.Close()
 	if readErr != nil {
 		wrappedReadErr := fmt.Errorf("forge: read installation list response: %w", readErr)
@@ -217,10 +222,14 @@ func installationResponseError(resp *http.Response, body []byte, now time.Time) 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && !isRateLimited(resp) {
+	rateLimited := isRateLimited(resp)
+	credentialRejected := resp.StatusCode == http.StatusUnauthorized ||
+		(resp.StatusCode == http.StatusForbidden && !rateLimited)
+	if credentialRejected {
 		return fmt.Errorf("forge: list app installations: %w", errors.Join(ErrAppCredentials, &StatusError{Status: resp.StatusCode}))
 	}
-	if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden) && isRateLimited(resp) {
+	rateLimitStatus := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden
+	if rateLimitStatus && rateLimited {
 		var retryAfter time.Duration
 		if reset := rateLimitResetAt(resp, now); !reset.IsZero() {
 			retryAfter = max(reset.Sub(now), 0)
