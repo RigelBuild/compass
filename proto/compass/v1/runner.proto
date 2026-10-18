@@ -489,6 +489,8 @@ message PublishEventsRequest {
   // Server-assigned, not agent-minted (transport-consolidation record,
   // Matt's Option A ruling 2026-07-24).
   string idempotency_key = 4;
+  // W3C trace context for the command that produced this frame, when present.
+  string traceparent = 5;
 }
 
 // PublishEvents ack, returned once when the Runner closes the event stream.

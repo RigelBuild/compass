@@ -397,23 +397,17 @@ func (f *stubStreamingRuntime) createdSpecs() []runtime.WorkloadSpec {
 
 // --- capturing PublishEvents server ------------------------------------------
 
-// capturePublish is a RunnerService handler backing newLink's client. Post-C5
-// nothing publishes agent frames, so its role is inverted: it exists to prove
-// PublishEvents is never used. `opened` counts stream opens — a live publisher
-// opens the stream before it sends anything, so a non-zero count catches a
-// resurrected relay even when no frame has crossed the wire yet.
+// capturePublish captures PublishEvents frames and counts stream opens, including
+// streams that send no frames.
 type capturePublish struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
-	frames chan *compassv1internal.PublishEventsRequest
-	opened atomic.Uint64
-	// secrets is the set FetchSecrets returns (default empty); fetchErr, when
-	// set, is returned instead (e.g. a CodeFailedPrecondition no-secrets-surface
-	// server); fetchReqs records each request so a test can assert the pre-exec
-	// by-container fetch.
-	mu        sync.Mutex
-	secrets   []*compassv1internal.ResolvedSecret
-	fetchErr  error
-	fetchReqs []*compassv1internal.FetchSecretsRequest
+	frames      chan *compassv1internal.PublishEventsRequest
+	stateFrames chan *compassv1internal.PublishEventsRequest
+	opened      atomic.Uint64
+	mu          sync.Mutex
+	secrets     []*compassv1internal.ResolvedSecret
+	fetchErr    error
+	fetchReqs   []*compassv1internal.FetchSecretsRequest
 	// configBundle is the bundle FetchAgentConfig returns (default the empty,
 	// unconfigured-fleet bundle); configErr, when set, is returned instead so a
 	// test can force the config-materialize path to fail.
@@ -432,9 +426,11 @@ type capturePublish struct {
 }
 
 func newCapturePublish() *capturePublish {
-	return &capturePublish{frames: make(chan *compassv1internal.PublishEventsRequest, 64)}
+	return &capturePublish{
+		frames:      make(chan *compassv1internal.PublishEventsRequest, 64),
+		stateFrames: make(chan *compassv1internal.PublishEventsRequest, 1),
+	}
 }
-
 func (c *capturePublish) PublishEvents(_ context.Context, stream compassv1internalconnect.RunnerServicePublishEventsServerStream) (*compassv1internal.PublishEventsResponse, error) {
 	c.opened.Add(1)
 	for {
@@ -446,6 +442,9 @@ func (c *capturePublish) PublishEvents(_ context.Context, stream compassv1intern
 			return nil, err
 		}
 		c.frames <- msg
+		if msg.GetFrame().GetSession() != nil && msg.GetFrame().GetSession().GetState().String() == "AGENT_SESSION_STATE_ERRORED" {
+			c.stateFrames <- msg
+		}
 	}
 	return &compassv1internal.PublishEventsResponse{}, nil
 }

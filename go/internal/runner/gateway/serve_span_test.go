@@ -27,6 +27,9 @@ func TestServeSharedPublisherCarriesNoCallerSpan(t *testing.T) {
 	relay := ctxRecordingRelay{inner: newSpanRelayClient(t), opened: make(chan context.Context, 1)}
 
 	provisionCtx, provision := otel.Tracer("test").Start(t.Context(), "provision")
+	if !trace.SpanContextFromContext(provisionCtx).IsValid() {
+		t.Fatal("Provision context has no active span")
+	}
 	listener, err := Serve(provisionCtx, socketPath(t), "cont-1", Deps{
 		Sessions: staticSessions{sessionID: "sess-1", ok: true},
 		Events:   relay,
@@ -47,5 +50,8 @@ func TestServeSharedPublisherCarriesNoCallerSpan(t *testing.T) {
 	if sc := trace.SpanContextFromContext(opened); sc.IsValid() {
 		t.Fatalf("shared publisher ctx holds span %s, want none (the Provision span %s must not outlive its call)",
 			sc.SpanID(), provision.SpanContext().SpanID())
+	}
+	if got := pub.traceparent; got != "" {
+		t.Fatalf("shared publisher traceparent = %q, want empty after Provision span stripping", got)
 	}
 }
