@@ -7,16 +7,11 @@ import {
 	CLOSURE_TARGETS,
 	REVIEWABLE_CUT_VERIFIED_AT,
 } from "./nix-package-diff.core.ts";
-// The shipped FOD table. Imported (not restated) so the coverage guard at the
-// end of this file re-derives its requirement from the declaration itself.
-// Side-effect-safe: that module does no I/O at import (its main() is behind an
-// `import.meta.main` guard); the only load-time work is a fragment-disjointness
-// assertion over this same table.
+// Import the declared FOD entries so the coverage guard derives requirements
+// from the shipped table instead of duplicating it.
 import { FOD_ENTRIES } from "./refresh-fod-hashes.ts";
 
-// Guard suite for compass's self-hosted Renovate config (RIG-2432). Covers compass's
-// config + ecosystems (bun catalog, devenv-nixpkgs channel, toolchain pins, gomod,
-// GitHub Actions; no rust/pulumi/woodpecker). The .json5 configs load via Bun's loader.
+// Guard Renovate configuration and supported ecosystems using Bun's JSON5 loader.
 
 type PostUpgradeTasks = {
 	commands?: string[];
@@ -236,24 +231,7 @@ const resolveGroupName = (dep: SyntheticDep) =>
 	resolveRuleValue(dep, "groupName");
 
 describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () => {
-	// postUpgradeTasks.commands are gated by the BOT config's global
-	// `allowedCommands` allowlist (a repo config cannot self-authorize a command),
-	// which Renovate matches UNANCHORED via regEx(pattern).test(cmd). So each
-	// entry's `^…$` IS the security property. Compass declares ten DISTINCT
-	// commands across the task sites (the FOD-hash refresh rides SIX sites — see
-	// the per-site enumeration on the count test below — so it appears six times
-	// in the declared list but needs only one allowlist entry; the devenv-fork
-	// relock rides the one devenv-fork rule, which relocks every changed lock); every
-	// distinct command must be permitted, every entry must be used, and no entry may
-	// be an unanchored substring rule. RIG-3100 added the fifth: the go↔go-overlay
-	// lockstep on the go pin's solo branch. RIG-2815 added the sixth: the
-	// devenv-fork relock on the one rule covering both locks. The seventh is the
-	// agent-image devenv-nixpkgs CHANNEL relock — the fourth devenv pin, on its
-	// own solo branch, with its own script because the root channel script's
-	// biome/catalog/bun.lock/flake tail has no counterpart in that scope. The
-	// eighth is the guest-rootfs agent-image relock, which rewrites the pinned
-	// tag, digest, and per-layer fetch keys together. The ninth and tenth are the
-	// Meissa relock (`devenv update meissa`) and biome catalog writer.
+	// Allowlist patterns must be anchored because Renovate tests them against commands.
 	const commands = allDeclaredCommands();
 	const distinctCommands = [...new Set(commands)];
 	const allowed = bot.allowedCommands ?? [];
@@ -263,25 +241,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		expect(allowed).toHaveLength(10);
 	});
 	test("the fod-hash refresh is declared at all six task sites", () => {
-		// The command must ride every task shape that can own a bump able to move a
-		// pinned FOD, because a rule-level task REPLACES the top-level one on its
-		// branch. The six sites, all carrying the refresh:
-		//   1. top-level (branch mode)      — gomod + bun/TypeScript-first branches
-		//   2. devenv-nixpkgs channel rule  — relocks devenv.lock, a declared trigger
-		//   3. devenv fork rule            — relocks both locks, each a declared trigger
-		//   4. go ↔ go-overlay lockstep     — relocks devenv.lock likewise
-		//   5. workspaces.catalog rule     — update mode, eviction-proof
-		//   6. Meissa lockstep             — relocks devenv.lock and may move the
-		//                                    biome pin + bun.lock
-		// Sites 3 and 4 carry it fail-safe: each relocks one non-nixpkgs input, so
-		// neither moves the FOD's bun — but each writes a declared trigger of the
-		// entrypoint.nix entry, so the coupling holds at file granularity and the
-		// refresh's write is a no-op when nothing moved (the gate itself fires on
-		// those branches — the relocked devenv.lock IS the trigger — so the price
-		// is one extra realise, not nothing). The generalized guard at the end of
-		// this file is what keeps that coverage property true for future sites: it
-		// derives from FOD_ENTRIES that any site declaring a trigger must run the
-		// refresh LAST and name the pin's file.
+		// Every task slot that changes an FOD trigger must refresh and commit its pin.
 		expect(commands.filter((c) => c === FOD_COMMAND)).toHaveLength(6);
 		const topLevel = cfg.postUpgradeTasks?.commands ?? [];
 		expect(topLevel).toContain(FOD_COMMAND);
@@ -342,14 +302,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 });
 
 describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
-	// A dep bump moves a pinned Nix fixed-output-derivation hash; left stale the
-	// image build fails `hash mismatch in fixed-output derivation`. refresh-fod-
-	// hashes.ts recomputes it, but Renovate only COMMITS files a task's fileFilters
-	// name — so a task that rewrites a FOD file without listing it silently drops
-	// the fix and the bump PR still goes red. This describe pins the two
-	// eviction-critical sites named below site-by-site; the generalized guard at
-	// the end of this file covers the property across EVERY task site, present and
-	// future, deriving what each must declare from FOD_ENTRIES itself.
+	// Renovate commits only fileFilters, so include every recomputed FOD pin.
 	const topLevel = cfg.postUpgradeTasks;
 	const catalogRule = cfg.packageRules.find(
 		(r) =>
@@ -362,14 +315,7 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 	});
 
 	test("the top-level task commits ALL THREE Go/bun FOD files (fileFilters cover them)", () => {
-		// gomod branches + bun/npm-first branches inherit this slot; it must be able
-		// to commit the Go vendorHash file, its flake.nix mirror (identical hash,
-		// same buildGoModule proxyVendor set over go/ — refresh-fod-hashes.ts mirrors
-		// the recomputed value into it), and the bun outputHash file. Renovate only
-		// commits files a task's fileFilters names, so a missing flake.nix here would
-		// silently drop the mirror edit → a gomod bump lands with flake.nix's
-		// vendorHash stale and `nix flake check` red (RIG-2852 Gap 1).
-		// A bun-first branch also moves the UI node_modules pin.
+		// Commit Go's vendorHash mirror and the Bun FOD, plus any UI pin a bun bump moves.
 		expect(topLevel?.fileFilters).toContain("apps/ui/dist.nix");
 		expect(topLevel?.fileFilters).toContain("guest-image/default.nix");
 		expect(topLevel?.fileFilters).toContain("flake.nix");
@@ -408,13 +354,7 @@ describe("tools/renovate OSV vuln source honors the disable rules", () => {
 		expect(cfg.osvVulnerabilityAlerts).toBe(true);
 	});
 
-	// INVARIANT: a vuln fix is injected as a packageRule carrying
-	// `force: { ...vulnerabilityAlerts }`, and applyPackageRules clears a prior
-	// skipReason when force.enabled is truthy — which would CANCEL every
-	// `enabled: false` rule (the postgres CI-service pin, the gomod `go`
-	// directive, biome) and re-open the bumps they exist to hold shut. The
-	// default vulnerabilityAlerts object has no `enabled` key, so those disables
-	// hold; assert it is absent (never true).
+	// Renovate's forced alerts can reopen disabled bumps; leave enabled unset.
 	test("does NOT set vulnerabilityAlerts.enabled (would re-open disabled bumps)", () => {
 		expect(cfg.vulnerabilityAlerts?.enabled).toBeUndefined();
 		expect(cfg.vulnerabilityAlerts?.enabled).not.toBe(true);
@@ -553,11 +493,7 @@ describe("tools/renovate root bun catalog manager", () => {
 });
 
 describe("tools/renovate devenv nixpkgs lockstep", () => {
-	// The customManager surfacing devenv.lock's channel rev as a git-refs digest;
-	// find it by the dep it stamps, not index — and NOT by file pattern alone:
-	// the RIG-2815 devenv-FORK managers also pattern-match a devenv lock, so a
-	// `includes("devenv")` finder would be ambiguous (order-dependent) between
-	// three managers over the same two files.
+	// Find the channel manager by depName; fork managers also match these locks.
 	const devenvManager = cfg.customManagers?.find(
 		(m) => m.depNameTemplate === "cachix/devenv-nixpkgs",
 	);
@@ -801,13 +737,7 @@ describe("tools/renovate Meissa lint toolchain lockstep", () => {
 });
 
 describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
-	// Both compass devenv scopes resolve github:RigelBuild/devenv/rigel-release.
-	// Separate regex managers surface each lock's fork rev, while one package
-	// rule groups both updates and relocks every changed scope.
-	//
-	// Found by the dep each stamps, never by index or a bare "devenv" file-pattern
-	// substring (the devenv-nixpkgs channel manager pattern-matches the same root
-	// lock).
+	// Separate managers track both fork locks; one rule relocks each changed scope.
 	const RELOCK = "bun tools/renovate/refresh-devenv-lock.ts";
 	const GROUP = "devenv fork";
 	const forkRule = cfg.packageRules.find((r) => r.groupName === GROUP);
@@ -848,12 +778,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			// Both locks name rigel-release, the tracked branch for this fork.
 			expect(manager?.currentValueTemplate).toBe("rigel-release");
 
-			// The file pattern must be ANCHORED to exactly this lock: a loose
-			// pattern would make the root manager extract from the agent-image lock
-			// too (or vice versa), so each manager remains scoped to one lock.
-			//
-			// Pin the literal first, so a Renovate delimiter-semantics drift fails as
-			// a changed literal, then re-parse it behaviourally below.
+			// Pin the literal before re-parsing it to catch delimiter changes.
 			expect(manager?.managerFilePatterns).toEqual([patternLiteral]);
 			const pattern = manager?.managerFilePatterns?.[0];
 			const delimited = /^\/(.*)\/$/.exec(pattern as string);
@@ -867,14 +792,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		},
 	);
 
-	// The matchString must recover EXACTLY ONE 40-hex rev from the REAL lock, and
-	// it must be the fork's own `nodes.devenv.locked.rev`. The anchor's whole
-	// safety argument is that `"repo": "devenv",` is followed by `"rev"` ONLY in
-	// the `locked` block — the `original` block repeats the repo but is followed
-	// by `"type"` (the input names no ref). Assert the uniqueness against ground
-	// truth so a devenv lock-format change fails HERE rather than silently
-	// binding to the wrong node (or to the `devenv-nixpkgs` node the channel
-	// manager owns).
+	// Require one match for the fork revision, not another node's revision.
 	test.each(forkScopes)(
 		"matchString extracts the fork rev from the real $label lock",
 		({ depName, lock }) => {
@@ -964,14 +882,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		},
 	);
 
-	// M1 (RIG-2815 review): the relock `nix run`s the fork flakeref, and the fork
-	// publishes no binary cache, so every fork rev is a from-source devenv build
-	// before the relock runs — measured minutes, plausibly past Renovate's 15-min
-	// default executionTimeout on a cold 2-vCPU runner. A timeout kills the child,
-	// the relock never runs, and Renovate still commits the regex bump (the exact
-	// half-relock this task exists to prevent). Pin the raised ceiling so a
-	// default change or accidental removal fails HERE, not as a nightly relock
-	// silently timing out. globalOnly, so it lives in bot-config.
+	// Pin a longer timeout so a cold fork build cannot commit before relocking.
 	test("bot-config sets an executionTimeout covering a cold fork build", () => {
 		expect(typeof bot.executionTimeout).toBe("number");
 		// Comfortably above the 15-min default; a cold from-source fork build can
@@ -979,16 +890,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		expect(bot.executionTimeout).toBeGreaterThanOrEqual(30);
 	});
 
-	// M2 (RIG-2815 review): the relock's `nix run` depends on the runner's
-	// nix.conf naming the devenv + cachix substituters and their trusted keys —
-	// the fork's `#devenv` closure is not on cache.nixos.org and nix ignores the
-	// fork flake's own nixConfig non-interactively, so without these caches the
-	// realise cold-compiles the Nix fork from source and can exhaust the runner.
-	// Nothing in refresh-devenv-lock.ts provides them; renovate.yml's
-	// extra_nix_config does. Assert that block still names both caches + keys so
-	// trimming them there (e.g. once the PATH devenv-cli step is retired) fails a
-	// test rather than wedging the nightly relock. Same fail-closed posture as the
-	// self-pin workflow guard below (which already reads renovate.yml).
+	// Nix ignores the fork's nixConfig here; require the workflow's cache settings.
 	test("renovate.yml wires the substituters the relock nix run needs", () => {
 		const workflow = readFileSync(
 			join(repoRoot, ".github", "workflows", "renovate.yml"),
@@ -1033,12 +935,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 });
 
 describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
-	// The fourth devenv pin. The agent-image channel digest had no manager, so it
-	// only advanced when someone relocked by hand. Its manager and rule now give
-	// it a solo-branched, self-relocking shape independent of the fork update.
-	//
-	// Find managers by stamped depName: both the channel and fork managers match
-	// agent-image/devenv.lock, so a file-pattern finder would be order-dependent.
+	// Find the agent-image channel manager by depName; the fork manager shares its lock.
 	const REFRESH = "bun tools/renovate/refresh-agent-image-nixpkgs.ts";
 	const DEP = "cachix/devenv-nixpkgs-agent-image";
 	const LOCK = "agent-image/devenv.lock";
@@ -1074,12 +971,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(re.test(`a/${LOCK}`)).toBe(false); // anchored, no arbitrary prefix
 	});
 
-	// The matchString must recover EXACTLY ONE 40-hex rev from the REAL
-	// agent-image lock, and it must be the OUTER channel rev
-	// (nodes.nixpkgs.locked.rev) — not the inner nixpkgs-src rev the relock
-	// refreshes from it, not the devenv FORK rev the sibling manager owns, and
-	// not the `original` block (which repeats `"repo": "devenv-nixpkgs"` but is
-	// followed by `"ref"`, never `"rev"` — the whole anchor-uniqueness argument).
+	// Extract the outer channel revision, not the nested nixpkgs or fork revisions.
 	test("matchString extracts the channel rev from the real agent-image lock", () => {
 		const lockText = readFileSync(join(repoRoot, LOCK), "utf8");
 		const matchString = manager?.matchStrings?.[0];
@@ -1132,12 +1024,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(rule?.minimumReleaseAge).toBeNull();
 	});
 
-	// Branch-mode task over EXACTLY the two files the script writes. fileFilters
-	// is an INCLUDE allowlist — Renovate commits ONLY listed files — so dropping
-	// entrypoint.nix would run the FOD refresh and silently discard it, shipping
-	// a channel bump whose outputHash never moved (`hash mismatch in
-	// fixed-output derivation` on the image build), and dropping the lock would
-	// discard the relock itself.
+	// Include both the relocked file and the FOD hash in Renovate's allowlist.
 	test("the postUpgradeTask is branch-mode over the lock AND the FOD file", () => {
 		const task = rule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
@@ -1145,11 +1032,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		expect(task?.fileFilters).toEqual([LOCK, "agent-image/entrypoint.nix"]);
 	});
 
-	// A SEPARATE script from the root channel lockstep, deliberately: the root
-	// script's tail (biome eval, catalog pin, bun.lock, flake lockstep) has no
-	// counterpart in this scope. Assert the two rules do NOT share a command, so
-	// a future "simplification" that points this rule at the root script — which
-	// would relock the ROOT lock on an agent-image branch — fails here.
+	// Use this scope's refresher; the root script would relock unrelated files.
 	test("does NOT reuse the root channel refresher", () => {
 		expect(rule?.postUpgradeTasks?.commands).not.toContain(
 			"bun tools/renovate/refresh-devenv-nixpkgs.ts",
@@ -1163,11 +1046,7 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		).toEqual(["^bun tools/renovate/refresh-agent-image-nixpkgs\\.ts$"]);
 	});
 
-	// The two locks must never land in ONE branch, and this digest must never
-	// fold into the TypeScript rollup (which also matches custom.regex) — either
-	// would put two branch-mode tasks on one branch, where Renovate builds only
-	// one and the other pin ships bumped-but-unrelocked. Replay the real
-	// last-match-wins packageRule semantics.
+	// Keep the digest in a solo branch so its relock task has the branch slot.
 	test("the digest resolves to its own solo branch, not the TS rollup", () => {
 		const group = resolveGroupName({
 			manager: "custom.regex",
@@ -1209,25 +1088,8 @@ describe("tools/renovate go ↔ go-overlay lockstep (RIG-3100)", () => {
 		expect(goOverlayRule?.matchDepNames).toContain("go");
 	});
 
-	// Branch-mode task over exactly the two files it writes: devenv.lock (the
-	// `devenv update go-overlay` re-lock) and the bun outputHash pin that re-lock
-	// invalidates by declaration — devenv.lock is a trigger of the entrypoint.nix
-	// FOD entry, so the refresh rides here and its recomputed pin needs a filter
-	// slot to be committed. It must NOT rewrite go.nix (the go manager already
-	// did) nor any other hash pin, so listing anything else — guest-image/
-	// default.nix or flake.nix, whose entry triggers on go/go.mod|go.sum — would be
-	// dead filter surface; listing LESS would silent-drop the re-lock (shipping a
-	// go bump the overlay can't resolve → the exact CI red this task exists to
-	// prevent) or the refreshed pin. fileFilters is an INCLUDE allowlist, so this
-	// pins it. The command order is load-bearing: relock FIRST, so the pin is
-	// realised against the written lock. The failure mode under a REVERSED order
-	// differs here from the devenv-nixpkgs and devenv-fork sites: the go manager's
-	// file scope is /^tools/toolchain/versions/go\.nix$/ (config.json5:319),
-	// which never touches devenv.lock. If refresh ran first, its self-gate would
-	// no-op; only then would `devenv update go-overlay` rewrite the lock. The
-	// bump would ship with a stale pin. Hence the literal command-order pin below.
-	// …and it is a DIFFERENT branch from the root channel pin and the shared
-	// devenv fork group.
+	// Relock before refreshing the FOD pin; only commit the lock and updated pin.
+	// Keep this task separate from the channel and fork groups.
 	test("its group differs from the root channel and devenv fork groups", () => {
 		const task = goOverlayRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
@@ -1241,14 +1103,7 @@ describe("tools/renovate go ↔ go-overlay lockstep (RIG-3100)", () => {
 		]);
 	});
 
-	// Solo-branch safety: the branch-mode task slot is winner-take-all per
-	// branch, so this rule is safe ONLY because the go pin never shares a branch.
-	// The versions/*.nix un-group rule nulls its groupName, so a go bump resolves
-	// to its own solo branch, never the TypeScript rollup — where it would
-	// collide with the top-level branch-mode task. Holds for BOTH minor and major
-	// bumps: the un-group rule has no matchUpdateTypes (fires for every type),
-	// and the go-overlay refresh rule likewise has none, so a major go bump also
-	// solo-branches and gets the overlay refresh on its own single task slot.
+	// Keep Go on a solo branch so it cannot compete for the top-level task slot.
 	test.each(["minor", "major"] as const)(
 		"a go pin %s bump un-groups to its own solo branch (null), not the TS rollup",
 		(updateType) => {
@@ -1363,13 +1218,7 @@ describe("tools/renovate postgres + gomod go disables", () => {
 });
 
 describe("tools/renovate wails/v3 floor cap (RIG-2852, GTK4 migration)", () => {
-	// The GTK4 migration record freezes a "Never v3.1" floor: wails v3.1 removes
-	// the legacy GTK3 build tag, so an auto-opened v3.1 bump before the GTK4 flip
-	// (RIG-2819) is proven would strand the app with no native shell. A gomod
-	// packageRule caps github.com/wailsapp/wails/v3 below v3.1 via a REGEX
-	// allowedVersions (not a semver range — gomod's node-semver ranges exclude a
-	// prerelease at a different major.minor.patch, so `< 3.1.0-0` would wrongly
-	// reject the current v3.0.0 prerelease pin). Find it by behavior, not index.
+	// Keep wails/v3 below 3.1 until GTK4 is proven; v3.1 removes the GTK3 tag.
 	const wailsRule = cfg.packageRules.find(
 		(r) =>
 			r.matchManagers?.includes("gomod") &&
@@ -1388,13 +1237,7 @@ describe("tools/renovate wails/v3 floor cap (RIG-2852, GTK4 migration)", () => {
 	});
 
 	test("the cap admits the LIVE go.mod pin + future v3.0.x, rejects v3.1.x and v4+", () => {
-		// Compile the shipped regex from its /.../ delimiters and replay it. The
-		// load-bearing assertion reads the ACTUAL wails require line from go/go.mod
-		// and asserts the cap admits whatever is pinned — so a future pin/regex
-		// pairing that would open zero PRs (the cap silently rejecting the real pin,
-		// the RIG-1220 freeze shape) fails HERE, tied to ground truth rather than a
-		// hard-coded literal. The boundary cases below then pin the reject edge so a
-		// fat-fingered cap (e.g. `^v?3\.`) that leaked v3.1 also fails.
+		// Admit the live pin and v3.0.x while rejecting v3.1 prereleases and v4+.
 		const allowedVersions = wailsRule?.allowedVersions ?? "";
 		const matcher = new RegExp(allowedVersions.slice(1, -1));
 
@@ -1414,12 +1257,7 @@ describe("tools/renovate wails/v3 floor cap (RIG-2852, GTK4 migration)", () => {
 });
 
 describe("tools/renovate postgres-stack digest manager (RIG-2774, DL-260)", () => {
-	// DefaultPostgresImage (go/internal/stack/postgres_image.go) is a standalone Go
-	// const the native managers can't see; a custom.regex manager surfaces it as a
-	// docker dep so upstream postgres:18 rebuilds (same major, new digest) flow
-	// through a reviewable PR. DL-260 freezes the major at 18, so the paired
-	// packageRule pins allowedVersions to /^18$/ — the digest moves, an 18->19
-	// major never auto-opens. Find both by behavior, not index.
+	// Track the postgres image digest while keeping the allowed major at 18.
 	const pgManager = cfg.customManagers?.find((m) =>
 		m.managerFilePatterns?.some((p) => p.includes("postgres_image")),
 	);
@@ -1475,13 +1313,7 @@ describe("tools/renovate postgres-stack digest manager (RIG-2774, DL-260)", () =
 		expect(versionMatcher.test("19")).toBe(false);
 	});
 
-	// Load-bearing behavioral guard: the CI-service disable fence
-	// (matchDepNames ["postgres"], enabled false) is unscoped by manager/file, so a
-	// `postgres` depName here would inherit the disable and open ZERO PRs. Replay
-	// Renovate's last-match-wins semantics (shared ruleMatches gates) for a
-	// synthetic postgres-stack docker dep and confirm it resolves
-	// ENABLED — this fails closed if the fence (or any future unscoped rule) ever
-	// swallows postgres-stack, silently defeating the automation.
+	// Ensure the unscoped CI postgres disable does not suppress this dependency.
 	const resolveEnabled = (dep: SyntheticDep): boolean => {
 		let enabled = true;
 		for (const rule of cfg.packageRules) {
@@ -1713,54 +1545,10 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 });
 
 describe("tools/renovate FOD trigger coverage (every task site, derived from FOD_ENTRIES)", () => {
-	// THE CLASS THIS GUARDS. A pinned Nix fixed-output-derivation hash content-
-	// addresses a fetched dependency set, so it is invalidated by a change to any
-	// of the manifests refresh-fod-hashes.ts declares as that entry's `triggers`.
-	// A postUpgradeTask that names such a trigger in its fileFilters is declaring
-	// "this task may commit a change to that manifest" — and Renovate commits ONLY
-	// files a task's fileFilters names, so such a task ships the lock change while
-	// the pin beside it still addresses the OLD closure. The image build then fails
-	// `hash mismatch in fixed-output derivation` and the bump PR goes red — the
-	// failure that kept PR #580 red for weeks.
-	//
-	// So the requirement is structural, not per-site: any site that can write a
-	// declared trigger must ALSO run the refresh (to recompute the pin) and name
-	// that entry's FOD file plus every mirrorFile (or Renovate drops the recomputed
-	// pin on the floor — the RIG-2852 Gap 1 silent-drop shape). The refresh
-	// self-gates per entry on TRIGGER CHANGE, and devenv.lock is exactly what
-	// these tasks rewrite — so on those branches the gate FIRES rather than
-	// passing over: firing means writing a deliberately-fake SRI and running a
-	// full `nix build` of the FOD's vehicle, a guaranteed fixed-output cache
-	// miss that forces a networked `bun install`. What is a no-op is the
-	// resulting WRITE (the same SRI), not the work. So covering a site whose
-	// installed tree did not actually move costs one extra realise per
-	// such branch (refresh-fod-hashes.ts:54: "costs at most one extra realise"),
-	// and no site's coverage gap is worth that price.
-	//
-	// The trigger sets are READ from FOD_ENTRIES rather than restated here, so
-	// adding a trigger or a new pinned FOD re-derives the requirement over every
-	// site automatically instead of needing a matching test edit.
-	//
-	// DETECTION BOUNDARY. What this reads is a site's fileFilters — i.e. the files
-	// the TASK declares it may commit. That misses the case where the trigger is
-	// written by Renovate's own manager update rather than by the task, because a
-	// manager's writes are never declared in fileFilters. The live instance is the
-	// guest-image/default.nix vendorHash: its triggers are go/go.mod and go/go.sum,
-	// which the gomod manager writes, so NO site names them and the pair below is
-	// empty for that entry — yet the pin still moves and the top-level task still
-	// has to refresh it. That leg is covered by assertion instead of derivation
-	// (the top-level site is pinned to carry the refresh, and gomod branches fall
-	// to the top-level slot because no rule-level task matches the gomod manager).
-	// A future rule-level task that matched gomod deps would evict that slot and
-	// this guard would NOT flag it; such a rule must carry the refresh, the FOD
-	// file, and its mirrorFiles by hand.
+	// Trigger-writing tasks must refresh and commit the pin; derive coverage from
+	// FOD_ENTRIES. Manager-written triggers need a separate top-level guard.
 
-	// fileFilters entries are GLOB patterns (Renovate matches them as globs, e.g.
-	// "**/*.js"), so coupling must be decided by glob match, not string equality —
-	// otherwise a site that names a trigger under any non-literal spelling is
-	// invisible here and the exact failure class this guard exists to catch ships
-	// silently. Every entry is a literal path today, for which a glob match and an
-	// equality test coincide.
+	// Match Renovate fileFilters as globs so equivalent patterns count.
 	const covers = (filters: string[], path: string): boolean =>
 		filters.some((filter) => new Bun.Glob(filter).match(path));
 
@@ -1792,18 +1580,7 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 	});
 
 	test("the coupled (site, entry) set has its expected shape (guard is not vacuous)", () => {
-		// The guard below iterates `coupled`, so a set that emptied or thinned out
-		// would leave it passing while checking nothing. A bare `> 0` cannot see
-		// the thinning: renaming a single trigger dissolves several pairings while
-		// leaving the count positive.
-		// Pinning the exact count catches a partial trigger rename, or a
-		// fileFilters edit, that dissolves any single pairing. It does NOT check
-		// WHICH sites are coupled — the per-site describes above pin that — only
-		// that the population has not shrunk or grown. A newly coupled site is a
-		// deliberate edit: update this number in the same change.
-		//
-		// 20 = main's 13 plus seven: the entrypoint.nix pin is now one entry per
-		// system, so each of its seven coupled sites gains a second pair.
+		// Pin the coupled set so a renamed trigger or filter cannot empty the guard.
 		expect(coupled.length).toBe(20);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
@@ -1841,15 +1618,7 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 		`recomputed and then silently DROPPED, and the bump lands with ` +
 		`the stale pin exactly as if no refresh ran.`;
 
-	// A command that refreshes the FOD pin IN-PROCESS rather than by shelling
-	// FOD_COMMAND. The guard's job is to ensure a site committing a trigger
-	// recomputes the pin; a script that imports refreshFodEntries and drives the
-	// same table satisfies that as completely as the standalone command, and
-	// adding the command beside it would pay a SECOND faked-pin realise (a full
-	// FOD cache miss plus a networked bun install) to rewrite a value already
-	// correct. Each entry is listed with the call site that makes it true, so this
-	// stays a per-script statement of fact and never a blanket exemption: a script
-	// added here without that call fails the assertion below.
+	// In-process refreshers need no duplicate command; list only actual callers.
 	const IN_PROCESS_REFRESHERS: Record<string, string> = {
 		// refresh-agent-image-nixpkgs.ts: relocks the agent-image channel, then
 		// awaits refreshFodEntries(agentImageFodEntries()).
@@ -1910,13 +1679,7 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 });
 
 describe("tools/renovate guest-rootfs agent-image pin lockstep", () => {
-	// guest-image/agent-oci.lock pins the published compass-agent image the
-	// microVM guest rootfs is built FROM. The lock carries the per-layer
-	// descriptor digests the rootfs's fixed-output fetches key on, which Renovate
-	// cannot compute — so the manager MUST be paired with a relock task, exactly
-	// like the devenv-lock pair and unlike the digest-only postgres pin. These
-	// assertions are what keep that pairing from being trimmed back to a bare
-	// regex bump, which would redden every fetch on every Renovate PR.
+	// Renovate cannot derive layer digests, so image digest bumps need a relock.
 	const DEP = "compass-agent-guest";
 	const RELOCK = "bun tools/guest-image/pin-agent-image.ts --relock";
 	const LOCK = "guest-image/agent-oci.lock";
@@ -1983,12 +1746,7 @@ describe("tools/renovate guest-rootfs agent-image pin lockstep", () => {
 	});
 
 	test("the cooldown is nulled, so an unknown-age digest is not held forever", () => {
-		// nix2container zeroes timestamps for reproducibility, so this image
-		// reports Created: 0001-01-01T00:00:00Z and the repo-wide
-		// minimumReleaseAge + internalChecksFilter:"strict" would keep the digest
-		// permanently `pending` — zero PRs, pin stale forever. Unlike the
-		// postgres pin, which keeps the soak because its registry supplies a
-		// real timestamp.
+		// Reproducible zero timestamps make strict minimumReleaseAge hold this digest forever.
 		expect(rule?.minimumReleaseAge).toBeNull();
 	});
 

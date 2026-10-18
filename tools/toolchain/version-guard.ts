@@ -78,22 +78,9 @@ CANDIDATES.forEach(({ content }, index) => {
 	writeFileSync(path, content);
 });
 
-// The flake half, as ONE nix eval over every candidate: getFlake re-evaluates
-// the whole flake per invocation, which turned a 24-row table into ~6 minutes.
-// Batching pays that cost once. nixpkgs lib comes from THIS repo's flake.lock
-// node, so the gate runs the same lib.strings.trim the real build uses.
-// getFlake on the locked nixpkgs node, not on the repo: the repo form copies
-// the working tree, and a file another gate renames mid-copy fails the eval.
-
-// tryEval catches throw and assert — both of the guard's reject branches — so
-// success=false IS the reject verdict. It does NOT catch readFile I/O/encoding
-// errors, so content nix cannot represent as a string (a NUL byte, UTF-16) is
-// OUTSIDE the comparable domain and aborts the batch into a harness error.
-
-// The devenv lane refuses the same input up front (its NUL check, pinned by
-// version-guard-core.test.ts), so both lanes fail closed on it; it stays out of
-// CANDIDATES only because a row would red the gate with an opaque "could not
-// run" from the flake half's batch.
+// Evaluate all candidates in one flake invocation; getFlake is costly and a
+// copied working tree can race with other gates. tryEval distinguishes rejected
+// inputs, while NUL and invalid encodings remain outside the comparable domain.
 const flakeVerdicts = (): Verdict[] | Error => {
 	// JSON.stringify, not bare interpolation: a path holding a " would break out
 	// of the nix string literal. Nothing can execute either way (nix has no

@@ -4,20 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
 
-// Orchestration harness for tools/renovate/refresh-go-overlay.ts (RIG-3100).
-//
-// The pure transforms (rev/version extraction) are unit-tested in
-// refresh-go-overlay.core.test.ts. This drives the SHIPPED entry point end to
-// end inside a throwaway git repo with stub `devenv`/`nix` on PATH, so the step
-// SEQUENCING is exercised offline + deterministically: self-gate → read target
-// → advance overlay → validate eval. The real nix eval + devenv re-lock run for
-// real against the vendored devenv in the PR's own CI; here they are stubbed so
-// the failure mode under test is the script's own control flow, not the
-// network.
+// Run the shipped refresher offline in a temporary repo to verify step order
+// and fail-closed handling; the real Nix operations run in CI.
 
-// The shipped entry point, invoked as Renovate will: `bun tools/renovate/…ts`,
-// cwd = repo root. Copied into the throwaway repo so the SHIPPED file runs, not
-// a re-implementation.
+// Copy and invoke the shipped entry point from the temporary repo root.
 const SCRIPT_REL = "tools/renovate/refresh-go-overlay.ts";
 const CORE_REL = "tools/renovate/refresh-go-overlay.core.ts";
 const REAL_SCRIPT = join(import.meta.dir, "refresh-go-overlay.ts");
@@ -98,16 +88,8 @@ fi
 exit 0
 `;
 
-// Stub `nix`: intercept `nix eval … -f <gate> langs.go.version` and model the
-// two go-overlay outcomes the script must tell apart. It records its args so a
-// test can assert the SHIPPED script evals the REAL CI target (a typo'd
-// file/attr would otherwise pass green here), then branches on sentinel files:
-//   .force-eval-fail — the PRIMARY RIG-3100 failure: a too-old overlay makes
-//     go-bin.versions.<new> a MISSING attr, so `nix eval` exits non-zero.
-//   .force-resolved  — a partial/wrong advance: the eval SUCCEEDS but yields a
-//     DIFFERENT version, exercising the resolved !== target equality guard.
-// With neither, it reads the version go.nix now pins out of the tree — modelling
-// the real overlay resolving go-bin.versions.<pin> once the input is advanced.
+// Stub nix eval to cover missing-attribute and wrong-version results, while
+// recording the exact target the script validates.
 const STUB_NIX = `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "eval" ]; then
@@ -239,11 +221,7 @@ describe("tools/renovate/refresh-go-overlay.ts coupling (RIG-3100)", () => {
 		expect(res.exitCode).not.toBe(0);
 	});
 
-	// Fail-loud, missing-attr case: the PRIMARY RIG-3100 failure. A still-too-old
-	// overlay makes `go-bin.versions.<new>` a missing attribute, so the CI-path
-	// eval itself exits non-zero — it does NOT fall back to an older release. The
-	// script must propagate that as a non-zero exit, in-branch, instead of red CI
-	// on the PR.
+	// A missing overlay attribute must propagate as a non-zero validation result.
 	test("fails loud (exit≠0) when the validation eval fails (missing overlay attr)", async () => {
 		await Bun.write(join(repo, GO_NIX_REL), goNix(GO_VERSION_BUMP));
 		await Bun.write(join(repo, ".force-eval-fail"), "");

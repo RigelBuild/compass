@@ -1,15 +1,4 @@
-// Unit tests for the inline-sql-gate's pure core + I/O wiring (index.ts).
-//
-// This gate is a CI oracle: it defines whether a pgx call site's SQL argument
-// is banned inline SQL, so this suite defends the machine-readable contract —
-// the across-newline tokenizer (the store's dominant shape puts the literal on
-// the line AFTER the call), multi-line backtick literals, the structural
-// exclusion of non-pgx Exec(ctx, id, spec) calls, and the fail-closed
-// stale-allowlist ratchet.
-//
-// Conventions (mirroring tools/cx-token-gate/index.test.ts):
-// - Literal paths, not values derived from the module constants.
-// - `.snippet` is the trimmed source line, asserted by an identifying substring.
+// Pin newline-spanning SQL detection, pgx receiver scoping, and stale allowlist behavior.
 
 import { describe, expect, test } from "bun:test";
 import {

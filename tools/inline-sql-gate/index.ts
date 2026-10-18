@@ -1,55 +1,6 @@
-// inline-sql-gate — ban inline SQL string literals at pgx call sites (sqlc
-// adoption T1).
-//
-// The rule (design record § "The inline-SQL ban"):
-//
-//   A `.Query(` / `.QueryRow(` / `.Exec(` call carries banned inline SQL in
-//   its SQL slot (the first argument after `ctx`) when EITHER:
-//     (a) that argument is a Go string literal (backtick or double-quoted,
-//         including `+`-concatenated literals), TOKENIZED ACROSS NEWLINES
-//         because the store overwhelmingly puts the literal on the line AFTER
-//         the call, containing a SQL keyword
-//         (SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP) — flagged at ANY
-//         receiver, or
-//     (b) the call's RECEIVER is a pgx pool/tx/conn handle and that argument is
-//         a bare identifier or simple selector (`q`, `ddl`, `m.sql`) — SQL
-//         hoisted into a const/var and passed by name (the `queryAgents` shape).
-//   Banned in go/**/*.go, EXCEPT:
-//     1. go/internal/store/db/** — the sqlc-generated package,
-//     2. **/*_test.go        — tests legitimately poke raw SQL,
-//     3. an explicit, checked-in allowlist of file paths (ALLOWLIST below).
-//
-// The tokenizer is load-bearing. A line-scoped grep would MISS the dominant
-// store shape — `s.pool.Exec(ctx,\n\t"INSERT …")` — where the literal sits on
-// the line after the call.
-//
-// Two guards keep the identifier rule (b) from firing on non-pgx calls. First,
-// it is RECEIVER-SCOPED: only a pgx handle (last receiver segment in
-// {pool, tx, conn, c}) has a SQL slot, so a runtime/compute
-// `r.runtime.Exec(ctx, id, spec)` / `g.client.Exec(ctx, req)` — whose receiver
-// is not a pgx handle — is never a query no matter what its args look like.
-// Second, only the SQL slot (arg after `ctx`) is tested, never the params, and
-// only a bare identifier/selector qualifies (a call/composite/concatenation is
-// not a hoisted-SQL name).
-//
-// The ratchet: the allowlist is seeded to every store file that carries inline
-// SQL today, so the gate is GREEN on current main while banning any NEW inline
-// SQL repo-wide. Each sqlc-migration task (T2..T6) deletes its file's entry;
-// the stale-entry check (fail-closed) then fails the gate if an allowlist entry
-// no longer matches any finding, so a migrated file cannot be left allowlisted.
-//
-// Identifier-passed SQL is GATED (T7): once every store domain migrated, the
-// only remaining identifier-passed sites are the migration runner's
-// `conn.Exec(ctx, ddl)` / `tx.Exec(ctx, m.sql)` in the PERMANENTLY-allowlisted
-// go/internal/store/store.go, so promoting rule (b) leaves the gate green while
-// banning any NEW const-hoisted SQL at a pgx call site.
-//
-// Inputs (env):
-//   GATE_ROOT - directory to scan (default: git toplevel).
-// Exit codes:
-//   0 - no active findings AND no stale allowlist entries
-//   1 - one or more active findings, OR one or more stale allowlist entries
-//   2 - usage / internal error (cannot read the tree)
+// Ban inline SQL at pgx call sites; the tokenizer spans newlines because SQL
+// literals often start on the line after the call.
+// Hoisted identifiers are checked only in pgx SQL slots to avoid unrelated Exec calls.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -458,12 +409,8 @@ export function scanText(file: string, text: string): Finding[] {
 		}
 		if (flagged) continue;
 
-		// Rule (b, T7): SQL hoisted into a const/var and passed by name. Fires
-		// ONLY at a pgx pool/tx/conn receiver — the load-bearing guard against
-		// runtime/compute `r.runtime.Exec(ctx, id, spec)` false positives — and
-		// ONLY on the SQL slot (the arg after ctx), never a param. A bare
-		// identifier/selector (`q`, `ddl`, `m.sql`) there is banned; a call or
-		// composite expression is not a hoisted-SQL name and is left alone.
+		// Check only pgx SQL slots: runtime/compute Exec calls and non-SQL parameters
+		// are outside this rule; bare identifiers/selectors represent hoisted SQL.
 		if (!PGX_RECEIVERS[receiverSegment(text, dot)]) continue;
 		const slot = args[1];
 		if (slot === undefined) continue;

@@ -1,11 +1,4 @@
-// Tests for the pure half of the devenv-CLI source tool (RIG-2546 §T1).
-//
-// The properties under test: the tool is SOURCE-AGNOSTIC (it reads whatever
-// owner/repo/rev the named lock names — cachix upstream or the RigelBuild fork),
-// it FAILS LOUD on any shape drift (missing node, short rev, non-github type)
-// rather than resolving a stale/wrong source, and its dependency-free
-// convention is a CHECKED property, not a comment. The bin-dir shim's
-// single-binary invariant (RD-3) is unit-checked via the pure shimPlan helper.
+// Pin source-agnostic lock parsing, fail-closed validation, and shim planning.
 
 import { describe, expect, test } from "bun:test";
 import { devenvSource, flakeref, parseArgs, shimPlan } from "./core.ts";

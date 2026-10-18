@@ -1,14 +1,5 @@
-// The pure core of the agent-image pin. Every function is a total map over its
-// inputs with no I/O, so pin-core.test.ts can drive each mapping — and each
-// fail-closed edge — without a registry or a subprocess.
-//
-// The guest rootfs derives from a PUBLISHED agent image rather than from the
-// agent's nix expressions, so the lock is the whole provenance story: it names
-// the one repo the rootfs may come from, an immutable per-commit tag, the
-// manifest digest those resolve to, and each layer descriptor digest the
-// fixed-output fetches key on. Provenance is enforced here rather than
-// documented, because a lock that pointed somewhere else would silently make
-// the rootfs unreproducible.
+// The published image is external to the rootfs build, so the lock enforces
+// repository, immutable tag, manifest digest, and layer-digest provenance.
 
 /** Exit codes, numbered so a failed run names its own fault in CI. Distinct
  * codes matter because the recoveries differ: 3 is a bad/hostile pin to

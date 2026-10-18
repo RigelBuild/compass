@@ -1,39 +1,6 @@
-// font-coverage-gate (RIG-3603 T8 precondition) — prove no rendered UI site
-// uses a character absent from the branded font faces.
-//
-// WHY this exists: the e2e chromium env (tools/toolchain/chromium-e2e-env.nix,
-// fontDirs) pins only Space Mono + Departure Mono, with no coverage fallback,
-// so a rendered character the branded faces lack bakes tofu into a visual
-// baseline. This gate keeps that from happening: it parses the real font cmaps
-// and scans the rendered UI source.
-//
-// Body text resolves --rigel-mono (Space Mono); --rigel-display (Departure
-// Mono) is used by exactly one CSS rule. So the effective coverage a rendered
-// character must satisfy is Space Mono's cmap; Departure is loaded, counted,
-// and plausibility-checked too (it proves the format-12 path and guards the
-// future display-face work), but Space Mono is the covered set findings clear.
-//
-// Adoption posture (RIG-3742 / T8): T8 is complete and ERROR is now the
-// default. In WARN it prints findings and exits 0; in ERROR it exits 1 on any
-// finding. Mode is FONT_COVERAGE_GATE=warn|error (default error). Set WARN
-// explicitly when a non-blocking report is needed.
-//
-// KNOWN BLIND SPOTS — the fail-closed T8 gate assumes these stay absent, so
-// widening the gate is cheaper than discovering one after it is enforced:
-//   * Only LITERAL non-ASCII characters/code points are seen. A "\u25b8" escape, a &#9656;
-//     entity, or String.fromCodePoint renders the glyph invisibly to the scan.
-//     The tree writes literal glyphs throughout, which is what makes this safe.
-//   * Only UI_SRC_DIR is scanned; apps/ui/e2e authors baselines too.
-//   * A .ts file containing JSX is parsed as non-JSX, so JSX text in it is not
-//     scanned. The tree keeps JSX in .tsx, which is what makes this safe.
-//
-// Inputs (env):
-//   GATE_ROOT            - directory to scan (default: git toplevel).
-//   FONT_COVERAGE_GATE   - "warn" or "error" (default: error).
-// Exit codes:
-//   0 - no findings, OR findings in WARN mode (printed, non-blocking)
-//   1 - one or more findings in ERROR mode
-//   2 - usage / internal error (font missing, truncated, or implausibly small)
+// Check literal rendered UI characters against the pinned font coverage.
+// CI has no fallback face, so a missing glyph renders tofu.
+// Space Mono covers body text; Departure also exercises format-12 cmap parsing.
 
 import { $ } from "bun";
 import ts from "typescript";

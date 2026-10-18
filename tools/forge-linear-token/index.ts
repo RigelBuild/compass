@@ -1,29 +1,5 @@
-// forge-linear-token — mint the forge live-oracle's Linear credential per CI run
-// (RIG-2423).
-//
-// The oracle's Linear legs authenticate as a Linear OAuth app (actor=app) via
-// the client_credentials grant. Those tokens are valid ~30 days and carry NO
-// refresh token, so a stored token would red the gate every month once it
-// lapsed — a cry-wolf false red on a required check. Instead the two static
-// halves (client id + secret) are custodied as Actions secrets and this helper
-// mints a fresh app-actor token per run, handing it to the suite as the
-// LINEAR_FORGE Actions-step env var the harness already reads.
-//
-// The mint is derived, never stored: the same client_credentials call the
-// platform's linear-auto-done job uses (design record
-// linear-auto-done-auth.md / RIG-1087). client id + secret
-// come from Actions secrets, cross TLS once to Linear's token endpoint, and the
-// minted token is masked out of the logs before it is exported.
-//
-// Inputs (env):
-//   LINEAR_FORGE_CLIENT_ID      - the OAuth app's public Client ID
-//   LINEAR_FORGE_CLIENT_SECRET  - the OAuth app's client secret (Actions secret)
-//   GITHUB_ENV                  - the Actions env file the token is appended to,
-//                                 so subsequent steps read it as LINEAR_FORGE
-// Exit codes:
-//   0 - token minted, masked, and exported as LINEAR_FORGE
-//   1 - a credential was unset, the mint failed, or the env file was unwritable
-
+// Mint a fresh Linear app token for each run; stored tokens expire without a
+// refresh token. Mask the result before exporting it to later workflow steps.
 import { appendFile } from "node:fs/promises";
 
 /** Auth material for the client_credentials grant. Static; no refresh token. */

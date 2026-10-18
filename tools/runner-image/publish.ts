@@ -1,27 +1,8 @@
 #!/usr/bin/env bun
-// Publish an image lane (`--lane runner|server`) by digest: scan the locally
-// built image config for leaked secrets, push it UNTAGGED with rootless
-// BuildKit, assert the digest the registry accepted equals the one the local
-// build produced, and only then tag that digest `:git-<sha12>` with skopeo.
-//
-// WHY A DIGEST AND NOT A TAG. GHCR has no server-side tag immutability, so
-// anyone holding packages:write can re-point a tag at other bytes. The
-// DaemonSet therefore pins `repo@sha256:…`; the `:git-<sha>` tag exists so a
-// human can find the build and so the release re-tag can resolve it.
-//
-// WHY TAG LAST. The release re-tag promotes `:git-<sha12>` to `:vX.Y.Z`. A tag
-// written before the digest check would survive a failed check and be promoted.
-//
-// WHY THIS DELEGATES TO build.ts. buildctl exposes no `push` verb — a push is
-// an EXPORTER on `build` — so publishing runs the same build with
-// `--output push`. Delegating keeps ONE staging implementation: a second copy
-// could drift in the details that make the digest reproducible.
-//
-// Needs `skopeo` on PATH and DOCKER_CONFIG naming the dir whose config.json
-// holds the registry auth (BuildKit reads the same file).
-//
-// Usage:
-//   bun tools/runner-image/publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12>
+// Verify and push the local image by digest, then add its discoverable git tag.
+// GHCR tags are mutable, so tag only after the pushed digest matches the local build.
+// Reuse build.ts staging for digest parity. Requires skopeo and DOCKER_CONFIG.
+// Usage: bun tools/runner-image/publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12>
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -74,12 +55,8 @@ if (!dockerConfig) {
 }
 const authFile = join(dockerConfig, "config.json");
 
-// The local layout the build lane wrote. Scanning the ASSEMBLED config (not the
-// Dockerfile) is what proves what ships, and scanning BEFORE the push matters
-// because deleting a tag from a public registry does not unpublish the bytes.
-// The directory alone is not enough: the build lane creates it before the
-// exporter writes into it, so an interrupted build leaves an empty dir whose
-// index.json read would throw a raw ENOENT instead of naming the fault.
+// Check the assembled OCI config before push; a failed publish cannot unpublish bytes.
+// Require index.json so an interrupted, empty layout gets a clear error.
 if (!existsSync(join(ociDir, "index.json"))) {
 	fail(
 		EXIT.usage,

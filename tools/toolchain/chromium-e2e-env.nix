@@ -1,18 +1,6 @@
-# The out-of-band Chromium for the dev-boot smoke gate (apps/ui:dev-smoke). The
-# gate drives a headless Chromium through Playwright via PLAYWRIGHT_CHROMIUM_PATH.
-#
-# Realized here rather than through gate-tools.nix (mirroring gtk-e2e-env):
-# nixpkgs `chromium` is Linux-only, so it cannot live in devenv.nix's parsed
-# `packages` literal (the parity gate resolves every bare attr on macOS too). It
-# is Linux-guarded in the dev shell and provisioned onto the CI runner from here.
-# Pins nixpkgs to the SAME devenv.lock rev the dev shell resolves.
-#
-# Two outputs, realized with `nix build` (never `nix eval`):
-#   chromium    the nix-wrapped Chromium; the step reads bin/chromium into
-#               PLAYWRIGHT_CHROMIUM_PATH.
-#   fontconfig  a self-contained fontconfig read into E2E_FONTCONFIG_FILE by both
-#               pixel-touching lanes and the Linux dev shell; playwright.config.ts
-#               passes it to Chromium alone as FONTCONFIG_FILE.
+# Provide Linux-only Chromium outside the cross-platform dev-shell package list.
+# Pin nixpkgs to devenv.lock and expose Chromium plus the fontconfig used by
+# screenshot lanes. Realize both outputs with nix build.
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
   node = lock.nodes.${lock.nodes.root.inputs.nixpkgs}.locked;
@@ -36,14 +24,7 @@ in
   # wrapper scripts a symlink-merge would break. ci.yml reads `bin/chromium`.
   chromium = pkgs.chromium;
 
-  # A self-contained fontconfig: the pinned faces + the rasterization parameters.
-  # Both halves are load-bearing. The <dir> list makes the host's fonts invisible
-  # so a box with 800+ families resolves the same faces as a bare runner — format
-  # subdirs, not share/fonts, because bitmap strikes would outsort the scalable
-  # face at some sizes. The <match> block pins hinting/AA, which the font set
-  # alone does not: unset they come from fontconfig's compiled-in defaults, so a
-  # devenv.lock bump moving fontconfig would shift every text baseline with no
-  # declared cause. rgba=none because a diffed screenshot wants grayscale AA.
+  # Pin fonts and rasterization so screenshots do not depend on host defaults.
   fontconfig = pkgs.writeText "compass-visual-gate-fonts.conf" ''
     <?xml version="1.0"?>
     <!DOCTYPE fontconfig SYSTEM "fonts.dtd">

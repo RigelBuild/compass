@@ -1,10 +1,4 @@
-// The pure core of the runner-image build lane (R1). Every function here is a
-// total map over its inputs with no I/O, so build-core.test.ts can drive each
-// mapping — and each fail-closed edge — without nix, buildkit, or a subprocess.
-//
-// The lane's job is to turn realised nix store paths into the two things the
-// container build needs: the set of paths to stage into the build context, and
-// the build-args that bake those absolute paths into the image's env.
+// Pure mappings turn realized store paths into staged paths and build arguments.
 
 /** The fixed build epoch. Nix normalises every store mtime to 1, so using the
  * same value keeps the rewritten layer timestamps equal to what the staged tree
@@ -110,20 +104,10 @@ export function outputSpec(
 	tag: string,
 	ociDir: string,
 ): string {
-	// rewrite-timestamp normalises every layer entry's mtime to SOURCE_DATE_EPOCH.
-	// Without it two builds of a BIT-IDENTICAL staged tree still produce different
-	// layer digests, because BuildKit carries the context's mtimes into the layer
-	// tar. Measured: only the `COPY store` layer differed between runs; with this
-	// set, two builds yield the same manifest digest.
+	// Normalize layer mtimes so identical inputs produce the same manifest digest.
 	const rewrite = "rewrite-timestamp=true";
 	if (mode === "oci") return `type=oci,dest=${ociDir},tar=false,${rewrite}`;
-	// oci-mediatypes is stated rather than inherited. The publish lane gates on
-	// the pushed manifest digest equalling the local layout's, and media-type
-	// strings live INSIDE the manifest — so a Docker-media-type push of
-	// identical blobs would hash differently and red every run. rewrite-timestamp
-	// already forces OCI types today (measured: a push and a layout of the same
-	// context both yielded sha256:e6e98c76…), which makes this belt-and-braces
-	// against that coupling changing, not a behaviour change.
+	// Pin OCI media types so registry and local layout digests match.
 	if (mode === "push") {
 		return `type=image,name=${tag},push=true,push-by-digest=true,oci-mediatypes=true,${rewrite}`;
 	}

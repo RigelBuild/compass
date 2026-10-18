@@ -1,8 +1,4 @@
-// Pure helpers for the compass-app-dev lane — the per-OS go build argv, the
-// gitignored dev-binary and UI-dist paths, the gtk4 nix-closure attrs, and the
-// build/run env overlays. No I/O and no process spawn: unit-tested in
-// dev-core.test.ts, while the spawning edge (nix build + go build + exec) lives
-// in index.ts.
+// Pure build and run helpers; the spawning edge is isolated in index.ts.
 import { join } from "node:path";
 
 /**

@@ -1,14 +1,5 @@
-// Unit tests for the cx-token-gate's pure core + I/O wiring (index.ts).
-//
-// This gate is a CI oracle: it defines whether component/base CSS is accepted
-// against the D2/D9 consumption rule, so this suite defends the machine-readable
-// contract — the four banned categories, the mark allowlist's exact scope, and
-// the WARN-vs-ERROR exit posture.
-//
-// Conventions:
-// - Literal paths, NOT values derived from the module constants (UI_SRC_DIR /
-//   TOKENS_REL): those constants ARE the thing under test.
-// - `.message` is human prose, asserted only by its identifying substring.
+// Pin the gate's categories, mark-file exception, and WARN/ERROR contract.
+// Literal paths keep tests independent of the constants under test.
 
 import { describe, expect, test } from "bun:test";
 import {

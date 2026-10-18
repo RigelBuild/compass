@@ -1,19 +1,7 @@
 #!/usr/bin/env bun
-// release-notes (T2) — the Release body + nix-outputs manifest generator.
-//
-// PURE CORE: `assemble(input)` translates the gathered facts (sha, version,
-// tag, asset list, the GHCR image digest OR null, and the parsed nix path-info
-// identity) into the Release body markdown + the nix-outputs manifest object.
-// It is a pure function: no I/O, no skopeo/nix/git invocation, no clock, no
-// `process`/`env`/`Bun` access. A null image digest is not a failure — it
-// DEGRADES to a recorded-absence line in the body (the image lane is
-// paths-filtered independently and may not have run for a go-only push).
-//
-// THE EDGE: `main()` (guarded by `import.meta.main`) parses argv, gathers the
-// inputs (queries GHCR with the fork skopeo, runs `nix path-info` over the
-// toolchain `langs` set), calls the pure core, and — unless `--dry-run` — writes
-// the body + manifest files. Guarding behind `import.meta.main` lets the test
-// import the pure core without firing the edge.
+// Pure core assembles release text and manifests; a missing image degrades to
+// a recorded-absence line because the image lane may not run for every push.
+// The guarded CLI edge gathers inputs and writes the release artifacts.
 
 import { createHash } from "node:crypto";
 import { $ } from "bun";

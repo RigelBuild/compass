@@ -1,11 +1,5 @@
-// The pure core of an image lane's release step: mint `:vX.Y.Z` by copying an
-// already-published `:git-<sha12>` manifest, never by building. No I/O, so
-// retag-core.test.ts drives every fail-closed edge without a registry.
-//
-// The per-push lane publishes only when a push touches the lane's closure, so
-// the release sha itself often has no image. The tag names the newest published
-// closure image at or before the release sha. The version string stamped into
-// that image may lag the release, because version.txt is outside the closure.
+// Retag the newest published closure image at or before the release sha; its
+// embedded version may lag because version.txt is outside that closure.
 
 import { isImageDigest } from "./publish-core.ts";
 

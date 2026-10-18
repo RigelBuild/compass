@@ -1,14 +1,5 @@
-// Unit tests for the macos-bundle pure core (index.ts).
-//
-// These defend the bundler's pure contract: the Info.plist template carries
-// every required CFBundle key with the passed values (name/executable/
-// identifier), both version keys carry the clean semver (GC4), the package type
-// is APPL, and the arg parser accepts the release-grammar flags (including the
-// repeatable --sidecar) + fails loud on missing/duplicate/unknown input
-// (build.sh sanity posture).
-//
-// Only the PURE core is exercised — the edge (codesign / hdiutil / staging) is
-// import.meta.main-guarded, so importing index.ts never runs it.
+// Pin bundle rendering and argument parsing; the main guard keeps staging and
+// signing effects out of core tests.
 
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";

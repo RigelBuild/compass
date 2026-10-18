@@ -1,10 +1,4 @@
-// Tests for the pure half of the flake nixpkgs-pin parity gate.
-//
-// The property under test throughout is the one the gate exists for: it must be
-// CAPABLE OF FAILING on a genuine skew, and it must never turn "I could not read
-// a rev" into a pass. So the extractor is tested against the real lock shape and
-// against every way a rev can be absent, and the comparator against a match, a
-// mismatch, and each missing side.
+// Pin lock revision extraction and fail-closed comparison for missing or skewed revs.
 
 import { describe, expect, test } from "bun:test";
 import { compareRevs, nixpkgsLockedRev } from "./flake-parity-core.ts";

@@ -1,20 +1,5 @@
-// Renovate postUpgradeTask: finish a devenv-nixpkgs channel bump (RIG-2432).
-// The customManager rewrites only the rev string, leaving devenv.lock and the
-// repo-root flake stale.
-
-// This task, on that branch, makes the PR consistent: 1. self-gate unless
-// devenv.lock differs from base; 2. devenv update nixpkgs re-locks at the new
-// rev; 3. lockstep flake.nix's nixpkgs url + nix flake update, so the
-// flake-parity gate does not red on the skew. The biome catalog pin follows
-// Meissa, not this channel; refresh-biome-catalog.ts runs after this task.
-
-// Design: RigelBuild/docs:docs/designs/compass/repo/compass-renovate-migration.md. Invoked by the
-// devenv-nixpkgs packageRule (config.json5), allowlisted in bot-config.json5.
-// Requires nix + devenv + bun + network on the runner PATH (the workflow
-// provisions nix and the vendored devenv shim; no ambient devenv on compass CI).
-
-// Exit 0 = pin refreshed (or no-op branch); 1 = a step failed — fail loud, never
-// ship a half-refreshed lock/pin set.
+// Relock devenv and the root flake after a channel revision changes; keep the
+// catalog pin with its separate Meissa task. Fail if either lock is stale.
 
 import { readFileSync } from "node:fs";
 import { $ } from "bun";

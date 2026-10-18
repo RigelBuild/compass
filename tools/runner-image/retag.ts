@@ -1,16 +1,8 @@
 #!/usr/bin/env bun
-// Mint an image lane's `:vX.Y.Z` release tag by copying an already-published
-// `:git-<sha12>` manifest: a registry-side write, never a build, never `:latest`.
-// The source is the newest published closure image at or before the release
-// sha (see retag-core.ts for what that does and does not guarantee).
-//
-// Needs `git` (full history), `skopeo`, the lane closure-path env var and
-// REGISTRY_AUTH_FILE for destination writes and copies.
-//
-// Usage:
-//   bun tools/runner-image/retag.ts --lane <runner|server> --repo <ghcr.io/owner/name> \
-//     --tag <vX.Y.Z> --release-sha <40-hex sha> (REGISTRY_AUTH_FILE required)
-
+// Copy the newest published closure image at or before the release sha to its
+// version tag; a registry write, never a build or `:latest`. Requires git, skopeo,
+// the lane closure-path env var, and REGISTRY_AUTH_FILE for writes and copies.
+// Usage: bun tools/runner-image/retag.ts --lane <runner|server> --repo <ghcr.io/owner/name> --tag <vX.Y.Z> --release-sha <40-hex sha>
 import { appendFileSync } from "node:fs";
 import { imageLaneConfig } from "./image-lane-core.ts";
 import {

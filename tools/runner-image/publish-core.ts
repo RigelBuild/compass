@@ -1,11 +1,4 @@
-// The pure core of the runner-image publish lane. Every function is a total map
-// over its inputs with no I/O, so publish-core.test.ts can drive each mapping —
-// and each fail-closed edge — without a registry or a subprocess.
-//
-// The lane publishes the image the build lane produces and reports the RESOLVED
-// DIGEST. GHCR has no server-side tag immutability: anyone holding
-// packages:write can re-push a tag, so a tag is only a build-addressability
-// handle and the deployed contract is `repo@sha256:…`.
+// Publish the built image and return its resolved digest; registry tags are mutable.
 
 /** Exit codes, numbered so a failed run names its own fault in CI. Distinct
  * codes matter because the recoveries differ: 3 is a real secret to rotate,

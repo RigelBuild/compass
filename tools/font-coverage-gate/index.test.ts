@@ -1,13 +1,4 @@
-// Unit tests for the font-coverage-gate's pure core and CLI contract (index.ts).
-//
-// This gate is the oracle that lets RIG-3742 retire the Unifont fallback pin,
-// so this suite defends the machine-readable contract: the cmap parser reads
-// the REAL font faces (format 4 for Space Mono, format 12 for Departure Mono's
-// astral coverage), the source scanner ignores comments/tests but flags
-// rendered characters, and the evaluate/mode cores behave. The font assertions
-// (U+2212 present in Space Mono, U+27E9 absent, U+27E9 present in Departure)
-// are measured facts, not guesses.
-
+// Pin cmap parsing, source scanning, and mode behavior against the real fonts.
 import { describe, expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -61,16 +52,8 @@ describe("cmapCodepoints", () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// cmapCodepoints — hostile cmap ranges (RIG-3742 T8 review finding).
-//
-// A font file is committed DATA and its range bounds are read straight out of
-// it. Structure bounds how many range RECORDS a file can hold, but nothing
-// bounds how wide each one CLAIMS to be — one 12-byte format-12 group saying
-// 0..0xffffffff is 4.29 billion Set inserts out of a font that parses clean.
-// These build such fonts synthetically and prove the parser rejects a
-// pathological range instead of walking it.
-// ---------------------------------------------------------------------------
+// Reject hostile cmap ranges: a compact font record must not cause billions
+// of Set inserts during coverage analysis.
 
 type Range = readonly [start: number, end: number];
 
@@ -226,11 +209,8 @@ describe("cmapCodepoints — hostile cmap ranges", () => {
 	});
 
 	test("the budget is font-wide: duplicated subtables cannot each spend it", () => {
-		// Each subtable is individually in budget (3 and 2 maximal codespaces,
-		// against a 4-codespace ceiling), so this throws ONLY if the budget
-		// spans subtables. A budget reset per subtable would let a font repeat
-		// an in-budget subtable without limit — the cheapest way to restore the
-		// unbounded walk the budget exists to stop.
+		// The expansion budget spans subtables; resetting it per table permits
+		// repeated ranges to restore an unbounded walk.
 		const maximal: Range = [0, 0x10ffff];
 		expect(() =>
 			cmapCodepoints(
@@ -243,19 +223,13 @@ describe("cmapCodepoints — hostile cmap ranges", () => {
 	});
 
 	test("format 12 startGlyphId 0 leaves the group's first codepoint uncovered", () => {
-		// Glyph 0 is .notdef: format 4 already treats it as uncovered, and a
-		// format-12 group's ids ascend from startGlyphId, so a group starting
-		// at 0 maps its FIRST codepoint to .notdef and the rest to real glyphs.
-		// Counting that first codepoint as covered would clear a rendered
-		// character that actually renders tofu — a false green in the gate's
-		// one direction that matters.
+		// Glyph 0 is .notdef, so its codepoint renders tofu and must remain uncovered.
 		const covered = cmapCodepoints(font([format12([[0x2000, 0x2002]], 0)]));
 		expect([...covered].sort((a, b) => a - b)).toEqual([0x2001, 0x2002]);
 	});
 
 	test("the widest legal group (0..U+10FFFF) is still accepted", () => {
-		// The bound is inclusive of U+10FFFF: an off-by-one here would reject a
-		// legitimate pan-Unicode face and fail the gate closed on a good font.
+		// The inclusive Unicode ceiling must remain accepted.
 		expect(cmapCodepoints(font([format12([[0, 0x10ffff]])])).size).toBe(
 			0xffff - 1,
 		);
@@ -436,13 +410,7 @@ describe("resolveMode", () => {
 	);
 });
 
-// ---------------------------------------------------------------------------
-// CLI process contract — the gate as CI actually invokes it.
-//
-// Each case runs the real CLI as a subprocess against an isolated temp root
-// holding one UI source file and copies of the real font faces, so the exit
-// code and the printed report are observed, not inferred from the pure core.
-// ---------------------------------------------------------------------------
+// Exercise the CLI in isolated roots to pin exit codes and reports.
 
 /** Run the CLI over a temp root containing `source` as the only UI file. */
 const runGate = async (
