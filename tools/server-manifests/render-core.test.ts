@@ -37,7 +37,6 @@ const values: ServerDeployValues = {
 	namespace: "compass",
 	serverImage: digest("compass-server"),
 	natsImage: digest("nats"),
-	initImage: digest("busybox"),
 	natsStorage: "8Gi",
 	tlsSecretName: "compass-server-tls",
 	dsnSecretName: "compass-dsn",
@@ -110,8 +109,6 @@ function serializedManifests(manifests: readonly unknown[]): string {
 		.join("\n---\n")}\n`;
 }
 
-const serverValuesWithoutPostgres: ServerDeployValues = structuredClone(values);
-
 describe("renderServerManifests", () => {
 	test("matches the example values golden output", () => {
 		const example: unknown = JSON.parse(
@@ -125,7 +122,7 @@ describe("renderServerManifests", () => {
 		).toBe(expected);
 	});
 
-	test("renders a singleton Recreate deployment and hardened Server pod", () => {
+	test("renders a singleton Recreate deployment without init containers", () => {
 		const manifests = renderServerManifests(values);
 		const deployment = serverDeployment(manifests);
 		const podSpec = object(nested(deployment, "spec", "template", "spec"));
@@ -135,6 +132,7 @@ describe("renderServerManifests", () => {
 				"compass.rigel.build/runner-clusters-checksum"
 			],
 		).toMatch(/^[a-f0-9]{64}$/);
+		expect(nested(deployment, "spec", "replicas")).toBe(1);
 		expect(nested(deployment, "spec", "strategy", "type")).toBe("Recreate");
 		expect(podSpec.securityContext).toEqual({
 			runAsNonRoot: true,
@@ -148,7 +146,7 @@ describe("renderServerManifests", () => {
 			readOnlyRootFilesystem: true,
 			capabilities: { drop: ["ALL"] },
 		});
-		expect(podSpec).toHaveProperty("initContainers");
+		expect(podSpec).not.toHaveProperty("initContainers");
 		expect(server).not.toHaveProperty("livenessProbe");
 		expect(nested(server, "startupProbe", "httpGet")).toEqual({
 			path: "/healthz",
@@ -180,7 +178,6 @@ describe("renderServerManifests", () => {
 			}),
 		).toThrow("same public key");
 	});
-
 	test("rejects unknown root and nested runner-cluster keys with full paths", () => {
 		const cluster = values.runnerClusters[0];
 		if (cluster === undefined) throw new Error("cluster test value missing");
@@ -204,17 +201,6 @@ describe("renderServerManifests", () => {
 				external: { port: 7443, typo: true },
 			}),
 		).toThrow("external.typo: unknown key");
-		expect(() =>
-			parseServerDeployValues({
-				...values,
-				postgres: {
-					image: digest("postgres"),
-					storage: "10Gi",
-					secretName: "pg-secret",
-					typo: true,
-				},
-			}),
-		).toThrow("postgres.typo: unknown key");
 	});
 
 	test("rejects HTTPS URL forms not accepted by Go", () => {
@@ -285,28 +271,9 @@ describe("renderServerManifests", () => {
 		expect(checksum(changedValues)).not.toBe(first);
 	});
 
-	test("copies the init-only admin token into the shared state volume", () => {
+	test("mounts the admin token directly for the Server", () => {
 		const deployment = serverDeployment(renderServerManifests(values));
 		const pod = object(nested(deployment, "spec", "template", "spec"));
-		const initContainers = pod.initContainers;
-		if (!Array.isArray(initContainers))
-			throw new Error("init container missing");
-		const init = object(initContainers[0]);
-		expect(init.image).toBe(values.initImage);
-		expect(init.command).toEqual([
-			"sh",
-			"-c",
-			"mkdir -p /run/compass/bootstrap /run/compass/xdg-state && cp /var/run/compass/admin-token/token /run/compass/bootstrap/admin-token && chmod 0600 /run/compass/bootstrap/admin-token",
-		]);
-		expect(init.securityContext).toEqual({
-			runAsNonRoot: true,
-			runAsUser: 65532,
-			runAsGroup: 65532,
-			allowPrivilegeEscalation: false,
-			readOnlyRootFilesystem: true,
-			capabilities: { drop: ["ALL"] },
-			seccompProfile: { type: "RuntimeDefault" },
-		});
 		const volumes = pod.volumes;
 		if (!Array.isArray(volumes)) throw new Error("pod volumes missing");
 		const token = volumes
@@ -316,17 +283,13 @@ describe("renderServerManifests", () => {
 			name: "admin-token",
 			secret: { secretName: values.adminTokenSecretName, defaultMode: 0o440 },
 		});
-		expect(init.volumeMounts).toEqual([
-			{ name: "compass-run", mountPath: "/run/compass" },
-			{
-				name: "admin-token",
-				mountPath: "/var/run/compass/admin-token",
-				readOnly: true,
-			},
-		]);
-		expect(
-			container(deployment, "compass-server").volumeMounts,
-		).not.toContainEqual(expect.objectContaining({ name: "admin-token" }));
+		const server = container(deployment, "compass-server");
+		expect(server.volumeMounts).toContainEqual({
+			name: "admin-token",
+			mountPath: "/var/run/compass/admin-token",
+			readOnly: true,
+		});
+		expect(server.args).toContain("/var/run/compass/admin-token/token");
 	});
 
 	test("keeps Server state, socket, bootstrap, and XDG state on one child-mounted emptyDir", () => {
@@ -358,7 +321,7 @@ describe("renderServerManifests", () => {
 			"--socket",
 			"/run/compass/state/server.sock",
 			"--admin-token-file",
-			"/run/compass/bootstrap/admin-token",
+			"/var/run/compass/admin-token/token",
 			"--runner-clusters",
 			"/etc/compass/runner-clusters/clusters.yaml",
 			"--secret-provider",
@@ -542,87 +505,29 @@ describe("renderServerManifests", () => {
 		]);
 	});
 
-	test("omits Postgres without values and renders hardened dev Postgres when set", () => {
-		const absent = renderServerManifests(serverValuesWithoutPostgres);
+	test("rejects removed Postgres and initImage values", () => {
+		const manifests = renderServerManifests(values);
 		expect(
-			absent.some(
-				(item) =>
-					["StatefulSet", "Service"].includes(String(object(item).kind)) &&
-					String(nested(item, "metadata", "name")).startsWith(
-						"compass-postgres",
-					),
+			manifests.some((item) =>
+				String(nested(item, "metadata", "name")).startsWith("compass-postgres"),
 			),
 		).toBe(false);
-		const manifests = renderServerManifests({
-			...values,
-			postgres: {
-				image: digest("postgres"),
-				storage: "20Gi",
-				secretName: "compass-postgres",
-			},
-		});
-		const postgres = manifests
-			.map(object)
-			.find(
-				(item) =>
-					item.kind === "StatefulSet" &&
-					object(item.metadata).name === "compass-postgres",
-			);
-		expect(postgres).toBeDefined();
-		const pgContainer = object(
-			(
-				object(nested(postgres, "spec", "template", "spec"))
-					.containers as unknown[]
-			)[0],
-		);
-		expect(pgContainer.env).toEqual(
-			expect.arrayContaining([
-				{ name: "POSTGRES_USER", value: "compass" },
-				{
-					name: "POSTGRES_PASSWORD",
-					valueFrom: {
-						secretKeyRef: { name: "compass-postgres", key: "password" },
-					},
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				postgres: {
+					image: digest("postgres"),
+					storage: "20Gi",
+					secretName: "compass-postgres",
 				},
-				{ name: "POSTGRES_INITDB_ARGS", value: "--auth=scram-sha-256" },
-				{ name: "POSTGRES_HOST_AUTH_METHOD", value: "scram-sha-256" },
-			]),
-		);
-		const policies = manifests.filter(
-			(item) => object(item).kind === "NetworkPolicy",
-		);
-		expect(policies).toHaveLength(2);
-		expect(
-			policies.some(
-				(item) =>
-					object(nested(item, "spec", "podSelector", "matchLabels"))[
-						"app.kubernetes.io/name"
-					] === "compass-postgres",
-			),
-		).toBe(true);
-		const postgresPolicy = policies
-			.map(object)
-			.find(
-				(item) =>
-					object(nested(item, "spec", "podSelector", "matchLabels"))[
-						"app.kubernetes.io/name"
-					] === "compass-postgres",
-			);
-		expect(nested(postgresPolicy, "spec", "ingress")).toEqual([
-			{
-				from: [
-					{
-						podSelector: {
-							matchLabels: { "app.kubernetes.io/name": "compass-server" },
-						},
-					},
-				],
-				ports: [{ protocol: "TCP", port: 5432 }],
-			},
-		]);
+			}),
+		).toThrow("postgres");
+		expect(() =>
+			parseServerDeployValues({ ...values, initImage: digest("busybox") }),
+		).toThrow("initImage");
 	});
 
-	test("renders only the required NATS ingress policy when Postgres is absent", () => {
+	test("renders only the required NATS ingress policy", () => {
 		const policies = renderServerManifests(values).filter(
 			(item) => object(item).kind === "NetworkPolicy",
 		);
@@ -632,6 +537,19 @@ describe("renderServerManifests", () => {
 		});
 	});
 
+	test("rejects JWKS configured with a URI", () => {
+		const cluster = values.runnerClusters[0];
+		if (cluster === undefined || cluster.jwks === undefined)
+			throw new Error("inline JWKS test value missing");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				runnerClusters: [
+					{ ...cluster, jwksURI: "https://issuer.example.test/keys" },
+				],
+			}),
+		).toThrow("jwksURI and jwks");
+	});
 	test("renders JWKS data and maps jwks to the Server's matching jwksFile", () => {
 		const configMap = manifestOf(renderServerManifests(values), "ConfigMap");
 		const data = object(configMap.data);
@@ -761,50 +679,185 @@ describe("renderServerManifests", () => {
 		}
 	});
 
-	test("rejects mutable image tags for Server, NATS, init, and Postgres images", () => {
-		for (const field of ["serverImage", "natsImage", "initImage"] as const) {
-			expect(() =>
-				parseServerDeployValues({
-					...values,
-					[field]: "example.test/image:latest",
-				}),
-			).toThrow(field);
+	test("rejects mutable and tagged digest images", () => {
+		for (const field of ["serverImage", "natsImage"] as const) {
+			for (const ref of [
+				"example.test/image:latest",
+				`example.test/image:latest@sha256:${"a".repeat(64)}`,
+			]) {
+				expect(() =>
+					parseServerDeployValues({ ...values, [field]: ref }),
+				).toThrow(field);
+			}
 		}
 		expect(() =>
 			assertServerImageDigest("registry.example.test/server:latest"),
 		).toThrow();
-		expect(() =>
-			parseServerDeployValues({
-				...values,
-				postgres: {
-					image: "example.test/postgres:latest",
-					storage: "10Gi",
-					secretName: "pg-secret",
-				},
-			}),
-		).toThrow("postgres.image");
 	});
 
-	test("rejects invalid storage quantities and accepts Kubernetes binary quantities", () => {
-		for (const quantity of ["", "banana", "0", "-1Gi", "1KB", "1.2.3Gi"]) {
+	test("renders optional forge args and validates dotenv secret names and ids", () => {
+		const configured = renderServerManifests({
+			...values,
+			forge: {
+				host: "github.example.test",
+				repos: ["rigelbuild/compass"],
+				appId: 123,
+				installationId: 456,
+				appKeySecret: "FORGE_APP_PRIVATE_KEY",
+				appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
+				reviewer: {
+					appId: 789,
+					installationId: 987,
+					appKeySecret: "FORGE_REVIEWER_APP_PRIVATE_KEY",
+				},
+			},
+		});
+		const server = container(serverDeployment(configured), "compass-server");
+		expect(server.args).toEqual(
+			expect.arrayContaining([
+				"--forge-host",
+				"github.example.test",
+				"--forge-app-id",
+				"123",
+				"--forge-installation-id",
+				"456",
+				"--forge-app-key-secret",
+				"FORGE_APP_PRIVATE_KEY",
+				"--forge-app-webhook-secret",
+				"FORGE_APP_WEBHOOK_SECRET",
+				"--forge-repos",
+				"rigelbuild/compass",
+				"--forge-reviewer-app-id",
+				"789",
+				"--forge-reviewer-app-installation-id",
+				"987",
+				"--forge-reviewer-app-key-secret",
+				"FORGE_REVIEWER_APP_PRIVATE_KEY",
+			]),
+		);
+		const minimalForge = container(
+			serverDeployment(
+				renderServerManifests({
+					...values,
+					forge: {
+						appId: 123,
+						installationId: 456,
+						appKeySecret: "FORGE_APP_PRIVATE_KEY",
+						appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
+					},
+				}),
+			),
+			"compass-server",
+		);
+		const minimalArgs = object(minimalForge).args;
+		if (!Array.isArray(minimalArgs)) throw new Error("server args are missing");
+		expect(minimalArgs).not.toContain("--forge-host");
+		expect(minimalArgs).not.toContain("--forge-repos");
+		expect(
+			minimalArgs.some((arg) => String(arg).startsWith("--forge-reviewer-")),
+		).toBe(false);
+		for (const [field, id] of [
+			["appId", 0],
+			["installationId", -1],
+			["appId", 1.5],
+			["installationId", 1.5],
+		] as const) {
 			expect(() =>
-				parseServerDeployValues({ ...values, natsStorage: quantity }),
-			).toThrow("natsStorage");
+				parseServerDeployValues({
+					...values,
+					forge: {
+						appId: 123,
+						installationId: 456,
+						appKeySecret: "FORGE_APP_PRIVATE_KEY",
+						appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
+						[field]: id,
+					},
+				}),
+			).toThrow(`forge.${field}`);
+		}
+		for (const [field, id] of [
+			["appId", 0],
+			["installationId", -1],
+			["appId", 1.5],
+			["installationId", 1.5],
+		] as const) {
+			expect(() =>
+				parseServerDeployValues({
+					...values,
+					forge: {
+						appId: 123,
+						installationId: 456,
+						appKeySecret: "FORGE_APP_PRIVATE_KEY",
+						appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
+						reviewer: {
+							appId: 789,
+							installationId: 987,
+							appKeySecret: "FORGE_REVIEWER_APP_PRIVATE_KEY",
+							[field]: id,
+						},
+					},
+				}),
+			).toThrow(`forge.reviewer.${field}`);
 		}
 		expect(() =>
 			parseServerDeployValues({
 				...values,
-				natsStorage: "10Gi",
-				postgres: {
-					image: digest("postgres"),
-					storage: "bad-size",
-					secretName: "pg-secret",
+				forge: {
+					appId: 123,
+					installationId: 456,
+					appKeySecret: "forge-app-key",
+					appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
 				},
 			}),
-		).toThrow("postgres.storage");
+		).toThrow("forge.appKeySecret");
+	});
+
+	test("rejects empty optional scheduling values", () => {
 		expect(() =>
-			parseServerDeployValues({ ...values, natsStorage: "1.5Gi" }),
-		).not.toThrow();
+			parseServerDeployValues({
+				...values,
+				nodeSelector: { key: "", value: "" },
+			}),
+		).toThrow("nodeSelector.key");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				toleration: { key: "", value: "", effect: "NoSchedule" },
+			}),
+		).toThrow("toleration.key");
+	});
+
+	test("renders optional scheduling values like the Runner", () => {
+		const scheduled = renderServerManifests({
+			...values,
+			nodeSelector: { key: "node-role", value: "server" },
+			toleration: { key: "dedicated", value: "server", effect: "NoSchedule" },
+		});
+		const podSpec = nested(
+			serverDeployment(scheduled),
+			"spec",
+			"template",
+			"spec",
+		);
+		expect(podSpec).toMatchObject({
+			nodeSelector: { "node-role": "server" },
+			tolerations: [
+				{
+					key: "dedicated",
+					operator: "Equal",
+					value: "server",
+					effect: "NoSchedule",
+				},
+			],
+		});
+		const unscheduled = nested(
+			serverDeployment(renderServerManifests(values)),
+			"spec",
+			"template",
+			"spec",
+		);
+		expect(object(unscheduled)).not.toHaveProperty("nodeSelector");
+		expect(object(unscheduled)).not.toHaveProperty("tolerations");
 	});
 
 	test("validates external ports and DNS-1123 names", () => {
