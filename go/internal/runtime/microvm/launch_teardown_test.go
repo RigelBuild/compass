@@ -29,36 +29,24 @@ func pidAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// TestLaunchFailClosedTeardown pins the fail-closed teardown contract that CI
-// surfaced (PR #574): when a later spawn fails after virtiofsd and passt are
-// already up, launch must (1) return a nil VM and the error WITHOUT panicking,
-// and (2) reap the daemons it already started, leaving no orphan. The original
-// bug returned `nil, err` into the NAMED vm return, clobbering the handle before
-// the deferred cleanup ran — so Shutdown nil-dereferenced (SIGSEGV) and the
-// started daemons were orphaned. This runs with no KVM: the aux daemons are
-// shell fakes that bind their sockets and sleep, and cloud-hypervisor is absent
-// from PATH so LookPath fails after both aux daemons are up.
+// TestLaunchFailClosedTeardown ensures a later spawn failure returns an error
+// without panicking and reaps already-started daemons. Shell fakes provide the
+// daemons; cloud-hypervisor is absent so the failure occurs after both start.
 func TestLaunchFailClosedTeardown(t *testing.T) {
 	bin := t.TempDir()
 	run := t.TempDir()
 	vfsPidFile := filepath.Join(run, "vfs.pid")
 	passtPidFile := filepath.Join(run, "passt.pid")
 
-	// The fakes must OUTLIVE launch, and the only absence this test wants is
-	// cloud-hypervisor's — so `sleep` is resolved on the real PATH now, while it
-	// is still intact, and burned into the stubs as an absolute path. Naming it
-	// bare would make the stubs die on `sleep: command not found` the moment
-	// PATH is narrowed below (there is no `sleep` builtin in /bin/sh), so both
-	// daemons would exit on their own and "teardown reaped them" would be
-	// trivially true — the RIG-3480 defect.
+	// Resolve sleep before narrowing PATH so the fake daemons stay alive until
+	// launch's deferred teardown; otherwise their early exit makes the no-orphan
+	// assertion pass vacuously.
 	sleepBin, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Fatalf("resolving sleep on PATH (the fakes need it to stay alive): %v", err)
 	}
-	// Both fakes record their pid, touch the socket launch waits on, then stay
-	// alive as `sleep`. longLivedFakeBody owns the `exec` that makes the
-	// recorded pid name the surviving process rather than a shell parenting it;
-	// see its doc for why that is load-bearing rather than style.
+	// Each fake records its pid, binds its socket, then execs sleep so teardown
+	// signals the recorded process rather than leaving a child behind.
 	writeFake(t, bin, "virtiofsd", longLivedFakeBody(vfsPidFile,
 		`for a in "$@"; do case "$a" in --socket-path=*) : > "${a#--socket-path=}";; esac; done`,
 		sleepBin, "30"))
@@ -85,27 +73,16 @@ func TestLaunchFailClosedTeardown(t *testing.T) {
 		t.Errorf("expected a nil VM on the error path, got %v", vm)
 	}
 
-	// The failure must be cloud-hypervisor's LookPath, which is the ONLY absence
-	// this test arranges. Anything earlier — notably a fake that exited before
-	// its socket was served — means the daemons never really came up, so the
-	// no-orphan assertion below would pass vacuously. This control is what
-	// caught RIG-3480: it fired on 39/40 runs of the merge result while the
-	// assertion it guards stayed green.
-	//
-	// Match the lookup's own wording, not the bare binary name: the
-	// exited-before-start check that runs between waitForSockets and the lookup
-	// also embeds "cloud-hypervisor" in its message, so a bare-name match would
-	// admit precisely the dead-daemon case this control exists to reject.
+	// Require the cloud-hypervisor lookup failure. A broader error match could
+	// pass when a fake exits before serving its socket, making the no-orphan
+	// assertion vacuous.
 	if !strings.Contains(err.Error(), "resolving cloud-hypervisor on PATH") {
 		t.Fatalf("launch failed before the cloud-hypervisor lookup (%v); the aux daemons never came up, "+
 			"so the no-orphan assertion below would be vacuous", err)
 	}
 
-	// The daemons launch already started must have been reaped by the deferred
-	// cleanup — no orphan left sleeping. Shutdown's reap blocks on each child's
-	// reaper channel before returning (it does NOT Wait — startChild's sole
-	// reaper owns the single cmd.Wait), so by the time Launch has returned this
-	// is a settled fact, not a race to poll.
+	// Deferred Shutdown waits for each child's sole reaper, so the no-orphan
+	// check below observes settled process state rather than racing a poll.
 	for name, pidFile := range map[string]string{"virtiofsd": vfsPidFile, "passt": passtPidFile} {
 		pid := readPidFile(t, pidFile)
 		if pidAlive(pid) {
@@ -114,22 +91,8 @@ func TestLaunchFailClosedTeardown(t *testing.T) {
 	}
 }
 
-// longLivedStayAlive builds shell text that runs setup and then STAYS ALIVE as
-// the given command. It is the single place the `exec` is spelled, for every
-// stub in this file that has to outlive the call under test.
-//
-// Without the exec, /bin/sh forks the tail and lives on as its parent. A
-// teardown that signals the child it started then reaches only that shell, and
-// the tail is reparented to init and survives its full lifetime — while the pid
-// a caller recorded, or the pid Go handed it, IS reaped, so a no-orphan
-// assertion keyed on it passes. Measured at +10 leaked processes per -count=5
-// run of TestLaunchFailClosedTeardown before the exec was added, 0 after.
-//
-// `sh -c` does exec its LAST command implicitly, so a stub whose sleep happens
-// to be last leaks nothing today. That is an accident of the shell, not a
-// property of the test: appending one trailing command restores the leak, and
-// nothing in this package can observe it. Hence one helper rather than the
-// spelling repeated per callsite.
+// longLivedStayAlive builds shell text that runs setup and execs its tail, so
+// teardown signals the process Go started instead of orphaning a shell child.
 func longLivedStayAlive(setup, tailBin string, tailArgs ...string) string {
 	tail := strings.Join(append([]string{tailBin}, tailArgs...), " ")
 	return setup + "\nexec " + tail
@@ -284,13 +247,9 @@ func TestWaitForSocketsFailsFastOnADeadDaemon(t *testing.T) {
 	if !strings.Contains(err.Error(), diagnostic) {
 		t.Errorf("error %q does not carry the daemon's own log tail (%q); the real cause would be lost", err.Error(), diagnostic)
 	}
-	// The two assertions above are satisfied by text on EITHER SIDE of the slot
-	// where the death cause belongs — the daemon name before it, the log tail
-	// after — so they both passed while that slot rendered the literal
-	// "%!w(<nil>)". A startup death is an *exec.ExitError, which waitResult
-	// deliberately maps to nil (a non-zero exit is the expected TEARDOWN
-	// outcome), and %w on a nil error prints that marker. So assert the slot
-	// itself: no formatting-verb marker, and the real exit status present.
+	// Check the error's cause slot too: daemon name and log tail can both be
+	// present around a broken %w(<nil>) marker. Startup ExitError must retain its
+	// exit status instead of being suppressed as expected teardown.
 	if strings.Contains(err.Error(), "%!") {
 		t.Errorf("error %q carries a Go formatting-verb error; the death cause was fed a nil", err.Error())
 	}
@@ -298,16 +257,14 @@ func TestWaitForSocketsFailsFastOnADeadDaemon(t *testing.T) {
 		t.Errorf("error %q does not report the daemon's exit status; an operator cannot tell "+
 			"a non-zero exit from a clean one", err.Error())
 	}
-	// Fast: the exit short-circuits the poll instead of burning the window.
+	// A dead child must short-circuit the poll instead of burning the window.
 	if elapsed > socketReadyTimeout/2 {
 		t.Errorf("waitForSockets took %v of a %v budget; a dead child must short-circuit the poll", elapsed, socketReadyTimeout)
 	}
 }
 
-// TestWaitForSocketsSucceedsForALiveDaemon is the non-vacuity control for the
-// liveness check: a child that binds its socket and STAYS UP must still be
-// accepted. Without it the assertion above would pass on a waitForSockets that
-// had simply started erroring unconditionally.
+// TestWaitForSocketsSucceedsForALiveDaemon prevents the liveness check from
+// passing vacuously if waitForSockets starts rejecting every child.
 func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 	dir := t.TempDir()
 	socket := filepath.Join(dir, "live.sock")
@@ -315,12 +272,8 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving sleep on PATH (the fake needs it to stay alive): %v", err)
 	}
-	// Built with longLivedStayAlive for the same reason the launch fakes are:
-	// the tail must be exec'd, or this stub is a shell parenting the sleep and
-	// reap's SIGTERM orphans the sleep to init. `sh -c` happens to exec its
-	// LAST command implicitly, so the bare form leaked nothing — but appending
-	// one trailing command silently restores the leak, which no test here can
-	// see. Going through the helper makes it explicit instead of incidental.
+	// Use longLivedStayAlive so reap signals the actual process, not a shell
+	// parent that would orphan its child when killed.
 	c := &child{
 		name:    "virtiofsd",
 		logPath: filepath.Join(dir, "virtiofsd.log"),
@@ -452,12 +405,9 @@ func TestDeathErrorReportsTheCauseForEveryStartupPhase(t *testing.T) {
 	}
 }
 
-// readPidFile reads the pid a fake recorded. It does NOT poll: each fake writes
-// its pid BEFORE it touches its socket, and the caller has already confirmed
-// launch got past the socket wait, which orders the write before this read. So a
-// missing or malformed pidfile here is a real defect in that ordering rather
-// than a race to wait out, and it fails immediately instead of behind a
-// wall-clock budget that can only ever expire (RIG-3480).
+// readPidFile does not poll: fakes record their pid before touching the socket,
+// and launch passing the socket wait orders that write before this read. A
+// missing or malformed file therefore indicates a real ordering defect.
 func readPidFile(t *testing.T, path string) int {
 	t.Helper()
 	raw, err := os.ReadFile(path)

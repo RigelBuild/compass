@@ -1,14 +1,8 @@
 //go:build unix
 
-// pidfile_test.go is the hermetic tier for §(a)'s pidfile primitives. It needs
-// no KVM and no guest: it reads /proc/self/stat and the boot id, exactly as the
-// production path does — the same Linux-hermetic posture readPSS already has in
-// this unix-tagged package.
-//
-// Every assertion here is a contract the reaper (§(b)) will act on: it kills on
-// a starttime match, refuses to kill on a mismatch or a stale boot id, and
-// keeps a dir on errPidUnknown. A wrong verdict from any of these is a killed
-// innocent process or a leaked orphan, so each is pinned rather than assumed.
+// Hermetic pidfile tests exercise /proc and boot-id checks without KVM. Their
+// assertions pin the reaper's decisions: signal matching identities, preserve
+// mismatches and stale boot records, and keep directories with unknown liveness.
 
 package microvm
 
@@ -543,11 +537,8 @@ func perturb(bootID string) string {
 	return first + bootID[1:]
 }
 
-// shutdownGuardBudget bounds the Shutdown-guard test below. It is not a poll
-// budget or a settling delay: the passing path returns as fast as a Kill and a
-// channel receive, so any value merely has to be longer than that. It exists so
-// a regression of the nil-channel guard FAILS instead of wedging the suite
-// forever, which is the exact symptom the guard prevents in production.
+// shutdownGuardBudget only prevents a regression in the nil-channel guard from
+// wedging the suite; the passing path returns after Kill and a channel receive.
 const shutdownGuardBudget = 10 * time.Second
 
 // writeShellFake writes an executable shell stub into dir under name. It is
@@ -563,13 +554,9 @@ func writeShellFake(t *testing.T, dir, name, body string) {
 	}
 }
 
-// startedAndReapedChild starts c through the production startChild and blocks
-// until its SOLE reaper has observed the exit. The wait is the whole point:
-// after a receive from c.exited the process has been Wait'd, so it is no longer
-// even a zombie and its /proc/<pid> entry is PROVABLY gone. That makes the
-// "child exited before its pidfile could be recorded" window deterministic —
-// the production race is narrow, but the state it lands in is exactly this one,
-// reached here without a sleep, a retry or a repeat count.
+// startedAndReapedChild waits for startChild's sole reaper, proving the child
+// is no longer a zombie and its /proc entry is gone. This makes the failed
+// pidfile-write race deterministic without sleeps or retries.
 func startedAndReapedChild(t *testing.T, dir, name string) *child {
 	t.Helper()
 	c := &child{
@@ -739,22 +726,13 @@ func TestWritePidfileErrorStaysClassifiable(t *testing.T) {
 	}
 }
 
-// TestLaunchRecordsAllThreePidfileNames pins the WIRING: that launch records
-// vmm.pid, virtiofsd.pid and passt.pid in the session runtime dir. Every other
-// hermetic test in this file passes its own pidfile name in, so it asserts the
-// name it supplied; the real-pid check lives in the KVM-gated lane, which does
-// not run on the ordinary test lane. Without this, wiring that recorded
-// virtiofsd under vmm.pid — or dropped a spawn site entirely — is caught by
-// NOTHING here. It needs no KVM: which strings launch passes is a property of
-// launch, so all three children are shell fakes.
+// TestLaunchRecordsAllThreePidfileNames pins launch's pidfile wiring without
+// KVM. Shell fakes cover all three spawn sites; other tests accept a supplied
+// filename, while only this test catches omitted or misnamed records.
 func TestLaunchRecordsAllThreePidfileNames(t *testing.T) {
 	bin := t.TempDir()
-	// PATH is narrowed to the fake dir below so LookPath resolves the fakes and
-	// nothing else, which also means a fake's own body cannot resolve a command
-	// by name. So the stay-alive exec is an ABSOLUTE path, found before the
-	// narrowing: a fake that could not resolve `sleep` would exit instantly and
-	// fail the boot at the liveness-aware readiness poll instead of reaching
-	// the VMM spawn this test is about.
+	// Resolve sleep before narrowing PATH and use its absolute path, or the fake
+	// daemons exit before the liveness-aware socket poll reaches the VMM spawn.
 	sleepBin, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Skipf("no sleep on PATH: %v", err)

@@ -1,13 +1,8 @@
 //go:build unix
 
-// The host-written per-session process record (V7 §(a)): three pidfiles under a
-// session's runtime dir that make the dir the durable record of its process
-// set, so a Runner-crash orphan can be killed WITHOUT hitting an innocent
-// process on a recycled pid.
-
-// The record is (pid, starttime, bootid), not a bare pid, written in TWO atomic
-// steps around each spawn — argued at writePidIntent (pre-spawn) and
-// pidRecord.alive (identity comparison).
+// Session pidfiles record each child as (pid, starttime, boot id), preventing
+// crash recovery from signaling an innocent process after pid reuse. An intent
+// record is written before spawn and a settled record after it.
 
 package microvm
 
@@ -23,9 +18,8 @@ import (
 	"syscall"
 )
 
-// bootIDPath is the kernel's per-boot UUID. It changes on every boot and is
-// stable for the boot's life, which is exactly the property the cross-reboot
-// arm of the identity check needs.
+// bootIDPath is the kernel UUID that remains stable for a boot and changes on
+// reboot, allowing the identity check to reject stale records.
 const bootIDPath = "/proc/sys/kernel/random/boot_id"
 
 // pidIntentToken is the literal standing in place of a pid in the pre-spawn
@@ -37,18 +31,13 @@ const pidIntentToken = "intent"
 // /proc/<pid>/stat (proc(5)): the process start time in clock ticks since boot.
 const procStartTimeField = 22
 
-// errPidUnknown is returned by pidRecord.alive for a SAME-BOOT intent record: a
-// child that was about to be spawned when the writer died, so it may or may not
-// be running and there is NO pid with which to find out. It is deliberately
-// neither "alive" nor "dead" — the reaper (V7 §(b)) must route it to its
-// possibly-live arm (warn, keep the dir) rather than to a kill or a removal,
-// and a bool return cannot express that third verdict.
+// errPidUnknown marks a same-boot intent whose child may or may not be running.
+// The reaper must keep the directory and never signal or remove it; bool alone
+// cannot represent this third liveness verdict.
 var errPidUnknown = errors.New("microvm: pidfile records a pre-spawn intent from this boot: liveness unknowable")
 
-// procBootID reads the host boot id ONCE per process and caches it: it cannot
-// change while this process lives (a new boot id means a new kernel, which
-// means this process is gone), so re-reading it per liveness check would be a
-// syscall per pidfile for a value that is constant by construction.
+// procBootID caches the boot UUID once per process because it cannot change
+// while this process runs; rereading it per pidfile would only add syscalls.
 var procBootID = sync.OnceValues(func() (string, error) {
 	raw, err := os.ReadFile(bootIDPath)
 	if err != nil {
@@ -76,19 +65,9 @@ type pidRecord struct {
 	BootID    string
 }
 
-// writePidIntent writes the pre-spawn INTENT record `intent <bootid>` to path
-// at 0600. It is called BEFORE the child's startChild so the runtime dir names
-// every child that MAY become live before it can be live (§(a)).
-//
-// Atomicity alone does not close the spawn→write window: the pid does not exist
-// until the spawn returns, so a writer dying between a successful spawn and the
-// settled write would leave a dir naming only the children it already recorded
-// and NO record at all of the live child it just started — whereupon the reaper
-// reads "everything recorded is dead", removes the dir, and erases the only
-// evidence of the leak. The intent record makes the on-disk set CONSERVATIVE by
-// construction: it may over-name a child that never spawned (which the reaper
-// tolerates — there is no pid to signal), but it can never under-name a live
-// one, which is the failure the reaper cannot recover from.
+// writePidIntent writes an atomic pre-spawn record so a crash cannot leave a
+// possibly-live child unrecorded. The conservative intent may name a child that
+// never spawned, which the reaper can safely tolerate.
 func writePidIntent(path string) error {
 	bootID, err := procBootID()
 	if err != nil {
@@ -97,16 +76,9 @@ func writePidIntent(path string) error {
 	return writePidRecordLine(path, pidIntentToken+" "+bootID+"\n")
 }
 
-// writePidfile writes the settled record `<pid> <starttime> <bootid>` to path
-// at 0600, superseding any intent record in ONE atomic rename — so a concurrent
-// reader sees the intent record or the settled record, never a torn prefix and
-// never nothing. It is called after startChild succeeds, with the pid the spawn
-// returned.
-//
-// starttime is read here, from the live process, rather than trusted from
-// anywhere else: it is the second half of the identity pair pidRecord.alive
-// compares, and a record carrying a starttime that was not actually read off
-// this pid would defeat the whole reuse defense.
+// writePidfile atomically replaces the intent with the spawned child's pid,
+// starttime, and boot id. Read starttime from the live process to preserve the
+// pid-reuse identity check.
 func writePidfile(path string, pid int) error {
 	bootID, err := procBootID()
 	if err != nil {
@@ -120,26 +92,10 @@ func writePidfile(path string, pid int) error {
 	return writePidRecordLine(path, line)
 }
 
-// writePidRecordLine writes line to path atomically: a temp file in the SAME
-// directory, then os.Rename. A same-directory rename is atomic against a
-// RUNNER PROCESS crash — a concurrent reader, and any reader after the Runner
-// dies, sees the complete record or the previous one, never a torn prefix. That
-// is exactly the window the reaper exists for: a half-written pidfile would
-// demote a recorded live child to the no-pidfile arm and leak it, which the
-// torn-write window a plain os.WriteFile leaves open.
-//
-// It is deliberately NOT durable against a host crash or power loss: tmp.Close
-// does not flush to stable storage and os.Rename is not durable without an
-// fsync of the parent directory, so after a host crash the record may be absent
-// or stale. That durability is not bought on purpose — a host crash changes the
-// boot id, so EVERY surviving record short-circuits dead at pidRecord.alive's
-// boot-id check whether or not the rename landed, and the reaper's verdict is
-// identical either way. Adding an fsync would buy a durability barrier per
-// spawn, on the boot path, for a guarantee the boot-id check already supplies.
-//
-// The temp file is removed on every failure path: the runtime dir is scanned
-// per-file by the reaper, so a stray temp file left behind would be an
-// unparseable extra entry it has to reason about.
+// writePidRecordLine uses a same-directory rename so readers see the old or new
+// complete record after a runner crash. It is not fsync-durable across host
+// crashes; the boot-id check rejects records from the previous boot. Failures
+// remove the temporary file so the reaper sees no stray entry.
 func writePidRecordLine(path, line string) (err error) {
 	dir := filepath.Dir(path)
 	// The pattern's trailing '*' puts os.CreateTemp's random suffix where a
@@ -235,37 +191,10 @@ func readPidfile(path string) (pidRecord, error) {
 	return pidRecord{PID: pid, StartTime: startTime, BootID: fields[2]}, nil
 }
 
-// alive reports whether the process this record names is still running.
-//
-// The boot id is compared FIRST, and the short-circuit is not belt-and-braces:
-// starttime is measured in clock ticks SINCE BOOT, so after a reboot a
-// long-uptime host re-issues low pids and a stale record's (pid, starttime) pair
-// can legitimately MATCH an unrelated process on the new boot. Since a match is
-// what authorizes the reaper to signal, that would be a plausible wrong kill; a
-// boot-id mismatch means the record predates a reboot and nothing it names can
-// exist, so it is "gone" before any proc read or signal.
-//
-// Within the same boot it re-reads starttime and compares: a mismatch, or a
-// /proc read that says the process is gone (procReadMeansGone), means the
-// recorded process is gone and the pid, if live at all, now belongs to an
-// unrelated process that must NOT be killed. A bare-pid file can make neither
-// distinction.
-//
-// A same-boot intent record is the third verdict: false with errPidUnknown (see
-// errPidUnknown). The bool is meaningless when that error is returned.
-//
-// So a non-nil error here is one of TWO kinds and callers MUST discriminate
-// with errors.Is before acting on the bool:
-//
-//   - errPidUnknown is a VERDICT, not a fault: route the dir to the
-//     possibly-live arm — warn, KEEP the dir, never signal and never remove.
-//   - anything else is a genuine fault (the boot id could not be read, or the
-//     /proc read failed for a reason other than the process being gone):
-//     surface it as a named per-dir error and leave the dir alone.
-//
-// The natural-but-wrong handling — `if err != nil { return err }`, or
-// `if !alive { remove }` — converts the possibly-live verdict into exactly the
-// removal it exists to prevent, because the bool is false in that case too.
+// alive compares boot id before pid/starttime: after reboot, both pid and
+// starttime can match an unrelated process, so stale records must be rejected
+// before any signal. A same-boot intent returns errPidUnknown; callers must
+// keep the directory and never signal it. Other errors are real read failures.
 func (r pidRecord) alive() (bool, error) {
 	bootID, err := procBootID()
 	if err != nil {
@@ -291,11 +220,8 @@ func (r pidRecord) alive() (bool, error) {
 	return startTime == r.StartTime, nil
 }
 
-// readProcStartTime reads field 22 (starttime) of /proc/<pid>/stat: the
-// kernel's process start time in clock ticks since boot, immutable for the
-// process's life. Together with the pid it is unique across pid reuse within a
-// boot for any wrap slower than one clock tick — the same identity pair systemd
-// and every pidfd-less supervisor relies on.
+// readProcStartTime reads immutable /proc starttime for a pid, the identity
+// component used to detect pid reuse within a boot.
 func readProcStartTime(pid int) (uint64, error) {
 	statPath := "/proc/" + strconv.Itoa(pid) + "/stat"
 	raw, err := os.ReadFile(statPath) //nolint:gosec // G304: statPath is a /proc path built from an integer pid, not user input
@@ -309,27 +235,15 @@ func readProcStartTime(pid int) (uint64, error) {
 	return startTime, nil
 }
 
-// procReadMeansGone reports whether err from a /proc/<pid> read means the
-// process is gone rather than that the read itself failed. Both kinds are
-// reachable: ENOENT when /proc/<pid> was already absent at open time, and
-// ESRCH when the open succeeded but the task was reaped before the read.
-// ESRCH does NOT satisfy errors.Is(err, os.ErrNotExist), so matching only
-// that predicate misses about half the occurrences.
+// procReadMeansGone recognizes ENOENT and ESRCH from /proc reads; ESRCH does not
+// match os.ErrNotExist, so both must be checked explicitly.
 func procReadMeansGone(err error) bool {
 	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ESRCH)
 }
 
-// parseProcStartTime extracts field 22 from one /proc/<pid>/stat line. It is
-// separate from the read above so it can be tested against lines whose field 22
-// is KNOWN: a round-trip through the live /proc cannot detect a wrong offset,
-// because the writer and the liveness check would misparse identically and
-// still agree.
-//
-// The parse starts from the LAST ')' in the line, not from a whole-line field
-// split: field 2 is the executable name, parenthesized, and it may itself
-// contain both spaces and parentheses (it is the first 15 bytes of a
-// caller-chosen comm), so a naive split misaligns every field after it — and
-// yields a wrong-but-plausible number rather than an error.
+// parseProcStartTime is separate from reading so tests can use known field 22
+// values. It starts after the final ')' because /proc field 2 can contain spaces
+// and parentheses, which would shift a whole-line split.
 func parseProcStartTime(line string) (uint64, error) {
 	commEnd := strings.LastIndexByte(line, ')')
 	if commEnd < 0 {

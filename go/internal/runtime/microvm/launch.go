@@ -19,12 +19,8 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// The host-controlled IPv4 plan passt offers the guest over its built-in DHCP
-// server (§(c) lines 128-136): a fixed private /24, delivered as the lease the
-// guest's in-process DHCP client (T2) consumes. The address plan is passt's
-// launch flags (-a/-g/-n/-D), not a guest guess, so the host stays in control
-// of addressing; DHCP is only the delivery mechanism. The 10.x block is a
-// throwaway per-boot plan — nothing outside the guest routes it.
+// passt leases a fixed private /24 via DHCP from its launch flags. The
+// throwaway per-boot subnet is not routed outside the guest.
 const (
 	guestAddr   = "10.0.2.15" // -a: the address passt leases the guest
 	guestGW     = "10.0.2.2"  // -g: the default gateway passt advertises
@@ -32,39 +28,24 @@ const (
 	guestDNS    = "10.0.2.3"  // -D: the resolver passt hands out
 )
 
-// socketReadyTimeout bounds the wait for virtiofsd's and passt's control
-// sockets to appear before cloud-hypervisor is started against them. Both
-// daemons create their AF_UNIX socket early in startup; a bounded poll (not an
-// unbounded sleep) fails fast with a named cause if a daemon dies on launch
-// instead of hanging the boot until the outer test deadline.
+// socketReadyTimeout bounds socket startup polling so a daemon that dies early
+// returns a named error instead of hanging until the outer deadline.
 const socketReadyTimeout = 10 * time.Second
 
 // reapGrace is how long Shutdown waits for a SIGTERM'd auxiliary daemon
 // (virtiofsd/passt) to exit before escalating to SIGKILL.
 const reapGrace = 5 * time.Second
 
-// diagnosticTailBytes caps how much of a captured log (serial console, or a
-// daemon's stderr) is surfaced in a failure message — enough to carry the cause
-// (a kernel panic banner, a passt/CH negotiation error) without dumping a whole
-// boot log into the test output.
+// diagnosticTailBytes limits failure output while retaining the daemon or
+// kernel error that explains the boot failure.
 const diagnosticTailBytes = 8 << 10
 
-// modcapsDropMknod is the exact --modcaps literal virtiofsd is launched with,
-// pinned in ONE place because virtiofsd does NOT validate capability names.
-// Verified by execution: `--modcaps=-not_a_real_cap` and `--modcaps=-bogus_cap`
-// are both accepted silently and the daemon starts normally. So a typo or an
-// upstream rename turns the flag into a no-op with no diagnostic anywhere, and
-// the argv assertion in launch_idmap_test.go is the ONLY guard — which is why
-// the literal lives here and both the launch path and that test reference this
-// const, so the two cannot drift apart into a mutually-agreeing typo.
+// modcapsDropMknod is shared with the argv assertion because virtiofsd silently
+// accepts unknown capability names; the test is the only typo guard.
 const modcapsDropMknod = "--modcaps=-mknod"
 
-// launchOptions selects which virtio devices cloud-hypervisor is booted with.
-// The full boot wires every device; the OQ-G net-only smoke omits virtio-fs and
-// vsock so the passt×CH vhost-user-net negotiation — the spike's primary
-// unknown (§(c)/OQ-G) — is exercised in isolation, and a negotiation failure
-// surfaces from the serial console as itself rather than as an ambiguous
-// full-stack timeout.
+// launchOptions selects boot devices. The net-only smoke omits fs and vsock to
+// isolate vhost-user negotiation from full-stack boot failures.
 type launchOptions struct {
 	withFS    bool
 	withVsock bool
@@ -78,12 +59,8 @@ type child struct {
 	cmd     *exec.Cmd
 	logPath string
 
-	// exited is closed by this child's SOLE reaper, started by startChild once
-	// Start has succeeded. It carries the ONE cmd.Wait per child: the readiness
-	// poll's liveness check (waitForSockets), Shutdown's reap, Running and PSS
-	// all observe the exit THROUGH this channel instead of calling Wait
-	// themselves, so no two paths ever race on the same process. Nil exactly
-	// when the process was never started (cmd.Process is nil too).
+	// exited is closed by the sole reaper after cmd.Wait. Readiness, Shutdown,
+	// Running, and PSS observe this channel instead of calling Wait again.
 	exited chan struct{}
 	// waitErr is cmd.Wait's error, written by the reaper BEFORE it closes
 	// exited. Reading it is only safe after a receive from exited, which is the
@@ -145,30 +122,19 @@ func Launch(ctx context.Context, cfg BootConfig) (*VM, error) {
 	return launch(ctx, cfg, launchOptions{withFS: true, withVsock: true})
 }
 
-// LaunchNetOnly boots the guest with only the vhost-user-net device — no
-// virtio-fs, no vsock (§(c)/OQ-G). It is the isolation smoke that exercises the
-// passt×cloud-hypervisor vhost-user negotiation on its own: the guest brings its
-// link up and acquires its DHCP lease (observable in the serial console) before
-// the boot sequence fails-closed at the absent workspace mount. That failure is
-// expected and irrelevant here — the smoke asserts only that the address landed,
-// read from the console, so a negotiation failure is a named cause rather than a
-// full-stack timeout.
+// LaunchNetOnly boots without virtio-fs or vsock to isolate passt/CH vhost-user
+// negotiation. It checks DHCP address acquisition before the expected mount
+// failure, making network errors visible without a full-stack timeout.
 func LaunchNetOnly(ctx context.Context, cfg BootConfig) (*VM, error) {
 	return launch(ctx, cfg, launchOptions{withFS: false, withVsock: false})
 }
 
-// launch is the shared boot body. Binaries are resolved from PATH here (not
-// carried on BootConfig) so the harness stays a pure boot contract and the test
-// gate (microvmtest.Require) owns proving they are present; exec.LookPath
-// against the same PATH yields the identical binaries Require resolved.
+// launch resolves binaries from PATH so BootConfig remains a pure boot contract;
+// microvmtest.Require verifies those same binaries for the test harness.
 func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err error) {
 	dir := filepath.Dir(cfg.Net.VhostUserSocket)
-	// vm is a LOCAL, not the named return. The error sites below return an
-	// explicit `nil, err`; were vm the named return, that nil would clobber the
-	// handle before the deferred cleanup runs — nil-dereferencing in Shutdown
-	// and orphaning any daemon already started. Keeping vm local means the defer
-	// always sees the real, partially-built VM. (This is the fail-closed path CI
-	// exercises when a daemon cannot sandbox on the runner and dies on launch.)
+	// Keep vm local: returning nil through the named result would clobber the
+	// partially-started VM before deferred Shutdown could reap its daemons.
 	vm := &VM{
 		consolePath: filepath.Join(dir, "console.log"),
 		vsockPort:   cfg.VsockPort,
@@ -208,11 +174,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	vm.passt = &child{
 		name:    "passt",
 		logPath: filepath.Join(dir, "passt.log"),
-		// -f keeps passt in the foreground so this *exec.Cmd IS the passt process
-		// (default daemonizes, orphaning it). The -a/-g/-n/-D flags fix the
-		// host-controlled address plan passt serves over DHCP (§(c)).
-		// --no-map-gw stops passt mapping the gateway address onto the host, so an
-		// allowlist naming 10.0.2.2 still cannot reach host listeners.
+		// -f keeps passt as this process; its DHCP flags set the host-controlled
+		// address plan, and --no-map-gw prevents guest access to host listeners.
 
 		// NO --pid: passt's pidfile is retired (§(a)). -f makes this Cmd the passt
 		// process, so the host knows its pid and carries the starttime+boot-id
@@ -278,15 +241,9 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	return vm, nil
 }
 
-// virtiofsdArgs builds the whole virtiofsd argv: the socket/share/sandbox flags
-// every boot carries, the capability trim, and the id translation (empty under
-// the V2a spike, see virtiofsdTranslateArgs).
-//
-// modcapsDropMknod drops CAP_MKNOD from the capability set virtiofsd retains
-// under --sandbox=namespace. A workspace share has no legitimate use for device
-// nodes, so the capability is pure escape surface. The literal is a const
-// shared with the test because virtiofsd silently ACCEPTS unknown capability
-// names, so the argv assertion is the only guard against a typo.
+// virtiofsdArgs builds the socket/share/sandbox argv and appends ownership
+// translation. It drops CAP_MKNOD because a workspace needs no device nodes;
+// the shared argv assertion catches typos virtiofsd silently accepts.
 func virtiofsdArgs(cfg BootConfig) []string {
 	translate := virtiofsdTranslateArgs(cfg.AgentUID)
 	args := make([]string, 0, 4+len(translate))
@@ -299,20 +256,9 @@ func virtiofsdArgs(cfg BootConfig) []string {
 	return append(args, translate...)
 }
 
-// virtiofsdTranslateArgs gives the shared volume the SAME host-side ownership
-// podman's `--userns=keep-id:uid=N,gid=N` produces (record §(d)): the in-guest
-// agent id (the guest runs uid==gid==agentUID) and the invoking host user's
-// uid and gid are translated into each other by virtiofsd itself. Empty when
-// agentUID is zero (the V2a spike, which asserts nothing about ownership).
-//
-// The `map` type is bidirectional: guest-authored files land as the invoking
-// host user, and host-authored files appear in-guest as the agent id. The gid
-// arm uses os.Getgid(), which routinely differs from the agent id (e.g. 1000:100).
-//
-// --translate-uid/--translate-gid, not --uid-map/--gid-map: the map flags need a
-// subordinate id mapped to namespace-root, which hands the daemon namespace-scoped
-// CAP_CHOWN/CAP_DAC_OVERRIDE/etc. The cost is that --posix-acl=always|auto is
-// incompatible with translation, so POSIX ACLs on the share are not supported.
+// virtiofsdTranslateArgs maps guest agent ids to the invoking host's ids,
+// preserving share ownership; zero leaves the V2a harness untranslated. The
+// translation flags avoid namespace-root capabilities but disable POSIX ACLs.
 func virtiofsdTranslateArgs(agentUID uint32) []string {
 	if agentUID == 0 {
 		return nil
@@ -330,19 +276,9 @@ func translateSpec(guestID, hostID string) string {
 	return "map:" + guestID + ":" + hostID + ":1"
 }
 
-// vmmArgs builds the cloud-hypervisor argv exactly per the record (lines
-// 542-547), dropping --fs/--vsock under the net-only smoke. Launch appends to
-// the guest cmdline (per BootConfig.Cmdline's contract):
-//   - console=ttyS0 so guestd's stderr reaches the captured serial console;
-//   - compass.vsock_port=<port> which guestd reads from /proc/cmdline (last-wins,
-//     so appending is safe even if cfg.Cmdline already carries one);
-//   - net.ifnames=0 so the single virtio-net device is named eth0, the fixed
-//     name guestd's netProvisioner binds (guestd/net.go: "cloud-hypervisor
-//     presents the single virtio-net device as eth0"). The pinned generic
-//     kernel defaults to predictable naming (enpNsM); without this the guest's
-//     link is enp0s5 and guestd fail-closes with "Link not found". This is a
-//     host-side boot parameter, not a guest change — guestd binds eth0 (T2),
-//     and the host is what must present that name.
+// vmmArgs builds cloud-hypervisor argv, omitting fs/vsock for the net-only smoke.
+// It appends console, vsock-port, and net.ifnames=0: guestd binds eth0, while
+// the generic kernel otherwise names the single virtio-net interface enpNsM.
 func vmmArgs(cfg BootConfig, consolePath string, opts launchOptions) []string {
 	cmdline := strings.TrimSpace(cfg.Cmdline +
 		" console=ttyS0 net.ifnames=0 compass.vsock_port=" + strconv.FormatUint(uint64(cfg.VsockPort), 10))
@@ -373,19 +309,9 @@ func vmmArgs(cfg BootConfig, consolePath string, opts launchOptions) []string {
 	return args
 }
 
-// startChild installs the child's best-effort orphan guard via the
-// platform-specific orphanGuardSysProcAttr (Linux PR_SET_PDEATHSIG, which fires
-// on the spawning THREAD's death — so the spawn holds the OS thread for it to
-// bind reliably; a no-op elsewhere) and captures its stdout+stderr to logPath so
-// a boot failure can surface the daemon's own diagnostics. The real teardown
-// guarantee is Shutdown, not Pdeathsig (record §(g) lines 300-303).
-//
-// On a successful Start it also installs the child's SOLE reaper: exactly one
-// goroutine per child owning exactly one cmd.Wait, publishing the result on
-// c.exited. Every other path — the readiness poll's liveness check, Shutdown's
-// reap, Running, PSS — observes the exit through that channel rather than
-// Wait'ing itself, so there is never a second concurrent Wait on one process
-// (which would race and hand one caller a bogus "waitid: no child processes").
+// startChild installs the platform orphan guard, captures logs, and starts the
+// sole cmd.Wait reaper. Linux PDEATHSIG fires on the spawning thread's death, so
+// Start holds the OS thread; Shutdown remains the real teardown guarantee.
 func startChild(c *child) error {
 	logFile, err := os.OpenFile(c.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -408,31 +334,17 @@ func startChild(c *child) error {
 	}
 	c.exited = make(chan struct{})
 	go func() {
-		// The single Wait for this child. waitErr is written BEFORE the close, so
-		// any reader that received from c.exited sees it (happens-before). An
-		// *exec.ExitError from a killed daemon is expected and filtered by
-		// waitResult at each teardown reader, not here; a startup reader renders
-		// it through deathError instead.
+		// The sole reaper writes waitErr before closing exited, so receivers see
+		// the result. Teardown filters ExitError; startup reports it via deathError.
 		c.waitErr = c.cmd.Wait()
 		close(c.exited)
 	}()
 	return nil
 }
 
-// waitForSockets polls until every path in paths exists, one of the children in
-// waiting has exited, or the deadline elapses.
-//
-// LIVENESS, not just path existence: virtiofsd binds its AF_UNIX socket BEFORE
-// the sandbox setup that can fail, so a sandbox failure leaves a mode-srwx socket
-// on disk with the daemon already exited 1 (verified by execution). A
-// path-existence-only poll returns nil there and the boot proceeds to start
-// cloud-hypervisor against a dead daemon, where the real cause (a sandbox
-// setup error in virtiofsd's own log) is replaced by an inscrutable vhost-user
-// negotiation error much later. So an exited child short-circuits the poll with
-// an error NAMING the daemon and carrying its log tail.
-//
-// A missing socket at the deadline is likewise a named error naming the first
-// path still absent.
+// waitForSockets requires both socket existence and live daemons. virtiofsd may
+// bind before sandbox setup fails, leaving a stale socket that would mask its
+// real log cause; missing sockets also produce a named timeout error.
 func waitForSockets(ctx context.Context, paths []string, waiting []*child, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -599,20 +511,9 @@ func waitResult(name string, err error) error {
 	return fmt.Errorf("waiting for %s: %w", name, err)
 }
 
-// deathCause renders why a child that has already exited died, for an operator
-// reading a startup failure.
-//
-// It deliberately does NOT go through waitResult. waitResult answers a
-// different question — "did the wait itself fail?" — and returns nil for an
-// *exec.ExitError, because a signalled or non-zero exit is the expected
-// outcome of a deliberate teardown. A daemon that dies during STARTUP is also
-// an ExitError, so routing that through waitResult yields nil and a caller
-// wrapping it with %w renders the literal "%!w(<nil>)" where the cause belongs,
-// with errors.Unwrap returning nil. That destroys the whole point of the
-// message.
-//
-// The returned string is for humans, not for errors.Is — a startup death has no
-// sentinel worth matching, and the ExitError is already reported verbatim.
+// deathCause renders why a child died during startup. Do not use waitResult:
+// it suppresses ExitError as expected teardown, but startup ExitError is the
+// cause and wrapping nil would render %!w(<nil>).
 func deathCause(c *child) string {
 	if c.waitErr == nil {
 		return "exited cleanly (status 0) without serving"
@@ -629,26 +530,15 @@ const (
 	phasePidfile  startupPhase = "its pidfile could be recorded"
 )
 
-// allStartupPhases is the list the guard test ranges over. Keep it in step with
-// the const block by hand: phaseText's switch fails a constant that is never
-// handled, but nothing checks membership of THIS list, so a phase handled there
-// and missing here is covered by no test and caught by no gate. It returns a
-// fresh slice so no test can scribble on another's copy.
+// allStartupPhases returns a fresh slice for the guard test. Keep it in sync
+// with the constants; phaseText cannot detect a phase omitted from this list.
 func allStartupPhases() []startupPhase {
 	return []startupPhase{phaseVMMStart, phaseSocket, phasePidfile}
 }
 
-// phaseText renders a phase. The switch is deliberate rather than a plain
-// string conversion: it gives exhaustive something to check, so adding a
-// constant and not handling it fails lint. Two gaps it does NOT close — a
-// constant handled here but absent from allStartupPhases, and a bare untyped
-// literal at a callsite, which a defined string type accepts silently. An
-// unlisted value still renders, so a mistake degrades the message rather than
-// killing the launch it was reporting on.
-//
-// The fallthrough return MUST stay outside the switch: the repo sets
-// exhaustive's default-signifies-exhaustive, so folding it into a default arm
-// disables the check with no lint or test failure to announce it.
+// phaseText renders a phase; the switch lets exhaustive catch unhandled values.
+// Keep the fallback outside the switch because the repo's default-signifies-
+// exhaustive setting would disable that check if a default arm were added.
 func phaseText(phase startupPhase) string {
 	switch phase {
 	case phaseVMMStart, phaseSocket, phasePidfile:
@@ -657,11 +547,8 @@ func phaseText(phase startupPhase) string {
 	return string(phase)
 }
 
-// deathError builds the error a startup site reports when a child it was
-// waiting on has already exited. Every such site goes through here so the
-// death cause cannot regress at one site while another stays guarded: the
-// %!w(<nil>) defect this replaced existed at three sites because each built
-// its own message.
+// deathError builds the startup error for an exited child; all startup sites use
+// it so daemon cause and log tail stay consistent.
 func deathError(c *child, phase startupPhase) error {
 	return fmt.Errorf("%s exited before %s: %s; log tail:\n%s",
 		c.name, phaseText(phase), deathCause(c), tailFile(c.logPath))
@@ -782,14 +669,9 @@ func (vm *VM) childByName(name string) *child {
 	}
 }
 
-// startRecordedChild records c's on-disk identity around its spawn, per §(a)'s
-// two-step write: the pre-spawn INTENT record, then startChild, then the
-// SETTLED record naming the pid the spawn returned. pidfileName is the file's
-// name within the session runtime dir (vmm.pid/virtiofsd.pid/passt.pid).
-//
-// Either write failing fails the boot: orphan reapability is load-bearing, so a
-// session that cannot be recorded must not run. launch's deferred vm.Shutdown
-// tears down whatever already started and removes the paths registered here.
+// startRecordedChild writes the intent before spawning and the settled identity
+// afterward. Either write failing aborts boot so no potentially-live child goes
+// unrecorded; deferred Shutdown removes registered paths.
 func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 	path := filepath.Join(dir, pidfileName)
 	// Registered before the first write, not after the last: the intent record
@@ -808,25 +690,9 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 	return nil
 }
 
-// pidfileWriteError shapes a writePidfile failure from startRecordedChild by
-// its actual cause. writePidfile's second step reads /proc/<pid>/stat, and a
-// child that exits fast can be reaped between the spawn and that read — so the
-// read fails for a reason that is NOT a pidfile fault: the child is simply
-// dead. Reporting a /proc path there buries the real cause, which is in the
-// daemon's own log, so a confirmed-dead child gets the SAME error shape launch
-// uses for a daemon that died before the VMM was started: it goes through
-// the same deathError builder.
-//
-// BOTH conditions are required: procReadMeansGone alone could describe a /proc
-// that vanished under a still-live pid (it cannot, but the pairing makes the
-// claim "this child is dead" one the reaper's channel actually proves), and
-// hasExited alone would swallow a genuine write fault on a child that merely
-// happens to have exited. Every other writePidfile failure stays fatal as a
-// pidfile error, because orphan reapability is load-bearing.
-//
-// The on-disk record is deliberately NOT touched on the dead-child branch: the
-// intent record stands and the path stays registered, so Shutdown removes it
-// and no window exists where the dir under-names a child that may have run.
+// pidfileWriteError reclassifies a failed settled write only when /proc says the
+// process is gone AND its sole reaper confirms exit. Other failures remain
+// fatal; the intent record stays registered for Shutdown cleanup.
 func pidfileWriteError(c *child, err error) error {
 	if procReadMeansGone(err) && c.hasExited() {
 		return fmt.Errorf("microvm: %w",

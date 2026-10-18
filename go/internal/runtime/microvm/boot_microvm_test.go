@@ -1,19 +1,9 @@
 //go:build microvm && unix
 
-// boot_microvm_test.go is T4's KVM-gated boot spike: it boots a real session
-// guest under cloud-hypervisor (rootless, as the invoking user), completes the
-// GuestControl.Health handshake over the hybrid vsock, measures per-process
-// PSS, and tears the stack down with no orphans — the deliverable of the V2a
-// milestone (record §T4, §(g)). Every test calls microvmtest.Require(t) first:
-// on a KVM-less box it SKIPS (unless COMPASS_REQUIRE_MICROVM=1 forces a hard
-// fail), so the suite is only real where /dev/kvm is openable.
-//
-// The tests run in a deliberate order via subtests off one parent, but each is
-// independent (its own VM, its own temp dir). The net-only smoke is first
-// because it isolates OQ-G — the passt×cloud-hypervisor vhost-user-net
-// negotiation, the spike's primary unknown — so a negotiation failure surfaces
-// as itself (no address in the serial console) rather than as an ambiguous
-// full-stack timeout.
+// KVM-gated boot tests for cloud-hypervisor, guestd's hybrid-vsock handshake,
+// process PSS, and clean teardown. The suite skips without /dev/kvm unless
+// COMPASS_REQUIRE_MICROVM=1; the net-only smoke runs first to isolate vhost-user
+// negotiation failures from full-stack boot timeouts.
 
 package microvm
 
@@ -47,12 +37,9 @@ const (
 	dhcpLeaseDeadline = 60 * time.Second
 )
 
-// bootConfig builds a BootConfig from the resolved test env and a fresh temp
-// dir. The temp dir holds every AF_UNIX socket, the passt pidfile, the captured
-// logs, and the virtio-fs shared dir, so a test leaves nothing outside its own
-// t.TempDir(). FSSharedDir is a throwaway dir here (V2b supplies the per-session
-// checkout); the spike only asserts the mount happened via Health's flag, not
-// content.
+// bootConfig creates an isolated temporary tree for sockets, pidfiles, logs,
+// and the shared dir. Tests assert only that the mount succeeded; V2b checks
+// shared-file content.
 func bootConfig(t *testing.T, env microvmtest.Env, cpus, memoryMB int) BootConfig {
 	t.Helper()
 	dir := t.TempDir()
@@ -256,17 +243,8 @@ func TestFullBootRecordsSettledPidfiles(t *testing.T) {
 	}
 }
 
-// armRuleset is a minimal but representative in-guest egress arm: it creates the
-// inet table + a conntrack-stateful output rule, forcing a representative slice
-// of the netfilter autoload chain — the NETLINK_NETFILTER socket (nfnetlink),
-// the nf_tables subsystem, and the `ct state` expression (nf_conntrack +
-// nft_ct). Once the usermode helper is staged, request_module resolves ANY
-// module from the full /lib/modules tree, so this slice proves the mechanism the
-// real base ruleset relies on (its interval sets and DNS rules pull further
-// modules the same way). It is `set -eu` so any nft failing aborts non-zero,
-// like EgressPolicy.NftScript()'s base ruleset. Kept as a local literal, not a
-// runtime.EgressPolicy call, because this package must not import
-// internal/runtime (config.go: no runtime dep, no cycle).
+// armRuleset exercises netfilter autoload through nfnetlink, nf_tables, and
+// conntrack. Keep it local: importing internal/runtime would create a cycle.
 const armRuleset = `set -eu
 nft add table inet compass_egress
 nft add chain inet compass_egress output '{ type filter hook output priority 0 ; policy drop ; }'
@@ -318,14 +296,9 @@ func TestInGuestEgressArmAutoloadsNetfilter(t *testing.T) {
 
 	client := GuestClient(vm.vsockSocket, vm.vsockPort)
 
-	// The load-bearing assertion: Provision with a non-empty nft_script arms
-	// egress in-guest. This is the exact path that failed EPROTONOSUPPORT before
-	// /sbin/modprobe was staged. A non-nil error here (especially one carrying
-	// mnl.c:66 / "Protocol not supported") means the netfilter autoload chain is
-	// broken again.
-	// 30s is a deliberately generous CLIENT bound: the arm (module autoload + a
-	// few nft adds) is sub-second, and the real ceiling is the server's 120s
-	// armTimeout (guestd/supervisor.go), not this deadline.
+	// A non-empty nft_script exercises the guest's module autoload path; failures
+	// here (including EPROTONOSUPPORT) identify a broken netfilter chain. The
+	// client bound is generous; guestd's armTimeout is the server-side ceiling.
 	provCtx, provCancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer provCancel()
 	if _, provErr := client.Provision(provCtx, &compassv1.ProvisionRequest{
@@ -346,12 +319,9 @@ func TestInGuestEgressArmAutoloadsNetfilter(t *testing.T) {
 func TestCorruptRootfsFailsClosed(t *testing.T) {
 	env := microvmtest.Require(t)
 	cfg := bootConfig(t, env, 1, 512)
-	// A raw-sized but non-erofs rootfs (16 MiB of zeros), NOT a missing or tiny
-	// path: CH must be able to detect a raw image and boot the kernel, so the
-	// initrd's `mount -t erofs /dev/vda` then fails-closed with a named cause on
-	// the serial console — the GUEST fail-closed teardown the design exercises.
-	// A missing path (or a byte-sized garbage file) instead trips CH's disk-open
-	// / image-type detection before the kernel ever runs, leaving no serial log.
+	// Use a raw-sized non-erofs image so CH boots the kernel and initrd fails the
+	// mount. A missing or tiny file fails during CH disk detection, before serial
+	// output can show the guest's fail-closed behavior.
 	corrupt := t.TempDir() + "/corrupt.erofs"
 	f, createErr := os.Create(corrupt)
 	if createErr != nil {
@@ -397,11 +367,8 @@ func TestCorruptRootfsFailsClosed(t *testing.T) {
 	t.Logf("corrupt-rootfs boot fail-closed with a named serial-console cause (as designed)")
 }
 
-// waitFor polls cond every 250 ms until it returns true or the deadline elapses,
-// returning whether it became true. It is a gated poll-until (not a blind
-// time.Sleep): there is no single in-band completion event for a guest boot —
-// readiness is only observable by probing Health — so a bounded poll is the
-// correct wait, and it fails loudly at a real timeout.
+// waitFor polls a condition until it succeeds or the deadline elapses.
+// Readiness has no completion event, so a bounded poll is required.
 func waitFor(t *testing.T, deadline time.Duration, cond func() bool) bool {
 	t.Helper()
 	timeout := time.NewTimer(deadline)
@@ -423,17 +390,9 @@ func waitFor(t *testing.T, deadline time.Duration, cond func() bool) bool {
 	}
 }
 
-// waitForConsole polls the captured serial console until match reports the
-// expected content or the deadline elapses. Used where the guest has no vsock to
-// probe (the net-only smoke and the corrupt-rootfs negative), so the console is
-// the only observable signal.
-//
-// It matches against the WHOLE console file, not VM.ConsoleTail's bounded
-// diagnostic tail: a fail-closed boot prints a kernel panic backtrace AFTER the
-// evidence line, and a dump larger than the 8 KiB tail window would evict the
-// evidence and turn a real failure into a false-negative timeout. The bounded
-// tail stays where it belongs — the failure MESSAGE (Diagnostics) — not the poll
-// predicate.
+// waitForConsole polls the full console because a later panic backtrace can
+// evict the evidence line from the bounded diagnostic tail. The full file is
+// the only signal for tests where the guest has no vsock to probe.
 func waitForConsole(t *testing.T, vm *VM, deadline time.Duration, match func(string) bool) bool {
 	t.Helper()
 	return waitFor(t, deadline, func() bool { return match(readConsole(vm)) })
