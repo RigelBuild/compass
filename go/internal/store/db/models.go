@@ -381,6 +381,24 @@ type ForgeStateTransition struct {
 	TenantID       string
 }
 
+type ForgeWriteIntent struct {
+	ID              string
+	ForgeProvider   int16
+	ForgeHost       string
+	Repo            string
+	Kind            int16
+	ParentNumber    int64
+	HeadRef         string
+	AgentAccountID  string
+	OwnerUserID     string
+	SessionID       string
+	ClientRequestID string
+	ForgeKey        string
+	State           string
+	CreatedAt       pgtype.Timestamptz
+	TenantID        string
+}
+
 type GatewayCredential struct {
 	ID              string
 	TenantID        string
