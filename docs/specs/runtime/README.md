@@ -14,6 +14,9 @@ Available specs:
   each tier's isolation boundary and egress posture, the adoption funnel from
   host tier through embedded-local to self-host graduation, and the standing
   guidance on when each tier is (and is not) the right choice.
+- [`config-import-review.md`](config-import-review.md) — the host tier's
+  first-run job: the operator reviews their existing agent config before it
+  is imported into the fleet bundle.
 
 > These specs describe the strategy and current behavior. The *why* — the
 > rulings behind the trust-model split and each tier — lives in the design
