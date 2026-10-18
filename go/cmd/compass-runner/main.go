@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -66,12 +67,14 @@ func run() error {
 			"Agents that push with jj-vine need github.com and api.github.com.")
 	runtimeDir := flag.String("runtime-dir", "/run/compass",
 		"Runner-owned base dir for per-container agent sockets (RuntimeDir/containers/<container>/agent.sock).")
+	serverName := registerServerNameFlag(flag.CommandLine)
 	caPath := flag.String("ca", "",
 		"PEM CA/certificate to trust for the Server's TLS network door, instead "+
 			"of the system roots. Set this to the locally-generated self-signed "+
 			"cert for the local dogfood path (where one cert is both the server's "+
 			"--tls-cert and this trust anchor); leave unset when the Server is "+
 			"behind a public CA. Defaults to $COMPASS_RUNNER_CA.")
+
 	var mounts []runtime.Mount
 	flag.Func("mount",
 		"Repeatable host:container[:ro] bind mount into the agent container "+
@@ -139,16 +142,9 @@ func run() error {
 		return err
 	}
 
-	// --ca (or $COMPASS_RUNNER_CA) swaps the system root pool for a single
-	// trusted CA — the local dogfood path, where the Server's self-signed
-	// 127.0.0.1 cert is the trust anchor. Unset leaves HTTPClient nil, so Dial
-	// uses http.DefaultClient (system roots) for a Server behind a public CA.
-	var httpClient connecthttp.HTTPClient
-	if ca := orEnv(*caPath, "COMPASS_RUNNER_CA"); ca != "" {
-		httpClient, err = runner.NewCATrustClient(ca)
-		if err != nil {
-			return err
-		}
+	httpClient, err := runnerHTTPClient(*caPath, *serverName)
+	if err != nil {
+		return err
 	}
 	specs, err := newSpecBuilder(ctx, engine, img, egress, *checkoutDir, *homeDir, mounts)
 	if err != nil {
@@ -175,6 +171,20 @@ func run() error {
 		AgentBatching: resolveAgentBatchingConfig(*agentBatching).AgentBatching,
 		HTTPClient:    httpClient,
 	}, specs, log)
+}
+
+func registerServerNameFlag(flags *flag.FlagSet) *string {
+	return flags.String("server-name", "",
+		"Name to check on the Server certificate and send as SNI. Defaults to $COMPASS_SERVER_NAME.")
+}
+
+func runnerHTTPClient(caPath, serverName string) (connecthttp.HTTPClient, error) {
+	ca := orEnv(caPath, "COMPASS_RUNNER_CA")
+	name := orEnv(serverName, "COMPASS_SERVER_NAME")
+	if ca == "" && name == "" {
+		return http.DefaultClient, nil
+	}
+	return runner.NewServerClient(ca, name)
 }
 
 func registerAgentBatchingFlag(flags *flag.FlagSet) *string {

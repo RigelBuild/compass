@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,6 +16,57 @@ import (
 
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
+
+func TestServerNameFlagAndEnvironmentFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		env         string
+		wantName    string
+		wantDefault bool
+	}{
+		{name: "unset uses default client", wantDefault: true},
+		{name: "environment fallback", env: "compass.example.test", wantName: "compass.example.test"},
+		{
+			name:     "flag overrides environment",
+			args:     []string{"--server-name", "flag.example.test"},
+			env:      "env.example.test",
+			wantName: "flag.example.test",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("COMPASS_RUNNER_CA", "")
+			t.Setenv("COMPASS_SERVER_NAME", tc.env)
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			serverName := registerServerNameFlag(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("parse server-name flag: %v", err)
+			}
+			client, err := runnerHTTPClient("", *serverName)
+			if err != nil {
+				t.Fatalf("runnerHTTPClient: %v", err)
+			}
+			if tc.wantDefault {
+				if client != http.DefaultClient {
+					t.Fatalf("runnerHTTPClient = %p, want http.DefaultClient %p", client, http.DefaultClient)
+				}
+				return
+			}
+			clientValue, ok := client.(*http.Client)
+			if !ok {
+				t.Fatalf("runnerHTTPClient = %T, want *http.Client", client)
+			}
+			transport, ok := clientValue.Transport.(*http.Transport)
+			if !ok {
+				t.Fatalf("Transport = %T, want *http.Transport", clientValue.Transport)
+			}
+			if transport.TLSClientConfig.ServerName != tc.wantName {
+				t.Errorf("ServerName = %q, want %q", transport.TLSClientConfig.ServerName, tc.wantName)
+			}
+		})
+	}
+}
 
 // Compile-time regression guard: the real backend types must satisfy their
 // probe interfaces, so a future change that drops a probe method fails to

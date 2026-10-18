@@ -10,7 +10,7 @@ The image must be a `repo@sha256:<digest>` reference. Configure node selectors,
 taints, host paths, the Server address (an absolute `https://` URL), token
 lifetimes, and admission identities before applying.
 
-Two optional values:
+Three optional values:
 
 - `egressAllow`: the hosts agents may reach, such as `["github.com", "api.github.com"]`.
   Each is a DNS name or a bare IP literal. It renders as one `--egress-allow`
@@ -19,6 +19,9 @@ Two optional values:
   `{ "secretName": "<name>", "key": "<file>" }`. Set it when the Server's
   certificate is not under a public root. The key is mounted read-only under
   `/etc/compass/server-ca/`, and `COMPASS_RUNNER_CA` points at it.
+- `serverName`: the certificate name the Runner checks instead of `serverAddr`'s
+  host. Set it when `serverAddr` is the in-cluster Service and the certificate
+  names only a public host. It is passed as `COMPASS_SERVER_NAME`.
 
 The DaemonSet uses a projected `compass-runner` ServiceAccount token at
 `/var/run/secrets/compass/runner/token`. Set `tokenExpirationSeconds` between

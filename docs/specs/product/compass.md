@@ -1436,10 +1436,9 @@ SHALL NOT be reflected.
 
 ## Runner enrollment CLI
 
-Two operator binaries provision the credentials a Runner needs to enroll over
-the network door, and `compass-runner --ca` lets a Runner trust a locally
-generated certificate. Both binaries log to stderr only and print their version
-with `--version`.
+Two operator binaries provision Runner enrollment credentials; both log to
+stderr only and print their version with `--version`. `compass-runner --ca`
+and `--server-name` set the Runner's TLS trust and checked name.
 
 ### Requirement: `compass-mint-runner-token` mints a Runner-subject token
 
@@ -1519,18 +1518,27 @@ or other permission. When only one exists, it SHALL regenerate both.
 ### Requirement: `compass-runner --ca` trusts a named certificate instead of the system roots
 
 `compass-runner --ca <pem>` (default `$COMPASS_RUNNER_CA`) SHALL trust only
-the certificates in that PEM file for the Server's TLS connection, in place of
-the system roots, with a minimum of TLS 1.3. The Runner reads the file after
-its backend preflight. A file that cannot be read, or that holds no PEM
-certificate, SHALL then stop startup with an error. When `--ca` is unset, the
-Runner SHALL use the system roots.
+that PEM's certificates, at TLS 1.3 minimum; unset, the system roots. After
+the backend preflight, an unreadable file or one with no PEM certificate SHALL
+stop startup.
 
-#### Scenario: A Runner trusting a different certificate is refused
+#### Scenario: A Runner trusting another certificate is refused
 
-- **Given** a network door serving a certificate from `compass-gen-cert`
-- **When** a Runner's `--ca` names a different certificate
-- **Then** its `Enroll` call fails at the TLS handshake with an
-  unknown-authority error, and it never enrolls.
+- **Given** a door serving a `compass-gen-cert` certificate
+- **When** the Runner's `--ca` names another
+- **Then** `Enroll` fails the TLS handshake
+
+### Requirement: `compass-runner --server-name` sets the name checked on the Server's certificate
+
+`--server-name` (default `$COMPASS_SERVER_NAME`) SHALL replace the `--server`
+host as the name checked, with the same roots; unset, the `--server` host.
+
+#### Scenario: A Runner checks the public name
+
+- **Given** an in-cluster address and a trusted cert naming only
+  `compass.example.test`
+- **When** the Runner sets `--server-name compass.example.test`
+- **Then** it enrolls
 
 ## Not yet specified
 

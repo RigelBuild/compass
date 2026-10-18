@@ -74,6 +74,88 @@ func TestNewCATrustClient(t *testing.T) {
 		}
 	})
 }
+func TestNewServerClient(t *testing.T) {
+	t.Run("system roots retain server name and TLS minimum", func(t *testing.T) {
+		client, err := NewServerClient("", "compass.example.test")
+		if err != nil {
+			t.Fatalf("NewServerClient without CA: %v", err)
+		}
+		transport, ok := client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+		}
+		if transport.TLSClientConfig.RootCAs != nil {
+			t.Errorf("RootCAs = %v, want nil for system roots", transport.TLSClientConfig.RootCAs)
+		}
+		if transport.TLSClientConfig.ServerName != "compass.example.test" {
+			t.Errorf("ServerName = %q, want compass.example.test", transport.TLSClientConfig.ServerName)
+		}
+		if transport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+			t.Errorf("MinVersion = %v, want TLS 1.3", transport.TLSClientConfig.MinVersion)
+		}
+	})
+
+	t.Run("missing CA keeps NewCATrustClient error", func(t *testing.T) {
+		_, err := NewServerClient(filepath.Join(t.TempDir(), "missing.pem"), "")
+		if err == nil || !strings.Contains(err.Error(), "reading --ca certificate") {
+			t.Fatalf("NewServerClient(missing CA) error = %v, want NewCATrustClient read error", err)
+		}
+	})
+
+	t.Run("non-PEM CA keeps NewCATrustClient error", func(t *testing.T) {
+		caPath := filepath.Join(t.TempDir(), "junk.pem")
+		if err := os.WriteFile(caPath, []byte("not a PEM certificate\n"), 0o600); err != nil {
+			t.Fatalf("write junk CA: %v", err)
+		}
+		_, err := NewServerClient(caPath, "")
+		if err == nil || !strings.Contains(err.Error(), "no PEM certificate") {
+			t.Fatalf("NewServerClient(non-PEM CA) error = %v, want NewCATrustClient PEM error", err)
+		}
+	})
+}
+
+func TestServerNameOverride(t *testing.T) {
+	serverKP, err := certgen.Generate([]string{"compass.example.test"}, 0)
+	if err != nil {
+		t.Fatalf("certgen.Generate(server): %v", err)
+	}
+	srv := startTLSRunnerServer(t, serverKP)
+	caPath := writeCertFile(t, serverKP.CertPEM)
+
+	t.Run("override enrolls against the certificate name", func(t *testing.T) {
+		httpClient, err := NewServerClient(caPath, "compass.example.test")
+		if err != nil {
+			t.Fatalf("NewServerClient: %v", err)
+		}
+		client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(
+			connecthttp.NewTransport(httpClient, srv.URL, connecthttp.WithReadMaxBytes(0)),
+		))
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		if _, err := client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: "runner-1"}); err != nil {
+			t.Fatalf("Enroll with server-name override: %v", err)
+		}
+	})
+
+	t.Run("empty override checks the dialed host", func(t *testing.T) {
+		httpClient, err := NewServerClient(caPath, "")
+		if err != nil {
+			t.Fatalf("NewServerClient: %v", err)
+		}
+		client := compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(
+			connecthttp.NewTransport(httpClient, srv.URL, connecthttp.WithReadMaxBytes(0)),
+		))
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		_, err = client.Enroll(ctx, &compassv1internal.EnrollRequest{RunnerId: "runner-1"})
+		if err == nil {
+			t.Fatal("Enroll without server-name override = nil error, want hostname failure")
+		}
+		if _, ok := errors.AsType[x509.HostnameError](err); !ok {
+			t.Fatalf("Enroll error = %v, want x509.HostnameError", err)
+		}
+	})
+}
 
 // enrollStub is a RunnerService handler that answers Enroll with a minimal
 // EnrollResponse. Only the TLS handshake + the unary Enroll round-trip are under
