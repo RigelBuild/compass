@@ -19,11 +19,8 @@ import (
 // testTenant is the tenant the fake-store tests publish their refs under.
 const testTenant store.TenantID = "tenant-1"
 
-// fakeFabric is an in-memory fabric.EventFabric. Publish queues a ref the way
-// the stream retains one, so a ref published before SubscribeKind is delivered
-// once the consumer subscribes. One goroutine runs the callback serially, as the
-// fabric promises, and fireReconnect runs the OnReconnect hooks. A callback
-// error is recorded and redelivered until maxDeliver attempts, then dropped.
+// fakeFabric queues refs until subscription, runs callbacks serially, and fires reconnect hooks.
+// Callback errors redeliver until the attempt limit, then drop.
 type fakeFabric struct {
 	queue      chan fakeEvent
 	subscribed chan struct{}

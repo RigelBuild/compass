@@ -30,13 +30,8 @@ type fakeNotifyStore struct {
 
 	lastOpened  bool
 	lastProject string
-	// advanceCalls counts every AdvanceDeliveredRevisionCAS call — it MUST stay
-	// zero on the normal (non-suppressed) path (W3), and on the suppress path is
-	// nonzero only after the Go-side caught-up gate passes for an artifact-scope
-	// sub. advanceArgs records each call's args so a test can assert the prior the
-	// router passed. The fake models the SQL CAS: advanced == (arg.prior ==
-	// casStoredPrior), so a test forces a lost CAS by setting casStoredPrior to a
-	// value the router won't pass. casErr forces a store fault.
+	// advanceCalls must remain zero on normal routing and require the caught-up artifact gate when suppressed.
+	// advanceArgs records CAS inputs; casStoredPrior can force a lost CAS and casErr a store failure.
 	advanceCalls   int
 	advanceArgs    []casCall
 	casStoredPrior string
@@ -203,11 +198,7 @@ func commentEvent(url string) forge.ForgeEvent {
 	}
 }
 
-// fakeIdentityResolver scripts the two identity-seam reads: an account-id ->
-// Handle map for HandleForAccount, and a single author Handle for AuthorHandle
-// (the OPENED coordinate). Either read can be forced to fault. authorMiss makes
-// AuthorHandle return a zero Handle with a nil error (the ErrNotFound / clean
-// miss the router treats as fail-open).
+// fakeIdentityResolver scripts subscriber and author handle reads, including faults and clean misses.
 type fakeIdentityResolver struct {
 	accounts    map[string]Handle
 	author      Handle
@@ -1032,13 +1023,8 @@ func TestSelfOriginNilResolverDeliversEverything(t *testing.T) {
 	}
 }
 
-// ---- self-origin suppress-path delivery-cursor advance (T2) ----
-//
-// The suppress path advances a self-suppressed subscriber's delivered_revision
-// to the route revision — but ONLY for an artifact-scope sub that was already
-// caught up to the PRIOR cursor revision, via a compare-and-set. selfCommentIDs
-// resolves the self-comment fixture's actor to a matching subscriber, so every
-// case below suppresses (0 dispatched); what varies is whether the advance fires.
+// ---- self-origin suppress-path delivery-cursor advance ----
+// Only a caught-up artifact subscriber advances by CAS; these cases share a self-resolving actor fixture.
 func selfCommentIDs() *fakeIdentityResolver {
 	return &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
 }

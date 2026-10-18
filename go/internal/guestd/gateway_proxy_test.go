@@ -241,12 +241,8 @@ func TestGatewayProxyCloseTearsDownCleanly(t *testing.T) {
 	}
 }
 
-// newGatewaySupervisor builds a stateReady supervisor wired for a hermetic
-// Provision-starts-proxy test: the gateway port is set, the socket path points
-// at a tempdir, dialGateway is the net.Pipe seam, and chownSocket is a recording
-// no-op (the suite is non-root). The returned *uint32 captures the uid the
-// forwarder requested the chown for, so the owner-posture contract is asserted
-// without privilege. It mirrors the &supervisor{} literal pattern the suite uses.
+// newGatewaySupervisor configures a hermetic proxy test with a temp socket, net.Pipe dialer, and recording chown seam.
+// The captured uid asserts socket ownership without root.
 func newGatewaySupervisor(t *testing.T, socketPath string, port uint32) (*supervisor, *uint32) {
 	t.Helper()
 	dial, _ := dialFromPipe(t)

@@ -31,16 +31,10 @@ type EventFabric interface {
 	// returning nil acks the event; an error or a panic redelivers it up to
 	// MaxDeliver attempts, then parks it on DLQSubject.
 	Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error)
-	// SubscribeKind is the tenant-wildcard read side: one durable queue-group
-	// consumer receiving one kind across EVERY tenant, which is what the
-	// per-Server delivery singleton needs (§T3). Publish stays per-tenant and
-	// concrete.
+	// SubscribeKind shares one tenant-wildcard consumer across Server instances; publish remains per-tenant.
 	SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef) error) (Unsubscribe, error)
-	// OnReconnect runs fn after each NATS reconnect, once the fabric has logged
-	// it, so a consumer can sweep for events lost during the outage. fn runs on
-	// a fabric goroutine, never concurrently with itself; a burst of reconnects
-	// may coalesce into one call, and fn never runs for the initial connect.
-	// The returned Unsubscribe is idempotent.
+	// OnReconnect runs after each reconnect, never the initial connection; bursts may coalesce.
+	// The callback never overlaps itself, and unsubscribe is idempotent.
 	OnReconnect(fn func()) (Unsubscribe, error)
 }
 
@@ -58,39 +52,12 @@ type RunnerFabric interface {
 	Events(ctx context.Context) (<-chan RunnerEvent, error)
 }
 
-// RoutingFabric is the binding-invalidation seam (§T4). It rides core NATS —
-// best-effort at-most-once, deliberately: the hub's binding maps become
-// instance-local caches over durable truth, and "Postgres is the arbiter on any
-// cache miss or conflict; core NATS at-most-once suffices because a dropped
-// invalidation degrades to a cache-miss re-read".
-//
-// A THIRD seam rather than a method on EventFabric because the two delivery
-// contracts are opposites. EventFabric promises durable at-least-once fan-out
-// and every one of its read paths is a durable queue-group consumer, so each
-// event is claimed by exactly one instance. An invalidation must reach EVERY
-// instance that might hold the stale entry, and must be droppable. Neither
-// property can be expressed on the other seam without breaking it for its own
-// callers.
-//
-// So: no ack, no retry, and NO DLQ on this plane. A malformed received payload
-// is logged and dropped — there is nothing to Nak and nowhere to park — which
-// is the one visible behavioural difference from the JetStream path, where an
-// undecodable payload lands on DLQSubject.
+// RoutingFabric broadcasts best-effort binding invalidations to every Server, unlike EventFabric's durable queue-group delivery.
+// Core NATS has no ack, retry, or DLQ; malformed payloads are logged and dropped.
 type RoutingFabric interface {
 	PublishBindingChange(ctx context.Context, tenant string, b BindingChange) error
-	// SubscribeBindingChanges is a PLAIN core-NATS subscribe with NO queue
-	// group, and that is the whole point of the seam. Every Server caches
-	// bindings independently, so every Server must receive every invalidation;
-	// joining a queue group would hand each invalidation to exactly one
-	// instance and leave the rest serving a stale binding — silently, since
-	// there is no error and no missing ack to notice. Contrast
-	// RunnerEventsQueue, which queue-groups on purpose: a Runner event is WORK,
-	// and work must be done once.
-	//
-	// fn may be handed a BindingOp outside the declared constants, published
-	// by a newer process; treat any unrecognized op as invalidate-and-re-read
-	// (see BindingOp). A switch with no default silently discards a real
-	// change on a plane with no ack, no retry and no dead-letter subject.
+	// SubscribeBindingChanges is plain core NATS: every Server caches bindings, so a queue group would leave stale peers.
+	// Unknown ops invalidate and re-read; dropping them would miss updates from newer publishers.
 	SubscribeBindingChanges(ctx context.Context, fn func(BindingChange)) (Unsubscribe, error)
 }
 
@@ -108,34 +75,14 @@ type Config struct {
 	// connections`). Defaults to "compass".
 	Name string
 
-	// Options are extra nats.Options appended after the fabric's own, so a
-	// caller can add credentials or TLS without this package growing a field per
-	// auth mechanism. A later option wins over an earlier one.
-	//
-	// The fabric reserves the CONNECTION LIFECYCLE for its own shutdown
-	// coordination: Close observes the connection's status directly rather than
-	// through a nats.ClosedHandler, so a caller may add its own ClosedHandler
-	// without disarming Close's drain wait. A caller's ReconnectHandler is
-	// chained after the fabric's, so it does not disarm OnReconnect either.
+	// Options append after fabric defaults; later options win.
+	// Close observes connection status directly, while reconnect callbacks are chained so caller handlers do not disarm fabric behavior.
 	Options []nats.Option
 
 	// StreamName overrides DefaultStreamName.
 	StreamName string
-	// MaxDeliver overrides DefaultMaxDeliver. It is the total number of
-	// delivery ATTEMPTS, not retries: MaxDeliver=1 parks on the first failure
-	// with no retry at all, and MaxDeliver=5 means the fifth failing attempt
-	// parks.
-	//
-	// The budget is enforced twice, by design (§Q3): the app-level check in
-	// retryOrPark parks at the budget, and the consumer's server-side
-	// MaxDeliver is the backstop for the case where the app-level check cannot
-	// run (unreadable metadata — which already parks). Both derive from THIS
-	// field, so every Server instance subscribing to a given subject MUST run
-	// the same fabric Config: the durable consumer is shared, so a divergent
-	// MaxDeliver would make the shared consumer's server-side budget
-	// flip-flop with whichever instance last ran CreateOrUpdateConsumer. One
-	// stack config for the whole deployment (RIG-2861 topology) is what
-	// guarantees it; the fabric deliberately does not probe for drift.
+	// MaxDeliver counts attempts, not retries: the final failing attempt parks.
+	// App and server limits enforce the same budget; all Server instances sharing a durable must use the same Config.
 	MaxDeliver int
 	// AckWait overrides DefaultAckWait.
 	AckWait time.Duration
@@ -146,11 +93,7 @@ type Config struct {
 	// Replicas overrides DefaultReplicas; set 3 against a clustered NATS.
 	Replicas int
 
-	// RunnerEventBuffer is the capacity of the channel Events returns. A
-	// consumer slower than the Runner event rate makes the core-NATS
-	// subscription's own buffer the backstop — NATS drops for a slow consumer
-	// rather than blocking the connection, which is the intended best-effort
-	// semantic. Defaults to 256.
+	// RunnerEventBuffer bounds the event channel; NATS drops for slow consumers rather than blocking the connection.
 	RunnerEventBuffer int
 
 	// Log carries the diagnostics that cannot be returned to a caller — a
@@ -254,17 +197,8 @@ type Fabric struct {
 	closedMu  sync.RWMutex
 	closed    bool
 
-	// teardown is closed by Close at the START of shutdown, before the drain.
-	// It is the signal the runner-events pump and every Subscribe watchdog
-	// select on, so a Close with an uncancelled subscribe/Events context still
-	// tears them down — nats.go closes neither a ChanSubscription's channel nor
-	// a ConsumeContext's buffer on connection close, so relying on those to
-	// unblock is a leaked goroutine and, for Events, a channel that never
-	// closes under a ranging consumer.
-	//
-	// Distinct from the closed/closedMu fail-closed gate above and not a
-	// substitute for it: that gate answers "may I start new work", this one
-	// answers "stop the work already running".
+	// teardown stops active pumps and watchdogs when Close begins; NATS does not close their channels.
+	// The closed gate rejects new work; teardown stops work already running.
 	teardown chan struct{}
 
 	// consumerClosed, when set before Subscribe, is called once a subscription's

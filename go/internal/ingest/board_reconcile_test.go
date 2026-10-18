@@ -260,11 +260,8 @@ func (s *poisonSink) PublishIssueUpdate(_ context.Context, issue *compassv1.Issu
 	return nil
 }
 
-// sinceAwareLister returns, on each call, the subset of a fixed issue set whose
-// UpdatedAt is NOT strictly below since (mirroring ListUpdatedIssues' strictly-<
-// since stop with == since re-included), so a multi-sweep test sees the re-walk
-// window actually shrink to the rows at/after the stored watermark. lastWindow
-// records the size of the most recent returned window.
+// sinceAwareLister mirrors the strict-< watermark: rows at since are re-included.
+// lastWindow records the most recent result size.
 type sinceAwareLister struct {
 	all        []forge.Issue
 	etag       string

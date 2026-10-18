@@ -136,14 +136,8 @@ func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(cont
 	return f.subscribeSubject(ctx, subject, fn)
 }
 
-// subscribeSubject is the shared body of Subscribe and SubscribeKind: it
-// registers the durable consumer on an ALREADY-VALIDATED subject and wires its
-// teardown. Split out so each public entry point owns its own subject
-// validation — Subscribe's strict concrete-only grammar, SubscribeKind's
-// tenant-wildcard builder — and neither can reach the other's.
-//
-// It performs no validation of its own: subject must come from
-// validCommsSubject or CommsWildcardSubject.
+// subscribeSubject shares durable-consumer setup after each public entry point validates its own subject grammar.
+// It accepts only subjects built by validCommsSubject or CommsWildcardSubject.
 func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	stream, err := f.ensureStream(ctx)
 	if err != nil {
@@ -161,11 +155,7 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// Consume dispatches serially today; the lock makes the promised serial
 	// callback a fabric guarantee rather than a nats.go internal.
 	var callbackMu sync.Mutex
-	// The server reaps the durable (InactiveThreshold) when this client could
-	// not pull, e.g. a long partition. reapDetector reports it and the
-	// supervisor below recreates the durable rather than go silent.
-	// Each signal carries its consume generation, so a probe that outlives a
-	// recreate cannot trigger another one.
+	// Recreate reaped durables after pull outages; generation IDs reject probes from a prior consumer.
 	reaped := make(chan uint64, 1)
 	var gen atomic.Uint64
 	consume := func(cons jetstream.Consumer) (jetstream.ConsumeContext, error) {
@@ -463,25 +453,10 @@ func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error
 	}
 }
 
-// park implements the dead-letter pattern JetStream has no native support for:
-// republish the raw payload to DLQSubject, then Term the message so the server
-// stops redelivering it.
-//
-// The payload goes out verbatim over CORE NATS, with the original subject, the
-// reason, and the publisher's traceparent (when it had one) in headers. Core
-// rather than JetStream because the DLQ is a diagnostic tap, not a recovery
-// path — recovery is always the Postgres row — and because the DLQ publish
-// would otherwise need its own DLQ.
-//
-// Term is issued even if the DLQ publish fails: leaving a poison message
-// redelivering forever is the worse failure, and the reason is logged either
-// way.
-//
-// A late final-attempt Term also draws the max-deliveries advisory; both paths claim
-// (durable, stream seq) and only one publishes (lifetime in SUBJECTS.md).
-//
-// The reason on the wire is sanitized and bounded (see sanitizeReason); the
-// full cause goes to the log, which has no wire limit.
+// park republishes the raw payload to the DLQ, then terminates the message because JetStream has no native DLQ.
+// The diagnostic uses core NATS and includes the original subject, reason, and traceparent; recovery stays in Postgres.
+// Term even when DLQ publish fails: endless poison-message redelivery is worse.
+// The advisory and final-attempt paths share one durable/stream-sequence claim.
 func (f *Fabric) park(ctx context.Context, msg jetstream.Msg, cause error) {
 	md, err := msg.Metadata()
 	reason := sanitizeReason(cause.Error())
@@ -732,22 +707,11 @@ const (
 	dlqHeaderReason  = "Compass-Park-Reason"
 )
 
-// maxParkReason bounds the reason written to the DLQ header and the +TERM ack
-// body. Both are wire-protocol fields under the server's max-payload ceiling,
-// and jetstream's TermWithReason applies no sanitization of its own, so an
-// unbounded or newline-bearing reason could make the park itself fail — the
-// worst possible place to fail, since the alternative is a poison message
-// redelivering forever.
+// maxParkReason bounds the DLQ header and TERM reason; unbounded or newline text could make parking fail.
 const maxParkReason = 256
 
-// sanitizeReason strips CR/LF, which would corrupt the +TERM ack line and the
-// header, and bounds the length. A subscriber panic embeds an arbitrary consumer
-// value in the cause, so neither property can be assumed. The full, untruncated
-// cause still reaches the ErrorContext log.
-//
-// Truncation is on a byte boundary and can split a trailing rune; this is a
-// diagnostic string read by an operator, not something that is parsed, so a
-// mangled last character is an acceptable price for a hard byte bound.
+// sanitizeReason removes CR/LF and truncates to the wire limit; the full cause remains in logs.
+// Byte truncation may split the last rune, acceptable for operator-only diagnostics.
 func sanitizeReason(s string) string {
 	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
 	if len(s) > maxParkReason {

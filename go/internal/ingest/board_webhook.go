@@ -27,17 +27,12 @@ import (
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
-// boardWebhookDrops is the exported queue-full/drop metric (design.md:288-292):
-// a sustained queue-full silently degrades the hot path to a de-facto 30-min
-// poll (the reconciler heal ceiling), so the drop is scrapeable for an alerting
-// threshold — a counter+Warn alone is not enough to notice the degradation.
+// boardWebhookDrops exposes queue-full loss; sustained drops degrade updates to the slow reconcile cadence.
+// The counter supports an alert beyond the local warning.
 var boardWebhookDrops = expvar.NewInt("compass_board_webhook_drops")
 
-// defaultBoardQueueSize is the bounded drain-queue depth. Sized to absorb a
-// normal edit-storm burst between drains; a sustained overflow (the drain paused
-// on ErrBudgetExhausted while events keep arriving) drops with the metric+Warn.
-// The sweep heals a dropped issue; a dropped CI-only PR change waits for the PR's
-// next event.
+// defaultBoardQueueSize absorbs normal bursts; sustained overflow drops events.
+// Reconcile heals issue drops; CI-only PR changes wait for another event.
 const defaultBoardQueueSize = 1024
 
 // maxHeldTraceparents caps the traces a held PR key collects, so a busy PR
@@ -215,12 +210,8 @@ func (a *BoardWebhookArm) boardRelevant(ev forge.ForgeEvent) bool {
 	}
 }
 
-// drainBatch coalesces the event that woke the drain and every other queued
-// event into distinct keys: normalized repo, kind and number, or head SHA for a
-// CHECKS event with no number. An edit storm and a mixed-case duplicate both
-// collapse to one key. A key already held for retry is left to the timer, so a
-// held PR whose budget is still out never pauses a fresh batch. It then hydrates
-// + sinks each key once, in arrival order, and reports a pause.
+// drainBatch coalesces queued events by repo, kind, and number (or head SHA for checks).
+// Held keys wait for retry timers so one exhausted PR cannot pause fresh work.
 func (a *BoardWebhookArm) drainBatch(ctx context.Context, first queuedEvent) (time.Duration, bool) {
 	seen := map[boardCoord]struct{}{}
 	carried := map[boardCoord][]string{}
@@ -389,11 +380,8 @@ func (a *BoardWebhookArm) hydrateAndSink(ctx context.Context, c boardCoord) erro
 	return a.ing.IngestIssues(ctx, c.repo, []forge.Issue{res.V})
 }
 
-// normalizeBoardRepo lowercases the event repo at the boundary (Global
-// Constraint 8, design.md:213-225): ParseGitHubEvent sets Repo from the
-// case-PRESERVED payload full_name, while subscription rows and board
-// coordinates are lowercased at the seed/upsert boundary — so a raw event repo
-// would silently miss the IsEnabledRepo row and mint a duplicate coordinate.
+// normalizeBoardRepo matches the lowercase subscription coordinates used by lookups.
+// Event payloads preserve case, so using them directly would miss the row and duplicate the coordinate.
 func normalizeBoardRepo(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }

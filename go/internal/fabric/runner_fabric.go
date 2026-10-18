@@ -19,26 +19,11 @@ const defaultRunnerEventBuffer = 256
 // RunnerEvent is one Runner→Server agent event as it arrives off the fan-in
 // subject.
 //
-// It carries the decoded PublishEventsRequest whole rather than flattening its
-// fields: the hub's existing write-through path already consumes exactly that
-// proto (RunnerSeq for gap detection, SessionId for routing, Frame for
-// classification, IdempotencyKey for at-most-once commit), so re-projecting it
-// into local fields would only create a shape that has to be un-projected again
-// at the seam — and would silently drop any field a later proto revision adds.
+// RunnerEvent retains the PublishEventsRequest so the hub can classify frames and detect gaps without re-projecting fields.
+// Keeping the proto also preserves fields added by later revisions.
 type RunnerEvent struct {
-	// RunnerID identifies the publishing Runner. The fan-in subject is shared
-	// (compass.runner.events, queue-grouped), so unlike the per-Runner command
-	// subject it does not encode the sender; the Runner stamps it in a header.
-	// Empty if the publisher set no header — a consumer is EXPECTED to treat an
-	// unattributed event as it treats an unknown frame: logged and counted,
-	// never silently trusted. The fabric itself does not enforce that; it
-	// reports the header verbatim.
-	//
-	// This value is publisher-asserted, NOT authenticated attribution: any
-	// publisher on the shared fan-in subject can stamp any id. A consumer must
-	// not treat it as identity — §Q2 puts the trust model on the Server's own
-	// resolution of the Runner, and this header is only a routing/diagnostic
-	// hint on top of it.
+	// RunnerID is a publisher-asserted header on the shared fan-in subject; it may be empty and is not authenticated identity.
+	// Consumers log and count unattributed events; the Server resolves the Runner independently.
 	RunnerID string
 	// Event is the decoded envelope, never nil for an event read off the
 	// channel.
@@ -130,16 +115,8 @@ func (f *Fabric) Events(ctx context.Context) (<-chan RunnerEvent, error) {
 	return out, nil
 }
 
-// pumpRunnerEvents decodes raw messages onto out until ctx is done or the
-// fabric is closed, then drains the subscription and closes out. It owns both
-// the subscription's and the channel's lifetime, so there is exactly one place
-// either is torn down.
-//
-// f.teardown is a load-bearing case in BOTH selects below, not a belt-and-braces
-// duplicate of ctx.Done(): nats.go does not close a ChanSubscription's channel
-// when the connection closes, so a Close with an uncancelled ctx would otherwise
-// leave this goroutine parked on raw forever — and out never closed under a
-// consumer ranging over it.
+// pumpRunnerEvents owns the subscription and output channel, draining and closing both on shutdown.
+// f.teardown is required because NATS leaves ChanSubscription open when the connection closes.
 func (f *Fabric) pumpRunnerEvents(ctx context.Context, sub *nats.Subscription, raw <-chan *nats.Msg, out chan<- RunnerEvent) {
 	defer close(out)
 	defer func() {

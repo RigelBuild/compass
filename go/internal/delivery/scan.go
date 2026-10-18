@@ -11,26 +11,10 @@ import (
 // at once — the scan loops, one bounded batch at a time.
 const scanBatchLimit = 256
 
-// scanMissedMentions replays the settle-edge mention pass over committed
-// messages whose durable marker is still NULL (mentions_routed_at IS NULL),
-// closing the pre-settle mention-loss window at a recovery point (RIG-2490 T2).
-// For each unmarked message it runs the ONE shared mention routine
-// (routeMentionsFor) against current durable state, then marks the message so a
-// later scan structurally excludes it.
-//
-// The loop keeps a scan-LOCAL, non-persisted seq floor (afterSeq, starting 0):
-// each batch advances it to the last returned row's seq, so a message the scan
-// SKIPS — because it is currently in c.held, i.e. the live settle path genuinely
-// owns it — is stepped past WITHIN this invocation and cannot re-fill the same
-// batch and hang the loop; but because nothing is persisted, the skipped
-// message stays NULL and is re-scanned from seq 0 at the NEXT recovery point,
-// until its settle pass marks it. This is deliberately NOT the killed
-// high-water: the floor lives only for this invocation's termination.
-//
-// The scan never fails Run or the consumer: a per-message fault leaves that
-// message UNMARKED (re-scanned next recovery point) and continues; a batch-read
-// fault stops this scan. Never returns an error, never panics (§Global
-// Constraints: never fail the consumer).
+// scanMissedMentions replays the shared mention policy for committed messages whose marker is NULL, then marks each message.
+// A call-local sequence floor prevents held messages from refilling a batch; nothing persists, so they retry next recovery point.
+// Per-message faults leave that row unmarked and continue; batch-read faults stop the scan.
+// Recovery faults never fail the consumer.
 func (c *Consumer) scanMissedMentions(ctx context.Context) {
 	var afterSeq int64
 	for {
@@ -69,11 +53,8 @@ func (c *Consumer) scanMissedMentions(ctx context.Context) {
 	}
 }
 
-// messageHeld reports whether messageID is currently registered in the
-// held-deliver registry — its id appears in the flattened value set across all
-// author-session entries (c.held is keyed by author session id; the values are
-// ordered held message ids). Read under c.mu; the caller must NOT hold c.mu
-// across the mention routine.
+// messageHeld checks the held-deliver registry under c.mu.
+// Callers must release c.mu before running the mention routine.
 func (c *Consumer) messageHeld(messageID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

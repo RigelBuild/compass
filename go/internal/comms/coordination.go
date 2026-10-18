@@ -24,11 +24,8 @@ type coordChange struct {
 	removed   []store.AccountID
 }
 
-// coordChanges is the mutable post-commit emit buffer the in-tx reconcile appends
-// to (via the ctx it is threaded) and the parent-edge RPC drains after the store
-// commits. A pointer lives in the ctx so the hook — which cannot return values
-// through its error-only signature — hands its result back to the caller that
-// owns the emit. Confined to one RPC's single-threaded call chain, so no lock.
+// coordChanges carries hook output through the RPC context because the hook can return only an error.
+// The single-RPC call chain confines it to one goroutine.
 type coordChanges struct {
 	pending []coordChange
 }
@@ -70,17 +67,9 @@ func (c *Comms) RegisterCoordinationHook(st *store.Store) {
 	st.SetCoordinationHook(c.reconcileCoordinationTx)
 }
 
-// reconcileCoordinationTx is the in-tx coordination reconcile registered as the
-// store's CoordinationHook: on the passed tx (mid-parent-edge-write) it (a)
-// resolves the manager's owning user; (b) locks that owner's coordination
-// namespace and re-reads the manager handle; (c) get-or-creates the namespace
-// group and UPSERTs the `<handle>-coordination` channel in it (owner=manager,
-// OWNER_ONLY, mandatory_subscription), suffixing around a user-owned name
-// collision; (d) resyncs membership to manager + current reports, seeding each
-// agent member's D2 cursor in this tx; (e) records the change for the post-commit
-// emit. Idempotent per manager: a re-run with the tree unchanged upserts nothing
-// new and resyncs to the same set. ALL reads/writes use tx, never the pool — the
-// tx is mid-flight.
+// reconcileCoordinationTx upserts the manager's OWNER_ONLY channel and resyncs its members in the parent-edge transaction.
+// All reads and writes use tx; the hook runs mid-flight.
+// The post-commit event is buffered for emitCoordChanges.
 func (c *Comms) reconcileCoordinationTx(ctx context.Context, tx pgx.Tx, managerAgentID store.AccountID) error {
 	_, ownerUserID, err := c.store.ResolveCoordinationManagerTx(ctx, tx, managerAgentID)
 	if err != nil {
@@ -131,12 +120,8 @@ func (c *Comms) reconcileCoordinationTx(ctx context.Context, tx pgx.Tx, managerA
 	return nil
 }
 
-// emitCoordChanges publishes the buffered coordination ChannelChanged events
-// AFTER the store commit, best-effort: it re-reads each touched channel and fans
-// a ChannelChanged (carrying removed_account_ids). A read failure is logged and
-// skipped, never propagated — the tree edge already committed, and the event
-// self-heals on the next reconcile / D1 sweep (design.md:555-556). NEVER call
-// this before the commit.
+// emitCoordChanges publishes buffered ChannelChanged events after commit.
+// Read failures are logged and skipped; the next reconcile or D1 sweep repairs state.
 func (c *Comms) emitCoordChanges(ctx context.Context, cc *coordChanges) {
 	if cc == nil {
 		return

@@ -77,11 +77,8 @@ func (in *Ingester) IngestIssues(ctx context.Context, repo string, raws []forge.
 	return nil
 }
 
-// translateOne strips the owner header off a raw forge issue's body BEFORE
-// translation (TranslateIssue is pure and copies the body verbatim — it does not
-// strip, so the strip MUST happen here or the header leaks onto the canonical
-// Body), parses the display attribution, translates, and stamps the forge
-// coordinate the translator deliberately leaves zero.
+// translateOne strips the owner header before translation, which preserves bodies verbatim.
+// It parses attribution and stamps the forge coordinate left unset by the translator.
 func (in *Ingester) translateOne(raw forge.Issue, repo string) *compassv1.Issue {
 	clean, author, ok := forge.StripOwner(raw.Body)
 	raw.Body = clean

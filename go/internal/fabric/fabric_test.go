@@ -20,21 +20,12 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// gate is the bound on every positive async assertion in this package. Long
-// enough that a loaded CI box does not fail a correct implementation, short
-// enough that a genuine hang fails the test rather than the suite's deadline.
-// It is a FAILURE bound, never a wait: no test sleeps for delivery, and no test
-// retries.
+// gate bounds positive async assertions; it fails genuine hangs without waiting for delivery.
+// Tests do not sleep or retry.
 const gate = 10 * time.Second
 
-// testServer runs an in-process NATS with JetStream for one test, and returns
-// its client URL. Hermetic by construction: Port -1 picks a free port, so
-// parallel tests never collide, and StoreDir from storeDir means the stream's
-// file storage is discarded with the test.
-//
-// SyncInterval is the record's `sync_interval: 100ms`. It is a SERVER option,
-// not a stream one (see SUBJECTS.md), so this is the only place in the repo the
-// tests can exercise the record's value rather than the server default.
+// testServer starts isolated JetStream with an ephemeral port and per-test storage.
+// SyncInterval is a server option, so this is where tests exercise the record's value.
 func testServer(t *testing.T) string {
 	t.Helper()
 	srv := natsserver.RunServer(&server.Options{
@@ -109,13 +100,8 @@ func recvRef(t *testing.T, ch <-chan EventRef) EventRef {
 	}
 }
 
-// pollUntil blocks until cond reports true, failing at the gate. For the two
-// states in this package that expose no event to block on — a goroutine count
-// read out of runtime.Stack, and a JetStream consumer's server-side
-// NumAckPending — there is no channel or WaitGroup to receive from, so a
-// bounded poll is the only gate available. It is still a FAILURE bound and not
-// a wait: it returns the moment cond holds, and a genuine hang fails the test
-// with what it was waiting for.
+// pollUntil gates state with no event or WaitGroup to await, such as goroutine counts or server ack state.
+// It returns as soon as the condition holds and fails at the gate.
 func pollUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.After(gate)

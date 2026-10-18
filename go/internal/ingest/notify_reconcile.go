@@ -1,14 +1,8 @@
 package ingest
 
-// The reconciliation sweep (RIG-2732 T5): the reliability backstop that heals a
-// missed webhook without reintroducing a poll. One immediate sweep at startup,
-// then a ticker at the Backstop cadence (default 30 min).
-//
-// Per sweep it enumerates subscribed coordinates, conditionally re-reads each via
-// forge.NotifyReader, diffs against the stored snapshot, feeds every change into
-// the SAME NotifyRouter.Route, and for a subscriber trailing the cursor with no
-// pending diff synthesizes ONE payload-free UPDATE. Requests are paced (anti-
-// burst); ErrBudgetExhausted aborts; a per-target error is isolated.
+// The startup and periodic reconciliation sweep heals missed webhooks without polling.
+// It conditionally fetches each subscription, routes changes through NotifyRouter, and synthesizes one update for a trailing cursor.
+// Requests are paced; budget exhaustion aborts the sweep, while target errors are isolated.
 
 import (
 	"context"
@@ -24,18 +18,12 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// defaultBackstop is the chosen backstop cadence (design.md:948-970): 30 min
-// keeps the sweep unmistakably a backstop (tens-of-minutes) while staying ~30x
-// under the prior poll design's issued-request rate; it is also the worst-case
-// latency for a missed webhook. A deployment that weights that latency higher
-// turns it down (10 min is still comfortably inside the rate bucket).
+// defaultBackstop sets the periodic recovery interval and maximum missed-webhook latency.
+// It keeps request volume below the prior poll design; deployments can shorten it within the rate budget.
 const defaultBackstop = 30 * time.Minute
 
-// defaultPace is the anti-burst inter-request delay applied between target
-// fetches within one sweep, so a 150-artifact sweep spreads its conditional GETs
-// rather than firing them in a single burst. A zero ReconcileConfig.Pace uses
-// this default; a negative value disables pacing (tests set it to 0-with-clock or
-// a tiny value to avoid real sleeps).
+// defaultPace spreads conditional fetches across a sweep; zero uses this default.
+// Negative disables pacing for tests.
 const defaultPace = 200 * time.Millisecond
 
 // ReconcileConfig configures the reconciliation sweep.
@@ -211,11 +199,8 @@ type fetchETags struct {
 	detail, comments, checks string
 }
 
-// fetch assembles the FetchedArtifact for one target from the NotifyReader,
-// resolving each 304'd half to its carried-forward prior value, and returns the
-// fresh (or carried-forward) ETags to re-store. A container target (number == 0)
-// reads ListNewArtifacts; an artifact target reads state (+ comments, + checks
-// for a PR).
+// fetch assembles one target from the reader, carrying forward prior values for each 304 response.
+// Container targets read new artifacts; artifact targets read state, comments, and PR checks.
 func (rc *NotifyReconciler) fetch(ctx context.Context, tgt NotifyTarget, prev fetchETags) (FetchedArtifact, fetchETags, error) {
 	fa := FetchedArtifact{
 		Provider: rc.provider,

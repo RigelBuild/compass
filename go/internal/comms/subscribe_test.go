@@ -35,14 +35,8 @@ type streamHarness struct {
 	client compassv1connect.CommsServiceClient
 }
 
-// commsTestActorHeader carries the acting account id from a test client to the
-// server-side handler, where withActorHeader translates it into the same
-// context value the T3 token interceptor would set (comms.WithActor). Over an
-// httptest server there is no interceptor, so without this every RPC would fall
-// back to the bootstrap admin — and the D9 stream filter would then evaluate
-// visibility for the admin, not the account the test means to act as. This is
-// the test-only stand-in for that interceptor, letting one harness drive a
-// stream as a member (A) or a non-member (B).
+// commsTestActorHeader carries the acting account to the test handler's WithActor middleware.
+// Without it, requests use the bootstrap admin and visibility assertions test the wrong actor.
 const commsTestActorHeader = "X-Test-Actor"
 
 // withActorHeader wraps a handler so a request carrying commsTestActorHeader is
@@ -58,11 +52,8 @@ func withActorHeader(h http.Handler) http.Handler {
 	})
 }
 
-// newStreamHarness wires a store, a bus, and a Comms handler, mounts it on an
-// httptest server, and returns a client plus the in-process handle. adminID is a
-// bootstrapped admin so the socket-door fallback attributes to a real account;
-// a request carrying commsTestActorHeader overrides it (withActorHeader), so a
-// stream can be driven as any account.
+// newStreamHarness wires a store, bus, handler, and HTTP test client.
+// The header middleware can override its bootstrap-admin fallback for any account.
 func newStreamHarness(t *testing.T) streamHarness {
 	t.Helper()
 	st := newTestStore(t)
@@ -91,17 +82,9 @@ type firstEvent struct {
 	err error
 }
 
-// subscribeFirst opens a SubscribeComms stream AS actor in a background
-// goroutine and returns a channel yielding the first delivered event. The actor
-// is carried on commsTestActorHeader so the server-side D9 filter evaluates
-// visibility for that account (empty actor keeps the admin fallback). connect
-// server-streaming over HTTP/1 is half-duplex — the client SubscribeComms call
-// blocks until the server flushes its first frame — so the subscribe MUST run
-// concurrently with the mutation that triggers the event, not before it.
-// sinceSeq=0 snapshots the ring under the same lock that registers the live
-// subscriber (events.go Subscribe), so an event published concurrently is
-// delivered exactly once (replay or live) with no gap and no sleep —
-// deterministic gating.
+// subscribeFirst opens a stream concurrently with the mutation that emits its first event.
+// HTTP/1 streaming is half-duplex, so subscribing first would block the mutation.
+// sinceSeq=0 snapshots and registers under one lock, making delivery gap-free without sleeps.
 func subscribeFirst(t *testing.T, h streamHarness, actor store.AccountID, req *compassv1.SubscribeCommsRequest) <-chan firstEvent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -128,16 +111,9 @@ func subscribeFirst(t *testing.T, h streamHarness, actor store.AccountID, req *c
 	return out
 }
 
-// firstEventAfterBoundary opens a since_seq=0 stream, consumes the leading
-// snapshot-boundary control frame (Seq=0, no payload), and returns the first
-// real EVENT frame. Use it wherever a test drives a since_seq=0 subscribe and
-// asserts on the first positioned event. It mirrors subscribeFirst's
-// goroutine+channel half-duplex shape (the subscribe runs concurrently with the
-// mutation that triggers the event) but calls stream.Receive() twice: the first
-// frame MUST be the boundary (Seq==0 && no payload — a misdelivered first frame
-// is a real bug, so fail loudly), then the second frame is returned. Sleep-free
-// and deterministic; no boundary frame is ever sent on since_seq>0, so only pass
-// a since_seq=0 request here.
+// firstEventAfterBoundary consumes the since_seq=0 control frame before returning the first positioned event.
+// It verifies the boundary has Seq=0 and no payload; only use it for since_seq=0.
+// Like subscribeFirst, it subscribes concurrently with the event-producing mutation.
 func firstEventAfterBoundary(t *testing.T, h streamHarness, actor store.AccountID, req *compassv1.SubscribeCommsRequest) <-chan firstEvent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())

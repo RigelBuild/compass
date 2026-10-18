@@ -16,14 +16,8 @@ import (
 // Member/owner and OpenDM resolution is viewer-scoped; roster vantages remain
 // list-scoped, so mutual peering never widens roster visibility.
 
-// resolveHandles resolves a batch of member/owner handles (which legitimately
-// name users as well as agents) to their account ids, in the caller's own
-// namespace and visibility scope. It is ATOMIC (OQ-2): any unresolved handle
-// fails the whole call with store.ErrNotFound naming EVERY unresolved handle in
-// its submitted spelling — the caller maps that through edgeError to
-// CodeNotFound. Order is preserved: the returned ids follow the submitted order,
-// so a caller that also needs per-input identity (memberUpdatesFromWire) can zip
-// them back. Empty input is a no-op (nil, nil).
+// resolveHandles atomically resolves member/owner handles in the caller's namespace and visibility scope.
+// It reports every missing spelling, preserves input order, and treats empty input as a no-op.
 func (c *Comms) resolveHandles(ctx context.Context, caller store.AccountID, handles []string) ([]store.AccountID, error) {
 	if len(handles) == 0 {
 		return nil, nil
@@ -49,12 +43,8 @@ func (c *Comms) resolveHandles(ctx context.Context, caller store.AccountID, hand
 	return out, nil
 }
 
-// resolveAgentHandle resolves a singular agent handle (owner-qualified or bare)
-// to its agent account id, in the caller's own owner namespace for a bare
-// handle. This owner-namespaced lookup stays outside viewer visibility checks;
-// the roster path applies its narrower list check after resolving the vantage.
-// wrong-owner, or non-agent handle is store.ErrNotFound naming the submitted
-// handle (edgeError → CodeNotFound), matching other handle-addressed targets.
+// resolveAgentHandle resolves bare handles in the caller's owner namespace.
+// Wrong-owner and non-agent handles return NOT_FOUND naming the submitted spelling.
 func (c *Comms) resolveAgentHandle(ctx context.Context, caller store.AccountID, handle string) (store.AccountID, error) {
 	acc, err := c.resolveAgentAccount(ctx, caller, handle)
 	if err != nil {
@@ -63,11 +53,8 @@ func (c *Comms) resolveAgentHandle(ctx context.Context, caller store.AccountID, 
 	return acc.ID, nil
 }
 
-// resolveAgentAccount is resolveAgentHandle's account-returning form. It parses
-// the owner qualifier, resolves the owner namespace (bare → caller's own owner,
-// qualified → the named user in the global index), then the agent under it via
-// store.AgentByHandle. The submitted handle — never the resolved id — names the
-// NOT_FOUND. NOT viewer-scoped (see resolveAgentHandle).
+// resolveAgentAccount selects the owner namespace, then looks up the agent by handle.
+// Errors report the submitted spelling; lookup is not viewer-scoped.
 func (c *Comms) resolveAgentAccount(ctx context.Context, caller store.AccountID, handle string) (store.Account, error) {
 	qh := store.ParseQualifiedHandle(handle)
 	owner, err := c.agentOwnerNamespace(ctx, caller, qh)
@@ -98,11 +85,8 @@ func (c *Comms) resolveAddressableAgent(ctx context.Context, caller store.Accoun
 	return acc, nil
 }
 
-// resolveVisibleAgentHandle is resolveAgentAccount plus a caller-visibility
-// check — the roster vantage's DEFINED error posture (§GetRoster's dual vantage):
-// a real-but-caller-invisible vantage maps to the SAME NOT_FOUND an unknown
-// handle gets, closing the NOT_FOUND-vs-empty-success vantage-probe oracle. The
-// submitted handle names the miss, never the resolved id.
+// resolveVisibleAgentHandle adds the roster-vantage visibility check to agent resolution.
+// Invisible and unknown handles both return NOT_FOUND to prevent probing.
 func (c *Comms) resolveVisibleAgentHandle(ctx context.Context, caller store.AccountID, handle string) (store.AccountID, error) {
 	acc, err := c.resolveAgentAccount(ctx, caller, handle)
 	if err != nil {
@@ -118,11 +102,8 @@ func (c *Comms) resolveVisibleAgentHandle(ctx context.Context, caller store.Acco
 	return acc.ID, nil
 }
 
-// agentOwnerNamespace resolves the owner-user id an agent handle is looked up
-// under: the caller's own owner for a bare handle, or the named user (global
-// index, users are globally unique) for an owner-qualified handle. An owner
-// qualifier that resolves to nothing is store.ErrNotFound (indistinguishable
-// from an unknown agent once notFoundHandle re-keys it to the submitted handle).
+// agentOwnerNamespace selects the caller's owner for a bare handle or resolves a qualified owner.
+// A missing owner is reported as NOT_FOUND for the submitted handle.
 func (c *Comms) agentOwnerNamespace(ctx context.Context, caller store.AccountID, qh store.QualifiedHandle) (store.AccountID, error) {
 	// Branch on the separator, not on Owner: "/x" must miss, not resolve bare.
 	if qh.Malformed() {

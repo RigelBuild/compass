@@ -47,13 +47,9 @@ func mkCanary(t *testing.T, h streamHarness, handle string) string {
 	return resp.GetAccount().GetId()
 }
 
-// drainReplayAsActor opens a SubscribeComms stream AS actor (over the
-// withActorHeader middleware) at since_seq=0 and returns every event delivered
-// up to — and excluding — the sentinel AccountChanged for canaryID. Because the
-// canary is published last and is globally visible, in-order per-subscriber
-// delivery guarantees every event the actor was entitled to (and that was
-// published before the canary) has arrived by the time the canary does. A
-// deadline guards a wedged handler; it is never a synchronization device.
+// drainReplayAsActor returns events up to the globally visible canary published last.
+// In-order delivery makes the canary a boundary for all earlier visible events.
+// Its deadline guards a wedged handler; it is not a synchronization device.
 func drainReplayAsActor(t *testing.T, h streamHarness, actor store.AccountID, canaryID string) []*compassv1.SubscribeCommsResponse {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())

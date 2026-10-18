@@ -23,26 +23,15 @@ import (
 // drain, not a hard requirement.
 const shutdownTimeout = 5 * time.Second
 
-// hostCID is AF_VSOCK's well-known CID for the host (VMADDR_CID_HOST). The
-// supervisor accepts control connections ONLY from the host; any other peer CID
-// (including the in-guest loopback CID 1, VMADDR_CID_LOCAL) is refused before a
-// single HTTP byte is read (§(e), microvm-runner.md:158-164).
+// hostCID is the only allowed AF_VSOCK peer; other CIDs are refused before reading HTTP bytes.
 const hostCID = 2
 
-// peerAllowed is the pure accept/refuse decision for an accepted vsock peer,
-// factored out so it is unit-testable without a real AF_VSOCK bind: only the
-// host CID is allowed. It is the guest-authenticates-host boundary — the exec
-// surface's real exposure is an in-guest process dialing the supervisor over
-// vsock loopback (§(e)).
+// peerAllowed is the guest-authenticates-host boundary; only the host CID is accepted.
 func peerAllowed(remoteCID uint32) bool {
 	return remoteCID == hostCID
 }
 
-// peerCIDListener wraps a vsock listener and refuses any accepted connection
-// whose remote CID is not the host's, closing it immediately before the HTTP
-// server ever reads from it. A refused peer is transparent to Serve: Accept
-// simply loops to the next connection, so a hostile in-guest dialer cannot even
-// occupy a serve slot.
+// peerCIDListener closes non-host connections before HTTP Serve sees them, then continues accepting.
 type peerCIDListener struct {
 	net.Listener
 }

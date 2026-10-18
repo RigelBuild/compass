@@ -18,26 +18,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// onMessagePosted is the delivery trigger for one posted message. It resolves
-// the subscribed agent recipients (D1's one query, author excluded, home-channel
-// disjunct) and applies the author split (design.md:139-168):
-//
-//   - HUMAN-authored (settled at post — does not stream): deliver now, from the
-//     posted blocks.
-//   - AGENT-authored WITH a live author session: HOLD keyed by the author's
-//     session id; the deliver fires on that session's settle edge, re-reading
-//     the then-settled blocks.
-//   - AGENT-authored with NO live author session (author already stopped at
-//     post): deliver now from stored blocks — there is no live turn to wait on
-//     (design.md:177-178, :306).
-//
-// The recipient set is resolved once here and captured with the held entry via a
-// re-resolve at fire time (the settle path re-resolves recipients against the
-// then-current subscription + liveness), so a subscription change between post
-// and settle is honored.
-//
-// Every read whose failure is returned runs before the first hold or dispatch;
-// reads inside fanOut are logged and acked, since a retry would repeat its steers.
+// onMessagePosted resolves recipients once and splits delivery by author state.
+// Human posts and agent posts without a live author dispatch now; live-author posts wait for settlement.
+// Held entries re-resolve recipients when they fire so subscription changes apply.
+// Reads that can fail run before hold/dispatch; fanOut read faults are logged because retries could repeat steers.
 func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) error {
 	if msg == nil {
 		return nil
@@ -177,27 +161,10 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 	}
 }
 
-// routeMentionsFor parses `@`-mentions from msg's settled text blocks and steers
-// every mentioned channel agent member with a LIVE session (D5). It is the ONE
-// implementation of the per-message mention policy, shared verbatim by the live
-// settle path (fanOut) and the RIG-2490 recovery scan (scanMissedMentions) — a
-// second mention-routing body is a second correctness surface and is prohibited.
-// It returns the full set of mentioned agent members (live or not) so fanOut can
-// exclude them from the plain deliver — steer-only precedence (OQ-3). A mentioned
-// agent with no live session is handled by the offline arm rather than dropped:
-// it is NOT added to the deliver fan-out (steer-only precedence still holds), but
-// the mention is made recoverable. An out-of-sweep-set member (unsubscribed,
-// non-home, non-mandatory) has no cursor-sweep backstop, so a durable
-// owed_mentions row is recorded first (T1; a record failure is logged loud and
-// the mention continues — a mention must never fail a post); after a successful
-// record the session is re-checked and, if now live, the owed mention is steered
-// directly, closing the record-vs-wake race. Then EVERY offline mentioned member
-// is woken via the AgentWaker seam (OQ-3 wake-all, incl. broadcast-expanded
-// members OQ-6), which resumes it to sweep the owed row. Order is record THEN
-// wake — the durable row is written before the wake so a wake that
-// resumes-and-sweeps finds it (durability-first). A mention routing failure is
-// logged and the mention(s) dropped, never returned up: a mention must never
-// fail a post (design.md:522-523).
+// routeMentionsFor is the single mention policy shared by live settle and recovery paths.
+// It returns all mentioned channel agents for steer-only precedence; offline recipients are woken, not delivered.
+// Out-of-sweep recipients get an owed row before wake, then a session recheck closes the record/wake race.
+// Faults are logged and swallowed so mentions never fail a post.
 func (c *Consumer) routeMentionsFor(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) map[store.AccountID]bool {
 	handles := mentionHandles(msg)
 	if len(handles) == 0 {
@@ -249,31 +216,10 @@ func askAnswerTarget(msg *compassv1.Message) (store.AccountID, bool) {
 	return "", false
 }
 
-// routeAskAnswerFor targets the asking agent of an ask_answer message when it
-// falls OUTSIDE the answer channel's sweep set (RIG-2257 T5). The deliver set
-// (SubscribedAgents) and the sweep set (InSweepSet) are the same disjunct
-// (subscribed OR home OR mandatory), so an asker that is a channel member but
-// unsubscribed, non-home, and non-mandatory is invisible to BOTH the live
-// deliver loop AND the reconnect cursor sweep — its answer would never arrive
-// without this arm. A subscribed/home/mandatory asker needs neither arm: the
-// normal deliver + cursor sweep already covers it.
-//
-// It is the ONE implementation of the ask_answer targeting policy, shared
-// verbatim by the live settle path (fanOut) and the RIG-2490 recovery scan
-// (scanMissedMentions) — so a consumer restart between AnswerAsk's commit and
-// fanOut re-derives the owed row on the next recovery scan (the answer message
-// is committed mentions_routed_at IS NULL, so it reappears in
-// UnroutedMentionMessages) rather than stranding the out-of-sweep asker. A
-// second targeting body would be a second correctness surface and is prohibited.
-//
-// For an out-of-sweep asker: (1) RECORD the durable owed row (the offline
-// backstop, drained by the OwedMentions start-edge sweep, which dispatches it as
-// a STEER); then (2) re-check the session and, if now live, dispatch the answer
-// directly as a steer — the latency path, closing the record-vs-start race.
-// Owed row and live dispatch are complements (durability vs latency), not
-// either/or: without the live dispatch an unsubscribed asker with a live session
-// strands until its next restart. A record failure is logged loud and swallowed
-// — delivery targeting must never fail a post.
+// routeAskAnswerFor is the shared ask_answer policy for live and recovery paths, preventing committed answers from stranding askers.
+// Out-of-sweep askers get an owed row first, then a live-session steer closes the record/start race.
+// The owed row is the offline backstop; the direct steer is the latency path.
+// Record faults are logged and swallowed so targeting never fails a post.
 func (c *Consumer) routeAskAnswerFor(ctx context.Context, channel store.ChannelID, msg *compassv1.Message) {
 	asker, ok := askAnswerTarget(msg)
 	if !ok {
@@ -340,12 +286,7 @@ func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID
 	return mentioned
 }
 
-// dispatchTo relays one deliver for msg to a recipient session under that
-// session's dispatch gate — the per-session serialization (design.md:212-225): a
-// live deliver takes the gate per message, so it queues BEHIND an in-flight
-// sweep for the same session and never interleaves ahead of the sweep's ordered
-// re-dispatch. A synchronous refusal (no live stream) is not fatal: the cursor
-// was never advanced on send, so the D2 sweep redelivers.
+// dispatchTo queues a deliver behind the recipient's sweep; a refusal leaves the cursor unadvanced for D2 recovery.
 func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compassv1.Message, fromHandle string) {
 	channelName, topicName := c.sourceNames(ctx, msg)
 	c.gatedDispatch(ctx, sessionID, deliverOp(msg, fromHandle, channelName, topicName, otelx.Traceparent(ctx)), msg.GetId())
@@ -360,11 +301,8 @@ func (c *Consumer) dispatchSteerTo(ctx context.Context, sessionID string, msg *c
 	c.gatedDispatch(ctx, sessionID, steerOp(msg, fromHandle, channelName, topicName, otelx.Traceparent(ctx)), msg.GetId())
 }
 
-// wake best-effort resumes an offline recipient via the AgentWaker seam (T3), so
-// an owed mention or subscribed deliver reaches it promptly. Nil-safe: a
-// consumer with no waker wired (the default, and every unit test that does not
-// set one) is a no-op — the durable owed row / cursor sweep is the backstop, so
-// a missing wake never loses a message.
+// wake best-effort resumes an offline recipient; the owed row or cursor sweep remains the durable backstop.
+// Nil is a no-op.
 func (c *Consumer) wake(ctx context.Context, agent store.AccountID) {
 	if c.agentWaker != nil {
 		c.agentWaker.WakeAgent(ctx, agent)

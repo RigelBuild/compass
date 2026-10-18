@@ -76,29 +76,13 @@ func (c *Comms) SubscribeComms(
 	return nil
 }
 
-// errStreamVisibility is the client-facing error a SubscribeComms stream ends
-// with when per-event visibility resolution hits a store fault. It carries no
-// detail about the event being filtered — the diagnostic goes to the server log,
-// never the client — so the fault is distinguishable from a clean end without
-// leaking what could not be resolved.
+// errStreamVisibility ends a stream when per-event visibility lookup fails.
+// Details stay in server logs so the event being filtered is not exposed.
 var errStreamVisibility = errors.New("visibility resolution failed")
 
-// forwardComms drains the replay snapshot (oldest first), then forwards the live
-// tail until the client disconnects, the server shuts down, or the subscriber
-// lags past the ring. The lag case emits a final CommsResyncRequired. Both
-// phases select on ctx so a shutdown or hang-up mid-replay returns promptly
-// rather than stalling graceful drain.
-//
-// Every event is filtered by actor visibility before it is sent (D9: the
-// SubscribeComms fan-out is visibility-scoped, design.md:446-447): the shared
-// bus fans every event to every subscriber, so a non-member would otherwise
-// receive private-channel MessagePosted/MessageUpdated content. A non-visible
-// event is silently skipped (not a resync — the client is not lagging, it just
-// may not see that event). A visibility-check store error ends the stream rather
-// than failing open (the event is never sent unfiltered) and is returned so the
-// caller surfaces it as a fault; a client hang-up or a stream.Send failure ends
-// the stream cleanly (nil), indistinguishable from graceful shutdown as it
-// should be.
+// forwardComms replays the snapshot, then streams live events until disconnect, shutdown, or lag.
+// It filters each event by actor visibility because the bus is shared across subscribers.
+// Lookup failures end the stream rather than fail open; hang-up and send failure end cleanly.
 func forwardComms(
 	ctx context.Context,
 	actor store.AccountID,
@@ -223,14 +207,8 @@ func commsResyncRequired(instanceEpoch uint64) *compassv1.SubscribeCommsResponse
 	}
 }
 
-// commsSnapshotBoundary is the leading control frame a since_seq=0 subscribe
-// receives before any event: it carries the store-space snapshot_seq boundary
-// (comms.proto:353-368) the client passes to each catch-up read RPC. It is a
-// control frame, not a positioned event — Seq=0, no payload — so a client
-// discriminates it from a positioned event by its zero seq and absent payload,
-// and from the terminal resync (also Seq=0) by payload: this frame has none,
-// the resync carries a CommsResyncRequired. instance_epoch is the subscription's
-// epoch so a client can pair the boundary with the seq space it belongs to.
+// commsSnapshotBoundary precedes a since_seq=0 snapshot and carries its store-space sequence boundary.
+// Seq=0 and no payload distinguish it from positioned events and terminal resync; the epoch identifies its sequence space.
 func commsSnapshotBoundary(snapshotSeq, instanceEpoch uint64) *compassv1.SubscribeCommsResponse {
 	return &compassv1.SubscribeCommsResponse{
 		Seq:           commsResyncSeq,
@@ -239,18 +217,10 @@ func commsSnapshotBoundary(snapshotSeq, instanceEpoch uint64) *compassv1.Subscri
 	}
 }
 
-// eventVisibility is the store surface the stream edge consults to decide
-// whether an event is visible to a subscriber. Each method is the single-id form
-// of a List* read predicate, so the per-event stream filter rides at exact
-// read-parity — the store is the one D9 source of truth and the two cannot drift
-// (the design record's anti-drift requirement). *store.Store satisfies it; a
-// test can substitute a fake to drive the filter without a database.
+// eventVisibility mirrors the store's per-event visibility predicates used by List* reads.
+// Tests can substitute a fake without a database.
 type eventVisibility interface {
-	// IsTopicChannelMember gates MessagePosted/MessageUpdated: a wire message
-	// carries only its topic, so the channel is resolved through topics.channel_id
-	// (the design record's topic->channel resolution), keeping the per-event
-	// filter at read-parity with ListMessages (a channel_members JOIN on the
-	// topic's channel).
+	// IsTopicChannelMember resolves the message's topic to its channel and matches ListMessages membership visibility.
 	IsTopicChannelMember(ctx context.Context, actor store.AccountID, topicID string) (bool, error)
 	// IsChannelMember gates TopicUpserted: a topic carries its channel_id, so a
 	// topic event reaches only members of its channel (read-parity with
@@ -287,16 +257,8 @@ func (s storeEventVisibility) boardVisible(ctx context.Context, viewer, agent st
 	return s.boardVisibleFn(ctx, viewer, agent)
 }
 
-// visibleToActor reports whether actor may receive resp — the per-event D9 gate
-// the stream applies to the shared fan-out (design.md:446-447). The bus fans
-// every event to every subscriber, so each variant is filtered by the SAME
-// predicate its List* read uses (via eventVisibility), never a uniform
-// membership check: a uniform check would leak nothing but would wrongly starve
-// a subscriber of ChannelChanged/ChannelGroupChanged/AccountChanged for
-// channels/groups/accounts it can legitimately see without plain membership.
-// ResyncRequired and any unset payload are control frames with no private
-// content and always pass (also guaranteed by construction: the resync sends at
-// the stream edge are synthesized, never bus events, so they never reach here).
+// visibleToActor applies the matching List* predicate to each event in shared fan-out.
+// Control frames pass because they carry no private content.
 func visibleToActor(
 	ctx context.Context,
 	vis eventVisibility,

@@ -21,11 +21,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// askFieldOwnership classifies every field of one ask-related wire message as
-// content (askFromWire must map it) or server-owned answer state (askFromWire
-// must drop it). Adding a field to the proto without adding it here fails
-// TestAskFromWireDropsEveryServerOwnedField, which is the whole point: the
-// classification is a decision, and this is where it is recorded.
+// askFieldOwnership classifies each ask field as content (mapped) or server-owned (dropped).
+// Descriptor-driven tests fail when a new proto field is left unclassified.
 type askFieldOwnership struct {
 	content     map[protoreflect.Name]struct{}
 	serverOwned map[protoreflect.Name]struct{}
@@ -228,11 +225,8 @@ func nonZeroString(name protoreflect.Name, suffix string) string {
 	return "v-" + string(name) + suffix
 }
 
-// populateEveryField sets EVERY field of m — and, recursively, of every message
-// it contains — to a non-zero value, driven by the descriptor rather than a
-// hand-written list so a newly added field is populated automatically. An
-// unhandled kind fails the test rather than leaving a field silently zero,
-// which would make the drop assertions vacuously pass.
+// populateEveryField sets each message field recursively to a descriptor-driven non-zero value.
+// Unsupported kinds fail instead of leaving drop assertions vacuous.
 func populateEveryField(t *testing.T, m protoreflect.Message) {
 	t.Helper()
 	fds := m.Descriptor().Fields()

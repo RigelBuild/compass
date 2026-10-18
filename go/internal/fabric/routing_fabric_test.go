@@ -11,13 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// bindingWatchdogMarker names every goroutine spawned on the
-// SubscribeBindingChanges path. The routing seam has its OWN copy of the
-// watchdog pattern rather than reusing subscribeSubject, so the sibling
-// event-plane goroutine tests provably do not cover it: their marker is
-// "fabric.(*Fabric).subscribeSubject.func", which never appears in this seam's
-// stacks. A residual watchdog shows up as a count that never falls back to
-// baseline.
+// bindingWatchdogMarker identifies goroutines from this seam's independent watchdog path.
+// The event-plane marker cannot detect a leaked binding watchdog.
 const bindingWatchdogMarker = "fabric.(*Fabric).SubscribeBindingChanges.func"
 
 // recvBindingChange takes the next BindingChange from ch, failing at the gate.
@@ -427,12 +422,8 @@ func TestForgedTenantBindingChangeIsDropped(t *testing.T) {
 	if err := raw.Publish(attackerSubject, forged); err != nil {
 		t.Fatalf("raw Publish(%q): %v", attackerSubject, err)
 	}
-	// Flush the ATTACKER's connection before the legitimate publish. Core NATS
-	// preserves order per publisher and these are two publishers, so without
-	// this the forgery could still be in flight when the assertion below runs
-	// and "it did not arrive" would mean "not yet". The flush round-trips a
-	// PING, so once it returns the server has processed the forged publish and
-	// already made its delivery decision for this subscription.
+	// Flush the attacker's connection before the legitimate publish because the publishers have no shared ordering.
+	// The round-trip proves the server processed the forgery before the assertion.
 	if err := raw.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flushing the forged publish: %v", err)
 	}

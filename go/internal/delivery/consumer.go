@@ -42,14 +42,10 @@ type ControlDispatcher interface {
 // from ControlDispatcher so that stays the established dispatch-only shape.
 // runnerhub.Hub implements it.
 type SessionResolver interface {
-	// SessionForAccount returns the live session bound to account, or ok=false
-	// when the account has no live session (deliver falls to the D2 sweep). ctx
-	// is threaded so the hub's read-through binding cache (RIG-3108) can scope a
-	// cache-miss table read: under the consumer's system-role ctx the read-through
-	// is refused and the miss falls to the sweep, exactly this method's contract.
+	// SessionForAccount returns a live session, or false so delivery falls to the D2 sweep.
+	// The context scopes cache-miss reads; denied misses also fall to the sweep.
 	SessionForAccount(ctx context.Context, account store.AccountID) (sessionID string, ok bool)
-	// LiveAgentSessions snapshots every live (account -> session) binding — the
-	// set the lag-resync sweep iterates so it redelivers to every live recipient.
+	// LiveAgentSessions snapshots every live binding for lag-resync delivery.
 	LiveAgentSessions() map[store.AccountID]string
 }
 
@@ -65,12 +61,7 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// the fan-out resolves the channel it delivers to through this join (the
 	// design record's topic->channel resolution).
 	MessageChannel(ctx context.Context, messageID string) (store.ChannelID, error)
-	// TopicChannelNames resolves a message's topic id to its topic name and the
-	// name of the channel it lives in (topics.channel_id -> channels.name) — the
-	// source-name denormalization stamped onto the deliver/steer control so the
-	// recipient renders the source channel+topic without a roster lookup (RIG-2956
-	// T0). An unknown topic id is store.ErrNotFound, which the caller logs and
-	// treats as empty names — never a delivery block.
+	// TopicChannelNames resolves display names; a miss yields empty names and never blocks delivery.
 	TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
 	// ChannelAgentMembers returns members the author may reach and their handles;
@@ -78,16 +69,10 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	ChannelAgentMembers(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.ChannelAgentMember, error)
 	// ResolveOwner scopes bare mentions to the posting author's owner namespace.
 	ResolveOwner(ctx context.Context, caller store.AccountID) (store.AccountID, error)
-	// SweepChannels resolves the D1 disjunct channel set an agent sweeps: every
-	// subscribed channel, PLUS its home channel, PLUS any mandatory_subscription
-	// channel it is a member of (T4 policy) — the pin sweep's channel
-	// enumeration (design.md T7). Distinct from UndeliveredMessages, whose map
-	// omits channels with no owed messages: the pin sweep must visit every
-	// subscribed channel to inject its current pins regardless of cursor.
+	// SweepChannels includes subscribed, home, and mandatory channels, even without owed messages.
+	// Pin sweeps need this full set to inject pins regardless of cursor.
 	SweepChannels(ctx context.Context, agent store.AccountID) ([]store.ChannelID, error)
-	// PinnedEntries returns a channel's pinned board ordered by position (the
-	// channel_pins store, T6). The pin sweep dispatches a deliver for each pinned
-	// message regardless of cursor position (design.md T7).
+	// PinnedEntries returns entries ordered by position for cursor-independent pin delivery.
 	PinnedEntries(ctx context.Context, channel store.ChannelID) ([]store.PinnedEntry, error)
 	// OwedMentions returns every message owed to agent (T1), keyed by channel,
 	// ascending seq — the sweepOwedMentions read (RIG-1641 T2).
@@ -115,12 +100,8 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// replays a message's mention pass, and the live path's mark (T3). Idempotent:
 	// the contract readers rely on is NULL vs non-NULL only (RIG-2490 T1).
 	MarkMentionsRouted(ctx context.Context, messageID string) error
-	// UnroutedMentionMessages returns committed messages whose settle-edge mention
-	// pass never completed (mentions_routed_at IS NULL) AND whose seq is > afterSeq,
-	// ascending seq, each with its channel resolved — the recovery scan read
-	// (RIG-2490 T1). limit bounds one batch; the caller loops, advancing afterSeq
-	// (a scan-LOCAL, never-persisted cursor) to the last returned seq until a batch
-	// is short.
+	// UnroutedMentionMessages returns unmarked committed messages after afterSeq in ascending order, each with its channel.
+	// The caller advances a call-local cursor until a batch is short.
 	UnroutedMentionMessages(ctx context.Context, afterSeq int64, limit int) ([]store.MessageWithChannel, error)
 }
 
@@ -201,24 +182,13 @@ type Consumer struct {
 	dispatch ControlDispatcher
 	resolver SessionResolver
 	log      *slog.Logger
-	// agentWaker best-effort resumes an offline recipient's session so an owed
-	// mention or subscribed deliver reaches it promptly (RIG-1641 T3). Set once
-	// at assembly via SetAgentWaker, AFTER both the consumer and the hub exist
-	// (the server package implements it over the resume machinery). Nil-safe: a
-	// consumer with no waker wired does not wake — today's behavior. T3 defines
-	// and wires this seam; no routing path calls it yet (that is T2/T4).
+	// agentWaker resumes offline recipients so owed work reaches them promptly.
+	// Nil is safe; the cursor sweep remains the durable backstop.
 	agentWaker AgentWaker
 
 	mu sync.Mutex
-	// held is the pending-deliver registry (design.md:157-168), keyed by the
-	// AUTHOR's live session id: an agent-authored message posted while its author
-	// still streams is HELD here until that session settles (WORKING->READY) or
-	// reaches any terminal frame, including ERRORED after an unrequested agent
-	// exit. Values are in post order, so a settle fires them ascending. A pre-T9
-	// Runner link loss never settles; its entry waits for the next-enroll reap
-	// (OnSessionsReaped), and a reap race can strand one entry. The sweeps skip
-	// only messages held for a LIVE author, so the cursor sweep still delivers a
-	// stranded entry.
+	// held keeps author-session messages until settle or a terminal frame.
+	// Values preserve post order; cursor sweeps recover entries stranded by a reap race.
 	held map[string][]heldEntry
 	// lastSettle records the latest settle timestamp and reported sequence for
 	// late holds. A sequence comparison takes precedence over wall time.
@@ -278,11 +248,8 @@ type Consumer struct {
 	// afterFunc schedules a deferred wake; a test swaps in a manual trigger.
 	afterFunc func(time.Duration, func())
 
-	// dispatched counts control dispatches (deliver + steer), labelled only by
-	// op kind (compass.op.kind = steer|deliver). Created ONCE at NewConsumer from
-	// the global meter; nil when meter construction failed, in which case the
-	// increment is skipped (a metric miss never blocks a delivery). NEVER
-	// labelled per-session/channel/message — that is a cardinality hazard.
+	// dispatched counts control ops by kind only; nil skips the metric.
+	// Session, channel, and message labels would create high cardinality.
 	dispatched metric.Int64Counter
 }
 
@@ -477,15 +444,8 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 	c.scanMissedMentions(ctx)
 }
 
-// deliverOp wraps a wire message in the AgentControl deliver op the relay carries
-// (§5 command envelope; agent.proto deliver = 3). fromHandle is the author's
-// handle denormalized onto the control so the agent emits the SessionInjection
-// observation's from_handle without a roster lookup on the injection path
-// (RIG-2486 T1); empty when the author handle could not be resolved (logged at
-// the resolve site — a handle miss never blocks a delivery). channelName and
-// topicName are the source channel+topic names denormalized the same way so the
-// agent renders "Channel <name> › topic <name>:" without a roster lookup
-// (RIG-2956 T0); each is empty on a resolve miss, which never blocks a delivery.
+// deliverOp carries the message and denormalized source/author names so rendering needs no roster lookup.
+// Name misses yield empty strings and never block delivery.
 func deliverOp(msg *compassv1.Message, fromHandle, channelName, topicName, traceparent string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Deliver{
@@ -494,14 +454,8 @@ func deliverOp(msg *compassv1.Message, fromHandle, channelName, topicName, trace
 	}
 }
 
-// steerOp wraps a wire message in the AgentControl steer op the relay carries
-// (mirror of deliverOp; agent.proto steer = 2). D5 routes an `@`-mention to a
-// channel agent member as a steer (mid-turn interrupt) rather than a deliver
-// (turn-end coalesced) — the only deliver-vs-steer difference is recipient-side
-// (design.md:558-562). SteerControl carries the same single first-party Message
-// as DeliverControl (DL-073), plus the same denormalized author from_handle
-// (RIG-2486 T1) and source channel+topic names (RIG-2956 T0) — each empty on a
-// resolve miss, which never blocks a delivery.
+// steerOp mirrors deliverOp for mid-turn mentions; only the recipient-side operation differs.
+// It carries the same denormalized names, and name misses never block delivery.
 func steerOp(msg *compassv1.Message, fromHandle, channelName, topicName, traceparent string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Steer{
@@ -510,12 +464,8 @@ func steerOp(msg *compassv1.Message, fromHandle, channelName, topicName, tracepa
 	}
 }
 
-// sourceNames resolves a wire message's topic id to its source channel name and
-// topic name — the values denormalized onto the deliver/steer control so the
-// agent renders the source without a roster lookup (RIG-2956 T0). A missing
-// topic id or a store miss is logged and yields empty names: the names are a
-// render signal, never a delivery precondition, so a name miss must not block
-// the dispatch.
+// sourceNames resolves render-only channel and topic names; missing topics or store misses yield empty strings.
+// A name miss must not block dispatch.
 func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (channelName, topicName string) {
 	topicID := msg.GetTopicId()
 	if topicID == "" {
@@ -534,11 +484,8 @@ func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (cha
 // the complete handle, including its optional owner qualifier.
 var mentionRE = regexp.MustCompile(`(?i)@([a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)?)`)
 
-// reservedMentions are the broadcast ping targets that expand to a channel's
-// member sets server-side (apps/ui/src/comms-stub.ts:182 RESERVED_MENTIONS).
-// Matched case-insensitively against the lowercased handle (comms.ts:279-281).
-// For steer routing, @everyone / @agents expand to the channel's agent members;
-// @users expands to human members (no agent session to steer) (design.md:532-534).
+// reservedMentions are case-insensitive channel-wide targets.
+// @everyone/@agents expand to agents; @users expands to human members.
 var reservedMentions = map[string]bool{"everyone": true, "agents": true, "users": true}
 
 // parseMentions returns distinct lowercased handles in first-appearance order.
@@ -596,13 +543,8 @@ func (c *Consumer) gateFor(sessionID string) *sync.Mutex {
 	return g
 }
 
-// storeMessageToWire re-reads a message from the store, maps it to the wire shape
-// via the ONE store->wire mapper (comms.MessageToWire), and resolves the channel
-// it lives in through its topic — the settled-block re-read the settle gate and
-// the no-live-author / sweep paths dispatch from (design.md:158-161), never a
-// stale in-memory copy. The channel is returned alongside because a wire/store
-// message no longer carries it: the fan-out gate needs the channel, resolved
-// through topics.channel_id (the design record's topic->channel resolution).
+// storeMessageToWire re-reads through the shared mapper and resolves the channel through the message topic.
+// Returning the channel separately preserves the fan-out gate for messages without a channel ID.
 func (c *Consumer) storeMessageToWire(ctx context.Context, messageID string) (*compassv1.Message, store.ChannelID, store.AccountID, error) {
 	m, err := c.st.MessageByID(ctx, messageID)
 	if err != nil {

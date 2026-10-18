@@ -58,14 +58,8 @@ func (r EventRef) encode() ([]byte, error) {
 	return b, nil
 }
 
-// msgID derives the JetStream deduplication id for the ref. Deterministic in
-// (tenant, kind, row id) so two Servers publishing the same logical change — or
-// one Server retrying a publish whose ack was lost — collapse to one stored
-// message inside the stream's duplicate window.
-//
-// Hashed rather than concatenated because the three fields are opaque: a raw
-// "tenant|kind|rowid" join could collide across differently-split ids, and a
-// long row id would push the Nats-Msg-Id header wide for no benefit.
+// msgID hashes tenant, kind, and row ID to deduplicate retries and duplicate publishers.
+// Hashing avoids ambiguous field splits and oversized headers.
 func (r EventRef) msgID() string {
 	h := sha256.New()
 	// Length-prefixed so no field boundary is ambiguous. hash.Hash.Write is

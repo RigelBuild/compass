@@ -44,19 +44,12 @@ import (
 // passes through, so it is fixed for determinism.
 const testActor store.AccountID = "actor-1"
 
-// errUnexpectedVisCall fails a test loudly if forwardComms routes a MessagePosted
-// event to any predicate other than IsTopicChannelMember (visibleToActor's
-// dispatch). Every event these tests publish is a MessagePosted, whose channel is
-// resolved through its topic now, so only IsTopicChannelMember should ever be
-// consulted.
+// errUnexpectedVisCall fails if a MessagePosted uses any predicate but IsTopicChannelMember.
+// The fake's other predicates return this error to expose dispatch regressions.
 var errUnexpectedVisCall = errors.New("fakeVisibility: unexpected predicate call")
 
-// fakeVisibility is a no-DB eventVisibility whose IsTopicChannelMember verdict is
-// supplied per topic id, so one fake drives every case: (false, errBoom) for a
-// fault, (false, wrapped-context-error) for a cancellation, (true, nil) for a
-// delivery, (false, nil) for a skip. The other predicates return
-// errUnexpectedVisCall — they are never exercised by a MessagePosted, and a
-// dispatch regression that routed one elsewhere would redden immediately.
+// fakeVisibility supplies per-topic verdicts without a database.
+// Other predicates fail loudly because MessagePosted must use IsTopicChannelMember.
 type fakeVisibility struct {
 	isMember func(topicID string) (bool, error)
 }
@@ -111,11 +104,8 @@ func messagePostedOn(topicID string) *compassv1.SubscribeCommsResponse {
 	}
 }
 
-// subscriptionOf publishes events onto a fresh bus, subscribes at since_seq=0 so
-// they land in Replay, then closes the bus so the live channel is closed. The
-// resulting Subscription drives forwardComms to completion with no sleeps and no
-// wall-clock waits: it drains the replay snapshot, then the closed (unlagged)
-// live channel ends the loop cleanly (subscribe.go:141-148).
+// subscriptionOf publishes to a fresh bus, subscribes at since_seq=0, then closes it.
+// The replay and closed live channel complete forwardComms without sleeps.
 func subscriptionOf(t *testing.T, events_ ...*compassv1.SubscribeCommsResponse) events.Subscription[*compassv1.SubscribeCommsResponse] {
 	t.Helper()
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
@@ -404,11 +394,8 @@ func (visibleAlways) boardVisible(context.Context, store.AccountID, store.Accoun
 
 var _ eventVisibility = visibleAlways{}
 
-// overrunSubscription subscribes to a fresh bus, then publishes more than the
-// live buffer holds without draining Live, so the bus latches the subscriber
-// lagged and closes its channel (events_test.go TestOverrunClosesLiveAndLatchesLagged,
-// a different package — the technique, not its symbols). The returned
-// subscription drives forwardComms's sub.Lagged() terminal-resync branch.
+// overrunSubscription publishes past the live buffer without draining it, latching lag and closing the channel.
+// forwardComms then exercises its terminal-resync branch.
 func overrunSubscription(t *testing.T) events.Subscription[*compassv1.SubscribeCommsResponse] {
 	t.Helper()
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
@@ -469,16 +456,9 @@ func TestForwardCommsLiveTailOverrunEmitsTerminalResync(t *testing.T) {
 	}
 }
 
-// driveUnderflowResync opens a SubscribeComms stream over httptest against a
-// nil-store Comms and returns the frames the client received plus its terminal
-// error. The underflow branch returns its terminal resync before
-// actorFromContext or any c.store access, so a nil store is sound here — not a
-// weakened substitute. The bus supplies the seq space and instance epoch the
-// cursor is validated against.
-//
-// The context is bounded because the failure mode of a dropped underflow guard
-// is a registered live subscriber tailing forever: without a deadline that
-// surfaces as a whole-suite timeout instead of this test failing.
+// driveUnderflowResync opens a stream over httptest and returns its frames and terminal error.
+// Underflow resync returns before actor or store access, so a nil store is safe.
+// A deadline prevents a missing guard from tailing forever.
 func driveUnderflowResync(t *testing.T, bus *events.Bus[*compassv1.SubscribeCommsResponse], req *compassv1.SubscribeCommsRequest) forwardResult {
 	t.Helper()
 	svc := NewComms(t.Context(), nil, bus, nil, testActor)

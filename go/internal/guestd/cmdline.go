@@ -18,12 +18,8 @@ const vsockPortKey = "compass.vsock_port"
 // it binds an auto-assigned port, so it is not a valid configured handshake port.
 const vmaddrPortAny = 0xFFFFFFFF
 
-// parseVsockPort extracts compass.vsock_port=<n> from a /proc/cmdline string.
-// The cmdline is a single line of space-separated tokens, each either a bare
-// flag or key=value; the last occurrence of the key wins, matching how the
-// kernel resolves duplicated parameters. A missing key, an empty value, a
-// non-numeric value, or a value outside the valid non-zero uint32 port range is
-// a fail-closed error — guestd cannot serve the handshake without a port.
+// parseVsockPort reads the last compass.vsock_port token; missing, empty, non-numeric, zero, or out-of-range values fail closed.
+// guestd cannot serve the handshake without a valid port.
 func parseVsockPort(procCmdline string) (uint32, error) {
 	raw := ""
 	found := false
@@ -59,21 +55,11 @@ func parseVsockPort(procCmdline string) (uint32, error) {
 	return uint32(n), nil
 }
 
-// bootNonceKey is the kernel-cmdline parameter carrying the per-session boot
-// nonce (§(e)) — a random hex value the host generates per session, passes on
-// the cmdline beside compass.vsock_port, and expects guestd to echo in
-// HealthResponse.boot_nonce. It binds the guest answering the handshake to THIS
-// BootConfig (a liveness/identity check against a stale VMM on a recycled
-// socket), not an authentication secret. It is OPTIONAL: a V2a-style cmdline
-// carries no nonce, so an absent key echoes an empty nonce and Health still
-// answers. A present-but-malformed value is a boot-config bug and fail-closes.
+// bootNonceKey carries the host-generated session nonce, which guestd echoes to bind the response to this boot.
+// It is optional for older guests; a present malformed value fails closed.
 const bootNonceKey = "compass.boot_nonce"
 
-// parseBootNonce extracts compass.boot_nonce=<hex> from a /proc/cmdline string,
-// following the same last-occurrence-wins tokenisation as parseVsockPort. A
-// missing key returns (nil, nil) — the nonce is optional hardening, not a
-// fail-closed boot parameter. A present key with an empty or non-hex value is a
-// malformed boot config and returns an error.
+// parseBootNonce follows parseVsockPort's last-occurrence rule; absence is optional, but empty or non-hex values fail.
 func parseBootNonce(procCmdline string) ([]byte, error) {
 	raw := ""
 	found := false
@@ -98,20 +84,12 @@ func parseBootNonce(procCmdline string) ([]byte, error) {
 	return nonce, nil
 }
 
-// gatewayPortKey is the kernel-cmdline parameter carrying the fixed AF_VSOCK
-// port the host serves the AgentGateway on (§(d)). guestd forwards
-// /run/compass/agent.sock to (CID 2, this port). The host appends it in
-// production; it is OPTIONAL so a V2a-era cmdline or a hermetic harness that
-// carries no gateway port simply starts no forwarder.
+// gatewayPortKey carries the optional host AgentGateway vsock port.
+// Older cmdlines omit it and start no forwarder.
 const gatewayPortKey = "compass.gateway_port"
 
-// parseGatewayPort extracts compass.gateway_port=<n> from a /proc/cmdline
-// string, following the same last-occurrence-wins tokenisation and non-zero
-// uint32 / VMADDR_PORT_ANY validation as parseVsockPort. It differs in being
-// OPTIONAL: an absent key returns (0, false, nil) — no forwarder is started and
-// V2a/hermetic cmdlines stay valid — while a present-but-malformed value is a
-// fail-closed boot error (the parseVsockPort posture), since a host that set the
-// key but garbled it is a boot-config bug.
+// parseGatewayPort follows parseVsockPort's token and range checks but allows absence.
+// A present malformed value fails boot because it came from host configuration.
 func parseGatewayPort(procCmdline string) (uint32, bool, error) {
 	raw := ""
 	found := false

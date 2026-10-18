@@ -59,22 +59,8 @@ const (
 	MinInactiveThreshold = time.Hour
 )
 
-// streamConfig is the COMPASS_COMMS stream configuration.
-//
-// # Where sync_interval lives
-//
-// The record specifies `sync_interval: 100ms` for this stream — a bounded fsync
-// window, because JetStream's default sync behavior can lose acknowledged writes
-// under power failure. It is deliberately NOT set here: sync_interval is a
-// nats-server FILE STORE option, not a per-stream one, so jetstream.StreamConfig
-// (nats.go v1.53.1) exposes no field for it. It is set on the NATS process:
-//
-//   - server config:  jetstream { sync_interval: "100ms" }
-//   - Go embedded/test: server.Options.SyncInterval = 100 * time.Millisecond
-//
-// The stack's NATS service config is where the deployment sets it (the sibling
-// nats-container task); testServer in this package sets the server.Options field
-// so the tests exercise the record's value rather than the server default.
+// streamConfig omits sync_interval because it is a NATS server FILE STORE option, not a StreamConfig field.
+// Set it in server config and embedded/test options instead.
 func (c Config) streamConfig() jetstream.StreamConfig {
 	return jetstream.StreamConfig{
 		Name:        c.streamName(),
@@ -92,11 +78,7 @@ func (c Config) streamConfig() jetstream.StreamConfig {
 	}
 }
 
-// consumerConfig is the durable pull-consumer configuration for one subscribed
-// subject. Durable and named deterministically from the subject so every Server
-// instance subscribing to that subject shares one consumer — which is what gives
-// the delivery plane its queue-group semantics (§Q3: each event is claimed by
-// exactly one worker) and what lets a restarted Server resume where it stopped.
+// consumerConfig shares one named durable per subject across Server instances, providing queue-group semantics and restart resume.
 func (c Config) consumerConfig(subject string) jetstream.ConsumerConfig {
 	return jetstream.ConsumerConfig{
 		Durable:       durableName(subject),
@@ -127,32 +109,15 @@ func (c Config) inactiveThreshold() time.Duration {
 	return max(2*age, MinInactiveThreshold)
 }
 
-// durableName derives a JetStream durable consumer name for a subject.
-// Consumer names cannot contain "." (nor whitespace, "*", ">", or a path
-// separator), and a subject's tokens can legally contain "_" (ValidSubjectToken
-// permits it — every snake_case EventKind uses it), so a "."→"_" substitution
-// is NOT injective: compass.a.comms.b_comms_c and compass.a_comms_b.comms.c
-// would collapse to one name and the second Subscribe would silently re-point
-// the first's shared consumer FilterSubject (a cross-tenant mis-delivery).
-// Hashing the subject is injective by construction; the "comms-" prefix keeps
-// the name greppable, and the consumer's Description/FilterSubject still carry
-// the readable subject for operators. Untruncated: "comms-" + 64 hex is 70
-// chars, far inside JetStream's 255-char limit, and truncating would reintroduce
-// the collision surface this exists to remove.
+// durableName hashes the subject: replacing dots is not injective because tokens may contain underscores.
+// Collisions could repoint another tenant's shared consumer; the prefix remains greppable and the full hash fits the limit.
 func durableName(subject string) string {
 	sum := sha256.Sum256([]byte(subject))
 	return "comms-" + hex.EncodeToString(sum[:])
 }
 
-// ensureStream creates or updates the comms stream, idempotently, and caches it.
-// Called lazily from the first Publish/Subscribe rather than from New because
-// New(cfg Config) takes no context — deriving the topology
-// call from the first caller's ctx keeps the cancellation chain intact instead of
-// rooting a fresh one.
-//
-// CreateOrUpdateStream (not CreateStream) so a container restart, a second
-// Server, and a config change all converge on the same stream rather than
-// racing or failing.
+// ensureStream lazily creates or updates the stream using the first caller's context.
+// CreateOrUpdate converges restarts, additional servers, and config changes.
 func (f *Fabric) ensureStream(ctx context.Context) (jetstream.Stream, error) {
 	f.streamMu.Lock()
 	defer f.streamMu.Unlock()

@@ -15,11 +15,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/forge"
 )
 
-// defaultPullNumberTTL is how long a resolved (repo, head sha) -> PR number
-// mapping is held. It is generous because the mapping is near-immutable: a
-// commit's association to a PR changes only when a PR is opened for, or
-// re-targeted onto, an already-pushed head. The TTL exists to bound staleness
-// for exactly those cases, not to track a moving value.
+// defaultPullNumberTTL bounds staleness for near-immutable (repo, head SHA) associations.
+// It covers a PR opened or retargeted onto an already-pushed head.
 const defaultPullNumberTTL = 10 * time.Minute
 
 // CachedPullNumberResolver is a TTL cache in front of a PullNumberResolver,
@@ -66,16 +63,8 @@ type pullNumberKey struct {
 	sha  string
 }
 
-// pullNumberEntry is one cached outcome: either a resolved number, or the
-// no-PR-for-this-SHA answer (number 0, noPull true). It never holds an
-// infrastructure error.
-//
-// observedAt is when the resolve that produced this entry STARTED, not when it
-// finished. Two resolves for one key overlap whenever a burst misses (the cache
-// resolves outside the lock on purpose), and the useful answer is the one that
-// looked at the world most recently — not the one that happened to return last.
-// A slow resolve that began before a PR existed must never overwrite a fast
-// later resolve that found it.
+// pullNumberEntry caches a resolved PR number or a clean no-PR result, never infrastructure errors.
+// observedAt records resolve start time so an older, slower miss cannot overwrite a later hit.
 type pullNumberEntry struct {
 	number     uint64
 	noPull     bool
@@ -152,18 +141,8 @@ func (c *CachedPullNumberResolver) PullNumberForSHA(ctx context.Context, repo, h
 	return num, nil
 }
 
-// store records one outcome under the cache lock, sweeping entries that expired
-// meanwhile. The sweep is what bounds the map: a read only evicts the key it
-// looks up, so a coordinate seen exactly once would otherwise stay resident
-// forever. Every store is already behind a network resolve, so walking the live
-// set is far cheaper than the call that got us here.
-//
-// The write is LAST-OBSERVED-WINS, not last-to-finish-wins. During the burst
-// this cache exists for, two resolves for one head overlap; if a slow one began
-// before the PR was opened and a fast one afterwards found it, letting the slow
-// one land would pin "no PR" for a full TTL and fail every check_suite for that
-// head until it expired. So an entry whose resolve started EARLIER never
-// replaces a live entry that saw the world later.
+// store records an outcome and evicts expired entries to bound the map.
+// Writes are last-observed-wins: a slow earlier miss cannot overwrite a later resolve that found the PR.
 func (c *CachedPullNumberResolver) store(key pullNumberKey, entry pullNumberEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

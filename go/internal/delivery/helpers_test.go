@@ -28,19 +28,8 @@ const testTimeout = 10 * time.Second
 
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-// signalObserved does a NON-BLOCKING send of a per-call token on a test
-// observation channel (the recorded/wake signals below). The token only wakes a
-// waiter (waitForMessage / waitForDispatches / waitForWakes / waitFor) to
-// re-check the fake's recorded set; the recorded FACT already lives in the fake's
-// mutex-guarded calls slice BEFORE this send, so the token is a wakeup hint,
-// never the source of truth. The send must not block: a blocking send turns the
-// observation channel into backpressure on the code under test, so a test that
-// produces more dispatches than the buffer holds wedges the dispatching goroutine
-// on a full channel the moment a waiter stops draining — a deadlock that passes in
-// isolation but hangs the whole package to the -timeout under cross-test load
-// (RIG-2514). Dropping a token is safe: a drop happens only when the buffer is
-// full (hence non-empty), so a blocked waiter still has a token to drain and loop
-// back to re-check the snapshot; when the buffer is empty the send always lands.
+// signalObserved sends a non-blocking wake token; recorded state is committed under the fake's mutex first.
+// Drops are safe because a full buffer already has a token; blocking would let observation backpressure deadlock dispatch.
 func signalObserved(ch chan struct{}) {
 	select {
 	case ch <- struct{}{}:
@@ -210,11 +199,8 @@ func (r *fakeResolver) bind(account store.AccountID, sessionID string) {
 	r.sessions[account] = sessionID
 }
 
-// fakeWaker is a counting AgentWaker: it records WakeAgent calls per agent so a
-// test can assert wake-all across offline mentioned members. An optional onWake
-// hook lets a test model a wake that resumes the agent (e.g. bind a session) —
-// used by the record-vs-wake race case is instead driven at the resolver, so
-// onWake stays a general seam.
+// fakeWaker counts wakes by agent; the optional hook models a wake that resumes an agent.
+// Record-vs-wake races are driven at the resolver instead.
 type fakeWaker struct {
 	mu       sync.Mutex
 	calls    map[store.AccountID]int
@@ -295,31 +281,20 @@ type fakeReads struct {
 	// pins is the pinned board per channel (PinnedEntries), ordered as seeded.
 	pins map[store.ChannelID][]store.PinnedEntry
 
-	// beforeUndelivered, when set, is called with the swept agent id at the TOP
-	// of UndeliveredMessages BEFORE f.mu is acquired — a TEST-ONLY seam (nil in
-	// production) so a test can block a sweep's owed-read mid-flight and publish
-	// a message INTO the sweep/subscribe window without deadlocking other reads
-	// on the fake's lock.
 	beforeUndelivered func(store.AccountID)
 	// beforeMessageByID, when set, is called with the message id at the TOP of
 	// MessageByID before f.mu is acquired, so a test can act at the point a
 	// re-read happens (e.g. a concurrent hold between the scan's checks).
 	beforeMessageByID func(messageID string)
-	// messageErrs, when set for an id, makes the next MessageByID calls for it
-	// fail with these errors in order, one per call; a nil entry reads normally.
-	// authorErrs (per account, IsAgentAccount) and channelErrs (per message id,
-	// MessageChannel) queue outcomes the same way.
+	// messageErrs queues MessageByID outcomes in order; authorErrs and channelErrs queue outcomes for their reads.
 	messageErrs map[string][]error
 	authorErrs  map[store.AccountID][]error
 	channelErrs map[string][]error
 	// reads records the scope of every MessageByID call, so a test can assert a
 	// re-read ran under the message's tenant and not the system role.
 	reads []readScope
-	// owedMentions is the OwedMentions read per agent (channel -> messages),
-	// distinct from `owed` (UndeliveredMessages / the cursor sweep). T2's
-	// sweepOwedMentions reads this map. RecordOwedMention appends into it and
-	// ClearOwedMention deletes from it, so a test can assert recorded/cleared
-	// state after routing.
+	// owedMentions stores the durable per-agent mention rows.
+	// RecordOwedMention appends; ClearOwedMention removes rows.
 	owedMentions map[store.AccountID]map[store.ChannelID][]store.Message
 	// sweepSet reports InSweepSet per (agent, channel). Absent -> false (out of
 	// sweep set), so a test seeds only the in-sweep-set memberships it needs.
@@ -332,11 +307,8 @@ type fakeReads struct {
 	// can flip the recipient live BETWEEN the record and the post-record resolve,
 	// exercising the record-vs-wake race's now-live steer.
 	afterRecord func(store.AccountID, store.ChannelID, string)
-	// unrouted is the ordered committed-message set the recovery scan reads
-	// (UnroutedMentionMessages): each row is a message whose settle-edge mention
-	// pass never completed (mentions_routed_at IS NULL), ascending seq. A test
-	// seeds it with seedUnrouted; MarkMentionsRouted removes the marked id, so
-	// the fake mirrors the store's WHERE mentions_routed_at IS NULL predicate.
+	// unrouted models committed messages whose settle-edge mention pass remains unmarked, in sequence order.
+	// MarkMentionsRouted removes rows matching the store predicate.
 	unrouted []store.MessageWithChannel
 	// marked records every id passed to MarkMentionsRouted, so a test asserts a
 	// message's mention pass was marked complete.
@@ -693,11 +665,8 @@ func (f *fakeReads) seedMessage(m store.Message) {
 	f.messages[string(m.ID)] = m
 }
 
-// seedOwedMention registers a durable owed mention (agent, channel, message) the
-// sweepOwedMentions read returns — directly, bypassing RecordOwedMention, so a
-// start-edge test can pre-seed an owed row independent of the routing arm. The
-// message itself must be seeded separately (seedMessage) for the sweep's re-read
-// to resolve it; omit it to model a permanently-unreadable owed row.
+// seedOwedMention preloads a durable owed row without routing it, for start-edge tests.
+// Seed the message separately so the sweep can re-read it.
 func (f *fakeReads) seedOwedMention(agent store.AccountID, channel store.ChannelID, m store.Message) { //nolint:unparam // read-clarity signature: agent names WHICH recipient's owed row to seed at each call site, though every current caller happens to seed the same recipient — not dead code.
 	f.mu.Lock()
 	defer f.mu.Unlock()

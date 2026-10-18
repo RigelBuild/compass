@@ -50,13 +50,8 @@ func (f *fakeMount) Mount() error {
 	return f.err
 }
 
-// newSteps wires a bootSteps whose api/readCmdline/net/mount stages record into
-// rec and whose serve step signals reached (so a test can gate on serve being
-// entered without polling the recorder across goroutines), captures the Health
-// service it received, and then blocks until ctx is cancelled — serve as the
-// terminal step, exactly as production does. served holds the service serve was
-// handed, or nil if serve was never reached. cmdline is the kernel command line
-// the readCmdline step returns; cmdlineErr, when non-nil, makes that step fail.
+// newSteps records each boot stage, signals when serving begins, then waits for cancellation.
+// It captures the served supervisor and lets tests inject cmdline and stage failures.
 func newSteps(rec *recorder, apiErr, netErr, mountErr, cmdlineErr error, cmdline string) (bootSteps, **supervisor, chan struct{}) {
 	served := new(*supervisor)
 	reached := make(chan struct{})

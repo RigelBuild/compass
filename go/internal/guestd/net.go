@@ -26,12 +26,8 @@ const (
 	resolvConfPath = "/etc/resolv.conf"
 )
 
-// linuxNetProvisioner is the real netProvisioner: it links up lo and the
-// virtio-net interface, runs an in-process DHCP client (OQ-C) to acquire a
-// lease, installs the address and default route, and writes /etc/resolv.conf
-// (§(d) step 2). It is Linux-only and touches netlink + a raw DHCP socket, so it
-// runs only inside the VM (proven by T4); the derivation it applies is unit-
-// tested via leaseToConfig / renderResolvConf.
+// linuxNetProvisioner obtains a DHCP lease, installs the address and route, and writes resolver config inside the Linux guest.
+// Lease derivation is unit-tested separately.
 type linuxNetProvisioner struct {
 	iface string
 	log   *slog.Logger
