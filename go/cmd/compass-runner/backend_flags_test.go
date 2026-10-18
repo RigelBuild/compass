@@ -2,13 +2,8 @@
 
 package main
 
-// The operator-knob wiring for the microVM backend. Every knob here is dead
-// code unless it reaches MicroVMConfig, and a knob that silently does not is the
-// worst kind of gap: QuotaRequired was declared on the config, consumed by the
-// D7 preflight, and unsettable by any operator — so the multi-tenant gate could
-// never fire, on any profile. These tests assert BOTH resolution paths (the flag
-// and the environment fallback) for the quota knobs, so that failure mode
-// cannot recur silently.
+// These tests pin microVM backend flag and environment wiring through
+// MicroVMConfig so quota settings reach D7 preflight.
 
 import (
 	"context"

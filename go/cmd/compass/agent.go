@@ -104,11 +104,8 @@ func stateLabel(state compassv1.AgentSessionState) string {
 	return strings.ToLower(strings.TrimPrefix(name, "AGENT_SESSION_STATE_"))
 }
 
-// tierLabel renders a RuntimeTier as the token the --backend flag accepts, so a
-// tier a reader sees here is one they can select. That makes the mapping
-// explicit rather than derived: stripping the enum prefix would print
-// "apple_container", which the flag rejects. Unknown renders as unknown, never
-// a tier a reader could mistake for containment.
+// tierLabel returns the --backend spelling; enum names like apple_container do
+// not match accepted values. Unknown tiers remain unspecified.
 func tierLabel(tier compassv1.RuntimeTier) string {
 	switch tier {
 	case compassv1.RuntimeTier_RUNTIME_TIER_PODMAN:
@@ -124,11 +121,8 @@ func tierLabel(tier compassv1.RuntimeTier) string {
 	}
 }
 
-// egressLabel renders an EgressPosture as the short operator-facing token: the
-// enum name with the EGRESS_POSTURE_ prefix stripped and lowercased (ARMED →
-// "armed", UNENFORCED → "unenforced"). The unspecified/unknown value renders as
-// the shared unknown token — a user must never read an unknown posture as armed,
-// which would show an uncontained session as contained.
+// egressLabel returns the lowercased posture name. Unknown values remain
+// unspecified, never appearing armed or contained.
 func egressLabel(posture compassv1.EgressPosture) string {
 	if posture == compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED {
 		return unspecifiedLabel

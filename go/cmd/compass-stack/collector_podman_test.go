@@ -2,33 +2,9 @@
 
 package main
 
-// T4 (RIG-2825) bundled Plane-B fan-in OTel Collector integration proof,
-// mirroring container_postgres_podman_test.go's cross-process harness: it drives
-// the REAL compass-stack binary as separate up/down processes against a REAL
-// rootless podman collector container, and proves the T4 supervised-component
-// path end to end:
-//
-//	up -> collector container exists + health :13133 answers 200 ->
-//	fresh-process down -> collector container gone (`podman container exists`
-//	false) -> pgid record removed.
-//
-// Plus the D3 --otel-external opt-out: `up --otel-external <endpoint>` brings the
-// stack up WITHOUT starting a bundled collector component, and no collector
-// container is ever created.
-//
-// Build-tagged `podman` (out of the hermetic unit lane) and podmanUsable()-guarded
-// so a container-less sandbox skips rather than fails.
-//
-// PROCESS SAFETY (rule://process-safety): the collector container is torn down
-// only by `compass-stack down` (reads the stack's OWN v2 pgid record, drives
-// podman stop/rm by the recorded name) or by an explicit podman-rm of a
-// container THIS test created by a unique derived name — never a pattern/name
-// scan kill.
-//
-// DETERMINISM: no blind sleeps for readiness — up returns only after Ready, so
-// its exit 0 is the gate; every post-condition polls an event (the container's
-// presence, the health endpoint, the pgid file) under a bounded budget.
-
+// Collector integration tests drive separate up/down processes with rootless
+// podman. They cover health, recorded-name teardown, and external-OTLP opt-out.
+// Cleanup targets only stack records or unique test-owned container names.
 import (
 	"context"
 	"crypto/sha256"
@@ -189,19 +165,15 @@ func TestExternalOTLPUpDown(t *testing.T) {
 	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 }
 
-// derivedCollectorName reproduces stack.collectorContainerName (package-internal
-// to stack): sha256 of the cleaned state dir, first 6 bytes hex, with the
-// compass-otel-collector- prefix. Kept in lockstep with the production
-// derivation so the test asserts against the exact name a fresh down
-// reconstructs.
+// derivedCollectorName mirrors the stack's hashed state-dir name so down's
+// reconstructed container name matches the test.
 func derivedCollectorName(stateDir string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(stateDir)))
 	return "compass-otel-collector-" + hex.EncodeToString(sum[:6])
 }
 
-// waitCollectorHealthy polls until the collector health endpoint answers 200 or
-// the budget elapses — the event-gate for "the collector is receiving", never a
-// blind sleep. up already gated on this, so it is a fast confirmation.
+// waitCollectorHealthy polls the collector health endpoint until 200 or the
+// budget expires; Up already gated readiness, so this is a fast confirmation.
 func waitCollectorHealthy(t *testing.T, url string, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)

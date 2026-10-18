@@ -20,12 +20,8 @@ import (
 	yaml "go.yaml.in/yaml/v3"
 )
 
-// Bundle grammar — mirrors the store door (internal/store/agent_config.go) so a
-// bundle this builder produces passes validateAndHashConfigBundle. Kept in sync
-// with the door constants at that file: the top-dir whitelist, the two admitted
-// top-level singleton filenames, the <name> grammar, and the per-category
-// content shape (mcp/<name>.json JSON, settings/config.yml and models.yml YAML
-// mapping).
+// Bundle grammar mirrors the store door's member whitelist, filename rules,
+// name grammar, and content shapes.
 const (
 	topDirSkills     = "skills"
 	topDirExtensions = "extensions"
@@ -77,16 +73,8 @@ var bundleTopDirs = map[string]bool{
 // configNamePattern).
 var bundleNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// buildBundle walks dir — the operator-pointed bundle root whose immediate
-// children are the whitelisted top dirs (skills/, extensions/, mcp/, settings/,
-// rules/, agents/) plus the two admitted top-level files (AGENTS.md,
-// models.yml) — and tars+gzips its regular files into a bundle the store door
-// accepts. It validates each member client-side (top-dir whitelist, <name>
-// grammar, mcp/<name>.json JSON, settings/config.yml and models.yml YAML
-// mapping) so a malformed dir is rejected here with a clear message rather than
-// as an opaque server InvalidArgument. Symlinks, absolute paths, and .. never
-// enter the tar: a symlink under dir is a hard error (the door rejects
-// TypeSymlink outright).
+// buildBundle tars validated regular files and rejects symlinks and other
+// non-regular files before sending them to the store door.
 func buildBundle(dir string) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -157,13 +145,8 @@ func checkBundleCaps(fileCount int, contentBytes int64) error {
 	return nil
 }
 
-// validateDirMember checks a directory member's top dir is whitelisted and, for
-// skills/extensions, that its <name> segment matches the grammar. Directories
-// are not written as tar members (the door skips non-regular members), but
-// validating them surfaces a bad top dir at the offending path. rules/, agents/,
-// and settings/ hold flat files, not <name> subdirs, so their leaves carry the
-// grammar check in addRegularMember; the container dir only needs a whitelisted
-// top dir.
+// validateDirMember checks the top-dir whitelist and name grammar. Checking
+// directories reports invalid paths early; leaf names are checked separately.
 func validateDirMember(name string) error {
 	parts := strings.Split(name, "/")
 	if !bundleTopDirs[parts[0]] {
@@ -182,21 +165,9 @@ func errNotWhitelisted(name string) error {
 	return fmt.Errorf("bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/ and is not a top-level %s or %s", name, memberAgentsMD, memberModels)
 }
 
-// addRegularMember validates a regular file against the door grammar and writes
-// it to the tar with a clean relative header name, returning the member's
-// content byte count so the caller can enforce the cumulative size cap. It
-// mirrors the store door's per-category grammar (validateRegularMember):
-//
-//   - mcp/<name>.json — grammar-valid <name>, content parses as JSON.
-//   - skills/<name>/… , extensions/<name>/… — grammar-valid <name>.
-//   - settings/config.yml — the ONLY settings/ member; content parses as a YAML
-//     mapping (the twin of the mcp JSON check; NO credential denylist — that is
-//     the door's authoritative security boundary, not the client's).
-//   - rules/<name>.md|.mdc — flat, grammar-valid <name>; prose, no content check.
-//   - agents/<name>.md — flat, grammar-valid <name>; prose, no content check.
-//   - top-level AGENTS.md — prose, no content check.
-//   - top-level models.yml — content parses as a YAML mapping (same cheap check
-//     as settings; NO credential denylist).
+// addRegularMember validates member grammar and content shape, writes the tar
+// header and contents, and returns the content size. Credential checks remain
+// the store door's security boundary.
 func addRegularMember(tw *tar.Writer, root, name string) (int64, error) {
 	parts := strings.Split(name, "/")
 
@@ -234,11 +205,9 @@ func addRegularMember(tw *tar.Writer, root, name string) (int64, error) {
 	return int64(len(content)), nil
 }
 
-// validateMemberGrammar enforces the per-category content shape a member must
-// satisfy, mirroring the store door (validateRegularMember). It does NOT port
-// the door's credential denylist: the door owns credential rejection as its
-// authoritative security boundary, and duplicating a bypassable denylist here
-// only invites stale-denylist drift.
+// validateMemberGrammar mirrors the store door's per-category content shape.
+// Credential rejection stays at the door; duplicating its denylist here would
+// create a bypassable copy that can drift.
 func validateMemberGrammar(parts []string, name string, content []byte) error {
 	// Top-level singletons (parts already restricted to the two exact names).
 	if len(parts) == 1 {
@@ -292,12 +261,8 @@ func validateMemberGrammar(parts []string, name string, content []byte) error {
 		}
 		return nil
 	case topDirProfiles:
-		// Exactly profiles/<name>/profile.yml — three components, grammar-valid
-		// <name>, filename exactly profile.yml, and a YAML-mapping body (the
-		// cheap shape check, twin of settings/models). The superset-key closure
-		// and cross-member models.agents frontmatter-name lint are the store
-		// door's authoritative checks, NOT replicated client-side (store door:
-		// RIG-2968 T1).
+		// Only profiles/<name>/profile.yml is admitted, with a YAML mapping body.
+		// Cross-member and superset-key checks remain the store door's authority.
 		if len(parts) != 3 || parts[2] != memberProfileYML {
 			return fmt.Errorf("profiles member %q must be profiles/<name>/%s", name, memberProfileYML)
 		}
@@ -317,9 +282,8 @@ func validateMemberGrammar(parts []string, name string, content []byte) error {
 	}
 }
 
-// validateFlatNamedMember enforces a flat dir/<name><ext> member: <name> matches
-// the config name grammar and <ext> is one of the allowed extensions (store
-// door: validateFlatNamedMember).
+// validateFlatNamedMember enforces dir/<name><ext>, with a valid name and an
+// allowed extension.
 func validateFlatNamedMember(topDir, filename, name string, exts ...string) error {
 	for _, ext := range exts {
 		if base, ok := strings.CutSuffix(filename, ext); ok {
@@ -332,12 +296,8 @@ func validateFlatNamedMember(topDir, filename, name string, exts ...string) erro
 	return fmt.Errorf("%s member %q must end in one of %s", topDir, name, strings.Join(exts, ", "))
 }
 
-// validateYAMLMapping is the cheap YAML shape check — the twin of the mcp
-// json.Valid check — for settings/config.yml and models.yml. It uses the SAME
-// YAML package as the store door (go.yaml.in/yaml/v3) and mirrors the door's
-// parseYAMLMapping: unmarshal into any, treat an empty document (nil) as an
-// empty mapping, and require the result to be a mapping. It deliberately does
-// NOT replicate the door's credential denylist.
+// validateYAMLMapping checks settings and models with the store door's parser.
+// Empty documents are accepted as empty mappings; credential checks remain there.
 func validateYAMLMapping(name string, content []byte) error {
 	var doc any
 	if err := yaml.Unmarshal(content, &doc); err != nil {
@@ -352,9 +312,7 @@ func validateYAMLMapping(name string, content []byte) error {
 	return nil
 }
 
-// readMember reads a member file's content from disk. root+name is rejoined
-// with path cleanliness already guaranteed by WalkDir producing a relative path
-// under root.
+// readMember reads a path made from WalkDir's clean relative name under root.
 func readMember(root, name string) ([]byte, error) {
 	full := filepath.Join(root, filepath.FromSlash(name))
 	f, err := os.Open(full) //nolint:gosec // full is under the operator-provided --dir root, the whole point of push

@@ -1,14 +1,8 @@
 //go:build (linux && gtk4) || darwin
 
-// The gtk4 build's binding of the bridge service's per-window frame routing
-// (M3) to the real Wails window API. It is split out of bridge_service.go
-// (//go:build unix) so that file — and its unix-tagged tests — never import
-// github.com/wailsapp/wails/v3/pkg/application, which only compiles under the
-// GTK stack (the untagged module build has no pkg-config for it;
-// main_nogtk4.go documents it repo-wide). This mirrors the
-// main.go / main_nogtk4.go split: the real shell is the gtk4 binary, and the
-// windowDispatcher seam (bridge_service.go) is what keeps the forwarding path
-// testable without the GTK stack.
+// This gtk4-only binding connects per-window frame routing to Wails. Keeping it
+// separate lets unix builds and tests avoid importing the GTK-only application
+// package; the windowDispatcher seam keeps forwarding testable without GTK.
 package main
 
 import (
@@ -17,14 +11,8 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// windowFromContext extracts the originating webview window from a bound-method
-// call context. Wails puts the calling window under application.WindowKey
-// (messageprocessor_call.go:16,136); the comma-ok assertion yields a nil window
-// when no key is present (a windowless transport, or a direct test call).
-//
-// It returns an UNTYPED-nil windowDispatcher when no window is present — never a
-// typed nil wrapping a nil *application.WebviewWindow — so the nil check in
-// emitFrame (call.window != nil) correctly selects the app-wide fallback.
+// windowFromContext extracts Wails' originating window. Missing or nil values
+// return an untyped nil so emitFrame uses the app-wide fallback.
 func windowFromContext(ctx context.Context) windowDispatcher {
 	win, ok := ctx.Value(application.WindowKey).(application.Window)
 	if !ok || win == nil {
@@ -33,18 +21,13 @@ func windowFromContext(ctx context.Context) windowDispatcher {
 	return wailsWindowDispatcher{win: win}
 }
 
-// wailsWindowDispatcher adapts an application.Window to the windowDispatcher
-// seam: dispatch delivers one response frame to that window's webview via
-// DispatchWailsEvent (webview_window.go:1372), the per-window analogue of the
-// app-wide eventEmitter.Emit. The struct is comparable (a single interface
-// field), so an inflightCall.window value can index M3b's cancel-all-for-window.
+// wailsWindowDispatcher adapts application.Window to the comparable routing
+// seam used for close-time lookup.
 type wailsWindowDispatcher struct {
 	win application.Window
 }
 
-// dispatch routes one frame to this window's webview only. DispatchWailsEvent
-// internally no-ops once the window isDestroyed() (webview_window.go:1373), so a
-// frame for a call whose window has since closed is dropped, not broadcast (A4).
+// dispatch targets only this window; Wails drops frames after it closes.
 func (d wailsWindowDispatcher) dispatch(name string, resp responseFrame) {
 	d.win.DispatchWailsEvent(&application.CustomEvent{Name: name, Data: resp})
 }

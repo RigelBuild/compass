@@ -15,10 +15,8 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
-// newTokenCmd builds the token noun: the fleet bearer-token operator surface. It
-// carries no logic of its own; each verb is a child that dials the Server and
-// drives one CompassService token RPC. A token plaintext is read from stdin,
-// never argv, so it cannot leak into the process table.
+// newTokenCmd builds the bearer-token operator surface. Children dial the
+// server for one token RPC; plaintext comes from stdin, never argv.
 func newTokenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "token",
@@ -28,11 +26,8 @@ func newTokenCmd() *cobra.Command {
 	return cmd
 }
 
-// newRevokeCmd builds `token revoke`: read a bearer token plaintext from stdin
-// and revoke it (admin). The token is read from stdin, never a flag or
-// positional, so it cannot leak into the process table (the load-bearing
-// convention shared with the bearer token itself). The server hashes the
-// plaintext; the CLI never does.
+// newRevokeCmd reads the token from stdin to keep it out of argv; the server
+// hashes the received plaintext.
 func newRevokeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "revoke",

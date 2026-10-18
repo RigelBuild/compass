@@ -1,9 +1,7 @@
 //go:build (linux && gtk4) || darwin
 
-// The native shell's launch services. A first-run chooser opens without a
-// connection; configured embedded launches supervise a local stack, while
-// configured client launches dial a headless stack over the authenticated TLS
-// door. The embedded stack supervisor is implemented in embedded.go.
+// Native launch services: first-run opens without a connection, embedded mode
+// supervises a local stack, and client mode dials a headless stack over TLS.
 package main
 
 import (
@@ -16,18 +14,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
 
-// runClient wires the native-client launch: it builds the ONE TLS-anchored
-// bridge target (design §T5.6) and hands that SAME *bridge.Target to BOTH the
-// pump and the bridge service, so an armed bearer (Connect → target.SetBearer)
-// reaches every forwarded RPC (CompassRPC → pump → target.client.Do). The
-// tokenstore persists the remote bearer keyed by server URL. accountID is left
-// empty (client identity is UI-resolved, OQ-7). There is NO pre-window probe —
-// the single auto-connect is the UI's boot-time shellConnect("") (T5.5) — so a
-// slow/unreachable remote never wedges launch.
-//
-// A CA read/parse failure (bad ca_cert path or contents) or a NewTLSTarget
-// failure returns a legible error that aborts launch; per rule://go-no-panic-in-lib
-// this path never panics.
+// runClient shares one TLS-anchored bridge target between the pump and service,
+// so Connect's bearer reaches every forwarded RPC. It stores the remote token
+// by server URL and skips a pre-window probe so slow servers cannot delay launch.
+// CA or target construction failures abort launch with an error, not a panic.
 func runClient(cfg appconfig.Config, stateDir string) (*bridgeService, error) {
 	var caPEM []byte
 	if cfg.CACert != "" {

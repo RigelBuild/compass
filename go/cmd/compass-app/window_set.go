@@ -28,14 +28,8 @@ func windowSetPath(stateDir string) string {
 	return filepath.Join(stateDir, windowSetFileName)
 }
 
-// loadWindowSet reads the persisted window names. It degrades to the empty set
-// (nil) on first-ever run (ErrNotExist) OR on any read/parse error: a corrupt
-// file must never crash startup — run() then opens exactly one default window.
-// The persisted contract is a SET (window identities/count, design §A2); order
-// carries no meaning since every window is an identical Bridge window, so the
-// names are stored canonically sorted (see saveWindowSet) purely for a stable,
-// diffable file. Unlike the token file this holds no secret, but the same
-// discipline applies: the raw file bytes are never surfaced.
+// loadWindowSet treats missing or corrupt state as empty. Persisted names form
+// a set, and raw bytes are never surfaced.
 func loadWindowSet(stateDir string) []string {
 	raw, err := os.ReadFile(windowSetPath(stateDir))
 	if err != nil {
@@ -48,14 +42,8 @@ func loadWindowSet(stateDir string) []string {
 	return set.Windows
 }
 
-// saveWindowSet atomically persists the window-name set to the state dir: a temp
-// file in the same directory is written and renamed over the final path, so a
-// reader never observes a partial file. Mirrors writeTokenFile
-// (go/server/network_door.go); 0o644 since this is not a secret. The names are
-// sorted before marshaling so the file is canonical and deterministic — the
-// caller (the OnShutdown hook) derives them from app.Window.GetAll(), whose map
-// iteration order is randomized; the persisted contract is a set, not an order,
-// so sorting loses nothing. An empty/nil names still writes a valid empty file.
+// saveWindowSet writes atomically and sorts names for stable output. Mode 0644
+// is safe because window names are not secret.
 func saveWindowSet(stateDir string, names []string) error {
 	names = slices.Clone(names)
 	slices.Sort(names)
@@ -97,12 +85,9 @@ func saveWindowSet(stateDir string, names []string) error {
 	return nil
 }
 
-// windowNamesOrDefault substitutes the single default window when the persisted
-// set is empty or absent: a first-ever run (or an empty/corrupt file, which
-// loadWindowSet degrades to nil) opens exactly one defaultWindowName window,
-// while a populated set passes through unchanged. Factored out of run()'s
-// restore loop so the branch that decides the window count is unit-testable
-// without a display.
+// windowNamesOrDefault returns the default window for an empty set, or passes
+// populated names through. This makes restore-count selection testable without
+// a display.
 func windowNamesOrDefault(names []string) []string {
 	if len(names) == 0 {
 		return []string{defaultWindowName}

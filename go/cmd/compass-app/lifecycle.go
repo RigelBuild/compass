@@ -30,12 +30,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/embedded"
 )
 
-// quitController is the explicit "Quit and stop stack" orchestration over its
-// injected effects. It holds the teardown seam (stackDown), the argv inputs
-// (params, resolved once in run()), the app-quit indirection (quit, wired to
-// app.Quit), the teardown deadline (timeout), and a logger. A test supplies a
-// recording stackDown stub and a counting quit, so the quit sequence is
-// verified with no real exec and no display.
+// quitController holds teardown effects and parameters. Tests inject stubs to
+// verify sequencing without executing a stack command or opening a display.
 type quitController struct {
 	stackDown func(ctx context.Context, args []string) error
 	params    embedded.Params
@@ -44,15 +40,9 @@ type quitController struct {
 	logger    *slog.Logger
 }
 
-// stopStackAndQuit runs the explicit teardown and then quits the app. It derives
-// a FRESH bounded context off the caller's (the bring-up context is already
-// cancelled by the time the window is open), builds the `compass-stack down`
-// argv, and runs the injected stackDown seam under that deadline.
-//
-// Quit-anyway on a failed down (OQ-6): if `compass-stack down` fails, the app
-// STILL quits. Rationale: the user's explicit intent is to quit, trapping them
-// in a live window because teardown hiccuped is worse, and a lingering stack is
-// the SAFE failure (it is the plain-quit default anyway).
+// stopStackAndQuit uses a fresh deadline because bring-up's context is canceled.
+// Explicit quit wins even if teardown fails; the safe failure mode is a
+// lingering stack.
 func (c quitController) stopStackAndQuit(ctx context.Context) {
 	logger := c.logger
 	if logger == nil {

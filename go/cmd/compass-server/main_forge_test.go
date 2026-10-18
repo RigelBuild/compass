@@ -2,15 +2,8 @@
 
 package main
 
-// Unit test for resolveForge: the forge CLI knobs (repos seed, secret name,
-// host, and the RIG-2883 App id / installation id / App key secret / webhook
-// secret) turned into server.ForgeConfig, mirroring resolveNetworkDoor's pure
-// input->output shape (no I/O, no store). Covers the flag->config mapping,
-// repo-format validation, seed case-normalization, and the int-parse error path.
-// The flag-then-env precedence itself is firstNonEmpty (covered by
-// resolveNetworkDoor's suite and exercised inline in run()); resolveForge is fed
-// the already-resolved strings, so this test drives the resolution logic that is
-// unique to forge.
+// Tests resolveForge mapping, repo validation, seed normalization, and integer
+// errors without I/O; flag/env precedence has separate coverage.
 
 import (
 	"reflect"

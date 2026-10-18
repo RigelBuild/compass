@@ -123,12 +123,8 @@ func newSecretDeleteCmd() *cobra.Command {
 // required and it is read from stdin.
 var errEmptySecretValue = errors.New("a secret value is required: pipe it on stdin (it is never taken from the command line)")
 
-// readSecretValue reads a secret value from stdin: it applies the size cap, the
-// trailing-newline trim (a bare `echo` adds one and it is not part of the
-// value), and the empty-value rejection.
-//
-// stdin is the only source by design: a value on argv would be visible in the
-// host process list.
+// readSecretValue reads stdin, trims one trailing newline, enforces the size
+// limit, and rejects empty values without exposing them in argv.
 func readSecretValue(in io.Reader) (string, error) {
 	raw, err := io.ReadAll(io.LimitReader(in, maxSecretBytes+2))
 	if err != nil {

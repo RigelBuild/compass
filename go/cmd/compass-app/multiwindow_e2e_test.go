@@ -197,18 +197,14 @@ func TestMultiWindowCloseCancelsOnlyClosingWindowE2E(t *testing.T) {
 	// Close winA for real: its WindowClosing handler runs cancelWindow(winA).
 	application.InvokeSync(func() { winA.Close() })
 
-	// The closing window's call is swept: cancelWindow cancels its context, the
-	// pump returns, run's finish drops the entry and closes doneA. waitDone gates
-	// on that (no sleep); winB's call is untouched and stays in-flight.
+	// cancelWindow cancels winA's call; completion gates the assertion that its
+	// entry is gone while winB remains in-flight.
 	waitDone(t, doneA)
 	assertNotInflight(t, svc, idA)
 	assertInflight(t, svc, idB)
 
-	// The other window is untouched — still live in the shell (the "close one
-	// leaves the other live" checklist row). winA's removal from the window
-	// manager is GTK-async, so it is NOT asserted here — a GetByName race would
-	// need a sleep the no-sleep rule forbids; that winA closed is already proven
-	// above by its call being swept (assertNotInflight), the contract §M4 gates.
+	// Avoid a GetByName race: GTK removes winA asynchronously. Its swept call
+	// proves the close handler ran; only assert winB remains registered.
 	if _, ok := getWindow(nameB); !ok {
 		t.Errorf("winB gone after closing winA")
 	}

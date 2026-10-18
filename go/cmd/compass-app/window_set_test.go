@@ -2,12 +2,8 @@
 
 package main
 
-// Compass multi-window M1 window-set store gate. The real invariants are the
-// round-trip (persisted N names reload as N windows on relaunch, canonically
-// sorted — the contract is a SET, not an order, §A2), degrade-to-empty (absent
-// OR corrupt file → nil set → run() opens exactly one default window), and the
-// empty→default substitution that decides the window count. No test launches a
-// real webview.
+// Tests window-set round-trip and canonical sorting, missing/corrupt-state
+// fallback, and empty-to-default window selection without launching a webview.
 
 import (
 	"os"
