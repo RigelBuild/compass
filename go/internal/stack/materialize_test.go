@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1149,6 +1150,89 @@ func TestReadGuestManifestFileRejectsMalformed(t *testing.T) {
 			}
 			if _, err := readGuestManifestFile(path); err == nil {
 				t.Fatalf("readGuestManifestFile(%q) = nil error, want a rejection", tt.content)
+			}
+		})
+	}
+}
+
+func TestFetchGuestManifestIndexSelectsRuntimeArch(t *testing.T) {
+	amd64 := newFakeRegistry(t, func(m *guestManifest) {
+		m.Annotations["org.opencontainers.image.revision"] = "amd64"
+	})
+	arm64 := newFakeRegistry(t, func(m *guestManifest) {
+		m.Annotations["org.opencontainers.image.revision"] = "arm64"
+	})
+	index, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []any{
+			map[string]any{"digest": amd64.digest, "platform": map[string]string{"os": "linux", "architecture": "amd64"}},
+			map[string]any{"digest": arm64.digest, "platform": map[string]string{"os": "linux", "architecture": "arm64"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal guest index: %v", err)
+	}
+	indexDigest := digestOf(index)
+	manifests := map[string][]byte{
+		amd64.digest: amd64.manifest,
+		arm64.digest: arm64.manifest,
+	}
+	client := &http.Client{Transport: bearerTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		digest := strings.TrimPrefix(req.URL.Path, "/v2/"+amd64.repo+"/manifests/")
+		body := index
+		if digest != indexDigest {
+			body = manifests[digest]
+		}
+		if body == nil {
+			return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(nil)), Request: req}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: req}, nil
+	})}
+	reg := guestRegistry{baseURL: "https://registry.test", repository: amd64.repo, digest: indexDigest}
+	manifest, _, err := fetchGuestManifest(t.Context(), client, reg, &guestBearerToken{})
+	if err != nil {
+		t.Fatalf("fetchGuestManifest(index) error = %v", err)
+	}
+	if got := manifest.Annotations["org.opencontainers.image.revision"]; got != runtime.GOARCH {
+		t.Fatalf("selected revision = %q, want runtime.GOARCH %q", got, runtime.GOARCH)
+	}
+}
+
+func TestFetchGuestManifestIndexRejectsMissingRuntimeArch(t *testing.T) {
+	index, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []any{map[string]any{
+			"digest":   "sha256:" + strings.Repeat("a", 64),
+			"platform": map[string]string{"os": "linux", "architecture": "riscv64"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal guest index: %v", err)
+	}
+	client := &http.Client{Transport: bearerTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(index)), Request: req}, nil
+	})}
+	reg := guestRegistry{baseURL: "https://registry.test", repository: "rigelbuild/compass-guest-image", digest: digestOf(index)}
+	if _, _, err := fetchGuestManifest(t.Context(), client, reg, &guestBearerToken{}); err == nil || !strings.Contains(err.Error(), runtime.GOARCH) {
+		t.Fatalf("fetchGuestManifest(index) error = %v, want error naming %s", err, runtime.GOARCH)
+	}
+}
+
+func TestGuestKernelName(t *testing.T) {
+	tests := []struct {
+		name   string
+		goarch string
+		want   string
+	}{
+		{name: "arm64", goarch: "arm64", want: "Image"},
+		{name: "amd64", goarch: "amd64", want: "bzImage"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := guestKernelName(tt.goarch); got != tt.want {
+				t.Fatalf("guestKernelName(%q) = %q, want %q", tt.goarch, got, tt.want)
 			}
 		})
 	}

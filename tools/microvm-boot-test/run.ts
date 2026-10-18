@@ -1,10 +1,13 @@
 #!/usr/bin/env bun
+
 // Drive the tagged local microVM suite using CI's guest-image and VMM contract.
 // Parsing stays in the pure core so this entry point can be tested offline.
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostPlatform, kernelFileName } from "../runner-image/build-core.ts";
 import { guestImageEnv, parseOutPaths, prependBins } from "./run-core.ts";
 
 // This file is tools/microvm-boot-test/run.ts, so `../..` is the workspace root.
@@ -51,10 +54,21 @@ const vmm = nixBuild("tools/toolchain/microvm-vmm-env.nix", [
 	"virtiofsd",
 	"passt",
 ]);
+const platform = hostPlatform(process.arch);
+const kernelDir = guest[0];
+const kernelPath =
+	kernelDir === undefined ? "" : `${kernelDir}/${kernelFileName(platform)}`;
+if (guest[0] === undefined || !existsSync(kernelPath)) {
+	console.error(
+		`microvm-boot-test: guest kernel file is missing: ${kernelPath}`,
+	);
+	process.exit(1);
+}
+if (process.argv.slice(2).includes("--build-only")) process.exit(0);
 
 const env: NodeJS.ProcessEnv = {
 	...process.env,
-	...guestImageEnv(guest),
+	...guestImageEnv(guest, platform),
 	PATH: prependBins(vmm, process.env.PATH ?? ""),
 	// The -race lane needs cgo.
 	CGO_ENABLED: "1",

@@ -1308,33 +1308,18 @@ jobs:
           echo "image_digest=$src_digest" >> "$GITHUB_OUTPUT"
           echo "resolved_sha12=$resolved_sha12" >> "$GITHUB_OUTPUT"
 
-  publish-runner-image:
-    name: publish-runner-image
+  publish-runner-gate:
+    name: publish-runner-gate
     runs-on: ubuntu-latest
-    # Least privilege: read the tree, write the GHCR package, nothing else.
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
-      packages: write
-    # A SEPARATE group from the agent image: this publishes a different package,
-    # so serializing the two against each other would only add latency. Within
-    # this package, publishes must still serialize — two runs pushing the same
-    # tag concurrently make which bytes the tag names a race.
-    concurrency:
-      group: publish-runner-image
-      cancel-in-progress: false
-      queue: max
-    # A dispatch from a feature branch must never publish an image for unmerged
-    # code. Main pushes satisfy this trivially.
-    if: github.ref == 'refs/heads/main'
-    # The guest rootfs is a ~2 GiB erofs built from source; that nix build sizes
-    # this timeout, matching the agent image's.
-    timeout-minutes: 90
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Decide whether this push touches the runner-image closure
         id: gate
-        # This gate uses the runner closure set because the trigger has no paths filter.
         working-directory: .
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -1343,64 +1328,67 @@ jobs:
         run: |
           set -euo pipefail
 
-          # workflow_dispatch has no push range to diff. Force-publish so the
-          # dispatch remediation path (publish then re-run) always publishes.
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "workflow_dispatch: force-publish (no push range to diff)"
             exit 0
           fi
-
-          # First push to the branch has an all-zero before-sha and no diff base.
           if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "no diff base (first push to branch): force-publish"
             exit 0
           fi
-
-          # A two-dot tree diff needs only the two endpoint commits; checkout has
-          # HEAD at depth 1, so fetch the before endpoint the same way.
           git fetch --no-tags --depth=1 origin "$BEFORE_SHA" >/dev/null 2>&1 || true
-
-          # An unreachable before-sha (force-push, GC'd object, fetch transient)
-          # leaves no diff base. Publish rather than fail — the no-drop invariant.
-          # --no-renames: a rename prints only its destination, which would hide
-          # a file moved OUT of the closure. -z output keeps NULs, which command
-          # substitution drops, so the names go to a file.
           changed="$RUNNER_TEMP/runner-image-changed"
           if ! git diff -z --no-renames --name-only "$BEFORE_SHA" "$HEAD_SHA" >"$changed" 2>/dev/null; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
             exit 0
           fi
-
           should_publish=false
           while IFS= read -r pattern; do
             [ -n "$pattern" ] || continue
             case "$pattern" in
               *'/**')
                 prefix="${pattern%'/**'}/"
-                while IFS= read -r -d '' f; do
-                  [ -n "$f" ] || continue
-                  case "$f" in
-                    "$prefix"*) should_publish=true ;;
-                  esac
+                while IFS= read -r -d '' file; do
+                  [ -n "$file" ] || continue
+                  case "$file" in "$prefix"*) should_publish=true ;; esac
                 done <"$changed"
                 ;;
               *)
-                while IFS= read -r -d '' f; do
-                  [ "$f" = "$pattern" ] && should_publish=true
+                while IFS= read -r -d '' file; do
+                  [ "$file" = "$pattern" ] && should_publish=true
                 done <"$changed"
                 ;;
             esac
             [ "$should_publish" = true ] && break
           done <<< "$RUNNER_IMAGE_CLOSURE_PATHS"
-
           echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
           echo "changed-path gate over the runner-image closure set: should_publish=$should_publish"
 
+  publish-runner-image:
+    name: publish-runner-image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: publish-runner-gate
+    if: github.ref == 'refs/heads/main' && needs.publish-runner-gate.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-runner-image
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-        if: steps.gate.outputs.should_publish == 'true'
         with:
           # The two caches are declared HERE rather than delegated via
           # `accept-flake-config`, which would make nix trust the nixConfig of
@@ -1412,7 +1400,6 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the pinned bun toolchain on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         # Resolve bun from gate-tools.nix so it is byte-identical to the dev
         # shell's — the same derivation, not merely the same version. `jq -r`
         # renders a missing `.store` as the literal string `null`, a value
@@ -1428,7 +1415,6 @@ jobs:
           echo "$store/bin" >>"$GITHUB_PATH"
 
       - name: Put the pinned skopeo on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         # publish.ts tags the verified digest with skopeo. The same pinned skopeo
         # release-image uses; take the output carrying bin/skopeo, since the
         # derivation also ships a `-man` output.
@@ -1449,7 +1435,6 @@ jobs:
           echo "$skopeo_bin" >> "$GITHUB_PATH"
 
       - name: Start a rootless buildkitd
-        if: steps.gate.outputs.should_publish == 'true'
         # Rootless BuildKit is the ruled mechanism for a prebuilt-application
         # image: never `docker build`, never a host docker socket (a socket
         # hands a build step the daemon's blast radius). rootlesskit needs
@@ -1499,7 +1484,6 @@ jobs:
           echo "BUILDKIT_HOST=$addr" >>"$GITHUB_ENV"
 
       - name: Log in to GHCR
-        if: steps.gate.outputs.should_publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
@@ -1524,49 +1508,73 @@ jobs:
           echo "DOCKER_CONFIG=$auth_dir" >>"$GITHUB_ENV"
 
       - name: Build the image locally
-        if: steps.gate.outputs.should_publish == 'true'
         # The local OCI layout is what the publish step scans for leaked secrets
         # BEFORE any push, and its digest is what the push is asserted against.
         run: bun tools/runner-image/build.ts --output oci
 
-      - name: Publish by digest and assert reproducibility
-        if: steps.gate.outputs.should_publish == 'true'
-        # Re-runs the build with the push exporter (buildctl has no `push` verb)
-        # to push by digest only, fails unless the registry's digest equals the
-        # local one, and only then tags it `:git-<sha12>`. The deployable
-        # `repo@sha256:…` lands in the step summary: GHCR has no server-side tag
-        # immutability, so nothing deployed resolves via a tag.
+      - name: Publish runner image member
         run: |
           set -euo pipefail
-          # `--short=12` returns the SHORTEST UNIQUE length that is >= 12, so a
-          # collision yields 13+ chars and buildTag's strict ^[0-9a-f]{12}$ then
-          # hard-fails the publish. A deterministic 12-char truncation keeps the
-          # contract exact.
           sha12="$(git rev-parse HEAD | cut -c1-12)"
-          ref="$(bun tools/runner-image/publish.ts \
-            --lane runner --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12")"
-          echo "published $ref"
-          echo "runner image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify runner package is public
-        if: steps.gate.outputs.should_publish == 'true'
-        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-runner:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
-
-
-  publish-server-image:
-    name: publish-server-image
+          bun tools/runner-image/publish.ts --lane runner --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12" --arch-suffix "${{ matrix.arch }}"
+  publish-runner-index:
+    name: publish-runner-index
     runs-on: ubuntu-latest
+    needs: [publish-runner-gate, publish-runner-image]
+    if: github.ref == 'refs/heads/main' && needs.publish-runner-gate.outputs.should_publish == 'true'
     permissions:
       contents: read
       packages: write
     concurrency:
-      group: publish-server-image
+      group: publish-runner-image
       cancel-in-progress: false
       queue: max
-    if: github.ref == 'refs/heads/main'
-    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+      - name: Put pinned bun and skopeo on PATH
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          done
+      - name: Pin registry auth and log in
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >>"$GITHUB_ENV"
+          skopeo login ghcr.io -u "$ACTOR" --password-stdin --authfile "$RUNNER_TEMP/ghcr-auth.json" <<< "$GITHUB_TOKEN"
+      - name: Compose, guard, push, and verify runner index
+        env:
+          IMAGE_REPO: ghcr.io/rigelbuild/compass-runner
+          GH_SHA: ${{ github.sha }}
+        run: bun tools/agent-image-index/index.ts
+      - name: Verify runner package is public
+        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-runner:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
 
+
+
+  publish-server-gate:
+    name: publish-server-gate
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Decide whether this push touches the server-image closure
         id: gate
         working-directory: .
@@ -1576,21 +1584,14 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "workflow_dispatch: force-publish (no push range to diff)"
-            exit 0
-          fi
-          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "no diff base (first push to branch): force-publish"
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "$BEFORE_SHA" >/dev/null 2>&1 || true
           changed="$RUNNER_TEMP/server-image-changed"
           if ! git diff -z --no-renames --name-only "$BEFORE_SHA" "$HEAD_SHA" >"$changed" 2>/dev/null; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
             exit 0
           fi
           should_publish=false
@@ -1600,7 +1601,6 @@ jobs:
               *'/**')
                 prefix="${pattern%'/**'}/"
                 while IFS= read -r -d '' file; do
-                  [ -n "$file" ] || continue
                   case "$file" in "$prefix"*) should_publish=true ;; esac
                 done <"$changed"
                 ;;
@@ -1615,8 +1615,30 @@ jobs:
           echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
           echo "changed-path gate over the server-image closure set: should_publish=$should_publish"
 
+  publish-server-image:
+    name: publish-server-image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: publish-server-gate
+    if: github.ref == 'refs/heads/main' && needs.publish-server-gate.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-server-image
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-        if: steps.gate.outputs.should_publish == 'true'
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -1624,7 +1646,6 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the pinned bun toolchain on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         run: |
           set -euo pipefail
           store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
@@ -1636,7 +1657,6 @@ jobs:
           echo "$store/bin" >>"$GITHUB_PATH"
 
       - name: Put the pinned skopeo on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         run: |
           set -euo pipefail
           skopeo_bin=""
@@ -1654,7 +1674,6 @@ jobs:
           echo "$skopeo_bin" >>"$GITHUB_PATH"
 
       - name: Start a rootless buildkitd
-        if: steps.gate.outputs.should_publish == 'true'
         run: |
           set -euo pipefail
           buildkit=$(nix build --no-link --print-out-paths nixpkgs#buildkit)
@@ -1691,7 +1710,6 @@ jobs:
           echo "BUILDKIT_HOST=$addr" >>"$GITHUB_ENV"
 
       - name: Log in to GHCR
-        if: steps.gate.outputs.should_publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
@@ -1708,20 +1726,58 @@ jobs:
           echo "DOCKER_CONFIG=$auth_dir" >>"$GITHUB_ENV"
 
       - name: Build the image locally
-        if: steps.gate.outputs.should_publish == 'true'
         run: bun tools/server-image/build.ts --output oci
 
-      - name: Publish by digest and assert reproducibility
-        if: steps.gate.outputs.should_publish == 'true'
+      - name: Publish server image member
         run: |
           set -euo pipefail
           sha12="$(git rev-parse HEAD | cut -c1-12)"
-          ref="$(bun tools/runner-image/publish.ts \
-            --lane server --repo ghcr.io/rigelbuild/compass-server --sha "$sha12")"
-          echo "published $ref"
-          echo "server image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+          bun tools/runner-image/publish.ts --lane server --repo ghcr.io/rigelbuild/compass-server --sha "$sha12" --arch-suffix "${{ matrix.arch }}"
+
+  publish-server-index:
+    name: publish-server-index
+    runs-on: ubuntu-latest
+    needs: [publish-server-gate, publish-server-image]
+    if: github.ref == 'refs/heads/main' && needs.publish-server-gate.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-server-image
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+      - name: Put pinned bun and skopeo on PATH
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          done
+      - name: Pin registry auth and log in
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >>"$GITHUB_ENV"
+          skopeo login ghcr.io -u "$ACTOR" --password-stdin --authfile "$RUNNER_TEMP/ghcr-auth.json" <<< "$GITHUB_TOKEN"
+      - name: Compose, guard, push, and verify server index
+        env:
+          IMAGE_REPO: ghcr.io/rigelbuild/compass-server
+          GH_SHA: ${{ github.sha }}
+        run: bun tools/agent-image-index/index.ts
       - name: Verify server package is public
-        if: steps.gate.outputs.should_publish == 'true'
         run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-server:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
 
 
@@ -1729,13 +1785,13 @@ jobs:
     name: tag-main-images
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    needs: [publish-runner-image, publish-server-image]
+    needs: [publish-runner-index, publish-server-index]
     if: >-
       !cancelled() &&
       contains(fromJSON('["push"]'), github.event_name) &&
       contains(fromJSON('["refs/heads/main"]'), github.ref) &&
-      contains(fromJSON('["success", "skipped"]'), needs.publish-runner-image.result) &&
-      contains(fromJSON('["success", "skipped"]'), needs.publish-server-image.result)
+      contains(fromJSON('["success", "skipped"]'), needs.publish-runner-index.result) &&
+      contains(fromJSON('["success", "skipped"]'), needs.publish-server-index.result)
     permissions:
       contents: read
       packages: write
@@ -1971,88 +2027,79 @@ jobs:
             --lane runner --repo ghcr.io/rigelbuild/compass-runner \
             --tag "$TAG_NAME" --release-sha "$RELEASE_SHA"
 
-  publish-guest-image:
-    name: publish-guest-image
+  publish-guest-gate:
+    name: publish-guest-gate
     runs-on: ubuntu-latest
-    # Least privilege: read the tree, write the GHCR package, nothing else.
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
-      packages: write
-    # Its own group: a different package from the agent and runner images, so
-    # serializing against those would only add latency. Within this package,
-    # publishes must serialize — two runs pushing one tag race over which bytes
-    # it names.
-    concurrency:
-      group: publish-guest-image
-      cancel-in-progress: false
-      queue: max
-    # A dispatch from a feature branch must never publish assets for unmerged
-    # code. Main pushes satisfy this trivially.
-    if: github.ref == 'refs/heads/main'
-    # The rootfs is a ~2 GiB erofs built from source; that nix build sizes this.
-    timeout-minutes: 90
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Decide whether this push touches the guest-image closure
         id: gate
-        # The sibling publish jobs' push-event tree diff, over
-        # GUEST_IMAGE_CLOSURE_PATHS. Every fallback errs toward publishing, so
-        # a missing diff base never silently drops a closure change.
         env:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "workflow_dispatch: force-publish (no push range to diff)"
             exit 0
           fi
-
-          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "no diff base (first push to branch): force-publish"
-            exit 0
-          fi
-
           git fetch --no-tags --depth=1 origin "$BEFORE_SHA" >/dev/null 2>&1 || true
-
-          if ! changed="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null)"; then
+          changed="$RUNNER_TEMP/guest-image-changed"
+          if ! git diff -z --no-renames --name-only "$BEFORE_SHA" "$HEAD_SHA" >"$changed" 2>/dev/null; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
             exit 0
           fi
-
           should_publish=false
           while IFS= read -r pattern; do
             [ -n "$pattern" ] || continue
             case "$pattern" in
               *'/**')
                 prefix="${pattern%'/**'}/"
-                while IFS= read -r f; do
-                  [ -n "$f" ] || continue
-                  case "$f" in
-                    "$prefix"*) should_publish=true ;;
-                  esac
-                done <<< "$changed"
+                while IFS= read -r -d '' file; do
+                  case "$file" in "$prefix"*) should_publish=true ;; esac
+                done <"$changed"
                 ;;
               *)
-                while IFS= read -r f; do
-                  [ "$f" = "$pattern" ] && should_publish=true
-                done <<< "$changed"
+                while IFS= read -r -d '' file; do
+                  [ "$file" = "$pattern" ] && should_publish=true
+                done <"$changed"
                 ;;
             esac
             [ "$should_publish" = true ] && break
           done <<< "$GUEST_IMAGE_CLOSURE_PATHS"
-
           echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
           echo "changed-path gate over the guest-image closure set: should_publish=$should_publish"
 
+  publish-guest-image:
+    name: publish-guest-image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: publish-guest-gate
+    if: github.ref == 'refs/heads/main' && needs.publish-guest-gate.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-guest-image-${{ matrix.arch }}
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-        if: steps.gate.outputs.should_publish == 'true'
         with:
           # Declared here rather than via `accept-flake-config`, which would
           # make nix trust the nixConfig of any flake it evaluates.
@@ -2062,7 +2109,6 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the pinned bun and moon on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         # Both come from the gate-tools pin, so the lane runs byte-identical
         # binaries here and on a dev box. moon is required, not incidental: the
         # lane realises its assets through the gate's own build task.
@@ -2081,7 +2127,6 @@ jobs:
           done
 
       - name: Put the fork's patched skopeo on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         # The publish lane probes and copies with a plain `skopeo` (the
         # RigelBuild/nix2container fork's patched build). Resolve it from the
         # shared pinned helper so this privileged job cannot run a mutable
@@ -2105,7 +2150,6 @@ jobs:
           echo "$skopeo_bin" >> "$GITHUB_PATH"
 
       - name: Pin the registry auth file
-        if: steps.gate.outputs.should_publish == 'true'
         # LOAD-BEARING. The login and the lane's own skopeo calls are SEPARATE
         # processes and must resolve the SAME creds file; the default location
         # is environment-dependent on hosted runners, and a mismatch greens the
@@ -2113,7 +2157,6 @@ jobs:
         run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
-        if: steps.gate.outputs.should_publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Pass the actor through env rather than interpolating ${{ }} into the
@@ -2126,41 +2169,69 @@ jobs:
             login ghcr.io -u "$ACTOR" --password-stdin \
             --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
-      - name: Publish the guest artifact by digest
-        if: steps.gate.outputs.should_publish == 'true'
-        # The lane realises the three assets, assembles the layout, scans its
-        # annotations before any push, and asserts the registry resolved the
-        # manifest it built. The deployable `repo@sha256:…` lands in the summary:
-        # GHCR has no server-side tag immutability, so nothing resolves by tag.
+      - name: Publish guest image member
         run: |
           set -euo pipefail
-          # `--short=12` returns the shortest UNIQUE length >= 12, so a collision
-          # would yield 13+ chars and fail the lane's strict 12-hex check. A
-          # deterministic truncation keeps the contract exact.
           sha12="$(git rev-parse HEAD | cut -c1-12)"
-          ref="$(bun tools/guest-image/publish.ts \
-            --repo ghcr.io/rigelbuild/compass-guest-image --sha "$sha12")"
-          echo "published $ref"
-          echo "guest image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify guest package is public
-        if: steps.gate.outputs.should_publish == 'true'
-        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-guest-image:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+          bun tools/guest-image/publish.ts --repo ghcr.io/rigelbuild/compass-guest-image --sha "$sha12" --arch-suffix "${{ matrix.arch }}"
 
-  publish-gateway-image:
-    name: publish-gateway-image
+  publish-guest-index:
+    name: publish-guest-index
     runs-on: ubuntu-latest
+    needs: [publish-guest-gate, publish-guest-image]
+    if: github.ref == 'refs/heads/main' && needs.publish-guest-gate.outputs.should_publish == 'true'
     permissions:
       contents: read
       packages: write
     concurrency:
-      group: publish-gateway-image
+      group: publish-guest-image
       cancel-in-progress: false
       queue: max
-    if: github.ref == 'refs/heads/main'
-    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+      - name: Put pinned bun and skopeo on PATH
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          done
+      - name: Pin registry auth and log in
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >>"$GITHUB_ENV"
+          skopeo login ghcr.io -u "$ACTOR" --password-stdin --authfile "$RUNNER_TEMP/ghcr-auth.json" <<< "$GITHUB_TOKEN"
+      - name: Compose, guard, push, and verify guest index
+        env:
+          IMAGE_REPO: ghcr.io/rigelbuild/compass-guest-image
+          GH_SHA: ${{ github.sha }}
+        run: bun tools/agent-image-index/index.ts
+      - name: Verify guest package is public
+        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-guest-image:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
 
+
+  publish-gateway-gate:
+    name: publish-gateway-gate
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Decide whether this push touches the gateway-image closure
         id: gate
         env:
@@ -2169,55 +2240,61 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "workflow_dispatch: force-publish (no push range to diff)"
             exit 0
           fi
-
-          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "no diff base (first push to branch): force-publish"
-            exit 0
-          fi
-
           git fetch --no-tags --depth=1 origin "$BEFORE_SHA" >/dev/null 2>&1 || true
-
           changed="$RUNNER_TEMP/gateway-image-changed"
           if ! git diff -z --no-renames --name-only "$BEFORE_SHA" "$HEAD_SHA" >"$changed" 2>/dev/null; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
             exit 0
           fi
-
           should_publish=false
           while IFS= read -r pattern; do
             [ -n "$pattern" ] || continue
             case "$pattern" in
               *'/**')
                 prefix="${pattern%'/**'}/"
-                while IFS= read -r -d '' f; do
-                  [ -n "$f" ] || continue
-                  case "$f" in
-                    "$prefix"*) should_publish=true ;;
-                  esac
+                while IFS= read -r -d '' file; do
+                  case "$file" in "$prefix"*) should_publish=true ;; esac
                 done <"$changed"
                 ;;
               *)
-                while IFS= read -r -d '' f; do
-                  [ "$f" = "$pattern" ] && should_publish=true
+                while IFS= read -r -d '' file; do
+                  [ "$file" = "$pattern" ] && should_publish=true
                 done <"$changed"
                 ;;
             esac
             [ "$should_publish" = true ] && break
           done <<< "$GATEWAY_IMAGE_CLOSURE_PATHS"
-
           echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
           echo "changed-path gate over the gateway-image closure set: should_publish=$should_publish"
 
+  publish-gateway-image:
+    name: publish-gateway-image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: publish-gateway-gate
+    if: github.ref == 'refs/heads/main' && needs.publish-gateway-gate.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-gateway-image-${{ matrix.arch }}
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-        if: steps.gate.outputs.should_publish == 'true'
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -2225,7 +2302,6 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the pinned bun toolchain on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         run: |
           set -euo pipefail
           store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
@@ -2237,7 +2313,6 @@ jobs:
           echo "$store/bin" >>"$GITHUB_PATH"
 
       - name: Put the pinned skopeo on PATH
-        if: steps.gate.outputs.should_publish == 'true'
         run: |
           set -euo pipefail
           skopeo_bin=""
@@ -2255,7 +2330,6 @@ jobs:
           echo "$skopeo_bin" >> "$GITHUB_PATH"
 
       - name: Start a rootless buildkitd
-        if: steps.gate.outputs.should_publish == 'true'
         run: |
           set -euo pipefail
           buildkit=$(nix build --no-link --print-out-paths nixpkgs#buildkit)
@@ -2292,11 +2366,9 @@ jobs:
           echo "BUILDKIT_HOST=$addr" >>"$GITHUB_ENV"
 
       - name: Pin the registry auth file
-        if: steps.gate.outputs.should_publish == 'true'
         run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
-        if: steps.gate.outputs.should_publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
@@ -2306,23 +2378,58 @@ jobs:
             --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
       - name: Build the gateway image
-        if: steps.gate.outputs.should_publish == 'true'
         run: bun tools/gateway-image/build.ts --out tools/gateway-image/out
-
       - name: Smoke-test the gateway image
-        if: steps.gate.outputs.should_publish == 'true'
         run: bun tools/gateway-image/smoke.ts --out tools/gateway-image/out
-
-      - name: Publish gateway image by digest
-        if: steps.gate.outputs.should_publish == 'true'
+      - name: Publish gateway image member
         run: |
           set -euo pipefail
           sha12="$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
-          ref="$(bun tools/gateway-image/publish.ts \
-            --repo ghcr.io/rigelbuild/compass-gateway --sha "$sha12" \
-            --out tools/gateway-image/out)"
-          echo "published $ref"
-          echo "gateway image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+          bun tools/gateway-image/publish.ts --repo ghcr.io/rigelbuild/compass-gateway --sha "$sha12" --arch-suffix "${{ matrix.arch }}" --out tools/gateway-image/out
+
+  publish-gateway-index:
+    name: publish-gateway-index
+    runs-on: ubuntu-latest
+    needs: [publish-gateway-gate, publish-gateway-image]
+    if: github.ref == 'refs/heads/main' && needs.publish-gateway-gate.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-gateway-image
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+      - name: Put pinned bun and skopeo on PATH
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          done
+      - name: Pin registry auth and log in
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >>"$GITHUB_ENV"
+          skopeo login ghcr.io -u "$ACTOR" --password-stdin --authfile "$RUNNER_TEMP/ghcr-auth.json" <<< "$GITHUB_TOKEN"
+      - name: Compose, guard, push, and verify gateway index
+        env:
+          IMAGE_REPO: ghcr.io/rigelbuild/compass-gateway
+          GH_SHA: ${{ github.sha }}
+        run: bun tools/agent-image-index/index.ts
       - name: Verify gateway package is public
-        if: steps.gate.outputs.should_publish == 'true'
         run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-gateway:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostPlatform } from "../runner-image/build-core.ts";
 import type { ForkPin, ImageConfigEntries } from "./core.ts";
 import {
 	baseBuildArgs,
@@ -137,10 +138,14 @@ rmSync(baseOciDir, { recursive: true, force: true });
 rmSync(ociDir, { recursive: true, force: true });
 rmSync(metadataFile, { force: true });
 console.error("gateway-image: building base image…");
-const base = spawnSync("buildctl", baseBuildArgs(srcDir, baseOciDir), {
-	cwd: workspaceRoot,
-	stdio: "inherit",
-});
+const base = spawnSync(
+	"buildctl",
+	baseBuildArgs(srcDir, baseOciDir, hostPlatform(process.arch)),
+	{
+		cwd: workspaceRoot,
+		stdio: "inherit",
+	},
+);
 if (base.status !== 0) process.exit(base.status ?? 1);
 
 let baseDigest: string;
@@ -158,7 +163,14 @@ try {
 console.error("gateway-image: building gateway image…");
 const gateway = spawnSync(
 	"buildctl",
-	gatewayBuildArgs(srcDir, baseOciDir, baseDigest, ociDir, metadataFile),
+	gatewayBuildArgs(
+		srcDir,
+		baseOciDir,
+		baseDigest,
+		ociDir,
+		metadataFile,
+		hostPlatform(process.arch),
+	),
 	{ cwd: workspaceRoot, stdio: "inherit" },
 );
 if (gateway.status !== 0) process.exit(gateway.status ?? 1);

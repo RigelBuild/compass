@@ -93,7 +93,7 @@ runner starts.
 
 | File | Contents |
 | --- | --- |
-| `kernel` | The direct-boot kernel (`bzImage`) |
+| `kernel` | The direct-boot kernel (`bzImage` on amd64, `Image` on arm64) |
 | `rootfs.erofs` | The guest root filesystem |
 | `initrd` | The guest initramfs |
 | `manifest.sha256` | `sha256sum` output for the three files above, by these names |
@@ -201,7 +201,8 @@ The artifact manifest carries one annotation per asset, holding bare hex:
 
 | Annotation | File |
 | --- | --- |
-| `org.compass.guest.layer.bzImage` | `kernel` |
+| `org.compass.guest.layer.bzImage` | `kernel` on amd64 |
+| `org.compass.guest.layer.Image` | `kernel` on arm64 |
 | `org.compass.guest.layer.compass-guest-rootfs.erofs` | `rootfs.erofs` |
 | `org.compass.guest.layer.compass-guest-initrd` | `initrd` |
 

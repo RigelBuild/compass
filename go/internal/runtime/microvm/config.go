@@ -21,10 +21,10 @@ type NetConfig struct {
 // BootConfig is everything needed to boot one session guest. Produced by the
 // backend (V2b) or the test harness (V2a); consumed by Launch.
 type BootConfig struct {
-	Kernel      string // bzImage path (compass-guest-kernel/bzImage)
+	Kernel      string // bzImage or Image path (compass-guest-kernel)
 	Initrd      string // initramfs path (compass-guest-initrd) — new vs the sketch: required because the pinned kernel's virtio drivers are modules ((a))
 	Rootfs      string // erofs image path (compass-guest-rootfs)
-	Cmdline     string // kernel cmdline; Launch appends the vsock-port + console parameters
+	Cmdline     string // kernel cmdline; Launch appends the vsock-port + architecture-specific console parameters
 	GatewayPort uint32 // fixed guest port the host serves the AgentGateway on over the suffixed vsock socket; zero ⇒ Launch omits the compass.gateway_port cmdline parameter (harness compatibility, record §(b)/§(d))
 	VsockCID    uint32 // guest CID (>= 3)
 	VsockPort   uint32 // guest port guestd listens on

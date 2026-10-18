@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { Platform } from "../runner-image/build-core.ts";
 
 // The pure core of the gateway-image lane: no I/O, so every mapping and
 // fail-closed edge is unit-testable without buildkitd, podman, or a registry.
@@ -24,8 +25,8 @@ export const FORK_BRANCH = "rigel-release";
 /** Must equal the default of `ARG PI_BASE` in the fork's `Dockerfile.gateway`:
  * stage 2 resolves its base through a named context of this exact name. */
 export const BASE_CONTEXT = "oh-my-pi/pi:dev";
-export const PLATFORM = "linux/amd64";
 export const SOURCE_DATE_EPOCH = 1;
+export type { Platform } from "../runner-image/build-core.ts";
 
 export type ForkPin = { repo: string; commit: string };
 export type ImageConfigEntries = {
@@ -60,7 +61,11 @@ export function parseForkPin(text: string): ForkPin {
 }
 
 /** Stage 1: the fork's `pi-runtime` target, the gateway image's base. */
-export function baseBuildArgs(forkDir: string, ociDir: string): string[] {
+export function baseBuildArgs(
+	forkDir: string,
+	ociDir: string,
+	platform: Platform,
+): string[] {
 	return [
 		"build",
 		"--frontend",
@@ -74,7 +79,7 @@ export function baseBuildArgs(forkDir: string, ociDir: string): string[] {
 		"--opt",
 		"target=pi-runtime",
 		"--opt",
-		`platform=${PLATFORM}`,
+		`platform=${platform}`,
 		"--opt",
 		`build-arg:SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}`,
 		"--output",
@@ -90,6 +95,7 @@ export function gatewayBuildArgs(
 	baseDigest: string,
 	ociDir: string,
 	metadataFile: string,
+	platform: Platform,
 ): string[] {
 	if (!DIGEST_PATTERN.test(baseDigest)) {
 		throw new Error(`base digest must be sha256:<64 hex>, got ${baseDigest}`);
@@ -109,7 +115,7 @@ export function gatewayBuildArgs(
 		"--opt",
 		`context:${BASE_CONTEXT}=oci-layout://pibase@${baseDigest}`,
 		"--opt",
-		`platform=${PLATFORM}`,
+		`platform=${platform}`,
 		"--opt",
 		`build-arg:SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}`,
 		"--output",
@@ -319,12 +325,16 @@ export function secretConfigViolations(config: {
 }
 
 /** The build-addressability tag for a compass commit. */
-export function buildTag(repo: string, sha12: string): string {
+export function buildTag(
+	repo: string,
+	sha12: string,
+	archSuffix?: "amd64" | "arm64",
+): string {
 	if (!/^[0-9a-f]{12}$/.test(sha12)) {
 		throw new Error(`sha must be 12 lowercase hex characters, got ${sha12}`);
 	}
 	if (repo === "") throw new Error("repo must not be empty");
-	return `${repo}:git-${sha12}`;
+	return `${repo}:git-${sha12}${archSuffix === undefined ? "" : `-${archSuffix}`}`;
 }
 
 /** The immutable reference a deployment pins. Never `repo:tag`. */

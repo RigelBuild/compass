@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { outputSpec } from "../runner-image/build-core.ts";
+import { hostPlatform, outputSpec } from "../runner-image/build-core.ts";
 import { ENTRYPOINT_LINK, entrypointTarget } from "./build-core.ts";
 
 const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -50,12 +50,7 @@ if (!buildkitHost) {
 	process.exit(1);
 }
 
-if (process.arch !== "x64") {
-	console.error(
-		`server-image targets linux/amd64, but this host is ${process.arch}`,
-	);
-	process.exit(1);
-}
+const platform = hostPlatform(process.arch);
 
 function nixBuild(args: readonly string[]): string {
 	const result = spawnSync(
@@ -135,7 +130,7 @@ const build = spawnSync(
 		"--opt",
 		"filename=Dockerfile",
 		"--opt",
-		"platform=linux/amd64",
+		`platform=${platform}`,
 		"--opt",
 		"build-arg:SOURCE_DATE_EPOCH=1",
 		"--output",

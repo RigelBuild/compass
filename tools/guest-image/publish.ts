@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostPlatform, kernelFileName } from "../runner-image/build-core.ts";
 import {
 	ASSET_ORDER,
 	type Asset,
@@ -34,7 +35,7 @@ import {
 } from "./publish-core.ts";
 
 const USAGE =
-	"usage: publish.ts --repo <repo> --sha <sha12> [--layout <dir>] [--dry-run]";
+	"usage: publish.ts --repo <repo> --sha <sha12> [--arch-suffix <amd64|arm64>] [--layout <dir>] [--dry-run]";
 
 function fail(code: number, message: string): never {
 	console.error(`::error::guest-image publish: ${message}`);
@@ -93,6 +94,21 @@ function sha256OfFile(path: string): string {
 const repo = flag("repo");
 const sha = flag("sha");
 const dryRun = process.argv.includes("--dry-run");
+const archSuffix = flag("arch-suffix");
+const platform = hostPlatform(process.arch);
+if (process.argv.includes("--arch-suffix") && archSuffix === undefined)
+	fail(EXIT.usage, "--arch-suffix requires amd64 or arm64");
+if (
+	archSuffix !== undefined &&
+	archSuffix !== "amd64" &&
+	archSuffix !== "arm64"
+)
+	fail(EXIT.usage, "--arch-suffix must be amd64 or arm64");
+if (archSuffix !== undefined && archSuffix !== platform.slice("linux/".length))
+	fail(
+		EXIT.usage,
+		`--arch-suffix ${archSuffix} does not match host platform ${platform}`,
+	);
 // An empty value is a usage error, not a late throw: without this the lane
 // does the whole multi-GiB realisation before digestRef rejects it.
 if (repo === undefined || sha === undefined || repo === "")
@@ -133,9 +149,9 @@ if (
 	);
 }
 
-// The kernel attr yields a directory; its bzImage is the blob.
+// The kernel attr yields a directory; the platform's image is the blob.
 const assetPaths: Readonly<Record<AssetName, string>> = {
-	kernel: join(kernelDir, "bzImage"),
+	kernel: join(kernelDir, kernelFileName(platform)),
 	rootfs: rootfsPath,
 	initrd: initrdPath,
 };
@@ -186,10 +202,14 @@ const agentImageDigest = lock.digest;
 
 let plan: LayoutPlan;
 try {
-	plan = layoutPlan(assets, {
-		revision: revision.stdout.trim(),
-		agentImageDigest,
-	});
+	plan = layoutPlan(
+		assets,
+		{
+			revision: revision.stdout.trim(),
+			agentImageDigest,
+		},
+		platform,
+	);
 } catch (error) {
 	fail(EXIT.badLayout, error instanceof Error ? error.message : String(error));
 }
@@ -240,7 +260,7 @@ if (dryRun) {
 	process.exit(0);
 }
 
-const tag = buildTag(repo, sha);
+const tag = buildTag(repo, sha, archSuffix);
 // The login runs in a separate process, so every call must name the same creds
 // file; skopeo's default location is environment-dependent on hosted runners.
 const authFile = process.env.REGISTRY_AUTH_FILE;

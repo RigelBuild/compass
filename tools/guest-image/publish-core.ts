@@ -1,3 +1,4 @@
+import { kernelFileName, type Platform } from "../runner-image/build-core.ts";
 // The pure core of the guest-image publish lane: no I/O, so every mapping and
 // fail-closed edge is unit-testable without a registry. GHCR has no
 // server-side tag immutability, so a tag only addresses a build and the
@@ -74,11 +75,15 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
  * sha256sum manifest on `filepath.Base` of each configured path, so these —
  * not the nix store basenames, which carry a content hash — are what the
  * annotations must name. */
-export const ASSET_FILENAMES = {
-	kernel: "bzImage",
-	rootfs: "compass-guest-rootfs.erofs",
-	initrd: "compass-guest-initrd",
-} as const;
+export function assetFilenames(
+	platform: Platform,
+): Readonly<Record<AssetName, string>> {
+	return {
+		kernel: kernelFileName(platform),
+		rootfs: "compass-guest-rootfs.erofs",
+		initrd: "compass-guest-initrd",
+	};
+}
 
 /** Per-asset digest annotations carry the same filename→hex facts the Runner's
  * `--microvm-image-manifest` consumes, so a materialiser can write that file
@@ -102,6 +107,7 @@ export function isDigest(value: string): boolean {
 export function layoutPlan(
 	assets: Readonly<Record<AssetName, Asset>>,
 	provenance: { revision: string; agentImageDigest: string },
+	platform: Platform,
 ): LayoutPlan {
 	for (const name of ASSET_ORDER) {
 		const asset = assets[name];
@@ -132,8 +138,9 @@ export function layoutPlan(
 		"org.opencontainers.image.revision": provenance.revision,
 		[AGENT_DIGEST_ANNOTATION]: provenance.agentImageDigest,
 	};
+	const filenames = assetFilenames(platform);
 	for (const name of ASSET_ORDER) {
-		annotations[`${LAYER_ANNOTATION_PREFIX}${ASSET_FILENAMES[name]}`] = assets[
+		annotations[`${LAYER_ANNOTATION_PREFIX}${filenames[name]}`] = assets[
 			name
 		].digest.slice("sha256:".length);
 	}
@@ -197,11 +204,15 @@ export function annotationViolations(
 
 /** The build-addressability tag for a commit. Nothing deployed resolves
  * through it. */
-export function buildTag(repo: string, sha12: string): string {
+export function buildTag(
+	repo: string,
+	sha12: string,
+	archSuffix?: "amd64" | "arm64",
+): string {
 	if (!/^[0-9a-f]{12}$/.test(sha12))
 		throw new Error(`sha must be 12 lowercase hex characters, got ${sha12}`);
 	if (repo === "") throw new Error("repo must not be empty");
-	return `${repo}:git-${sha12}`;
+	return `${repo}:git-${sha12}${archSuffix === undefined ? "" : `-${archSuffix}`}`;
 }
 
 /** The immutable reference a deployment pins. Never `repo:tag`. */

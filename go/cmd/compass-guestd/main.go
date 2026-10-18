@@ -37,7 +37,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// Console is ttyS0; guestd logs boot progress and failures to stderr.
+	// Console is ttyS0 on amd64 and ttyAMA0 on arm64; guestd logs to stderr.
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	slog.SetDefault(log)
 

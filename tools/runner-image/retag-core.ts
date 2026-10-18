@@ -1,6 +1,7 @@
 // Retag the newest published closure image at or before the release sha; its
 // embedded version may lag because version.txt is outside that closure.
 
+import type { Platform } from "./build-core.ts";
 import { isImageDigest } from "./publish-core.ts";
 
 export function inspectArgv(ref: string): string[] {
@@ -14,6 +15,8 @@ export function copyArgv(
 ): string[] {
 	return [
 		"copy",
+		"--multi-arch",
+		"all",
 		"--preserve-digests",
 		"--src-no-creds",
 		"--dest-authfile",
@@ -213,16 +216,15 @@ export function assertNoClosureChange(
 	}
 }
 
-export type ManifestIdentity = {
-	/** sha256 of the exact manifest bytes: the digest `repo@…` resolves. */
-	manifestDigest: string;
-	/** The image config the manifest names. */
-	configDigest: string;
-};
+export type ManifestIdentity =
+	| { kind: "manifest"; manifestDigest: string; configDigest: string }
+	| {
+			kind: "index";
+			manifestDigest: string;
+			members: { platform: Platform; digest: string }[];
+	  };
 
-/** The identity of a single-platform manifest. The manifest digest is hashed
- * from the bytes locally, so it always describes the body that was read. An
- * index (no top-level config) is refused rather than resolved to a platform. */
+/** Return the checked identity of a single manifest or its two-platform index. */
 export function manifestIdentity(raw: string): ManifestIdentity {
 	let parsed: unknown;
 	try {
@@ -232,6 +234,65 @@ export function manifestIdentity(raw: string): ManifestIdentity {
 			`manifest is not JSON: ${String(err)}`,
 			EXIT.badManifest,
 		);
+	}
+	const manifestDigest = `sha256:${new Bun.CryptoHasher("sha256").update(raw).digest("hex")}`;
+	if (parsed && typeof parsed === "object" && "manifests" in parsed) {
+		const rawMembers = parsed.manifests;
+		if (!Array.isArray(rawMembers)) {
+			throw new RetagError("index manifests are malformed", EXIT.badManifest);
+		}
+		const members: { platform: Platform; digest: string }[] = [];
+		for (const member of rawMembers) {
+			if (
+				!member ||
+				typeof member !== "object" ||
+				!("platform" in member) ||
+				!("digest" in member)
+			) {
+				throw new RetagError("index member is malformed", EXIT.badManifest);
+			}
+			const platform = member.platform;
+			const digest = member.digest;
+			if (
+				!platform ||
+				typeof platform !== "object" ||
+				!("os" in platform) ||
+				!("architecture" in platform)
+			) {
+				throw new RetagError(
+					"index member platform is malformed",
+					EXIT.badManifest,
+				);
+			}
+			const { os, architecture } = platform;
+			if (
+				os !== "linux" ||
+				(architecture !== "amd64" && architecture !== "arm64") ||
+				typeof digest !== "string" ||
+				!isImageDigest(digest)
+			) {
+				throw new RetagError(
+					"index member platform or digest is malformed",
+					EXIT.badManifest,
+				);
+			}
+			members.push({
+				platform: architecture === "amd64" ? "linux/amd64" : "linux/arm64",
+				digest,
+			});
+		}
+		const platforms = members.map((member) => member.platform).sort();
+		if (
+			platforms.length !== 2 ||
+			platforms[0] !== "linux/amd64" ||
+			platforms[1] !== "linux/arm64"
+		) {
+			throw new RetagError(
+				"index must contain linux/amd64 and linux/arm64",
+				EXIT.badManifest,
+			);
+		}
+		return { kind: "index", manifestDigest, members };
 	}
 	const config =
 		parsed && typeof parsed === "object" && "config" in parsed
@@ -247,28 +308,48 @@ export function manifestIdentity(raw: string): ManifestIdentity {
 			EXIT.badManifest,
 		);
 	}
-	const manifestDigest = `sha256:${new Bun.CryptoHasher("sha256").update(raw).digest("hex")}`;
-	return { manifestDigest, configDigest };
+	return { kind: "manifest", manifestDigest, configDigest };
 }
 
-/** The release tag must name the source's exact manifest. The config check is
- * the same coherence shape the agent lane uses; the manifest check is what
- * makes the tag's digest equal to the per-push digest. */
+/** Compare both the copied bytes and any per-platform descriptors. */
 export function assertCoherent(
 	source: ManifestIdentity,
 	release: ManifestIdentity,
 ): void {
-	if (source.configDigest !== release.configDigest) {
-		throw new RetagError(
-			`re-tag incoherent: config ${release.configDigest} != source ${source.configDigest}`,
-			EXIT.incoherent,
-		);
-	}
 	if (source.manifestDigest !== release.manifestDigest) {
 		throw new RetagError(
 			`re-tag incoherent: manifest ${release.manifestDigest} != source ${source.manifestDigest}`,
 			EXIT.incoherent,
 		);
+	}
+	if (source.kind !== release.kind) {
+		throw new RetagError(
+			"re-tag incoherent: manifest type differs",
+			EXIT.incoherent,
+		);
+	}
+	if (source.kind === "manifest" && release.kind === "manifest") {
+		if (source.configDigest !== release.configDigest) {
+			throw new RetagError(
+				`re-tag incoherent: config ${release.configDigest} != source ${source.configDigest}`,
+				EXIT.incoherent,
+			);
+		}
+		return;
+	}
+	if (source.kind === "index" && release.kind === "index") {
+		const sourceMembers = [...source.members].sort((a, b) =>
+			a.platform.localeCompare(b.platform),
+		);
+		const releaseMembers = [...release.members].sort((a, b) =>
+			a.platform.localeCompare(b.platform),
+		);
+		if (JSON.stringify(sourceMembers) !== JSON.stringify(releaseMembers)) {
+			throw new RetagError(
+				"re-tag incoherent: index members differ",
+				EXIT.incoherent,
+			);
+		}
 	}
 }
 /** Flux orders each shared tag by this first-parent sequence number. */

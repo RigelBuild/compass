@@ -19,6 +19,48 @@ func cmdlineArg(t *testing.T, args []string) string {
 	return args[i+1]
 }
 
+// TestSerialConsole pins the console device to the guest architecture.
+func TestSerialConsole(t *testing.T) {
+	tests := []struct {
+		name    string
+		goarch  string
+		want    string
+		wantErr bool
+	}{
+		{name: "amd64", goarch: "amd64", want: "ttyS0"},
+		{name: "arm64", goarch: "arm64", want: "ttyAMA0"},
+		{name: "unsupported", goarch: "riscv64", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := serialConsole(tt.goarch)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("serialConsole() error = nil, want unsupported architecture error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("serialConsole() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("serialConsole(%q) = %q, want %q", tt.goarch, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVmmArgsUsesArm64SerialConsole(t *testing.T) {
+	cfg := BootConfig{VsockPort: 1024}
+	cmdline := cmdlineArg(t, vmmArgs(cfg, "/tmp/console", "ttyAMA0", launchOptions{}))
+	if !strings.Contains(cmdline, "console=ttyAMA0") {
+		t.Fatalf("cmdline = %q, want console=ttyAMA0", cmdline)
+	}
+	if strings.Contains(cmdline, "ttyS0") {
+		t.Fatalf("cmdline = %q, want no amd64 console", cmdline)
+	}
+}
+
 // TestVmmArgsAppendsGatewayPort pins the record §(b)/§(d) cmdline contract: a
 // non-zero BootConfig.GatewayPort is appended as compass.gateway_port=<n>
 // beside the existing compass.vsock_port append, so guestd's forwarder learns
@@ -26,7 +68,7 @@ func cmdlineArg(t *testing.T, args []string) string {
 // control port.
 func TestVmmArgsAppendsGatewayPort(t *testing.T) {
 	cfg := BootConfig{VsockPort: 1024, GatewayPort: 1025}
-	cmdline := cmdlineArg(t, vmmArgs(cfg, "/tmp/console", launchOptions{}))
+	cmdline := cmdlineArg(t, vmmArgs(cfg, "/tmp/console", "ttyS0", launchOptions{}))
 	if !strings.Contains(cmdline, "compass.gateway_port=1025") {
 		t.Fatalf("cmdline = %q, want it to carry compass.gateway_port=1025", cmdline)
 	}
@@ -41,7 +83,7 @@ func TestVmmArgsAppendsGatewayPort(t *testing.T) {
 // keep booting unchanged (record §(b)/§(d)).
 func TestVmmArgsOmitsZeroGatewayPort(t *testing.T) {
 	cfg := BootConfig{VsockPort: 1024}
-	cmdline := cmdlineArg(t, vmmArgs(cfg, "/tmp/console", launchOptions{}))
+	cmdline := cmdlineArg(t, vmmArgs(cfg, "/tmp/console", "ttyS0", launchOptions{}))
 	if strings.Contains(cmdline, "compass.gateway_port") {
 		t.Fatalf("cmdline = %q, want no compass.gateway_port token for a zero GatewayPort", cmdline)
 	}

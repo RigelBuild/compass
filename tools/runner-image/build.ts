@@ -18,21 +18,16 @@ import { fileURLToPath } from "node:url";
 import {
 	buildctlArgs,
 	closureRoots,
+	hostPlatform,
 	outputSpec,
 	parseOutPaths,
 	type RunnerImageOutputs,
 } from "./build-core.ts";
 
-// This file is tools/runner-image/build.ts, so `../..` is the workspace root.
 const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const imageDir = join(workspaceRoot, "runner-image");
 const stageDir = join(imageDir, "store");
 const ociDir = join(imageDir, "out");
-
-// Single-arch linux/amd64: the Runner's microVM backend needs KVM on the node,
-// and the cluster nodes are amd64. A second leg would need its own KVM-capable
-// builder, so it is added when a node arch is, not speculatively.
-const IMAGE_PLATFORM = "linux/amd64";
 
 function parseArgs(argv: readonly string[]): {
 	tag: string;
@@ -117,17 +112,7 @@ function makeWritable(dir: string): void {
 
 const { tag, mode, metadataFile } = parseArgs(process.argv.slice(2));
 
-// The platform below is a manifest LABEL; BuildKit applies it without checking
-// what the COPY'd files actually are. Today only flake.nix's systems list keeps
-// the two honest — a separate file this lane never reads — so assert it here
-// rather than inherit an unchecked invariant.
-if (process.arch !== "x64") {
-	console.error(
-		`runner-image targets ${IMAGE_PLATFORM}, but this host is ${process.arch}.\n` +
-			"  Building here would label the image amd64 while staging this host's binaries.",
-	);
-	process.exit(1);
-}
+const platform = hostPlatform(process.arch);
 
 // buildctl is a CLIENT; it needs a reachable buildkitd. This only checks the
 // var is SET, so an unreachable daemon still fails at the build step after the
@@ -226,12 +211,7 @@ console.error(`runner-image: building ${tag}…`);
 const build = spawnSync(
 	"buildctl",
 	[
-		...buildctlArgs(
-			imageDir,
-			outputs,
-			IMAGE_PLATFORM,
-			outputSpec(mode, tag, ociDir),
-		),
+		...buildctlArgs(imageDir, outputs, platform, outputSpec(mode, tag, ociDir)),
 		...(metadataFile ? ["--metadata-file", metadataFile] : []),
 	],
 	{ cwd: workspaceRoot, stdio: "inherit" },

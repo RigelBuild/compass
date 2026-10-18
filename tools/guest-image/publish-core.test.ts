@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { Platform } from "../runner-image/build-core.ts";
 import {
 	AGENT_DIGEST_ANNOTATION,
 	ARTIFACT_TYPE,
@@ -22,7 +23,8 @@ const provenance = {
 	revision: "d3adb33fd3ad",
 	agentImageDigest: `sha256:${hex("a")}`,
 };
-const plan = () => layoutPlan(assets, provenance);
+const plan = (platform: Platform = "linux/amd64") =>
+	layoutPlan(assets, provenance, platform);
 
 describe("layoutPlan", () => {
 	test("marks the artifact non-runnable: artifactType plus the empty config", () => {
@@ -76,6 +78,11 @@ describe("layoutPlan", () => {
 			"d3adb33fd3ad",
 		);
 	});
+	test("uses the platform kernel filename for arm64 annotations", () => {
+		const { annotations } = layoutPlan(assets, provenance, "linux/arm64");
+		expect(annotations["org.compass.guest.layer.Image"]).toBe(hex("1"));
+		expect(annotations["org.compass.guest.layer.bzImage"]).toBeUndefined();
+	});
 
 	test("the index descriptor's size and digest match the manifest bytes", () => {
 		const built = plan();
@@ -104,15 +111,21 @@ describe("layoutPlan", () => {
 	])(
 		"rejects %s rather than publishing a manifest a registry will refuse",
 		(_label, broken) => {
-			expect(() => layoutPlan(broken, provenance)).toThrow();
+			expect(() => layoutPlan(broken, provenance, "linux/amd64")).toThrow();
 		},
 	);
 
 	test("rejects provenance that would publish an unusable pin", () => {
 		expect(() =>
-			layoutPlan(assets, { ...provenance, agentImageDigest: "git-abc" }),
+			layoutPlan(
+				assets,
+				{ ...provenance, agentImageDigest: "git-abc" },
+				"linux/amd64",
+			),
 		).toThrow();
-		expect(() => layoutPlan(assets, { ...provenance, revision: "" })).toThrow();
+		expect(() =>
+			layoutPlan(assets, { ...provenance, revision: "" }, "linux/amd64"),
+		).toThrow();
 	});
 });
 
@@ -220,6 +233,11 @@ describe("references", () => {
 		);
 		expect(buildTag("ghcr.io/x/y", "0123456789ab")).toBe(
 			"ghcr.io/x/y:git-0123456789ab",
+		);
+	});
+	test("adds an architecture suffix to member tags", () => {
+		expect(buildTag("ghcr.io/x/y", "0123456789ab", "arm64")).toBe(
+			"ghcr.io/x/y:git-0123456789ab-arm64",
 		);
 	});
 

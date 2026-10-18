@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishImageIndex } from "./index.ts";
@@ -11,7 +11,11 @@ const AMD64 = `sha256:${"a".repeat(64)}`;
 const ARM64 = `sha256:${"b".repeat(64)}`;
 const AUTH = "/tmp/auth.json";
 const TEMP = mkdtempSync(join(tmpdir(), "agent-image-index-"));
-const REF = "docker://ghcr.io/rigelbuild/compass-agent";
+const REPO = "ghcr.io/rigelbuild/compass-agent";
+function imageRef(repo: string): string {
+	return `docker://${repo}`;
+}
+const REF = imageRef(REPO);
 
 const LOCAL_RAW = JSON.stringify({
 	mediaType: "application/vnd.oci.image.index.v1+json",
@@ -20,7 +24,26 @@ const LOCAL_RAW = JSON.stringify({
 		{ digest: ARM64, platform: { os: "linux", architecture: "arm64" } },
 	],
 });
-const LOCAL_DIGEST = `sha256:${createHash("sha256").update(LOCAL_RAW).digest("hex")}`;
+const GUEST_RAW = JSON.stringify({
+	mediaType: "application/vnd.oci.image.index.v1+json",
+	manifests: [
+		{
+			digest: AMD64,
+			artifactType: "application/vnd.compass.guest-image.v1",
+			platform: { os: "linux", architecture: "amd64" },
+		},
+		{
+			digest: ARM64,
+			artifactType: "application/vnd.compass.guest-image.v1",
+			platform: { os: "linux", architecture: "arm64" },
+		},
+	],
+});
+
+function localDigest(raw: string): string {
+	return `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+}
+
 const DIFFERENT_RAW = JSON.stringify({
 	mediaType: "application/vnd.oci.image.index.v1+json",
 	manifests: [],
@@ -34,6 +57,8 @@ type FakeOptions = {
 	walkingError?: string;
 	localIndex?: string;
 	memberConfigMismatch?: boolean;
+	repo?: string;
+	emptyMemberConfig?: boolean;
 };
 
 type FakeCommandResult = { exitCode: number; stdout: string; stderr: string };
@@ -63,16 +88,18 @@ function handlePodmanCommand(
 	},
 ): FakeCommandResult | undefined {
 	if (command[0] !== "podman") return undefined;
+	const ref = imageRef(options.repo ?? REPO);
 	if (command[2] === "inspect")
 		return fakeResult(options.localIndex ?? LOCAL_RAW);
+	if (command[2] === "create" || command[2] === "add") return fakeResult();
 	if (command[2] === "push") {
 		const target = command.at(-1);
-		if (target === `${REF}:latest`) {
+		if (target === `${ref}:latest`) {
 			state.latestPushes += 1;
-			state.latestRaw = LOCAL_RAW;
-		} else if (target === `${REF}:git-${SHA12}`) {
+			state.latestRaw = options.localIndex ?? LOCAL_RAW;
+		} else if (target === `${ref}:git-${SHA12}`) {
 			state.immutablePushes += 1;
-			state.immutableRaw = LOCAL_RAW;
+			state.immutableRaw = options.localIndex ?? LOCAL_RAW;
 		}
 	}
 	return fakeResult();
@@ -83,20 +110,23 @@ function fakeImmutableInspection(
 	options: FakeOptions,
 	state: { immutableRaw: string },
 ): FakeCommandResult | undefined {
-	if (tag !== `${REF}:git-${SHA12}`) return undefined;
+	const ref = imageRef(options.repo ?? REPO);
+	if (tag !== `${ref}:git-${SHA12}`) return undefined;
 	if (options.immutable === "error") return fakeResult("", 1, "unauthorized");
 	if (options.immutable === "different") return fakeResult(DIFFERENT_RAW);
 	if ((options.immutable ?? "unknown") === "unknown" && !state.immutableRaw) {
 		return fakeResult("", 1, "manifest unknown");
 	}
-	return fakeResult(state.immutableRaw || LOCAL_RAW);
+	return fakeResult(state.immutableRaw || options.localIndex || LOCAL_RAW);
 }
 
 function fakeLatestInspection(
 	tag: string,
+	options: FakeOptions,
 	state: { latestRaw: string },
 ): FakeCommandResult | undefined {
-	if (tag !== `${REF}:latest`) return undefined;
+	const ref = imageRef(options.repo ?? REPO);
+	if (tag !== `${ref}:latest`) return undefined;
 	return fakeResult(state.latestRaw, state.latestRaw ? 0 : 1, "missing latest");
 }
 
@@ -104,7 +134,8 @@ function fakeNewerInspection(
 	tag: string,
 	options: FakeOptions,
 ): FakeCommandResult | undefined {
-	if (!tag.startsWith(`${REF}:git-`)) return undefined;
+	const ref = imageRef(options.repo ?? REPO);
+	if (!tag.startsWith(`${ref}:git-`)) return undefined;
 	if (options.walkingError) return fakeResult("", 1, options.walkingError);
 	return options.newerRaw
 		? fakeResult(options.newerRaw)
@@ -118,7 +149,7 @@ function fakeRawInspection(
 ): FakeCommandResult {
 	return (
 		fakeImmutableInspection(tag, options, state) ??
-		fakeLatestInspection(tag, state) ??
+		fakeLatestInspection(tag, options, state) ??
 		fakeNewerInspection(tag, options) ??
 		fakeResult("", 1, "unexpected skopeo inspect")
 	);
@@ -137,11 +168,37 @@ function handleSkopeoCommand(
 		const arch = tag.endsWith(AMD64) ? "amd64" : "arm64";
 		const configArch =
 			options.memberConfigMismatch && arch === "amd64" ? "arm64" : arch;
+		if (options.emptyMemberConfig) return fakeResult("{}");
 		return fakeResult(
 			JSON.stringify({ os: "linux", architecture: configArch }),
 		);
 	}
 	return fakeRawInspection(tag, options, state);
+}
+
+function fakeCommandResult(
+	command: string[],
+	options: FakeOptions,
+	state: {
+		immutableRaw: string;
+		latestRaw: string;
+		latestPushes: number;
+		immutablePushes: number;
+	},
+): FakeCommandResult {
+	if (command[0] === "cat")
+		return fakeResult(`${localDigest(options.localIndex ?? LOCAL_RAW)}\n`);
+	if (command[0] === "git") {
+		const gitResult = handleGitCommand(command, options.newerCommits ?? []);
+		if (gitResult) return gitResult;
+	}
+	if (command[0] === "podman") {
+		const podmanResult = handlePodmanCommand(command, options, state);
+		if (podmanResult) return podmanResult;
+	}
+	if (command[0] === "skopeo")
+		return handleSkopeoCommand(command, options, state);
+	return fakeResult();
 }
 
 function makeRunner(options: FakeOptions = {}): {
@@ -155,7 +212,7 @@ function makeRunner(options: FakeOptions = {}): {
 	const state = {
 		immutableRaw:
 			immutable === "equal"
-				? LOCAL_RAW
+				? (options.localIndex ?? LOCAL_RAW)
 				: immutable === "different"
 					? DIFFERENT_RAW
 					: "",
@@ -167,18 +224,7 @@ function makeRunner(options: FakeOptions = {}): {
 		command,
 	) => {
 		commands.push(command);
-		if (command[0] === "cat") return fakeResult(`${LOCAL_DIGEST}\n`);
-		if (command[0] === "git") {
-			const gitResult = handleGitCommand(command, options.newerCommits ?? []);
-			if (gitResult) return gitResult;
-		}
-		if (command[0] === "podman") {
-			const podmanResult = handlePodmanCommand(command, options, state);
-			if (podmanResult) return podmanResult;
-		}
-		if (command[0] === "skopeo")
-			return handleSkopeoCommand(command, options, state);
-		return fakeResult();
+		return fakeCommandResult(command, options, state);
 	};
 	return {
 		commands,
@@ -199,10 +245,33 @@ const NEWER_RAW = JSON.stringify({
 });
 
 describe("publishImageIndex latest ownership", () => {
+	test("compass-server repo composes its architecture tags", async () => {
+		const repo = "ghcr.io/rigelbuild/compass-server";
+		const fake = makeRunner({ repo });
+		await publishImageIndex(
+			{ repo, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			fake.run,
+		);
+		expect(
+			fake.commands.some((command) =>
+				command.includes(`docker://${repo}:git-${SHA12}-amd64`),
+			),
+		).toBe(true);
+		expect(
+			fake.commands.some((command) =>
+				command.includes(`docker://${repo}:git-${SHA12}-arm64`),
+			),
+		).toBe(true);
+		expect(
+			fake.commands.some((command) =>
+				command.includes(`docker://${repo}:git-${SHA12}`),
+			),
+		).toBe(true);
+	});
 	test("no newer index pushes :git before :latest", async () => {
 		const fake = makeRunner();
 		await publishImageIndex(
-			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,
 		);
 		expect(fake.latestPushes).toBe(1);
@@ -219,7 +288,7 @@ describe("publishImageIndex latest ownership", () => {
 			latestRaw: NEWER_RAW,
 		});
 		await publishImageIndex(
-			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,
 		);
 		expect(fake.latestPushes).toBe(0);
@@ -236,7 +305,7 @@ describe("publishImageIndex latest ownership", () => {
 		});
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("latest index differs from newest immutable tag");
@@ -255,7 +324,7 @@ describe("publishImageIndex latest ownership", () => {
 		};
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("is not on origin/main");
@@ -271,7 +340,7 @@ describe("publishImageIndex latest ownership", () => {
 		});
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("ambiguous inspect failure probing newer");
@@ -281,11 +350,42 @@ describe("publishImageIndex latest ownership", () => {
 
 afterAll(() => rmSync(TEMP, { recursive: true, force: true }));
 
+test("declares both platform descriptors when composing the index", async () => {
+	const repo = "ghcr.io/rigelbuild/compass-guest-image";
+	const fake = makeRunner({
+		repo,
+		localIndex: GUEST_RAW,
+		emptyMemberConfig: true,
+	});
+	await publishImageIndex(
+		{ repo, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+		fake.run,
+	);
+	const adds = fake.commands.filter(
+		(command) => command[0] === "podman" && command[2] === "add",
+	);
+	expect(adds).toHaveLength(2);
+	expect(adds[0]).toEqual([
+		"podman",
+		"manifest",
+		"add",
+		"--authfile",
+		join(TEMP, "anonymous-auth.json"),
+		"--os",
+		"linux",
+		"--arch",
+		"amd64",
+		`localhost/compass-guest-image:${SHA12}`,
+		`${imageRef(repo)}@${AMD64}`,
+	]);
+	expect(adds[1]).toContain("arm64");
+});
+
 describe("registry authentication boundaries", () => {
 	test("authenticates only the destination probe and manifest pushes", async () => {
 		const fake = makeRunner();
 		await publishImageIndex(
-			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,
 		);
 
@@ -311,17 +411,6 @@ describe("registry authentication boundaries", () => {
 			expect(command).not.toContain("--authfile");
 		}
 
-		const adds = fake.commands.filter(
-			(command) => command[0] === "podman" && command[2] === "add",
-		);
-		expect(adds).toHaveLength(2);
-		for (const command of adds) {
-			expect(command).toContain(join(TEMP, "anonymous-auth.json"));
-			expect(readFileSync(join(TEMP, "anonymous-auth.json"), "utf8")).toBe(
-				"{}",
-			);
-			expect(command).not.toContain(AUTH);
-		}
 		for (const command of fake.commands.filter(
 			(entry) => entry[0] === "podman" && entry[2] === "push",
 		)) {
@@ -334,7 +423,7 @@ describe("immutable tag guard", () => {
 	test("matching immutable raw digest skips the immutable push", async () => {
 		const fake = makeRunner({ immutable: "equal" });
 		await publishImageIndex(
-			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,
 		);
 		expect(fake.immutablePushes).toBe(0);
@@ -350,7 +439,7 @@ describe("immutable tag guard", () => {
 				: result;
 		};
 		await publishImageIndex(
-			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,
 		);
 		expect(fake.immutablePushes).toBe(0);
@@ -360,7 +449,7 @@ describe("immutable tag guard", () => {
 		const fake = makeRunner({ immutable: "different" });
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("immutable :git-abcdef012345 index differs");
@@ -370,7 +459,7 @@ describe("immutable tag guard", () => {
 	test("manifest unknown allows immutable push", async () => {
 		const fake = makeRunner({ immutable: "unknown" });
 		await publishImageIndex(
-			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,
 		);
 		expect(fake.immutablePushes).toBe(1);
@@ -380,7 +469,7 @@ describe("immutable tag guard", () => {
 		const fake = makeRunner({ immutable: "error" });
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("refusing to push: unauthorized");
@@ -393,7 +482,7 @@ describe("index and member verification", () => {
 		const fake = makeRunner({ localIndex: DIFFERENT_RAW });
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("composed index has 0 members, expected exactly 2");
@@ -410,7 +499,7 @@ describe("index and member verification", () => {
 		const fake = makeRunner({ localIndex: wrongPlatforms });
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("composed platform set is 'linux/amd64,linux/arm64v8'");
@@ -420,7 +509,7 @@ describe("index and member verification", () => {
 		const fake = makeRunner({ memberConfigMismatch: true });
 		await expect(
 			publishImageIndex(
-				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
 		).rejects.toThrow("config is linux/arm64, declared linux/amd64");

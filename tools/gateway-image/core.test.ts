@@ -56,7 +56,7 @@ describe("parseForkPin", () => {
 
 describe("buildctl argv", () => {
 	test("stage 1 builds pi-runtime for amd64 with reproducible OCI output", () => {
-		expect(baseBuildArgs("/src", "/base")).toEqual([
+		expect(baseBuildArgs("/src", "/base", "linux/amd64")).toEqual([
 			"build",
 			"--frontend",
 			"dockerfile.v0",
@@ -79,7 +79,14 @@ describe("buildctl argv", () => {
 
 	test("stage 2 binds the stage-1 layout as oh-my-pi/pi:dev by digest", () => {
 		expect(
-			gatewayBuildArgs("/src", "/base", DIGEST, "/oci", "/meta.json"),
+			gatewayBuildArgs(
+				"/src",
+				"/base",
+				DIGEST,
+				"/oci",
+				"/meta.json",
+				"linux/amd64",
+			),
 		).toEqual([
 			"build",
 			"--frontend",
@@ -107,7 +114,7 @@ describe("buildctl argv", () => {
 
 	test("stage 2 refuses a base that is not a digest", () => {
 		expect(() =>
-			gatewayBuildArgs("/src", "/base", "latest", "/oci", "/m"),
+			gatewayBuildArgs("/src", "/base", "latest", "/oci", "/m", "linux/amd64"),
 		).toThrow();
 	});
 });
@@ -313,6 +320,11 @@ describe("tags and refs", () => {
 			"ghcr.io/r/g:git-0123456789ab",
 		);
 		expect(digestRef("ghcr.io/r/g", DIGEST)).toBe(`ghcr.io/r/g@${DIGEST}`);
+	});
+	test("adds an architecture suffix to member tags", () => {
+		expect(buildTag("ghcr.io/r/g", "0123456789ab", "arm64")).toBe(
+			"ghcr.io/r/g:git-0123456789ab-arm64",
+		);
 	});
 
 	test("rejects a short sha and a tag-shaped digest", () => {

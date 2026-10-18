@@ -11,7 +11,11 @@ const workflow = Bun.YAML.parse(
 	jobs: Record<
 		string,
 		{
-			needs?: string[];
+			needs?: string | string[];
+			outputs?: Record<string, string>;
+			strategy?: {
+				matrix?: { include?: { arch: string; runner: string }[] };
+			};
 			permissions?: Record<string, string>;
 			concurrency?: {
 				group: string;
@@ -22,6 +26,11 @@ const workflow = Bun.YAML.parse(
 		}
 	>;
 };
+
+function needsList(job: (typeof workflow.jobs)[string] | undefined): string[] {
+	const needs = job?.needs;
+	return needs === undefined ? [] : Array.isArray(needs) ? needs : [needs];
+}
 
 // One file per top-level go/ dir that `go list -deps ./cmd/compass-runner`
 // reports. flake.nix builds from all of ./go, so each must republish the image.
@@ -65,9 +74,9 @@ describe("P6 paired main tags", () => {
 	});
 	test("tag-main-images waits for both publishers and checks out full history", () => {
 		const job = workflow.jobs["tag-main-images"];
-		expect(job?.needs).toEqual([
-			"publish-runner-image",
-			"publish-server-image",
+		expect(needsList(job)).toEqual([
+			"publish-runner-index",
+			"publish-server-index",
 		]);
 		expect(job?.permissions).toEqual({ contents: "read", packages: "write" });
 		expect(job?.concurrency).toEqual({
@@ -96,6 +105,68 @@ describe("P6 paired main tags", () => {
 		);
 		expect("main-0-abcdef012345").not.toMatch(pattern);
 		expect("main-1638-abcdefg12345").not.toMatch(pattern);
+	});
+});
+
+describe("P7 multi-arch release publishers", () => {
+	const lanes = ["runner", "server", "guest", "gateway"] as const;
+	test("each lane gates once, builds native members, then composes an index", () => {
+		for (const lane of lanes) {
+			const gate = workflow.jobs[`publish-${lane}-gate`];
+			const publisher = workflow.jobs[`publish-${lane}-image`];
+			const index = workflow.jobs[`publish-${lane}-index`];
+			expect(needsList(publisher)).toEqual([`publish-${lane}-gate`]);
+			expect(publisher?.strategy?.matrix?.include).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ arch: "amd64", runner: "ubuntu-latest" }),
+					expect.objectContaining({
+						arch: "arm64",
+						runner: "ubuntu-24.04-arm",
+					}),
+				]),
+			);
+			expect(needsList(index)).toEqual([
+				`publish-${lane}-gate`,
+				`publish-${lane}-image`,
+			]);
+			expect(gate?.outputs).toBeDefined();
+		}
+	});
+	test("tag-main-images waits on the runner and server indexes", () => {
+		expect(needsList(workflow.jobs["tag-main-images"])).toEqual([
+			"publish-runner-index",
+			"publish-server-index",
+		]);
+	});
+});
+
+describe("P7 arm64 guest CI gate", () => {
+	test("runs guest build-only on native arm64 behind microvm_affected and requires it in rollup", () => {
+		const ci = Bun.YAML.parse(
+			readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"),
+		) as {
+			jobs: Record<
+				string,
+				{
+					needs?: string | string[];
+					if?: string;
+					"runs-on"?: string;
+					steps?: { run?: string }[];
+				}
+			>;
+		};
+		const guest = ci.jobs["guest-arm64"];
+		expect(guest?.["runs-on"]).toBe("ubuntu-24.04-arm");
+		expect(guest?.if).toContain("microvm_affected");
+		expect(
+			guest?.steps?.some((step) =>
+				step.run?.includes("tools/microvm-boot-test/run.ts --build-only"),
+			),
+		).toBe(true);
+		const rollupNeeds = ci.jobs.rollup?.needs;
+		expect(Array.isArray(rollupNeeds) ? rollupNeeds : [rollupNeeds]).toContain(
+			"guest-arm64",
+		);
 	});
 });
 

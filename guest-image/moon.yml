@@ -50,9 +50,8 @@ tasks:
       - '/devenv.yaml'
 
   test:
-    # The layer assembly fixtures and the pure v2 pin contract checks need no
-    # registry or guest boot.
-    command: 'nix build -f default.nix compass-guest-assembly-tests compass-guest-agent-pin-tests --no-link'
+    # Fixtures cover layer assembly, pinned agent metadata, and kernel module config.
+    command: 'nix build -f default.nix compass-guest-assembly-tests compass-guest-agent-pin-tests compass-guest-module-check-tests --no-link'
     options:
       cache: false
       runInCI: true
@@ -62,6 +61,7 @@ tasks:
       - 'agent-pin.nix'
       - 'agent-pin-tests.nix'
       - 'default.nix'
+      - 'module-check-tests.nix'
       - '/devenv.lock'
 
   eval-arm64:

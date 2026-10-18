@@ -34,6 +34,7 @@ It denies exec, attach, and ephemeral containers on Runner pods except to
 `admission.breakGlassGroups` (default `system:masters`).
 The Server assigns each Runner ID during enrollment. The ServiceAccount has no
 RBAC binding. Rollout beyond one node waits for the multi-Runner hub.
+Runner nodes must be amd64.
 
 ## KVM device delivery
 

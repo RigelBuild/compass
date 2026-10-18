@@ -12,6 +12,7 @@ export type CommandResult = {
 export type CommandRunner = (command: string[]) => Promise<CommandResult>;
 
 export type PublishInput = {
+	repo: string;
 	sha: string;
 	authFile: string;
 	runnerTemp: string;
@@ -22,6 +23,7 @@ export type PublishResult = { stdout: string[]; stderr: string[] };
 type IndexMember = {
 	digest: string;
 	platform: { os: string; architecture: string };
+	artifactType?: string;
 };
 
 type ImageIndex = {
@@ -29,8 +31,14 @@ type ImageIndex = {
 	manifests: IndexMember[];
 };
 
-const IMAGE_REF = "docker://ghcr.io/rigelbuild/compass-agent";
-const LOCAL_INDEX = "localhost/compass-agent";
+function imageRef(repo: string): string {
+	return `docker://${repo}`;
+}
+
+function localIndexRef(repo: string, sha12: string): string {
+	const name = repo.slice(repo.lastIndexOf("/") + 1);
+	return `localhost/${name}:${sha12}`;
+}
 const EXPECTED_PLATFORMS = "linux/amd64,linux/arm64";
 const INDEX_MEDIA_TYPES = [
 	"application/vnd.oci.image.index.v1+json",
@@ -100,7 +108,9 @@ function parseIndex(raw: string, description: string): ImageIndex {
 			typeof member.digest !== "string" ||
 			!isRecord(member.platform) ||
 			typeof member.platform.os !== "string" ||
-			typeof member.platform.architecture !== "string"
+			typeof member.platform.architecture !== "string" ||
+			(member.artifactType !== undefined &&
+				typeof member.artifactType !== "string")
 		) {
 			throw new Error(`invalid ${description}: malformed manifest member`);
 		}
@@ -110,6 +120,9 @@ function parseIndex(raw: string, description: string): ImageIndex {
 				os: member.platform.os,
 				architecture: member.platform.architecture,
 			},
+			...(typeof member.artifactType === "string"
+				? { artifactType: member.artifactType }
+				: {}),
 		};
 	});
 	return {
@@ -148,11 +161,13 @@ function isManifestUnknown(message: string): boolean {
 }
 
 async function resolveArchDigests(
+	repo: string,
 	run: CommandRunner,
 	sha12: string,
 ): Promise<[string, string]> {
-	const amd64Tag = `${IMAGE_REF}:git-${sha12}-amd64`;
-	const arm64Tag = `${IMAGE_REF}:git-${sha12}-arm64`;
+	const ref = imageRef(repo);
+	const amd64Tag = `${ref}:git-${sha12}-amd64`;
+	const arm64Tag = `${ref}:git-${sha12}-arm64`;
 	const amd64Digest = (
 		await runChecked(run, inspectCommand(amd64Tag, "--format", "{{.Digest}}"))
 	).trim();
@@ -166,25 +181,34 @@ async function resolveArchDigests(
 }
 
 async function composeLocalIndex(
+	repo: string,
 	authFile: string,
 	runnerTemp: string,
 	sha12: string,
 	[amd64Digest, arm64Digest]: [string, string],
 	run: CommandRunner,
 ): Promise<{ localList: string; localDigest: string }> {
-	const localList = `${LOCAL_INDEX}:${sha12}`;
+	const ref = imageRef(repo);
+	const localList = localIndexRef(repo, sha12);
 	const anonymousAuthFile = `${runnerTemp}/anonymous-auth.json`;
 	writeFileSync(anonymousAuthFile, "{}");
 	await runChecked(run, ["podman", "manifest", "create", localList]);
-	for (const digest of [amd64Digest, arm64Digest]) {
+	for (const [digest, architecture] of [
+		[amd64Digest, "amd64"],
+		[arm64Digest, "arm64"],
+	] as const) {
 		await runChecked(run, [
 			"podman",
 			"manifest",
 			"add",
 			"--authfile",
 			anonymousAuthFile,
+			"--os",
+			"linux",
+			"--arch",
+			architecture,
 			localList,
-			`${IMAGE_REF}@${digest}`,
+			`${ref}@${digest}`,
 		]);
 	}
 	const localRaw = await runChecked(run, [
@@ -220,13 +244,14 @@ async function composeLocalIndex(
 }
 
 async function guardImmutableTag(
+	repo: string,
 	authFile: string,
 	localList: string,
 	sha12: string,
 	localDigest: string,
 	run: CommandRunner,
 ): Promise<PublishResult> {
-	const tag = `${IMAGE_REF}:git-${sha12}`;
+	const tag = `${imageRef(repo)}:git-${sha12}`;
 	const result = await run(destinationProbeCommand(authFile, tag));
 	const output: PublishResult = {
 		stdout: [],
@@ -262,6 +287,7 @@ async function guardImmutableTag(
 }
 
 async function findNewerIndex(
+	repo: string,
 	sha: string,
 	run: CommandRunner,
 ): Promise<string> {
@@ -287,7 +313,7 @@ async function findNewerIndex(
 		if (!commit) continue;
 		const newerSha12 = commit.slice(0, 12);
 		const probe = await run(
-			inspectCommand(`${IMAGE_REF}:git-${newerSha12}`, "--raw"),
+			inspectCommand(`${imageRef(repo)}:git-${newerSha12}`, "--raw"),
 		);
 		if (probe.exitCode === 0) return newerSha12;
 		if (!isManifestUnknown(probe.stderr)) {
@@ -300,12 +326,13 @@ async function findNewerIndex(
 }
 
 async function verifyMemberConfig(
+	repo: string,
 	member: IndexMember,
 	run: CommandRunner,
 ): Promise<void> {
 	const configRaw = await runChecked(
 		run,
-		inspectCommand(`${IMAGE_REF}@${member.digest}`, "--config"),
+		inspectCommand(`${imageRef(repo)}@${member.digest}`, "--config"),
 	);
 	let config: unknown;
 	try {
@@ -314,8 +341,16 @@ async function verifyMemberConfig(
 		const detail = error instanceof Error ? error.message : String(error);
 		throw new Error(`invalid member config for ${member.digest}: ${detail}`);
 	}
+	if (!isRecord(config)) {
+		throw new Error(`invalid member config for ${member.digest}`);
+	}
+	if (member.artifactType !== undefined) {
+		if (Object.keys(config).length !== 0) {
+			throw new Error(`invalid artifact config for ${member.digest}`);
+		}
+		return;
+	}
 	if (
-		!isRecord(config) ||
 		typeof config.os !== "string" ||
 		typeof config.architecture !== "string"
 	) {
@@ -332,6 +367,7 @@ async function verifyMemberConfig(
 }
 
 async function verifyPublishedIndex(
+	repo: string,
 	sha12: string,
 	localDigest: string,
 	archDigests: [string, string],
@@ -339,7 +375,7 @@ async function verifyPublishedIndex(
 ): Promise<{ gitDigest: string; index: ImageIndex }> {
 	const gitRaw = await runChecked(
 		run,
-		inspectCommand(`${IMAGE_REF}:git-${sha12}`, "--raw"),
+		inspectCommand(`${imageRef(repo)}:git-${sha12}`, "--raw"),
 	);
 	const gitDigest = sha256(gitRaw);
 	if (gitDigest !== localDigest) {
@@ -365,12 +401,13 @@ async function verifyPublishedIndex(
 		);
 	}
 	for (const member of index.manifests) {
-		await verifyMemberConfig(member, run);
+		await verifyMemberConfig(repo, member, run);
 	}
 	return { gitDigest, index };
 }
 
 async function verifyLatest(
+	repo: string,
 	sha12: string,
 	newerIndex: string,
 	gitDigest: string,
@@ -381,13 +418,13 @@ async function verifyLatest(
 	if (newerIndex) {
 		const newerRaw = await runChecked(
 			run,
-			inspectCommand(`${IMAGE_REF}:${expectedTag}`, "--raw"),
+			inspectCommand(`${imageRef(repo)}:${expectedTag}`, "--raw"),
 		);
 		expectedDigest = sha256(newerRaw);
 	}
 	const latestRaw = await runChecked(
 		run,
-		inspectCommand(`${IMAGE_REF}:latest`, "--raw"),
+		inspectCommand(`${imageRef(repo)}:latest`, "--raw"),
 	);
 	const latestDigest = sha256(latestRaw);
 	if (latestDigest !== expectedDigest) {
@@ -403,12 +440,13 @@ export async function publishImageIndex(
 	input: PublishInput,
 	run: CommandRunner,
 ): Promise<PublishResult> {
-	const { sha, authFile, runnerTemp } = input;
+	const { repo, sha, authFile, runnerTemp } = input;
 	const sha12 = sha.slice(0, 12);
 	const result: PublishResult = { stdout: [], stderr: [] };
 	try {
-		const archDigests = await resolveArchDigests(run, sha12);
+		const archDigests = await resolveArchDigests(repo, run, sha12);
 		const { localList, localDigest } = await composeLocalIndex(
+			repo,
 			authFile,
 			runnerTemp,
 			sha12,
@@ -416,6 +454,7 @@ export async function publishImageIndex(
 			run,
 		);
 		const guarded = await guardImmutableTag(
+			repo,
 			authFile,
 			localList,
 			sha12,
@@ -424,7 +463,7 @@ export async function publishImageIndex(
 		);
 		result.stdout.push(...guarded.stdout);
 		result.stderr.push(...guarded.stderr);
-		const newerIndex = await findNewerIndex(sha, run);
+		const newerIndex = await findNewerIndex(repo, sha, run);
 		if (!newerIndex) {
 			await runChecked(run, [
 				"podman",
@@ -435,7 +474,7 @@ export async function publishImageIndex(
 				"--authfile",
 				authFile,
 				localList,
-				`${IMAGE_REF}:latest`,
+				`${imageRef(repo)}:latest`,
 			]);
 		} else {
 			result.stderr.push(
@@ -443,12 +482,19 @@ export async function publishImageIndex(
 			);
 		}
 		const { gitDigest } = await verifyPublishedIndex(
+			repo,
 			sha12,
 			localDigest,
 			archDigests,
 			run,
 		);
-		const expectedTag = await verifyLatest(sha12, newerIndex, gitDigest, run);
+		const expectedTag = await verifyLatest(
+			repo,
+			sha12,
+			newerIndex,
+			gitDigest,
+			run,
+		);
 		result.stdout.push(
 			`verified OCI index ${gitDigest}: ${EXPECTED_PLATFORMS}; :latest matches :${expectedTag}`,
 		);
@@ -471,14 +517,17 @@ async function runCommand(command: string[]): Promise<CommandResult> {
 }
 
 async function main(): Promise<void> {
+	const repo = process.env.IMAGE_REPO;
 	const sha = process.env.GH_SHA;
 	const authFile = process.env.REGISTRY_AUTH_FILE;
 	const runnerTemp = process.env.RUNNER_TEMP;
-	if (!sha || !authFile || !runnerTemp) {
-		throw new Error("GH_SHA, REGISTRY_AUTH_FILE, and RUNNER_TEMP are required");
+	if (!repo || !sha || !authFile || !runnerTemp) {
+		throw new Error(
+			"IMAGE_REPO, GH_SHA, REGISTRY_AUTH_FILE, and RUNNER_TEMP are required",
+		);
 	}
 	const result = await publishImageIndex(
-		{ sha, authFile, runnerTemp },
+		{ repo, sha, authFile, runnerTemp },
 		runCommand,
 	);
 	for (const line of result.stdout) console.log(line);

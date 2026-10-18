@@ -5,13 +5,25 @@
  * already carries. */
 export const SOURCE_DATE_EPOCH = 1;
 
+export type Platform = "linux/amd64" | "linux/arm64";
+
+export function hostPlatform(arch: NodeJS.Architecture): Platform {
+	if (arch === "x64") return "linux/amd64";
+	if (arch === "arm64") return "linux/arm64";
+	throw new Error(`unsupported host architecture: ${arch}`);
+}
+
+export function kernelFileName(platform: Platform): "bzImage" | "Image" {
+	return platform === "linux/amd64" ? "bzImage" : "Image";
+}
+
 /** The six artifacts the image carries, as realised store paths. */
 export interface RunnerImageOutputs {
 	/** The `compass-runner` package out-path (the binary is at `bin/compass-runner`). */
 	runner: string;
 	/** The `compass-stack-env` symlinkJoin (cloud-hypervisor, virtiofsd, passt under `bin/`). */
 	stack: string;
-	/** The guest kernel DERIVATION dir; the bootable artifact is `<dir>/bzImage`. */
+	/** The guest kernel derivation dir; the bootable artifact is platform-specific. */
 	kernelDir: string;
 	/** The guest rootfs image — the derivation IS the file. */
 	rootfs: string;
@@ -29,15 +41,9 @@ export function parseOutPaths(stdout: string): string[] {
 		.filter((line) => line !== "");
 }
 
-/**
- * The absolute in-image path of the bootable kernel. The kernel derivation is a
- * DIRECTORY (it also carries System.map); cloud-hypervisor direct-boots the
- * bzImage inside it, with no bootloader. The rootfs and initrd derivations are
- * files, so only this one gains a suffix — the asymmetry is the derivations',
- * not a convention.
- */
-export function kernelImagePath(kernelDir: string): string {
-	return `${kernelDir}/bzImage`;
+/** Return the absolute in-image path of this platform's bootable kernel. */
+export function kernelImagePath(kernelDir: string, platform: Platform): string {
+	return `${kernelDir}/${kernelFileName(platform)}`;
 }
 
 /**
@@ -51,14 +57,17 @@ export function kernelImagePath(kernelDir: string): string {
  * matching `--microvm-*` flags, so an operator can still override any one at
  * runtime without rebuilding.
  */
-export function buildArgs(outputs: RunnerImageOutputs): Record<string, string> {
+export function buildArgs(
+	outputs: RunnerImageOutputs,
+	platform: Platform,
+): Record<string, string> {
 	return {
 		VMM_BIN: `${outputs.stack}/bin/cloud-hypervisor`,
 		VIRTIOFSD_BIN: `${outputs.stack}/bin/virtiofsd`,
 		// passt is exec'd by NAME rather than by a configured path (it has no
 		// --microvm-* flag), so the image needs its bin dir on PATH.
 		STACK_BIN_DIR: `${outputs.stack}/bin`,
-		GUEST_KERNEL: kernelImagePath(outputs.kernelDir),
+		GUEST_KERNEL: kernelImagePath(outputs.kernelDir, platform),
 		GUEST_ROOTFS: outputs.rootfs,
 		GUEST_INITRD: outputs.initrd,
 	};
@@ -123,7 +132,7 @@ export function outputSpec(
 export function buildctlArgs(
 	contextDir: string,
 	outputs: RunnerImageOutputs,
-	platform: string,
+	platform: Platform,
 	output: string,
 ): string[] {
 	const args = [
@@ -146,7 +155,7 @@ export function buildctlArgs(
 	];
 	// Sorted, so the argv is deterministic across runs: an unstable arg order
 	// would make two otherwise-identical builds diff in logs for no reason.
-	for (const [name, value] of Object.entries(buildArgs(outputs)).sort(
+	for (const [name, value] of Object.entries(buildArgs(outputs, platform)).sort(
 		([a], [b]) => a.localeCompare(b),
 	)) {
 		args.push("--opt", `build-arg:${name}=${value}`);

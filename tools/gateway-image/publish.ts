@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { hostPlatform } from "../runner-image/build-core.ts";
 import {
 	buildTag,
 	digestRef,
@@ -11,7 +12,8 @@ import {
 	tagDisposition,
 } from "./core.ts";
 
-const USAGE = "usage: publish.ts --repo <repo> --sha <sha12> [--out <dir>]";
+const USAGE =
+	"usage: publish.ts --repo <repo> --sha <sha12> [--arch-suffix <amd64|arm64>] [--out <dir>]";
 const workspaceRoot = resolve(import.meta.dir, "..", "..");
 const laneDir = import.meta.dir;
 
@@ -24,13 +26,19 @@ function parseArgs(argv: readonly string[]): {
 	repo: string;
 	sha: string;
 	out: string;
+	archSuffix: "amd64" | "arm64" | undefined;
 } {
-	const values: Partial<Record<"--repo" | "--sha" | "--out", string>> = {};
+	const values: Partial<
+		Record<"--repo" | "--sha" | "--out" | "--arch-suffix", string>
+	> = {};
 	for (let index = 0; index < argv.length; index += 1) {
 		const name = argv[index];
 		const value = argv[index + 1];
 		if (
-			(name !== "--repo" && name !== "--sha" && name !== "--out") ||
+			(name !== "--repo" &&
+				name !== "--sha" &&
+				name !== "--out" &&
+				name !== "--arch-suffix") ||
 			value === undefined ||
 			value === "" ||
 			value.startsWith("--") ||
@@ -43,13 +51,33 @@ function parseArgs(argv: readonly string[]): {
 	}
 	const repo = values["--repo"];
 	const sha = values["--sha"];
+	const archValue = values["--arch-suffix"];
 	if (repo === undefined || sha === undefined) fail(EXIT.usage, USAGE);
 	if (!/^[0-9a-f]{12}$/.test(sha)) {
 		fail(EXIT.usage, `--sha must be 12 lowercase hex characters, got ${sha}`);
 	}
+	if (
+		archValue !== undefined &&
+		archValue !== "amd64" &&
+		archValue !== "arm64"
+	) {
+		fail(EXIT.usage, "--arch-suffix must be amd64 or arm64");
+	}
+	const platform = hostPlatform(process.arch);
+	if (
+		archValue !== undefined &&
+		archValue !== platform.slice("linux/".length)
+	) {
+		fail(
+			EXIT.usage,
+			`--arch-suffix ${archValue} does not match host platform ${platform}`,
+		);
+	}
 	return {
 		repo,
 		sha,
+		archSuffix:
+			archValue === "amd64" || archValue === "arm64" ? archValue : undefined,
 		out: resolve(workspaceRoot, values["--out"] ?? join(laneDir, "out")),
 	};
 }
@@ -75,7 +103,7 @@ function run(command: string, args: readonly string[]): CommandResult {
 	};
 }
 
-const { repo, sha, out } = parseArgs(process.argv.slice(2));
+const { repo, sha, out, archSuffix } = parseArgs(process.argv.slice(2));
 const indexPath = join(out, "oci", "index.json");
 let localDigest: string;
 try {
@@ -84,7 +112,7 @@ try {
 	fail(EXIT.badLayout, `reading ${indexPath} failed: ${String(error)}`);
 }
 
-const tag = buildTag(repo, sha);
+const tag = buildTag(repo, sha, archSuffix);
 const authFile = process.env.REGISTRY_AUTH_FILE;
 const destinationAuth = authFile === undefined ? [] : ["--authfile", authFile];
 const probe = run("skopeo", [
