@@ -392,6 +392,39 @@ func checkSuppliedAdminTokenFIFO(t *testing.T, tokenFile string, check func() er
 }
 
 func TestIssueAndWriteAdminTokenRegistersSecretVolumeToken(t *testing.T) {
+	cases := []struct {
+		name string
+		gid  func(t *testing.T) int
+	}{
+		{name: "effective gid", gid: func(*testing.T) int { return os.Getegid() }},
+		{name: "supplementary gid", gid: supplementaryGID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSecretVolumeTokenBoots(t, tc.gid(t))
+		})
+	}
+}
+
+// supplementaryGID returns a held group other than the effective one, as
+// kubelet's fsGroup is when it differs from runAsGroup.
+func supplementaryGID(t *testing.T) int {
+	t.Helper()
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatalf("read supplementary groups: %v", err)
+	}
+	for _, gid := range groups {
+		if gid != os.Getegid() {
+			return gid
+		}
+	}
+	t.Skip("process holds no supplementary group besides its effective gid")
+	return 0
+}
+
+func assertSecretVolumeTokenBoots(t *testing.T, gid int) {
+	t.Helper()
 	ctx := context.Background()
 	st, adminID, _ := newNetworkStore(t)
 	volumeDir := t.TempDir()
@@ -404,7 +437,7 @@ func TestIssueAndWriteAdminTokenRegistersSecretVolumeToken(t *testing.T) {
 	if err := os.WriteFile(target, []byte(token), 0o440); err != nil {
 		t.Fatalf("write projected Secret token: %v", err)
 	}
-	if err := os.Chown(target, -1, os.Getegid()); err != nil {
+	if err := os.Chown(target, -1, gid); err != nil {
 		t.Fatalf("set projected Secret group: %v", err)
 	}
 	if err := os.Symlink(filepath.Join("..data", "token"), filepath.Join(volumeDir, "token")); err != nil {

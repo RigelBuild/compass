@@ -376,7 +376,7 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 				"(\"1\"/\"true\"/\"yes\"/\"on\" = on)."),
 		adminTokenFile: fs.String("admin-token-file", "",
 			"Regular file; group-read only if the process holds its group. No group-write, "+
-				"group-execute, or other permission bits; symlinks allowed. "+
+				"group-execute, or others permission bits; symlinks allowed. "+
 				"Defaults to $COMPASS_ADMIN_TOKEN_FILE."),
 		stateDir: fs.String("state-dir", "",
 			"Directory the bootstrap-admin token file is written under (0600). "+
