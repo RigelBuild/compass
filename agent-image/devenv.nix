@@ -1,21 +1,8 @@
 { pkgs, lib, config, inputs, ... }:
-# The Compass agent base image — the single self-contained OCI artifact every
-# per-agent container starts from.
-#
-# Its own devenv, not a `containers.agent` attr on a dev shell: devenv's container
-# module serializes the ENCLOSING devenv's merged `config.env` into the image, so
-# a dev-shell build would ship that shell's whole build environment — none of
-# which belongs in an agent runtime, and an env var pointing at a store path the
-# image lacks fails at use, not at build. A separate devenv keeps those vars out.
-#
-# Still a devenv container build, deliberately: the module wires the one primitive
-# the writable-store model needs (`initializeNixDatabase`, nixUid=nixGid=1000),
-# shipping a valid nix DB and chowning the nix state to the agent uid.
-# Hand-rolling nix2container would re-implement that for no gain.
-#
-# The agent owns /nix as itself (single-user Nix), so it clones repos, edits
-# devenv.nix, and rebuilds mid-session as a developer does. No host /nix mount and
-# no assumption the host has Nix; Compass must run on hosts without it.
+# Base OCI image for agents; its own devenv keeps dev-shell variables and
+# unavailable store paths out of the runtime image.
+# devenv provides the writable single-user Nix database and ownership setup.
+# The agent owns `/nix` to rebuild in-container, without a host Nix mount.
 let
   # `compass-agent` as a real command on PATH — a bundled single-file entrypoint.
   # The Runner execs a bare `compass-agent` argv and cli.ts has a real import
@@ -36,18 +23,10 @@ in
   # image via the container entrypoint's `source ${shell.envScript}`.)
   packages = [ ];
 
-  # One entry, and only because it must be here: direnv resolves its rc as
-  # `$DIRENV_CONFIG/direnvrc` with no system-wide path, so the baked devenv stdlib
-  # in `/etc/direnv/direnvrc` is only reachable if the image env points at it.
-  # Everything session-shaped stays out — the Runner supplies it per-exec.
-  #
-  # devenv merges its own `DEVENV_*` vars into `config.env`, serialized verbatim
-  # into the image. Most are harmless (the fork forces ROOT/STATE/RUNTIME to the
-  # container home during a build), but DEVENV_PROFILE (the dev profile) and
-  # DEVENV_TASK_FILE name absolute /nix/store paths, and nix2container makes
-  # config.json a closure root — so a store path in the env drags its whole
-  # closure into the image. Force both to a placeholder while building
-  # (isBuilding). The agent-image-env-gate is the regression backstop.
+  # direnv needs DIRENV_CONFIG to find its baked stdlib; Runner supplies
+  # session-specific variables at exec time.
+  # config.env is serialized into the image, so replace DEVENV_* store paths
+  # during builds to avoid pulling their closures into the image.
   env = {
     DIRENV_CONFIG = "/etc/direnv";
   }
@@ -60,13 +39,8 @@ in
     agent = {
       name = "compass-agent";
 
-      # Identity, matched to the Go runtime rather than devenv's default. The
-      # runtime runs the agent as uid 1000 with $HOME=/home/agent, and launches
-      # containers with `--userns=keep-id:uid=<agent-uid>` so an arbitrary host uid
-      # still yields an agent that owns /nix (a podman-version preflight guards the
-      # remap). The uid is what /nix ownership keys on, but the passwd row and
-      # $HOME must match what the Runner execs with, or nix/direnv hit "$HOME is
-      # not owned by you". The vendored fork exposes the identity per-container.
+      # Match the Go runtime's agent uid and home. The userns remap lets an arbitrary
+      # host uid own `/nix`, so passwd and HOME must match or nix/direnv reject it.
       user = "agent";
       group = "agent";
       homeDir = "/home/agent";

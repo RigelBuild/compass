@@ -2,21 +2,10 @@
   pkgs,
   lib,
 }:
-# `compass-agent` as a real command on PATH — a BUNDLED entrypoint. The Runner
-# execs a bare `compass-agent` argv with no flags, so the TypeScript entrypoint
-# has to resolve and run like any other binary.
-#
-# Why a bundle, not the `writeShellScriptBin` + `bun run ${./src/cli.ts}` shape
-# the repo's other bun CLIs use: interpolating a single .ts file copies only that
-# ONE file, no siblings, no node_modules. That works for genuinely self-contained
-# tools, but `cli.ts` has relative and workspace-package imports, so bun fails at
-# the FIRST import and the headline entrypoint could not start.
-#
-# `bun build --compile` resolves the whole graph ahead of time into a STANDALONE
-# executable. It is NOT a lone file: the native addon loader needs its prebuilt
-# `.node` at runtime, so the derivation ships the binary WITH its
-# `pi_natives.*.node` siblings in the same store dir, resolved from execDir — so
-# a cold container with no node_modules and no network still loads the addon.
+# Bundle the full TypeScript import graph: the Runner invokes this bare command,
+# while a single-file bun wrapper would omit relative and workspace imports.
+# Keep platform-specific native `.node` siblings beside the binary; the loader
+# resolves them there when the container has no node_modules or network.
 let
   system = pkgs.stdenv.hostPlatform.system;
 
@@ -44,11 +33,9 @@ let
   native =
     nativeBySystem.${system} or (throw "compass-agent entrypoint: unsupported system ${system}");
 
-  # The package's dependency closure, fetched once as a fixed-output derivation
-  # (the only derivation here allowed network access). `--frozen-lockfile` pins
-  # versions to `bun.lock`; the output hash pins the installed tree on THIS host.
-  # Install and compile with the repo-pinned bun: the binary embeds this runtime,
-  # and the SDK decodes images with Bun.Image, which the nixpkgs bun lacks.
+  # Fetch and compile the locked dependency tree in the only network-enabled
+  # derivation. Use the repo-pinned Bun; the binary embeds it and the SDK needs
+  # Bun.Image, which nixpkgs' Bun lacks.
   pinnedBun = (import ../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
 
   # Parameterized by TARGET system: `--cpu` selects that arch's optionalDependency,
@@ -59,12 +46,9 @@ let
       pname = "compass-agent-node-modules";
       version = "0.1.0";
 
-      # Only the files `bun install` reads: the lockfile plus EVERY workspace
-      # member's package.json (bun resolves the whole graph before installing one
-      # filtered package). No source files, so a code edit does not invalidate this
-      # closure. The member list is READ FROM the root manifest rather than restated,
-      # so adding a workspace package cannot silently break this build; entries mix
-      # literal paths and one-level globs (`packages/*`).
+      # Include only bun install manifests: it resolves every workspace member before
+      # filtering, but source edits should not invalidate this closure.
+      # Expand globs from root package.json so new workspace members stay included.
       src =
         let
           repoRoot = ../.;
@@ -134,12 +118,9 @@ let
         runHook postInstall
       '';
 
-      # A fixed-output derivation: `bun install` is the one step needing network,
-      # and pinning the output hash keeps the rest pure. The hash covers the
-      # INSTALLED TREE, not just the version set. `--ignore-scripts` keeps
-      # postinstall from injecting host-varying content, and the installPhase strips
-      # non-deterministic `.bin` shims, so the tree is reproducible across hosts.
-      # Refresh with `lib.fakeSha256` on a bun.lock/manifest move.
+      # The fixed-output hash pins the installed tree, not only versions. Ignore
+      # install scripts and strip host-varying `.bin` shims for reproducibility.
+      # Refresh with `lib.fakeSha256` after lockfile or manifest changes.
       dontFixup = true;
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
@@ -156,12 +137,9 @@ let
     fileset = import ./agent-source-files.nix { inherit lib; };
   };
 
-  # Bundle inside a RECONSTRUCTED workspace: the package source at the same depth
-  # bun installed it, with both node_modules trees restored around it, so the
-  # member's relative symlinks resolve back to the root store as at install time.
-  # Every copy MERGES into its destination (`cp -R <src>/. <dst>/`) rather than
-  # relying on absence: plain `cp -R src dst` NESTS when dst exists, burying the
-  # pinned tree at `node_modules/node_modules`.
+  # Reconstruct the workspace at the installed depth so member symlinks resolve.
+  # Merge copies into existing directories; plain `cp -R src dst` nests
+  # `node_modules` when the destination exists.
   bundle = pkgs.runCommand "compass-agent-bundle" { nativeBuildInputs = [ pinnedBun ]; } ''
     export HOME=$TMPDIR
     pkgDir=packages/compass-agent
@@ -187,11 +165,8 @@ let
     ${lib.concatMapStringsSep "\n" (f: "cp $natives/${f} $out/") native.addons}
   '';
 in
-# The bundle is a STANDALONE compiled binary, so the wrapper execs it directly —
-# no `bun run` at runtime. It carries its own bun runtime and finds its native
-# addon from the `.node` siblings beside it in the same store dir.
-# `nodeModules` and `nodeModulesBySystem` are exposed (drv unchanged) so the FOD
-# check and the hash refresher can realise a pin alone.
+# The bundled binary runs directly and finds native addons beside it.
+# Expose both node-modules derivations so hash checks can realize the FOD alone.
 lib.extendDerivation true { inherit nodeModules nodeModulesBySystem; } (
   pkgs.writeShellScriptBin "compass-agent" ''
     exec ${bundle}/compass-agent "$@"

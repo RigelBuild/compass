@@ -1,20 +1,7 @@
 #!/usr/bin/env bash
-# publish.sh — build the compass-agent image spec once and push it to GHCR
-# under each requested tag, enforcing :git-<sha> immutability.
-#
-# Why bash: this is nix-orchestration glue. It builds the compass-agent image
-# through the shared RigelBuild/devenv fork's `devenv container build` and
-# drives the RigelBuild/nix2container fork's patched skopeo, which it invokes by
-# name off PATH (see the SKOPEO= note below — skopeo is deliberately NOT in
-# agent-image/devenv.nix; it comes from the root dev shell locally or the
-# publish workflow's pinned-helper bootstrap in CI).
-# agent-image/ is a standalone nix devenv with no bun PACKAGE infrastructure —
-# no package.json, no bun.lock, no install step — so this orchestration stays
-# thin bash over `nix`/`skopeo` rather than a TS tool, and must run
-# byte-identically locally and in CI. It does invoke the repo's shared
-# devenv-CLI under bun to resolve the fork rev from agent-image/devenv.lock
-# rather than hand-pinning it; bun comes from the root dev shell locally and
-# the publish workflow's pinned bootstrap in CI, exactly as skopeo does.
+# Build and publish the agent image with nix and skopeo.
+# This standalone devenv has no Bun package infrastructure, so orchestration
+# stays in bash; pinned helpers keep local and CI behavior aligned.
 
 set -euo pipefail
 
@@ -26,23 +13,15 @@ cd "$SCRIPT_DIR"
 
 IMAGE=ghcr.io/rigelbuild/compass-agent
 
-# skopeo login (in CI) and the copies below run as SEPARATE `nix run`
-# processes, so they must resolve the SAME credentials file. The default
-# location ($XDG_RUNTIME_DIR/containers/auth.json) is environment-dependent —
-# a mismatch greens login but 401s copy. Pin one explicit path both honor; CI
-# exports this, and this default keeps local runs working.
+# Separate `nix run` processes must share one auth file; the default depends
+# on environment and can make login succeed while copy gets 401.
+# CI sets this path; the default supports local runs.
 : "${REGISTRY_AUTH_FILE:=${RUNNER_TEMP:-/tmp}/ghcr-auth.json}"
 export REGISTRY_AUTH_FILE
 
-# The fork's patched skopeo understands the `nix:` transport (reads a
-# nix2container image spec directly); stock skopeo does not. The publish
-# workflow puts it on PATH (resolved from the shared pinned helper
-# tools/toolchain/skopeo-nix2container-env.nix, from the lockfile-pinned
-# nix2container + nixpkgs revs — one source of truth, no raw flake ref), so it
-# is a plain command here. It is NOT in agent-image/devenv.nix: a package there
-# would bake skopeo's closure into the published image via the container
-# entrypoint. Locally, `direnv`/`devenv shell` puts it on PATH from the root
-# devenv.nix `packages` the same way.
+# The patched skopeo handles `nix:` image specs; stock skopeo does not.
+# CI and the root dev shell provide it. Keep it out of this devenv so its
+# closure is not baked into the image.
 SKOPEO=(skopeo)
 
 log() { printf '>> %s\n' "$*" >&2; }
@@ -139,11 +118,9 @@ guard_immutable() {
     return 1
   fi
 
-  # inspect failed — classify. Only GHCR's authoritative "manifest unknown"
-  # (the absent-tag response to an authenticated, write-scoped request) frees
-  # the tag. A bare gateway/CDN 404 with no manifest token, and every auth /
-  # 5xx / rate-limit error, is ambiguous and must abort — a transient must
-  # NEVER be read as "tag absent, safe to overwrite".
+  # Only authenticated GHCR "manifest unknown" proves the tag is absent.
+  # A bare gateway/CDN 404 or any transient/auth failure is ambiguous; abort
+  # rather than risk overwriting an immutable tag.
   local msg
   msg="$(cat "$remote_err")"
   rm -f "$remote_err"
