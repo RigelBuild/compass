@@ -914,8 +914,8 @@ type fixtureSite struct {
 }
 
 // newPersistentSite allocates one short root and postgres port for two Ups.
-// Its single RemoveAll runs at test end, after both Downs; the state directory
-// uses TempDir because only the runner socket path requires a short path.
+// Its single RemoveAll runs at test end, after both Downs. The root stays short
+// for the Postgres and runner Unix-socket paths; the state directory uses TempDir.
 func newPersistentSite(ctx context.Context, t *testing.T) fixtureSite {
 	t.Helper()
 	// A short, unique root — NOT via shortRoot: inlined to keep the site's single

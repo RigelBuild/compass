@@ -423,8 +423,8 @@ func (c *cannedModelServer) writeTextTurn(w http.ResponseWriter, flusher http.Fl
 	})
 }
 
-// writeTurn flushes each SSE frame immediately, then writes [DONE]. Marshal
-// errors become HTTP 500; a mid-stream write error means the client left.
+// writeTurn flushes each SSE frame immediately, then writes [DONE]. A marshal
+// failure aborts the stream; a mid-stream write error means the client left.
 func (c *cannedModelServer) writeTurn(w http.ResponseWriter, flusher http.Flusher, events []chatChunk) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

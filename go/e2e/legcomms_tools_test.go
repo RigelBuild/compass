@@ -20,8 +20,9 @@ const (
 	toolsAskTopic    = "tools-ask-topic"
 )
 
-// Marker routing is required on the shared stack; roster rows put peer handles
-// into requests, so this marker must be unique across all agents and activity.
+// Marker routing is required on the shared stack. Routing is a substring match on
+// the request body, and roster rows put peer handles and activity into requests,
+// so no other route marker may be a substring of them.
 const toolsMarker = "tools-native-drive"
 
 // These posts omit the marker so the agent's own delivery cannot retrigger turns.

@@ -125,9 +125,8 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	if peerContainer == spawnerContainer {
 		t.Fatalf("peer container name %q collides with the spawner's — the deterministic name did not derive from the fresh account id", peerContainer)
 	}
-	// Assert the peer container exists by exact name. This distinguishes a running
-	// container from an account-only spawn and uses podman's dependency-free exists
-	// check, matching the runtime suite.
+	// Assert a container exists under the deterministic name, which distinguishes
+	// a spawn that created a container from an account-only spawn.
 	if exec.CommandContext(t.Context(), "podman", "container", "exists", peerContainer).Run() != nil {
 		t.Fatalf("peer container %q is not present in podman's runtime set — the scripted spawn minted the account but its container did not come up (design.md:655-659)", peerContainer)
 	}
