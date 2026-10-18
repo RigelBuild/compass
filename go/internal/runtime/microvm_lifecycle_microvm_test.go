@@ -2,13 +2,8 @@
 
 package runtime
 
-// The KVM-gated microVM lifecycle e2e suite (record §T4/U4): it drives a real
-// MicroVMRuntime through Create→Start→Exec→Stop→Remove on live hardware, and
-// asserts the fail-closed Start-teardown and graceful-Stop invariants. Every
-// test calls microvmtest.Require(t) first, mirroring
-// microvm/boot_microvm_test.go: on a KVM-less box it SKIPS (unless
-// COMPASS_REQUIRE_MICROVM=1 forces a hard fail), so the suite is only real where
-// /dev/kvm is openable and the guest images are exported into the env.
+// KVM-gated e2e tests drive real MicroVMRuntime lifecycle and teardown behavior.
+// They skip without KVM unless COMPASS_REQUIRE_MICROVM requires the environment.
 
 import (
 	"context"
@@ -19,17 +14,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
 )
 
-// e2eConfig builds a MicroVMConfig from the resolved test env and a fresh, SHORT
-// runroot, so every session's sockets live inside the test's own scratch tree
-// and are removed with it. The runroot must be short because the per-session
-// socket paths under it are AF_UNIX sun_path-budgeted: the widest is
-// <RunRoot>/microvm/<32-hex session id>/vsock.sock_1025, a 57-byte tail, so a
-// t.TempDir() root (which embeds the test-function name, e.g. the 36-char
-// TestMicroVMStartFailureLeavesNoState → a ~112-byte socket path) overflows
-// the 107-byte Linux cap and the bind(2) fails with a bare EINVAL —
-// the socket never appears and the boot times out. A short fixed root keeps the
-// worst-case path well under the cap. Production runroots are short and
-// startup-budget-checked (run.go validateRuntimeDir); this mirrors that.
+// e2eConfig creates a fresh short runroot for session sockets and cleans it up with the test.
+// Long t.TempDir paths can exceed the AF_UNIX limit after the session suffix is added.
 func e2eConfig(t *testing.T, env microvmtest.Env) MicroVMConfig {
 	t.Helper()
 	//nolint:usetesting // t.TempDir embeds the long test-function name, which overflows the 107-byte AF_UNIX sun_path budget for the per-session virtiofsd/vsock/net sockets — the very failure this short root prevents.

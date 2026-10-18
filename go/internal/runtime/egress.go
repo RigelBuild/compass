@@ -136,12 +136,8 @@ func isDNSName(host string) bool {
 	return err != nil
 }
 
-// baseRuleset is the base nftables ruleset: fail-closed (`set -eu`), a single
-// table with dual-stack allow sets, and an output chain that drops by default.
-// DNS (port 53) is allowed only to the container's own configured resolvers
-// (parsed from /etc/resolv.conf at arm time), not to any host — so a compromised
-// agent can't tunnel to an arbitrary port-53 listener. Ordering matters: accept
-// rules precede the implicit drop from the chain policy.
+// baseRuleset installs a fail-closed dual-stack firewall.
+// DNS is limited to configured resolvers; accept rules precede the output-chain drop.
 const baseRuleset = `set -eu
 nft add table inet compass_egress
 nft add set inet compass_egress allow4 '{ type ipv4_addr ; flags interval ; }'

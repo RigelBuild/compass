@@ -34,13 +34,8 @@ type MicroVMConfig struct {
 	// as modules, so the initrd is what loads them and mounts the root before
 	// switch_root (microvm-v2a §(a)).
 	InitrdImage string
-	// ImageManifest is an optional path to a sha256sum-format manifest
-	// (`<hex digest>  <basename>` lines, text or binary `*`-marked mode). When
-	// set, the guest images are hash-verified against it at preflight; when
-	// unset, preflight checks presence and readability only and logs a warning
-	// that the images are not hash-verified. Guest-image basenames must not
-	// begin with `*`: sha256sum's binary-mode marker makes such a name
-	// ambiguous in the manifest format, so the entry would be mis-keyed.
+	// ImageManifest optionally verifies guest images against a sha256sum-format manifest.
+	// Without it, preflight checks presence/readability only; '*' basenames are ambiguous.
 	ImageManifest string
 	// RunRoot is the root under which each session's runtime dir is created
 	// (<RunRoot>/microvm/<session>/), holding that session's AF_UNIX sockets —
@@ -52,24 +47,11 @@ type MicroVMConfig struct {
 	// DefaultMemoryMB is the RAM each session guest boots with, in MiB
 	// (hotplug-grown later per D5). Zero leaves it to the VMM's own default.
 	DefaultMemoryMB int
-	// QuotaRequired selects the D7 quota posture. When set (the multi-tenant
-	// profile), Runner startup verifies an operator-provisioned project quota is
-	// active on the session-volume filesystem and fails if absent (D7
-	// verify-never-assign: the Runner reads the bound, it never assigns one —
-	// assignment needs CAP_SYS_ADMIN it lacks). Unset (Dogfood single-tenant):
-	// no host-enforced quota is required, and the observed utilization is logged
-	// only. Appended, never reordered: the field is additive to a config
-	// operators already construct positionally in tests.
+	// QuotaRequired makes preflight verify an operator-assigned quota, never assign one.
+	// It applies to the session-volume filesystem; unset logs utilization only.
 	QuotaRequired bool
-	// VolumeRoot is the parent dir the per-session workspace volumes are minted
-	// under (P2's volume lifecycle), i.e. a startup-known path ON THE
-	// SESSION-VOLUME FILESYSTEM. It exists solely so the D7 quota check probes
-	// the filesystem sessions actually consume: RunRoot is the socket dir, held
-	// to a SHORT /tmp path by the AF_UNIX sun_path budget, so it is routinely a
-	// different filesystem entirely and a verdict read there says nothing about
-	// the durable volume. When QuotaRequired is set and this is empty the
-	// preflight fails closed rather than reporting a verdict about a filesystem
-	// it never probed. Appended, never reordered.
+	// VolumeRoot identifies the workspace-volume filesystem quota preflight must inspect.
+	// RunRoot may be elsewhere to keep AF_UNIX socket paths short; required quota needs this path.
 	VolumeRoot string
 	// GuestClientInterceptors are passed to guest control clients except Health.
 	GuestClientInterceptors []connect.ClientInterceptor
@@ -104,11 +86,7 @@ type MicroVMRuntime struct {
 	// this map for a matching spec.Name — a scan is cheap at one-VM-per-session
 	// scale and keeps a single source of truth.
 	sessions map[WorkloadID]*microvmSession
-	// launchFunc boots a session guest behind the guestVM seam; newGuestClient
-	// dials the guest control plane. Both default to the real microvm
-	// implementations (installSeamDefaults, //go:build unix) and are overridden
-	// in hermetic Start tests so no real VMM boots and no real vsock is dialed
-	// (design §W2 seams, mirroring the supervisor's newCredential seam).
+	// Tests replace these guest launch and dial seams to avoid starting a VMM or dialing vsock.
 	launchFunc     guestLaunchFunc
 	newGuestClient guestClientFunc
 }

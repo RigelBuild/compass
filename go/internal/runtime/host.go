@@ -23,14 +23,8 @@ func (e *InvalidHostError) Error() string {
 	return fmt.Sprintf("invalid host %q: must be a DNS name or IP literal", e.Host)
 }
 
-// isValidHost reports whether host is a plain DNS name or IP literal — the only
-// shapes allowed into a root shell script. It rejects anything with shell
-// metacharacters, whitespace, or control characters.
-//
-// A value containing ':' must parse as an IP address (an IPv6 literal), so
-// github.com:443, ":", and "::::" are rejected — they are neither DNS names nor
-// IP literals and would only fail later inside the container. A colon-free value
-// is validated as a DNS name: labels of A–Z a–z 0–9 - _ and dots.
+// isValidHost accepts only plain DNS names and IP literals, excluding shell syntax.
+// Colon-bearing input must parse as an IPv6 address; other input is checked as DNS.
 func isValidHost(host string) bool {
 	if host == "" || len(host) > 253 {
 		return false

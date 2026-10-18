@@ -2,14 +2,8 @@
 
 package runtime
 
-// The KVM-gated BootCanary e2e (record §(e)/W3 test cycle): it drives the real
-// (*MicroVMRuntime).BootCanary against live hardware, proving the whole boot
-// chain — KVM, vsock, image, guest supervisor, exec gate — end to end, and that
-// the canary owns its own teardown (no orphan session, no leftover runtime dir).
-// It calls microvmtest.Require(t) first (skip-on-absent-KVM, hard-fail under
-// COMPASS_REQUIRE_MICROVM=1) and passes t.Context() as the caller ctx, mirroring
-// TestMicroVMQBudget + e2eConfig. It rides the existing CI microVM leg
-// (go test -tags microvm -race -timeout 15m ./...), budgeted well inside 15m.
+// This KVM-gated e2e runs BootCanary on live hardware and verifies boot and teardown.
+// It uses the existing microVM CI leg and fails when KVM is required but unavailable.
 
 import (
 	"os"

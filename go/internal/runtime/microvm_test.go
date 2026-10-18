@@ -1,12 +1,7 @@
 package runtime
 
-// The microVM backend-selection suite: hermetic, no subprocess, no build tag.
-// It pins the backend-selection contract (the podman default, the
-// microVM opt-in, the loud rejection of an unknown backend) — the part of the
-// microVM seam that must type-check and run on any platform. The lifecycle
-// method behavior (spec→BootConfig, spec→ExecCall, the session table, mount
-// refusal, idempotent Remove) lives in microvm_lifecycle_test.go behind
-// //go:build unix, matching the unix-only lifecycle file it exercises.
+// Backend-selection tests pin defaults, microVM opt-in, and unknown-backend rejection.
+// The package can run them on any platform without subprocesses.
 
 import (
 	"strings"

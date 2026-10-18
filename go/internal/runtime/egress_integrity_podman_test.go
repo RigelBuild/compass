@@ -2,25 +2,9 @@
 
 package runtime
 
-// Egress-integrity boundary proof against real rootless podman: an agent exec —
-// run as the agent uid with an explicit --user — holds an EMPTY effective
-// capability set inside a NET_ADMIN container, so it cannot alter the egress
-// ruleset the container's privileged entrypoint armed (egress.go:6-10, "the
-// agent then runs as a non-root user whose capability set is empty, so it cannot
-// flush or edit the ruleset even though the container nominally holds the
-// capability").
-//
-// What this pins: podman's own --user mechanism strips the container's ambient
-// CAP_NET_ADMIN from an exec pinned to the agent uid — the property the hermetic
-// spec tests (agentenv_test.go) cannot prove because they never spawn podman. It
-// does NOT prove any production call site sets --user: those are pinned
-// separately by agentenv_test.go TestExecSpecRunsAsWorkspaceUIDNotContainerRoot
-// (the streaming agent session) and lifecycle_test.go (ExecAsAgent's nft flush
-// is denied). Together the three lock both halves of the boundary: the call
-// sites set --user, and --user actually drops the capability.
-//
-// Skipped (not failed) when podman isn't usable, matching lifecycle_test /
-// config_mount_test. Build-tagged (podman) so it is not part of the hermetic gate.
+// This real-podman proof checks that agent-uid exec loses CAP_NET_ADMIN in a privileged container.
+// Hermetic tests pin that production exec call sites set --user; this verifies podman enforces it.
+// The podman-tagged test skips when the engine is unavailable.
 
 import (
 	"context"
@@ -56,13 +40,8 @@ func capEffOf(t *testing.T, ctx context.Context, cli *PodmanCLI, id WorkloadID, 
 	return ""
 }
 
-// TestAgentExecDropsNetAdminInNetAdminContainer is the egress-integrity
-// regression: in a container granted CAP_NET_ADMIN (as every agent container
-// is, agent.go createAndStart CapAdd), an exec pinned to the agent uid via
-// --user must have an all-zero effective capability set, while the container's
-// uid-0 exec (the armEgress identity) retains the capability. A regression
-// that drops the --user on an agent exec makes the two masks equal and fails
-// here.
+// TestAgentExecDropsNetAdminInNetAdminContainer verifies agent execs lack CAP_NET_ADMIN
+// while the container's uid-0 exec retains it; dropping --user makes the masks equal.
 func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
 	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")

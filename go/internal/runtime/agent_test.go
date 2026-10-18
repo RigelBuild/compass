@@ -1,11 +1,7 @@
 package runtime
 
-// THE T6 HERMETIC GATE. FakeRuntime records the calls AgentRuntime.Launch /
-// Teardown make against the container engine, so the lifecycle's composition —
-// stage ordering, which user each step runs as, the scoped $HOME, the
-// failure-cleanup path — is asserted without a real container. Every test here
-// pins a contract a plausible reorder / wrong-user / missing-cleanup bug would
-// break.
+// These hermetic tests record FakeRuntime calls to pin AgentRuntime lifecycle ordering,
+// user identity, scoped HOME, and failure cleanup without a real container.
 
 import (
 	"archive/tar"

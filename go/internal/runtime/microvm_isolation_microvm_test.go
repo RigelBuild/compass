@@ -43,32 +43,15 @@ import (
 // subtree, so it is a distinctive sentinel rather than a generic word.
 const outsideCanaryBody = "HOST-ONLY-CANARY-8f3ac1d0-must-never-be-readable-from-a-guest"
 
-// The bounds on the quota-enforcement leg's guest write. It must cross the
-// project byte bound to observe EDQUOT, but the cost of crossing it is the
-// operator's quota size, which the test does not control — and the 120s
-// per-exec cap (execDefaultTimeout) is hard, so an unbounded fill fails as a
-// transport timeout rather than with the verdict the leg exists to assert.
-//
-// quotaFillMarginMiB is how far past the remaining headroom to write: enough to
-// be unambiguously over the bound even if usage shifts between the pre-read and
-// the write, small enough to be free.
-//
-// quotaFillCeilingMiB is the largest fill this leg will attempt. 1 GiB over
-// virtio-fs is comfortably inside the cap on any box that can run this suite at
-// all, while a 10 GiB production-sized quota is not — so a volume with more
-// headroom than this SKIPS with the reason named rather than timing out. The
-// operator's quota volume for this leg is expected to be purpose-sized (a few
-// hundred MiB), not a production project.
+// quotaFillMarginMiB bounds the write past observed headroom; quotaFillCeilingMiB limits its cost.
+// Volumes with more remaining space skip instead of exceeding the exec timeout.
 const (
 	quotaFillMarginMiB  = 64
 	quotaFillCeilingMiB = 1024
 )
 
-// isolationSession boots one session against a fresh volume dir and returns the
-// runtime, its id, and the host-side volume path. Teardown is registered so a
-// failed assertion still tears the VM down. The volume is a t.TempDir() child so
-// it is removed with the test; the SHORT runroot comes from e2eConfig (the
-// AF_UNIX sun_path budget, microvm_lifecycle_microvm_test.go).
+// isolationSession creates a fresh-volume VM and registers teardown.
+// Its short runroot keeps suffixed AF_UNIX sockets within the path limit.
 func isolationSession(t *testing.T, env microvmtest.Env, name string) (*MicroVMRuntime, WorkloadID, string) {
 	t.Helper()
 	m := NewMicroVMRuntime(e2eConfig(t, env))
@@ -109,60 +92,20 @@ func guestSh(t *testing.T, m *MicroVMRuntime, id WorkloadID, script string) (str
 	return out.Stdout + out.Stderr, out.ExitCode
 }
 
-// crossSessionAttempt is one way tenant A could try to reach tenant B's volume,
-// paired with what its OUTPUT must not contain. The secret body is the
-// discriminator for a `cat`; a command that prints names rather than content
-// (`ls`, `grep -r` on paths) needs its own forbidden strings, or the assertion
-// is vacuously true and the row proves nothing.
+// crossSessionAttempt pairs a cross-tenant probe with strings its output must not contain.
+// Each probe needs discriminators that keep a path-only search from passing vacuously.
 type crossSessionAttempt struct {
 	script              string
 	forbid              []string
 	probeErrorSensitive bool
 }
 
-// sweepBatchSize is how many paths one awk invocation is handed. Process
-// creation is the scan's dominant cost, and each exec has a hard 120s cap
-// (execDefaultTimeout, microvm_lifecycle.go). Batching bounds that cost by the
-// number of batches: awk takes many FILENAMEs per run and reports which file
-// each match came from itself.
-//
-// Keep the batch bounded by ARG_MAX. Paths are short enough that 200 entries
-// leave ample argv headroom while avoiding one process per file.
+// sweepBatchSize bounds awk process creation by grouping paths within ARG_MAX.
 const sweepBatchSize = 200
 
-// sweepScript builds a recursive content search the guest can actually run. The
-// guest image ships bash 5.3 and awk but NO grep and NO find, so a `grep -r`
-// row exits 127 without searching anything — a vacuous pass that looks like
-// confinement. bash's globstar walks the trees and awk does the matching, and
-// the exit status mirrors grep's: 0 when the needle was found, 1 when it was
-// not, so a caller can still assert the non-zero exit a confined command owes.
-// An input-open error exits 2 so the caller can distinguish a broken probe
-// from the expected no-match exit 1.
-//
-// Matching files are printed as `<path>:<line>`, so BOTH discriminators are
-// live: the secret body appears in the output if any file's content was read,
-// and the path appears if a file under another tenant's volume was reachable at
-// all.
-//
-// BATCHED, one awk per sweepBatchSize files rather than one per file, to bound
-// process creation and execution time. awk is handed many FILENAMEs at once
-// and reports the matching one itself, so the output contract is unchanged.
-//
-// Two things stop the sweep from finding ITS OWN needle, which would be a false
-// escape report rather than a real one:
-//
-//   - The needle travels in an EXPORTED ENV VAR, never in argv. Passed as
-//     `awk -v`, it would land in the searcher's own /proc/self/cmdline, so the
-//     sweep would match the string it is looking for in its own command line.
-//   - /proc, /sys and /dev are skipped during the RECURSIVE WALK, removing the
-//     self-match surface (the searcher's own environ/cmdline) without narrowing
-//     what the row probes. A root named explicitly as a file is swept anyway,
-//     so never give a confinement row a /proc path as a FILE root: it would
-//     match its own environ and report a false escape.
-//
-// shellQuote returns one shell word that preserves s literally. The guest image
-// does not guarantee base64, so generated scripts use the POSIX single-quote
-// idiom for transport instead of relying on an optional decoder.
+// sweepScript searches guest files with bash globstar and awk; the image lacks grep and find.
+// It mirrors grep statuses and reports input-open failures separately.
+// The needle stays in an environment variable, while proc/sys/dev are skipped to avoid self-matches.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
@@ -177,15 +120,7 @@ func shellQuoteWords(words ...string) string {
 
 func sweepScript(needle string, roots ...string) string {
 
-	// The awk program: scan every FILENAME handed to this invocation, print
-	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
-	// the caller's `found` accumulator keeps grep's semantics across batches.
-	//
-	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk (agent-image ships
-	// pkgs.gawk) makes an unopenable input FATAL, aborting there and dropping
-	// later paths plus the batch's exit-status contribution. It covers OPEN
-	// errors only; read errors still abort too, and stderr stays unsuppressed so
-	// that signal remains visible.
+	// BEGINFILE handles unreadable paths as status 2; gawk otherwise aborts and drops later paths.
 	const awkProg = `BEGINFILE { if (ERRNO != "") { probeError=1; nextfile } } ` +
 		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { if (probeError) exit 2; exit !hit }`
 	return "export SWEEP_NEEDLE=" + shellQuote(needle) + "; " +
@@ -236,22 +171,8 @@ func TestMicroVMSweepScriptFindsItsNeedle(t *testing.T) {
 	t.Logf("sweep control: found the planted canary -> exit %d, %q", code, strings.TrimSpace(truncate(out)))
 }
 
-// TestMicroVMSweepScriptFindsANeedleAcrossBatches is the control for the
-// BATCHING specifically, which the single-file control above cannot reach: with
-// only a handful of files the sweep never fills a batch, so the mid-loop scan
-// and the accumulator that carries a hit across batches are both dead code in
-// that run — and the cross-tenant row now completes in ~26ms over the targeted
-// roots, so it does not exercise them either.
-//
-// Planting well over sweepBatchSize files and putting the needle ONLY in the
-// last one forces two things the batched form must get right:
-//
-//  1. the mid-loop `scan` flushes full batches instead of accumulating an argv
-//     past ARG_MAX;
-//  2. the trailing flush runs, and `found` survives the batch that matched —
-//     a batched sweep whose exit status came from the LAST awk alone would
-//     report "not found" whenever the needle sat in any earlier batch, so the
-//     early-needle case below pins the other side of the same accumulator.
+// TestMicroVMSweepScriptFindsANeedleAcrossBatches pins flush and accumulator behavior.
+// The needle in the last batch verifies full-batch flushing and the trailing flush.
 func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 	env := microvmtest.Require(t)
 	m, id, _ := isolationSession(t, env, "iso-sweep-batch")
@@ -842,20 +763,6 @@ func TestMicroVMGuestCannotReassignHostOwnership(t *testing.T) {
 	}
 }
 
-// requireQuotaFS gates the real in-guest quota-enforcement leg on a capability
-// this box structurally cannot have: a prjquota-ACTIVE filesystem, whose
-// provisioning needs root (loop file + `mkfs.xfs`/`mkfs.ext4 -O quota` + mount
-// -o prjquota + a project id + limits — every step CAP_SYS_ADMIN, D7 / Global
-// Constraint "Rootless is hard"). It mirrors microvmtest.Require's shape: SKIP
-// with the reason named when absent, and HARD FAIL when the operator asserts the
-// capability is present via COMPASS_REQUIRE_QUOTA_FS=1, so a managed/CI profile
-// that is supposed to have it cannot silently stop exercising it.
-//
-// $COMPASS_TEST_QUOTA_VOLUME names a directory on a project-quota'd filesystem.
-// Returning it only after verifyVolumeQuota confirms an ACTIVE bound is the
-// honesty gate: a path on an unquota'd filesystem skips (or hard-fails under the
-// require flag) rather than running a test that can never observe EDQUOT and
-// passing as if it proved quota.
 func requireQuotaFS(t *testing.T) string {
 	t.Helper()
 	required := os.Getenv("COMPASS_REQUIRE_QUOTA_FS") != ""

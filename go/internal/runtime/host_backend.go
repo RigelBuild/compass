@@ -31,27 +31,18 @@ import (
 	"time"
 )
 
-// ErrResizeUnsupportedOnHost is returned by HostRuntime.Resize: the host
-// backend owns no cgroup, so there is no live resource limit to change. It is a
-// permanent unsupported (distinct from ErrResizeNotImplemented's "reserved
-// until C3"), returned rather than a silent success so a caller that believes
-// it resized is never lied to.
+// ErrResizeUnsupportedOnHost means the host backend cannot change resource limits.
+// It is permanent, unlike ErrResizeNotImplemented's reserved operation.
 var ErrResizeUnsupportedOnHost = errors.New("runtime: WorkloadRuntime.Resize is unsupported on the host backend (no cgroup ownership)")
 
-// defaultHostStateRoot is where HostRuntime handles keep their per-agent state
-// dirs when SelectBackend builds the backend with no explicit root. This is a
-// shared tmpdir: MkdirAll will not tighten an existing dir, so on a multi-user
-// box a local user could pre-create it with looser permissions. Deployments
-// pass their own private root instead.
+// defaultHostStateRoot is the shared tmpdir used without an explicit root.
+// Deployments should pass a private root; MkdirAll does not tighten existing permissions.
 func defaultHostStateRoot() string {
 	return filepath.Join(os.TempDir(), "compass-host")
 }
 
-// UnsupportedUserError is an ExecSpec/StreamingExecSpec AsUser naming a uid the
-// host backend cannot honor. A host child runs as the Runner's own effective
-// uid, so the only accepted value is that euid; any other uid means the caller
-// believes a user switch happened, which the host tier cannot provide, so it is
-// rejected rather than run wrong.
+// UnsupportedUserError reports a requested uid the host backend cannot honor.
+// Host children run as the Runner's euid, so other uids are rejected.
 type UnsupportedUserError struct {
 	Requested string
 	Euid      string
@@ -120,13 +111,8 @@ func NewHostRuntime(stateRoot string) *HostRuntime {
 	}
 }
 
-// WorkspaceUID resolves the uid host-backend agents run as: the Runner's own
-// effective uid captured at construction — the same h.euid checkUser enforces —
-// so the uid handed to each workspace is exactly the uid its execs will be
-// accepted under. os.Geteuid returns -1 where the syscall is unavailable; a
-// blind uint32 conversion would wrap it to a huge uid, so the negative case is
-// refused before any narrowing. The error wording is stable so the startup
-// failure text does not regress.
+// WorkspaceUID returns the construction-time euid used by checkUser.
+// It rejects negative values before narrowing to uint32.
 func (h *HostRuntime) WorkspaceUID() (uint32, error) {
 	if h.euid < 0 {
 		return 0, fmt.Errorf("host backend: geteuid returned %d, no usable effective uid to run agents as", h.euid)
@@ -134,11 +120,8 @@ func (h *HostRuntime) WorkspaceUID() (uint32, error) {
 	return uint32(h.euid), nil //nolint:gosec // G115: euid is non-negative here (the < 0 case returned above), so the narrowing cannot wrap.
 }
 
-// EgressUnenforced marks this tier as unable to constrain egress. A host child
-// shares the host's network namespace, so there is no boundary to firewall —
-// the nftables arm the container tiers run has nothing to attach to here. This
-// reports the absence of enforcement, never that enforcement happened
-// elsewhere.
+// EgressUnenforced reports that host children share the host network namespace.
+// No firewall boundary exists on this tier.
 func (h *HostRuntime) EgressUnenforced() bool {
 	return true
 }
@@ -149,11 +132,8 @@ func (h *HostRuntime) WithTimeout(timeout time.Duration) *HostRuntime {
 	return h
 }
 
-// Create allocates a per-agent handle: it mints a synthetic WorkloadID and
-// creates the handle's private 0700 state-dir tree (workspace root, home
-// overlay dir, socket dir). No process is spawned. A duplicate name is refused
-// under the same lock that inserts, so two concurrent Creates of one name
-// cannot both pass. See the file header for the WorkloadSpec field map.
+// Create mints a synthetic handle and private 0700 state tree without spawning a process.
+// Duplicate names are refused under the insertion lock.
 func (h *HostRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadID, error) {
 	id, err := mintSessionID()
 	if err != nil {
@@ -635,13 +615,8 @@ func (h *HostRuntime) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) 
 	return ErrResizeUnsupportedOnHost
 }
 
-// AgentStateDir returns the private 0700 state dir Create minted for the handle,
-// where the Runner's host Provision leg serves the agent's gateway socket and
-// materializes its config — the host tier has no bind mounts, so both live here
-// and are threaded to the agent by path. An unknown id returns ok=false. This is
-// the host backend's Provision-leg selector, the analogue of the microVM
-// backend's AgentGatewayEndpoint: only HostRuntime implements it, so podman and
-// the microVM backend leave the Runner's default leg byte-identical.
+// AgentStateDir returns the handle's private state directory for host provisioning.
+// Unknown IDs return false; other backends use their default provisioning path.
 func (h *HostRuntime) AgentStateDir(id WorkloadID) (string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -729,12 +704,8 @@ func closePipes(files ...*os.File) error {
 	return err
 }
 
-// envSlice renders the child's environment: the Runner's own environment as the
-// baseline, with env overriding it per key. A host child has no image to supply
-// a baseline, so without inheritance even PATH is unset and an unqualified
-// command cannot resolve. The agent already runs in the operator's own trust
-// domain, so an isolated environment here would be a posture the tier does not
-// actually have.
+// envSlice inherits the Runner environment, then applies overrides.
+// Host children need PATH, and this tier shares the operator's trust domain.
 func envSlice(env map[string]string) []string {
 	merged := make(map[string]string, len(env))
 	for _, kv := range os.Environ() {

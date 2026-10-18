@@ -1,10 +1,7 @@
 package runtime
 
-// The default-deny + allowlist egress firewall. These pin the generated nft
-// script's structural contract (fail-closed base ruleset, DNS scoped to the
-// container's own resolver, dual-stack resolution per host) and the allowlist's
-// validation/dedup — a regression here either opens an exfiltration path or
-// silently stalls a permitted host.
+// These tests pin the fail-closed nft script, resolver-scoped DNS, dual-stack rules,
+// and allowlist validation so regressions cannot open egress or stall allowed hosts.
 
 import (
 	"errors"
@@ -181,14 +178,8 @@ func TestZoneScopedHostIsRejectedAtTheEgressSink(t *testing.T) {
 }
 
 func TestEgressSubshellToleratesFailingAddElement(t *testing.T) {
-	// The per-address loops run in a `set +e` subshell terminated with `; true`.
-	// `set +e` keeps a failing `nft add element` (a host may lack an address
-	// family, or two allowlisted hosts may share a CDN address whose second
-	// insert nft's interval sets reject with "File exists") from aborting the
-	// loop; the trailing `; true` makes the subshell's OWN exit status 0 so that
-	// tolerated failure can't pierce the fail-closed base ruleset's `set -eu` and
-	// abort the whole arm-egress script — which would tear down a legit
-	// container. This drives that exact vector at the shell level.
+	// A set +e subshell tolerates duplicate or unavailable nft addresses without aborting the arm.
+	// Its trailing true prevents that expected failure from escaping the fail-closed set -eu script.
 	script := MustAllowEgress("github.com", "example.com").NftScript()
 
 	subshellRe := regexp.MustCompile(`(?m)^\(set \+e;.*\)$`)

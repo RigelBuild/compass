@@ -2,20 +2,8 @@
 
 package runtime
 
-// The microVM leg of the shared WorkloadRuntime contract suite (record §U5):
-// runs runContractSuite against a real MicroVMRuntime on live hardware, gated on
-// microvmtest.Require(t) (skip-on-absent-KVM, hard-fail under
-// COMPASS_REQUIRE_MICROVM=1). It supplies the microVM caps encoding all 7
-// conceded divergences (record 580-593) as ON flags, so every divergence row
-// runs here and a silent widening fails. It ALSO records the Q-budget numbers
-// (record 832-834): boot latency (Start wall-clock) and per-process PSS, emitted
-// via t.Logf as informational spike output per §(g) — NOT a boot gate.
-//
-// The Create→Start→Exec→Stop→Remove happy path and the ExecStreaming-kill path
-// that used to live in microvm_lifecycle_microvm_test.go are now shared contract
-// rows and were folded out of that file; e2eConfig and
-// TestMicroVMStartFailureLeavesNoState (a microVM-backend-only negative with no
-// podman analog) stay there.
+// The KVM-gated microVM leg runs the shared contract suite with all microVM divergences on.
+// It also records boot latency and PSS as informational Q-budget data, not a boot gate.
 
 import (
 	"errors"
@@ -25,12 +13,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
 )
 
-// TestContractSuite_MicroVM drives the shared contract rows against a live
-// MicroVMRuntime through the WorkloadRuntime interface. The factory builds a
-// runtime from the resolved test env; sessions are created with a single
-// /workspace virtio-fs share and uid 1000. All divergence caps are ON, so the
-// microVM-specific rows (output cap, non-numeric user, empty MountLabel, ignored
-// Command/CapAdd, graceful power-off, portable kill error) all run.
+// TestContractSuite_MicroVM runs shared rows against a live MicroVMRuntime.
+// Its factory uses one /workspace virtio-fs mount and enables all divergence checks.
 func TestContractSuite_MicroVM(t *testing.T) {
 	env := microvmtest.Require(t)
 
@@ -68,13 +52,8 @@ func TestContractSuite_MicroVM(t *testing.T) {
 	}, caps)
 }
 
-// TestMicroVMQBudget records the boot-latency and per-process PSS numbers that
-// feed the Q-budget (record 832-834, §(g), launch.go:450-455). It is
-// INFORMATIONAL spike output, NOT a boot gate: it times Start (the full
-// Launch→Health-OK→Provision window) and reads the session VM's PSS
-// (proportional set size in kB, launch.go:456), emitting both via t.Logf. PSS is
-// best-effort — a sandboxed helper (passt sets PR_SET_DUMPABLE=0) leaves no
-// readable entry, which is reported, never failed.
+// TestMicroVMQBudget records Start latency and per-process PSS as informational output.
+// PSS is best-effort because sandboxed helpers may hide their process data.
 func TestMicroVMQBudget(t *testing.T) {
 	env := microvmtest.Require(t)
 	m := NewMicroVMRuntime(e2eConfig(t, env))

@@ -77,18 +77,13 @@ func okConfig(t *testing.T) MicroVMConfig {
 		RootfsImage: rootfs,
 		InitrdImage: initrd,
 		RunRoot:     runRoot,
-		// A VolumeRoot distinct from RunRoot is the production shape: the
-		// session-volume filesystem is the durable D9 volume, while RunRoot is
-		// the short /tmp socket dir. The quota axis targets THIS path.
+		// Keep VolumeRoot distinct from the short socket RunRoot; quota checks target this path.
 		VolumeRoot: dir,
 	}
 }
 
-// preflightRow is one verifyMicroVMSupport failure-axis case: mutate the
-// all-green config/probes to break (or re-pose) exactly one axis, then assert
-// the verdict. Shared by the capability table and the D7 quota table, which are
-// separate functions only because one table covering every axis outgrows the
-// funlen budget.
+// preflightRow mutates a valid config and probes to test one preflight decision.
+// Separate tables cover capability checks and volume quota behavior.
 type preflightRow struct {
 	name      string
 	mutate    func(cfg *MicroVMConfig, p *preflightProbes)
@@ -295,11 +290,8 @@ func TestVerifyMicroVMSupportQuota(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			// FAIL CLOSED: with no VolumeRoot the session-volume filesystem is
-			// unidentified, and the RunRoot is NOT an acceptable proxy — it is
-			// the short /tmp socket dir, routinely a different filesystem. A
-			// verdict about a filesystem that was never probed is worse than a
-			// refusal, so the required profile refuses.
+			// Without VolumeRoot, the session-volume filesystem is unknown.
+			// The socket RunRoot may be on another mount and cannot serve as a proxy.
 			name: "quota required but the volume root is unknown fails closed",
 			mutate: func(cfg *MicroVMConfig, p *preflightProbes) {
 				cfg.QuotaRequired = true

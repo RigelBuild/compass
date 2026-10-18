@@ -33,12 +33,8 @@ import (
 // emits only this type; an OAuth extension adds a sibling.
 const providerCredentialAPIKey = "api_key"
 
-// compassDirName is the per-agent config subdir under $HOME, and envFileName is
-// the aggregate env-secret file within it. Env-delivery secrets are written here
-// as KEY=VALUE lines (RIG-1327 T5) and sourced by the agent from its own
-// namespace at startup — never `-e KEY=VALUE` (host-process-list visible) nor
-// `podman exec --env-file` (podman resolves that path host-side, where this
-// container-internal file does not exist).
+// compassDirName and envFileName locate the per-agent env-secret file under HOME.
+// The agent sources it in-container; passing it through podman exec would resolve host-side.
 const (
 	compassDirName = ".compass"
 	envFileName    = "env"
@@ -240,12 +236,8 @@ func GHHostsScript(homeDir string, creds []GHCredentials) (string, error) {
 	return b.String(), nil
 }
 
-// yamlDoubleQuote renders s as a yaml double-quoted scalar, so an arbitrary
-// token byte cannot restructure the document or terminate the value line. The
-// two framing-dangerous bytes (" and newline) are escaped, and every other C0
-// control and DEL is emitted as a \xNN escape so the scalar is always a VALID
-// yaml document (yaml.v3 rejects a literal control byte in a quoted scalar).
-// An ASCII token (every real gh token) stays byte-exact.
+// yamlDoubleQuote escapes framing and control bytes so arbitrary tokens stay valid YAML.
+// ASCII credentials remain byte-exact.
 func yamlDoubleQuote(s string) string {
 	const hex = "0123456789abcdef"
 	var b strings.Builder

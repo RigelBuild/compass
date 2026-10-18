@@ -1,11 +1,7 @@
 package runtime
 
-// newChildHandleFuncs (U3): the funcs-backed ChildHandle the microVM GuestExec
-// adaptation consumes (U4 wires the real kill/wait pair onto a GuestStream).
-// These hermetic unit tests pin the exported Kill/Wait/Terminate surface over a
-// kill/wait function pair — no *exec.Cmd, no backend — including that a
-// signalled-exit waitFunc returning *ExitStatusError flows through Wait
-// unchanged, so the runner's isDeliberateKill can recognize it.
+// These tests pin the funcs-backed ChildHandle API used by remote guest execs.
+// In particular, Wait must preserve ExitStatusError for deliberate-kill detection.
 
 import (
 	"errors"

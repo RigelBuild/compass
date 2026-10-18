@@ -1,11 +1,7 @@
 package runtime
 
-// The apple-container hermetic suite: the pure argv assembly, version parsing,
-// and inspect classification that decide what the Runner shells out to Apple's
-// `container` CLI with, and how it reads the answers back. No subprocess is
-// spawned — these pin the serialized command shapes and the CLI-output
-// contracts a real bug (a dropped flag, a leaked podman-ism, a misread
-// "not found") would silently corrupt.
+// Hermetic tests pin apple-container argv, version parsing, and inspect classification.
+// They run no subprocess and protect the CLI command and output contracts.
 
 import (
 	"errors"
@@ -348,13 +344,8 @@ func TestAppleContainerResizeIsReserved(t *testing.T) {
 	}
 }
 
-// appleMissingContainer is the single place absence is read off a failed
-// command, and it must hold for BOTH measured wordings: `inspect` says
-// "container not found: <id>" while `rm`/`stop` say
-// `notFound: "container with ID <id> not found"`. The apiserver-down case is
-// the hazard the exit-code half of the guard exists for — it is also exit 1,
-// so a code-only guard would call every container absent while the engine is
-// down, and teardown would silently "succeed" against a live container.
+// TestAppleMissingContainer covers both CLI not-found wordings and the apiserver-down case.
+// Exit code 1 alone must not make a live container appear absent.
 func TestAppleMissingContainer(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -382,11 +373,8 @@ func TestAppleMissingContainer(t *testing.T) {
 	}
 }
 
-// appleStubCLI builds a CLI whose engine binary is a shell stub printing stderr
-// and exiting 1, so the teardown verbs are exercised end to end through the
-// real spawn seam without a `container` binary. Exit 1 is fixed: it is the code
-// this CLI returns for both a missing container and an apiserver-down refusal,
-// which is exactly what the tolerate-missing guard has to tell apart.
+// appleStubCLI exercises teardown through the real spawn seam without a container binary.
+// Its fixed exit code is shared by missing-container and apiserver-down responses.
 func appleStubCLI(t *testing.T, stderr string) *AppleContainerCLI {
 	t.Helper()
 	prog := filepath.Join(t.TempDir(), "container-stub.sh")

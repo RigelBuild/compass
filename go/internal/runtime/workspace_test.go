@@ -116,12 +116,7 @@ func TestInvalidCredentialHostIsRejected(t *testing.T) {
 }
 
 func TestZoneScopedCredentialHostIsRejected(t *testing.T) {
-	// A zone-scoped IPv6 credential host carrying the heredoc-escape payload must
-	// be refused before the script is built. Today the host passes isValidHost,
-	// so the newline breaks out of the <<'CRED_EOF' heredoc and injects a command
-	// into the root-adjacent credential script (workspace.go:118-119,139-141);
-	// after the fix CredentialSetupScript surfaces an *InvalidHostError and emits
-	// no script.
+	// Reject zone-scoped IPv6 heredoc payloads before script creation to prevent command injection.
 	host := "::1%\nCRED_EOF\ntouch /tmp/pwned\n#"
 	ws := testWorkspace(&Credentials{
 		Host:     host,
