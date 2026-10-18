@@ -1525,8 +1525,8 @@ stop startup.
 #### Scenario: A Runner trusting another certificate is refused
 
 - **Given** a door serving a `compass-gen-cert` certificate
-- **When** the Runner's `--ca` names another certificate
-- **Then** `Enroll` fails the TLS handshake (unknown authority)
+- **When** the Runner's `--ca` names another
+- **Then** `Enroll` fails the TLS handshake
 
 ### Requirement: `compass-runner --server-name` sets the name checked on the Server's certificate
 
