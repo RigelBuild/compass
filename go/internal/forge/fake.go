@@ -35,6 +35,8 @@ type Call struct {
 	Payload any
 	// Filter is the ListIssues filter (zero for other methods).
 	Filter IssueFilter
+	Kind   WriteKind
+	Parent uint64
 }
 
 // FakeProvider is a network-free Provider for tests. Scripted results are set on
@@ -56,6 +58,14 @@ type FakeProvider struct {
 	ListIssuesResult []Issue
 	// CreatePRResult is returned by CreatePullRequest when no error is scripted.
 	CreatePRResult PullRequest
+	// UpdatePRResult is returned by UpdatePullRequest when no error is scripted.
+	UpdatePRResult PullRequest
+	// FindPRResult and FindPRFound are returned by FindPullRequestByHead.
+	FindPRResult PullRequest
+	FindPRFound  bool
+	// FindWriteResult and FindWriteFound are returned by FindByWriteMarker.
+	FindWriteResult WrittenRef
+	FindWriteFound  bool
 	// GetPRResult is returned by GetPullRequest when no error is scripted.
 	GetPRResult PullRequest
 	// ChecksResult is returned by Checks when no error is scripted.
@@ -175,6 +185,30 @@ func (f *FakeProvider) CreatePullRequest(_ context.Context, repo string, in Crea
 		return PullRequest{}, err
 	}
 	return f.CreatePRResult, nil
+}
+
+// UpdatePullRequest records the call and returns its scripted result or error.
+func (f *FakeProvider) UpdatePullRequest(_ context.Context, repo string, number uint64, in UpdatePR) (PullRequest, error) {
+	if err := f.record(Call{Method: "UpdatePullRequest", Repo: repo, Number: number, Payload: in}); err != nil {
+		return PullRequest{}, err
+	}
+	return f.UpdatePRResult, nil
+}
+
+// FindPullRequestByHead records the branch lookup and returns its scripted result.
+func (f *FakeProvider) FindPullRequestByHead(_ context.Context, repo, headRef string) (PullRequest, bool, error) {
+	if err := f.record(Call{Method: "FindPullRequestByHead", Repo: repo, CommentKey: headRef}); err != nil {
+		return PullRequest{}, false, err
+	}
+	return f.FindPRResult, f.FindPRFound, nil
+}
+
+// FindByWriteMarker records the lookup and returns its scripted result.
+func (f *FakeProvider) FindByWriteMarker(_ context.Context, repo string, kind WriteKind, parent uint64, intentID string, since time.Time) (WrittenRef, bool, error) {
+	if err := f.record(Call{Method: "FindByWriteMarker", Repo: repo, Kind: kind, Number: parent, ClientID: intentID, Since: since}); err != nil {
+		return WrittenRef{}, false, err
+	}
+	return f.FindWriteResult, f.FindWriteFound, nil
 }
 
 // CommentOnPullRequest records the call and returns the scripted result or error.

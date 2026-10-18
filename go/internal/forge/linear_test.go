@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -1550,5 +1551,124 @@ func TestLinearOrganizationURLKeyRejectsEmptyAndRetries(t *testing.T) {
 	}
 	if rt.calls != 2 {
 		t.Fatalf("GraphQL requests = %d, want 2 after empty key", rt.calls)
+	}
+}
+
+func TestLinearCreateIssueUsesIntentID(t *testing.T) {
+	const intentID = "bda6b48f-bede-45c6-88f4-24360c24ee8a"
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		probeResp(false),
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"id":"` + intentID + `","number":42,"title":"first","state":{"type":"unstarted"}}}}}`},
+		{status: 200, body: `{"errors":[{"message":"duplicate id"}]}`},
+		{status: 200, body: `{"data":{"issue":{"id":"` + intentID + `","number":42,"title":"first","url":"https://linear.app/x/issue/RIG-42","state":{"type":"unstarted"}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	created, err := l.CreateIssue(t.Context(), "SEA", CreateIssue{ID: intentID, Title: "first"})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	_, createVars := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	input := createVars["input"].(map[string]any)
+	if input["id"] != intentID {
+		t.Errorf("IssueCreateInput.id = %v, want %q", input["id"], intentID)
+	}
+
+	_, err = l.CreateIssue(t.Context(), "SEA", CreateIssue{ID: intentID, Title: "second"})
+	if err == nil {
+		t.Fatal("second CreateIssue with the same intent id succeeded, want Linear refusal")
+	}
+	if !strings.Contains(err.Error(), "duplicate id") {
+		t.Errorf("second CreateIssue error = %v, want duplicate-id refusal", err)
+	}
+	got, found, err := l.FindByWriteMarker(t.Context(), "SEA", WriteKindIssue, 0, intentID, time.Time{})
+	if err != nil {
+		t.Fatalf("FindByWriteMarker: %v", err)
+	}
+	if !found || got.Number != created.Number {
+		t.Errorf("FindByWriteMarker = (%+v, %v), want issue number %d", got, found, created.Number)
+	}
+}
+
+func TestLinearFindIssueByWriteMarkerMiss(t *testing.T) {
+	const intentID = "bda6b48f-bede-45c6-88f4-24360c24ee8a"
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{
+		status: 200,
+		body:   `{"errors":[{"message":"Entity not found: Issue"}]}`,
+	}}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	got, found, err := l.FindByWriteMarker(t.Context(), "SEA", WriteKindIssue, 0, intentID, time.Time{})
+	if err != nil {
+		t.Fatalf("FindByWriteMarker: %v", err)
+	}
+	if found || got != (WrittenRef{}) {
+		t.Errorf("FindByWriteMarker = (%+v, %v), want zero ref and miss", got, found)
+	}
+}
+
+func TestLinearFindCommentByWriteMarker(t *testing.T) {
+	const intentID = "9b2e86de-5ba4-4a1c-a12c-215bc78237d8"
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "hit", body: `{"data":{"comment":{"id":"` + intentID + `","url":"https://linear.app/acme/comment/` + intentID + `"}}}`, want: true},
+		{name: "miss", body: `{"errors":[{"message":"Entity not found: Comment"}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var request struct {
+					Variables map[string]any `json:"variables"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if request.Variables["id"] != intentID {
+					t.Errorf("comment lookup id = %v, want %q", request.Variables["id"], intentID)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := w.Write([]byte(tt.body)); err != nil {
+					t.Errorf("write response: %v", err)
+				}
+			}))
+			defer server.Close()
+			l := NewLinear(LinearConfig{Host: server.URL, Token: &fakeTokenSource{token: "t"}, Client: server.Client(), Log: slog.New(&capturingHandler{})})
+
+			got, found, err := l.FindByWriteMarker(t.Context(), "SEA", WriteKindComment, 42, intentID, time.Time{})
+			if err != nil {
+				t.Fatalf("FindByWriteMarker: %v", err)
+			}
+			if found != tt.want {
+				t.Fatalf("found = %v, want %v", found, tt.want)
+			}
+			if tt.want && (got.Key != intentID || got.URL != "https://linear.app/acme/comment/"+intentID) {
+				t.Errorf("WrittenRef = %+v, want comment key and URL", got)
+			}
+			if calls != 1 {
+				t.Errorf("GraphQL calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestLinearPRProviderCallsUnsupported(t *testing.T) {
+	l := newTestLinear(&scriptedRoundTripper{}, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	if _, err := l.UpdatePullRequest(t.Context(), "SEA", 1, UpdatePR{}); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("UpdatePullRequest error = %v, want ErrUnsupported", err)
+	}
+	if _, _, err := l.FindPullRequestByHead(t.Context(), "SEA", "feature"); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("FindPullRequestByHead error = %v, want ErrUnsupported", err)
+	}
+	for _, kind := range []WriteKind{WriteKindPullRequest, WriteKindReview} {
+		if _, _, err := l.FindByWriteMarker(t.Context(), "SEA", kind, 0, "id", time.Time{}); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("FindByWriteMarker(%s) error = %v, want ErrUnsupported", kind, err)
+		}
 	}
 }

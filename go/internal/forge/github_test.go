@@ -7,6 +7,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -955,7 +956,7 @@ func TestCreatePullRequestRequestAndDecode(t *testing.T) {
 		"html_url": "https://github.com/org/repo/pull/13",
 		"draft": true,
 		"head": {"ref": "feature"},
-		"base": {"ref": "main"},
+		"base": {"ref": "main", "repo": {"full_name": "org/repo"}},
 		"user": {"login": "octocat"}
 	}`
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
@@ -976,7 +977,7 @@ func TestCreatePullRequestRequestAndDecode(t *testing.T) {
 		t.Errorf("request body = %q, want %q", b, wantBody)
 	}
 	if got.Number != 13 || got.Title != "a change" || got.State != "open" ||
-		got.URL != "https://github.com/org/repo/pull/13" || !got.Draft ||
+		got.URL != "https://github.com/org/repo/pull/13" || got.RepoFullName != "org/repo" || !got.Draft ||
 		got.HeadRef != "feature" || got.BaseRef != "main" || got.ForgeAccount != "octocat" {
 		t.Errorf("decoded PullRequest = %+v", got)
 	}
@@ -2064,6 +2065,150 @@ func TestListIssuesStopsPagingAtLimit(t *testing.T) {
 			}
 			if len(got) != limit || got[len(got)-1].Number != uint64(limit) {
 				t.Errorf("issues = %+v, want numbers 1..%d", got, limit)
+			}
+		})
+	}
+}
+func TestUpdatePullRequestRequestAndDecode(t *testing.T) {
+	const response = `{"number":13,"title":"updated","body":"body","state":"open","html_url":"https://github.com/org/repo/pull/13","head":{"ref":"feature"},"base":{"ref":"release","repo":{"full_name":"Org/Repo"}},"user":{"login":"octocat"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: response}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.UpdatePullRequest(t.Context(), "org/repo", 13, UpdatePR{Title: "updated", Body: "body", BaseRef: "release"})
+	if err != nil {
+		t.Fatalf("UpdatePullRequest: %v", err)
+	}
+	if req := rt.requests[0]; req.Method != http.MethodPatch || req.URL.Path != "/repos/org/repo/pulls/13" {
+		t.Errorf("request = %s %s, want PATCH /repos/org/repo/pulls/13", req.Method, req.URL.Path)
+	}
+	if gotBody, want := readReqBody(t, rt.requests[0]), `{"title":"updated","body":"body","base":"release"}`; gotBody != want {
+		t.Errorf("PATCH body = %q, want %q", gotBody, want)
+	}
+	if got.Title != "updated" || got.BaseRef != "release" || got.RepoFullName != "Org/Repo" {
+		t.Errorf("updated PR = %+v", got)
+	}
+}
+
+func TestUpdatePullRequestReady(t *testing.T) {
+	const response = `{"number":13,"title":"updated","body":"body","state":"open","draft":true,"node_id":"PR_node","head":{"ref":"feature"},"base":{"ref":"main","repo":{"full_name":"org/repo"}}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: response},
+		{status: 200, body: `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"isDraft":false}}}}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.UpdatePullRequest(t.Context(), "org/repo", 13, UpdatePR{Title: "updated", Body: "body", BaseRef: "main", Ready: true})
+	if err != nil {
+		t.Fatalf("UpdatePullRequest: %v", err)
+	}
+	if rt.calls != 2 || rt.requests[1].URL.String() != "https://api.github.com/graphql" {
+		t.Fatalf("ready requests = %d, second URL = %v", rt.calls, rt.requests[1].URL)
+	}
+	var request graphQLRequest
+	if err := json.NewDecoder(rt.requests[1].Body).Decode(&request); err != nil {
+		t.Fatalf("decode GraphQL request: %v", err)
+	}
+	if !strings.Contains(request.Query, "markPullRequestReadyForReview") {
+		t.Errorf("GraphQL query = %q, want markPullRequestReadyForReview", request.Query)
+	}
+	input, ok := request.Variables["input"].(map[string]any)
+	if !ok || input["pullRequestId"] != "PR_node" {
+		t.Errorf("GraphQL input = %#v, want pullRequestId PR_node", request.Variables["input"])
+	}
+	if got.Draft {
+		t.Errorf("Draft = true after ready mutation")
+	}
+}
+
+func TestUpdatePullRequest422(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 422, body: `{"message":"Validation Failed"}`}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	_, err := g.UpdatePullRequest(t.Context(), "org/repo", 13, UpdatePR{Title: "updated", Body: "body", BaseRef: "main"})
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("UpdatePullRequest error = %v, want StatusError 422", err)
+	}
+}
+
+func TestFindPullRequestByHead(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantFound bool
+		wantState string
+	}{
+		{name: "hit", body: `[{"number":13,"title":"change","state":"open","head":{"ref":"feature"},"base":{"ref":"main","repo":{"full_name":"org/repo"}}}]`, wantFound: true, wantState: "open"},
+		{name: "miss", body: `[]`},
+		{name: "merged", body: `[{"number":13,"state":"closed","merged_at":"2026-10-17T12:00:00Z","head":{"ref":"feature"},"base":{"ref":"main","repo":{"full_name":"org/repo"}}}]`, wantFound: true, wantState: "merged"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: tt.body}}}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+			got, found, err := g.FindPullRequestByHead(t.Context(), "org/repo", "feature")
+			if err != nil {
+				t.Fatalf("FindPullRequestByHead: %v", err)
+			}
+			if found != tt.wantFound || got.State != tt.wantState {
+				t.Errorf("result = (%+v, %v), want state %q found=%v", got, found, tt.wantState, tt.wantFound)
+			}
+			if got := rt.requests[0].URL.Query(); got.Get("state") != "all" || got.Get("head") != "org:feature" {
+				t.Errorf("query = %v, want state=all and head=org:feature", got)
+			}
+		})
+	}
+}
+
+func TestGetIssuePullRequestFlag(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: `{"number":13,"title":"change","state":"open","pull_request":{"url":"https://api.github.com/repos/org/repo/pulls/13"}}`}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.GetIssue(t.Context(), "org/repo", 13)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !got.IsPullRequest {
+		t.Errorf("Issue.IsPullRequest = false, want true")
+	}
+}
+
+func TestFindByWriteMarkerGitHubKinds(t *testing.T) {
+	since := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		kind       WriteKind
+		parent     uint64
+		hitBody    string
+		missBody   string
+		wantNumber uint64
+		wantKey    string
+	}{
+		{name: "issue", kind: WriteKindIssue, hitBody: `[{"number":41,"body":"hello <!-- compass:write intent-1 -->","created_at":"2026-10-17T12:01:00Z","html_url":"https://github.com/org/repo/issues/41"}]`, missBody: `[{"number":41,"body":"hello","created_at":"2026-10-17T12:01:00Z"}]`, wantNumber: 41},
+		{name: "comment", kind: WriteKindComment, parent: 13, hitBody: `[{"id":99,"body":"<!-- compass:write intent-1 -->","created_at":"2026-10-17T12:01:00Z","html_url":"https://github.com/org/repo/issues/13#issuecomment-99"}]`, missBody: `[{"id":99,"body":"other","created_at":"2026-10-17T12:01:00Z"}]`, wantKey: "99"},
+		{name: "review", kind: WriteKindReview, parent: 13, hitBody: `[{"id":77,"body":"<!-- compass:write intent-1 -->","submitted_at":"2026-10-17T12:01:00Z","html_url":"https://github.com/org/repo/pull/13#pullrequestreview-77"}]`, missBody: `[{"id":77,"body":"other","submitted_at":"2026-10-17T12:01:00Z"}]`, wantKey: "77"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				body string
+				want bool
+			}{{name: "hit", body: tt.hitBody, want: true}, {name: "miss", body: tt.missBody}} {
+				t.Run(tc.name, func(t *testing.T) {
+					rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: tc.body}}}
+					g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+					got, found, err := g.FindByWriteMarker(t.Context(), "org/repo", tt.kind, tt.parent, "intent-1", since)
+					if err != nil {
+						t.Fatalf("FindByWriteMarker: %v", err)
+					}
+					if found != tc.want {
+						t.Fatalf("found = %v, want %v", found, tc.want)
+					}
+					if found && (got.Number != tt.wantNumber || got.Key != tt.wantKey) {
+						t.Errorf("WrittenRef = %+v, want number=%d key=%q", got, tt.wantNumber, tt.wantKey)
+					}
+				})
 			}
 		})
 	}

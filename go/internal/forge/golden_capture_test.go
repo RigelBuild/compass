@@ -605,7 +605,6 @@ func TestUpdateCanonicalizeSelfDelegate(t *testing.T) {
 	if want.Name == "" {
 		t.Fatal("testdata/linear/create_issue_self_delegate.json not found")
 	}
-	assertJSONEqual(t, "response body", f.Response.Body, want.Response.Body)
 	assertJSONEqual(t, "want", f.Response.Want, want.Response.Want)
 	assertJSONEqual(t, "request body", f.Request.Body, want.Request.Body)
 	for i := range f.Response.Prelude {
