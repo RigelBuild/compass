@@ -1,9 +1,7 @@
-# Unpacks OCI layer tarballs into a staged rootfs tree. Shared by the rootfs
-# derivation and its fixture tests so both exercise the same code. Bash, not
-# TypeScript: it runs inside a nix runCommand builder, which has no bun.
-#   unpack ROOT LAYER...                 header allowlist, whiteouts, extract
-#   restore-dir-modes ROOT LAYER...      re-apply published directory modes
-#   check-contract ROOT IMAGE PATH...    each PATH resolves to an executable
+# Unpacks OCI layer tarballs into a staged rootfs, shared by the rootfs derivation
+# and its fixture tests. Bash, not TypeScript: nix runCommand builders have no bun.
+# Subcommands: unpack ROOT LAYER... | restore-dir-modes ROOT LAYER... |
+#   check-contract ROOT IMAGE PATH... (each PATH must resolve to an executable)
 set -euo pipefail
 
 # Only regular files, directories and links that stay inside the tree. Device
