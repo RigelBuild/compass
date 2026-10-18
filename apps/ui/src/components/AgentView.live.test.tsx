@@ -17,11 +17,7 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { AgentView } from "./AgentView";
 
-// The LIVE AgentView header (T4): a live agent has no fixture `model`/`cwd`
-// (both optional on the joined `Agent`), so the `.av-model` / `.av-cwd` spans
-// are each gated on a `<Show>` — an absent field renders NOTHING rather than an
-// empty span. The offline fixture agents always carry both, so only a
-// live-shaped store can exercise the absent arm.
+// Live agent headers must tolerate missing model and cwd.
 
 const CALLER = "acc-me";
 const AGENT = "acc-cook";

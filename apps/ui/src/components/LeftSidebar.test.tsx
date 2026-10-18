@@ -12,16 +12,9 @@ import { flush, mountApp } from "../test-router";
 import { testQueryClient } from "../test-support";
 import { LeftSidebar } from "./LeftSidebar";
 
-// T7 acceptance: one Channels section contains the agent tree, channel bands,
-// direct messages, and the unchanged browse/discover list.
-//
-// The test fixture has joined standalone channels, home DMs, and a browse channel.
+// The rail unifies agents, channel bands, direct messages, and browse channels.
 
-// Mount LeftSidebar over a real store through the app's StoreContext (index.tsx
-// wires it as `<StoreContext value={store}>`). The store is built inside
-// render's reactive root so its memos are owned and disposed on the library's
-// per-test cleanup; the reference is captured so tests drive store actions and
-// re-query the live DOM.
+// Render-created stores dispose their reactive memos with each test.
 function mountSidebar(initialComms = STUB_COMMS_STATE): {
 	store: AppStore;
 	container: HTMLElement;
@@ -220,22 +213,14 @@ describe("LeftSidebar (T7)", () => {
 				?.querySelector(".rail-section-head")?.textContent,
 		).toBe("channels");
 	});
-	// Matt's ruling: join/subscribe are NOT wired to the wire yet — there is no
-	// join/subscribe RPC, and the old local-only mutation silently reverted the
-	// moment the next SubscribeComms snapshot re-derived membership from the
-	// server (store.ts adoptComms → live/adapt.ts deriveMembership). A control
-	// that plainly does not work beats one that appears to and undoes itself, so
-	// the join control renders DISABLED with an honest title and clicking it
-	// changes nothing. Mutation-check: restoring the local-toggle mutation
-	// reddens the membership leg; an enabled button reddens the disabled leg.
+	// Join has no server RPC, so keep it disabled rather than fake membership.
 	test("browse/join renders disabled and does not fake membership", () => {
 		const { store, container } = mountSidebar();
 
 		const membershipOf = () =>
 			store.channels().find((c) => c.id === "ch-random")?.membership;
-		// The transition starts from `none` (ch-random is the unjoined channel).
+		// The unjoined fixture channel starts with membership "none".
 		expect(membershipOf()).toBe("none");
-
 		const browseHead = findToggle(container, "browse channels");
 		expect(browseHead).toBeDefined();
 		if (!browseHead) throw new Error("browse channels header not rendered");
@@ -260,18 +245,14 @@ describe("LeftSidebar (T7)", () => {
 		expect(membershipOf()).toBe("none");
 	});
 
-	// The same ruling on the subscribe toggle: a joined row's ◉/○ control is
-	// disabled with an honest title, and a click leaves membership alone. The
-	// always-subscribed rows render a non-button `.ch-sub.fixed` marker, so this
-	// picks a row that actually has the toggle. Mutation-check: restoring
-	// toggleSubscribe's local mutation reddens the membership leg.
+	// Subscribe is not wired either; leave the toggle disabled and preserve membership.
 	test("the subscribe toggle renders disabled and does not fake membership", () => {
 		const { store, container } = mountSidebar();
 
 		const toggles = [
 			...container.querySelectorAll<HTMLButtonElement>("button.ch-sub"),
 		];
-		// Non-triviality: the rail really does render togglable rows.
+		// Confirm the rail renders togglable rows before checking their disabled state.
 		expect(toggles.length).toBeGreaterThan(0);
 
 		const before = store.channels().map((c) => c.membership);
@@ -281,16 +262,11 @@ describe("LeftSidebar (T7)", () => {
 			fireEvent.click(toggle);
 		}
 
-		// No membership anywhere moved.
+		// Clicking disabled controls leaves every membership unchanged.
 		expect(store.channels().map((c) => c.membership)).toEqual(before);
 	});
 
-	// Contract (§T8): the subscribe toggle is HIDDEN entirely on
-	// mandatory_subscription channels — the model force-subscribes every member,
-	// so any unsubscribe affordance (even a disabled one, even a fixed marker)
-	// would be a lie. Fixture: ch-announcements and ch-coordination are both
-	// mandatorySubscription. Mutation-check: removing the hide reddens (a toggle
-	// or fixed marker reappears on a mandatory row).
+	// Mandatory-subscription channels have no subscribe affordance.
 	test("hides the subscribe control on mandatory_subscription channels", () => {
 		const { container } = mountSidebar();
 
@@ -299,13 +275,11 @@ describe("LeftSidebar (T7)", () => {
 				(r) => r.querySelector(".ch-name")?.textContent === name,
 			);
 
-		// Precondition: the fixture channels we assert on are actually mandatory.
 		for (const id of ["ch-announcements", "ch-coordination"]) {
 			const ch = STUB_CHANNELS.find((c) => c.id === id);
 			expect(ch?.mandatorySubscription).toBe(true);
 		}
 
-		// Neither a toggle button nor a fixed marker renders on a mandatory row.
 		for (const name of ["announcements", "coordination"]) {
 			const row = rowByName(name);
 			expect(row).toBeDefined();
@@ -318,11 +292,7 @@ describe("LeftSidebar (T7)", () => {
 		expect(compass?.querySelector(".ch-sub")).not.toBeNull();
 	});
 
-	// Contract (§T8): an agent's presence render carries its human-readable
-	// activity note (Agent.activity, AgentPresenceChanged.activity) beside the
-	// process-state dot. Present → a `.agent-activity` with the fixture text;
-	// absent → nothing extra. Mutation-check: dropping the render reddens the
-	// present leg. Fixture: supervisor has an activity; compass-server-acp has none.
+	// Agent activity appears beside its state dot only when present.
 	test("renders an agent's activity note when present", () => {
 		const { container } = mountSidebar();
 

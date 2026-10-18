@@ -30,14 +30,7 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { Bridge } from "./Bridge";
 
-// Render acceptance spec for the Bridge Issues/PRs tabs (Record B / DL-097). The
-// board is now two peer tabs inside one view: the Issues tab is today's board
-// unchanged; the PRs tab is a flat one-row-per-OPEN-PR list. The tab is a
-// Bridge-local signal (like BoardMode), so it is exercised through the exported
-// Bridge mounted over a real store — the same seam a click uses. These tests
-// defend: the tab flip renders PR rows, the tab-label count equals prCount, the
-// grouping seg is Issues-only, the cross-link chips move selection + flip tabs,
-// and the card's per-check pip strip has collapsed to CI/review badges.
+// The exported Bridge surface exposes peer Issues and PRs tabs.
 function mountBridge(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
@@ -53,11 +46,7 @@ function mountBridge(): { store: AppStore; container: HTMLElement } {
 	return { store, container };
 }
 
-// Mount the full App shell (store + StoreContext + a Router 2 instance whose
-// render-prop child is the App root — the production shape mirror of `mountApp`)
-// over a CALLER-PROVIDED store, returning the render's `unmount`. The
-// remount-hygiene test uses one shared store across two mounts to observe the
-// app-lifetime registry across a mount→unmount→remount cycle.
+// Reuse one store across mounts to test app-lifetime cleanup.
 function mountShell(
 	store: AppStore,
 	initialPath: string,
@@ -311,11 +300,7 @@ describe("Bridge card badges (Record B §3)", () => {
 	});
 
 	test("the selected card carries data-selected; others do not (presence toggle)", () => {
-		// T3 encodes selection solely as `.cx-card[data-selected]` (IssueCard.tsx:
-		// `sel ? "" : undefined`), which owns the accent left rule now that the
-		// priority stripe is gone. Defend the toggle against inversion / a dropped
-		// attribute: exactly one card is selected (the store seeds STUB_ISSUES[0]),
-		// and selecting a different issue moves the attribute to exactly one card.
+		// Selection is exposed only through data-selected.
 		const { store, container } = mountBridge();
 		const selectedCards = () =>
 			container.querySelectorAll(".cx-card[data-selected]");
@@ -391,13 +376,7 @@ describe("Bridge card badges (Record B §3)", () => {
 	});
 });
 
-// T4 — the whole board is ONE roving-tabindex group with a 2-D cursor (RIG-2130,
-// DL-220/221; design §471-509). The board mounts its own keymap + roving group,
-// so these drive real window `keydown`s (the same seam the dispatcher listens
-// on) and assert against the live DOM + store. The fixture has no swimlane
-// multi-card cell, so the multi-card traversal is exercised in status mode (the
-// in_review column stacks RIG-1022/1085/847) and the empty-cell skip in swimlane
-// mode (compass-ui's queued/blocked cells are empty between its cards).
+// The board uses one roving stop group and a 2-D cursor.
 const boardGrouping = (container: HTMLElement): HTMLElement | null =>
 	container.querySelector('[aria-label="Board grouping"]');
 const clickGrouping = (
@@ -436,12 +415,7 @@ const press = (init: KeyboardEventInit): KeyboardEvent => {
 	flushSync();
 	return event;
 };
-// Enter the board group by focusing the cursor stop (the sole `tabindex="0"`) —
-// the same landing native Tab produces. The dispatcher claims a group-relative
-// chord ONLY while focus is on a board stop (focus-exclusivity, design §401-405),
-// so a keydown test must enter first; a within-group cursor move then keeps focus
-// on the board (the roving effect refocuses), but a grouping/tab switch rebuilds
-// the stop elements and drops focus, so re-enter after one.
+// Focus a board stop first; group-relative chords are active only within the group.
 const enterBoard = (container: HTMLElement): void => {
 	container.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')?.focus();
 };
@@ -480,11 +454,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(cursorLabel(container)).toBe("Issue RIG-1022");
 	});
 
-	// Keyboard-driving tests re-host onto the full shell (`mountApp`) so the
-	// App-root spine is the installer (RD-3 / A6): they dispatch real window
-	// keydowns and the one root listener resolves them. Cursor moves + selection
-	// are synchronous signal writes; opening an agent navigates (real router), so
-	// those cases await `flush()` before reading the routed view.
+	// Use the app-root keymap listener; router-driven cases await flush.
 	test("Up/Down traverse a multi-card column (status mode in_review stack)", () => {
 		const { container } = mountApp("/");
 		clickGrouping(container, "Status");
@@ -528,13 +498,8 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(event.defaultPrevented).toBe(true);
 	});
 
+	// A tier-1 board chord must win over a same-zone tier-3 comms chord.
 	test("Shift+Enter opens the assigned agent — tier-1 board claim beats when:main comms", async () => {
-		// The load-bearing precedence test, re-hosted onto the App-root spine (RD-3):
-		// a competing `comms.newline`/`comms.send` is seeded into the SAME shared
-		// registry, in the SAME `main` zone; `Shift+Enter → comms.newline
-		// {when:"main"}` is an established keymap entry. The board's `board.openAssignedAgent`
-		// is group-relative, so the dispatcher's tier 1 claims it AHEAD of the scoped
-		// comms entry.
 		const { store, container } = mountApp("/");
 		let commsNewlineRan = 0;
 		let commsSendRan = 0;
@@ -983,15 +948,8 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(grid.getAttribute("role")).toBe("group");
 	});
 
+	// Tab changes rebuild stop IDs, so reset to the new tab's first stop.
 	test("switching tabs resets the cursor to the new tab's first stop", () => {
-		// design §248: a tab switch rebuilds the stop set and resets the cursor to
-		// the tab's selected/first stop — NOT a same-column recovery onto whatever
-		// PR row happens to share the old numeric column (the ids change wholesale
-		// across tabs, so that landing would be arbitrary). The Issues-tab selection
-		// (an issue id) is not a PRs-tab stop (composite `issueId::repo#n`), so the
-		// reset lands on the first stop. Board stops are <button>s (`.cx-card` cards
-		// + `.bridge-lane` gutters); the Unassigned lane is a non-interactive <div>,
-		// so `button.…` selects only real stops in DOM order.
 		const { container } = mountBridge();
 		expect(cursorLabel(container)).toBe("Issue RIG-1022");
 		clickTab(container, "PRs");
@@ -1021,15 +979,8 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(store.selectedIssueId()).toBe("ws-965");
 	});
 
+	// Group-relative chords are claimed only while focus is on a board stop.
 	test("focus-exclusivity: a focused non-board button keeps its native keys; the tier-3 Shift+Enter escape is scope-gated out (RD-4 closed, RIG-2529)", async () => {
-		// The regression guard for the focus-exclusivity contract (design §401-405),
-		// re-hosted onto the App-root spine: the board claims a group-relative chord
-		// in tier 1 ONLY while focus is on a board stop. With focus on a toolbar
-		// segmented button (a native control outside the board group), Enter/Space/
-		// Arrows must NOT be claimed — the board neither preventDefaults nor moves
-		// its cursor/selection, so the button keeps its native activation. (This
-		// fails if the spine's active-group accessor were unconditional — the board
-		// would trap every non-editable key.)
 		const { store, container } = mountApp("/");
 		const cursorBefore = cursorLabel(container);
 		const selectedBefore = store.selectedIssueId();
@@ -1043,15 +994,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(cursorLabel(container)).toBe(cursorBefore); // cursor unmoved
 		expect(store.selectedIssueId()).toBe(selectedBefore); // selection unchanged
 
-		// RD-4 CLOSED (RIG-2529): tier 3 is now scope-gated. `board.openAssignedAgent`
-		// is `scope:'main'` (Bridge.tsx:437) and the keymap binds it unscoped
-		// (Shift+Enter, keymap.ts:98). With the toolbar button holding focus, no
-		// roving group is active and no zone is active, so `activeZone()` is null —
-		// the scope gate's `command.scope === zone` is `"main" === null` → false, and
-		// the chord falls out of tier 3 UN-consumed. The button keeps its native
-		// activation and the assigned-agent escape does NOT fire. This is the
-		// production-wiring proof (real App, real chord, real store) that the established
-		// dispatch contract changed deliberately.
+		// Tier-3 escape is scope-gated: a focused toolbar control has no active zone.
 		const viewBefore = store.view();
 		const escapeEvent = press({ key: "Enter", shiftKey: true });
 		expect(escapeEvent.defaultPrevented).toBe(false); // native activation survives
@@ -1059,14 +1002,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(store.view()).toBe(viewBefore); // the assigned-agent escape did NOT fire
 	});
 
-	// Lifecycle (A6 bullet 4): a mount→unmount→remount cycle leaves exactly ONE
-	// window listener and NO stale `board.*` commands. Uses ONE shared store across
-	// both shell mounts so the same app-lifetime registry is observed: after
-	// unmount the Bridge's cleanup unregisters both `board.*` ids and App's
-	// cleanup removes the keymap listener; after remount both are present exactly
-	// once. The single-listener property is proven functionally — one `Ctrl+B`
-	// runs the `view.bridge` command exactly once (a stacked listener would run it
-	// twice).
+	// Remount must leave one app listener and one registration per board command.
 	test("mount → unmount → remount leaves one listener and no stale board.*/list.* commands", async () => {
 		// The shared store outlives both mounts, so it can't live inside either
 		// render root; build it in its own `createRoot` (v2 createAppStore's useQuery

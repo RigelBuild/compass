@@ -73,11 +73,7 @@ export const MessageStream: Component<{
 					class="conv-sizer"
 					style={{
 						height: `${virtualizer.getTotalSize()}px`,
-						// The scroller (`.conv-stream`) is a flex column, so the sizer
-						// would otherwise flex-shrink below its set height when the
-						// virtual height exceeds the viewport — collapsing scrollHeight
-						// to one screen and stranding later rows. Pin it to its own
-						// height so the full scroll range is always reachable.
+						// Prevent flex shrink from collapsing the virtual scroll range.
 						"flex-shrink": "0",
 						position: "relative",
 						width: "100%",
@@ -85,13 +81,9 @@ export const MessageStream: Component<{
 				>
 					<For each={virtualizer.getVirtualItems()}>
 						{(item) => {
-							// During a data change the Solid adapter reconciles the virtual
-							// item store keyed by index, so a row can transiently receive an
-							// undefined item or an index past the new message list. Guard both
-							// so a mid-change tick renders nothing rather than throwing.
+							// Guard stale or out-of-range virtual items during reconciliation.
 							const message = () => (item ? messages()[item.index] : undefined);
-							// Index-reconciled rows get a new message on a scope switch: drop
-							// the old key's cache entry so one node never sits under two keys.
+							// Re-key the cached row when a scope switch reuses its element.
 							let rowEl: HTMLDivElement | undefined;
 							createEffect(
 								() => item?.key,
@@ -108,18 +100,12 @@ export const MessageStream: Component<{
 								<Show when={item && message()}>
 									<div
 										class="conv-row"
-										// data-index is intentionally set BOTH here and imperatively
-										// in the ref below: the ref wins on timing (fires before
-										// Solid flushes this binding, so it is present at measure
-										// time), and this binding keeps it in the declared attribute
-										// set. Do not drop either as "redundant".
+										// Keep data-index available before virtualizer measurement.
 										data-index={item.index}
 										data-key={item.key}
 										ref={(el) => {
 											rowEl = el;
-											// The measure observer reads data-index off the node, so
-											// set it before measuring (the ref fires before Solid
-											// flushes the attribute binding).
+											// Set data-index first because the ref precedes binding flush.
 											el.setAttribute("data-index", String(item.index));
 											virtualizer.measureElement(el);
 										}}

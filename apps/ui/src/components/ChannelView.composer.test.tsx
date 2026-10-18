@@ -15,19 +15,7 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { TopicView } from "./TopicView";
 
-// The topic composer's POSTING contract. In the two-level model a message is
-// posted into a TOPIC (a topic IS the thread), so the composer lives in
-// TopicView and posts through store.postMessage with the topic oneof
-// {case:"topicId"}. The SubscribeComms echo renders the result. These tests
-// mount TopicView over a store backed by the CommsClient double
-// (live/comms-fake.ts) and assert the user-visible contract end to end: click
-// and Enter both send, the draft clears, the message appears only on the echo,
-// and a failure keeps the user's text. Switching between two topics scopes the
-// draft to each.
-//
-// The membership-based enablement and the ask surface live in
-// ChannelView.test.tsx (offline, fixture-backed); this suite is the live write
-// path only.
+// TopicView posts by topic ID; tests cover input, echo, failure, and drafts.
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-live";

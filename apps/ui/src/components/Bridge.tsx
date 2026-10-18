@@ -71,11 +71,8 @@ type BoardMode = "swimlane" | "status";
  *  `BoardMode` (which is how ISSUES group). Bridge-local, like `BoardMode`. */
 type BoardTab = "issues" | "prs";
 
-// The eight group-relative Lists-block commands (keymap.ts:79-86). Registered
-// `scope:'main'` beside the `board.*` block so the discoverability net (RIG-2482
-// overlay, RIG-2483 palette) earns their rows; the tier-3 scope gate (RIG-2529)
-// keeps them inert unless the main zone holds focus. `run` mirrors `onCommand`,
-// the same behavior tier 1 routes group-relative ids to (D3 rider).
+// Register group-relative commands in the main scope for palette discovery.
+// Their handlers mirror onCommand.
 const LIST_COMMANDS: ReadonlyArray<{
 	id: string;
 	title: string;
@@ -278,11 +275,7 @@ export const Bridge: Component = () => {
 		setTab(next);
 	};
 
-	// SEAM (subtree-scope): Record C's subtree filter has no store accessor yet,
-	// so the board is always unscoped here — `scope()` is `undefined`, and both
-	// the PRs-tab rows and the tab-badge count read the full set. When C wires a
-	// `subtreeAgentIds` accessor into the store, feed it through this one seam and
-	// the count + row filter track it together.
+	// Subtree scoping is not wired; rows and counts currently use the full set.
 	const scope = (): ReadonlySet<string> | undefined => undefined;
 	const multiForge = () => isMultiForge(store.issues());
 	const prGroups = () => {
@@ -338,11 +331,7 @@ export const Bridge: Component = () => {
 			? `180px repeat(${BOARD_LANES.length}, minmax(210px, 1fr))`
 			: `repeat(${BOARD_LANES.length}, minmax(210px, 1fr))`;
 
-	// ── Keyboard: the whole board is ONE roving group (T4, DL-220) ────────────
-	// The board derives a pure `BoardNavInput` from tab()/mode() (T3 owns the 2-D
-	// cursor math). `stops()` is the ordered stop list; alongside it we build a
-	// per-stop action map (select/open/cross-link + positional a11y), resolved
-	// from the same board data so the dispatcher stays a pure id→behavior table.
+	// Derive stops and actions from the same board snapshot.
 	const navInput = createMemo<BoardNavInput>(() => {
 		if (tab() === "prs") {
 			return {
@@ -454,20 +443,8 @@ export const Bridge: Component = () => {
 	let prevStop: BoardStop | null =
 		stops().find((s) => s.id === cursorId()) ?? null;
 	let prevTab = tab();
-	// Rebuild the cursor when the stop set changes. A TAB switch (issues↔prs)
-	// resets to the tab's selected/first stop: the ids change wholesale, so
-	// same-column recovery would land on a semantically arbitrary PR row that
-	// happens to share a numeric column (design §248). In-tab churn — a mode
-	// switch (card ids persist across swimlane/status) or a background data push
-	// — keeps a surviving cursor and recovers a vanished one via T3's
-	// `resolveCursor`. The explicit compute dep (`() => stops()`) keeps this a
-	// static-dep effect (the effect body reads `prevStop`/`prevTab`, plain
-	// closure vars, not signals).
-	// `defer: true` skips the initial run: the cursor is already seeded via
-	// `createSignal(seedCursor(stops()))` above, and running the rebuild on mount
-	// would re-seed and reset `prevTab`/`prevStop` redundantly. It fires only on
-	// subsequent `stops()` changes — the Solid-2 equivalent of Solid 1's
-	// `on(stops, cb, { defer: true })`.
+	// Tab changes reset the cursor; in-tab changes preserve surviving stops.
+	// Defer rebuilding because the signal already has its seeded cursor.
 	createEffect(
 		() => stops(),
 		(list: BoardStop[]) => {
@@ -489,12 +466,7 @@ export const Bridge: Component = () => {
 		},
 	);
 
-	// The board's element refs, keyed by stop id — collected as each card/gutter
-	// button renders. The roving group pairs a live stop id with its element.
-	// `elsVersion` makes the Map observable: refs fire during render (after the
-	// `stops()` memo settles), so `rovingStops` must re-run when the Map fills or
-	// the roving effect would read an empty stop set on mount and never recover
-	// (Solid 2 does not re-run the effect on an untracked Map mutation).
+	// Map mutation is untracked, so bump elsVersion after refs fill.
 	const els = new Map<string, HTMLElement>();
 	const [elsVersion, bumpElsVersion] = createSignal(0, { equals: false });
 	const setStopEl = (id: string) => (el: HTMLElement | undefined) => {
@@ -570,29 +542,15 @@ export const Bridge: Component = () => {
 			else store.selectIssue(action.issueId); // no-assignee falls back to select
 			return true;
 		}
-		// Space: the board's cross-link rides the Lists-block `list.expandOrToggle`
-		// (keymap:84) — the dispatcher's first group-relative match on Space, and
-		// the board has no expand/toggle of its own. `board.openCardCrossLink` has
-		// no keymap row (it would be dead behind list.expandOrToggle); it stays a
-		// registered command (palette + a future Space remap, OQ-2), so map both.
+		// Space maps to the Lists-block expand command for cross-links.
 		if (id === "board.openCardCrossLink" || id === "list.expandOrToggle") {
 			return openCrossLink();
 		}
 		return false;
 	};
 
-	// Consumer of the app keyboard spine (RIG-2456): the board does NOT install
-	// its own keymap — App.tsx installs the one root listener. It registers its
-	// four `board.*` commands into the shared registry (so the palette can surface
-	// them; their keyboard path is `onCommand` above — the dispatcher routes
-	// group-relative ids to the group, not `registry.get` — so `run` mirrors the
-	// group behavior for the palette's sake) and PUBLISHES its roving group to the
-	// spine. The RIG-2130 focus gate now lives in the spine's `activeGroup()`
-	// accessor (keyboard/spine.ts): the board claims a group-relative chord only
-	// while DOM focus is on one of its stops. Both the command registration and
-	// the group publication are retracted on cleanup — the shared registry is
-	// app-lifetime, so a leaked `board.*` command would be tier-3 dispatchable
-	// from any route after the board unmounts (design A5.3 / RD-4).
+	// Register board commands and publish its roving group on the shared keyboard spine.
+	// Cleanup retracts both to prevent dispatch after unmount.
 	const registry = store.keyboard.registry;
 	const rovingGroup = createRovingGroup({
 		group: { zone: "main", id: "bridge-board" },

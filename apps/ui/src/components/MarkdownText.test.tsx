@@ -15,27 +15,12 @@ import { MarkdownText } from "./MarkdownText";
 // leaks to every later test IN THIS FILE and across files).
 const realHighlightToHtml = realHighlighter.highlightToHtml;
 
-// The R1 highlight cache (highlight-cache.ts) is module-level and persists
-// across component instances by design. Clear it after every test so a prior
-// render's cached `(lang, code)` → HTML entry never seeds a later test's
-// highlight path (which would make an assertion on the debounce/fetch cycle
-// read a synchronous cache hit instead).
+// Clear the module-level highlight cache so one test cannot seed another.
 afterEach(() => {
 	clearHighlightCache();
 });
 
-// Tests for the message-surface renderer: it renders a text block as MARKDOWN
-// (CommonMark + GFM), composes the existing @-mention chips by post-processing
-// the markdown tree's TEXT nodes (markdown-first), renders code verbatim through
-// a `code` override (so mentions never chip inside code), highlights fenced code
-// via a lazy Shiki singleton with a plain-text fallback, stays stable while a
-// string grows mid-stream, and routes link activation through the Wails
-// `Browser.OpenURL` seam instead of navigating the app.
-//
-// happy-dom has no layout, but every assertion here is on rendered DOM
-// STRUCTURE / text / classes / attributes / events — none needs pixels. The
-// async Shiki swap is observed with waitFor (deterministic: the highlight
-// promise resolves; only its timing is async).
+// Cover markdown semantics, mentions, highlights, and safe links; assertions inspect DOM.
 
 // A byHandle map keyed lowercase, exactly as ChannelView builds it
 // (ChannelView.tsx:364-365). "cook" is a known account; "compass" is the known
@@ -70,13 +55,7 @@ function flushHighlightDebounce(): void {
 	flush();
 }
 
-// The async Shiki highlight (150ms debounce + async tokenize) is observed with
-// `waitFor`, whose default ceiling is 1000ms. On a loaded CI box (concurrent go
-// + nix builds) the tokenize has resolved as late as ~1350ms — correct, just
-// slow — so give the highlight-observing waits a headroom ceiling. This is not a
-// retry: `waitFor` still polls the real highlighter to genuine completion; the
-// wider ceiling only tolerates a contended runner, and a highlighter that never
-// resolves still fails.
+// Allow for slow CI highlighting while still failing if the promise never resolves.
 const HIGHLIGHT_WAIT_MS = 5000;
 
 describe("MarkdownText — markdown semantics", () => {
@@ -215,12 +194,7 @@ describe("MarkdownText — code is verbatim, never chipped", () => {
 		expect(container.querySelector(".mention-chip")).toBeNull();
 	});
 
-	// The `br` interleaving that rescues a prose softbreak must NOT reach a code
-	// element: `rawText` concatenates only `text` descendants, so a `br` inside
-	// `<code>` contributes nothing and every newline in a multi-line block is
-	// silently eaten ("line one\nline two" renders as "line oneline two"). Every
-	// other code test here uses a single-line body, which is exactly why this
-	// class of loss can pass a full suite.
+	// `rawText` ignores `<br>`, so inserting breaks would collapse multiline code.
 	test("a multi-line fenced block keeps every newline", () => {
 		const { container } = render(() => (
 			<MarkdownText
@@ -350,11 +324,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 
 	test("an unknown-lang fence stays plain (no token spans, no error)", async () => {
 		jest.useFakeTimers();
-		// Deterministic replacement for the old `setTimeout(50)`-then-assert-absence
-		// race. Wrap the REAL highlighter so the genuine unknown-lang → null
-		// decision is exercised (teeth on highlightToHtml, not a hardcoded null),
-		// but CAPTURE the promise it returns so we can await it and assert only
-		// once the highlight has actually settled — no wall-clock wait.
+		// Await the real unknown-language result before asserting there are no token spans.
 		const settledPromises: Promise<string | null>[] = [];
 		mock.module("../markdown/highlighter", () => ({
 			...realHighlighter,
@@ -386,12 +356,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		expect(code?.querySelector("span[style]")).toBeNull();
 	});
 
-	// T-MD-2: last-write-wins under out-of-order highlight resolution. A growing
-	// fence kicks a fresh highlight per tick; createResource keys on [code, lang],
-	// so a STALE earlier tick that resolves AFTER the latest must be dropped. We
-	// control resolution order via the mock: resolve the LATEST tick first (paint
-	// it), then resolve the earlier stale tick LATE and assert the DOM still shows
-	// the latest, never the stale overwrite.
+	// Last-write-wins must discard a stale result that resolves after the latest.
 	test("a stale highlight resolving after the latest tick does not overwrite it", async () => {
 		jest.useFakeTimers();
 		const pending: {
@@ -438,18 +403,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		expect(container.querySelector('[data-tick="stale"]')).toBeNull();
 	});
 
-	// Each growth tick must issue a request carrying ITS OWN text — collapse the
-	// per-tick keying and `asked[0]` stops being "AAA".
-	//
-	// The stronger property the name might suggest — that an in-flight fetcher
-	// cannot retarget to the newest text — is NOT what this defends, and the
-	// distinction is established by mutation rather than assumed: with the
-	// highlight source DEBOUNCED, `[code(), lang()]` is snapshotted into the
-	// debounced signal before the timer fires, so by the time the fetcher runs
-	// its keyed `src` and the live `code()` are the same string. Pointing the
-	// fetcher at the live signal leaves this suite green — that mutation is
-	// unreachable through the public component, not merely uncaught here. The
-	// stale-resolution test above is what guards the painted result.
+	// Each request must use its own tick's debounced text snapshot.
 	test("each growth tick issues its own highlight request", async () => {
 		jest.useFakeTimers();
 		const asked: string[] = [];
@@ -498,13 +452,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		expect(container.querySelector("pre pre")).toBeNull();
 	});
 
-	// R1: the synchronous `(lang, code)` highlight cache. #44's reconcile renderer
-	// rebuilds the whole message subtree — a fresh `CodeBlock` instance — on every
-	// changed streaming tick, so a settled fence would flash back to the plain
-	// `<pre>` fallback until its async highlight re-resolves. The module-level
-	// cache lets a rebuilt instance seed `html` synchronously at construction, so
-	// an already-highlighted fence stays highlighted across a growth tick with no
-	// fallback frame.
+	// Seed rebuilt code blocks from cache so growth does not flash the plain fallback.
 	test("a settled fence stays highlighted across a growth tick (R1 cache, no fallback frame)", async () => {
 		// Deterministic highlighter: resolves to known markup for the ts fence so
 		// the R1 cache is populated once it settles. `data-r1` survives the
@@ -544,16 +492,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		expect(container.textContent).toContain("more prose below");
 	});
 
-	// RIG-1422: leading-edge first highlight. A settled (non-streaming) block —
-	// every historical message in a channel — must colorize on FIRST paint, not
-	// sit on the plain `<pre>` fallback for HIGHLIGHT_DEBOUNCE_MS. This is the
-	// cache-MISS counterpart to the R1 test above (which proves the sync-cache
-	// paint): here the (lang, code) pair is NOT cached (afterEach cleared it), so
-	// the highlight runs the async path — but on the leading edge, kicked
-	// immediately rather than gated behind the 150ms trailing timer. The proof is
-	// that the highlighter is asked, and its markup paints, WITHOUT ever elapsing
-	// `flushHighlightDebounce()`. A debounced-from-the-first-tick implementation
-	// would leave `asked` empty until the 150ms window passed.
+	// A settled cache miss must highlight on first paint, without the trailing debounce.
 	test("a settled fence highlights on first paint, not gated behind the debounce (leading edge, cache miss)", async () => {
 		const HIGHLIGHTED =
 			'<pre class="shiki"><code><span style="color:green" data-le="hit">const x = 1;</span></code></pre>';
@@ -585,11 +524,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		expect(container.querySelector("pre.code-block")).toBeNull();
 	});
 
-	// RIG-1422: the leading-edge gate must NOT reintroduce the per-tick re-tokenize
-	// the debounce exists to collapse. A single fence grown across ticks that
-	// arrive inside the debounce window (no `flushHighlightDebounce` between them)
-	// must issue ONE leading-edge pass, then collapse the whole growth burst into
-	// exactly ONE trailing pass — not one per tick.
+	// Collapse growth inside the debounce window into one trailing highlight.
 	test("a fence's within-window growth ticks collapse to one trailing highlight", async () => {
 		jest.useFakeTimers();
 		const asked: string[] = [];
@@ -623,13 +558,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		expect(asked[1]).toContain("L3");
 	});
 
-	// RIG-1422 regression: the leading-edge gate is a MODULE-LEVEL record, so a
-	// message with more than one fence rebuilds every fence in the same reconcile
-	// tick. A naive single-slot record lets an earlier fence clobber the slot
-	// before a later, still-growing fence reads it, so the grower never matches
-	// its OWN prior code and (mis)fires an immediate re-tokenize every tick — the
-	// exact O(n²) the debounce collapses. The gate must match a growing fence
-	// against its own recent snapshot regardless of siblings scheduled between.
+	// Reconcile rebuilds fences per tick, so leading-edge state must be module-level.
 	test("a second streaming fence beside a settled one still debounces (no per-tick re-tokenize)", async () => {
 		const asked: string[] = [];
 		mock.module("../markdown/highlighter", () => ({
@@ -662,11 +591,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 });
 
 describe("MarkdownText — link safety", () => {
-	// The `openExternal` seam routes to the Wails `Browser.OpenURL` only inside
-	// the native shell (detected via `window._wails.environment`, injected by the
-	// Wails runtime); in a plain browser it falls back to `window.open`. happy-dom
-	// is not a shell, so each test that observes the opener installs a fake shell
-	// marker to drive the native path, then tears it down.
+	// Set a fake Wails marker to exercise `Browser.OpenURL`; plain happy-dom uses the browser fallback.
 	const asShell = () => {
 		(window as unknown as { _wails?: unknown })._wails = { environment: {} };
 	};
@@ -710,13 +635,7 @@ describe("MarkdownText — link safety", () => {
 		expect(opened).toEqual(["https://example.com/docs"]);
 	});
 
-	// T-MD-1: dangerous-scheme links are neutralized. solid-markdown does NOT
-	// strip schemes (its transformLinkUri default is null), so an agent-authored
-	// `javascript:` / `file:` / `data:` href would otherwise reach the DOM as a
-	// live attribute AND the opener. The `a` override must render it inert
-	// (`href="#"`) and never hand the raw href to the opener on activation.
-	// Pre-fix (`href={p.href ?? "#"}`, `const href = p.href`) the live href
-	// reaches the DOM and the opener → red.
+	// Make parser-preserved dangerous schemes inert in both the DOM and opener.
 	for (const scheme of [
 		"javascript:alert(1)",
 		"file:///etc/passwd",
@@ -848,15 +767,7 @@ describe("MarkdownText — link safety", () => {
 });
 
 describe("MarkdownText — content preservation", () => {
-	// solid-markdown pipes remarkRehype with `allowDangerousHtml: true`
-	// (solid-markdown/dist/index.jsx:307), so HTML in a message becomes hast
-	// `raw` nodes — and its child renderer has Match arms only for `element`
-	// and `text` (dist/index.jsx:110-125), so a `raw` node renders as NOTHING.
-	// `<` is a raw-HTML opener to CommonMark, so ordinary agent prose about
-	// generics or JSX silently loses characters. The fix must restore the text
-	// WITHOUT making the HTML live: these assertions pin both halves, so a
-	// future `rehype-raw` swap (which would restore text by injecting real
-	// elements) reddens on the second half.
+	// Raw HTML nodes are dropped by this renderer, so retype them as text; enabling `rehype-raw` would make them live.
 	test("raw HTML in prose renders as literal text, never as live elements", () => {
 		const { container } = render(() => (
 			<MarkdownText
@@ -929,11 +840,7 @@ describe("MarkdownText — content preservation", () => {
 		expect(kids[2]?.textContent).toBe("line two");
 	});
 
-	// A `raw` node is retyped to `text` so its characters survive, and it must
-	// then go through the SAME newline→`br` split a plain text node gets: raw
-	// HTML is a block-level chunk of source, so a multi-line one is the common
-	// case, and skipping the split lets `white-space: normal` collapse its
-	// newlines and render every line joined on one.
+	// Retyped raw blocks need the same newline-to-`<br>` split as text to preserve lines.
 	test("a multi-line raw HTML block renders its lines as separate lines", () => {
 		const { container } = render(() => (
 			<MarkdownText
@@ -941,13 +848,7 @@ describe("MarkdownText — content preservation", () => {
 				byHandle={byHandle()}
 			/>
 		));
-		// `textContent` ignores `br` per spec, so assert the STRUCTURE: the two
-		// lines are separate text runs with a break between them. (The opening and
-		// closing tag lines get their own breaks too — the whole raw chunk is one
-		// multi-line node — so match on the two prose lines rather than on a
-		// fixed child count.) react-markdown-10 renders the content directly under
-		// `.markdown-content` — the old solid-markdown's extra `<div>` wrapper is
-		// gone — so the raw chunk's text/`br` runs are its direct children.
+		// Since `textContent` omits `<br>`, assert child-node structure; raw content is direct children of `.markdown-content`.
 		const kids = [
 			...(container.querySelector(".markdown-content")?.childNodes ?? []),
 		];
@@ -962,20 +863,7 @@ describe("MarkdownText — content preservation", () => {
 		expect(container.querySelector("details")).toBeNull();
 	});
 
-	// The verbatim-in-code rule outranks the break rescue: `white-space: pre`
-	// already renders the newline, and the `code` override reads through
-	// `rawText`, which concatenates text descendants and IGNORES `br` — so an
-	// interleaved break would not just be redundant, it would collapse the block
-	// onto one line.
-	//
-	// This covers PLAIN TEXT in code, which is all it can cover: a `raw` node
-	// never reaches a code subtree. Fenced and indented code become mdast `code`
-	// nodes, and only an mdast `html` node becomes `raw` (mdast-util-to-hast
-	// handlers/html.js), so the two are disjoint by construction — verified by
-	// resolving `` ```\n<a>\n<b>\n``` `` through the real from-markdown/to-hast
-	// stack: zero raw nodes in the tree at all. The angle brackets below are
-	// therefore code text, not markup, and the `inCode` guard they exercise is
-	// the pre-existing plain-text one.
+	// `white-space: pre` keeps code newlines; inserted `<br>` nodes are dropped by `rawText`.
 	test("a fenced block keeps its newlines and adds no break", () => {
 		const { container } = render(() => (
 			<MarkdownText text={"```\n<a>\n<b>\n```"} byHandle={byHandle()} />
@@ -999,12 +887,7 @@ describe("MarkdownText — content preservation", () => {
 		expect(container.textContent).toContain("the architecture diagram");
 	});
 
-	// mdast→hast emits a bare "\n" text node BETWEEN block children (ul→li,
-	// table→tr, and inside a loose li around its p). solid-markdown drops those
-	// with its own `value !== "\n"` guard, but the rehype plugin runs first —
-	// turning each into a `br` smuggles an element past that guard into a parent
-	// where phrasing content is invalid. Browsers foster-parent a `br` out of
-	// table internals, and each one adds a blank line the virtualizer measures.
+	// Keep bare newlines between block children as whitespace; converting them to `<br>` creates invalid phrasing content and table foster-parenting adds measured blank lines.
 	test("a list gets no stray <br> between its items", () => {
 		const { container } = render(() => (
 			<MarkdownText text={"- one\n- two\n- three"} byHandle={byHandle()} />
@@ -1031,11 +914,7 @@ describe("MarkdownText — content preservation", () => {
 		expect(container.querySelectorAll("td").length).toBe(2);
 	});
 
-	// `li` and `blockquote` are DUAL-MODE — phrasing content in a tight list,
-	// block content in a loose one — so the separator/softbreak call cannot be
-	// made from the parent tag. These four pin both halves of the sibling rule
-	// that decides it: a bare "\n" next to a block is whitespace, everything
-	// else is prose.
+	// In tight and loose lists, a bare newline beside a block is whitespace; otherwise it is prose.
 	test("a nested list gets no stray <br> around the inner list", () => {
 		const { container } = render(() => (
 			<MarkdownText text={"- a\n  - b\n- d"} byHandle={byHandle()} />
@@ -1097,12 +976,7 @@ describe("MarkdownText — content preservation", () => {
 		expect(container.querySelector("p")?.textContent).toBe("ab");
 	});
 
-	// Pins the OTHER side of the asymmetry: only a PRECEDING `br` absorbs the
-	// newline. The bare "\n" has to be its own node with the `br` on its RIGHT,
-	// which needs an inline-element boundary — `"a\nb  \nc"` will not do, since
-	// its softbreak stays embedded in the text node and never reaches the drop
-	// clause. `"*a*\n\\\nb"` yields p[em, "\n", br, "\n", "b"]: relax the clause
-	// to either side and the softbreak's own break disappears.
+	// A hard break absorbs only its preceding newline; this case puts a softbreak before an inline boundary.
 	test("a softbreak running into a hard break renders both", () => {
 		const { container } = render(() => (
 			<MarkdownText text={"*a*\n\\\nb"} byHandle={byHandle()} />
@@ -1151,12 +1025,7 @@ describe("MarkdownText — highlight failure is contained", () => {
 		}));
 	});
 
-	// The async highlight failure is caught INSIDE the block's highlight effect
-	// (a try/catch around `highlightToHtml`) and never surfaces into render, so a
-	// failed dynamic import (a stale Vite chunk after redeploy, an offline
-	// webview) degrades to the plain `<pre>` fallback instead of throwing. This
-	// test proves the containment holds even when an error boundary IS present:
-	// nothing propagates to it, so a real deployment (which mounts none) is safe.
+	// The effect catches highlight failures, so rejection must leave the plain fallback visible.
 	test("a rejected highlight degrades to plain code, taking nothing else down", async () => {
 		mock.module("../markdown/highlighter", () => ({
 			...realHighlighter,

@@ -594,22 +594,12 @@ export const RightSidebar: Component = () => {
 		const id = store.selectedIssueId();
 		return id ? (STUB_FILES[id] ?? []) : [];
 	};
-	// D5: the card-scoped chrome (detail head + repo/branch dropdown) is
-	// meaningless above a fleet conversation, so it hides when a fleet tab is
-	// active. The active tab is fleet iff it's `status` or an `agent:`-prefixed
-	// pin (the RIGHT_SIDEBAR_TAB_BY_ID index can't key the open `agent:` arm, so
-	// this reads the shape, matching the rightTabGroups() partition).
+	// Fleet tabs are not keyed in the issue-tab index.
 	const fleetActive = (): boolean => {
 		const active = store.activeRightTab();
 		return active === "status" || active.startsWith("agent:");
 	};
-	// The active tab's fleet pane item, for any `agent:`-prefixed pin (RIG-1645
-	// P2). The P1 `rightTabGroups()` memo already emits an item for EVERY pin
-	// (marked unreachable or not) with the cached-handle title; read it out rather
-	// than resolving/rebuilding a second time — this is the SINGLE
-	// item-construction site. Never undefined for a pinned `agent:` tab (that was
-	// the blank-pane gap); undefined only for a non-`agent:` tab or an `agent:`
-	// tab with no matching pin (which falls through to `status`).
+	// Reuse the tab group item for its cached title and reachability.
 	const activeFleetItem = (): AvatarTabItem | undefined => {
 		const active = store.activeRightTab();
 		if (!active.startsWith("agent:")) return undefined;

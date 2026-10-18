@@ -9,11 +9,7 @@ import {
 import * as destinationsModule from "../keyboard/destinations";
 import { flush, mountApp } from "../test-router";
 
-// The command palette's rendered contract (RIG-2483). Mounts the full shell so
-// the palette reads the REAL registry + store providers (registers nothing).
-// Defends: action-mode fuzzy + scoped-above-global ranking against a captured
-// zone, the toggle no-recapture case, chips derived from the keymap, navigation
-// groups, loading + empty states, and select-navigates.
+// Exercise palette ranking, keymap chips, navigation groups, and selection.
 
 function setPlatform(platform: "mac" | "other"): void {
 	Object.defineProperty(navigator, "platform", {

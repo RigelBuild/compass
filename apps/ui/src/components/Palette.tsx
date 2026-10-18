@@ -1,20 +1,4 @@
-// Command palette (RIG-2483) — the Cmd/Ctrl+K do-an-action surface. One
-// prefix-free input feeds two modes at once: ACTION (fuzzy over the command
-// registry, scoped-above-global per the captured open-time zone) and NAVIGATION
-// (store-backed destination providers, grouped by kind). Hosted once at the App
-// root behind `store.paletteOpen()`.
-//
-// Host anatomy (A2/D8): a hand-positioned `position: fixed` wrapper IS
-// `.cx-palette`, holding a Kobalte Search primitive with `open` pinned true and
-// — per Kobalte's published command-menu recipe — `Search.Portal`/
-// `Search.Content` replaced by a plain div directly holding `Search.Listbox`, so
-// nothing portals and floating-ui stays out of the test path. Our own
-// `.cx-palette-backdrop` renders behind the wrapper. Dismiss is ours and thin:
-// Escape + backdrop-click → `store.closePalette()` (the sole teardown is the
-// `<Show>` unmount; `open` stays pinned so a blur can never close the list).
-// Focus is hand-granted (`input.focus()` on mount) since Search does not
-// autofocus the input; each row's `onMouseDown`-preventDefault keeps focus in
-// the input on click.
+// Root-hosted palette; Search stays inline so floating-ui cannot own dismissal.
 
 import { Search } from "@kobalte/core/search";
 import {
@@ -132,13 +116,7 @@ export const Palette: Component<{
 		}));
 	});
 
-	// ── Navigation mode: store-backed providers, grouped, latest-wins ──
-	// The last non-stale destination map (null until the first query resolves),
-	// plus an in-flight flag — both plain signals written from the effect's apply
-	// phase. v2 has no createResource; async work lives in a split effect (compute
-	// tracks `query()`, apply runs the async fetch and writes the signals), the
-	// pattern MarkdownText's highlight uses. Reading these signals in `allOptions`
-	// never suspends, preserving the original `.latest`/`.loading` semantics.
+	// Keep the latest destination map and loading state without suspending results.
 	const [destinations, setDestinations] = createSignal<Map<
 		DestinationKind,
 		Destination[]
@@ -156,13 +134,13 @@ export const Palette: Component<{
 			const timer = setTimeout(() => {
 				void queryDestinations(providers, input, mine, () => currentGen)
 					.then((result) => {
-						// A stale resolve must apply nothing; a newer query owns the surface.
+						// Ignore stale results; only the newest query owns the surface.
 						if (mine !== currentGen) return;
 						if (result !== null) setDestinations(result);
 						setLoading(false);
 					})
 					.catch(() => {
-						// Keep loading from sticking on a future throw; this surface has no ErrorBoundary.
+						// Clear loading if a future provider throws.
 						if (mine === currentGen) setLoading(false);
 					});
 			}, SEARCH_DEBOUNCE_MS);

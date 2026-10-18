@@ -1,12 +1,4 @@
-// Shortcut chip (RIG-2483) — the shared point-of-use key hint. Splits a
-// resolved chord ("Ctrl+K", "Shift+Enter") on "+" and renders the
-// `.cx-palette-shortcut` chip. The chord it renders is ALWAYS the
-// resolveChord-resolved display string (via `shortcutFor`); it never resolves
-// `Mod` itself. The `class` prop lets a host like `CoachTip`'s `.cx-tooltip`
-// (RIG-2530) restyle the box while reusing the same split rendering.
-//
-// OQ-5: chords render as resolved text ("Ctrl+K"); mapping to "⌘K" on mac is a
-// one-component change here later.
+// Render keymap chords as individual key caps; hosts may override the class.
 
 import type { Component } from "solid-js";
 import { For } from "solid-js";

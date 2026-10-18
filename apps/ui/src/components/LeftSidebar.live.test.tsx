@@ -19,18 +19,7 @@ import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { LeftSidebar } from "./LeftSidebar";
 
-// The LIVE render path for the agent tree in the unified Channels section: the
-// board no longer reads STUB_AGENTS — it reads `store.agents()`, the reactive join of
-// the comms accounts (identity) and the roster presence map (lifecycle +
-// activity). These tests mount LeftSidebar over a live store (createFakeComms,
-// no server) and defend what a live roster looks like on the surface:
-//
-//   - a joined agent renders as a `.tree-agent` leaf carrying its handle and,
-//     when present, its activity note;
-//   - a live agent has NO fixture `role` (role === undefined), so it renders
-//     NO `.role-pip` — the pip is fixture-only chrome;
-//   - the `.tree-empty` seam renders ONLY on a genuinely empty roster PAST the
-//     first snapshot, never during the connect window (T5 / R4).
+// Live roster tests cover leaves, fixture-only role pips, and empty-state timing.
 
 const CALLER = "acc-me";
 

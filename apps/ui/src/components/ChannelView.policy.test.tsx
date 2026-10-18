@@ -18,15 +18,7 @@ import { ViewContext } from "../view-scope";
 import { ChannelView } from "./ChannelView";
 import { TopicView } from "./TopicView";
 
-// Post-policy gating on the two channel write affordances (comms substrate
-// §T8/§A2): an `owner_only` channel admits only its owner. The composer (in
-// TopicView) and the "new topic" affordance (in ChannelView's topic index) both
-// post through store.postMessage, so both must render DISABLED with an
-// owner-only hint for a non-owner — the honest-disabled pattern (mirroring
-// LeftSidebar's fixed subscribe toggle): visibly disabled with a reason, never
-// hidden, never offered. The server would reject the post; the UI must not
-// offer it. The membership gate stays; the policy gate sits beside it (disabled
-// if EITHER fails).
+// Owner-only policy disables both topic creation and posting for non-owners.
 
 const CALLER = "acc-me";
 const OWNER = "acc-owner";
@@ -164,11 +156,7 @@ describe("composer post-policy gating (T8)", () => {
 	});
 });
 
-// NewTopic gating over the offline fixture store (the same convention as
-// ChannelView.test.tsx's membership tests). The fixture pins the contrast:
-// `ch-announcements` is owner_only owned by acc-supervisor (the fixture caller
-// acc-matt is NOT the owner → gated); `ch-coordination` is owner_only owned by
-// MATT (the caller IS the owner → enabled).
+// Fixture contrast: announcements is owned by another agent; coordination by caller.
 const NON_OWNER_CHANNEL = (() => {
 	const c = STUB_CHANNELS.find(
 		(ch) =>

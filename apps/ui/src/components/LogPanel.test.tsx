@@ -17,21 +17,9 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { LogPanel } from "./LogPanel";
 
-// The trace reads the view's `agentSession()`, keyed on the route's agent, not
-// the `agent` prop, so each test calls `store.openAgent(id)` first.
-//
-// Fixture ground truth (session-events-stub.ts STUB_SESSION_EVENTS):
-//   - acc-compass-server: running:true — a thinking beat, ~10 one-word
-//     assistant_text deltas sharing messageId "m-l1" (fold → ONE text item), a
-//     tool_call + tool_call_update (tc-l1, diff+output+status "completed"), a
-//     3-entry plan.
-//   - acc-compass-native:  running:false — a single notice.
-//   - acc-compass-comms:   ABSENT → agentSession() undefined → empty state.
+// Fixtures cover running, stopped, and absent selected-agent sessions.
 
-// Derived from the fixture (never hardcoded, so a fixture reshuffle can't stale
-// the test): the coalesced assistant text and the tool title the typed trace
-// must show for acc-compass-server. Computed via the real fold so the test asserts
-// exactly what the panel renders.
+// Derive expected text and tool title through the same session fold as the panel.
 const LIVINGSTONE_ITEMS = foldSession(
 	STUB_SESSION_EVENTS["acc-compass-server"].events,
 );
@@ -47,11 +35,7 @@ const LIVINGSTONE_TOOL_TITLE = (() => {
 	return item.call.title;
 })();
 
-// Mount LogPanel over a real store through the app's StoreContext. The store is
-// built inside render's reactive root (its memos are owned + disposed on the
-// library's per-test cleanup); `openAgent` runs BEFORE the JSX resolves, and a
-// `<Show when={store.selectedAgent()} keyed>` narrows the agent for the prop —
-// re-opening another agent re-keys the Show, re-driving both prop and session.
+// Build the store inside render and open the agent before resolving the view.
 function mountLogPanel(
 	agentId: string,
 	sessions?: Record<string, AgentSession>,

@@ -1,13 +1,4 @@
-// Keyboard-shortcuts overlay (RIG-2482) — the `?`-opened, searchable reference
-// sheet. The content is a render-time JOIN of DEFAULT_KEYMAP × the live command
-// registry (buildShortcutGroups), so it can never drift from the real bindings;
-// this component only renders that model + owns the modal chrome.
-//
-// Hand-rolled modal on the `.cx-dialog` convention (ratified D5 — no
-// @kobalte/core), with two correctness features: focus-RESTORE (capture
-// activeElement on mount, restore on cleanup) and a minimal Tab/Shift+Tab focus
-// TRAP, so a modal claiming aria-modal cannot let focus walk out and leave its
-// local Escape handler unreachable.
+// Show the live keymap and registry in a modal with focus management.
 
 import {
 	type Component,
@@ -38,16 +29,8 @@ export const ShortcutsOverlay: Component = () => {
 
 	let dialogRef: HTMLDivElement | undefined;
 	let searchRef: HTMLInputElement | undefined;
-	// The element focused before the overlay opened; focus returns here on close
-	// (every close path — `?` toggle, Escape, backdrop, close-on-navigation).
+	// Save prior focus, focus search, and restore while the element stays connected.
 	let restoreTo: HTMLElement | null = null;
-
-	// Setup-and-teardown as one unit (v2 onSettled: runs once after the first
-	// reactive settle, its returned cleanup on dispose — the 1.x onMount+onCleanup
-	// pair). Capture the pre-open focus, grant focus to the search input, and on
-	// close restore focus to the captured element — but only if it is still in the
-	// DOM: a route change during the overlay's lifetime can detach it, and
-	// .focus() on a detached node silently drops focus to <body>.
 	onSettled(() => {
 		restoreTo =
 			document.activeElement instanceof HTMLElement
@@ -59,8 +42,7 @@ export const ShortcutsOverlay: Component = () => {
 		};
 	});
 
-	// Minimal focus trap: keep Tab/Shift+Tab inside the dialog so focus cannot
-	// leave behind aria-modal="true" and the local Escape stays reachable.
+	// Trap Tab navigation so focus stays inside the modal dialog.
 	const focusables = (): HTMLElement[] =>
 		dialogRef
 			? Array.from(

@@ -53,11 +53,7 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 	const store = useStore();
 	const view = useView();
 	const running = () => view.agentSession()?.running ?? false;
-	// A fixture-sourced session's id was never minted by a server, so Stop has
-	// nothing it can honestly issue (store.ts `stopAgent` refuses it outright).
-	// Render the control disabled and say why, the same shape the channel rail
-	// uses for its not-yet-wired subscribe control (LeftSidebar.tsx:171-184) — a
-	// visibly-dead button beats one that only reports into the console.
+	// Fixture sessions lack the server ID required by Stop.
 	const fixture = () => view.agentSession()?.fixture === true;
 	// This pane's window, not the focused view's, so split panes stay apart.
 	const pending = () => store.batchPending(view.agentSession());
