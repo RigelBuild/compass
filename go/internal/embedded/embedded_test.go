@@ -204,11 +204,8 @@ func TestRunStackUpReturnsWhileChildrenLinger(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	// A short-lived grandchild that outlives its parent and inherits stderr: the
-	// exact fire-and-return shape of `compass-stack up`. sleep 5 is far longer
-	// than any correct RunStackUp (which returns at the parent's exit, ~ms) and
-	// well past the 1s assertion below, yet short enough that a regressed run's
-	// leaked grandchild self-reaps in seconds rather than a minute.
+	// The grandchild inherits stderr, so a pipe keeps os/exec blocked until EOF
+	// after the parent exits. This verifies RunStackUp returns at parent exit.
 	stackUp := RunStackUp("/bin/sh")
 	start := time.Now()
 	err := stackUp(ctx, []string{"-c", "sleep 5 & exit 0"})

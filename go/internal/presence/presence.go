@@ -104,12 +104,9 @@ type Publisher struct {
 	log    *slog.Logger
 
 	mu sync.Mutex
-	// last is the last-published presence per agent — the publish-on-change
-	// registry AND the snapshot source (PresenceSnapshot). An agent absent here
-	// has never had a presence published; the zero value UNSPECIFIED is never a
-	// COMPUTED presence (presenceFor only ever returns IDLE/WORKING/WAITING/
-	// OFFLINE), so the first computed value for an agent always differs and
-	// publishes.
+	// last stores each agent's last-published presence and backs PresenceSnapshot.
+	// Missing agents have never published; UNSPECIFIED is not computed, so the
+	// first computed presence always differs and is published.
 	last map[store.AccountID]compassv1.AgentPresence
 	// lastState is the last-known lifecycle state per agent, the state input the
 	// ask arm recomputes against (the ask overlay flips without a lifecycle

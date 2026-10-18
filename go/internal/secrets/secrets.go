@@ -3,16 +3,9 @@
 // owns the resolve-surface value types the Runner fetch path and the container
 // materializer consume.
 
-// The split of concerns:
-//   - internal/store owns two separate registries. The secrets table holds user
-//     secrets: one row carries the declaration (name, delivery/routing) AND the
-//     encrypted value columns. Boot/server secret names live in the physically
-//     separate server_secrets table, declaration only — so the inject-all
-//     container path, which reads secrets, can never see them by construction.
-//   - this package reads those registries and hands back ResolvedSecrets (name +
-//     value + content-hash version + delivery/kind): SpecResolver by generating
-//     a manifest and resolving names against the provider, StoreResolver by
-//     decrypting the user rows.
+// User secrets carry encrypted values in secrets; server secrets are
+// declaration-only in the separate server_secrets table. Keeping them apart
+// prevents inject-all, which reads secrets, from exposing server secrets.
 
 // It maps store enums to its own resolve-surface enums at this edge, exactly as
 // the comms service maps store↔proto (store/types.go) — so store stays a leaf

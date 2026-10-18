@@ -99,8 +99,8 @@ func (p *Publisher) Run(ctx context.Context) error {
 		case event, ok := <-sub.Live:
 			if !ok {
 				if sub.Lagged() {
-					// On overrun, resubscribe: presence is derived and can be repaired by
-					// a later ask or reconciliation edge. Replaying the ring adds nothing.
+					// On overrun, resubscribe and skip the retained ring: presence is
+					// derived, so a later ask or reconciliation edge repairs it.
 					fresh, err := p.bus.Subscribe(0, p.bus.InstanceEpoch())
 					if err != nil {
 						p.log.ErrorContext(ctx, "presence: re-subscribe after bus-lag overrun", "error", err)

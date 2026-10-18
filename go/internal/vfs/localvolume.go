@@ -38,11 +38,9 @@ const (
 	stampTempPattern = "close-stamp-*.json.tmp"
 )
 
-// volumeDirMode is the mode of the base dir and of every per-session volume
-// root: private to the invoking host user, who owns the whole subtree. The
-// container's keep-id remap maps that user to the agent uid in-container, so
-// owner-only is exactly right — no other host user has any business in a
-// session's tree.
+// volumeDirMode is used for the base and per-session roots. keep-id maps their
+// host owner to the agent uid in-container, so owner-only access keeps the
+// session tree private from other host users.
 const volumeDirMode os.FileMode = 0o700
 
 // stampFileMode is the mode of the close-stamp and lock files: owner-only,

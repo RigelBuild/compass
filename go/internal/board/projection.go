@@ -36,7 +36,7 @@ type Projection struct {
 
 	mu sync.RWMutex
 	// sessions retains terminal states for single-id reads, while Snapshot lists
-	// only live sessions. Retention is bounded by Runner agent count.
+	// only live sessions. Entries live as long as the projection; there is no expiry.
 	sessions map[string]sessionEntry
 }
 

@@ -1,10 +1,7 @@
 package secrets
 
-// Pure contracts for the secret resolve surface: the name grammar that gates
-// what can become a manifest key / filesystem path / script token, the
-// content-hash version producer, the D14 value-redaction guard on every fmt
-// verb, and the store→resolve enum mapping at this package's edge. No Postgres,
-// no secretspec CLI — all of this is a pure function of its inputs.
+// These pure resolver contracts need no Postgres or secretspec CLI; inputs
+// cover name safety, versioning, value redaction, and store-enum mapping.
 
 import (
 	"fmt"
