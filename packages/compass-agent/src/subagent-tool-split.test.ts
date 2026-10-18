@@ -1,4 +1,5 @@
 // Pins the capability split: the Manager gets Compass tools; subagents retain only OMP tools and hub.
+// This is a capability contract, not a security boundary: task subagents run at Manager trust in the same container.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";

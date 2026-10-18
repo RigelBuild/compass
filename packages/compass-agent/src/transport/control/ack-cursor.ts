@@ -12,7 +12,9 @@ import {
 } from "./../../gen/compass/v1/agent_pb";
 import type { PublishSpine } from "./../publish-spine";
 
-// Tracks the highest contiguous applied sequence and out-of-order sequences above it; the set is unbounded, but wire cost is O(runs).
+// Tracks the highest contiguous applied sequence and out-of-order sequences above it.
+// A queued, unapplied op can pin the cursor while immediate ops above it accumulate, so the
+// set is unbounded by design; the wire encoding costs O(runs).
 
 // `markApplied` is idempotent — a redelivered applied op re-acks without corrupting the cursor.
 // Every apply emits a `ControlAck` on the priority lane.
