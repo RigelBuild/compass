@@ -84,9 +84,9 @@ spec:
             - "--forge-installation-id"
             - "234567"
             - "--forge-app-key-secret"
-            - compass-forge-app-key
+            - FORGE_APP_PRIVATE_KEY
             - "--forge-app-webhook-secret"
-            - compass-forge-app-webhook
+            - FORGE_APP_WEBHOOK_SECRET
             - "--forge-repos"
             - rigelbuild/compass
             - "--forge-reviewer-app-id"
@@ -94,7 +94,7 @@ spec:
             - "--forge-reviewer-app-installation-id"
             - "456789"
             - "--forge-reviewer-app-key-secret"
-            - compass-forge-reviewer-app-key
+            - FORGE_REVIEWER_APP_PRIVATE_KEY
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

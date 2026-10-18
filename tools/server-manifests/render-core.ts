@@ -488,6 +488,20 @@ function numberValue(
 	return value;
 }
 
+const SERVER_SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function serverSecretNameValue(
+	record: Record<string, unknown>,
+	key: string,
+	field: string,
+): string {
+	const value = stringValue(record, key, field);
+	const match = SERVER_SECRET_NAME_PATTERN.exec(value);
+	if (match?.[0] !== value)
+		throw new Error(`${field} must match ${SERVER_SECRET_NAME_PATTERN}`);
+	return value;
+}
+
 function parseForgeValues(input: unknown): ForgeValues {
 	const record = objectValue(input, "forge");
 	assertOnlyKeys(
@@ -510,8 +524,12 @@ function parseForgeValues(input: unknown): ForgeValues {
 			"installationId",
 			"forge.installationId",
 		),
-		appKeySecret: stringValue(record, "appKeySecret", "forge.appKeySecret"),
-		appWebhookSecret: stringValue(
+		appKeySecret: serverSecretNameValue(
+			record,
+			"appKeySecret",
+			"forge.appKeySecret",
+		),
+		appWebhookSecret: serverSecretNameValue(
 			record,
 			"appWebhookSecret",
 			"forge.appWebhookSecret",
@@ -541,7 +559,7 @@ function parseForgeValues(input: unknown): ForgeValues {
 				"installationId",
 				"forge.reviewer.installationId",
 			),
-			appKeySecret: stringValue(
+			appKeySecret: serverSecretNameValue(
 				reviewer,
 				"appKeySecret",
 				"forge.reviewer.appKeySecret",

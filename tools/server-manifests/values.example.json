@@ -26,12 +26,12 @@
 		"repos": ["rigelbuild/compass"],
 		"appId": 123456,
 		"installationId": 234567,
-		"appKeySecret": "compass-forge-app-key",
-		"appWebhookSecret": "compass-forge-app-webhook",
+		"appKeySecret": "FORGE_APP_PRIVATE_KEY",
+		"appWebhookSecret": "FORGE_APP_WEBHOOK_SECRET",
 		"reviewer": {
 			"appId": 345678,
 			"installationId": 456789,
-			"appKeySecret": "compass-forge-reviewer-app-key"
+			"appKeySecret": "FORGE_REVIEWER_APP_PRIVATE_KEY"
 		}
 	},
 	"runnerClusters": [

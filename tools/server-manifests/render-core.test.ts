@@ -695,7 +695,7 @@ describe("renderServerManifests", () => {
 		).toThrow();
 	});
 
-	test("renders optional forge args and rejects non-positive ids", () => {
+	test("renders optional forge args and validates dotenv secret names and ids", () => {
 		const configured = renderServerManifests({
 			...values,
 			forge: {
@@ -703,12 +703,12 @@ describe("renderServerManifests", () => {
 				repos: ["rigelbuild/compass"],
 				appId: 123,
 				installationId: 456,
-				appKeySecret: "forge-app-key",
-				appWebhookSecret: "forge-webhook",
+				appKeySecret: "FORGE_APP_PRIVATE_KEY",
+				appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
 				reviewer: {
 					appId: 789,
 					installationId: 987,
-					appKeySecret: "forge-reviewer-key",
+					appKeySecret: "FORGE_REVIEWER_APP_PRIVATE_KEY",
 				},
 			},
 		});
@@ -722,9 +722,9 @@ describe("renderServerManifests", () => {
 				"--forge-installation-id",
 				"456",
 				"--forge-app-key-secret",
-				"forge-app-key",
+				"FORGE_APP_PRIVATE_KEY",
 				"--forge-app-webhook-secret",
-				"forge-webhook",
+				"FORGE_APP_WEBHOOK_SECRET",
 				"--forge-repos",
 				"rigelbuild/compass",
 				"--forge-reviewer-app-id",
@@ -732,18 +732,35 @@ describe("renderServerManifests", () => {
 				"--forge-reviewer-app-installation-id",
 				"987",
 				"--forge-reviewer-app-key-secret",
-				"forge-reviewer-key",
+				"FORGE_REVIEWER_APP_PRIVATE_KEY",
 			]),
 		);
+		const minimalForge = container(
+			serverDeployment(
+				renderServerManifests({
+					...values,
+					forge: {
+						appId: 123,
+						installationId: 456,
+						appKeySecret: "FORGE_APP_PRIVATE_KEY",
+						appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
+					},
+				}),
+			),
+			"compass-server",
+		);
+		const minimalArgs = object(minimalForge).args;
+		if (!Array.isArray(minimalArgs)) throw new Error("server args are missing");
+		expect(minimalArgs).not.toContain("--forge-host");
+		expect(minimalArgs).not.toContain("--forge-repos");
 		expect(
-			container(
-				serverDeployment(renderServerManifests(values)),
-				"compass-server",
-			).args,
-		).not.toContain("--forge-host");
+			minimalArgs.some((arg) => String(arg).startsWith("--forge-reviewer-")),
+		).toBe(false);
 		for (const [field, id] of [
 			["appId", 0],
 			["installationId", -1],
+			["appId", 1.5],
+			["installationId", 1.5],
 		] as const) {
 			expect(() =>
 				parseServerDeployValues({
@@ -751,13 +768,63 @@ describe("renderServerManifests", () => {
 					forge: {
 						appId: 123,
 						installationId: 456,
-						appKeySecret: "forge-app-key",
-						appWebhookSecret: "forge-webhook",
+						appKeySecret: "FORGE_APP_PRIVATE_KEY",
+						appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
 						[field]: id,
 					},
 				}),
 			).toThrow(`forge.${field}`);
 		}
+		for (const [field, id] of [
+			["appId", 0],
+			["installationId", -1],
+			["appId", 1.5],
+			["installationId", 1.5],
+		] as const) {
+			expect(() =>
+				parseServerDeployValues({
+					...values,
+					forge: {
+						appId: 123,
+						installationId: 456,
+						appKeySecret: "FORGE_APP_PRIVATE_KEY",
+						appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
+						reviewer: {
+							appId: 789,
+							installationId: 987,
+							appKeySecret: "FORGE_REVIEWER_APP_PRIVATE_KEY",
+							[field]: id,
+						},
+					},
+				}),
+			).toThrow(`forge.reviewer.${field}`);
+		}
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				forge: {
+					appId: 123,
+					installationId: 456,
+					appKeySecret: "forge-app-key",
+					appWebhookSecret: "FORGE_APP_WEBHOOK_SECRET",
+				},
+			}),
+		).toThrow("forge.appKeySecret");
+	});
+
+	test("rejects empty optional scheduling values", () => {
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				nodeSelector: { key: "", value: "" },
+			}),
+		).toThrow("nodeSelector.key");
+		expect(() =>
+			parseServerDeployValues({
+				...values,
+				toleration: { key: "", value: "", effect: "NoSchedule" },
+			}),
+		).toThrow("toleration.key");
 	});
 
 	test("renders optional scheduling values like the Runner", () => {

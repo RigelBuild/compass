@@ -10,7 +10,9 @@ Images must use `repo@sha256:<64 hex>` references; tagged refs are rejected, and
 only the digest field should be updated by image automation. `natsStorage` is
 a Kubernetes storage quantity. `external.port` is the optional LoadBalancer
 Service port. The renderer emits no Secret objects or secret values; create
-each referenced Secret with the keys below:
+each referenced Kubernetes Secret with the keys below. Forge secret names are
+dotenv names, not Kubernetes Secret names; each needs a `SERVER_<name>` line
+in the `server.env` key of `serverSecretsSecretName`.
 
 | Value | Key | Use |
 | --- | --- | --- |
@@ -21,9 +23,9 @@ each referenced Secret with the keys below:
 | `adminTokenSecretName` | `token` | Read-only Server admin token file |
 | `s3SecretName` | all keys | Optional Server environment |
 | `tlsSecretName` | `tls.crt`, `tls.key` | Read-only Server TLS files |
-| `forge.appKeySecret` | configured Secret name | Forge App private key |
-| `forge.appWebhookSecret` | configured Secret name | Forge webhook signing key |
-| `forge.reviewer.appKeySecret` | configured Secret name | Optional reviewer App private key |
+| `forge.appKeySecret` | `SERVER_<name>` in `server.env` | Forge App private key |
+| `forge.appWebhookSecret` | `SERVER_<name>` in `server.env` | Forge webhook signing key |
+| `forge.reviewer.appKeySecret` | `SERVER_<name>` in `server.env` | Optional reviewer App private key |
 
 The admin token file is mounted directly at `/var/run/compass/admin-token/token`.
 Postgres is operator-provided, not rendered. Its DSN must use a direct,
@@ -50,8 +52,7 @@ least `600s`.
 The `serverSecretsSecretName` Secret key `server.env` holds `COMPASS_MASTER_KEY`
 and all `SERVER_<name>` values read by the dotenv provider. `COMPASS_MASTER_KEY`
 must remain unchanged after initialization; changing it makes the Server fail
-to start. Do not place forge token values in `forge` or agent environment; the
-renderer accepts only Secret names.
+to start. Never put forge secret values in `forge` or agent environment.
 
 NATS uses the R1 file JetStream settings with a PVC-backed store and requires
 the `password` key to match the NATS config authorization user.
