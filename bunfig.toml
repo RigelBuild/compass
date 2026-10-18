@@ -4,13 +4,10 @@
 # install dir (not parent dirs), so the guard lives here rather than per-project.
 [install]
 minimumReleaseAge = 432000
-# @tanstack/virtual-core is pinned to 3.17.8 via root `overrides` — the version
-# @rigelbuild/solid-virtual is built/typed against, at or above the chat-mode
-# scroll floor the compass message-surface renderer requires (the end-anchored
-# anchorTo:'end'+followOnAppend path needs the anchor-offset clamp). That
-# exact version is exempted from the 5-day cooldown because the floor is a
-# reviewed, record-mandated pin, not an unvetted float; the exact-version
-# exclude keeps the exemption from covering any other virtual-core release.
+# @tanstack/virtual-core is pinned exactly by the root `overrides`. Its floor is
+# 3.17.8, the version @rigelbuild/solid-virtual declares and the end-anchored
+# message surface needs. The package is exempt from the 5-day cooldown by name,
+# so every release is exempt, because the override pin is reviewed per bump.
 # @types/bun (and its lockstep transitive bun-types) tracks the bun runtime,
 # which is itself a first-party, nix-pinned (tools/toolchain/versions/bun.nix)
 # toolchain version — not an unvetted registry float. A toolchain bump lands the
