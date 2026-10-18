@@ -36,7 +36,8 @@ const ALL_STATES: readonly IssueState[] = [
 	"archived",
 ];
 
-// Only state and assignee affect board helpers; remaining fields satisfy Issue.
+// Partition helpers read state and assignee; advancing helpers also read stateChangedAtUnixMs.
+// Remaining fields only satisfy Issue.
 function ws(over: Partial<Issue> & Pick<Issue, "id" | "state">): Issue {
 	return {
 		forge: { provider: "github", host: "github.com" },

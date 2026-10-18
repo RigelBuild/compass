@@ -88,7 +88,8 @@
 	/* Blue marks focus; purple is reserved for the brand mark. */
 	--cx-focus-ring: 2px solid var(--rigel-blue);
 
-	/* Departure Mono stays crisp at even 11px multiples; use Space Mono otherwise. */
+	/* Departure Mono is crisp only when (size / 11) × devicePixelRatio is an integer; use
+	   even 11px multiples so common scalings stay crisp, and Space Mono otherwise. */
 	--rigel-mono: "Space Mono", "IBM Plex Mono", ui-monospace, monospace;
 	--rigel-display: "Departure Mono", "Space Mono", monospace;
 
