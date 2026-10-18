@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"connectrpc.com/connect/v2"
 )
 
 // MicroVMConfig is the operator-supplied wiring for the microVM backend: the
@@ -69,6 +71,8 @@ type MicroVMConfig struct {
 	// preflight fails closed rather than reporting a verdict about a filesystem
 	// it never probed. Appended, never reordered.
 	VolumeRoot string
+	// GuestClientInterceptors are passed to guest control clients except Health.
+	GuestClientInterceptors []connect.ClientInterceptor
 }
 
 // BackendConfig selects and configures the workload runtime backend. Backend
