@@ -295,7 +295,8 @@ func (m *gitMirror) runInput(ctx context.Context, repoPath, input, remote string
 	}
 	gitArgs = append(gitArgs, args...)
 	cmd := exec.CommandContext(ctx, "git", gitArgs...) //nolint:gosec // fixed executable; all Git input is passed as arguments, never through a shell
-	cmd.Env = os.Environ()
+	// The Server has no Git config; replay keeps authors but needs a committer.
+	cmd.Env = append(os.Environ(), "GIT_COMMITTER_NAME=Compass", "GIT_COMMITTER_EMAIL=noreply@compass.invalid")
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
