@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/bodydeadline"
 	"github.com/RigelBuild/compass/go/internal/envelope"
 	"github.com/RigelBuild/compass/go/internal/gatewaycred"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -199,66 +201,37 @@ func networkCORS(origin string) *cors.Cors {
 	})
 }
 
-// networkBodyReadTimeout bounds how long the whole request body of a
-// bounded-body RPC may take to arrive on the network door. It sits well above
-// the 10s ReadHeaderTimeout so a genuinely slow-but-real client is unaffected,
-// while a slow-body (slowloris) drip is cut. Every compass.v1 RPC that is not
-// in bodyDeadlineExempt carries a small control-plane protobuf, so no legitimate
-// caller needs longer.
+// networkBodyReadTimeout bounds request-body arrival time on the network door.
+// Authenticated Runner streams release the deadline after bearer authentication.
 const networkBodyReadTimeout = 30 * time.Second
 
-// bodyDeadlineExempt is the set of procedure paths whose REQUEST body is
-// legitimately long-lived, so a body-read deadline must NOT apply to them: the
-// Runner streams its request half for the whole life of the connection. Both
-// live on the internal RunnerService door:
-//   - Sessions (bidi): the Runner's request stream carries command results
-//     upward for as long as it is enrolled.
-//   - PublishEvents (client-stream): the Runner drips agent event frames upward
-//     continuously.
-//
-// Everything else on the network door — every unary RPC, both server-streams
-// (SubscribeEvents/SubscribeComms, whose long-lived half is the RESPONSE, not
-// the request), and RunnerService.Enroll (unary) — has a bounded request body,
-// so the deadline protects them without ever cutting a legitimate call.
-//
-// Residual risk (accepted, tracked as a RIG-1298 follow-up): the exemption is
-// keyed on r.URL.Path and applied before authentication, so an UNAUTHENTICATED
-// client can still slow-drip a request body to these two paths with no deadline
-// armed. The bearer interceptor rejects it on the headers, but the HTTP-layer
-// body drip sits below auth and IdleTimeout does not reap an actively-dripping
-// connection. This is a strict improvement over the prior state (every path was
-// exposed); closing it fully needs an auth-gated deadline (arm on connect, clear
-// only once the Runner handshake authenticates) or per-IP/per-connection limits
-// on the network door, neither of which connect exposes a clean seam for.
-var bodyDeadlineExempt = map[string]struct{}{
+// bodyDeadlineReleasable names Runner request streams that clear their deadline
+// after bearer authentication, so unauthenticated request bodies stay bounded.
+var bodyDeadlineReleasable = map[string]struct{}{
 	compassv1internalconnect.RunnerServiceSessionsProcedure:      {},
 	compassv1internalconnect.RunnerServicePublishEventsProcedure: {},
 }
 
-// withBodyReadDeadline wraps the network-door handler to close the slow-body DoS
-// window that ReadHeaderTimeout leaves open (RIG-1298): it sets a per-request
-// read deadline via http.ResponseController, so a client that sends headers
-// promptly then drips the body no longer ties up a connection. The deadline is
-// per-HTTP/2-stream (Go 1.20+ SetReadDeadline semantics), so one slow request
-// does not disturb other streams multiplexed on the same TLS connection.
-//
-// It is the OUTERMOST wrapper (above CORS), at the HTTP-body layer where the
-// drip happens — below connect's message decode — so it is a plain
-// http.Handler middleware rather than a connect interceptor. Requests to a
-// bodyDeadlineExempt procedure are passed through untouched, keeping the
-// long-lived Runner request streams alive.
+// withBodyReadDeadline bounds request-body reads, then lets authenticated Runner
+// streams clear their deadline before decoding begins.
 func withBodyReadDeadline(next http.Handler, timeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, exempt := bodyDeadlineExempt[r.URL.Path]; !exempt {
-			// SetReadDeadline bounds the request-body read. A failure means no
-			// deadline support (never true for the network door), so fall through
-			// and serve. But a future middleware wrapping w without Unwrap() would
-			// silently disable slow-body protection, so log the load-bearing failure.
-			rc := http.NewResponseController(w)
-			if err := rc.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-				slog.WarnContext(r.Context(), "network door body-read deadline not armed; slow-body protection disabled for this request",
-					"err", err, "path", r.URL.Path)
-			}
+		rc := http.NewResponseController(w)
+		if err := rc.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			slog.WarnContext(r.Context(), "network door body-read deadline not armed; slow-body protection disabled for this request",
+				"err", err, "path", r.URL.Path)
+		}
+		if _, releasable := bodyDeadlineReleasable[r.URL.Path]; releasable {
+			var once sync.Once
+			ctx := bodydeadline.WithRelease(r.Context(), func(ctx context.Context) {
+				once.Do(func() {
+					if err := rc.SetReadDeadline(time.Time{}); err != nil {
+						slog.WarnContext(ctx, "network door body-read deadline not released",
+							"err", err, "path", r.URL.Path)
+					}
+				})
+			})
+			r = r.WithContext(ctx)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -402,8 +375,7 @@ func buildNetworkServer(
 		// operator-configured browser origin.
 		netRoot = networkCORS(cfg.CORSAllowedOrigin).Handler(netMux)
 	}
-	// Outermost: bound the request-body read so a slow-body drip cannot tie up a
-	// connection (RIG-1298). Long-lived Runner request streams are exempt.
+	// Bound request bodies before auth; Runner streams stay bounded until bearer auth.
 	netRoot = withBodyReadDeadline(netRoot, networkBodyReadTimeout)
 	// Shutdown does not unblock a stalled stream write; drain cuts it via this registry.
 	netRoot = streams.wrap(netRoot)
@@ -411,10 +383,8 @@ func buildNetworkServer(
 		Handler:   netRoot,
 		TLSConfig: netTLS,
 		Protocols: networkProtocols(),
-		// G112: the network door is the internet-facing surface, so bound the header
-		// read and idle lifetime to close the slow-loris window. The request-body
-		// half is closed by withBodyReadDeadline (per-request, skipping the exempt
-		// long-lived Runner streams) rather than a blunt whole-request ReadTimeout.
+		// G112: bound the header and idle lifetime on the internet-facing door.
+		// The body deadline is released for Runner streams after bearer auth.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}, nil

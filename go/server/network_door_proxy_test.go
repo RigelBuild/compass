@@ -2,7 +2,7 @@
 
 package server
 
-// Proxied spellings of the exempt Runner stream paths must not be classified exempt:
+// Proxied spellings of Runner stream paths must remain bounded before authentication:
 // each near-miss has to reach the handler with the slow-body read deadline armed.
 
 import (
@@ -16,33 +16,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RigelBuild/compass/go/internal/bodydeadline"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
-// deadlineRecorder records that the middleware armed a read deadline and forwards
-// the call so the real per-request deadline still applies.
+// deadlineRecorder records armed and cleared deadlines while forwarding calls so
+// the real per-request deadline still applies.
 type deadlineRecorder struct {
 	http.ResponseWriter
-	armed *atomic.Bool
+	armed    *atomic.Bool
+	released *atomic.Bool
 }
 
 func (d deadlineRecorder) SetReadDeadline(deadline time.Time) error {
-	d.armed.Store(true)
+	if deadline.IsZero() {
+		d.released.Store(true)
+	} else {
+		d.armed.Store(true)
+	}
 	return http.NewResponseController(d.ResponseWriter).SetReadDeadline(deadline)
 }
 
 // probeDeadline serves one raw request through withBodyReadDeadline on a fresh door
-// and reports the decoded path, whether the deadline was armed, and the status.
-func probeDeadline(t *testing.T, target string) (path string, armed bool, status int) {
+// and reports the decoded path, deadline state, and status.
+func probeDeadline(t *testing.T, target string) (path string, armed, released bool, status int) {
 	t.Helper()
-	var armedFlag atomic.Bool
+	var armedFlag, releasedFlag atomic.Bool
 	seen := make(chan string, 1)
 	door := withBodyReadDeadline(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.URL.Path
+		bodydeadline.Release(r.Context())
 		w.WriteHeader(http.StatusNoContent)
 	}), networkBodyReadTimeout)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		door.ServeHTTP(deadlineRecorder{ResponseWriter: w, armed: &armedFlag}, r)
+		door.ServeHTTP(deadlineRecorder{
+			ResponseWriter: w,
+			armed:          &armedFlag,
+			released:       &releasedFlag,
+		}, r)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -50,9 +61,39 @@ func probeDeadline(t *testing.T, target string) (path string, armed bool, status
 	select {
 	case path = <-seen:
 	default:
-		t.Fatalf("target %q: handler never ran (status %d); the row no longer tests the exemption", target, status)
+		t.Fatalf("target %q: handler did not run (status %d); deadline arm and release were not observed", target, status)
 	}
-	return path, armedFlag.Load(), status
+	return path, armedFlag.Load(), releasedFlag.Load(), status
+}
+
+func TestNetworkDoorProxyPathSpellingsKeepBodyDeadline(t *testing.T) {
+	sessions := compassv1internalconnect.RunnerServiceSessionsProcedure
+	publishEvents := compassv1internalconnect.RunnerServicePublishEventsProcedure
+
+	for _, tc := range []struct {
+		name        string
+		target      string
+		wantRelease bool
+	}{
+		{"canonical Sessions", sessions, true},
+		{"canonical PublishEvents", publishEvents, true},
+		{"trailing slash", sessions + "/", false},
+		{"double leading slash", "/" + sessions, false},
+		{"dot segment", "/compass.v1.RunnerService/x/../Sessions", false},
+		{"encoded trailing slash", sessions + "%2F", false},
+		{"case-folded", strings.ToLower(sessions), false},
+		{"absolute-form double slash", "https://foreign.example/" + sessions, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, armed, released, status := probeDeadline(t, tc.target)
+			if !armed {
+				t.Fatalf("target %q decoded to %q (status %d): handler ran but the read deadline was not armed", tc.target, path, status)
+			}
+			if released != tc.wantRelease {
+				t.Fatalf("target %q decoded to %q (status %d): read deadline release granted = %t, want %t", tc.target, path, status, released, tc.wantRelease)
+			}
+		})
+	}
 }
 
 // sendRawTarget writes target verbatim as the HTTP/1.1 request-target; the Go
@@ -85,30 +126,4 @@ func sendRawTarget(t *testing.T, addr, target string) int {
 		t.Errorf("close response body: %v", err)
 	}
 	return resp.StatusCode
-}
-
-func TestNetworkDoorProxyPathSpellingsKeepBodyDeadline(t *testing.T) {
-	sessions := compassv1internalconnect.RunnerServiceSessionsProcedure
-
-	t.Run("control: canonical exempt path is not armed", func(t *testing.T) {
-		if _, armed, _ := probeDeadline(t, sessions); armed {
-			t.Fatal("canonical Sessions path armed the deadline, want it exempt")
-		}
-	})
-
-	for _, tc := range []struct{ name, target string }{
-		{"trailing slash", sessions + "/"},
-		{"double leading slash", "/" + sessions},
-		{"dot segment", "/compass.v1.RunnerService/x/../Sessions"},
-		{"encoded trailing slash", sessions + "%2F"},
-		{"case-folded", strings.ToLower(sessions)},
-		{"absolute-form double slash", "https://foreign.example/" + sessions},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path, armed, status := probeDeadline(t, tc.target)
-			if !armed {
-				t.Fatalf("target %q decoded to %q (status %d) with no read deadline: a near-miss was classified exempt", tc.target, path, status)
-			}
-		})
-	}
 }
