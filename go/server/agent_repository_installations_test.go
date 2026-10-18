@@ -21,6 +21,9 @@ func (f installationResolverFunc) InstallationFor(ctx context.Context, owner str
 	return f(ctx, owner)
 }
 
+// DefaultInstallation is the "owner" installation in these tests.
+func (f installationResolverFunc) DefaultInstallation() int64 { return 159353126 }
+
 type agentRepositoryScopeStore struct {
 	grants []string
 }
@@ -56,8 +59,11 @@ func TestAgentRepositoryServiceCheckOrgInstallations(t *testing.T) {
 		t.Fatalf("uninstalled wildcard owner error = %v, want FailedPrecondition naming owner", err)
 	}
 	svc.scopes = agentRepositoryScopeStore{grants: []string{"*"}}
-	if err := svc.checkOrg(context.Background(), "agent", "another/wildcard-repository"); err != nil {
-		t.Fatalf("wildcard grant with another installed owner: %v", err)
+	if err := svc.checkOrg(context.Background(), "agent", "owner/wildcard-repository"); err != nil {
+		t.Fatalf("wildcard grant with the default installation owner: %v", err)
+	}
+	if err := svc.checkOrg(context.Background(), "agent", "another/wildcard-repository"); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "wildcard grant covers only the default") {
+		t.Fatalf("wildcard grant with a non-default installed owner = %v, want FailedPrecondition", err)
 	}
 	if err := svc.checkOrg(context.Background(), "agent", "missing/wildcard-repository"); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("wildcard grant for uninstalled owner = %v, want FailedPrecondition", err)

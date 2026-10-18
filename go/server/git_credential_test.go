@@ -374,6 +374,14 @@ func TestGitCredentialBrokerCachesMissingInstallation(t *testing.T) {
 	if got := minter.callCount(); got != 1 {
 		t.Fatalf("owner-specific mint calls = %d, want one negative-cached failure", got)
 	}
+	// An installation added later is retried after the short no-install TTL.
+	now = now.Add(gitCredentialNoInstallCache)
+	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
+		t.Fatalf("credential after TTL = (%q, %v), want a retried failure", token, ok)
+	}
+	if got := minter.callCount(); got != 2 {
+		t.Fatalf("mint calls after no-install TTL = %d, want a retry", got)
+	}
 }
 
 func TestGitCredentialBrokerRateLimitServesStaleFullScopeWithoutOwnerLookup(t *testing.T) {

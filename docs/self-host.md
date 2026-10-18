@@ -372,7 +372,7 @@ Grants name a user account. That user's agents inherit them. A rejected write lo
 
 #### Agent workstream repositories
 
-Use `compass agent repo add <agent> <org/name>`, `remove <agent> <org/name>` and `list <agent>` to manage an agent's GitHub repositories. The target is a bare agent handle or `owner/agent`. Writes require the owning user's own token; tenant administrators cannot change another user's agent grants. Each repository must be an exact `org/name` under the same owner as the agent's other repositories, and that owner must have an installation of the GitHub App; otherwise the grant is rejected with `FAILED_PRECONDITION`. A newly installed owner is accepted within about 30 seconds. The GitHub App must be configured.
+Use `compass agent repo add <agent> <org/name>`, `remove <agent> <org/name>` and `list <agent>` to manage an agent's GitHub repositories. The target is a bare agent handle or `owner/agent`. Writes require the owning user's own token; tenant administrators cannot change another user's agent grants. Each repository must be an exact `org/name` under the same owner as the agent's other repositories, and that owner must have an installation of the GitHub App; otherwise the grant is rejected with `FAILED_PRECONDITION`. An agent with the `*` grant may add repositories only under the owner of the default App installation (`--forge-installation-id`). A newly installed owner is accepted within about 30 seconds. The GitHub App must be configured.
 
 Agents created later by an agent inherit its repository rows. A grant or remove signals the affected live agent to refresh its credential. After remove, the old token may still reach the removed repository until it expires, up to one hour.
 

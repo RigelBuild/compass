@@ -359,6 +359,15 @@ func TestInstallationResolverMissCacheRefreshFloorAndHitTTL(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests before hit TTL = %d, want 2", got)
 	}
+	// Past the hit TTL the snapshot refreshes, so an uninstall is seen.
+	installed.Store(false)
+	clock.Add(installationMissRefreshFloor)
+	if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+		t.Fatalf("lookup after hit TTL = %v, want ErrNoInstallation from a refreshed snapshot", err)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("requests after hit TTL = %d, want 3", got)
+	}
 }
 
 func TestScopedAppMinterMintForUsesResolvedInstallation(t *testing.T) {

@@ -117,6 +117,11 @@ func (r *InstallationResolver) InstallationFor(ctx context.Context, owner string
 	return installationFor(installations, owner)
 }
 
+// DefaultInstallation returns the configured default installation id, or 0.
+func (r *InstallationResolver) DefaultInstallation() int64 {
+	return r.source.cfg.InstallationID
+}
+
 func noInstallation(owner string) error {
 	return fmt.Errorf("forge: owner %q: %w", owner, ErrNoInstallation)
 }

@@ -36,9 +36,11 @@ const (
 	gitCredentialRefreshTick   = 10 * time.Second
 	gitCredentialRefreshLead   = 15 * time.Minute
 	gitCredentialMismatchCache = 5 * time.Minute
-	gitCredentialMintRate      = rate.Limit(1)
-	gitCredentialMintBurst     = 30
-	gitCredentialRateBackoff   = time.Minute
+	// Match the resolver's miss-refresh floor so a new installation mints promptly.
+	gitCredentialNoInstallCache = 30 * time.Second
+	gitCredentialMintRate       = rate.Limit(1)
+	gitCredentialMintBurst      = 30
+	gitCredentialRateBackoff    = time.Minute
 )
 
 var (
@@ -528,7 +530,11 @@ func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []stri
 			}
 		}
 		if gitCredentialScopeRejected(err) {
-			b.negative[key] = gitCredentialNegativeEntry{expiresAt: b.clock().Add(gitCredentialMismatchCache)}
+			ttl := gitCredentialMismatchCache
+			if errors.Is(err, forge.ErrNoInstallation) {
+				ttl = gitCredentialNoInstallCache
+			}
+			b.negative[key] = gitCredentialNegativeEntry{expiresAt: b.clock().Add(ttl)}
 		}
 		b.mu.Unlock()
 		return "", false, err
@@ -815,7 +821,14 @@ func (b *gitCredentialBroker) run(ctx context.Context, tick <-chan time.Time) {
 	}
 }
 
-func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets.Resolver, installations *forge.InstallationResolver, hub *runnerhub.Hub, log *slog.Logger) (*gitCredentialBroker, error) {
+func buildGitCredentialBroker(
+	cfg ServeConfig,
+	st *store.Store,
+	resolver secrets.Resolver,
+	installations *forge.InstallationResolver,
+	hub *runnerhub.Hub,
+	log *slog.Logger,
+) (*gitCredentialBroker, error) {
 	if !cfg.Forge.boardIngestionEnabled() {
 		return nil, nil //nolint:nilnil // nil broker means App not configured
 	}

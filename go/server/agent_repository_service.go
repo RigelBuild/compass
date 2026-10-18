@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect/v2"
@@ -26,8 +27,10 @@ type agentSecretsSignaler interface {
 type agentRepositoryScopeLister interface {
 	ListForgeScopeRepos(ctx context.Context, accountID store.AccountID, provider store.ForgeProvider, host string) ([]string, error)
 }
+
 type agentInstallationResolver interface {
 	InstallationFor(ctx context.Context, owner string) (int64, error)
+	DefaultInstallation() int64
 }
 
 type agentRepositoryService struct {
@@ -39,7 +42,12 @@ type agentRepositoryService struct {
 	installations agentInstallationResolver
 }
 
-func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, signal agentSecretsSignaler, installations *forge.InstallationResolver) *agentRepositoryService {
+func newAgentRepositoryService(
+	st *store.Store,
+	broker *gitCredentialBroker,
+	signal agentSecretsSignaler,
+	installations *forge.InstallationResolver,
+) *agentRepositoryService {
 	var installationResolver agentInstallationResolver
 	if installations != nil {
 		installationResolver = installations
@@ -273,7 +281,8 @@ func (s *agentRepositoryService) requireHost() error {
 }
 
 // checkOrg requires the requested owner to match the agent's grants and have
-// an App installation. Wildcard grants skip the owner-match restriction.
+// an App installation. A wildcard grant mints on the default installation, so
+// it admits only that installation's owner.
 func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.AccountID, repo string) error {
 	org, _, _ := strings.Cut(repo, "/")
 	scopes := s.scopes
@@ -288,32 +297,41 @@ func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.Accou
 	if err := s.checkOrgFromGrants(grants, org); err != nil {
 		return err
 	}
-	if s.installations != nil {
-		return s.checkInstallation(ctx, org)
+	if s.installations == nil {
+		return nil
+	}
+	installation, err := s.checkInstallation(ctx, org)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(grants, "*") && installation != s.installations.DefaultInstallation() {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Sprintf("a wildcard grant covers only the default GitHub App installation, not owner %q", org))
 	}
 	return nil
 }
 
-func (s *agentRepositoryService) checkInstallation(ctx context.Context, org string) error {
-	if _, err := s.installations.InstallationFor(ctx, org); err != nil {
+func (s *agentRepositoryService) checkInstallation(ctx context.Context, org string) (int64, error) {
+	installation, err := s.installations.InstallationFor(ctx, org)
+	if err != nil {
 		if errors.Is(err, forge.ErrNoInstallation) {
-			return connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("the GitHub App has no installation for owner %q", org)).WithCause(err)
+			return 0, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("the GitHub App has no installation for owner %q", org)).WithCause(err)
 		}
 		if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
 			if statusErr.Status == 401 || statusErr.Status == 403 {
-				return connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
+				return 0, connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
 			}
 		}
 		if errors.Is(err, forge.ErrAppCredentials) {
-			return connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
+			return 0, connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
 		}
 		if errors.Is(err, forge.ErrBudgetExhausted) {
-			return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+			return 0, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
 		wrappedErr := fmt.Errorf("resolving GitHub App installation for owner %q: %w", org, err)
-		return connect.NewError(connect.CodeUnavailable, wrappedErr.Error()).WithCause(wrappedErr)
+		return 0, connect.NewError(connect.CodeUnavailable, wrappedErr.Error()).WithCause(wrappedErr)
 	}
-	return nil
+	return installation, nil
 }
 
 func (s *agentRepositoryService) checkOrgFromGrants(grants []string, org string) error {
