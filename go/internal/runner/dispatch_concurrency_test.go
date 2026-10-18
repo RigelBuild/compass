@@ -2,9 +2,9 @@
 
 package runner
 
-// Concurrent-dispatch tests cover in-flight request-id dedup and event-gated
-// synchronization without sleeps. Real RunSessions tests cover lifecycle
-// concurrency and provision limits.
+// Concurrent-dispatch tests cover request-id idempotency and event-gated
+// synchronization. Real RunSessions tests cover lifecycle concurrency and
+// provision limits.
 
 import (
 	"context"

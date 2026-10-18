@@ -2,9 +2,9 @@
 
 package gateway
 
-// Podman integration verifies socket ownership and connection after :Z relabel.
-// The current probe is skipped until a container image with a Unix-socket client
-// is available; socket mount and relabel arguments are covered hermetically.
+// The test is a skeleton that skips after Podman availability succeeds; no
+// in-container socket probe is wired. Mount and relabel arguments are covered
+// hermetically.
 
 import (
 	"context"

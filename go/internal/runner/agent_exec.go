@@ -46,7 +46,8 @@ var agentCommand = []string{"compass-agent"}
 // session) instead of receiving a value it must special-case.
 // COMPASS_AGENT_BATCHING is omitted when empty.
 type AgentEnv struct {
-	// UID runs the agent without ambient capabilities, protecting egress rules.
+	// UID sets the agent exec user. Container tiers require it explicitly so the
+	// agent does not inherit the capabilities used to arm egress.
 	UID uint32
 	// HomeDir is the agent's scoped HOME.
 	HomeDir string

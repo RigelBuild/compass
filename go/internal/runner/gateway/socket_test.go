@@ -3,8 +3,8 @@
 package gateway
 
 // Hermetic tests cover socket permissions, stale-socket ownership, and bounded
-// drain behavior. Channel events provide synchronization; the deadline test uses
-// the production drain grace rather than a settle sleep.
+// drain behavior. The force-close test gates on an in-flight request and uses a
+// short caller deadline, not shutdownGrace.
 
 import (
 	"context"
@@ -684,9 +684,9 @@ func TestOperatorFaultSentinelClassification(t *testing.T) {
 		}
 	})
 
-	// These fixtures pin unwrapped internal error shapes; live positive guards
-	// cover the wrapped boundary. OS anomalies needed to force these branches are
-	// not portable in a unit test.
+	// These hand-built errors document the intended classification; they do not
+	// exercise production failure paths. Live tests cover wrapped operator faults;
+	// OS anomalies needed to force these internal-fault branches are not portable.
 	t.Run("socket-file Chmod failure stays INTERNAL", func(t *testing.T) {
 		// Built the same way the code raises it at the socket-FILE Chmod arm
 		// (securing agent socket, socket.go), which is deliberately unwrapped.

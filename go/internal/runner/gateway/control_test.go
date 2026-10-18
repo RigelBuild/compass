@@ -800,8 +800,8 @@ func TestControlTwoStaleDrainersDoNotStealWake(t *testing.T) {
 	}
 	live.entered(t)
 
-	// gen3 is busy, so releasing gen1 should place its park token first. Observing
-	// this event fixes the order instead of relying on scheduling luck.
+	// onCycle runs before the select, so this observes gen1 reaching the park
+	// boundary; it does not prove gen1 is parked before gen3 is released.
 	before1 := parksSoFar()
 	close(release1)
 	awaitPark(before1, "the stale drainer to reach its park")

@@ -2,8 +2,8 @@
 
 package runner
 
-// BuildSpec rejects incomplete defaults, derives workspace paths and names, and
-// must fail at startup rather than later during the first provision.
+// NewConfigSpecBuilder rejects incomplete defaults at startup. BuildSpec fills
+// workspace paths and derives the container name for a validated account id.
 
 import (
 	"strings"

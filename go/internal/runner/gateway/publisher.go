@@ -105,8 +105,9 @@ type sessionPublisher struct {
 	closeErr error
 }
 
-// newSessionPublisher opens the shared PublishEvents stream. Its context bounds
-// stream lifetime, and its sequence counter survives publisher replacement.
+// newSessionPublisher opens a PublishEvents stream for the given context and
+// session. Its context bounds the stream lifetime, and its sequence counter
+// survives publisher replacement.
 func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *SeqCounter) *sessionPublisher {
 	traceparent := otelx.Traceparent(ctx)
 	ctx, cancel := context.WithCancel(ctx)

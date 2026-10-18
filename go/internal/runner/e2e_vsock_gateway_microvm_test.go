@@ -335,8 +335,7 @@ func TestVsockGateway_InGuestVsockIsNotIP(t *testing.T) {
 	}
 
 	// A raw-IP connection must fail under default-deny even though vsock works.
-	// Use an IP to avoid DNS stalls; the guest timeout distinguishes a dropped
-	// SYN from a harness failure.
+	// Any nonzero guest exit counts as unreachable; Exec errors fail as harness faults.
 	if inGuestCanReachIP(t, engine, id, "8.8.8.8") {
 		t.Fatal("an IP destination reached the guest egress path; the vsock gateway must be orthogonal to (never a hole in) the default-deny IP seal")
 	}
@@ -417,9 +416,8 @@ func parseProbeResult(t *testing.T, stdout string) probeResult {
 	return probeResult{}
 }
 
-// inGuestCanReachIP probes TCP egress with a guest-side timeout. A dropped SYN
-// returns unreachable; a completed handshake returns connected. Other errors
-// indicate a harness failure.
+// inGuestCanReachIP probes TCP egress with a guest-side timeout. Any nonzero
+// guest exit counts as unreachable; Exec errors fail as harness faults.
 func inGuestCanReachIP(t *testing.T, m *runtime.MicroVMRuntime, id runtime.WorkloadID, ip string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), inGuestProbeTimeout)

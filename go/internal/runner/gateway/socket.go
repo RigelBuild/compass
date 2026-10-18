@@ -74,10 +74,10 @@ type SocketListener struct {
 	gateway *Gateway
 }
 
-// listenAgentSocket binds the per-container socket before Launch. It reclaims a
-// stale path only when it is a socket owned by this Runner; other filesystem
-// objects fail closed. Path length is checked before directory creation so a
-// rejected bind cannot leave an orphaned directory.
+// listenAgentSocket binds the per-container socket; its caller chooses whether
+// this happens before or after Launch. It reclaims only a stale socket owned by
+// this Runner; all other occupants fail closed. It checks path length before
+// creating directories so a rejected bind leaves no orphaned directory.
 func listenAgentSocket(ctx context.Context, path string, h http.Handler, cancel context.CancelFunc) (*SocketListener, error) {
 	// The socket path is RuntimeDir + /containers/<container>/agent.sock, and
 	// --runtime-dir is operator-supplied and unbounded. The account id's SHAPE is

@@ -362,9 +362,9 @@ func (h *agentHost) Close(ctx context.Context) {
 	h.retireWG.Wait()
 }
 
-// Start launches the agent in a container. Fresh starts require a server-minted
-// id; resumes reuse their session id. ERRORED sessions can recover via Reload or
-// resume Start.
+// Start launches the agent in its provisioned workload. Fresh starts require a
+// server-minted id; resumes reuse their session id. ERRORED sessions can recover
+// via Reload or resume Start.
 
 //nolint:gocognit,gocyclo,cyclop // Preserve Start's inline guards and resume flow.
 func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody, freshSessionID string) (string, error) {
