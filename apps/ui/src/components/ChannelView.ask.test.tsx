@@ -15,21 +15,7 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { TopicView } from "./TopicView";
 
-// The MULTI-question ask surface, over the live wire. The single-question ask
-// (the only shape in the offline fixture) is covered in ChannelView.test.tsx;
-// this suite exists for what a single-question fixture structurally cannot
-// show — the send model (Matt's ruling):
-//
-//   - the server accepts exactly ONE RespondToAsk per ask, so recording an
-//     answer never sends: clicks stay LOCAL until an explicit submit;
-//   - the submit control is the ONE send path, unconditional on a live ask,
-//     shipping answered questions plus an empty answer for each skip;
-//   - a refused respond leaves the staged answers in place (no rollback), and
-//     the ask stays retryable.
-//
-// The store contracts are pinned in store.live.test.ts; here the subject is the
-// RENDER — that the control exists, is enabled/labelled correctly, and reaches
-// the wire.
+// Live ask clicks stage choices; only explicit submit sends them.
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-live";
@@ -98,16 +84,12 @@ const submitControl = (c: HTMLElement) =>
 	c.querySelector<HTMLButtonElement>(".block-ask .ask-submit");
 const askErrorText = (c: HTMLElement) =>
 	c.querySelector(".block-ask .ask-error")?.textContent;
-// The topic header has its own mirror control, so scope to the ask block.
+// Scope to the ask block because the topic header has its own mirror control.
 const askResult = (c: HTMLElement) =>
 	c.querySelector(".block-ask .mirror-result")?.textContent ?? "";
 
 describe("multi-question ask (live RespondToAsk gate)", () => {
-	// From the DOM: a click on the first question's option records locally and
-	// puts NOTHING on the wire; the completing click also sends nothing. Only
-	// the submit control's click ships the one respond carrying both questions.
-	// Mutation-check: an auto-sending recorder records a response on a click and
-	// reddens an empty leg.
+	// Clicks stage answers; only submit sends the complete response.
 	test("clicks send nothing; the submit control sends one full respond", async () => {
 		const fake = createFakeComms(snapshot());
 		const { container, settled } = await mountAsk(fake);
@@ -144,11 +126,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// The submit control is the ONE send path, so it renders on every live ask:
-	// disabled while untouched, enabled once anything is answered, and its label
-	// switches on completeness. It disappears only when the ask settles.
-	// Mutation-check: a control gated on the partially-answered window reddens
-	// the untouched-disabled and fully-answered legs.
+	// The submit control stays visible until the ask settles.
 	test("the submit control is unconditional on a live ask", async () => {
 		const fake = createFakeComms(snapshot());
 		const { container, settled } = await mountAsk(fake);
@@ -183,11 +161,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// The skip path end to end: answer one question, click submit, and the one
-	// respond carries the answered question plus an EMPTY chosenOptionIds for the
-	// skipped one (the wire requires coverage of every question, not an answer to
-	// each). Mutation-check: a submit that omitted the skipped question drops the
-	// q-2 entry; an inert control records nothing.
+	// Submit must include an empty answer for each skipped question.
 	test("submitting a partially answered ask ships the skipped question empty", async () => {
 		const fake = createFakeComms(snapshot());
 		const { container, settled } = await mountAsk(fake);
@@ -219,11 +193,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// A REFUSED respond leaves the staged answers in place — submit records
-	// nothing to roll back — and surfaces the error so the user's submit does
-	// not vanish into a console line, the way the composer does for a failed
-	// post. Re-submitting clears it. Mutation-check: dropping the error render
-	// reddens the first leg; a never-cleared error reddens the last.
+	// A refusal keeps staged answers and shows an error; retry clears the error.
 	test("a refused respond renders in the ask block and clears on the next submit", async () => {
 		const fake = createFakeComms(snapshot());
 		const { container, settled } = await mountAsk(fake);
@@ -290,19 +260,8 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// The other way an ask is settled, and the one `submitted` cannot see: the
-	// server flips Ask.answered on the first RespondToAsk it ACCEPTS and refuses
-	// every later one with ErrConflict (the answer-once guard in `applyAskAnswer`,
-	// `go/internal/store/messages.go`). An ask another participant already
-	// answered arrives CLOSED to this client, which has issued no respond of its
-	// own — so judged by the submitted mark alone every option renders enabled
-	// and the submit control shows too, offering a gesture that can only produce
-	// a refusal. The closed ask locks instead, and the submit control hides on
-	// the `!closed()` gate.
-	//
-	// Mutation-check: gating `locked` on `submitted()` alone leaves the options
-	// enabled and reddens the disabled leg; gating the control's visibility on
-	// `submitted()` alone renders it and reddens the no-control leg.
+	// Another participant can close an ask before this client submits; lock it
+	// based on the server's answered state, not only this store's submitted mark.
 	test("a server-closed ask renders locked with no submit control", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -346,11 +305,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// Free text is an answer path on EVERY question: q-1 renders its input
-	// under the option row, q-2 (option-less) renders it as the only content,
-	// with no options beside it. Both enabled on a live ask.
-	// Mutation-check: gating the input on options.length === 0 reddens q-1's
-	// input; gating options on the same shape reddens q-2's empty-options leg.
+	// Every question supports free text, including those that also have options.
 	test("every question renders an answerable input", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -386,9 +341,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// Typed text reaches custom_text on the outbound respond, beside a
-	// chosen option on the other question (each in its own answer entry).
-	// Mutation-check: a send seam that drops customText reddens the q-2 entry.
+	// Verify custom text is sent beside the other question's chosen option.
 	test("typed text reaches custom_text on the outbound respond", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -496,11 +449,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// Single-select exclusivity in the DOM: typing then choosing an option
-	// clears the input and disables it (the pick settles the question), and the
-	// respond carries the id with empty text — never both. Mutation-check: a
-	// pick that leaves the draft standing reddens the cleared-value leg and
-	// ships non-empty text.
+	// Choosing an option clears and locks free text for that question.
 	test("choosing an option clears and locks the free-text input", async () => {
 		const fake = createFakeComms(snapshot());
 		const { container, settled } = await mountAsk(fake);
@@ -571,11 +520,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		}
 	});
 
-	// Recommended marks exactly one option, pre-selects nothing, and an
-	// out-of-range index renders no marking and throws nothing (the block still
-	// mounts). Mutation-check: dropping the bounds guard throws on the
-	// out-of-range index and never renders; pre-selecting reddens the
-	// untouched-disabled leg.
+	// Recommended marks one option without selecting it; invalid indexes are ignored.
 	test("recommended marks one option, selects nothing, survives a bad index", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],

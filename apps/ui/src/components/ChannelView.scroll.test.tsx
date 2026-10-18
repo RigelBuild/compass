@@ -40,40 +40,17 @@ function captureVirtualizer(): void {
 	);
 }
 
-// The conversation stream's scroll contract, designed fresh
-// (ChannelView had NO scroll management before this lane). The behavior is
-// TanStack Virtual's chat mode; these tests pin the CONTRACT, not pixel math.
-// The T5 two-level model made the stream a FLAT message list (a topic IS the
-// thread), so MessageStream renders Message[] directly — the same virtualizer
-// contract, keyed by MESSAGE id.
-//
-// happy-dom has no layout: a scroll element's real rect is 0×0 and item
-// offsetHeight is 0, so the virtualizer produces an empty window unmodified
-// (verified this session). The suite injects geometry — a stubbed offsetHeight
-// giving .conv-stream a viewport and each rendered message a row height — plus a
-// scrollTop/clientHeight/scrollHeight + scrollTo emulation so scrollToEnd and
-// element-size mocks / measureElement stubs the scroll contract needs. What
-// happy-dom genuinely cannot exercise (real ResizeObserver
-// layout, sub-pixel scroll coupling, the real webview's scroll-element identity)
-// is deferred to manual-QA / browser-mode.
+// Test virtual scrolling with injected geometry because happy-dom has no layout.
 
 const VIEWPORT_H = 500;
 const ROW_H = 100;
 
-// Per-element scroll offset (happy-dom has no layout, so scrollTop is not backed
-// by anything). A WeakMap keyed by the element gives each scroller its own live
-// offset that scrollTo writes and the offset observer reads.
+// happy-dom does not back scrollTop, so track each scroller's offset separately.
 const scrollTops = new WeakMap<HTMLElement, number>();
 
 let restoreGeometry: (() => void) | undefined;
 
-// Install browser-like geometry on the div prototype so it is ACTIVE DURING
-// MOUNT — the virtualizer's scope-id effect calls scrollToEnd() on mount, and
-// that needs clientHeight/scrollHeight/scrollTo present to actually move the
-// offset. offsetHeight gives .conv-stream a viewport and each [data-index] row a
-// height; scrollHeight reads the component's .conv-sizer height (real browser
-// semantics: scrollHeight = content height); scrollTo writes scrollTop and fires
-// the scroll event the offset observer listens for.
+// Install geometry before mount because the virtualizer scrolls to the end on mount.
 beforeEach(() => {
 	const proto = Object.getPrototypeOf(document.createElement("div"));
 	const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -315,26 +292,11 @@ describe("MessageStream scroll contract", () => {
 		const beforeMax = Math.max(...indices());
 		setMessages(makeMessages(201));
 		const afterMax = Math.max(...indices());
-		// The window's top index must not advance toward the new end at all:
-		// because we are scrolled up past the end-threshold, followOnAppend does
-		// not fire, and the appended message sorts BELOW the current window, so it
-		// never enters the rendered range.
+		// Appending below the window must not move it when the reader is scrolled up.
 		expect(afterMax).toBeLessThanOrEqual(beforeMax);
 	});
 
-	// Case (4): prepend older messages keeps the visible message anchored by
-	// message id/key — the SAME message the user was viewing stays at the same
-	// viewport-relative position (its translateY minus the scroller's scrollTop),
-	// rather than jumping by the number of prepended rows.
-	//
-	// This is the behavioral proof of MESSAGE-ID keying: TanStack chat mode
-	// re-finds the scroll anchor by key after the list changes and adjusts
-	// scrollTop so the anchor stays put. Under index keys the "anchor key" (e.g.
-	// 105) still resolves to index 105 — now a DIFFERENT message after a 50-item
-	// prepend — so the virtualizer sees no move and the message the user was
-	// reading jumps up by 50 rows. Identify the anchor by its rendered CONTENT
-	// (message id text), NOT by data-key, so the assertion is robust to the key
-	// scheme and reddens when keying regresses to indices.
+	// Prepending keeps the same message at the same viewport position via message-ID keys.
 	test("(4) prepend older messages keeps the visible message anchored", () => {
 		const { setMessages, scroller, rows } = mountStream(makeMessages(200));
 		scroller().scrollTo({ top: 100 * ROW_H }); // park mid-list (~index 100)
@@ -342,33 +304,28 @@ describe("MessageStream scroll contract", () => {
 		const before = rows();
 		expect(before.length).toBeGreaterThan(0);
 		// Anchor on a specific message near the middle of the window, tracked by
-		// its id (rendered as the message text) so we follow the SAME message.
+		// its id so we follow the same message after the prepend.
 		const anchorRow = before[Math.floor(before.length / 2)];
 		const anchorIndex = Number(anchorRow.getAttribute("data-index"));
 		const anchorId = `sm-${anchorIndex}`;
 		expect(anchorRow.textContent).toContain(anchorId);
 		const beforeViewportPos = translateY(anchorRow) - scroller().scrollTop;
 
-		// Prepend 50 older messages (earlier timestamps → sort before the originals).
+		// Prepend older messages before the original sequence.
 		const older: Message[] = Array.from({ length: 50 }, (_, i) =>
 			msg(`older-${i}`, 1 + i),
 		);
 		setMessages([...older, ...makeMessages(200)]);
 
-		// The same message must still be rendered AND at the same viewport-relative
-		// position. Find it by content, not index (its index shifted by 50).
+		// Find the same message by content because its index shifted by 50.
 		const anchorAfter = rows().find((r) => r.textContent?.includes(anchorId));
 		expect(anchorAfter).toBeDefined();
 		const afterViewportPos =
 			translateY(anchorAfter as HTMLElement) - scroller().scrollTop;
-		// Same viewport position within a row (measurement/overscan slack). Index
-		// keying would shift it by ~50 * ROW_H, far outside this tolerance.
 		expect(Math.abs(afterViewportPos - beforeViewportPos)).toBeLessThan(ROW_H);
 	});
 
-	// Case (6): switching the selected scope resets to the new scope's latest
-	// via a scope-id keyed effect (not a remount — .conv-stream persists). Driven
-	// by swapping the messages + scopeId prop, as openTopic does upstream.
+	// A scope change resets the existing scroller to the new topic's latest message.
 	test("(6) switching scope resets to the new scope's latest", () => {
 		const [messages, setMessages] = createSignal<Message[]>(
 			makeMessages(200, 1_000),
@@ -453,14 +410,6 @@ describe("MessageStream scroll contract", () => {
 		}
 	});
 
-	// Case (8): shrinking a large WINDOWED topic to empty ([]) renders the empty
-	// state instead of throwing. REGRESSION for the HIGH crash finding: the
-	// virtualizer core invokes getItemKey/estimateSize INTERNALLY with indices
-	// from its previous measurement pass, so when the message list shrinks the
-	// core fires them with `index >= new length` before Solid reconciles. The JSX
-	// Show guard does NOT cover these out-of-JSX core calls. Must run under real
-	// windowing (the suite's geometry harness), NOT the global 100_000px shim, so
-	// the core actually has a prior measurement window to replay stale indices from.
 	test("(8) shrinking a windowed topic to empty renders the empty state, no throw", () => {
 		const { setMessages, scroller, container, rows } = mountStream(
 			makeMessages(2000),
@@ -483,16 +432,13 @@ describe("MessageStream scroll contract", () => {
 		expect(scroller()).not.toBeNull();
 	});
 
-	// Case (9): switching from a large windowed topic to a much SHORTER one (with
-	// a scopeId change, as openTopic does upstream) renders the short topic's
-	// bounded rows instead of throwing on the stale-index core callbacks. Same
-	// regression as (8) for the 2000→5 shrink path.
+	// Shrinking to five messages must not replay stale indexes from the previous window.
 	test("(9) switching to a much shorter scope renders it, no throw on stale index", () => {
 		const { setMessages, setScopeId, scroller, indices, rows } = mountStream(
 			makeMessages(2000),
 		);
 		expect(rows().length).toBeLessThan(2000); // windowed
-		// Park the window at high indices so the shrink replays out-of-range ones.
+		// Park at high indexes so shrinking replays out-of-range values.
 		scrollToTop(scroller());
 		const shortScope = makeMessages(5, 9_000).map((m) => ({
 			...m,
@@ -505,23 +451,11 @@ describe("MessageStream scroll contract", () => {
 		}).not.toThrow();
 		const idx = indices();
 		expect(idx.length).toBeGreaterThan(0);
-		// Every rendered index is bounded by the new (5-message) length.
 		expect(Math.max(...idx)).toBeLessThanOrEqual(4);
 		expect(Math.min(...idx)).toBeGreaterThanOrEqual(0);
 	});
 
-	// Case (10): the .conv-sizer carries the flex-shrink guard so the virtual
-	// scroll range survives .conv-stream being a flex column. REGRESSION for the
-	// P1 (RIG-1332 / PR #886): the scroller is `display: flex; flex-direction:
-	// column`, so an unpinned sizer flex-shrinks below its set getTotalSize()
-	// height once the content exceeds the viewport — collapsing scrollHeight to
-	// one screen and stranding every message past the first viewport.
-	//
-	// This is a DOM-CONTRACT guard, not a behavioral one: happy-dom has no flex
-	// layout engine, so the sizer's *measured* height never actually collapses
-	// in-test regardless of the guard (which is exactly why the pre-fix bug slipped
-	// past the green windowing suite above). So we assert the rendered node still
-	// carries `flex-shrink: 0` inline — the entry that pins it in a real browser.
+	// Keep the flex sizer from shrinking and collapsing the virtual scroll range.
 	test("(10) the sizer is pinned with flex-shrink:0 so its scroll range cannot collapse", () => {
 		const { container } = mountStream(makeMessages(200));
 		const sizer = container.querySelector<HTMLElement>(".conv-sizer");

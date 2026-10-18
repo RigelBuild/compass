@@ -4,12 +4,7 @@ import type { CommandId } from "../keyboard/commands";
 import { formatChordForDisplay, shortcutFor } from "../keyboard/keymap";
 import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
 
-// CoachTip's rendered contract (RIG-2530): a Kobalte Tooltip whose content is a
-// control's label + its keymap-resolved chord. Defends: chord derivation via
-// shortcutFor (never hand-authored), the ARIA tooltip wiring the primitive
-// owns (role="tooltip" + aria-describedby), focus reveal, the label-only path
-// when no keymap row exists, and the sequence-aware branch that keeps a leader
-// sequence out of ShortcutChip's "+"-split.
+// Assert tooltip labels, keymap chords, ARIA wiring, focus reveal, and sequences.
 
 function setPlatform(platform: "mac" | "other"): void {
 	Object.defineProperty(navigator, "platform", {

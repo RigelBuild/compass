@@ -10,29 +10,15 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { AgentView, nextFreeTerminalPane } from "./AgentView";
 
-// RED acceptance spec for T3 (design.md §504-545): the rebuilt AgentView — a
-// tab strip (chat tab permanent + terminal button) over each tab's split-pane
-// tree, the chat pane rendering the agent's home-DM ChannelView. It fails today
-// because AgentView is a minimal shell that renders only <ChannelView/> with no
-// tabs/tree — every assertion below is an absence-of-workspace-surface failure
-// (no `.av-tabs`, no `.av-tree`, no `.av-split`), never a module-load error. An
-// implementer makes it green next.
-//
-// Fixture ground truth (grepped from comms-stub.ts / stub-data.ts, quoted here):
-//   - agent `acc-compass-ui`, home DM `dm-compass-ui`. `openAgent("acc-compass-ui")` centers
-//     `selectedChannel` on dm-compass-ui, so the chat pane's ChannelView renders it.
-//   - dm-compass-ui message `msg-dm-f1` (text) and `msg-dm-f2` (an ask).
-//   - compass-ui terminals `t-ui1` ("vite dev") and `t-ui2` ("compass-ui:ci").
+// The tab strip is absent until an agent is opened.
 
 // The fixture agent whose home DM carries a visible message + an interactive ask.
 const AGENT_ID = "acc-compass-ui";
 
-// dm-compass-ui's home topic (`top-dm-compass-ui`) name — the topic row the chat pane's
-// topic index must show. A DM is topics too (Matt's ruling): one home topic.
+// The DM pane lists this agent's home topic.
 const HOME_DM_TOPIC = "general";
 
-// compass-ui's two terminals, as the terminal panes `openTab`/`splitFocused` place.
-// `t-ui1`'s scrollback carries this line — proof the right terminal rendered.
+// This terminal's scrollback proves that it rendered.
 const TERM_C1_LINE = "VITE v8.1.0  ready in 247 ms";
 const termPaneC1: Pane = {
 	id: "t-ui1",
@@ -47,11 +33,7 @@ const termPaneC2: Pane = {
 	terminalId: "t-ui2",
 };
 
-// Mount AgentView over a real store through the app's StoreContext (index.tsx
-// wires it as `<StoreContext.Provider value={store}>`; there is no separate
-// provider wrapper). The store is built inside render's reactive root so its
-// memos are owned and disposed on the library's per-test cleanup; the reference
-// is captured so tests drive the store's actions and re-query the live DOM.
+// Build the store inside render so its reactive memos are disposed with the test.
 function mountAgentView(): {
 	store: AppStore;
 	container: HTMLElement;
@@ -104,11 +86,7 @@ describe("AgentView (T3)", () => {
 		expect(container.querySelectorAll(".av-tab").length).toBe(1);
 	});
 
-	// Contract: the chat pane renders the agent's home DM through ChannelView,
-	// inside the active tab's split tree. In the uniform two-level model a DM is
-	// topics too (Matt's ruling), so the pane shows the DM's TOPIC INDEX — the
-	// home DM's topic row is visible within `.av-tree` (not merely somewhere on
-	// screen).
+	// A DM renders its topic index in the chat pane.
 	test("chat pane renders the home-DM topic index in the tab tree", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
@@ -187,23 +165,7 @@ describe("AgentView (T3)", () => {
 	});
 });
 
-// Regression suite for the always-open "+"/split fix (impl in the worktree):
-// AgentView's "+" new-tab button and each pane's split buttons are ALWAYS
-// enabled for every agent. When no unplaced FIXTURE terminal remains,
-// `openTerminalTab`/`splitWith` fall back to `store.newTerminalPane(agent)`,
-// which mints a fresh placeholder pane (`term-<accountId>-<n>`, title
-// "Terminal <n>", terminalId matching no fixture → the muted "Terminal starting…"
-// body). The OLD code carried `disabled={!nextFreeTerminalPane(...)}` on these
-// buttons, so once fixtures were exhausted (immediately, for a zero-terminal
-// agent) the buttons went dead and a click was a no-op. Each test below asserts
-// observable behavior — button enabled AND a click grows the tab/split tree with
-// a rendered placeholder — so every one would FAIL against the disabled variant.
-//
-// Fixture ground truth (verified from stub-data.ts STUB_AGENTS, quoted here):
-//   - acc-supervisor: `terminals: []` — ZERO fixture terminals, so
-//     `nextFreeTerminalPane` returns undefined from the first "+" click. The old
-//     code disabled "+" immediately for them → the cleanest always-open proof.
-//   - acc-compass-ui: terminals `t-ui1` + `t-ui2` (2) — exhausted after two opens.
+// Terminal controls must remain usable after fixture terminals run out.
 describe("AgentView always-open '+'/split (regression)", () => {
 	// Assert the fixture facts this suite leans on straight from the source, so a
 	// fixture reshuffle reddens here rather than silently weakening the tests.
@@ -218,14 +180,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(agentTerminalCount("acc-compass-ui")).toBe(2);
 	});
 
-	// PRIMARY REGRESSION. A zero-fixture-terminal agent (supervisor): the "+"
-	// button is enabled from the first render, and clicking it opens a new
-	// terminal tab whose pane is a minted placeholder — titled "Terminal 1", its
-	// body the "Terminal starting…" empty state. The OLD `disabled={!next…}` code
-	// disabled "+" immediately here (no fixture terminal to place) → the
-	// `newBtn.disabled` assertion below is exactly what catches the old bug, and
-	// the tab-count-grows + placeholder-title assertions confirm the click did
-	// real work rather than being swallowed by a dead button.
+	// A zero-fixture agent exposes the disabled-button bug on its first click.
 	test("zero-fixture agent: '+' is enabled and clicking it opens a placeholder tab", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-supervisor");
@@ -256,12 +211,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(container.querySelector(".av-tree .term-body")).toBeNull();
 	});
 
-	// EXHAUSTION. compass-ui has two fixture terminals. Open both as tabs, then
-	// assert `nextFreeTerminalPane` is spent (undefined) yet "+" stays enabled and
-	// a further click opens ANOTHER tab — a minted placeholder. Assert the tab
-	// count keeps growing and each new tab id is unique (no collision with the
-	// fixtures or with each other, no dedupe-swallow). The old code disabled "+"
-	// at this exact point.
+	// After fixture exhaustion, opening another tab must create a placeholder.
 	test("fixture exhaustion (compass-ui): '+' stays enabled and mints unique placeholder tabs", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-compass-ui");
@@ -308,11 +258,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(new Set(minted).size).toBe(2);
 	});
 
-	// Split always-open. Inside a terminal tab whose fixture pane is placed, the
-	// pane's split buttons stay enabled and clicking one grows the split tree with
-	// a placeholder pane (rather than a disabled no-op). Uses a zero-fixture agent
-	// so the first split already lands on the minted fallback — the old code
-	// disabled the split buttons the moment `nextFreeTerminalPane` was undefined.
+	// A zero-fixture agent's first split must use a minted placeholder.
 	test("split stays open after fixtures: clicking a split button grows the tree with a placeholder pane", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-supervisor");
@@ -349,10 +295,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		).toBe(true);
 	});
 
-	// Graceful placeholder render: a minted placeholder never surfaces an error
-	// string — its body is the muted "Terminal starting…" empty state, and the
-	// text "Terminal not found." appears nowhere. Guards the TerminalBody fallback
-	// that makes the always-open buttons safe to click past the fixture supply.
+	// Minted placeholders render the starting state, never a missing-terminal error.
 	test("minted placeholder renders the 'Terminal starting…' empty state, never an error", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-supervisor");

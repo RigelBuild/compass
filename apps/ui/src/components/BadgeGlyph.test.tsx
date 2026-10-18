@@ -2,20 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
 import { BadgeGlyph } from "./BadgeGlyph";
 
-// BadgeGlyph's observable contract (RIG-2121 / RIG-2117 Option B): each badge is
-// a wrapper carrying the axis+status as data-attributes (the single source of
-// truth for color routing), a 2-char axis code, and a 9×9 crispEdges SVG glyph
-// whose lit `<rect>` count is the designed glyph geometry. The tests pin the
-// axis→code mapping, the per-status glyph geometry, the wrapper attributes the
-// CSS color selectors key on, and the compact toggle — behaviour a consumer or
-// a CSS-selector change could silently break.
-
-// The six glyph grids, transcribed verbatim from the ASCII art in
-// RigelBuild/docs:docs/designs/compass/ui/compass-badge-clarity/design.md §"The six glyph grids"
-// (`#` = lit, `.` = off; 9×9). This is an INDEPENDENT copy of the contract —
-// the component transcribes the same grids into [x,y] coordinate arrays, so
-// comparing the rendered rects against these grids catches a wrong grid even
-// when its lit-cell count is unchanged (three grids share a count of 17).
+// Assert badge semantics and verify exact lit cells against independent grids.
 const GRIDS = {
 	ci: {
 		success: [
@@ -153,11 +140,7 @@ describe("BadgeGlyph", () => {
 		expect(glyph?.getAttribute("data-verdict")).toBeNull();
 	});
 
-	// Each status draws its own designed geometry. Assert the exact lit-cell
-	// POSITIONS (not just the count): three grids share a count of 17, so a
-	// count check alone can't tell a swapped-but-same-count grid from the
-	// contract. Comparing [x,y] sets against the independently-transcribed
-	// design grids catches that.
+	// Exact cell positions distinguish grids with equal lit counts.
 	for (const axis of ["ci", "review"] as const) {
 		for (const status of Object.keys(GRIDS[axis])) {
 			test(`${axis}/${status} draws exactly its design grid`, () => {

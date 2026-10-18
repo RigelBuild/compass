@@ -7,14 +7,7 @@ import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { RightSidebar } from "./RightSidebar";
 
-// Accessible-name regression for the PR-review verdict marks (RIG-3603 F1).
-// The verdict mark WAS the only accessible name; once the glyph work replaced
-// the bare ✓/✗/• with an `aria-hidden` `<Glyph>`, the name had to move to the
-// wrapper `.rv` span (role="img" + aria-label). No test guarded that, so a
-// future edit dropping either attribute would silently mute the verdict for
-// screen-reader users. This drives the real exported RightSidebar the way a
-// user reaches the pane — select an issue with bot reviews, activate the PR
-// tab — since PrPane is module-private.
+// The verdict wrapper keeps an accessible name when its glyph is hidden.
 function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {

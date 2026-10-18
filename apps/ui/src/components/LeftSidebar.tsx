@@ -249,14 +249,8 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 					</Show>
 				</button>
 
-				{/* Subscribe toggle (only meaningful once joined, which every rail row
-				    is). Fixed where the subscription is implicit; DISABLED everywhere
-				    else until the subscribe RPC lands — the wire has none, and the
-				    local-only toggle this used to drive silently reverted on the next
-				    SubscribeComms snapshot. It still shows the real membership, it
-				    just can't change it yet. On mandatory_subscription channels the
-				    control is HIDDEN entirely: every member is force-subscribed, so
-				    any affordance (toggle or fixed marker) would be a lie (§T8). */}
+				{/* The wire has no subscribe RPC, so this control is display-only. Hide it on mandatory
+				    channels: membership is forced, and any toggle or fixed marker would mislead. */}
 				<Show when={!mandatory()}>
 					<Show
 						when={!fixed()}

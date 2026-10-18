@@ -18,35 +18,9 @@ import { ViewContext } from "../view-scope";
 import { ChannelView, MessageRow } from "./ChannelView";
 import { TopicView } from "./TopicView";
 
-// Acceptance spec for the standalone channel view's asks (design.md §219-256):
-// asks are answerable wherever they are, no rerouting, first-responder-wins is
-// the sole settlement. `ChannelView` renders ask blocks
-// interactive in every mount; a single-select ask locks (`locked()`) only once
-// answered. These tests defend that contract on the standalone-channel surface
-// (App.tsx `view()==="channel"`): options enabled, a click records through
-// `store.answerAsk`, NO read-only hint anywhere, and a settled ask renders every
-// option disabled with the winner `chosen`. The interactive-guard test confirms
-// the default mount behaves identically (there is no longer a gated variant).
-//
-// Fixture ground truth (grepped from comms-stub.ts / stub-data.ts, quoted here;
-// DERIVED below, not hardcoded, so a fixture reshuffle can't stale the test):
-//   - The ONLY ask sitting in a standalone (kind "channel") channel is
-//     msg-c4 `ask-s4-integration` in `ch-svc-compass` ("svc.compass",
-//     kind "channel", membership "subscribed" → a standalone member channel).
-//     Its message author is `acc-compass-server` (handle "compass-server"). The
-//     hint-absence leg asserts NO `@<author-handle>` text renders (the gate that
-//     once routed answers to @<author>'s workspace is gone); @compass-server is
-//     that author. NOTE: the brief said `@compass-ui`, but `ask-ui-layout`
-//     (compass-ui's ask) lives in `dm-compass-ui` (kind "dm") → openChannel
-//     routes THAT to the agent workspace (store.ts:602-616), so it never renders
-//     in a standalone channel. We derive the true author from the store's accounts.
-//   - `ch-svc-compass` also carries a threaded text exchange (msg-c1 root +
-//     msg-c2/msg-c3 replies) plus the ask, so both mounts render real threads —
-//     the "threads render identically" leg has content to compare.
+// Standalone-channel asks stay answerable; fixtures derive the channel and author.
 
-// The first ask that sits in a STANDALONE channel (kind "channel"), with the
-// message + channel coordinates the tests drive. Derived from the fixture so a
-// reshuffle can't stale it: finds whatever standalone-channel ask exists.
+// Derive the standalone ask from fixtures to tolerate fixture reshuffles.
 function standaloneChannelAsk(): {
 	channelId: string;
 	topicId: string;
@@ -94,15 +68,7 @@ const AUTHOR_HANDLE = (() => {
 	return account.handle; // "compass-server" for ask-s4-integration
 })();
 
-// Mount TopicView over a real store through the app's StoreContext (index.tsx
-// wires it as `<StoreContext value={store}>`; there is no separate
-// provider wrapper). The store is built inside render's reactive root so its
-// memos are owned and disposed on the library's per-test cleanup; the reference
-// is captured so tests drive `openTopic` and re-read `messages()`.
-//
-// Asks live in the topic message view (the two-level model — a topic IS the
-// thread), so these ask-surface tests mount TopicView and drill into the ask's
-// topic. There is no read-only gate: an ask is answerable wherever it renders.
+// Build the store inside render so its memos are disposed with the test.
 function mountTopicView(): {
 	store: AppStore;
 	container: HTMLElement;
@@ -142,11 +108,7 @@ const chosenIds = (store: AppStore): string[] => {
 };
 
 describe("ChannelView (T6)", () => {
-	// A standalone-channel ask renders answerable to every viewer (design.md
-	// §219-240): options ENABLED and NO read-only hint — there is no gate, and a
-	// single-select ask is inert only once `locked()` (answered). Mutation-check:
-	// re-introducing a `disabled` gate arm reddens the enabled loop; a resurrected
-	// hint block reddens the hint-absence check.
+	// Options stay enabled and no read-only hint appears for a standalone-channel ask.
 	test("an ask in a standalone channel renders answerable (options enabled, no read-only hint)", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
@@ -171,11 +133,7 @@ describe("ChannelView (T6)", () => {
 		expect(hint).toBeUndefined();
 	});
 
-	// A click in the standalone channel RECORDS the answer through store.answerAsk
-	// — no gate, no rerouting to a workspace. After clicking the first option, the
-	// store's chosenOptionIds is exactly that option, and the button carries
-	// aria-pressed="true" and the `chosen` class. Mutation-check: re-introducing a
-	// gate early-return that swallows the click reddens all three post-click legs.
+	// A click records the selected answer without routing to another workspace.
 	test("an ask in a standalone channel records the answer on click", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
@@ -196,12 +154,7 @@ describe("ChannelView (T6)", () => {
 		expect(options[0].classList.contains("chosen")).toBe(true);
 	});
 
-	// Settled render on the standalone surface (design.md §242-256): once the ask
-	// is answered (through the store, the first-wins winner), every option renders
-	// disabled and the winning option carries `chosen`. `locked()` is the sole
-	// reason they are disabled — this is the first-wins render surface. A broken
-	// `locked()`/`chosen` (options enabled after settle, or a missing highlight)
-	// reddens either way.
+	// A settled ask disables every option and preserves the winning choice.
 	test("a settled single-select ask on the standalone surface renders locked (all disabled, winner chosen)", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
@@ -230,20 +183,14 @@ describe("ChannelView (T6)", () => {
 		expect(winner?.getAttribute("aria-pressed")).toBe("true");
 	});
 
-	// Render-determinism + interaction guard: the standalone channel mounted twice
-	// renders identical thread/message structure, and a click in the interactive
-	// path records the choice. (Both mounts are interactive now — the ask block
-	// never differs in structure, only ever in `locked()` state once answered.)
-	// design §620-621: the standalone surface behaves as the ordinary interactive
-	// view. Guards against a regression that makes one mount over-disable or drop
-	// content relative to the other.
+	// Two interactive mounts render the same structure and keep the ask answerable.
 	test("the same ask stays answerable in a second (interactive) mount, and messages render identically", () => {
-		// A second mount of the same channel — for the identical-render comparison.
+		// Mount the same channel again for a render comparison.
 		const secondMount = mountTopicView();
 		secondMount.store.openTopic(STANDALONE_ASK.topicId);
 		flush();
 
-		// Default (interactive) mount.
+		// Default interactive mount.
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
 		flush();
@@ -334,15 +281,9 @@ describe("MessageRow anatomy", () => {
 	});
 });
 
-// The settled-state render lock and its interaction guard (design.md §242-256),
-// exercised on the interactive mount so `locked()` — not any gate — is the sole
-// reason a settled ask is inert. Any red here is a real bug in the render lock.
+// On the interactive surface, only locked() disables a settled ask.
 describe("ChannelView settled-state lock (T3)", () => {
-	// Render half: a settled single-select ask renders every option disabled with
-	// the winner carrying `chosen`. Backed purely by `locked()` (allowMultiple ===
-	// false && chosenOptionIds.length > 0). Mutation-check: a `locked()` that
-	// ignored chosenOptionIds (options stay enabled) or dropped the `chosen`
-	// highlight reddens.
+	// A settled single-select ask disables all options and keeps the winner chosen.
 	test("a settled single-select ask renders all options disabled with the winner chosen", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
@@ -368,12 +309,7 @@ describe("ChannelView settled-state lock (T3)", () => {
 		expect(winner?.getAttribute("aria-pressed")).toBe("true");
 	});
 
-	// Interaction half (the loop the store guard exists for): clicking a LOSING
-	// option on a settled single-select ask does NOT mutate chosenOptionIds, and
-	// the winner's aria-pressed/chosen is unchanged. The render lock disables the
-	// button, and even if a click slips through, the store's first-wins no-op
-	// backs it. Mutation-check: a store that re-answered (dropping first-wins)
-	// reddens the chosenIds equality; a lost winner highlight reddens the DOM legs.
+	// A losing click cannot replace the first answer, even if it reaches the store.
 	test("clicking a losing option on a settled ask is a no-op (first-wins holds)", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
@@ -407,17 +343,9 @@ describe("ChannelView settled-state lock (T3)", () => {
 	});
 });
 
-// The load-bearing model boundary (record §F11/§D5, Matt's uniform-DM ruling):
-// the channel surface is a composerless TOPIC INDEX — you post into a topic,
-// never a channel/DM directly. The ONLY channel-level write affordance is the
-// "new topic" name+first-message input (NewTopic, `.new-topic`), not a message
-// composer (`.conv-composer`, which lives ONLY in TopicView). Nothing else in
-// the slice pins the ABSENCE of a composer here, so a mutation re-adding a
-// Composer to TopicIndex (or a DM flat-branch) would otherwise ship green.
+// ChannelView is a composerless topic index; only NewTopic writes at channel level.
 describe("ChannelView is a composerless topic index (T5 model boundary)", () => {
-	// Mount the real ChannelView over the offline stub store on a standalone
-	// channel (openChannel routes a kind:"channel" to its topic index; the
-	// default in-memory seam applies the route synchronously).
+	// Mount the real channel topic index over the offline fixture store.
 	function mountChannelView(): { store: AppStore; container: HTMLElement } {
 		let store!: AppStore;
 		const { container } = render(() => {
@@ -453,20 +381,7 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 	});
 });
 
-// The @compass system-sender mention resolves as KNOWN through the REAL store,
-// end to end (RIG-1820 T5). The unit test in MarkdownText.test.tsx builds a
-// local byHandle with a hardcoded compass entry, and identity.test.ts pins that
-// STUB_ACCOUNTS carries the system sender — this closes the loop between them:
-// it renders TopicView over the actual offline store (whose byHandle is built
-// from store.accounts(), TopicView.tsx:22-23) and asserts the system sender's
-// mention chips with NEITHER `reserved` (purple, mark-only per DL-155) NOR
-// `unknown`. Mutation-check: dropping the system sender from the store's account
-// surface — while leaving STUB_ACCOUNTS intact — reddens here, where the two
-// unit tests alone would not.
-//
-// Derived from the fixture (like STANDALONE_ASK above) so a reshuffle can't
-// stale it: the sole system-kind account's handle, and the topic of the first
-// message body that mentions it.
+// The real store must resolve @compass from its account map, not a test-local map.
 const SYSTEM_MENTION = (() => {
 	const system = STUB_ACCOUNTS.find((a) => a.kind === "system");
 	if (!system) {

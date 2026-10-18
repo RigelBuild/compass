@@ -15,15 +15,7 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { Bridge } from "./Bridge";
 
-// The LIVE render path for the Bridge board (T4): the board no longer reads
-// STUB_AGENTS — `boardAgentsOf`/`prRowGroups` read `store.agents()`, the
-// reactive join of the comms accounts (identity) and the roster presence map
-// (lifecycle + activity). The offline Bridge.test.tsx mounts a store with no
-// comms, so `store.agents()` there is the STUB_AGENTS fixture and the live read
-// is never exercised. This test mounts Bridge over a live store
-// (createFakeComms, no server) and proves the live roster reaches a swimlane
-// gutter row: a joined agent holding an active issue partitions into a Bridge
-// swimlane, so `store.agents()` (not STUB_AGENTS) is what feeds the board.
+// Live roster join is not exercised by the offline fixture store.
 
 const CALLER = "acc-me";
 
@@ -82,11 +74,7 @@ async function mountLive(fake: FakeComms): Promise<{
 }
 
 describe("Bridge — live roster (T4/T5)", () => {
-	// Bridge defaults to the Issues tab + swimlane mode, so the gutter renders
-	// immediately. A live agent whose account id matches an active STUB_ISSUES
-	// assignee (acc-compass-ui) partitions into a Bridge swimlane; its gutter row
-	// carries the joined account's handle. This can only be green if the board
-	// reads the live `store.agents()` — STUB_AGENTS has no acc-compass-ui live join.
+	// A live agent matching an issue assignee must appear in the board roster.
 	test("a Bridge swimlane renders a gutter row for a live agent", async () => {
 		const fake = createFakeComms({
 			accounts: [wireUserAccount(CALLER), wireAgentAccount("acc-compass-ui")],

@@ -3,11 +3,7 @@ import { render } from "@solidjs/testing-library";
 import type { Account, Message } from "../comms-stub";
 import { MessageRow } from "./ChannelView";
 
-// The message row's author-kind contract: a row's `.msg` element carries the
-// author's `kind` (`user`/`agent`/`system`) as `data-kind`, so each sender
-// reads distinctly. The system arm is the reserved `@compass` platform sender;
-// without its own kind it would render styled as a plain user. MessageRow is
-// rendered directly (no virtualizer/store) so the assertion pins the mapping.
+// The author kind distinguishes system senders from ordinary users.
 
 function acc(id: string, kind: Account["kind"]): Account {
 	return { id, handle: id, displayName: id, kind };

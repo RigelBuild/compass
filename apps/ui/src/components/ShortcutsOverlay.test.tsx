@@ -2,11 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { flush, mountApp } from "../test-router";
 
-// The shortcuts overlay's rendered contract (RIG-2482). Mounts the full shell
-// via mountApp and drives the overlay through the store's `toggleShortcuts` —
-// the same seam the `?` chord uses in production — so these prove the surface
-// wiring (dialog aria, auto-focus, Escape, live filtering, focus trap + restore)
-// without self-registering `view.shortcuts`.
+// Exercise the shell overlay through the store action used by the ? chord.
 
 const dialog = (c: HTMLElement) =>
 	c.querySelector<HTMLElement>(

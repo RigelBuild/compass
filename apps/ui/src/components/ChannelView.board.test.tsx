@@ -9,22 +9,7 @@ import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { ChannelView } from "./ChannelView";
 
-// The pinned-board STRIP in the channel header (comms substrate §T8/§A3): the
-// human client RENDERS the channel's pinned board — the "permanent thread"
-// headline — but never edits/unpins/pins it (pins are agent-managed, Matt's
-// ruling). These tests mount ChannelView over the offline fixture store and
-// assert the render-only contract:
-//   - a channel with pinnedEntries resolving to real messages renders one strip
-//     item per resolved pin, in position order, carrying each pin's author +
-//     text;
-//   - a channel with no pinnedEntries renders NO strip;
-//   - the strip re-derives reactively when the channel's pinnedEntries change on
-//     a new ChannelChanged snapshot — no refetch.
-//
-// Fixture ground truth (grepped from comms-stub.ts, derived here so a reshuffle
-// can't stale the test): `ch-announcements` is owner_only + carries
-// pinnedEntries [msg-a1@0, msg-a2@1], both authored by acc-supervisor. An `open`
-// channel with no board (ch-svc-compass) is the no-strip contrast.
+// The channel header renders pinned messages in position order, without edit controls.
 
 // The channel that carries a pinned board, derived from the fixture.
 const BOARD_CHANNEL = (() => {
@@ -42,11 +27,7 @@ const NO_BOARD_CHANNEL = (() => {
 	return c;
 })();
 
-// Mount ChannelView over the offline fixture store with an explicit `channel`
-// prop (the workspace mount form), so the surface renders THAT channel's header
-// deterministically rather than the global selection. The prop is a reactive
-// accessor so a test can swap the channel value (a ChannelChanged snapshot) and
-// observe the header re-derive with no refetch.
+// Mount with a reactive channel prop so tests can swap snapshots without refetching.
 function mountChannelView(channel: () => Channel): {
 	store: AppStore;
 	container: HTMLElement;
@@ -73,9 +54,7 @@ const boardItems = (container: HTMLElement): HTMLElement[] => [
 const byId = new Map(STUB_ACCOUNTS.map((a) => [a.id, a]));
 
 describe("ChannelView pinned board (T8)", () => {
-	// The expected render, derived through the SAME foundation helper the
-	// component uses, so the assertion tracks the fixture rather than copied
-	// literals.
+	// Derive expected items with the helper used by the component, not copied literals.
 	const expected = pinnedMessages(BOARD_CHANNEL, STUB_COMMS_STATE.messages);
 
 	test("pin strip renders one item per resolved pin, in position order, with author + text", () => {

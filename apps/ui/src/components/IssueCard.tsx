@@ -44,15 +44,7 @@ export const IssueCard: Component<{
 	};
 	const pr = () => primaryPr(props.issue);
 	const key = () => issueKey(props.issue, isMultiForge(store.issues()));
-	// The card foot shows the issue's ASSIGNEE — the agent currently on it —
-	// deliberately a different fact from the PR pane's artifact author
-	// (RightSidebar's authorLabel over pr.agent): a reassigned issue's card
-	// should name its current holder, not the original author. The two author
-	// surfaces are intended to diverge, so the card does not go through the
-	// authorLabel seam. (Confirm-with-Matt parked in the PR's Open Questions.)
-	// The assignee is a trusted Compass account id, so agentView resolves it; a
-	// miss is a real store bug, surfaced as the raw id rather than disguised as a
-	// plausible handle.
+	// Keep unresolved assignee IDs visible instead of hiding the assignment.
 	const assignee = () => {
 		const id = props.issue.assignee;
 		if (!id) return undefined;

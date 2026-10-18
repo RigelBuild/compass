@@ -68,14 +68,8 @@ const AskBlock: Component<{ messageId: string; topicId: string; ask: Ask }> = (
 	// submit from disappearing into a console line — the same hole the
 	// composer's error span closes for a failed post.
 	const error = () => store.askError(ask().askId);
-	// The server burns an ask on the first RespondToAsk it ACCEPTS and refuses
-	// every later one with ErrConflict (go/internal/store/messages.go:404-406),
-	// so an ask arriving with `answered` set is CLOSED to this client whoever
-	// closed it — another participant, or an earlier run of ours. `submitted`
-	// cannot see those: it records only the responds THIS store issued. Offering
-	// an enabled option on a closed ask promises a click that can only produce a
-	// refusal, so the closed ask locks and the honest surface is a dead control
-	// rather than a doomed RPC and an error span.
+	// An ask already answered elsewhere is closed; enabling its options would offer
+	// an action the server must refuse.
 	const closed = () => submitted() || ask().answered;
 	// A single-select question is settled once answered; further clicks are
 	// locked. A settled ask locks every question outright.
@@ -393,11 +387,7 @@ export const Composer: Component<{
 	// Typing, the clear on send and a restored failed post all change the draft;
 	// the last two fire no input event, so fit on the draft, after it renders.
 	createEffect(draft, fit);
-	// The post-policy gate (comms substrate §A2): an `owner_only` channel admits
-	// only its owner. Separate from the membership gate — the composer is
-	// disabled if EITHER fails. This is the honest-disabled pattern (mirroring
-	// LeftSidebar's fixed subscribe toggle): the control renders visibly disabled
-	// with a reason, never hidden and never offered.
+	// Owner-only policy and membership both gate posting; disabled controls explain why.
 	const policyOk = () => canPost(props.channel, store.caller().id);
 	const blocked = () => props.channel.membership === "none" || !policyOk();
 	const hint = () =>

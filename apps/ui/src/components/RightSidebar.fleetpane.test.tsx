@@ -12,31 +12,8 @@ import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { RightSidebar } from "./RightSidebar";
 
-// Render acceptance spec for the fleet pane (design: architecture-lineage,
-// FleetPane in RightSidebar.tsx). A fleet tab (Supervisor · Compass-UI) used to
-// render CONTROL-ONLY — just a button into the agent's workspace. It now renders
-// the agent's home-DM conversation INLINE above a compact "Open workspace"
-// control, and — per Matt's kill-the-gate ruling (2026-07-20) — any ask in that
-// DM renders ANSWERABLE in place (first-responder-wins is the sole settlement;
-// no read-only gate, no rerouting to the owner's workspace). These tests defend
-// that contract:
-//   1. the inline home-DM conversation actually renders (the DM's messages show
-//      up in the pane's .conv-stream) — the leg that would REDDEN against the old
-//      control-only pane, which had no conversation at all;
-//   2. a home-DM ask renders answerable in place: options enabled, no read-only
-//      hint, and a click records the choice through the store (answerAsk);
-//   3. the "Open workspace" button routes via the store (openAgent's observable
-//      effect: view → "agent", selectedAgentId → the tab's agent).
-// The pane is exercised through the exported RightSidebar (FleetPane is
-// module-private): driving store.setActiveRightTab("agent:<accountId>") makes
-// the RightSidebar Switch render the FleetPane for any resolvable pin, the
-// honest integration path.
-//
-// FleetPane is module-PRIVATE, so we mount the exported RightSidebar and drive
-// the store's tab signal — the same seam a real click on the activity bar uses.
-// The store is built inside render's reactive root (owned + auto-disposed on the
-// library's per-test cleanup) and captured so tests can drive setActiveRightTab
-// and re-read view()/selectedAgentId().
+// Exercise the fleet pane through exported RightSidebar because FleetPane is private.
+// Verify home-DM topic rows and store routing through the same tab seam used by the activity bar.
 function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
@@ -53,12 +30,7 @@ function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 	return { store, container };
 }
 
-// The two visible fixture agents whose home-DM the fleet pane renders. The fleet
-// tabs are CONFIGURABLE PINS keyed `agent:${accountId}` (Record A §T2), not a
-// hardcoded Supervisor · Cook pair. The pane arm reads the active tab's item
-// out of `rightTabGroups()` (RIG-1645 P2), which emits only PINNED agents, so a
-// test must pin the agent before activating its tab. Both ids resolve in the
-// fixture, so once pinned the pane renders their home-DM inline.
+// Pin agents before activating tabs; only pinned agents appear in rightTabGroups().
 const FLEET_TABS = ["acc-supervisor", "acc-compass-ui"] as const;
 
 // The agent account's home-DM channel id — resolved through the SAME account set
@@ -87,21 +59,11 @@ function homeDmMessages(agentId: string) {
 }
 
 describe("RightSidebar fleet pane", () => {
-	// pinAgent write-throughs to the default-workspace localStorage key
-	// (compass.pinnedAgents.acc-matt), and happy-dom's localStorage is
-	// process-wide, so clear it around every case — otherwise pins accumulate
-	// across tests and leak into other default-workspace suites (store.test.ts's
-	// clearStorage discipline).
+	// Clear process-wide localStorage because pinAgent writes there.
 	beforeEach(() => globalThis.localStorage.clear());
 	afterEach(() => globalThis.localStorage.clear());
 
-	// The inline topic-index leg, one case per fleet tab. In the uniform
-	// two-level model a DM is topics too (Matt's ruling), so the pane renders the
-	// DM's ChannelView TOPIC INDEX — the home topic as a row — not a flat message
-	// stream. Against the OLD control-only FleetPane (a button, no ChannelView)
-	// there is no `.topic-index` and zero `.topic-row`. Mutation-check: dropping
-	// the inline ChannelView, or binding the wrong channel, changes the rendered
-	// topic rows so each reddens independently.
+	// Each pinned fleet tab shows its home-DM topic index; the old pane had no topic rows.
 	for (const tab of FLEET_TABS) {
 		test(`${tab} tab renders the agent's home-DM topic index inline`, () => {
 			const { store, container } = mountRightSidebar();
@@ -131,12 +93,7 @@ describe("RightSidebar fleet pane", () => {
 		});
 	}
 
-	// The supervisor home DM carries a single-select ask (`ask-sup-lane`) in its
-	// home topic. In the uniform two-level model the fleet pane shows the DM's
-	// TOPIC INDEX (Matt's ruling: steering = open/start a topic), so the ask is
-	// answered by drilling into its topic, not inline in the pane. This leg pins
-	// that the pane's topic row drills into the ask's topic. It REDDENS if the
-	// pane stops rendering the topic index or the row stops routing to the topic.
+	// The home-DM topic row routes to the supervisor's ask topic; it is not an inline stream.
 	test("the supervisor fleet pane's home-DM topic row drills into the topic", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-supervisor");
@@ -164,12 +121,7 @@ describe("RightSidebar fleet pane", () => {
 		expect(store.selectedTopic()?.name).toBe(HOME_DM_TOPIC);
 	});
 
-	// The "Open workspace" control routes via the store. openAgent's observable
-	// contract (store.ts openAgent): view → "agent", selectedAgentId → the tab's
-	// agent. We assert those store effects, not that a handler fired. Old pane had
-	// the button too, so the button's presence alone isn't the new contract — the
-	// inline-conversation legs above carry the regression teeth; this leg pins the
-	// routing so a refactor of the button can't silently break navigation.
+	// Check workspace routing through store effects; inline topic legs cover pane rendering.
 	test("the Open workspace button routes to the agent's workspace", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-supervisor");
@@ -190,11 +142,7 @@ describe("RightSidebar fleet pane", () => {
 		expect(store.selectedAgentId()).toBe("acc-supervisor");
 	});
 
-	// A resolved fleet tab renders the live pane, not the unreachable block: the
-	// pane arm resolves reachability first (RIG-1645). Both real fleet tabs
-	// resolve, so this asserts the resolved tab renders a fleet-pane with no
-	// in-pane unpin control — the observable inverse that reddens if the arm ever
-	// stops resolving a live agent.
+	// A resolved pin shows the live pane, not the unreachable block or unpin control.
 	test("a resolved fleet tab renders the live pane, not the unreachable block", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-compass-ui");
@@ -236,12 +184,7 @@ describe("RightSidebar fleet pane", () => {
 		expect(container.querySelector(".fleet-unreachable")).toBeNull();
 	});
 
-	// The unreachable pane shows the HUMAN HANDLE cached at pin time (OQ-2), not
-	// the opaque id — a regression that dropped item().title from the pane (or
-	// rendered the raw id) would stay green at store level but reddens here. Seed
-	// a {id,handle} pin with a DISTINCTIVE handle into the default-workspace key
-	// before mount so the store hydrates it (mountRightSidebar has no workspaceKey
-	// hook), then assert the handle reaches the pane's unpin control.
+	// Seed a cached handle so the unreachable pane shows a label instead of an opaque id.
 	test("the unreachable pane renders the cached handle, not the raw id", () => {
 		globalThis.localStorage.setItem(
 			"compass.pinnedAgents.acc-matt",

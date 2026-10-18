@@ -1,11 +1,4 @@
-// Coaching tooltip (RIG-2530) — the reusable label+chord Tooltip adopted across
-// command-backed chrome. Built on the Kobalte v2-alpha `Tooltip` primitive
-// (a11y-hard behavior: hover+focus reveal, open-delay timing, Escape dismiss,
-// aria-describedby wiring — DL-150), styled by the shipped `.cx-tooltip` box.
-// The chord is ALWAYS the keymap-resolved display string (via `shortcutFor`),
-// never hand-authored (DL-234's single-derivation rule). Sequence-aware: a
-// leader sequence ("G then B") renders as plain text in the chip's style, since
-// ShortcutChip splits on "+" and would otherwise emit one giant <kbd> (A3).
+// Keymap-derived tooltip; leader sequences render as text, not split key caps.
 
 import { Tooltip } from "@kobalte/core/tooltip";
 import type { Component, ParentProps } from "solid-js";

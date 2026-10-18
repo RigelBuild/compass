@@ -23,19 +23,7 @@ import { openExternal } from "../open-external";
 import { remarkRefLinks } from "../refs/remark-ref-links";
 import { safeHref } from "../safe-url";
 
-// The message-surface renderer: renders a text block as markdown (CommonMark +
-// GFM) and composes the existing @-mention chips by post-processing the markdown
-// tree's TEXT nodes (markdown-first, so emphasis spanning a mention survives and
-// a mention inside code stays verbatim). Code is highlighted via the lazy Shiki
-// singleton with an immediate plain fallback; links open externally through the
-// `openExternal` seam (the Wails runtime's `Browser.OpenURL` inside the shell, a
-// plain `window.open` in the browser dev build) instead of navigating the app;
-// images render as their alt text
-// and are never fetched. A growing string renders a valid partial every step:
-// CommonMark closes an unterminated fence implicitly at end of input, so a
-// half-streamed fence already parses as a growing code block, and `reconcile`
-// keeps the same DOM nodes across ticks (so selection and scroll survive).
-
+// Render markdown with safe links and images, mention chips, and streaming code highlights.
 /** The visible stand-in for an image, which this surface never renders as an
  *  element (no `src` ever reaches the DOM, so nothing is fetched) — the alt
  *  text keeps the sentence around it readable. */
@@ -43,18 +31,8 @@ function imgPlaceholder(alt: string | undefined): string {
 	return alt ? `[image: ${alt}]` : "[image]";
 }
 
-/** The concatenated raw text of a hast element's descendants — the verbatim
- *  source for code and link labels, so the mention override never descends into
- *  either. For a code element this is the single text child's value; for a link
- *  label with inline markup (`[**@cook**](url)`) it flattens the nested text
- *  (emphasis intentionally dropped — an accepted tradeoff of rendering labels
- *  from raw text).
- *
- *  An `img` descendant contributes its placeholder rather than nothing: a label
- *  that is ONLY an image (`[![alt](i.png)](url)` — a badge, common in agent
- *  prose) would otherwise flatten to `""` and render a zero-width but clickable
- *  anchor carrying a live external href. The `img` override never sees it,
- *  because this label path does not render children. */
+/** Concatenate descendant text for code and link labels; bypass mention rendering.
+ * Image placeholders keep image-only links visible without rendering an image. */
 function rawText(node: HastElement | undefined): string {
 	if (!node?.children) return "";
 	let out = "";
@@ -91,43 +69,16 @@ function langOf(codeClass: string | undefined): string {
  *  because a newer effect run has already moved `settled` past it. */
 function BlockCode(props: { code: string; codeClass?: string }) {
 	const lang = () => langOf(props.codeClass);
-	// R1 synchronous seed: a rebuilt instance of an already-highlighted block
-	// reads the cache at construction and paints highlighted markup immediately,
-	// so #44's per-tick teardown never flashes the plain fallback for a block we
-	// have already tokenized.
+	// Seed rebuilt blocks from the module cache to avoid flashing the plain fallback.
 	const [html, setHtml] = createSignal<string | null>(
 		getCachedHighlight(lang(), props.code) ?? null,
 	);
-	// The debounced highlight source. A streaming fence changes `props.code` on
-	// every growth tick, and highlighting is O(text), so re-tokenizing the whole
-	// block each tick makes a growing block quadratic; sampling the text once it
-	// has been quiet briefly collapses that to a handful of passes. The plain
-	// `<pre>` fallback (or an R1 cache hit) stays visible until one resolves.
+	// Debounce streaming fences to avoid O(n²) re-tokenization; keep the plain fallback until a highlight resolves.
 	const [settled, setSettled] = createSignal<readonly [string, string] | null>(
 		null,
 	);
-	// Static-dep effect: track code/lang in the compute phase, keep the
-	// setTimeout/cleanup cycle in the (untracked) apply phase so it only re-runs
-	// when a tracked source changes. Solid 2's two-arg createEffect returns its
-	// cleanup from the apply phase.
-	//
-	// Leading-edge first, trailing-debounce the rest (RIG-1422): a settled
-	// (non-streaming) block — every historical message in a channel — must
-	// colorize on first paint, not sit on the plain `<pre>` fallback for
-	// HIGHLIGHT_DEBOUNCE_MS while a timer it never needed elapses. So a FRESH
-	// block pushes `[code, lang]` into `settled` immediately (no timer); only a
-	// streaming GROWTH tick arms the trailing timer, collapsing a burst into one
-	// pass exactly as before.
-	//
-	// Why the leading-edge test lives OUTSIDE this instance: under
-	// `renderingStrategy="reconcile"` solid-markdown REBUILDS the fenced subtree
-	// on every growth tick, so `BlockCode` is reconstructed each tick (a fresh
-	// closure — verified: the component body re-runs per tick). A per-instance
-	// `firstRun` flag would therefore read true on every tick and fire an
-	// immediate highlight for each, reintroducing the O(n²) re-tokenize the
-	// debounce exists to collapse. `isLeadingEdgeHighlight` is module-level so a
-	// reconstructed instance can tell a fresh block (immediate) from a growth tick
-	// of a stream still inside its debounce window (keep debouncing).
+	// Highlight fresh fences immediately and debounce growth; module-level state distinguishes
+	// reconstructed streaming blocks from new fences to avoid per-tick re-tokenization.
 	const immediate = isLeadingEdgeHighlight(
 		lang(),
 		props.code,
@@ -148,15 +99,7 @@ function BlockCode(props: { code: string; codeClass?: string }) {
 			return () => clearTimeout(t);
 		},
 	);
-	// The async highlight, driven off the debounced `settled` source. Replaces
-	// Solid 1's `createResource`: a two-arg effect awaits the highlighter and
-	// writes the resolved markup into the signal (and the R1 cache). A failed
-	// highlight (stale Vite chunk after a redeploy, offline webview) is swallowed
-	// so the block degrades to the plain `<pre>` fallback rather than throwing —
-	// there is no ErrorBoundary on this surface, so an unhandled rejection would
-	// unmount the whole window. A settled source that arrives while an earlier
-	// highlight is still in flight starts a newer run; `disposed` gates the stale
-	// resolution out so last-write-wins holds.
+	// Failed imports keep the plain fallback; ignore stale resolutions so the latest source wins.
 	createEffect(
 		() => settled(),
 		(src) => {
@@ -199,14 +142,7 @@ function BlockCode(props: { code: string; codeClass?: string }) {
 			}
 		>
 			{(rendered) => (
-				// Shiki emits its own `<pre class="shiki"><code>…tokens…</code></pre>`;
-				// set it as innerHTML on a wrapper. Safe: the HTML is generated from
-				// Shiki's token AST (no user HTML passthrough), rendered into a leaf
-				// with no reactive children. This is the one sink on this surface
-				// where markup goes live, and its safety rests ENTIRELY on Shiki
-				// escaping metacharacters in code content — so if the highlighter
-				// ever gains a transformer or any pass-through path, re-review here
-				// before shipping it.
+				// Keep user HTML out of this sink; safety depends on Shiki escaping code.
 				<div class="code-highlight" innerHTML={rendered()} />
 			)}
 		</Show>
@@ -259,19 +195,8 @@ export const MarkdownText: Component<{
 	text: string;
 	byHandle: Map<string, Account>;
 }> = (props) => {
-	// Chips are injected by a rehype plugin (design A3), not a `text` component
-	// override — react-markdown-10 renders hast text nodes as raw strings, never
-	// routing them through `components`, so the old `text` override would never
-	// fire. The pipeline runs in three ordered passes: `rehypeInertRaw` FIRST
-	// (retype every `raw` HTML node to `text` across the whole tree),
-	// `rehypeProseBreaks` SECOND (the guarded softbreak→`br` rescue, operating on
-	// the now raw-free tree), and `rehypeMentionChips` LAST (so it splits the
-	// retyped raw-HTML text into chips like any prose). Memoized on `byHandle`:
-	// #44's processor is a memo over its options, so a new map identity re-creates
-	// the processor and re-parses, refreshing chip known/reserved state (coarser
-	// than the old per-chip live resolution — an accepted tradeoff, account-map
-	// changes are rare and a full re-parse is what every streaming tick already
-	// costs).
+	// Retype raw HTML before softbreak conversion; add mention chips last so raw text is included.
+	// Memoize by account-map identity so changes re-parse and refresh known/reserved handles.
 	const refLinkRules = useRefLinkRules();
 	const remarkPlugins = createMemo(() => {
 		const rules = refLinkRules();
@@ -289,26 +214,15 @@ export const MarkdownText: Component<{
 		// from its `code` child's raw text and never mounts `p.children`, so no
 		// `<pre>` nests and the inline `code` override's output is discarded (A4).
 		pre: (p) => <PreBlock node={p.node} />,
-		// Links open externally via the `openExternal` seam (Wails `Browser.OpenURL`
-		// in the shell, `window.open` in the dev build); label rendered from raw
-		// text (so a mention in a label never chips, and inline markup is flattened
-		// — accepted).
+		// Open links externally and flatten labels so mention markup stays inert.
 		a: (p) => {
 			const label = () => rawText(p.node);
-			// Scheme-sanitize on BOTH the DOM attribute and the opener call: a
-			// `javascript:`/`data:`/`file:` href must never be a live attribute
-			// (middle-click / keyboard-activate / context-menu can bypass onClick
-			// in a webview) nor reach `openExternal` (a `file://` would open a local
-			// file in the OS default app). Unsafe → inert `#` + no-op click.
+			// Sanitize href and opener: context actions bypass onClick, and file: can launch local files.
 			const safe = () => safeHref(stringAttr(p.href));
 			return (
 				<a
 					href={safe() ?? "#"}
-					// The onClick below is the normal path, but a middle-click,
-					// keyboard activation, or context-menu "open" bypasses it and lets
-					// the live href act. `target`/`rel` bound that bypass: it cannot
-					// replace the app document, and the remote page gets no
-					// `window.opener` handle and no referrer.
+					// Prevent context actions from replacing the app or exposing opener/referrer.
 					target={safe() ? "_blank" : undefined}
 					rel={safe() ? "noreferrer noopener" : undefined}
 					onClick={(e) => {
@@ -321,11 +235,7 @@ export const MarkdownText: Component<{
 				</a>
 			);
 		},
-		// An `img` renders as its alt text, never as an element: no `src` is ever
-		// emitted, so the no-remote-fetch / no-tracking-pixel guarantee is the same
-		// as dropping it — but the sentence keeps its meaning instead of showing a
-		// hole. (Filtering it out via `disallowedElements` splices the node and its
-		// alt text away entirely.)
+		// Render alt text instead of an image, preserving meaning without fetching remote content.
 		img: (p) => (
 			<span class="md-img-omitted">{imgPlaceholder(stringAttr(p.alt))}</span>
 		),

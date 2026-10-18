@@ -3,22 +3,8 @@ import { render } from "@solidjs/testing-library";
 import type { FileDiff, PlanEntry, TraceItem } from "../session-events";
 import { SessionTrace } from "./SessionTrace";
 
-// RED acceptance spec for T-U2 (design.md §440-478): the per-kind typed-trace
-// renderer. `SessionTrace` takes the folded `TraceItem[]` (produced by
-// `foldSession` upstream) and renders one row per kind, reusing the existing
-// block CSS (app.css:996-1134). This suite mounts the component DIRECTLY with
-// hand-built TraceItems — no store, no fold — so each test pins exactly one
-// kind's render contract. `SessionTrace.tsx` does not exist yet, so the whole
-// file is RED until the implementer builds it.
-//
-// The tool-status VALUE assertion (§473-476) is the load-bearing one: the model
-// speaks `ToolCallStatus` (pending|in_progress|completed|failed) while the OLD
-// CSS keyed running|ok|error. A presence-only check ("has a .tool-status") would
-// pass against either vocabulary; asserting the emitted `data-status` VALUE is
-// what makes red-green catch the gap.
-
-// The old tool-status vocabulary the migration retires — the renderer must emit
-// NONE of these.
+// Mount typed TraceItems directly to pin each renderer's output, including exact tool-status values.
+// Reject the old tool-status vocabulary; assert rendered values, not just status presence.
 const OLD_TOOL_STATUS = ["running", "ok", "error"];
 
 // Mount SessionTrace over an explicit TraceItem list.
@@ -251,12 +237,7 @@ describe("SessionTrace (T-U2)", () => {
 		expect(anchor?.getAttribute("href")).toBe(href);
 	});
 
-	// A notice whose link carries a dangerous scheme (javascript:/data:) must
-	// render NO navigable anchor. Once the live session-event stream feeds these
-	// links (RIG-1342), the link is untrusted agent input; an unhardened
-	// `href={link}` would make it clickable (stored-XSS-adjacent). The scheme
-	// allow-list (safe-url.ts) gates the anchor. Pre-fix (`href={href()}` with no
-	// gate) the anchor renders → red.
+	// Session-event links are untrusted; dangerous schemes must not render navigable anchors.
 	for (const link of [
 		"javascript:alert(document.domain)",
 		"data:text/html,<script>alert(1)</script>",
@@ -304,14 +285,6 @@ describe("SessionTrace (T-U2)", () => {
 	});
 });
 
-// RED acceptance spec for T2 (design record §341-379): DiffBlock's line
-// derivation moves from the current set-membership filter (SessionTrace.tsx:9-22)
-// to the jsdiff-backed `diffRows`. These fixtures fail against the CURRENT
-// membership code and go green once DiffBlock delegates to `diffRows`. Each
-// mounts one tool item carrying a single diff, reusing the existing
-// `mountTrace(items)` helper and tool-item TraceItem shape (see the kept-green
-// tests at lines 106-183). The two existing DiffBlock tests are the regression
-// gate and MUST stay green.
 function mountDiff(diff: FileDiff): HTMLElement {
 	return mountTrace([
 		{
@@ -332,9 +305,7 @@ function mountDiff(diff: FileDiff): HTMLElement {
 }
 
 describe("DiffBlock (T2, red against set-membership)", () => {
-	// reorder: "a\nb" -> "b\na" is a real change, but set membership sees the same
-	// two lines in both texts and renders ZERO rows. A real line diff renders at
-	// least one .diff-line.
+	// Reordering preserves membership but changes line order, so a real diff must emit a row.
 	test("reorder renders at least one diff line", () => {
 		const container = mountDiff({
 			path: "apps/ui/src/reorder.ts",
@@ -345,8 +316,7 @@ describe("DiffBlock (T2, red against set-membership)", () => {
 		expect(lines.length).toBeGreaterThan(0);
 	});
 
-	// dup-line: "a" -> "a\na" adds one duplicate "a". Set membership sees "a" in
-	// both and renders zero rows; a real diff renders exactly one add, zero dels.
+	// Set membership misses duplicate additions; a real line diff emits one add and no deletions.
 	test("dup-line renders exactly one add and no del", () => {
 		const container = mountDiff({
 			path: "apps/ui/src/dup.ts",
@@ -359,10 +329,7 @@ describe("DiffBlock (T2, red against set-membership)", () => {
 		expect(dels.length).toBe(0);
 	});
 
-	// trailing-newline: "a\n" -> "a\nb" adds "b". The membership filter splits on
-	// "\n" WITHOUT trimming, so oldText "a\n" -> ["a",""] and the vanished "" is
-	// emitted as a phantom `del ""`. A real diff renders exactly one add ("b")
-	// and NO blank-bodied row.
+	// The trailing newline is not a deleted blank line; expect exactly the added `b`.
 	test("trailing-newline renders one add and no blank-bodied row", () => {
 		const container = mountDiff({
 			path: "apps/ui/src/trailing.ts",
