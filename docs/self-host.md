@@ -10,6 +10,8 @@ database, and the agent runner as child processes on a Linux host. Agent
 sessions run in containers by default or in microVMs when selected. The
 [prerequisites](#prerequisites) describe shared and microVM-only requirements.
 
+<!-- LENGTH §Secrets: forge credentials, write scopes and agent repo grants share one operator reference -->
+
 ## Prerequisites
 
 Both tiers need Linux and rootless podman for the bundled database. They also
@@ -375,6 +377,8 @@ Grants name a user account. That user's agents inherit them. A rejected write lo
 Use `compass agent repo add <agent> <org/name>`, `remove <agent> <org/name>` and `list <agent>` to manage an agent's GitHub repositories. The target is a bare agent handle or `owner/agent`. Writes require the owning user's own token; tenant administrators cannot change another user's agent grants. Each repository must be an exact `org/name` under the same owner as the agent's other repositories, and that owner must have an installation of the GitHub App; otherwise the grant is rejected with `FAILED_PRECONDITION`. An agent with the `*` grant may add repositories only under the owner of the default App installation (`--forge-installation-id`). A newly installed owner is accepted within about 30 seconds. The GitHub App must be configured.
 
 Agents created later by an agent inherit its repository rows. A grant or remove signals the affected live agent to refresh its credential. After remove, the old token may still reach the removed repository until it expires, up to one hour.
+
+App installations are deployment-wide. Any user of the deployment can grant an agent a repository under any owner the App is installed on, within the rules above; the `*` limit to the default installation's owner still applies. Install the App only on accounts every user of the deployment may reach. Do not share one deployment between tenants that must not see each other's repositories.
 
 `--forge-scope-grants` is for bringing a server up, not for maintaining grants. When forge writes are enabled, every start inserts each listed grant that is missing, in the bootstrap tenant. Every account in the flag must be a user there, or startup fails. Seeding never revokes, so removing an entry from the flag leaves its grant in place. With forge writes disabled, nothing is seeded, but a malformed entry still fails startup. Once the server is up, manage agent access with `compass agent repo` above; there is no runtime operation for user grants.
 
