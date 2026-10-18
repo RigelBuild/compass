@@ -1,30 +1,4 @@
-// RIG-1678 T4 — the entrypoint's fleet-config passthrough (design
-// compass-agent-config-passthrough §CP-1/CP-2/CP-4), object-injection variant.
-//
-// Matt's pivot: the Runner-mounted bundle stays the delivery vehicle, but the
-// agent CONSUMES it by OBJECT INJECTION through the `createAgentSession` seams the
-// runtime SDK (16.5.2, the installed .bun pkg) actually exposes — not the inert
-// PI_CONFIG_FILES env path the original CP-1 named:
-//
-//   - settings/config.yml (CP-1) → `main` builds a `Settings` overlay
-//     (`buildFleetSettings`) and passes it as `settingsManager`. The overlay
-//     layer deep-merges AFTER global+project, so a fleet key beats the checkout's
-//     project value — asserted directly on the built Settings, and end-to-end
-//     through the SDK's resolution (a) via the createSession seam.
-//   - rules (CP-4) → `main` composes: builds the fleet `Rule[]` and re-runs
-//     the SDK's own rule discovery itself, passing `[...fleet, ...discovered]`
-//     (fleet-first, both levels load).
-//   - AGENTS.md (CP-2) → `main` composes: `contextFiles: [fleetGlobal,
-//     ...discovered]` (fleet re-runs the cwd walk-up itself), ONLY when present.
-//   - agents/ + models.yml (CP-4) → NO object seam, so they stay FILESYSTEM-based
-//     via `ensureAgentDirLink` symlinks into $HOME/.omp/agent. The symlink
-//     mechanics (d–f) are pinned directly; (g) is proven through real SDK
-//     `discoverAgents` in a HOME-frozen subprocess.
-//
-// The createSession seam (MainDeps.createSession) captures the options `main`
-// hands the SDK, so b–f assert on what reaches the session WITHOUT constructing a
-// real one. Every fixture is a real tempdir, torn down after each test; no
-// timers, no sleeps, no retries — deterministic FS fixtures only.
+// Pins fleet config injection and reload behavior across the SDK seams.
 
 import {
 	afterEach,
@@ -112,13 +86,7 @@ function mkdirMember(mount: string, rel: string): string {
 	return path;
 }
 
-// ── The createSession seam: capture the options `main` hands the SDK ──────────
-//
-// A minimal fake AgentSession + RunnerTransport, standing in for the two
-// unfakeable constructors so `main` runs its full composition and its
-// createAgentSession call lands on the recorder. The transport reuses the REAL
-// PublishSpine (as createUnixSocketTransport does) so the sink/control wiring is
-// production code; only the RPC handlers and the session are faked.
+// A fake session captures main's options without starting a real SDK session.
 
 interface RecordedModelChange {
 	model: Model;
@@ -645,11 +613,7 @@ describe("main injects fleet config as objects into createAgentSession", () => {
 		expect(options.rules?.map((r) => r.name)).toContain("checkout");
 	});
 
-	// (c) AGENTS.md COMPOSE (Matt-decided): the fleet AGENTS.md is a GLOBAL/user
-	// file that must COMPOSE with — not replace — the checkout's project AGENTS.md.
-	// With BOTH a fleet member AND a project .omp/AGENTS.md in cwd, the session's
-	// contextFiles carries BOTH, fleet global FIRST (least prominent). Absent
-	// fleet ⇒ key omitted ⇒ SDK discovers the project file itself.
+	// Fleet AGENTS.md precedes the project file; without it, SDK discovery stays unchanged.
 	test("(c) a fleet AGENTS.md composes with the checkout's project AGENTS.md, fleet first", async () => {
 		const mount = scratch();
 		const cwd = scratch();
@@ -790,13 +754,7 @@ describe("ensureAgentDirLink (agents/models.yml — the filesystem members)", ()
 	});
 });
 
-// ── (g): the SDK actually discovers a mounted subagent (launch-frozen HOME) ────
-//
-// Subagent defs are the ONE fleet member with no object seam AND a home-anchored
-// discovery: `discoverAgents` reads the user-level agent dir off os.homedir(),
-// which Bun freezes at module load. Only a fresh process with HOME set at launch
-// makes discovery hermetic — so this spawns config-passthrough-probe.ts, which
-// runs `main`'s exact agents symlink effect then queries the SDK by name.
+// A fresh process pins HOME before SDK load so discovery reads the mounted subagent directory.
 
 interface ProbeResult {
 	subagentFound: boolean;
@@ -845,18 +803,7 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 			PROBE_SUBAGENT_NAME: "probeagent",
 		});
 		expect(result.subagentFound).toBe(true);
-		// Event-gated: runProbe awaits the probe subprocess's own proc.exited, so
-		// this completes exactly when the cold SDK discoverAgents walk ends —
-		// never on a fixed ceiling a slow-but-correct cold-start races (the walk
-		// is ~2.5s warm; a contended CI runner is far slower and unbounded). The
-		// 130s per-test bound is NOT a timing budget the healthy path depends on
-		// — it is the sole crash guard for a genuinely hung probe, deliberately
-		// far above any real cold-start. Disabling it (0) is not an option: in
-		// a file with lifecycle hooks (the beforeEach/afterEach above), bun does
-		// not treat 0 as "no timeout" — the test silently falls back to the 5s
-		// default, which kills the probe mid-flight ("killed 1 dangling
-		// process", exit null). An explicit generous bound is the only way to
-		// actually raise the ceiling.
+		// Event-gated on process exit; 130s only bounds a genuinely hung cold SDK probe.
 	}, 130_000);
 
 	// The remove path, end-to-end: an unconfigured mount leaves nothing for
@@ -877,25 +824,9 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 	}, 130_000);
 });
 
-// ── RIG-1678 T6: the Reload RE-READ (the record's load-bearing acceptance) ─────
-//
-// The record's acceptance is that the update path is proven on the agent's
-// OBSERVED value, not just a flipped symlink: after a ConfigVersion Reload the
-// re-exec'd `main()` must build its createAgentSession objects from the NEW mount
-// content — a fresh Settings overlay resolving the updated value, recomposed
-// rules carrying the updated body, updated contextFiles. A Reload re-execs
-// `main()`, and the reader reads through the mount's `current/` view, so the
-// faithful model is: boot once over the mount, capture the injected objects,
-// CHANGE a member's content in `current/` (the re-materialized new version the
-// Runner flips `current` to), re-run `main()` over the SAME mount + HOME + cwd,
-// and assert the SECOND createAgentSession call carries the new content. A stale
-// object (a cached read, a boot-once assumption) would carry the old value → red.
+// Reload must rebuild injected options from the new mount contents, not reuse prior values.
 
-// Run `main` twice over the same mount/home/cwd, applying `mutate` to the mount
-// between the two boots (the ConfigVersion re-materialize). Returns both captured
-// createAgentSession option sets so a test can assert the second observed the
-// mutation. HOME + cwd are stable across both boots — a Reload keeps the
-// container (and its scoped HOME) and re-execs the agent against the same cwd.
+// Boots main before and after mutating the mount to prove the second boot reads new contents.
 async function runMainAcrossReload(
 	mount: string,
 	mutate: () => void,

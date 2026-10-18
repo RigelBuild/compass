@@ -80,12 +80,7 @@ function isLifecycle(frame: OutboundFrame): boolean {
 	);
 }
 
-// A "session" frame carrying a SessionInjection trace event is NOT loss-tolerable
-// (steer/deliver split-observation seam, F3): drop-oldest off the trace queue could make
-// a cross-process observer miss the op-kind a recipient received. So it rides the never-
-// drop priority lane like a lifecycle transition, though its board state is UNSPECIFIED.
-// A batchPending event rides it too: dropping a close (count 0) would leave the UI's
-// pending count stale until the next window.
+// Injection and batchPending events use the priority lane: losing them can hide delivered operations or stale the UI count.
 function isInjection(frame: OutboundFrame): boolean {
 	if (frame.kind !== "session") return false;
 	const kind = frame.value.typedEvent?.event.case;

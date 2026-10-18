@@ -12,11 +12,7 @@ import {
 } from "./../../gen/compass/v1/agent_pb";
 import type { PublishSpine } from "./../publish-spine";
 
-// The selective apply-ack cursor: the highest CONTIGUOUS applied `control_seq` plus the set
-// of seqs applied out of order above it (`applied_above_ranges`, invariant 2). That set is
-// UNBOUNDED: a queued-but-unapplied iterator op pins the cursor while immediate ops above
-// accumulate, draining only once the held op lands. The set stays unbounded in memory, while
-// range-encoding makes its wire cost O(runs).
+// Tracks the highest contiguous applied sequence and out-of-order sequences above it; the set is unbounded, but wire cost is O(runs).
 
 // `markApplied` is idempotent — a redelivered applied op re-acks without corrupting the cursor.
 // Every apply emits a `ControlAck` on the priority lane.

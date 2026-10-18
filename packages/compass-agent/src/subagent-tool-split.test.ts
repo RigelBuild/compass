@@ -1,47 +1,4 @@
-// The comms/hub tool split, pinned (design
-// RigelBuild/docs:docs/designs/compass/agent/compass-per-agent-overrides/design.md §Plan T7).
-//
-// WHAT THIS DEFENDS. Compass's native tools — the comms surface
-// (`comms_post_message`, `compass_roster`, …), the lifecycle surface
-// (`agents_spawn_peer`, `agents_despawn_peer`), and the forge surface
-// (`forge_*`) — reach the Manager session as `customTools` (cli.ts, the
-// `customTools:` registration seam in `main`:
-// `customTools: stampEssential([...mcp.tools, ...nativeTools])`).
-// An in-process `task` subagent (the design's worker topology) runs at full
-// Manager trust in the SAME container, so its Compass reach is NOT a security
-// boundary — it is a capability contract. The contract: a subagent gets the OMP
-// builtin toolset (edit/read/bash/…) and `hub`, but NONE of Compass's native
-// tools; peers and the Manager are reached over the OMP-internal peer channel,
-// never a Compass channel.
-//
-// WHY BY-CONSTRUCTION TODAY, AND WHY PIN IT ANYWAY. The exclusion falls out of
-// the SDK's subagent construction: a subagent session's `customTools` is
-// `mcpProxyTools = options.mcpManager ? createMCPProxyTools(...) : []`
-// (src/task/executor.ts:3113/:3234), and Compass passes its native tools as
-// `customTools`, never via an `mcpManager` — so a child's `customTools` is
-// empty and no Compass tool can transit. That is a property of a pinned SDK
-// (lockfile 18.0.11), not a guarantee: an SDK upgrade, or a future refactor
-// that hands Compass tools to subagents through an `mcpManager`, would silently
-// widen the child's reach. This test is the DRIFT ALARM (design §Global
-// Constraints: "T7's closed-set pin is a drift alarm, not a fence") — it
-// reddens the day a Compass tool leaks into a subagent, or `hub` drops out of
-// one.
-//
-// THE ASSERTION IS A CLOSED SET ON THE COMPASS DIMENSION, not a deny-list and
-// not an exact-equals against the whole OMP builtin list. The builtin list is
-// environment- and version-dependent (`bash`/`eval`/`lsp` gate on settings and
-// available backends; `browser`/`search_tool_bm25` come and go across SDK
-// versions), so an exact-equals against it would be flaky. What is INVARIANT is
-// the split: the Manager session carries EXACTLY the Compass native tool set,
-// and the subagent session carries EXACTLY NONE of it while still carrying
-// `hub`. Asserting the Compass-tool intersection in both directions is the
-// closed set that matters — it cannot pass if a Compass tool leaks in, and
-// cannot pass if `hub` is missing.
-//
-// Hermetic: a scratch cwd + scratch HOME (the SDK anchors discovery on the
-// launch HOME, os.homedir(); pinning it keeps ambient extensions/tools out) and
-// disabled extension/MCP discovery, so the sets reflect the code contract, not
-// the developer's ~/.omp tree. No sockets, no model, no timers.
+// Pins the capability split: the Manager gets Compass tools; subagents retain only OMP tools and hub.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -167,12 +124,7 @@ async function activeToolNames(
 	}
 }
 
-// The Manager session shape: Compass native tools ride `customTools` (cli.ts,
-// the `customTools:` seam). The subagent session shape: a real in-process subagent
-// (`taskDepth: 1`) with no `customTools` — the SDK's subagent path sets
-// `customTools` from `mcpProxyTools`, which is empty because Compass passes no
-// `mcpManager` (src/task/executor.ts:3113/:3234), so a child inherits none of the
-// native tools the Manager holds.
+// The Manager gets native tools; SDK subagent construction omits them without an mcpManager.
 function managerActiveToolNames(cwd: string): Promise<string[]> {
 	return activeToolNames({ cwd, customTools: compassNativeTools() });
 }
@@ -182,13 +134,7 @@ function subagentActiveToolNames(cwd: string): Promise<string[]> {
 }
 
 describe("subagent comms/hub tool split (design §T7)", () => {
-	// 30s, not the 5s default: each case boots a real session, and this first one
-	// also pays the one-time module init its siblings inherit warm (measured ~7s
-	// for the file locally, ~1.2-1.6s per sibling case). The default left it
-	// racing a wall clock rather than the work, and it timed out on a loaded
-	// runner while its siblings passed. Not time-gated on purpose: the awaits
-	// below already gate on the session being ready, so this ceiling only bounds
-	// a genuine hang.
+	// Real sessions need a generous startup bound; readiness gates the healthy path.
 	// biome-ignore lint/plugin: 30s bounds a real session boot (this first case also pays ~7s one-time module init; siblings ~1.2-1.6s); the awaits gate on the session being ready, so the ceiling only bounds a genuine hang.
 	test("the Manager session carries exactly the Compass native tool set", async () => {
 		const cwd = scratch();
@@ -223,14 +169,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 		const cwd = scratch();
 		const active = new Set(await subagentActiveToolNames(cwd));
 
-		// `hub` is active on this subagent via the availability gate
-		// isIrcEnabled(settings, taskDepth) (tools/index.ts:679): at taskDepth 1
-		// the `taskDepth > 0` short-circuit returns true
-		// (tools/hub/messaging.ts:109-110). (A tool-restricted subagent
-		// additionally force-includes it in the task executor.) The split removes
-		// Compass's channel tools but MUST leave the OMP-internal peer channel, or
-		// workers cannot reach the Manager at all. The SDK renamed this tool
-		// `irc` -> `hub`; the gate function kept its original name.
+		// hub must remain available for the OMP-internal peer channel after Compass tools are excluded.
 		expect(active.has("hub")).toBe(true);
 	}, 30_000);
 

@@ -1,65 +1,5 @@
-// Mutation verification for the Control source's reconnect-pump abort branches
-// and the ack cursor's progress signal — the branches whose removal the suite
-// must NOTICE. A reviewer proved the abort branches survive OUTRIGHT DELETION
-// with the suite fully green, so the tests that cover them must be shown to
-// DIE under each mutation, not merely to pass beside it.
-//
-// This exists because "the suite is green" and "the suite would notice" are
-// different claims, and only the second one is worth anything. A test that
-// passes against both the code and its deletion asserts nothing about it.
-//
-// Each mutant applies one textual edit to ITS target source, runs that source's
-// suite, and requires a FAILURE. A mutant that survives (suite still green) is
-// reported as SURVIVED and exits non-zero. Every file the table touches is
-// snapshotted up front and restored from that snapshot, including on throw or
-// signal — a crash here must never leave a mutated source on disk.
-//
-// WHAT A SURVIVAL DOES AND DOES NOT MEAN. These branches partly mask each
-// other, so SURVIVED is two different findings wearing one label:
-//
-//   - UNTESTED — a test could catch this and none does. A real gap; write one.
-//   - UNTESTABLE at the public surface — no test could catch it without
-//     reaching into internals, because another branch absorbs the difference.
-//
-// Deleting the catch-side abort guard is the worked example: the pump falls
-// through to the backoff, which returns at once on an already-aborted signal,
-// loops, and the TOP-OF-LOOP guard returns. buffer.fail() is a no-op after
-// return() closed the buffer, so nothing differs at the public surface. That
-// early return is load-bearing for this claim and is a real code path, not an
-// assumption — see `sleepOrAbort`'s already-aborted fast path. (It is still
-// killable — the mutant runs the no-progress bookkeeping first and consumes a
-// slot of that budget, which IS observable — but that took a specific
-// contract to reach, not a straightforward assertion.)
-//
-// So do not read a survival as "write a test here" without first checking
-// which of the two it is. Manufacturing an assertion for an unkillable branch
-// produces exactly the vacuous test this script exists to expose.
-//
-// SINGLE-WRITER. This mutates control-source.ts AND control/ack-cursor.ts IN
-// PLACE. Running it while another agent holds either file exposes a
-// mid-mutation read of a source that looks subtly wrong (`if (false) {` where a
-// real check belongs). Do not run it concurrently with anyone editing the
-// transport.
-//
-// Crash safety is VERIFIED, not asserted: the run was killed with SIGTERM at a
-// moment the source was observed mutated on disk (a different blob than HEAD),
-// and the handler restored it byte-identical. Killing it at an arbitrary moment
-// proves nothing — the file is unmutated for most of a run, so the restore path
-// never executes and the test cannot fail. Catch the mutation window first.
-//
-// SIGKILL and a hard crash cannot be trapped, so either can leave a mutated
-// file on disk — `control-source.ts` (`if (false) {` where a real check
-// belongs) or `control/ack-cursor.ts` (the novelty predicate reduced to
-// `if (seq > this.#cursor) {`, i.e. the re-ack-counts-as-progress defect).
-// Both are git-tracked, so recovery is always:
-//   git checkout -- src/transport/
-//
-// MANUAL TOOL, NOT A CI GATE. Nothing runs this script automatically: the
-// package's `test` task covers only the pure helpers pinned in
-// verify-abort-mutants.test.ts beside it, so the mutants' actual kill/survive
-// status is ungated. It stays manual for the SINGLE-WRITER reason above, not
-// by oversight. Run it by hand after touching those branches or the counter:
-//   cd oss/compass/packages/compass-agent && bun run scripts/verify-abort-mutants.ts
+// Manual single-writer mutation check for transport abort and ack-cursor guards.
+// It edits source files in place; a hard crash can leave them mutated.
 
 import { $ } from "bun";
 
@@ -163,14 +103,7 @@ export const MUTANTS: readonly Mutant[] = [
 		expect:
 			"an abort during the backoff must wake immediately, not sit out the full delay",
 	},
-	// The iterator return()'s teardown ORDER — the single hardest T4 guarantee.
-	// abort.abort() must fire BEFORE the awaited Fiber.interrupt/dispose: the
-	// backoff wait is an uninterruptible Effect.promise, so a fiber parked in it
-	// is only unparked by the abort, never by interrupt alone. Deleting the abort
-	// leaves return()'s awaited teardown wedged on the parked fiber until the 2s
-	// timer expires. F7 pins this with a 1s bounded guard; this entry folds F7's
-	// non-vacuity into the same automated discipline as the pump branches, so a
-	// future refactor reordering the teardown reddens here instead of silently.
+	// Abort must precede interrupt: the uninterruptible backoff wait needs abort to wake it.
 	{
 		name: "return() aborts before awaiting interrupt",
 		find: "\t\t\t\t\tabort.abort();\n\t\t\t\t\tbuffer.close();",
@@ -178,12 +111,7 @@ export const MUTANTS: readonly Mutant[] = [
 		expect:
 			"return()'s awaited teardown must not wedge on the uninterruptible backoff wait — abort unparks the fiber the interrupt then joins",
 	},
-	// The no-progress budget's SIGNAL, not a branch of the pump. It earns a slot
-	// here because it is the pump's only termination for a slow flap: if a
-	// re-ack can inflate the applied count, a Runner redelivering one op forever
-	// resets the budget forever — the unbounded reconnect the budget replaced a
-	// wall-clock window to fix. Mutating the novelty predicate is how that claim
-	// stays proven rather than merely asserted in a comment.
+	// Re-acks must not reset the no-progress budget; only a new application counts.
 	{
 		name: "progress novelty guard (re-ack is not progress)",
 		src: ACK_CURSOR_SRC,

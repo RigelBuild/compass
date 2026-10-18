@@ -1,19 +1,4 @@
-// The module-private OTel layer
-// (design RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-otel/design.md, O1a + O1b).
-// These cases pin three guarantees:
-//
-//   1. Off by default — with no OTEL_EXPORTER_OTLP_ENDPOINT the layer IS
-//      Layer.empty, so the transport runtime installs no provider and pays no
-//      overhead.
-//   2. Inert-not-broken — a ManagedRuntime built the way the transport builds it
-//      (Layer.merge(Logger.remove(...), makeOtelLayer())) runs Effect.withSpan
-//      and a Metric increment with no provider, and disposes cleanly. This is
-//      the property that keeps the existing black-box suite green: instrumentation
-//      added in O2-O4 no-ops without an endpoint rather than throwing.
-//   3. Live export (O1b) — with the endpoint set, the layer is NOT Layer.empty,
-//      and a runtime built with it exports both a span and a metric over OTLP to
-//      the configured collector, flushing both on dispose within the shutdown
-//      timeout.
+// Pins disabled, inert, and exporting behavior for the optional OTLP layer.
 
 import { afterEach, expect, test } from "bun:test";
 import { Effect, Layer, Logger, ManagedRuntime, Metric } from "effect";
@@ -26,11 +11,7 @@ afterEach(() => {
 	delete process.env[ENDPOINT_KEY];
 });
 
-// The env gate is read at call time. Identity against Layer.empty is the
-// assertion: makeOtelLayer returns the empty layer itself, not a merged/wrapped
-// one, so the runtime gains no provider.
-// Mutation check: a layer that always composed NodeSdk.layer would not be
-// referentially Layer.empty.
+// With no endpoint, identity with Layer.empty proves the runtime gets no provider.
 test("makeOtelLayer returns Layer.empty when no endpoint is configured", () => {
 	delete process.env[ENDPOINT_KEY];
 	expect(makeOtelLayer()).toBe(Layer.empty);
@@ -44,12 +25,7 @@ test("makeOtelLayer treats an empty endpoint string as unconfigured", () => {
 	expect(makeOtelLayer()).toBe(Layer.empty);
 });
 
-// The exact runtime shape the transport constructs (index.ts): the OTel layer
-// merged with the logger removal. With no provider installed, Effect.withSpan is
-// the no-op tracer and Metric.increment accumulates in the in-memory registry —
-// both must run and the runtime must dispose without error. Mutation check: a
-// layer that failed to build, or an instrumentation call that threw without a
-// provider, would reject one of these awaits.
+// The transport's merged layer must run span and metric effects without a provider.
 test("a runtime built with the merged OTel layer runs withSpan + Metric and disposes cleanly", async () => {
 	delete process.env[ENDPOINT_KEY];
 	const runtime = ManagedRuntime.make(
@@ -69,17 +45,7 @@ test("a runtime built with the merged OTel layer runs withSpan + Metric and disp
 	await runtime.dispose();
 });
 
-// O1b — the endpoint-set branch. With OTEL_EXPORTER_OTLP_ENDPOINT pointing at a
-// collector, makeOtelLayer is NOT Layer.empty and installs a live OTLP pipeline:
-// a runtime built the transport's way exports a span AND a metric, both flushed
-// on dispose. The stub is an in-process HTTP server; each signal resolves its own
-// gate promise when its OTLP path is POSTed, so the test is event-gated, not
-// timed. Mutation checks: reverting the branch to Layer.empty makes makeOtelLayer
-// === Layer.empty (first assertion red) and sends nothing (the awaited export
-// promises never resolve → the test's own deadline fires); dropping either
-// exporter drops that signal's POST, so its awaited promise hangs the test to a
-// deadline failure. The explicit per-test timeout is the framework deadline that
-// turns a broken/absent export into a bounded failure rather than a hang.
+// Collector POSTs gate the healthy path; the timeout only bounds a broken or absent export.
 // biome-ignore lint/plugin: 15s is the framework deadline turning an absent/broken OTLP export into a bounded failure; the pass event-gates on the collector's traces+metrics POSTs, not the clock.
 test("with an endpoint set, the layer exports a span and a metric over OTLP and flushes on dispose", async () => {
 	const seen = new Set<string>();

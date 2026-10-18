@@ -1,13 +1,4 @@
-// The in-container agent-config reader (design compass-agent-config-delivery
-// §CD-3/CD-4). These pin the pure/async mapping from the Runner-mounted bundle
-// to the three `createAgentSession` option surfaces — skills, extension entry
-// paths, MCP configs — plus the observability version line.
-//
-// Every fixture is a real tempdir tree under `<mount>/current/…`, the layout the
-// Runner materializes, torn down after each test. The dominant contract is
-// TOLERANCE: an absent mount, an absent subtree, and a malformed file must each
-// yield empty rather than throw — a missing mount must never crash the agent.
-// No timers, no sleeps: pure FS fixtures, deterministic results.
+// Pins the mounted config reader's tolerance for absent or malformed trees.
 
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -84,12 +75,7 @@ describe("AGENT_CONFIG_MOUNT_PATH", () => {
 		);
 	});
 
-	// The mount path became env-overridable for the host tier (design "Agent
-	// transport: the socket and config paths"): the host-process backend has no
-	// bind mounts, so it materializes the config tree inside the agent handle's
-	// own state dir and threads the root via COMPASS_AGENT_CONFIG_MOUNT_PATH. The
-	// fixed literal stays the DEFAULT — a container-tier agent (no override)
-	// reads it unchanged.
+	// Host-tier agents use an env-provided root; container agents retain the fixed default.
 	test("resolveConfigMountPath defaults to the fixed path when unset or blank", () => {
 		expect(resolveConfigMountPath({})).toBe(AGENT_CONFIG_MOUNT_PATH);
 		expect(
@@ -270,11 +256,7 @@ describe("readConfigVersion", () => {
 	});
 });
 
-// The five CP-1/CP-4 path accessors: EXISTENCE only, no parsing. Each returns
-// the absolute member path when it is the right filesystem KIND (regular file
-// for settings/AGENTS.md/models.yml; directory for rules/agents), and undefined
-// otherwise — present-wrong-kind is undefined, not a throw, so a malformed mount
-// still boots. Parsing is the SDK's job through the T4 overlay/symlinks.
+// Accessors check member kind and existence only; parsing remains the SDK's responsibility.
 describe("readMountedSettingsPath", () => {
 	test("returns the absolute path when settings/config.yml is a regular file", async () => {
 		const mount = scratch();

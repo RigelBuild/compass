@@ -1,23 +1,4 @@
-// TranscriptTeeBackend (RIG-1570 T2): the container-local FS backend that tees
-// every committed session write upstream as a durable TranscriptEntry frame.
-//
-// Each test defends a load-bearing contract over a RECORDING FrameSink (captures
-// the frames + lets a test force a definitive reject) and a temp session dir:
-//   - append writes locally AND emits a delta frame (verbatim line + monotonic
-//     bigint entry_seq);
-//   - writeFull writes locally AND emits a checkpoint frame;
-//   - local reads round-trip what was written;
-//   - ops on one path emit in commit order even under interleaved slow sends
-//     (the awaited-op ordering);
-//   - a compaction-shaped writeFull after appends emits a checkpoint AFTER the
-//     deltas it supersedes;
-//   - a definitively-erred emit FAILS THE SESSION CLOSED — the op re-throws a
-//     fatal error, it is surfaced once on stderr, and every subsequent op
-//     re-throws the latched error (R4, fail-closed per rule://no-retries; no
-//     backend buffer/retry tier).
-//
-// No sockets, no timers-as-sleeps: ordering is gated on a deferred the test
-// controls, not a wall-clock wait.
+// Pins TranscriptTeeBackend local writes, durable frame ordering, and fail-closed behavior.
 
 import {
 	afterEach,
@@ -67,12 +48,7 @@ afterEach(() => {
 	// parallel pre-push gate; bound as a slow-cleanup detector, not a budget (RIG-3611).
 }, 60_000);
 
-// A recording FrameSink. `emitDurable` captures each frame and resolves; a test
-// can swap in test controls: `failAll` (every send rejects — a definitive
-// give-up, i.e. the sink's own transport retry already exhausted), `failTimes`
-// (reject the first N sends then succeed — the transient blip the backend's own
-// retry tier absorbs), or `gate` (hold a send open for the ordering test).
-// `emit`/`drain` are unused by the backend but satisfy the type.
+// Recording sink controls durable-send success, rejection, and ordering for backend tests.
 interface RecordingSink {
 	readonly frames: OutboundFrame[];
 	emit(frame: OutboundFrame): void;
@@ -321,14 +297,7 @@ describe("TranscriptTeeBackend reads", () => {
 		expect(index.map((e) => e.path)).toEqual([join(dir, "a.jsonl")]);
 	});
 
-	// The SDK looks the resume file up under `path.resolve(sessionFile)`
-	// (session-manager.ts:969 → statSync/readText/readTextSlices keyed on the
-	// RESOLVED path, indexed-session-storage.ts:178/205/215), and the #index is a
-	// plain exact-string Map. "Absolute" is not "canonical": an env value with a
-	// `.`/`..` segment, trailing slash, or doubled slash resolves to a different
-	// string than the raw one. loadIndex must key the entry by the resolved path
-	// so the gate matches. Non-vacuity: raw-string keying → entry path is the
-	// non-canonical string → lookup under resolve() misses → red.
+	// The SDK resolves resume paths before lookup, so the index must use the resolved path.
 	test("loadIndex keys an out-of-dir resumeFile by its resolved path", async () => {
 		const dirA = scratch();
 		const dirB = scratch();
@@ -361,19 +330,7 @@ describe("TranscriptTeeBackend reads", () => {
 });
 
 describe("TranscriptTeeBackend ordering", () => {
-	// The composite ordering guarantee (design.md:764-767): the SDK wrapper's
-	// per-path tail chain serializes ops per path, and the backend AWAITS each
-	// emit INSIDE the op — so per-session emit order == send order == commit
-	// order. This drives two same-path appends through the REAL
-	// IndexedSessionStorage (the production write vector, openWriter().append),
-	// exactly as the SDK does — the backend is not (and need not be) independently
-	// concurrency-safe; the wrapper is the single locus of same-path ordering.
-	//
-	// Non-vacuity: the first send is HELD open. A backend that fired emits
-	// fire-and-forget (not awaiting inside the op) would let the wrapper's op
-	// complete and the second op's frame land while the first is still held →
-	// order inverts. Because the emit is awaited inside the op, the wrapper's
-	// chain cannot advance to the second append until the first send commits.
+	// The SDK serializes same-path ops; awaiting each emit inside the op preserves commit order.
 	test("emits in commit order across serialized same-path ops (via the SDK wrapper)", async () => {
 		const dir = scratch();
 		const file = join(dir, "s.jsonl");
@@ -405,15 +362,7 @@ describe("TranscriptTeeBackend ordering", () => {
 			secondDone = true;
 		});
 
-		// Wait until the first send is REACHED — a deterministic signal that fires
-		// AFTER the op's local fs.appendFile in both impls, so fs timing is
-		// factored out. Then drain the whole microtask queue with one setImmediate
-		// (a macrotask runs strictly after every queued microtask). Under the
-		// correct impl backend.append is still blocked awaiting the held emit, so
-		// neither op has resolved and no frame has landed. A fire-and-forget
-		// backend would have returned from the op after the local write (never
-		// awaiting the emit), so `first` resolves within that drain → firstDone
-		// true → red.
+		// Wait for the first send, then drain microtasks; fire-and-forget would let the op resolve early.
 		await firstEmitEntered.promise;
 		const drained = Promise.withResolvers<void>();
 		setImmediate(drained.resolve);
@@ -568,12 +517,7 @@ describe("TranscriptTeeBackend local-only + latch on the remaining methods", () 
 		Parameters<TranscriptTeeBackend["updateSessionTitle"]>[1]
 	>;
 
-	// (1a) The fatal latch is enforced by EVERY op, not just append/writeFull.
-	// Mirror the 434-462 pattern: latch via a failAll append at cap, snapshot
-	// attempts, clear failAll, then assert each remaining method re-throws the
-	// latched error AND makes NO new durable-send attempt (the latch
-	// short-circuits BEFORE the sink). Non-vacuity: a method missing its
-	// #throwIfFatal() would run its local fs mutation and resolve → red.
+	// Every mutating method must rethrow the latched fatal before changing local state or sending again.
 	test("truncate/remove/move/updateSessionTitle re-throw the latched fatal after the cap", async () => {
 		const dir = scratch();
 		const file = join(dir, "s.jsonl");
@@ -609,11 +553,7 @@ describe("TranscriptTeeBackend local-only + latch on the remaining methods", () 
 		}
 	});
 
-	// (1b) updateSessionTitle overwrites the fixed-width title slot IN PLACE:
-	// the first 256 bytes decode to the new title, and every byte after 256
-	// (header + entries) is byte-identical to the original. Non-vacuity: a wrong
-	// write offset (e.g. writing past the slot) reds the "bytes after 256"
-	// assert; a no-op write reds the decoded-title assert.
+	// Title updates replace the 256-byte slot without changing the following session bytes.
 	test("updateSessionTitle round-trips the slot in place, leaving bytes after 256 untouched", async () => {
 		const dir = scratch();
 		const file = join(dir, "s.jsonl");

@@ -1,24 +1,4 @@
-// O4 span wiring on the OUTBOUND transport (frame-sink.ts + publish-spine.ts).
-// Decision 1 of RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-otel/design.md: the
-// four outbound spans — the durable-send parent + its per-attempt children on
-// the frame sink, and the two teardown drain spans (one per module).
-//
-// Spans need a RECORDING runtime — the no-op tracer discards them — so each case
-// injects one through the module-private `setTransportRuntime` channel (a test
-// in src/transport/ may call it) with an in-memory OTel exporter wired through
-// effect's tracer via `NodeSdk.layer`, exactly as the O3 span case does
-// (control-metrics.test.ts:461-583). The sink/spine BORROW that injected runtime
-// (setTransportRuntime registered it / it is passed as borrowedRuntime), so they
-// never dispose it — the test owns that teardown.
-//
-// Spans are readable SYNCHRONOUSLY after the driven work settles because
-// SimpleSpanProcessor exports each span on END: once the awaited send/drain
-// promise resolves, every span it opened is finished and readable via
-// `exporter.getFinishedSpans()`. That read MUST happen BEFORE the test disposes
-// its runtime — `ManagedRuntime.dispose()` shuts the SDK down and clears the
-// in-memory exporter. No test-authored timer is used (ts-no-test-timers): each
-// case is event-gated on the code-under-test's own promises; only that code's
-// bounded backoff sleeps elapse, so a generous per-test timeout arg covers them.
+// Pins outbound spans with a recording runtime and event-gated sends/drains.
 
 import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
@@ -46,12 +26,7 @@ import type { RunnerTransport } from "./index";
 import { createPublishSpine, type PublishSpine } from "./publish-spine";
 import { setTransportRuntime, type TransportRuntime } from "./runtime-channel";
 
-// A recording runtime whose tracer records into an in-memory exporter, built the
-// transport's way (the OTel layer merged with the logger removal). The OTel
-// layer is declared Layer<never> exactly as otel-layer.ts / the O3 span case do:
-// NodeSdk.layer returns Layer<Resource.Resource>, and Layer's contravariant ROut
-// lets it widen to Layer<never>, so the runtime is a ManagedRuntime<never, never>
-// — the TransportRuntime shape setTransportRuntime / createPublishSpine expect.
+// The sink and spine borrow this OTel runtime; the test owns its disposal.
 function recordingRuntime(exporter: InMemorySpanExporter): TransportRuntime {
 	const otel: Layer.Layer<never> = NodeSdk.layer(() => ({
 		spanProcessor: new SimpleSpanProcessor(exporter),
@@ -80,12 +55,7 @@ async function drainDriver(
 	}
 }
 
-// A fake RunnerTransport giving exact control over the durable unary's per-call
-// outcome, plus a REAL PublishSpine over the injected recording runtime so the
-// sink's spine.drain() opens the genuine publish.drain span (a noop spine would
-// not). `postConversationFrame`'s outcome is driven by `durablePlan(callIndex)`:
-// "ok" resolves, "fail" rejects with a distinguishable error. Member shape
-// grounded against the fake carriers in frame-sink.test.ts:623-636.
+// Real PublishSpine wiring lets drain open its span while the fake controls send outcomes.
 interface FakeConfig {
 	runtime: TransportRuntime;
 	// Per-call durable outcome. Call index is 0-based across ALL attempts of the
@@ -129,16 +99,7 @@ function spansNamed(
 
 // biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on the durable send committing; the ceiling only bounds a send that never settles.
 test("a durable send opens one durable_send parent with a durable_attempt child per attempt, parented via the fiber tree, indexed 0..N", async () => {
-	// Drive ONE durable send whose unary fails the first two attempts and
-	// succeeds on the third (two forced failures → three attempts total).
-	// Assert the fiber-tree parenting is OBSERVED, not assumed (record §467):
-	// each durable_attempt's parentSpanContext.spanId equals the one
-	// durable_send span's spanContext().spanId, and the three attempt attrs are
-	// 0/1/2 in order.
-	// Mutation: dropping the durable_attempt withSpan → 0 attempt children →
-	// red; dropping the Ref tick / hardcoding attempt → the 0/1/2 assertion →
-	// red; dropping the durable_send withSpan → attempts have no matching
-	// parent → red.
+	// Three sends pin parentage and attempt order; removing either span or its attributes fails the assertions.
 	const exporter = new InMemorySpanExporter();
 	const runtime = recordingRuntime(exporter);
 	const transport = fakeDurableTransport({
@@ -184,16 +145,8 @@ test("a durable send opens one durable_send parent with a durable_attempt child 
 
 // biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on the durable send exhausting its retry ladder and rejecting; the ceiling only bounds a send that never settles.
 test("an always-failing durable send records ERROR status on the durable_send span after the retry ladder exhausts", async () => {
-	// Drive one durable send whose unary ALWAYS fails, so it exhausts the
-	// DURABLE_RETRY_BACKOFF_MS ladder and gives up. Because the durable_send
-	// withSpan sits INSIDE the Effect.exit boundary, the give-up failure reaches
-	// the span and records ERROR status (Effect.exit still absorbs it for the
-	// fiber, so emitDurable rejects but no unhandled fiber-failure escapes).
-	// Mutation: moving the withSpan OUTSIDE Effect.exit → the failure is
-	// absorbed before the span sees it → status stays unset → red.
-	// The ladder is [50,200,800,2000]ms of the CODE's own backoff sleeps
-	// (an exported const with no test override); the 10s timeout covers the
-	// ~3.05s of real backoff with no test-authored timer.
+	// Exhausted retries must mark the durable_send span as ERROR before Effect.exit absorbs the failure.
+	// The code's 3.05s backoff needs no test-authored timer.
 	const exporter = new InMemorySpanExporter();
 	const runtime = recordingRuntime(exporter);
 	const transport = fakeDurableTransport({
@@ -221,13 +174,7 @@ test("an always-failing durable send records ERROR status on the durable_send sp
 
 // biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on sink.drain() resolving; the ceiling only bounds a drain that never completes.
 test("drain opens both the frame_sink.drain and publish.drain spans, finished before the test disposes its runtime", async () => {
-	// Build a sink over a fake transport whose spine is a REAL spine on the
-	// injected runtime, drive a couple of frames, then call sink.drain(). The
-	// sink's drain wraps its own FiberSet.awaitEmpty in frame_sink.drain and
-	// then calls spine.drain(), which opens publish.drain from inside the spine.
-	// Both spans must be FINISHED once drain() resolves — before the test's own
-	// dispose (the sink borrows the injected runtime, so it does NOT dispose it).
-	// Mutation: dropping either drain withSpan → its span absent → red.
+	// Both sink and spine drain spans must finish before the test disposes their borrowed runtime.
 	const exporter = new InMemorySpanExporter();
 	const runtime = recordingRuntime(exporter);
 	const transport = fakeDurableTransport({
@@ -267,14 +214,7 @@ test("drain opens both the frame_sink.drain and publish.drain spans, finished be
 
 // biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on spine.drain() joining the pump; the ceiling only bounds a drain that never completes.
 test("a cycled batch send opens a publish.batch span carrying batch_size/priority_count/retry_index", async () => {
-	// Drive one batch directly through a real spine on the injected runtime:
-	// enqueue a single priority frame (so a batch cycles), then drain to flush
-	// it. The pump opens publish.batch around the Effect.either(tryPromise) send
-	// with the batch composition + pump-scoped retry level as attributes. For a
-	// single lone priority frame on a live (resolving) driver: batch_size=1,
-	// priority_count=1, retry_index=0.
-	// Mutation: dropping the withSpan → span absent → red; wiring the wrong
-	// attribute source → the attribute assertion → red.
+	// One priority frame pins the batch span's size, priority count, and retry attributes.
 	const exporter = new InMemorySpanExporter();
 	const runtime = recordingRuntime(exporter);
 	const spine = createPublishSpine(drainDriver, runtime);

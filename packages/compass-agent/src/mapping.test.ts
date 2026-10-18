@@ -1,12 +1,4 @@
-// EventMapper: the SDK `AgentSessionEvent` stream → compass.v1 frame map (§T5's
-// "own testable surface", spine-inversion + typed session renderer, design: architecture-lineage).
-// Each test defends an observable translation contract — what compass.v1 payload
-// a given SDK event produces — never the mapper's internals. One payload class:
-//   - SESSION (typed trace): assistant-text / thinking chunks, tool calls + their
-//     updates (with diffs), and plans ride `SessionFrame.typed_event` as a typed
-//     `SessionEvent`; board lifecycle rides `SessionFrame.state`.
-// The clock is injected so `at_unix_ms` is asserted exactly. Fixtures are plain
-// SDK-typed literals (no network, no timers).
+// Pins observable SDK-event to compass.v1 frame mappings with an injected clock.
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai";
@@ -85,11 +77,7 @@ function textEnd(content: string): AgentSessionEvent {
 	});
 }
 
-// A `message_update` whose inner `text_end` OMITS `content` — exercises the
-// mapper's `inner.content ?? buf` fallback (a settle event that carries no
-// settled string must not lose the streamed deltas). The SDK type marks
-// `content` required, so the cast is deliberate: we are pinning the defensive
-// branch.
+// A content-less text_end must use streamed deltas; the SDK type requires content, so the cast reaches this fallback.
 function textEndNoContent(): AgentSessionEvent {
 	return upd({
 		type: "text_end",
@@ -351,11 +339,7 @@ describe("EventMapper — streamed text is session-only (live chunk, no comms se
 });
 
 describe("EventMapper — message_id correlates a logical message's chunks", () => {
-	// message_id is a per-MESSAGE counter, bumped at each message_start ("0"
-	// before the first, "1" after, …). Two chunks within one message share it;
-	// a chunk after a new message_start carries the next id; a thinking chunk in
-	// the same message shares the message's id. This is how foldSession coalesces
-	// a message's streamed chunks into one rendered block.
+	// Chunks in one message share its id; message_start advances it for the next message.
 	function messageIdOf(out: MapOutput[]): string {
 		const ev = soleTyped(out);
 		if (ev.event.case === "assistantText" || ev.event.case === "thinking")
@@ -430,13 +414,8 @@ describe("EventMapper — non-content inner events emit nothing", () => {
 });
 
 describe("EventMapper — inner error: error → SessionError + ERRORED vs abort → SessionError only", () => {
-	// The pi-ai `error` variant carries reason "error" | "aborted". Both surface
-	// their content as a SessionError trace event; the failure class differs:
-	//   - "error" = an inner/provider failure → the SessionError(ERROR) content
-	//     frame AND the ERRORED lifecycle transition (content first).
-	//   - "aborted" = a deliberate cancel, NOT a crash → the SessionError(ABORTED)
-	//     content frame only, no lifecycle transition, never a counted unmapped.
-	// `status` rides the frame only when the provider surfaced an HTTP status.
+	// Provider errors emit ERROR and an ERRORED transition; aborts emit ABORTED without a transition.
+	// HTTP status is included only when the provider supplies one.
 	const errored = (over: Partial<AssistantMessage>): AssistantMessage => ({
 		...partial(),
 		...over,
@@ -736,12 +715,7 @@ describe("EventMapper — file diff extraction from a tool result", () => {
 		expect(diffs[0].newText).toBe("after");
 	});
 
-	// The guard branches that ELIDE an entry rather than emit a malformed diff:
-	// a non-record result or details (extractDiffs early-returns []), and a
-	// per-file entry missing a path or carrying neither oldText nor newText
-	// (buildDiff returns undefined, so the entry is dropped). Each row asserts
-	// the emitted diff set is empty — a regression that stopped guarding would
-	// surface a diff with an empty path or no text, reddening the row.
+	// Invalid diff shapes are elided rather than emitted with an empty path or missing text.
 	const elided: { name: string; result: unknown }[] = [
 		{ name: "a non-record result", result: "not-a-record" },
 		{
@@ -849,12 +823,7 @@ describe("EventMapper — plan from a todo tool result", () => {
 	});
 
 	test("an empty-content task is skipped, leaving the plan's entries empty", () => {
-		// A present snapshot with no VALID task: content is empty, so the task is
-		// dropped (continue) but the extractor still returns [] (not undefined),
-		// so a plan IS emitted — with zero entries. This pins the distinction
-		// between "no snapshot" (no plan) and "snapshot, no valid task" (empty
-		// plan): a regression that emitted the empty-content task would surface a
-		// content-less plan entry, reddening the length assertion.
+		// A snapshot with no valid tasks emits an empty plan; no snapshot emits no plan.
 		const out = mapper().map(
 			todoEnd({
 				details: {

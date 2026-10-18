@@ -1,10 +1,4 @@
-// The T4 transport contract (RIG-1351): createUnixSocketTransport must dial a
-// Runner-style Unix socket, speak h2c to the AgentGateway.Comms RPC, and return
-// the typed CommsCallResult. These tests stand up a real connect-node h2c server
-// bound to a Unix socket and drive an actual comms() call through it — proving
-// the socket dial, the h2c handshake, and the typed round-trip end to end. A
-// mock would restate the transport; only a live socket server can catch a broken
-// nodeOptions.path, a wrong baseUrl, or a protocol mismatch.
+// A live Unix-socket h2c server pins the transport's dial, RPC, and typed round-trip.
 
 import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
@@ -318,21 +312,8 @@ function traceFrame(): OutboundFrame {
 	};
 }
 
-// The leak class close() exists for (index.ts:50-62, design record §T5): the
-// transport owns ONE ManagedRuntime backing the sink/spine/source lanes, and
-// close() — called after the sink's drain barrier — is what disposes it, so no
-// live fiber outlives the transport. This drives a real socket end to end: a
-// sink over the shared transport emits + drains a frame, and then close()
-// disposes the runtime. Both halves of the ownership contract are pinned:
-//   - after sink.drain() the runtime is STILL live — a BORROWING factory must
-//     never dispose the shared runtime (a premature dispose would break the
-//     still-open sibling spine/source), so drain leaves it usable; and
-//   - after transport.close() the runtime is disposed — the transport owns that
-//     disposal, and once disposed it runs no further work, so no fiber keeps the
-//     loop alive.
-// A live server-side receipt of the frame proves the shared runtime actually
-// backed the send (non-vacuity: a runtime disposed too early at drain would have
-// thrown inside the sink rather than flushing).
+// The transport owns one runtime for sink, spine, and source; only close() disposes it after drain.
+// Drain must leave borrowed lanes usable, and a server receipt proves the sink shared that runtime.
 test("close() after drain() disposes the single transport-owned runtime, leaving no live fibers", async () => {
 	const received: string[] = [];
 	const socketPath = await servePublish(received);
@@ -355,19 +336,11 @@ test("close() after drain() disposes the single transport-owned runtime, leaving
 	// Borrowed, so drain() must NOT have disposed it — the runtime is still usable.
 	expect(runtime.runSync(Effect.succeed("live"))).toBe("live");
 
-	// close() must be the thing that disposes the runtime — the leak class this
-	// test exists for. Spy on dispose BEFORE close() so the assertion pins
-	// close()'s own call, not a dispose the test issued: awaiting the runtime
-	// here directly (as a "second, idempotent dispose") would tear it down
-	// regardless of whether close() ever called it, so a close() that forgot to
-	// dispose would still pass. With the spy, a close() that only aborts the
-	// session leaves toHaveBeenCalled false and reddens.
+	// Spy before close so the test proves close itself disposes the runtime.
 	const disposeSpy = spyOn(runtime, "dispose");
 	transport.close();
 	expect(disposeSpy).toHaveBeenCalledTimes(1);
-	// dispose is fire-and-forget from close()'s sync signature; await the exact
-	// promise close() started (captured by the spy) — no second dispose, no
-	// wall-clock poll — to observe its completion deterministically.
+	// Await the disposal promise captured from close(); its sync API returns no promise.
 	await disposeSpy.mock.results[0]?.value;
 
 	// Disposed by close(): the runtime rejects further work, so no fiber it backed

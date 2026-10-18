@@ -1,13 +1,4 @@
-// BoardBroker + the native board tool `board_set_issue_state` (RIG-3191).
-// Each test defends an observable contract of the agent->Runner board call: the
-// exact `BoardCallRequest` a tool `execute` puts on the wire (arm case, issue id,
-// state enum, call_id), and how a `BoardCallResult` renders back — a domain
-// `error` case as a thrown Error (the OMP tool-failure contract), a success as
-// the post-transition ack line.
-//
-// The transport is faked to the one method the broker consumes (`board`), so
-// there is no socket, no Connect client, and no timing: a call in, a canned
-// result out, and the captured request asserted verbatim. Mirrors forge.test.ts.
+// Pins the BoardBroker wire contract through a fake transport and captured requests.
 
 import { describe, expect, test } from "bun:test";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";

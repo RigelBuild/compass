@@ -1,14 +1,4 @@
-// LifecycleBroker + the two native lifecycle tools (design:
-// RigelBuild/docs:docs/designs/compass/agent/compass-agent-spawn-despawn/design.md, T6).
-// Each test defends an observable contract of the agent->Runner lifecycle call:
-// the exact `LifecycleCallRequest` a tool `execute` puts on the wire (oneof
-// case, spawn/despawn payload, call_id / client_request_id), and how a
-// `LifecycleCallResult` renders back — a domain `error` case as a thrown Error
-// (the OMP tool-failure contract), a success as text content.
-//
-// The transport is faked to the one method the broker consumes (`lifecycle`), so
-// there is no socket, no Connect client, and no timing: a call in, a canned
-// result out, and the captured request asserted verbatim.
+// Pins LifecycleBroker request and result rendering through a fake transport.
 
 import { describe, expect, test } from "bun:test";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
@@ -503,30 +493,13 @@ describe("lifecycle parameter schemas", () => {
 		expect(rejects(spawnParameters, { ...valid, persona: "  " })).toBe(true);
 	});
 
-	// The `.narrow` non-blank rules on `handle`/`persona` do not survive into the
-	// JSON Schema the model is shown, so the descriptions are the only place a
-	// caller reads them — asserted here so dropping the rule from a description
-	// reddens rather than silently re-blinding the model while the runtime narrow
-	// still rejects. `role` is a literal union (its closed set IS in the schema),
-	// so it needs no such carry and is not asserted here.
+	// Non-blank rules are absent from JSON Schema, so parameter descriptions carry them to the model.
 	test("spawn descriptions carry the non-blank rule unrepresentable in JSON Schema", () => {
 		expect(spawnParameters.get("handle").description).toContain("blank");
 		expect(spawnParameters.get("persona").description).toContain("blank");
 	});
 
-	// The counterpart to the carry test above: `role` needs no description carry
-	// precisely because its closed literal union renders into the model-facing
-	// JSON Schema. arktype emits the union as an `anyOf` of `const`s, which the
-	// SDK's `arkToWireSchema` — the same conversion `toolWireSchema` runs to build
-	// the schema the agent loop hands the model — collapses to a flat
-	// `{ type: "string", enum: [...] }` before the model sees it. So the model is
-	// shown the exact three taxonomy values as an enum. Asserted against that
-	// model-facing conversion (not arktype's raw pre-collapse output) so a
-	// regression that stopped rendering the set — an arktype bump, a change to the
-	// SDK collapse, or reverting `role` to a bare `type("string").narrow(...)`
-	// (dropping the literal union arktype renders) — reddens instead of silently
-	// re-blinding the model while the runtime union validation and the server
-	// closed-set guard still reject off-taxonomy roles.
+	// The closed role union renders as a model-visible enum, so unlike handle/persona it needs no description carry.
 	test("spawn role renders its closed taxonomy into the JSON Schema the model sees", () => {
 		const wire = arkToWireSchema(spawnParameters) as {
 			properties: { role: { type?: string; enum?: string[] } };
