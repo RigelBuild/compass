@@ -17,6 +17,8 @@ package runtime
 
 import (
 	"fmt"
+	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -94,20 +96,44 @@ func (e EgressPolicy) Configured() bool {
 func (e EgressPolicy) NftScript() string {
 	var b strings.Builder
 	b.WriteString(baseRuleset)
+	if slices.ContainsFunc(e.hosts, isDNSName) {
+		// Fail closed if the pin file is not writable: an unpinned name would be
+		// re-resolved by the agent and miss the allow sets once its DNS rotates.
+		fmt.Fprintf(&b, "\n: >> %s", egressHostsFile)
+	}
 	for _, host := range e.hosts {
-		// `getent ahostsv4/v6` is resolver-backed (glibc), one address per line.
-		// `set +e` keeps a failing `nft add element` (missing family, or a shared
-		// address nft rejects on second insert) from aborting the loop; the
-		// trailing `; true` keeps it from piercing the base ruleset's `set -e`.
+		// Resolve both families before pinning: a pinned v4 line would answer the
+		// v6 lookup with ::ffff: addresses instead of AAAA. `set +e` tolerates a
+		// failing `nft add element` (missing family, shared address); `; true`
+		// keeps that from piercing the base ruleset's `set -e`.
+		pin4, pin6 := "", ""
+		if isDNSName(host) {
+			// Pin the name so the agent dials exactly the addresses allowed here.
+			// A failed pin write exits non-zero: an unpinned address can rotate away.
+			pin4 = fmt.Sprintf(" echo \"$ip %s\" >> %s || exit 1;", host, egressHostsFile)
+			pin6 = fmt.Sprintf(" case \"$ip\" in ::ffff:*) ;; *) echo \"$ip %s\" >> %s || exit 1;; esac;", host, egressHostsFile)
+		}
 		fmt.Fprintf(&b,
-			"\n(set +e; for ip in $(getent ahostsv4 %s | awk '{print $1}' | sort -u); do "+
-				"nft add element inet compass_egress allow4 \"{ $ip }\"; done; true)", host)
-		fmt.Fprintf(&b,
-			"\n(set +e; for ip in $(getent ahostsv6 %s | awk '{print $1}' | sort -u); do "+
-				"nft add element inet compass_egress allow6 \"{ $ip }\"; done; true)", host)
+			"\n(set +e; v4=\"$(getent ahostsv4 %[1]s | awk '{print $1}' | sort -u)\"; "+
+				"v6=\"$(getent ahostsv6 %[1]s | awk '{print $1}' | sort -u)\"; "+
+				"for ip in $v4; do nft add element inet compass_egress allow4 \"{ $ip }\";%[2]s done; "+
+				"for ip in $v6; do nft add element inet compass_egress allow6 \"{ $ip }\";%[3]s done; true)",
+			host, pin4, pin6)
 	}
 	b.WriteByte('\n')
 	return b.String()
+}
+
+// egressHostsFile is where the arm pins each allowlisted name's addresses. The
+// agent image's glibc reads it before DNS, so a later lookup cannot return a
+// rotated address the allow sets lack.
+const egressHostsFile = "/etc/hosts"
+
+// isDNSName reports whether host is a name rather than an IP literal; only a
+// name needs pinning, since a literal is dialled as-is.
+func isDNSName(host string) bool {
+	_, err := netip.ParseAddr(host)
+	return err != nil
 }
 
 // baseRuleset is the base nftables ruleset: fail-closed (`set -eu`), a single

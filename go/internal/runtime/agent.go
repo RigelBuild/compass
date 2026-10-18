@@ -445,11 +445,12 @@ func (r *AgentRuntime) selfArmsEgress() bool {
 	return ok && armer.EgressArmedInGuest()
 }
 
-// armEgress arms the egress firewall as the image's default user (uid 1000)
-// with CAP_NET_ADMIN. After this, an agent exec — run as the agent uid with no
-// capabilities — cannot alter the ruleset.
+// armEgress arms the egress firewall as container root (uid 0). Root, not the
+// image's default user, because the arm also pins resolved addresses in the
+// root-owned /etc/hosts. After this, an agent exec — run as the agent uid with
+// no capabilities — cannot alter the ruleset or the pins.
 func (r *AgentRuntime) armEgress(ctx context.Context, id WorkloadID, egress EgressPolicy) error {
-	out, err := r.runtime.Exec(ctx, id, NewExecSpec("sh", "-c", egress.NftScript()))
+	out, err := r.runtime.Exec(ctx, id, NewExecSpec("sh", "-c", egress.NftScript()).AsUser("0"))
 	if err != nil {
 		return atStage("arm egress", err)
 	}
