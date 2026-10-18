@@ -49,11 +49,7 @@ func armedForgeConfig() ServeConfig {
 	}}
 }
 
-// testAppPEM generates a real PKCS#1 RSA private key in PEM form. A real,
-// parseable PEM is load-bearing because the test drives Token() on a source
-// built with the resolved key: Token -> mint -> parseRSAPrivateKey runs on it.
-// (NewAppTokenSource itself only nil-checks the key, so construction alone
-// proves nothing.) 2048 bits keeps generation off the test's critical path.
+// Generates a parseable PKCS#1 key for Token(); 2048 bits keeps it bounded.
 func testAppPEM(t *testing.T) string {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -66,10 +62,7 @@ func testAppPEM(t *testing.T) string {
 	}))
 }
 
-// dotenvValue renders a value as one double-quoted dotenv value. dotenvy (the
-// SecretSpec dotenv provider) interprets \\, \" and \n inside double quotes, so
-// a multiline PEM survives on a single logical line. Escaping backslash first,
-// then quote, then newline is the only correct order.
+// Renders a multiline dotenv value, escaping backslashes, quotes, and newlines.
 func dotenvValue(v string) string {
 	v = strings.ReplaceAll(v, `\`, `\\`)
 	v = strings.ReplaceAll(v, `"`, `\"`)
@@ -77,14 +70,7 @@ func dotenvValue(v string) string {
 	return `"` + v + `"`
 }
 
-// writeDeclaredDotenv writes one dotenv line per DECLARED server-secret name,
-// taking values from want (keyed by the wrapped, stored name). Deriving the
-// fixture from the declared rows — never a hand-list — is load-bearing:
-// buildManifest marks every declaration required, so Load fails wholesale if the
-// fixture under-provides. A future declaration flows into the fixture
-// automatically; a hand-list would silently drift and redden for the wrong
-// reason. A declared name with no fixture value fails setup rather than writing
-// an empty value that would mask the miss.
+// Writes declared secrets as dotenv lines; missing fixture values fail loudly.
 func writeDeclaredDotenv(t *testing.T, path string, declared []store.ServerSecretDeclaration, want map[string]string) {
 	t.Helper()
 	var b strings.Builder
@@ -205,17 +191,7 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	if string(got) != webhookValue {
 		t.Fatalf("webhook secret = %q, want %q (the provider value, resolved through the real SpecResolver)", got, webhookValue)
 	}
-	// Prove the resolved PEM is a real, parseable key — the finding this test
-	// closes. buildBoardWebhookWiring builds its OWN token source with no Client
-	// and Host "github.com", so its apiBase is the live api.github.com; calling
-	// Token() on it would hit the network. Instead build a SECOND source with the
-	// SAME resolver-backed PrivateKey closure production uses
-	// (newDeclaredSecretResolver over the real SpecResolver), routed to an
-	// httptest server. appAPIBase forces an https:// base for any Host, so a Host
-	// string cannot point at the loopback http test server — a rewriting
-	// Transport is the only hermetic seam (matching forge's own githubapp_test).
-	// Token() -> mint -> parseRSAPrivateKey then runs on the key that flowed
-	// through the real CLI read path.
+	// Mints a token from the resolver-backed PEM through a hermetic test endpoint.
 	const mintedToken = "ghs_armed_installtoken"
 	mint := newArmedMintServer(t, mintedToken)
 	appSrc, err := forge.NewAppTokenSource(forge.GitHubAppConfig{

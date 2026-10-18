@@ -48,29 +48,21 @@ func TestDefaultSocketPath(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			// XDG_RUNTIME_DIR set non-empty wins over HOME (XDG precedence): the
-			// impl returns from the XDG branch before ever reading HOME.
+			// XDG_RUNTIME_DIR takes precedence; the helper never reads HOME afterward.
 			name: "xdg set wins over home",
 			xdg:  "/run/user/1000",
 			home: "/home/x",
 			want: filepath.Join("/run/user/1000", "compass", "server.sock"),
 		},
 		{
-			// LOAD-BEARING INVARIANT: an empty XDG_RUNTIME_DIR counts as unset and
-			// falls back to HOME, rather than resolving a bogus /compass/... path.
-			// If the impl's `!= ""` check were weakened to a mere presence check
-			// (e.g. LookupEnv truthiness), an empty XDG would bind
-			// /compass/server.sock and this case's want (the HOME path) would
-			// fail — that is the tooth here.
+			// Empty XDG_RUNTIME_DIR counts as unset and falls back to HOME.
 			name: "empty xdg counts as unset and falls back to home",
 			xdg:  "",
 			home: "/home/x",
 			want: filepath.Join("/home/x", ".compass", "server.sock"),
 		},
 		{
-			// XDG "unset": Go's t.Setenv cannot truly unset a var, but the impl
-			// treats empty as the fallback trigger, so setting "" is the
-			// equivalent path — same fallback branch, same expected result.
+			// t.Setenv cannot unset XDG_RUNTIME_DIR; empty exercises the fallback.
 			name: "xdg unset falls back to home",
 			xdg:  "",
 			home: "/home/x",
@@ -85,22 +77,15 @@ func TestDefaultSocketPath(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// LOAD-BEARING INVARIANT: a non-empty but RELATIVE XDG_RUNTIME_DIR is
-			// not absolute, so it counts as unset and falls back to HOME — a
-			// relative value would otherwise resolve a cwd-dependent socket path,
-			// the footgun the impl guards against. If the impl weakened its
-			// filepath.IsAbs check to a mere `!= ""`, this would bind
-			// "runrel/compass/server.sock" (cwd-relative) and this case's want
-			// (the HOME path) would fail — that is the tooth.
+			// Relative XDG_RUNTIME_DIR counts as unset and falls back to HOME,
+			// avoiding a cwd-dependent socket path.
 			name: "relative xdg counts as unset and falls back to home",
 			xdg:  "runrel",
 			home: "/home/x",
 			want: filepath.Join("/home/x", ".compass", "server.sock"),
 		},
 		{
-			// A non-empty but RELATIVE HOME is not absolute either: rather than
-			// resolving a cwd-relative ".compass/server.sock", the impl surfaces
-			// an error. Same absolute-path filter as XDG, applied to HOME.
+			// Relative HOME is invalid rather than a cwd-dependent path.
 			name:    "relative home errors rather than resolving cwd-relative path",
 			xdg:     "",
 			home:    "homerel",
@@ -213,11 +198,9 @@ func TestEnsurePrivateDirPinsModeUnderRestrictiveUmask(t *testing.T) {
 }
 
 func TestListenUnixPrivateBirthsSocket0600UnderPermissiveUmask(t *testing.T) {
-	// umask is process-global and not goroutine-safe: no t.Parallel.
-	// A fully permissive umask (0): a plain net.Listen would create the socket
-	// 0666 & ^0 == 0666, connectable by other users before any chmod tightens
-	// it. listenUnixPrivate binds under a temporary 0177 umask so the socket is
-	// born 0600 with no such window.
+	// Umask is process-global, so this test cannot run in parallel. Under umask
+	// zero, plain net.Listen would expose a 0666 socket; the guarded bind must
+	// create it owner-only from the start.
 	prev := syscall.Umask(0)
 	defer syscall.Umask(prev)
 
@@ -228,19 +211,14 @@ func TestListenUnixPrivateBirthsSocket0600UnderPermissiveUmask(t *testing.T) {
 	}
 	defer l.Close()
 
-	// Assert the birth mode immediately — before any external chmod — so this
-	// proves the umask-guarded bind, not a later tightening step.
+	// Check the mode before any later chmod can tighten it.
 	if perm := statPerm(t, path); perm != 0o600 {
 		t.Fatalf("socket mode = %o, want 0600 (born owner-only under the guarded umask)", perm)
 	}
 }
 
 func TestListenUnixPrivateRetainsSocketOnClose(t *testing.T) {
-	// listenUnixPrivate disables Go's default unlink-on-close on the returned
-	// *net.UnixListener, so the socket file is removed ONLY through the
-	// identity-guarded cleanupSocket. If unlink-on-close were left at Go's default
-	// true, Close() would unconditionally delete the path and clobber a successor
-	// server's rebound socket when this server drains, defeating the identity guard.
+	// Disable unlink-on-close so listener close cannot remove a successor's socket.
 	path := filepath.Join(t.TempDir(), "s.sock")
 	l, err := listenUnixPrivate(t.Context(), path)
 	if err != nil {
@@ -254,15 +232,12 @@ func TestListenUnixPrivateRetainsSocketOnClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// The regression assertion: with unlink-on-close disabled, Close leaves the
-	// socket file on disk. This fails if the SetUnlinkOnClose(false) call is
-	// dropped or set back to true.
+	// Close must leave the path for identity-guarded cleanup.
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("socket file removed by Close (%v); listenUnixPrivate must disable unlink-on-close so removal is cleanupSocket's job alone", err)
 	}
 
-	// Removal is normally cleanupSocket's job; clean up here so temp-dir
-	// teardown is quiet.
+	// Remove the retained path here so temp-dir teardown stays quiet.
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("cleanup remove: %v", err)
 	}
@@ -292,20 +267,14 @@ func TestClearStaleSocketRefusesNonSocketFile(t *testing.T) {
 func TestClearStaleSocketRemovesStaleSocket(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "compass.sock")
-	// Bind a listener, then close it WITHOUT unlinking so the socket inode is
-	// deterministically left on disk with no server behind it — a genuinely
-	// stale socket a connect would refuse. net.Listen("unix") defaults to
-	// unlink-on-close, which would usually remove the file and leave this
-	// test's removal path unexercised; SetUnlinkOnClose(false) pins the stale
-	// state so the assertion always runs.
+	// Disable unlink-on-close to leave a stale socket for this test.
 	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	l.(*net.UnixListener).SetUnlinkOnClose(false)
 	l.Close()
-	// The stale socket must still be on disk now — that is the precondition
-	// the removal path is meant to handle.
+	// Confirm the stale socket remains before testing removal.
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("stale socket not retained after close (%v); SetUnlinkOnClose(false) should keep it", err)
 	}
@@ -319,15 +288,14 @@ func TestClearStaleSocketRemovesStaleSocket(t *testing.T) {
 
 func TestClearStaleSocketRefusesLivePeer(t *testing.T) {
 	dir := t.TempDir()
+	// A live listener must make clearStaleSocket refuse without unlinking it.
 	path := filepath.Join(dir, "compass.sock")
-	// A real listener answering connects: clearStaleSocket must refuse to start
-	// on top of it and must NOT remove it.
 	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	defer l.Close()
-	// Accept loop so the connect in clearStaleSocket succeeds.
+	// Accept connections so the liveness probe succeeds.
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -347,13 +315,8 @@ func TestClearStaleSocketRefusesLivePeer(t *testing.T) {
 }
 
 func TestClearStaleSocketPropagatesNonRefusedProbeError(t *testing.T) {
-	// A connect probe that fails with anything OTHER than ECONNREFUSED/ENOENT
-	// (here EACCES) proves nothing about staleness, so clearStaleSocket must
-	// propagate the error and leave the socket file untouched — never unlink a
-	// socket whose liveness is uncertain. Mechanism: bind a real Unix listener,
-	// then chmod the socket 0000 so the kernel denies connect() with EACCES
-	// (permission is checked before any refused/accepted decision), while the
-	// listener stays live underneath.
+	// EACCES does not prove staleness. A mode-0000 live socket exercises this
+	// only for non-root callers.
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses socket permission checks, so a 0000 connect is not denied with EACCES")
 	}
@@ -367,17 +330,15 @@ func TestClearStaleSocketPropagatesNonRefusedProbeError(t *testing.T) {
 	if err := os.Chmod(path, 0000); err != nil {
 		t.Fatalf("chmod 0000: %v", err)
 	}
-
-	// Confirm the environment actually denies connect with a non-refused error;
-	// if some kernel/uid still permits it, the contract under test cannot be
-	// exercised, so skip rather than assert a false result.
+	// Skip unless the environment produces a non-refused error on the probe.
+	// Otherwise this contract cannot be exercised reliably.
 	if c, derr := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(t.Context(), "unix", path); derr == nil {
 		c.Close()
 		t.Skip("connect to 0000 socket unexpectedly succeeded; cannot induce a non-refused probe error here")
 	} else if errors.Is(derr, syscall.ECONNREFUSED) || errors.Is(derr, syscall.ENOENT) {
 		t.Skipf("connect to 0000 socket gave a stale-signaling error (%v); cannot induce a non-refused probe error here", derr)
 	}
-
+	// Propagate non-refused probe errors without removing the socket.
 	if err := clearStaleSocket(t.Context(), path); err == nil {
 		t.Fatal("clearStaleSocket over a non-refused probe error = nil, want the probe error propagated")
 	}

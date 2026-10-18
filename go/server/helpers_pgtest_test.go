@@ -39,16 +39,10 @@ func clientContextWithBearer(ctx context.Context, bearer string) context.Context
 	return clientContextWithHeaders(ctx, http.Header{"Authorization": {bearer}})
 }
 
-// socketReadyTimeout bounds the wait for Serve to bind its Unix socket. It is
-// deliberately separate from — and larger than — testTimeout (the RPC/stream
-// safety net, helpers_test.go): under full-suite -race load the Serve goroutine
-// can be slow to get scheduled and bind, and a readiness wait sharing the 15s
-// RPC budget false-fails with "socket never became connectable" on healthy code
-// that is merely under load. This budget fails only a genuinely wedged bind.
+// Bounds socket readiness for race scheduling; a wedged Serve bind still fails.
 const socketReadyTimeout = 60 * time.Second
 
-// waitListening fails the test unless the Unix socket at path becomes connectable
-// within socketReadyTimeout; a bound stream socket accepts before Serve calls Accept.
+// Waits for the Unix socket to accept a connection; bind precedes Accept.
 func waitListening(t *testing.T, path string) {
 	t.Helper()
 	if err := waitConnectable(t.Context(), path, socketReadyTimeout, (&net.Dialer{}).DialContext); err != nil {
@@ -56,8 +50,7 @@ func waitListening(t *testing.T, path string) {
 	}
 }
 
-// waitConnectable takes budget and dial so tests can drive the timeout and see misses.
-// Each miss blocks on the ticker, not a spin, so the binding goroutine gets CPU.
+// Dial retries wait on a ticker so the binding goroutine gets CPU.
 func waitConnectable(ctx context.Context, path string, budget time.Duration, dial func(context.Context, string, string) (net.Conn, error)) error {
 	deadline := time.After(budget)
 	tick := time.NewTicker(10 * time.Millisecond)
@@ -77,9 +70,7 @@ func waitConnectable(ctx context.Context, path string, budget time.Duration, dia
 	}
 }
 
-// newUDSClient builds a connect client that speaks h2c over the Unix socket at
-// socketPath, ignoring the URL host (the dialer routes every dial to the
-// socket).
+// Routes every h2c request through the Unix socket.
 func newUDSClient(t *testing.T, socketPath string) compassv1connect.CompassServiceClient {
 	t.Helper()
 	tr := h2cTransport(func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -90,12 +81,6 @@ func newUDSClient(t *testing.T, socketPath string) compassv1connect.CompassServi
 	return compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, "http://unix", connecthttp.WithReadMaxBytes(0))))
 }
 
-// newUDSCommsClient builds a connect client for the CommsService that speaks
-// h2c over the Unix socket at socketPath, ignoring the URL host (the dialer
-// routes every dial to the socket). The server mounts both the CompassService
-// and CommsService handlers on the one socket door, so this reaches the comms
-// RPCs — including the SubscribeComms stream the shutdown-with-subscriber
-// regression holds open — over the same transport newUDSClient uses.
 func newUDSCommsClient(t *testing.T, socketPath string) compassv1connect.CommsServiceClient {
 	t.Helper()
 	tr := h2cTransport(func(ctx context.Context, _, _ string) (net.Conn, error) {

@@ -29,12 +29,8 @@ const forgeE2EHost = "github.com"
 // forgeE2ERepo is the owner/name repo every GitHub-addressed forge call here uses.
 const forgeE2ERepo = "owner/repo"
 
-// forgeE2EWire is the whole-wire forge fixture: the ported spawn/despawn wire
-// (a real store + server-package hub + real Runner over a socket-serving stub
-// engine + a bound supervisor session) with the forge chokepoint mounted on its
-// hub via hub.SetForgeCaller over FakeProvider author/reviewer clients (plus a
-// Linear fake). The supervisor's per-container socket is the wire the tests drive
-// AgentGateway.Forge over; the supervisor is the resolved CALLER.
+// Whole-wire fixture with a real store, Runner, socket-serving stub, and bound
+// supervisor. Fakes provide author, reviewer, and Linear forge roles.
 type forgeE2EWire struct {
 	*e2eWire
 	author   *forge.FakeProvider // the GitHub author role every ordinary write dispatches on
@@ -42,11 +38,7 @@ type forgeE2EWire struct {
 	linear   *forge.FakeProvider // the Linear coordinate (issues-only; PR/review ops scripted ErrUnsupported)
 }
 
-// newForgeE2EWire stands up the ported whole-wire fixture and mounts the forge
-// caller on its hub over fakes, registering the GitHub coordinate as the default
-// (author+reviewer) and a Linear coordinate (issues-only). Mirrors serve.go's
-// buildForgeWriteService assembly + hub.SetForgeCaller, but with fakes so the
-// stamp/dedup/dispatch is observable without a real forge.
+// Mounts fake GitHub author/reviewer and issues-only Linear roles on the wire.
 func newForgeE2EWire(t *testing.T) *forgeE2EWire {
 	t.Helper()
 	w := newE2EWire(t)
@@ -84,12 +76,8 @@ func newForgeE2EWire(t *testing.T) *forgeE2EWire {
 	return &forgeE2EWire{e2eWire: w, author: author, reviewer: reviewer, linear: linear}
 }
 
-// TestForgeCreateOverTheWire drives the create arm end-to-end over the socket and
-// pins the DL-050 stamp, the DL-055 ownership row+memo, the F3 dedup, and the
-// write-forgery replacement — the create-path acceptance (design.md:877-880). One
-// shared wire; each subtest uses a distinct client_request_id so the memo is not
-// cross-contaminated, and provider-call counts are read as before/after deltas so
-// a prior subtest's calls never taint the assertion.
+// Exercises create over the socket: stamping, ownership/memo recording, dedup,
+// and forged-header replacement. Per-case IDs and call deltas isolate assertions.
 func TestForgeCreateOverTheWire(t *testing.T) {
 	w := newForgeE2EWire(t)
 
@@ -240,11 +228,8 @@ func forgeCreateRestampsForgery(t *testing.T, w *forgeE2EWire) {
 	}
 }
 
-// TestForgeSubmitReviewOverTheWire pins the submit_review acceptance over the
-// socket: the A6 inline-comment strip (a forged owner header in an inline body is
-// stripped, never stamped, while the top-level review body IS stamped) and the F1
-// reviewer≠author dispatch (submit_review dispatches on the REVIEWER fake, never
-// the author) — design.md:880-884.
+// Over the socket, inline forged owner headers are stripped, the review body is
+// stamped, and submit_review dispatches on the reviewer provider.
 func TestForgeSubmitReviewOverTheWire(t *testing.T) {
 	w := newForgeE2EWire(t)
 	ctx := w.ctx
@@ -296,11 +281,8 @@ func TestForgeSubmitReviewOverTheWire(t *testing.T) {
 	}
 }
 
-// TestForgeStatusErrorFlatteningOverTheWire pins the 403≡404 flattening over the
-// socket (design.md:881): a provider *StatusError{403} and {404} on a read both
-// come back as a BYTE-IDENTICAL in-band not_found ForgeCallError — neither the
-// code nor the message distinguishes them, so a forge that hides a private repo
-// behind a 404 is indistinguishable from a genuine miss.
+// Provider 403 and 404 reads must return byte-identical in-band not_found errors,
+// hiding whether a private artifact exists.
 func TestForgeStatusErrorFlatteningOverTheWire(t *testing.T) {
 	w := newForgeE2EWire(t)
 	ctx := w.ctx
@@ -390,14 +372,8 @@ func TestForgeNoLiveSessionFailsClosedOverTheWire(t *testing.T) {
 	}
 }
 
-// TestForgeLinearUnimplementedOverTheWire pins the Linear addressing leg
-// (design.md:884): a Linear-addressed create_pull_request (ForgeRef
-// provider=LINEAR) comes back as an in-band `unimplemented` ForgeCallError —
-// Linear is issues-only (DL-051), its PR half returns ErrUnsupported, which the
-// chokepoint flattens to unimplemented. Present because serve.go registers a
-// Linear coordinate when the Linear OAuth client-credentials pair is declared
-// (not left as a TODO), and
-// Linear satisfies forge.Provider.
+// Linear PR creation returns in-band unimplemented: Linear supports issues only,
+// and its ErrUnsupported is flattened by the chokepoint.
 func TestForgeLinearUnimplementedOverTheWire(t *testing.T) {
 	w := newForgeE2EWire(t)
 	ctx := w.ctx

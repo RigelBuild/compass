@@ -81,17 +81,8 @@ func newTracedCommsClient(t *testing.T, baseURL string) compassv1connect.CommsSe
 	return compassv1connect.NewCommsServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, baseURL, connecthttp.WithReadMaxBytes(0))))
 }
 
-// newRelayRunnerClient mounts a RunnerService door over this wire's hub. It
-// keeps the production interceptor order so RelayCommsCall runs under a real
-// otelconnect span with trace propagation.
-//
-// The client interceptor injects traceparent, which the door extracts and links
-// to its new root span. The isolated door is separate from attachFakeRunner
-// because that helper carries the live Sessions stream; RelayCommsCall needs
-// none because bringSessionLive has already promoted the hub binding.
-//
-// Build the interceptor here, after the global span exporter, because
-// otelconnect captures the tracer provider at NewServerInterceptor().
+// Mounts a RunnerService door with production interceptors so the client
+// traceparent links to a root span. Build after the exporter is installed.
 func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
 	otelIC, err := otelconnect.NewServerInterceptor()
@@ -124,16 +115,8 @@ func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) com
 	))
 }
 
-// relayAgentPost issues ONE agent-initiated RelayCommsCall Post through client,
-// under sessionID, carrying triggerTP as the request's trigger_traceparent (""
-// for the no-trigger case), and returns the id of the message the post created.
-// It fails on a transport error AND on the in-band CommsCallError variant — the
-// arm the hub renders a tool failure into — so a call that never reached the
-// Post arm can never pass for one that did.
-//
-// The post addresses the channel by NAME: PostAsAccountByName is the agent-tool
-// entry executeCall's Post arm dispatches to, and it resolves the name within
-// the AGENT's visible set (comms/agent_caller.go:201-227).
+// Relays an agent Post and returns its message ID; errors include transport and
+// in-band tool failures.
 func relayAgentPost(t *testing.T, ctx context.Context, client compassv1internalconnect.RunnerServiceClient, sessionID, channelName, body, triggerTP string) string {
 	t.Helper()
 	resp, err := client.RelayCommsCall(ctx, &compassv1internal.RelayCommsCallRequest{
@@ -163,11 +146,8 @@ func relayAgentPost(t *testing.T, ctx context.Context, client compassv1internalc
 	return msgID
 }
 
-// postOverTracedDoor posts one text message into the wire's shared channel over
-// the traced door and returns the connect response (whose header carries
-// traceresponse) plus the created message id. It is postOverSocket's sibling for
-// this file's mounted door and per-case body text (that helper hardcodes its
-// body, so a mention case needs this one rather than a change over there).
+// Posts a message through the traced door, returning response headers and the
+// created message ID. Unlike postOverSocket, this accepts per-case body text.
 func postOverTracedDoor(t *testing.T, ctx context.Context, client compassv1connect.CommsServiceClient, channel store.ChannelID, body string) (*connect.Header, string) {
 	t.Helper()
 	ctx, info := connect.NewClientContext(ctx)
@@ -187,10 +167,8 @@ func postOverTracedDoor(t *testing.T, ctx context.Context, client compassv1conne
 	return info.ResponseHeader(), msgID
 }
 
-// postAsk authors an ask message as the admin in-process (no span needed — only
-// the ANSWER's handler span is under test) and returns the ask message id plus
-// the SERVER-MINTED ask id RespondToAsk is keyed on (a caller-supplied ask_id is
-// stripped, comms_test.go:498-503).
+// Posts an ask without tracing and returns its message ID and server-minted ask
+// ID; caller-supplied ask IDs are stripped.
 func postAsk(t *testing.T, w *mentionE2EWire, question string) (msgID, askID string) {
 	t.Helper()
 	resp, err := w.comms.PostAsAccount(w.ctx, w.adminID, &compassv1.PostMessageRequest{
@@ -223,32 +201,8 @@ func postAsk(t *testing.T, w *mentionE2EWire, question string) (msgID, askID str
 	return msgID, askID
 }
 
-// bringSessionLive drives the REAL hub Provision->Start pair so account's
-// container->session binding is promoted (promoteSession) and SessionForAccount
-// resolves — the precondition for the author-hold arm to hold and for a live
-// fan-out to reach a recipient. Mirrors the forge e2e's goLive, using the
-// runner's FIFO overrides so distinct accounts get distinct containers/sessions.
-//
-// Called BEFORE any post in a fixture: doing it after would contend with the
-// wake path's own Start for the same FIFO entry.
-//
-// Returns only once this session's START-EDGE SWEEP has finished, which is what
-// keeps the wire quiet for the assertions. The hub fires OnSessionStarted
-// synchronously (runnerhub/relay_comms.go, Hub.promoteSession), but that only ENQUEUES the
-// edge (delivery/settle.go:51-65); the sweep itself runs later, on the Run
-// loop's OTHER select arm (delivery/consumer.go:355-357). Left ungated it can
-// land AFTER the first post commits and deliver that message a SECOND time —
-// the recordingRunner never acks, so the cursor never advances and sweepSession
-// still sees it owed — and because sweepSession dispatches directly
-// (settle.go:343) rather than through gatedDispatch, the duplicate carries no
-// delivery.dispatch hop span and a different, fresh-rooted traceparent. That
-// breaks tracedOpFor's exactly-one contract in (a)/(c)/(d)/(e)/(g) — this
-// helper's callers that read by identity — and shifts EVERY position-based wire
-// read, including (e):753 and (g):834, and (j), whose reads are positional only.
-// (f) calls tracedOpFor but never this helper: it drives the start edge itself,
-// so its swept deliver is the subject under test, not a contaminant.
-// Gating here removes the race at its source instead of loosening the readers,
-// which would let a swept op with the WRONG trace satisfy an assertion.
+// Starts the session and waits for its edge sweep, preventing asynchronous
+// redelivery from shifting later span assertions. The fake Runner does not ack.
 func bringSessionLive(t *testing.T, w *mentionE2EWire, exp *tracetest.InMemoryExporter, account store.AccountID, container, session string) {
 	t.Helper()
 	// Baseline BEFORE Start: the edge it enqueues is the one we wait on. exp is
@@ -274,9 +228,8 @@ func bringSessionLive(t *testing.T, w *mentionE2EWire, exp *tracetest.InMemoryEx
 	waitForStartSweep(t, exp, sweepsBefore+1)
 }
 
-// startSweepSpanName is the LAST of the three sweeps drainStarts runs per start
-// edge (delivery/settle.go:134-142: sweepSession, sweepPins, then this one), so
-// observing it end means the whole start edge for one session is drained.
+// The final start-edge sweep marks completion because delivery drains sweeps
+// serially.
 const startSweepSpanName = "delivery.sweep.owedMentions"
 
 func countSpansNamed(exp *tracetest.InMemoryExporter, name string) int {
@@ -289,28 +242,8 @@ func countSpansNamed(exp *tracetest.InMemoryExporter, name string) int {
 	return n
 }
 
-// waitForStartSweep event-gates until at least n start-edge sweeps have ENDED.
-// Counting is sound even with several live sessions because drainStarts pops
-// the queue one edge at a time on a single goroutine (settle.go:124-134), so
-// the nth completed sweep means n edges are fully drained. WithSyncer's exporter
-// makes a span readable the moment it ends, and GetSpans locks internally.
-// Same deadline + Gosched idiom as the other waiters: no sleep, no retry loop.
-//
-// The count is a proxy for "MY edge drained", and that proxy holds only because
-// start edges in these fixtures are strictly sequential on the test goroutine:
-// bringSessionLive is the only producer, and it is called before any post. The
-// wake path cannot slip an extra edge in between, because promoteSession deletes
-// the container binding as it promotes and returns early when the lookup misses
-// (runnerhub/relay_comms.go, Hub.promoteSession), so a wake's re-Start on the same
-// placement container promotes nothing. A future fixture that starts a session
-// concurrently would break that precondition, which is why the wait below
-// demands an EXACT count: an unaccounted interleaved edge then fails loudly
-// instead of satisfying the wait and returning with my own edge still pending.
-//
-// delivery.sweep.owedMentions is also the only sweep name safe to count. The
-// obvious alternative, delivery.sweep.session, is emitted by the reconnect and
-// floor-tick recovery too (sweepAllLive), so its count is inflatable by
-// something that is not a start edge.
+// Waits for owed-mention start-edge sweeps. Count only this sweep because
+// reconnect and floor-tick recovery also emit session sweeps.
 func waitForStartSweep(t *testing.T, exp *tracetest.InMemoryExporter, n int) {
 	t.Helper()
 	deadline := timeAfter()
@@ -339,12 +272,7 @@ func waitForStartSweep(t *testing.T, exp *tracetest.InMemoryExporter, n int) {
 	}
 }
 
-// installGlobalMetricReader installs a global SDK MeterProvider over a manual
-// reader, restoring the prior global on cleanup. It MUST run BEFORE the wire is
-// built: T5 creates the compass.delivery.dispatched counter ONCE at
-// delivery.NewConsumer from the then-global meter (consumer.go:269), so a
-// provider installed afterwards records nothing. Mirrors the T5 unit test's
-// setup (delivery/trace_test.go:210-221).
+// Installs the global meter provider before wire construction creates counters.
 func installGlobalMetricReader(t *testing.T) *sdkmetric.ManualReader {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
@@ -360,9 +288,7 @@ func installGlobalMetricReader(t *testing.T) *sdkmetric.ManualReader {
 
 // --- wire-fact and span readers ----------------------------------------------
 
-// tracedOp is one observed send-only control push on the wire, carrying the W3C
-// traceparent the op was stamped with — the field the spine file's controlRecord
-// deliberately omits and every assertion here reads.
+// Records send-only control pushes with their traceparent for these assertions.
 type tracedOp struct {
 	sessionID   string
 	messageID   string
@@ -396,9 +322,8 @@ func tracedOps(r *recordingRunner) []tracedOp {
 	return out
 }
 
-// tracedOpFor returns the single op pushed to sessionID carrying messageID,
-// failing on zero or more than one match — so a duplicate dispatch (which would
-// make "the" traceparent ambiguous) is a loud failure, never a silent pick.
+// Selects one operation by session and message; duplicates make traceparent
+// attribution ambiguous.
 func tracedOpFor(t *testing.T, r *recordingRunner, sessionID, messageID string) tracedOp {
 	t.Helper()
 	var match []tracedOp
@@ -413,14 +338,8 @@ func tracedOpFor(t *testing.T, r *recordingRunner, sessionID, messageID string) 
 	return match[0]
 }
 
-// waitForDeliverOfMessage event-gates until sessionID has been pushed a deliver
-// carrying messageID — an IDENTITY predicate, never a count or an index, so a
-// duplicate dispatch of some OTHER message cannot satisfy it and cannot shift
-// the awaited one off a fixed position. The start-edge sweep the wire enqueues
-// is exactly such a duplicate source (consumer.go:355-357 drains it on the Run
-// loop's other select arm, and the recordingRunner never acks, so
-// sweepSession's owed set still holds the message). Same deadline primitive and
-// Gosched yield as the spine's waitFor* helpers: no sleep, no retry loop.
+// Waits for the exact session/message deliver, not a count or index, with a
+// deadline instead of sleeping.
 func waitForDeliverOfMessage(t *testing.T, r *recordingRunner, sessionID, messageID string) {
 	t.Helper()
 	deadline := timeAfter()
@@ -440,20 +359,13 @@ func waitForDeliverOfMessage(t *testing.T, r *recordingRunner, sessionID, messag
 	}
 }
 
-// traceIDOfTraceparent parses a W3C traceparent through the shipped
-// otel.ContextWithTraceparent helper and returns its trace id, failing when the
-// string is empty or does not parse to a VALID span context. Parsing (never
-// string-slicing) is what makes the assertion a statement about the real W3C
-// grammar the agent seam carries.
+// Parses W3C traceparent with the shipped helper, verifying its grammar.
 func traceIDOfTraceparent(t *testing.T, ctx context.Context, what, tp string) trace.TraceID {
 	t.Helper()
 	return spanContextOfTraceparent(t, ctx, what, tp).TraceID()
 }
 
-// spanContextOfTraceparent is traceIDOfTraceparent's whole-span-context form:
-// (i) asserts a link's SPAN id as well as its trace id, so it needs both halves
-// of the parsed remote context, and it parses through the same one shipped
-// helper.
+// Parses the full span context so callers can assert trace and span IDs.
 func spanContextOfTraceparent(t *testing.T, ctx context.Context, what, tp string) trace.SpanContext {
 	t.Helper()
 	if tp == "" {
@@ -466,17 +378,8 @@ func spanContextOfTraceparent(t *testing.T, ctx context.Context, what, tp string
 	return sc
 }
 
-// relayOriginSpanForMessage returns the single SERVER-kind RelayCommsCall
-// handler span that carries compass.message.id == msgID — the origin span of ONE
-// agent-authored post relayed through the runner door.
-//
-// originServerSpan cannot serve here: it demands exactly one span of the
-// procedure in the whole export, and (i) deliberately drives TWO relayed posts
-// (the linked one and the empty-trigger control) into one fixture. The message id
-// is the discriminator because comms stamps it on the CURRENT span at append
-// (comms/comms.go:424) — which on this path IS the otelconnect RelayCommsCall
-// handler span. Name + kind still gate the match, so a delivery hop span
-// carrying the same id (delivery/dispatch.go:375) is never a candidate.
+// Selects the RelayCommsCall server span by procedure and message ID; delivery
+// spans also carry the message ID.
 func relayOriginSpanForMessage(t *testing.T, spans tracetest.SpanStubs, msgID string) tracetest.SpanStub {
 	t.Helper()
 	want := compassv1internalconnect.RunnerServiceRelayCommsCallProcedure[1:] // trim the leading "/"
@@ -495,16 +398,8 @@ func relayOriginSpanForMessage(t *testing.T, spans tracetest.SpanStubs, msgID st
 	return match[0]
 }
 
-// triggerLinkOf returns the span context of the ONE cross-turn trigger link on
-// span, selected by the compass.link.kind attribute linkTrigger stamps
-// (runnerhub/relay_comms.go). Selecting by attribute rather than by index is
-// required: otelconnect's server branch mints its own link from the inbound
-// transport context, so the trigger link is neither the only nor reliably the
-// first element of Links.
-//
-// Selection presupposes a non-zero OTEL_LINK_ATTRIBUTE_COUNT_LIMIT: zeroing it
-// keeps the link and drops its attributes, so this finds nothing. See
-// linkKindAttr's doc (runnerhub/relay_comms.go).
+// Selects the cross-turn link by kind, not position; link attribute limits must
+// retain the selector.
 func triggerLinkOf(t *testing.T, span tracetest.SpanStub) trace.SpanContext {
 	t.Helper()
 	var match []trace.SpanContext
@@ -542,20 +437,14 @@ func linkIsTrigger(l sdktrace.Link) bool {
 }
 
 const (
-	// The attribute linkTrigger stamps on the cross-turn causal link. Duplicated
-	// here, not exported from runnerhub: it is an OBSERVABLE contract a trace
-	// consumer selects on, so reading it through the same constant it is written
-	// from could not catch a rename that breaks every existing consumer.
+	// Duplicated here so tests check the observable link-kind contract, not the
+	// same constant used by its producer.
 	triggerLinkKindKey   = attribute.Key("compass.link.kind")
 	triggerLinkKindValue = "cross_turn_trigger"
 )
 
-// originServerSpan returns the single SERVER-kind span named procedure — the
-// otelconnect handler span, whose name is the procedure path with the leading
-// slash trimmed (otelconnect interceptor.go:94). Selecting on name + kind rather
-// than on compass.message.id is required here: the delivery hop span stamps the
-// same message id (delivery/dispatch.go:375), so an id-only match is ambiguous
-// the moment anything dispatches.
+// Selects the otelconnect server span by procedure and kind; message ID alone is
+// ambiguous with delivery spans.
 func originServerSpan(t *testing.T, spans tracetest.SpanStubs, procedure string) tracetest.SpanStub {
 	t.Helper()
 	want := procedure[1:] // trim the leading "/" the generated constant carries
@@ -581,9 +470,8 @@ func spanAttr(s tracetest.SpanStub, key string) (string, bool) { //nolint:unpara
 	return "", false
 }
 
-// spansForMessage returns every exported span carrying compass.message.id ==
-// msgID — the origin handler span plus each delivery hop span for that message,
-// i.e. the recorded server hops of one turn.
+// Returns the origin and delivery spans carrying a message ID: the recorded
+// server hops of one turn.
 func spansForMessage(spans tracetest.SpanStubs, msgID string) tracetest.SpanStubs {
 	var out tracetest.SpanStubs
 	for _, s := range spans {
@@ -594,12 +482,8 @@ func spansForMessage(spans tracetest.SpanStubs, msgID string) tracetest.SpanStub
 	return out
 }
 
-// dispatchedOpKindCounts extracts the compass.delivery.dispatched sum per op
-// kind and asserts the attribute SET on every data point is EXACTLY the op-kind
-// key — the load-bearing cardinality half (never a session, channel, or message
-// label). The extraction idiom is the T5 unit test's dispatchedCounts
-// (delivery/trace_test.go:256), which lives in package delivery and so cannot be
-// called from here.
+// Extracts dispatched counts by operation kind and asserts each point has only
+// that attribute, preserving metric cardinality.
 func dispatchedOpKindCounts(t *testing.T, rm *metricdata.ResourceMetrics) map[string]int64 {
 	t.Helper()
 	out := map[string]int64{}

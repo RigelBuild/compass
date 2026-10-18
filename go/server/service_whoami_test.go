@@ -2,13 +2,8 @@
 
 package server
 
-// Handler-level contracts for WhoAmI, the identity-reflection RPC (service.go
-// GetServerInfo neighbor). It reflects the caller's own account id resolved
-// server-side from the credential (DL-111), so both branches turn on the caller
-// the door's interceptors attach: an authenticated caller reflects its own id,
-// and a missing caller fails closed with Unauthenticated. Both run in the
-// default lane — no store is reached — driven end to end through a real connect
-// client over in-process h2c (the shipped door's protocol).
+// WhoAmI reflects the authenticated account and fails closed without a caller.
+// The h2c test avoids the store.
 import (
 	"context"
 	"net/http"

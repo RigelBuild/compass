@@ -2,11 +2,8 @@
 
 package server
 
-// Store-gated end-to-end proofs for the RIG-2883 board webhook-ingestion serve wiring:
-// buildBoardIngestLane's pieces driven over the REAL signed ingress against a REAL
-// Postgres. Covers a signed `issues` webhook landing durably, and App-absent boot
-// (all-nil, with warnDisabledBoardIngestion Warning on enabled rows), and the
-// scope gate driven through the production builder. Behind `pgtest`.
+// Store-gated tests drive signed board webhooks through Postgres, covering
+// durable issue writes, App-absent boot, and production scope gates.
 
 import (
 	"context"
@@ -47,11 +44,8 @@ func forgeTestStore(t *testing.T) *store.Store {
 	return st
 }
 
-// fakeBoardHydrator is a scripted issueHydrator (the shared GitHub client's role
-// on the webhook path): it returns a fixed issue stamped with the requested
-// number, so the ingress -> arm -> Ingester -> store pipeline is exercised end to
-// end without a live GitHub. It satisfies the arm's conditional point-read seam
-// structurally (GetIssueConditional), the same shape *forge.GitHub provides.
+// Scripted issue hydrator for the webhook path. It returns the requested issue
+// number without live GitHub access and implements the conditional-read seam.
 type fakeBoardHydrator struct {
 	issue forge.Issue
 }
@@ -107,13 +101,8 @@ func warnCount(recs []slog.Record) int {
 
 // --- test: signed webhook -> board projection observes the hydrated issue -----
 
-// TestBoardWebhookIngressSinksHydratedIssue drives the REAL landed ingress: a
-// signed fake `issues` webhook POSTed through the mounted /webhooks/github
-// handler (fanoutSink over the board arm) causes the arm to hydrate the changed
-// coordinate and sink the fresh issue through the shared Ingester, which lands it
-// durably in the store at its forge coordinate. The webhook secret and the target
-// gate are the REAL server seams (newDeclaredSecretResolver-shaped closure and
-// boardTargetStore over the enabled subscription); only the hydrate is a fake.
+// A signed webhook through the mounted ingress hydrates and stores an issue at
+// its forge coordinate. Only hydration is fake; secret and target gates are real.
 func TestBoardWebhookIngressSinksHydratedIssue(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
@@ -206,14 +195,8 @@ func TestBoardWebhookIngressSinksHydratedIssue(t *testing.T) {
 
 // --- test: App-config-absent boot leaves both lanes off + Warns on enabled rows
 
-// TestBoardIngestionDisabledWarnsOnEnabledRows proves the App-absent posture at
-// the shared wiring site (RIG-2991): buildBoardWebhookWiring returns all-nil (no
-// App configured), and it Warns exactly once through warnDisabledBoardIngestion
-// when the table holds enabled subscription rows for the bound coordinate — no
-// webhook mounted, no panic. The App gate + the boot Warn now live on the shared
-// wiring (the single site that builds the one client both lanes ride), not on
-// buildBoardIngestLane. issueBrd is nil-safe: the gate short-circuits before any
-// lane assembly.
+// Without an App, shared wiring disables both lanes and warns once for enabled
+// rows at the bound coordinate; no webhook mounts.
 func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
@@ -267,13 +250,8 @@ func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 
 // --- test: App configured but a secret undeclared -> fail fast ----------------
 
-// TestBoardIngestLaneFailsFastOnMissingAppSecret pins Constraint #3's fail-fast:
-// a configured App (AppID != 0) with an undeclared App secret is a startup error
-// (a likely operator typo), not a silent degrade. The two App-secret validations
-// now live on the shared wiring (buildBoardWebhookWiring, RIG-2991), so this
-// drives them there — before either lane is built. The resolver is a fake; the
-// store is real (the wiring reconciles the seed only after a successful resolve,
-// which this never reaches).
+// Configured App secrets must be declared or startup fails before either lane is
+// built. The resolver is fake; the store is real.
 func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
@@ -300,14 +278,11 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 		}
 	})
 
-	// App key declared but the webhook signing secret absent -> the SECOND
-	// validateForgeSecret must fail (both secrets required, checked separately).
+	// With only the App key declared, validation must catch the missing webhook secret.
 	t.Run("app key present but webhook secret undeclared fails on the webhook secret", func(t *testing.T) {
-		// The RESOLVED name carries the server prefix; the config and the
-		// assertion below stay unprefixed. Unwrapped here, the FIRST validation
-		// (the app key) fails instead and this subtest silently degrades into a
-		// duplicate of its sibling, losing the per-secret discrimination it
-		// exists to prove.
+		// Keep the resolved server-prefixed name distinct from the unprefixed
+		// config and assertion, so this subtest reaches webhook-secret
+		// validation instead of duplicating the missing-App-key case.
 		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("APP_KEY"), Value: "pem"}}}
 		_, _, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
 		if err == nil {
@@ -319,10 +294,7 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	})
 }
 
-// TestDeclareServerSecretNamesIsIdempotentAndGated proves the boot declare that
-// makes the consumer re-point work. Without it the server registry is empty,
-// Resolve short-circuits an empty registry to (nil, nil), and a configured App
-// hard-fails its boot at validateForgeSecret.
+// Boot declarations must include configured secrets or consumers fail validation.
 //
 //nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
@@ -337,11 +309,8 @@ func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// NOTHING may be declared. resolved() defaults the two Linear
-		// client-credential names, so gating on the RESOLVED config would
-		// declare them for a deployment running no Linear — which makes the
-		// server registry non-empty and forces a real provider Load on a server
-		// that never configured Linear (it broke every full-boot test).
+		// Check the raw config: resolved() defaults Linear credentials, but
+		// an unconfigured deployment must not declare them or load a provider.
 		if len(rows) != 0 {
 			t.Fatalf("declared %d names with nothing configured, want 0: %+v", len(rows), rows)
 		}
@@ -358,8 +327,7 @@ func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
 		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
 			t.Fatalf("first declare: %v", err)
 		}
-		// Every boot re-runs this, so a second call must be a clean no-op
-		// rather than a duplicate-name startup failure.
+		// Repeated boot declarations must be idempotent.
 		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
 			t.Fatalf("second declare (idempotence): %v", err)
 		}
@@ -371,8 +339,7 @@ func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
 		got := make(map[string]bool, len(rows))
 		for _, r := range rows {
 			got[r.Name] = true
-			// Everything in this table must carry the reserved prefix, or the
-			// CHECK constraint would have rejected it.
+			// Names must have the reserved prefix or the database constraint rejects them.
 			if !store.HasServerSecretPrefix(r.Name) {
 				t.Fatalf("unprefixed name %q in server_secrets", r.Name)
 			}
@@ -421,11 +388,8 @@ func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
 		)
 	})
 
-	// A reviewer-only deployment is a misconfiguration (writes need both Apps),
-	// but it must be a DIAGNOSABLE one: declaring the reviewer PEM is what lets
-	// warnPartialForgeWriteSecrets see haveReviewer != havePrimary and warn.
-	// Gating the reviewer under the primary's boardIngestionEnabled would
-	// declare nothing here and the operator would get no boot warning at all.
+	// Reviewer-only configuration declares its key so validation can report missing
+	// primary write credentials.
 	t.Run("reviewer App alone still declares its PEM, so the partial config is diagnosable", func(t *testing.T) {
 		st := forgeTestStore(t)
 		cfg := ServeConfig{Forge: ForgeConfig{
@@ -439,8 +403,7 @@ func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
 		}
 		assertDeclaredExactly(ctx, t, st, serverSecretName("REVIEWER_KEY"))
 
-		// And the diagnostic actually fires: with the reviewer declared and the
-		// primary absent, the two halves differ, which is the warn condition.
+		// A reviewer key without a primary key must trigger the partial-config warning.
 		declared := []secrets.ResolvedSecret{{Name: serverSecretName("REVIEWER_KEY"), Value: "k"}}
 		havePrimary, haveReviewer := cfg.Forge.forgeWriteAppsConfigured(declared)
 		if havePrimary || !haveReviewer {
@@ -449,10 +412,8 @@ func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
 	})
 }
 
-// assertDeclaredExactly asserts server_secrets holds precisely the given names.
-// Exactness matters in both directions: a missing name is a hard boot failure
-// for that deployment, and an extra one pollutes the registry and can force a
-// provider Load for a lane the deployment never configured.
+// Asserts the exact declared-name set: missing secrets break boot, and extras
+// can trigger provider loads for lanes the deployment did not configure.
 func assertDeclaredExactly(ctx context.Context, t *testing.T, st *store.Store, want ...string) {
 	t.Helper()
 	rows, err := st.DeclaredServerSecrets(ctx)
@@ -473,46 +434,28 @@ func assertDeclaredExactly(ctx context.Context, t *testing.T, st *store.Store, w
 	}
 }
 
-// TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph drives the REAL
-// buildDoors and asserts which resolver INSTANCE reached which consumer.
-//
-// This is the seam a leaf-level test cannot hold. Passing a hand-built resolver
-// straight to buildLinearWebhookWiring re-proves name-wrapping, not routing:
-// swap the two arguments inside buildDoors and every such test stays green. So
-// the assertions here are over buildDoors' own threading, with two fakes whose
-// identity is observable.
-//
-// The severe direction is buildNetworkServer's: it feeds runnerhub's
-// FetchSecrets delivery path, so pointing it at server_secrets would hand every
-// deployment secret — App PEMs, webhook secrets, Linear credentials — to every
-// agent container. The webhook direction is the milder inverse: the container
-// instance cannot see a SERVER_ name, so the handler silently never mounts
-// (failure mode (b)).
+// Exercises resolver-instance routing through buildDoors, which leaf tests of
+// buildLinearWebhookWiring cannot prove. This boundary matters: passing the
+// server resolver to runnerhub would expose deployment secrets to agent
+// containers; the inverse leaves the webhook handler without its secret.
 func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) {
 	ctx := context.Background()
 	st := forgeTestStore(t)
 
-	// The container instance is the real DB-backed StoreResolver (T5); the server
-	// instance is a fake carrying ONLY the SERVER_-prefixed webhook secret the
-	// Linear wiring needs, so a handler exists if and only if that instance was
-	// threaded there. Pointer identity of the container instance is what the D6
-	// assertion below turns on.
+	// The container uses the real resolver; the server fake has only the webhook
+	// secret. Pointer identity verifies which instance reaches each path.
 	container := secrets.NewStoreResolver(st, secretsFixtureKey(t), 1)
 	server := &fakeResolver{resolved: []secrets.ResolvedSecret{
 		{Name: serverSecretName("LWH"), Value: "shh"},
 	}}
 
-	// StateDir must be set: buildNetworkServer mints and writes the bootstrap
-	// admin token under it, and an empty StateDir defaults to the socket's
-	// parent — here the package directory, which leaves an admin-token file in
-	// the source tree.
+	// Keep the admin token in a temporary directory, not the source tree.
 	cfg := ServeConfig{
 		StateDir: t.TempDir(),
 		Forge:    ForgeConfig{LinearWebhookSecretName: "LWH"},
 	}
 
-	// A net listener is required for the buildNetworkServer arm to be built at
-	// all — with netListener nil the D6 direction is never exercised.
+	// Require a listener so buildNetworkServer's network-door arm is assembled.
 	netListener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -543,7 +486,7 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 		}
 	})
 
-	// The net door must exist, or the D6 assertion below is vacuous.
+	// Require a listener so buildNetworkServer assembles the network-door arm.
 	if doors.net == nil {
 		t.Fatal("no net door built; the container-delivery arm was never exercised")
 	}

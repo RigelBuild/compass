@@ -576,11 +576,8 @@ func attachRecordingRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, re
 		cancel()
 	})
 
-	// Gate on the SERVER-side router being live, not merely the client having sent.
-	// The handler's router.attach runs asynchronously after the bootstrap Send
-	// reaches the server; a command in that window gets a retriable Unavailable.
-	// Probing with a real round trip is the observed attach; the deadline turns a
-	// wedged seam into a fast failure, never a sleep.
+	// Wait for the server-side router to attach; commands sent before the
+	// asynchronous attach return retriable Unavailable.
 	select {
 	case <-rec.attached:
 	case <-timeAfter():
@@ -607,72 +604,39 @@ func attachRecordingRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, re
 	return rec
 }
 
-// recordingRunner is a minimal Runner-side Sessions loop that records every
-// command the Server pushes and answers the three this suite drives. Recording
-// on the wire is what makes "the handler stopped the session" an observed fact
-// rather than a mock expectation.
+// Records Runner commands and answers the commands exercised by this suite.
+// Recording on the wire makes handler effects observable rather than mocked.
 type recordingRunner struct {
 	// attached closes once the bootstrap Send has flushed the stream open.
 	attached chan struct{}
 
-	// sendMu serializes every reply the loop writes against teardown's
-	// CloseRequest, and closing latches the loop out of sending once teardown
-	// holds it. Closing the request half under an in-flight Send fails that write
-	// with "write envelope: EOF" and the loop reports a dirty end (RIG-3606), so
-	// teardown takes this lock to wait out a running Send and to bar any later
-	// one. Deliberately NOT mu: a Send must not serialize against commands() and
-	// startCount(), which test goroutines poll in tight deadline loops.
+	// Serializes replies against CloseRequest; do not take mu because tests poll
+	// commands and start counts under it.
 	sendMu  sync.Mutex
 	closing bool
 
-	// withholdStop makes the loop record a Stop but never answer its result —
-	// the wedged-but-connected Runner that hangs an unbounded rollback Stop.
 	withholdStop bool
 
-	// failStart, when set, makes the loop answer every Start with a RunnerError
-	// (ALREADY_RUNNING) instead of a session id — the mid-chain failure the
-	// spawn-rollback test drives (RIG-1618 T5). Set under mu before the command
-	// is driven, read under mu in serve, so -race sees a clean handoff.
+	// failStart returns ALREADY_RUNNING. Set before driving and read under mu.
 	failStart bool
 
 	mu   sync.Mutex
 	seen []*compassv1internal.SessionsResponse
-	// startIDs, when non-empty, overrides the fixed answer() Start session id one
-	// per Start (FIFO) — so a test driving several Starts (e.g. two resumes of one
-	// logical session) gets distinct live ids. Empty falls back to answer()'s
-	// fixed fakeSessionID. Read/popped under mu.
+	// startIDs overrides Start replies so repeated resumes get distinct IDs.
 	startIDs []string
-	// containerNames, when non-empty, overrides the fixed answer() Provision
-	// container name one per Provision (FIFO) — so a test driving several
-	// distinct spawns (e.g. two owners spawning the same handle into separate
-	// namespaces) gets distinct container names instead of colliding on the one
-	// fakeContainer placement. Empty falls back to answer()'s fixed fakeContainer.
-	// Read/popped under mu.
+	// containerNames gives repeated Provision calls distinct placement names.
 	containerNames []string
-	// statuses, when set, is what the loop answers a GetAgentStatus command with
-	// (the all-sessions scan the SpawnAgent reject-on-live check reads). Empty
-	// answers an empty set — no live session, so reject-on-live never fires.
-	// Read under mu.
+	// statuses supplies the all-sessions scan; empty means none are live.
 	statuses []*compassv1.AgentSessionStatus
-	// startGate, when non-nil, blocks the serve loop on each Start command until
-	// the gate is closed — the wedged-Start shape the RIG-1641 T3 singleflight
-	// test drives to hold the leader's start in-flight while concurrent wakes
-	// coalesce onto it. The command is RECORDED before the wait, so a start that
-	// should have coalesced is still counted. Read under mu for a clean handoff.
+	// startGate holds Start replies so concurrent wakes can coalesce on one.
 	startGate chan struct{}
-	// lostContainers answers a Start on any listed container with NOT_FOUND: the
-	// Runner that restarted and no longer has the placement's container. Read under mu.
+	// lostContainers makes Starts on listed containers return NOT_FOUND. Read under mu.
 	lostContainers map[string]bool
-	// lostSessions answers a control deliver to any listed session with NOT_FOUND: a
-	// session whose container died under a still-connected Runner. Read under mu.
+	// lostSessions makes control delivers to listed sessions return NOT_FOUND. Read under mu.
 	lostSessions map[string]bool
 }
 
-// serve runs the dispatch loop. Like the seam test's loop it opens with one
-// bootstrap Send, because connect-go does not initiate the request (and so the
-// server's router.attach never runs) until the client's first Send; the empty
-// result carries no request id, so router.complete treats it as an unknown-id
-// no-op. It ends on the clean EOF the caller's CloseRequest produces.
+// Sends a bootstrap frame to attach the router, then exits on CloseRequest EOF.
 func (r *recordingRunner) serve(
 	stream compassv1internalconnect.RunnerServiceSessionsClientStream,
 	done chan<- error,
@@ -694,8 +658,7 @@ func (r *recordingRunner) serve(
 		}
 		r.record(cmd)
 		if cmd.GetStart() != nil {
-			// Block the leader's Start in-flight until the test releases the gate
-			// — recorded above, so a coalesced-away start is still counted.
+			// Block Start until released; the command is already recorded.
 			if gate := r.startGateCh(); gate != nil {
 				<-gate
 			}
@@ -757,11 +720,8 @@ func (r *recordingRunner) reply(cmd *compassv1internal.SessionsResponse) (*compa
 	return answer(cmd), true
 }
 
-// send writes one reply under sendMu, so a reply and teardown's CloseRequest can
-// never overlap. Once stopSending has latched closing, it drops the reply and
-// reports success: the stream is being torn down, the test is over, and a
-// dropped answer is not a loop fault. Returning an error instead would report a
-// teardown artifact as a dirty end — the RIG-3606 failure in a new spelling.
+// Serializes replies with teardown. A reply after closing is latched is an expected
+// drop; returning an error would report teardown as a dirty stream end.
 func (r *recordingRunner) send(
 	stream compassv1internalconnect.RunnerServiceSessionsClientStream,
 	req *compassv1internal.SessionsRequest,
@@ -774,9 +734,7 @@ func (r *recordingRunner) send(
 	return stream.Send(req)
 }
 
-// stopSending bars every future reply and waits out one already running, so the
-// caller may close the request half knowing no Send is in flight. Taking sendMu
-// IS the wait: a Send holds it for the whole write.
+// Stops future replies and waits for any in-flight Send before closing the request half.
 func (r *recordingRunner) stopSending() {
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
@@ -788,7 +746,7 @@ func (r *recordingRunner) record(cmd *compassv1internal.SessionsResponse) {
 	defer r.mu.Unlock()
 	r.seen = append(r.seen, cmd)
 	if cmd.GetProvision() != nil {
-		// A real Provision re-creates the container, so it is no longer lost.
+		// A new Provision restores the lost container.
 		r.lostContainers = nil
 	}
 }

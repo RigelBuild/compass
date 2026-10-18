@@ -35,12 +35,9 @@ const (
 	corsAllowCredentials = "Access-Control-Allow-Credentials"
 )
 
-// buildDoorHandler stands up the authenticated network door via the production
-// buildNetworkServer (the same call serve.go makes) with corsOrigin as
-// --cors-allowed-origin, and returns its HTTP handler — the netRoot that is
-// either the bare mux (corsOrigin == "") or the mux wrapped in networkCORS. A
-// nil netTLS is fine: buildNetworkServer only stores it on the http.Server for
-// later serving, and this test never serves — it invokes the handler directly.
+// Builds the authenticated network door with the requested CORS origin and
+// returns its bare or CORS-wrapped mux. TLS is unused because the test invokes
+// the handler directly rather than serving it.
 func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 	t.Helper()
 	ctx := context.Background()
@@ -107,12 +104,8 @@ func preflight(t *testing.T, handler http.Handler, origin string) http.Header {
 	return rec.Result().Header
 }
 
-// TestNetworkDoorCORSPolicy pins the four halves of the network-door CORS
-// contract against the enforced spec Scenario. Each case defends one clause, so
-// a distinct regression reddens a distinct case: a wildcard origin fails
-// "configured origin echoed exactly", credentialed CORS fails the
-// AllowCredentials clause, a reflected foreign origin fails "foreign origin not
-// reflected", and a dropped always-on guard fails "empty config emits no CORS".
+// Covers exact configured-origin echo, credentials, no foreign-origin reflection,
+// and no CORS when disabled; each case guards one policy clause.
 func TestNetworkDoorCORSPolicy(t *testing.T) {
 	const configured = "https://app.example.com"
 	const foreign = "https://evil.example.com"

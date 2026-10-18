@@ -78,17 +78,8 @@ func TestServeBindsSocketServesClientAndCleansUpOnCancel(t *testing.T) {
 }
 
 func TestServeShutdownIsClean(t *testing.T) {
-	// A normal ctx-cancel shutdown with no wedged handler must return nil: the
-	// drain completes well within the 5s deadline. This guards the drain-error
-	// propagation added to Serve — it must surface a real overrun, never turn a
-	// clean shutdown into a spurious "draining ... on shutdown" error.
-	//
-	// The drain-deadline-overrun path (a wedged slow-client stream) is not
-	// forced here: making it deterministic needs a handler stalled mid-replay,
-	// tracked separately in RIG-1263. Forcing a server self-exit error cleanly
-	// is likewise not deterministic from this harness (both servers exit only on
-	// ctx cancel or a bind fault that Serve rejects up front), so that sub-case
-	// is intentionally omitted rather than added as a flaky test.
+	// A clean cancel must return nil; this harness cannot deterministically
+	// trigger slow-client overruns or server self-exits.
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -104,12 +95,8 @@ func TestServeShutdownIsClean(t *testing.T) {
 		errCh <- Serve(ctx, cfg)
 	}()
 
-	// Gate on a SERVED RPC, not just the socket being connectable: Serve binds
-	// the socket before it opens the store, so a connectable socket does not yet
-	// mean the server is serving. A successful GetServerInfo proves store.Open
-	// completed and the HTTP server is up, so the ctx cancel below exercises the
-	// graceful-drain path rather than racing store.Open (which would fail with a
-	// context-canceled ping, not the clean shutdown this test asserts).
+	// Gate on a successful RPC; the socket binds before store.Open completes.
+	// Cancellation now exercises graceful drain instead of racing startup.
 	waitListening(t, socketPath)
 	if _, err := newUDSClient(t, socketPath).GetServerInfo(context.Background(), &compassv1.GetServerInfoRequest{}); err != nil {
 		t.Fatalf("GetServerInfo before shutdown: %v", err)
@@ -126,33 +113,15 @@ func TestServeShutdownIsClean(t *testing.T) {
 	}
 }
 
-// TestServeShutdownWithLiveCommsSubscriberReturnsClean is the P2 regression: a
-// shutdown while a SubscribeComms stream is still held open must still return
-// nil within the drain deadline. connect's http.Server.Shutdown does NOT cancel
-// an in-flight streaming handler's context, so the ONLY thing that unblocks a
-// live SubscribeComms handler is the comms bus closing its Live channel. Serve's
-// drain therefore must close commsBus (not only the CompassService bus); the
-// applied fix does. Against a drain missing commsBus.Close() the SubscribeComms
-// handler stays wedged, udsServer.Shutdown blocks to the 5s deadline, and Serve
-// returns the wrapped "draining ... on shutdown" error (non-nil) — reddening the
-// nil assertion below — or, if Shutdown blocks past the test deadline, the
-// timeout fires. Either way the pre-fix drain is caught; the fix returns nil
-// promptly.
-//
-// That claim was untrue for as long as this test failed at its subscriber gate:
-// it never reached the drain, so the regression it names went undefended while
-// the test reported red for an unrelated reason. A red test is not
-// self-evidently doing its job — it has to fail at the assertion it exists for.
-// Verified by deleting the drain's commsBus.Close() and confirming this test
-// then fails at the Serve-returns-nil assertion rather than at the gate.
+// Holding SubscribeComms open must not prevent clean shutdown. HTTP server
+// shutdown does not cancel streaming handlers; closing commsBus releases this
+// one. The registration gate proves the stream is live before cancellation.
 func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")
 
 	serveCtx, cancel := context.WithCancel(context.Background())
-	// Idempotent with the explicit cancel() on the happy path below. Needed
-	// because every failure path here t.Fatalf's before reaching that call,
-	// which would otherwise leave Serve running against a live socket and pg
-	// pool for the remainder of the binary.
+	// Defer idempotent cancellation so every failure path stops Serve and releases
+	// its socket and database pool.
 	defer cancel()
 	errCh := make(chan error, 1)
 	cfg := ServeConfig{
@@ -169,12 +138,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 
 	commsClient := newUDSCommsClient(t, socketPath)
 
-	// Seed one comms event the subscriber is guaranteed to see: create a channel
-	// (attributed to the bootstrap admin over the socket door, who is thus a
-	// founding member), so the resulting ChannelChanged is visible to that same
-	// admin on the stream. A current member always sees its own channel's
-	// ChannelChanged, so this gate is stable regardless of how the per-variant
-	// visibility filter treats other event kinds.
+	// CreateChannel makes the bootstrap admin its founding member, so it sees the event.
 	created, err := commsClient.CreateChannel(context.Background(), &compassv1.CreateChannelRequest{
 		Name: "shutdown-room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 	})
@@ -183,12 +147,8 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	}
 	wantChannelID := created.GetChannel().GetId()
 
-	// Open a SubscribeComms subscriber on its OWN background context — so what
-	// releases the held-open stream is the SERVER closing the comms bus on
-	// shutdown, never the client cancelling. sinceSeq=0 replays the ring under
-	// the same lock that registers the live subscriber, so the seeded
-	// ChannelChanged is delivered exactly once and its receipt proves the
-	// subscriber is registered and now blocked on the live tail.
+	// A separate client context lets server shutdown release the stream.
+	// Receiving the seeded event proves the subscriber is live.
 	subCtx, subCancel := context.WithCancel(t.Context())
 	defer subCancel()
 	stream, err := commsClient.SubscribeComms(subCtx, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
@@ -197,37 +157,14 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	}
 	defer func() { _ = stream.Close() }()
 
-	// Drive the stream on a goroutine: consume the preamble, gate on the seeded
-	// event (registration proof), then keep receiving so the stream stays open
-	// on the comms bus until the server's shutdown drain closes it. The final
-	// Receive returning false (clean EOF) is what proves the server-side close
-	// released it.
-	//
-	// A since_seq=0 subscribe receives commsSnapshotBoundary FIRST, before any
-	// event (see commsSnapshotBoundary in internal/comms/subscribe.go, whose
-	// doc comment specifies the frame's shape).
-	//
-	// Assert that frame rather than skipping one blindly. The gain is
-	// attribution, not catch-vs-miss: the seeded-event assertion below is a
-	// hard backstop either way, because no control frame can satisfy
-	// GetChannelChanged().GetChannel().GetId() == wantChannelID. Measured, by
-	// mutating subscribe.go with the skip and the assertion in turn:
-	//
-	//	preamble grows a second boundary  skip: caught, opaque empty channel id
-	//	                                  assert: caught, same
-	//	boundary Send removed entirely    skip: caught at 25.4s, gate deadline
-	//	                                  assert: caught at 11.8s, names the frame
-	//
-	// So a bare skip is slower and far less diagnostic, not silent.
+	// Assert the snapshot boundary and seeded event before holding the live tail.
 	gate := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		first, err := stream.Receive()
 		if err != nil {
-			// Describe the observable, not a cause: all this proves is that the
-			// stream ended before any frame arrived. Naming the boundary as the
-			// missing one would mis-attribute a stream that ended early.
+			// Report only that the stream ended before its first frame.
 			gate <- fmt.Errorf("stream ended before any frame (expected the snapshot boundary first): %w", err)
 			return
 		}
@@ -245,7 +182,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 			return
 		}
 		gate <- nil
-		// Block on the live tail until the server closes the comms bus.
+		// Keep receiving until shutdown closes the comms bus.
 		for {
 			_, receiveErr := stream.Receive()
 			if receiveErr != nil {
@@ -258,8 +195,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 		}
 	}()
 
-	// Wait for the registration gate before cancelling, so the subscriber is
-	// provably live on the comms bus when shutdown begins.
+	// Wait for registration so shutdown starts with a live subscriber.
 	select {
 	case err := <-gate:
 		if err != nil {
@@ -269,9 +205,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 		t.Fatal("subscriber never received the seeded ChannelChanged")
 	}
 
-	// Shutdown with the subscriber still live: Serve must drain and return nil
-	// within the deadline — the commsBus.Close() in the drain is what unblocks
-	// the held-open SubscribeComms handler.
+	// Serve must drain cleanly; closing commsBus releases the held stream.
 	cancel()
 	select {
 	case err := <-errCh:

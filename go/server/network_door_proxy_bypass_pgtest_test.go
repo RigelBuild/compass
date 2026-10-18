@@ -20,11 +20,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/auth"
 )
 
-// forgedProxyHeaders is the set of identity-suggestive headers a reverse proxy
-// (tailscale serve, nginx, an ALB) conventionally injects. handle is spliced
-// into the user-naming headers so a test can forge a SPECIFIC identity (e.g. the
-// admin handle) and prove even a targeted forgery grants nothing. The door reads
-// none of these; they exist here only so the assertions can prove their inertness.
+// Proxy identity headers can be forged; the door must ignore them all.
 func forgedProxyHeaders(handle string) http.Header {
 	h := http.Header{}
 	h.Set("X-Forwarded-User", handle)

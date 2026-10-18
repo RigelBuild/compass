@@ -43,13 +43,8 @@ const (
 	corsOriginForTest = "https://app.example.com"
 )
 
-// installGlobalSpanExporter installs a global SDK TracerProvider feeding an
-// in-memory exporter and a W3C propagator (what otelconnect and the trace-
-// response interceptor read), restoring the prior globals on cleanup so an
-// enabled-path test never leaks its provider into a sibling. It mirrors the
-// enabled path SetupTracerProvider installs, but with a SyncSpanProcessor onto
-// an InMemoryExporter so the test reads spans without a collector or a flush
-// race. Returns the exporter the assertions read.
+// Installs a synchronous in-memory exporter and W3C propagator, restoring
+// global state on cleanup.
 func installGlobalSpanExporter(t *testing.T) *tracetest.InMemoryExporter {
 	t.Helper()
 	prevTP := otel.GetTracerProvider()
@@ -66,11 +61,8 @@ func installGlobalSpanExporter(t *testing.T) *tracetest.InMemoryExporter {
 	return exp
 }
 
-// seedAdminChannel opens the store, finds-or-creates the bootstrap admin (the
-// account the socket door attributes every RPC to), and creates one OPEN channel
-// the admin is a member of — so PostMessage's D9 membership gate admits a post
-// over the socket. It returns the DSN (so Serve opens the SAME isolated schema)
-// and the channel id. Serve's own BootstrapAdmin later finds this same admin.
+// Creates an open channel for the bootstrap admin, enabling attributed socket
+// RPCs and member posts.
 func seedAdminChannel(t *testing.T, ctx context.Context) (dsn string, channelID string) {
 	t.Helper()
 	dsn = pgtest.RequireDSN(t) //nolint:contextcheck // DSN acquisition roots its own setup context; it takes no ctx
@@ -106,13 +98,9 @@ func postOverSocket(t *testing.T, ctx context.Context, socketPath, channelID str
 	return info.ResponseHeader(), resp.GetMessage().GetId()
 }
 
-// TestServerEmissionSocketDoorTracesPostMessage is the enabled-path emission
-// contract on the SHIPPED socket door: a PostMessage RPC produces a server span
-// carrying the compass.message.id of the appended message, and the response
-// carries a traceresponse header whose trace id equals that span's trace id.
-// Drives Serve (the production socket door with the otelconnect + trace-response
-// interceptors T2 mounts) against a real store, with a global in-memory span
-// exporter installed so the span is observable.
+// A PostMessage over Serve's socket door emits a span with the appended message
+// ID and a traceresponse header carrying the same trace ID. The global in-memory
+// exporter makes the production interceptors' span observable.
 func TestServerEmissionSocketDoorTracesPostMessage(t *testing.T) {
 	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 	exp := installGlobalSpanExporter(t)
@@ -143,14 +131,9 @@ func TestServerEmissionSocketDoorTracesPostMessage(t *testing.T) {
 	}
 }
 
-// TestServerEmissionDisabledSetsNoTraceResponseHeader is the disabled-path
-// contract: with NO global provider installed (the shipped default when
-// OTEL_EXPORTER_OTLP_ENDPOINT is unset), a PostMessage over the socket door sets
-// NO traceresponse header — otelconnect falls back to the global no-op provider,
-// so no span is ever recorded and the interceptor finds no valid span context to
-// stamp. (Span absence is proven transitively: no header can be stamped without a
-// recording span; a direct in-memory-exporter check would be vacuous, since no
-// code path routes spans into a non-global provider.)
+// With the default no-op provider, PostMessage must set no traceresponse header.
+// Without a recording span the interceptor has no valid context to stamp; a
+// separate empty exporter would not prove span absence.
 func TestServerEmissionDisabledSetsNoTraceResponseHeader(t *testing.T) {
 	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 	// Save/restore globals but install NO SDK provider: the shipped disabled
@@ -177,12 +160,8 @@ func TestServerEmissionDisabledSetsNoTraceResponseHeader(t *testing.T) {
 	}
 }
 
-// TestNetworkDoorExposesTraceResponseHeader pins the CORS half of T2: the
-// network door's Access-Control-Expose-Headers must include traceresponse so a
-// cross-origin browser can READ the header the trace-response interceptor sets.
-// Drives the production buildNetworkServer (via buildDoorHandler's sibling shape)
-// and inspects the actual-request CORS response, where rs/cors emits
-// Access-Control-Expose-Headers (not on the preflight).
+// The network door must expose traceresponse to cross-origin browsers. Inspect
+// the actual CORS request because Access-Control-Expose-Headers is not on preflight.
 func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 	st, admin, _ := newNetworkStore(t)
@@ -245,15 +224,9 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	}
 }
 
-// TestNetworkDoorAllowsPostHogSessionRequestHeader asserts the browser can
-// actually SEND the session-id header, which the span-stamping test cannot see:
-// that one calls srv.Handler directly on the RPC path, while a real browser is
-// gated by the CORS PREFLIGHT first. A request header missing from
-// Access-Control-Allow-Headers fails the preflight, so the browser blocks the
-// WHOLE request — the feature would be inert for the UI that is its only
-// source, while every span-side test stayed green.
-//
-// This is the inbound mirror of the traceresponse exposure asserted above.
+// A real browser needs the session header in Access-Control-Allow-Headers or its
+// preflight blocks the request. The span test calls the handler directly, so this
+// checks the separate CORS gate.
 func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 	st, admin, _ := newNetworkStore(t)
@@ -332,17 +305,9 @@ func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 	}
 }
 
-// TestNetworkDoorStampsPostHogSessionIDOnTheSpan asserts the J1 inbound half is
-// MOUNTED, not merely implemented: it drives a real RPC through the real
-// buildNetworkServer chain with the UI's X-POSTHOG-SESSION-ID header set and
-// reads session.id off the exported span. The request is deliberately
-// unauthenticated, so it also pins the interceptor's position AHEAD of the auth
-// chain — the key lands on a rejected request too.
-//
-// The interceptor's own unit tests cannot see this. They construct it directly,
-// so they stay green if it is never added to the chain — and an unmounted
-// interceptor is indistinguishable from a working one until someone tries to
-// pivot from a PostHog funnel to a trace and finds no key.
+// A rejected RPC through the production chain must still stamp session.id on its
+// exported span, proving the session interceptor is mounted before auth. Direct
+// unit tests cannot detect an unmounted interceptor.
 func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 	st, admin, _ := newNetworkStore(t)
@@ -386,12 +351,7 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
 
-	// The network door requires a bearer, so this request is REJECTED — and that
-	// is the stronger case to assert: the interceptor sits ahead of the auth
-	// chain, so the key must be on the span even when the RPC never reaches a
-	// handler. A failed request is precisely what someone pivots from a product
-	// funnel to diagnose, so a key that only appears on success is the wrong
-	// half of the seam.
+	// This unauthenticated request still must stamp the session ID on its span.
 	const wantSession = "0198f2c1-7b3a-7000-8b1e-2f9d4c5a6e70"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, compassv1connect.CompassServiceGetServerInfoProcedure, strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
@@ -420,11 +380,7 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 	}
 }
 
-// serveOTelSocket starts a production Serve on a fresh t.TempDir() socket with
-// the given version + DSN, waits for the socket to bind, and returns its path.
-// Serve is driven on a background goroutine bounded by a cancel deferred via
-// t.Cleanup so the server drains at test end. It gates on a served RPC
-// (waitListening + the caller's first PostMessage) rather than a sleep.
+// Starts Serve on a temporary socket and cancels it during test cleanup.
 func serveOTelSocket(t *testing.T, version, dsn string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "compass.sock")
@@ -439,7 +395,7 @@ func serveOTelSocket(t *testing.T, version, dsn string) string {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-errCh: // Serve returns nil on a clean ctx-cancel drain; a fault is covered by the serve_pgtest tests
+		case <-errCh: // Serve returns nil on clean cancel; fault paths are covered separately
 		case <-timeAfter():
 			t.Fatal("Serve did not return after ctx cancel")
 		}

@@ -42,11 +42,7 @@ type bodyReadResult struct {
 	proto  int
 }
 
-// isBodyReadTimeout reports whether err is the socket read-deadline failure the
-// middleware produces. net wraps a lapsed read deadline as os.ErrDeadlineExceeded
-// inside a *net.OpError that satisfies net.Error with Timeout()==true; the http
-// body reader may wrap it further, so both an errors.Is on the sentinel and a
-// net.Error Timeout() check are accepted (either alone proves a timeout).
+// Accepts wrapped deadline errors via the sentinel or net.Error timeout.
 func isBodyReadTimeout(err error) bool {
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
@@ -76,14 +72,8 @@ func startDeadlineDoor(t *testing.T, custom func(*http.Request) bodyReadResult) 
 	return srv, results
 }
 
-// driveDrip issues a chunked POST to path with a pipe-backed body and returns
-// the writer the test drips into. The request runs in a goroutine (Do blocks
-// until the server responds); cleanup closes the writer (unblocking any pending
-// drip) and waits for that goroutine under the shared safety-net, so no client
-// goroutine outlives the test — a requirement for a clean -race run. The
-// pipe-backed body has unknown length, so the transport frames it as chunked
-// and the server keeps reading until the terminating chunk, which the drip
-// controls: exactly the "headers arrive, body stalls" shape under test.
+// Starts a chunked POST; cleanup closes the writer and joins the request.
+// The unknown body length keeps the server reading until the final chunk.
 func driveDrip(t *testing.T, srv *httptest.Server, path string) *io.PipeWriter {
 	t.Helper()
 	pr, pw := io.Pipe()
@@ -348,23 +338,10 @@ func TestNetworkDoorBodyDeadlineReleasableSet(t *testing.T) {
 	}
 }
 
-// TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams is the per-STREAM-isolation
-// proof for the middleware's central design claim: the read deadline is armed
-// per HTTP/2 stream (Go's SetReadDeadline semantics on an h2 request body), so
-// one slow request cannot disturb a sibling multiplexed on the SAME connection.
-// The existing drip tests run over HTTP/1.1 (one request per conn), which cannot
-// distinguish a per-stream deadline from a per-connection one; this test drives
-// two concurrent POSTs down a single shared h2c connection and asserts the slow
-// one is cut WHILE the prompt sibling completes cleanly. A per-connection
-// deadline — the regression this guards — would cut the sibling too.
-//
-// Both requests use non-releasable paths, so both arm a deadline; the drip stream's
-// body stalls UNBOUNDED (its writer only closes in cleanup), so the socket read
-// deadline is the only thing that can end its server-side read — time is the
-// subject under test, never a sync device. Every assertion gates on the real
-// per-stream server-side read outcome delivered over a buffered channel, bounded
-// by the shared safety-net. Hermetic: h2c over loopback, OS-assigned port, no
-// Postgres — the default `go test ./server/` lane.
+// Two concurrent POSTs share an h2c connection: a stalled body must time out
+// without cutting its prompt sibling, proving deadlines are per stream.
+// Both non-releasable paths arm deadlines; the drip writer stays open until
+// cleanup, so only the server-side read deadline can end its read.
 func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	t.Parallel()
 	// A non-releasable path: both requests arm the deadline. The ?stream= query
@@ -494,11 +471,7 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	}
 }
 
-// launchPost fires a POST with the given body on its own goroutine and returns
-// a channel closed when the client call returns. A request-build failure is
-// reported on failResult (the per-stream outcome channel) so the test still
-// observes it; the response body is drained and closed. Shared by the two
-// isolation streams so the test body stays within funlen.
+// Fires a POST in its own goroutine, reports request errors, and drains replies.
 func launchPost(t *testing.T, client *http.Client, url string, body io.Reader, failResult chan<- bodyReadResult) <-chan struct{} {
 	t.Helper()
 	done := make(chan struct{})
@@ -518,14 +491,7 @@ func launchPost(t *testing.T, client *http.Client, url string, body io.Reader, f
 	return done
 }
 
-// startServerStreamDeadlineDoor mounts the REAL compass.v1 CompassService
-// handler wrapped in the PRODUCTION withBodyReadDeadline middleware on an h2c
-// loopback server and returns its base URL. It mirrors newH2CTestServer's h2c
-// setup (unstarted → cleartext protocols → Start → Cleanup) but injects a short
-// deadline, so a non-releasable server-stream (SubscribeEvents) arms it — the exact
-// seam the survival test drives, minus the production 30s wait. The mux is the
-// same handler the door ships, so the middleware sees the real, non-releasable
-// procedure path. Torn down in t.Cleanup.
+// Serves CompassService over h2c with a short request-body deadline.
 func startServerStreamDeadlineDoor(t *testing.T, svc *service, timeout time.Duration) string {
 	t.Helper()
 	server := connect.NewServer()
@@ -539,35 +505,10 @@ func startServerStreamDeadlineDoor(t *testing.T, svc *service, timeout time.Dura
 	return srv.URL
 }
 
-// TestNetworkDoorBodyDeadlineDoesNotCutServerStreamResponse is the invariant
-// that makes the body-read deadline safe to apply to the server-streams
-// (SubscribeEvents / SubscribeComms) that keep it: a non-releasable server-stream's
-// long-lived RESPONSE half must survive PAST the request-body read deadline. The
-// deadline is scoped to the request-body read and released at body EOF — NOT
-// armed on the whole connection/request — so a fast unary request followed by a
-// long response write is not bounded by it.
-//
-// SubscribeEvents is non-releasable, so the middleware arms the short deadline on
-// it. Its request is one bounded message; connect half-closes the request stream
-// immediately, so net/http releases the deadline at request-body EOF. The test
-// opens the stream, then waits 5x the deadline — a guaranteed LOWER bound (a
-// time.Sleep runs long, never short), so the deadline would already have fired
-// if it bounded the response — and only THEN publishes a live event. The
-// subscriber must still receive it.
-//
-// The rejected design — a deadline that bounds the whole request/connection
-// instead of releasing at body EOF — cuts this post-deadline frame: the
-// verified teeth-proof re-arms the read deadline after net/http clears it and
-// runs THIS exact assertion path (recvOne on the seq-2 frame) over HTTP/1.1,
-// where recvOne fails with a false receive. Over the production h2 transport the
-// response half is additionally immune (Go's h2 onReadTimeout closes only the
-// request body, never the response stream), so this positive assertion pins the
-// invariant that keeps SubscribeEvents/SubscribeComms safe on the deadline path.
-//
-// Time is the subject under test, never a sync device: the post-deadline wait is
-// a lower bound and every stream advance gates on a real Receive bounded by the
-// shared testTimeout safety-net. Hermetic: h2c over loopback, OS-assigned port,
-// no Postgres — the default `go test ./server/` lane.
+// The deadline applies only to request-body reads, not long-lived stream
+// responses. This test waits beyond the deadline before publishing an event,
+// then verifies SubscribeEvents still delivers it. A connection-wide deadline
+// would cut that response; Receive has a shared timeout safety net.
 func TestNetworkDoorBodyDeadlineDoesNotCutServerStreamResponse(t *testing.T) {
 	t.Parallel()
 	const deadline = 200 * time.Millisecond

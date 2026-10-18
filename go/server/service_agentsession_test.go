@@ -23,12 +23,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 )
 
-// recvAgentFrameOrTimeout runs one Receive on a SubscribeAgentSession client
-// stream with a deadline safety net; returns the ok value. Mirrors
-// recvStreamOrTimeout (service_test.go) for the AgentSessionFrame element type —
-// connect's ServerStreamForClient is generic over the message, so the two client
-// streams need separately-typed receive helpers. It never sleeps; the timeout
-// only guards against a wedged handler.
+// Runs one Receive with a deadline; the generated stream needs a typed helper.
 func receiveAgentFrameOrTimeout(t *testing.T, stream compassv1connect.CompassServiceSubscribeAgentSessionClientStream) (*compassv1.AgentSessionFrame, error) {
 	t.Helper()
 	type receiveResult struct {
@@ -49,11 +44,8 @@ func receiveAgentFrameOrTimeout(t *testing.T, stream compassv1connect.CompassSer
 	}
 }
 
-// subscribeAgentSessionCode opens a SubscribeAgentSession stream carrying no
-// bearer and returns the connect code the door answers with on the first
-// Receive. A handler that rejects before streaming surfaces its terminal error
-// there (no frame ever arrives); recvAgentFrameOrTimeout is the deadline safety
-// net, not a sleep.
+// Opens an unauthenticated stream and returns its rejection code. Rejected
+// pre-stream calls send no frame.
 func subscribeAgentSessionCode(t *testing.T, client compassv1connect.CompassServiceClient, sessionID string) connect.Code {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -71,13 +63,8 @@ func subscribeAgentSessionCode(t *testing.T, client compassv1connect.CompassServ
 	}
 }
 
-// TestSubscribeAgentSessionWithoutTailIsUnavailable pins branch 1
-// (service.go:284): a server built with no Runner door has a nil session tail,
-// so SubscribeAgentSession is CodeUnavailable — the same retryable-unavailable
-// contract as the lifecycle mutators (TestAgentSessionRPCsWithoutRunnerHubAreUnavailable),
-// never CodeUnimplemented and never a panic. The tail is checked before the
-// caller, so this holds even with no bearer on the request. A regression that
-// dropped the nil-tail guard would dereference nil and crash, reddening this.
+// With no session tail, SubscribeAgentSession returns CodeUnavailable before
+// checking the caller; a missing guard would dereference nil.
 func TestSubscribeAgentSessionWithoutTailIsUnavailable(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)

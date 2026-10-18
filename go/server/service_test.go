@@ -2,10 +2,8 @@
 
 package server
 
-// Tests for the compass.v1 service handlers, exercised end to end through a real
-// connect-go client over in-process cleartext HTTP/2 — the shipped door minus the Unix
-// socket. Each test wires a real event bus so the SubscribeEvents snapshot/tail/resync
-// paths run against the actual bus, not a stub.
+// Exercises CompassService handlers over cleartext HTTP/2 with a real event bus,
+// including SubscribeEvents snapshot, tail, and resync paths.
 
 import (
 	"context"
@@ -40,14 +38,8 @@ func statusEvent() busPayload {
 	}
 }
 
-// chunkEvent is a positioned AgentMessageChunk carrying `size` incompressible
-// bytes of text. Incompressibility matters: connect gzips responses by default,
-// so a run of zero bytes would collapse on the wire and never fill the client's
-// flow-control window — the lag test needs real bytes to create real
-// backpressure. The bytes are a slice of one fixed, high-entropy buffer, so
-// every event resists gzip yet the payload is fully deterministic across runs
-// (no clock, no entropy source). Reuse is safe: connect gzips each streamed
-// message independently, so identical bytes still fill the wire.
+// Builds an incompressible chunk event; compression would not fill the HTTP/2
+// flow-control window.
 func chunkEvent(size int) busPayload {
 	if size > len(incompressibleBytes) {
 		size = len(incompressibleBytes)
@@ -261,13 +253,7 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
 
-	// Prime one small event before subscribing. connect flushes the stream's
-	// response headers on the handler's first Send, and SubscribeEvents (the
-	// client RoundTrip) blocks until those headers arrive — with an empty bus the
-	// handler would sit in the live loop and never send, deadlocking the test. A
-	// single replay event makes the handler Send once, so the client stream
-	// opens; the server-side subscriber is then registered and ready to be
-	// flooded on its live tail.
+	// Prime replay so headers flush; an empty bus blocks RoundTrip before registration.
 	bus.Publish(t.Context(), statusEvent())
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -278,19 +264,8 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stream.Close() })
 
-	// Now flood the live tail while the client reads nothing. The server's Send
-	// blocks once the client's HTTP/2 stream window (a fixed ~4 MiB) plus socket
-	// buffers fill; the forward loop then stops draining the bus's live buffer,
-	// which fills (liveBufferCapacity = 1024) and overruns. The bus latches the
-	// subscriber lagged and closes its Live channel, so once the client resumes
-	// reading and the buffered events drain, the handler emits a terminal
-	// ResyncRequired.
-	//
-	// Deterministic overrun, no timing: 16 KiB incompressible events cap what the
-	// transport can absorb before Send blocks at ~4 MiB / 16 KiB ≈ 256 events
-	// plus bounded socket-buffer slack — far under the flood, which is many
-	// multiples of that ceiling plus the whole live buffer. The client reads
-	// nothing until every publish has returned, so the pile-up is guaranteed.
+	// Flood without reading until the live buffer overruns, then drain to observe
+	// the terminal ResyncRequired.
 	const eventBytes = 16 * 1024
 	const flood = 8192 // >> transport ceiling (~256) + liveBufferCapacity (1024)
 	for range flood {
@@ -353,14 +328,8 @@ func recvStreamOrTimeout(t *testing.T, stream compassv1connect.CompassServiceSub
 	}
 }
 
-// TestAgentSessionRPCsWithoutRunnerHubAreUnavailable pins the net-new contract
-// for the three agent-session lifecycle mutators: on a server built with no
-// Runner door (hub nil, the socket-only path), each returns connect
-// CodeUnavailable — never CodeUnimplemented (the pre-handler default) and never
-// a panic/success. GetAgentStatus is not in this set: it is served from the
-// Bridge board projection (not a Runner relay), so it does not depend on the
-// hub — its serving path is covered in service_agentstatus_test.go. Driven
-// through the real connect client so the actual handler dispatch runs.
+// Without a Runner hub, agent-session mutators return CodeUnavailable through
+// Connect; GetAgentStatus remains a local projection RPC.
 func TestAgentSessionRPCsWithoutRunnerHubAreUnavailable(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
@@ -401,11 +370,8 @@ func TestAgentSessionRPCsWithoutRunnerHubAreUnavailable(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
-			// CodeUnavailable (not CodeUnimplemented) is the contract: a server
-			// with no Runner door pins the RPC as retryable-unavailable, never
-			// the old unimplemented-stub code. Asserting Unavailable pins that
-			// regression — CodeUnimplemented != CodeUnavailable, so this fails
-			// if the handler ever reverts to the embedded Unimplemented default.
+			// CodeUnavailable is the contract for a missing Runner door; it must
+			// not fall back to the embedded Unimplemented handler.
 			if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 				t.Fatalf("want CodeUnavailable (not CodeUnimplemented), got %v (err=%v)", got, err)
 			}

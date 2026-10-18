@@ -42,11 +42,8 @@ type dmE2EWire struct {
 	adminID  store.AccountID // the human owner of every seeded/spawned agent
 }
 
-// newDME2EWire stands up the store + hub + fake Runner door (via attachFakeRunner),
-// a comms service on a fresh comms bus, and the delivery consumer wired exactly as
-// startDeliveryConsumer does — REAL waker with the comms service as its dm opener,
-// so both the delivery sweep and the spawn auto-open exercise real code. The Run
-// loop is on a goroutine bounded by the test ctx.
+// Builds the store, hub, fake Runner door, comms service, and delivery consumer.
+// The real waker uses comms for DM opening; its Run loop is bounded by the test context.
 func newDME2EWire(t *testing.T) *dmE2EWire {
 	t.Helper()
 	ctx := context.Background() // the test root context (rule://go-thread-context _test.go exemption)
@@ -327,13 +324,8 @@ func TestPeerDMTaskingLoopEndToEnd(t *testing.T) {
 	}
 }
 
-// TestPeerDMSpawnPathDelivers drives the spawn-path leg (design.md T6:826): a
-// manager spawns a peer, the spawn auto-opens the manager<->peer DM and returns a
-// live dm_channel_name whose channel satisfies the DM invariants, and a manager
-// post into that DM reaches the spawned peer as a delivery target — event-gated
-// on the recording runner. The spawn runs the REAL hub Provision->Start, so the
-// peer is genuinely hub-live at the fake session id and the manager post reaches
-// it via the live fan-out (not a manual OnSessionStarted).
+// A spawned peer receives the manager's DM post. The real Provision->Start path
+// makes it live, and the event-gated runner observes delivery through fan-out.
 func TestPeerDMSpawnPathDelivers(t *testing.T) {
 	w := newDME2EWire(t)
 	ctx := w.ctx
