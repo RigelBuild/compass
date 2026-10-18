@@ -1067,9 +1067,9 @@ func resolveWorkflowState(repo string, states []workflowState, in TransitionStat
 	return matches[0].ID, nil
 }
 
-// defaultWorkflowState maps close to completed (not canceled); open maps to
-// unstarted, falling back to backlog. Multiple candidates require an explicit
-// name rather than a positional guess.
+// defaultWorkflowState maps close to completed (not canceled). Open prefers
+// unstarted and falls back to backlog only when the team has no unstarted state.
+// Multiple candidates of one type require an explicit name, not a positional guess.
 func defaultWorkflowState(repo string, states []workflowState, target string) (string, error) {
 	types := []string{linearTypeUnstarted, linearTypeBacklog}
 	if target == stateClosed {
