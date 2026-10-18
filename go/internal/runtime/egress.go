@@ -111,8 +111,9 @@ func (e EgressPolicy) NftScript() string {
 		pin4, pin6 := "", ""
 		if isDNSName(host) {
 			// Pin the name so the agent dials exactly the addresses allowed here.
-			pin4 = fmt.Sprintf(" echo \"$ip %s\" >> %s;", host, egressHostsFile)
-			pin6 = fmt.Sprintf(" case \"$ip\" in ::ffff:*) ;; *) echo \"$ip %s\" >> %s;; esac;", host, egressHostsFile)
+			// A failed pin write exits non-zero: an unpinned address can rotate away.
+			pin4 = fmt.Sprintf(" echo \"$ip %s\" >> %s || exit 1;", host, egressHostsFile)
+			pin6 = fmt.Sprintf(" case \"$ip\" in ::ffff:*) ;; *) echo \"$ip %s\" >> %s || exit 1;; esac;", host, egressHostsFile)
 		}
 		fmt.Fprintf(&b,
 			"\n(set +e; v4=\"$(getent ahostsv4 %[1]s | awk '{print $1}' | sort -u)\"; "+

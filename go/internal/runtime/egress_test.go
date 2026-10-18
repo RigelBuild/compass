@@ -215,6 +215,7 @@ func TestEgressSubshellToleratesFailingAddElement(t *testing.T) {
 		// entrypoint runs, then assert the outer script still reaches its end.
 		forced := getentRe.ReplaceAllString(sub, "a b c")
 		forced = nftAddRe.ReplaceAllString(forced, "false")
+		forced = strings.ReplaceAll(forced, egressHostsFile, filepath.Join(t.TempDir(), "hosts"))
 		outer := "set -eu\n" + forced + "\necho REACHED_END"
 
 		out, err := exec.CommandContext(t.Context(), "sh", "-c", outer).CombinedOutput()
@@ -228,8 +229,7 @@ func TestEgressSubshellToleratesFailingAddElement(t *testing.T) {
 }
 
 func TestArmPinsResolvedAddressesInEtcHosts(t *testing.T) {
-	// The agent must dial only addresses the arm put in the allow sets. Arm
-	// resolves once; if the agent re-resolved later it could get a rotated
+	// Arm resolves once; an agent that re-resolved later could get a rotated
 	// address the firewall drops. Run the real script against fake getent/nft
 	// and a temp hosts file, then check every resolved address is pinned.
 	script := MustAllowEgress("github.com", "192.0.2.99").NftScript()
@@ -283,5 +283,41 @@ esac
 		if strings.Contains(string(got), unwanted) {
 			t.Errorf("hosts file pins %q\nhosts:\n%s", unwanted, got)
 		}
+	}
+}
+
+func TestArmFailsWhenAPinCannotBeWritten(t *testing.T) {
+	// An address allowed in nft but missing from the hosts file reproduces the
+	// rotation outage, so a failed pin write must fail the whole arm.
+	script := MustAllowEgress("github.com").NftScript()
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"nft":    "exit 0\n",
+		"getent": "printf '140.82.112.3 STREAM github.com\\n'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolv := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(resolv, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, probe, pin string }{
+		// A hosts path inside a missing directory cannot be opened at all.
+		{"probe fails", filepath.Join(dir, "missing", "hosts"), filepath.Join(dir, "missing", "hosts")},
+		// The probe opens fine but the per-address append fails.
+		{"append fails", filepath.Join(dir, "hosts"), filepath.Join(dir, "missing", "hosts")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := strings.Replace(script, egressHostsFile, tc.probe, 1)
+			run = strings.ReplaceAll(run, egressHostsFile, tc.pin)
+			run = strings.ReplaceAll(run, "/etc/resolv.conf", resolv)
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", run)
+			cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin:" + os.Getenv("PATH")}
+			if out, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("arm succeeded with an unwritable pin file\noutput:\n%s", out)
+			}
+		})
 	}
 }

@@ -60,7 +60,7 @@ func capEffOf(t *testing.T, ctx context.Context, cli *PodmanCLI, id WorkloadID, 
 // regression: in a container granted CAP_NET_ADMIN (as every agent container
 // is, agent.go createAndStart CapAdd), an exec pinned to the agent uid via
 // --user must have an all-zero effective capability set, while the container's
-// default-user exec (the armEgress identity) retains the capability. A regression
+// uid-0 exec (the armEgress identity) retains the capability. A regression
 // that drops the --user on an agent exec makes the two masks equal and fails
 // here.
 func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
@@ -96,9 +96,9 @@ func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
 
 	probe := []string{"grep", "CapEff", "/proc/self/status"}
 
-	// The armEgress identity: nil --user, runs as the image default user and
-	// inherits the container's CAP_NET_ADMIN so it can arm nft.
-	privileged := capEffOf(t, ctx, cli, cid, NewExecSpec(probe...))
+	// The armEgress identity: --user 0, container root, holding the container's
+	// CAP_NET_ADMIN so it can arm nft and write the /etc/hosts pins.
+	privileged := capEffOf(t, ctx, cli, cid, NewExecSpec(probe...).AsUser("0"))
 	// The agent-work identity: explicit --user <agent uid>, empty capability set.
 	agent := capEffOf(t, ctx, cli, cid, NewExecSpec(probe...).AsUser(strconv.FormatUint(uint64(agentUID), 10)))
 
@@ -106,9 +106,13 @@ func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
 		t.Fatalf("agent-uid exec CapEff = %q, want an empty set %q: an --user agent exec must hold no capabilities so it cannot alter the egress ruleset (egress.go)", agent, "0000000000000000")
 	}
 	if privileged == agent {
-		t.Fatalf("default-user exec CapEff = %q equals the agent-uid exec's = %q: the NET_ADMIN the entrypoint arms with must not be inherited by agent execs", privileged, agent)
+		t.Fatalf("uid-0 exec CapEff = %q equals the agent-uid exec's = %q: the NET_ADMIN the arm runs with must not be inherited by agent execs", privileged, agent)
 	}
-	if !strings.Contains(privileged, "1000") {
-		t.Fatalf("default-user exec CapEff = %q, want the CAP_NET_ADMIN bit (0x1000) set — the armEgress identity must retain the capability it arms nft with", privileged)
+	mask, err := strconv.ParseUint(privileged, 16, 64)
+	if err != nil {
+		t.Fatalf("parse uid-0 exec CapEff %q: %v", privileged, err)
+	}
+	if mask&(1<<12) == 0 {
+		t.Fatalf("uid-0 exec CapEff = %q, want the CAP_NET_ADMIN bit (0x1000) set — the armEgress identity must retain the capability it arms nft with", privileged)
 	}
 }
