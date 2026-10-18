@@ -333,19 +333,14 @@ func TestSpawnCaptureWaitDelayBoundsLeakedPipeHang(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "orphan.pid")
 
-	// A shell stub that (1) forks a child inheriting the captured stdout pipe and
-	// outliving the parent (recording its pid so the test reaps it), then (2)
-	// hangs the parent so the per-command timeout SIGKILLs it. The podman argv
-	// ($@) is ignored on purpose. The 30s orphan sleep exceeds WaitDelay + the
-	// safety deadline, so a WaitDelay-less hang is caught, not tolerated.
+	// The stub forks a pipe-holding orphan, records its pid, then hangs until timeout.
+	// The orphan outlives WaitDelay so removing that bound makes the test fail.
 	stub := "#!/bin/sh\nsleep 30 &\necho $! > " + pidFile + "\nexec sleep 30\n"
 	prog := filepath.Join(dir, "podman-stub.sh")
 	if err := os.WriteFile(prog, []byte(stub), 0o755); err != nil {
 		t.Fatalf("writing stub: %v", err)
 	}
-	// Reap the orphaned pipe-holder by its recorded pid — never a pattern kill.
-	// It closes the stdout pipe, so even a regressed (WaitDelay-less) call left
-	// blocked in the goroutine below unwedges and the goroutine exits.
+	// Reap the recorded orphan by pid; it holds the stdout pipe open until killed.
 	t.Cleanup(func() { killRecordedPid(t, pidFile) })
 
 	cli := NewPodmanCLI().WithProgram(prog).WithTimeout(200 * time.Millisecond)
@@ -435,16 +430,11 @@ func TestChildHandleTerminateKillsAndReaps(t *testing.T) {
 		t.Fatalf("ExecStreaming: %v", err)
 	}
 
-	// Wait for the stub to record the child pid before terminating, so the pid we
-	// probe is the process Terminate actually acts on. Gate on the file appearing,
-	// never a fixed sleep.
+	// Wait for the child pid file instead of using a fixed sleep before Terminate.
 	pid := waitForRecordedPid(t, pidFile)
 
-	// Terminate must return within a WaitDelay-bounded deadline. ExecStreaming
-	// sets cmd.WaitDelay=10s, so a healthy Terminate returns effectively at once
-	// (the child dies on SIGKILL); the deadline sits above WaitDelay and far
-	// below the stub's 120s sleep, so a wedged Terminate — or one that never
-	// signals and blocks in Wait until the stub exits on its own — trips it.
+	// Terminate must return before WaitDelay and far earlier than the stub's sleep.
+	// A path that waits without signaling exceeds the safety deadline.
 	const safety = 15 * time.Second
 	done := make(chan error, 1) // buffered so a late send can't leak the goroutine after a failed deadline.
 	go func() { done <- se.Process.Terminate() }()
@@ -452,16 +442,11 @@ func TestChildHandleTerminateKillsAndReaps(t *testing.T) {
 	case <-time.After(safety):
 		t.Fatalf("Terminate did not return within %s — it wedged instead of Kill+Wait", safety)
 	case <-done:
-		// A kill-signalled child yields a non-nil "signal: killed" error from
-		// Wait; that's the expected result of Terminate, not a failure. The
-		// contract under test is the process state after it returns.
+		// Wait's signal error is expected; the contract is the process state after Terminate.
 	}
 
-	// The contract: after Terminate returns the child is dead AND reaped. A live
-	// process (Terminate never signalled) or a zombie (signalled but never
-	// reaped) both keep kill(pid,0) returning nil; only a fully reaped process is
-	// gone (ESRCH). ESRCH is the single condition that holds iff Terminate did
-	// both its jobs.
+	// After Terminate, kill(pid, 0) must report ESRCH: the child is dead and reaped.
+	// A live process or zombie would still exist.
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("after Terminate, kill(%d, 0) = %v, want ESRCH — child not killed-and-reaped (still alive, or a zombie)", pid, err)
 	}

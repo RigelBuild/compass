@@ -150,10 +150,7 @@ func requireSuccess(stage string, out ExecOutput) error {
 }
 
 // AgentRuntime drives the per-agent workload lifecycle over a WorkloadRuntime.
-//
-// When constructed with an AgentRegistry via NewAgentRuntimeWithRegistry, a
-// successful Launch registers the handle and Teardown deregisters it, so the
-// Runner's session RPCs can resolve a launched container by name.
+// An optional registry tracks successful launches until teardown.
 type AgentRuntime struct {
 	runtime  WorkloadRuntime
 	registry *AgentRegistry
@@ -234,15 +231,8 @@ func (r *AgentRuntime) Teardown(ctx context.Context, handle *AgentHandle) error 
 	return nil
 }
 
-// WriteAgentFile materializes a Runner-supplied file into the agent's $HOME as
-// the agent user, creating parent dirs. Two invariants match every sibling
-// materializer in this package (installCredentials, the secrets materializers):
-// the body is fed over stdin, never argv — argv is visible in the container's
-// process list while stdin is not; and the file lands 0600 under umask 077 (the
-// created dir 0700), because a reconstructed session transcript is as sensitive
-// as the aggregate env file. The path components are positional args to a fixed
-// sh script, never interpolated into the script text, so a crafted path cannot
-// inject shell.
+// WriteAgentFile writes a Runner-supplied file as the agent user with mode 0600.
+// It sends the body over stdin and passes paths as arguments to a fixed script.
 func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id WorkloadID, uid uint32, homeDir, relPath, body string) error {
 	script := `set -eu; umask 077; dir=$(dirname "$1"); mkdir -p "$dir"; cat > "$1"; chmod 600 "$1"`
 	spec := NewExecSpec("sh", "-c", script, "sh", filepath.Join(homeDir, relPath)).
@@ -359,25 +349,14 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Work
 	return id, nil
 }
 
-// inGuestEgressArmer is a backend that arms the egress firewall itself, inside
-// its isolation boundary (as guest root, before the exec gate opens), so the
-// host-side armEgress exec must be skipped. It is a marker, deliberately NOT a
-// verb on the WorkloadRuntime interface (podman.go): AgentRuntime probes
-// for it and skips arming when a backend self-arms (design §(c)). Only
-// MicroVMRuntime implements it; PodmanCLI and the test fakes do not, so the
-// host-side arm runs byte-identically for them.
+// inGuestEgressArmer marks backends that arm egress inside their isolation boundary.
+// AgentRuntime skips host-side arming for these backends; only MicroVMRuntime does so.
 type inGuestEgressArmer interface {
 	EgressArmedInGuest() bool
 }
 
-// egressUnenforcer is a backend that cannot enforce an egress policy at all,
-// because it has no isolation boundary to firewall — a host process shares the
-// host's network namespace. It is deliberately distinct from
-// inGuestEgressArmer: that marker means "someone armed it", this one means
-// "nobody did and nobody can", and conflating them would report a contained
-// posture for an uncontained launch. Like that marker, a WorkloadRuntime
-// decorator must re-expose EgressUnenforced: swallowing it would report an
-// uncontained launch as armed.
+// egressUnenforcer marks backends with no isolation boundary to enforce egress.
+// Decorators must preserve this marker so configured policies are not silently dropped.
 type egressUnenforcer interface {
 	EgressUnenforced() bool
 }
@@ -408,13 +387,8 @@ func (e *UnenforceableEgressPolicyError) Error() string {
 	)
 }
 
-// provision runs the post-start steps, all inside the running container:
-// firewall (root), credentials (agent user), checkout dir (agent user). A
-// backend that self-arms egress in-guest (inGuestEgressArmer, the microVM
-// backend) has already armed by Start, so the host-side armEgress exec — which
-// on that backend would run capability-less and fail — is skipped. A backend
-// that cannot enforce egress (egressUnenforcer) refuses any configured policy
-// rather than dropping it.
+// provision runs firewall, credentials, and checkout setup after start.
+// It skips host-side arming for self-arming backends and refuses unenforceable policies.
 func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
 	// Unenforced is tested first so a backend claiming both markers refuses a
 	// policy it cannot honour rather than taking the self-arm branch and

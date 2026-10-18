@@ -70,14 +70,8 @@ func (a *AppleContainerCLI) Create(ctx context.Context, spec WorkloadSpec) (Work
 	return WorkloadID(strings.TrimSpace(string(stdout))), nil
 }
 
-// appleCreateArgs assembles the argv for `container create`. Split out so the
-// argv assembly is unit-testable without spawning the CLI, the createArgs
-// discipline.
-//
-// No userns/uid-remap token is emitted, and that is load-bearing: virtiofs
-// translates identity at the boundary, so the podman remap has no analogue here
-// and a hand-rolled substitute would break the ownership round-trip that
-// already works.
+// appleCreateArgs assembles create argv for tests without spawning the CLI.
+// It omits user-namespace remapping because virtiofs translates identity itself.
 func appleCreateArgs(spec WorkloadSpec) []string {
 	// Preallocate: 3 fixed tokens (create, --name+value) + 2 per
 	// cap/mount/env/label pair + image + command tokens, so appends don't reallocate.
@@ -292,11 +286,7 @@ func appleExecStreamingArgs(id WorkloadID, spec StreamingExecSpec) []string {
 	return args
 }
 
-// Stop stops a running container, allowing timeout for graceful exit. A
-// container that is already gone is success: teardown runs more than once (a
-// retry, or after an operator removed the container by hand) and must be a
-// no-op the second time, not a hard failure. An already-stopped but existing
-// container already exits 0, so only absence needs tolerating.
+// Stop stops a container gracefully and treats absence as success for idempotent teardown.
 func (a *AppleContainerCLI) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
 	return a.runTolerateMissing(ctx, "container stop", appleStopArgs(id, timeout))
 }
@@ -379,23 +369,14 @@ func appleInspectArgs(name string) []string {
 // this substring.
 const appleNotFoundStderr = "not found"
 
-// appleMissingContainer reports whether a non-zero result is the CLI saying the
-// container does not exist.
-//
-// Exit code AND wording, never the code alone: an unreachable apiserver also
-// exits 1 (an "XPC connection error" stderr), so a code-only guard would report
-// every container as absent while the engine is down.
+// appleMissingContainer requires both exit code and not-found wording.
+// An unavailable apiserver also exits 1, so the code alone cannot prove absence.
 func appleMissingContainer(exitCode int, stderr string) bool {
 	return exitCode == 1 && strings.Contains(stderr, appleNotFoundStderr)
 }
 
-// classifyInspectErr turns an inspect exit code plus stderr into an existence
-// verdict. Pure so the classification is unit-testable against real CLI output
-// without spawning anything.
-//
-// Only the CLI's own "not found" wording means absence; any other non-zero is a
-// failed probe, and reporting it as absence would let a caller recreate a
-// container that already exists.
+// classifyInspectErr maps CLI output to existence; only its not-found wording means absent.
+// Other failures remain errors to avoid recreating an existing container.
 func classifyInspectErr(exitCode int, stderr string) (bool, error) {
 	trimmed := strings.TrimSpace(stderr)
 	switch {

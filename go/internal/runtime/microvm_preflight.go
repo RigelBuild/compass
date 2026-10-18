@@ -23,11 +23,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
 )
 
-// preflightProbes is the effectful seam VerifyMicroVMSupport drives its host
-// checks through, so every failure axis is hermetically unit-testable without a
-// real /dev/kvm, PATH binary, or filesystem — the parsePodmanVersion testability
-// split generalized (podman.go). defaultPreflightProbes wires the real
-// implementations; tests inject fakes.
+// preflightProbes is the effectful seam used to test VerifyMicroVMSupport without host prerequisites.
+// Production wires real probes; tests inject fakes.
 type preflightProbes struct {
 	// openKVM opens /dev/kvm R/W and returns the open error (nil = openable).
 	openKVM func() error
@@ -39,11 +36,8 @@ type preflightProbes struct {
 	statImage func(string) error
 	// hashImage returns the streaming lowercase-hex SHA-256 of the image file.
 	hashImage func(string) (string, error)
-	// readQuota reads the active project quota scoping a volume path (D7:
-	// read-only, never assign). Behind the seam so the quota axis is
-	// hermetically testable — a prjquota-active filesystem cannot be
-	// provisioned rootless, so a fake reading is the only way this decision is
-	// covered on a dev box.
+	// readQuota is behind a seam because project quotas cannot be provisioned rootless.
+	// Tests inject readings to cover the decision without a quota filesystem.
 	readQuota quotaReadFn
 	// geteuid returns the Runner's effective uid, behind the seam so the root
 	// refusal is testable without running the suite as root.
@@ -131,28 +125,12 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 			"passes untranslated guest ids through to the host — run the Runner as a non-root user")
 	}
 
-	// 6. Session-volume quota (D7): under the multi-tenant profile an
-	// operator-provisioned project quota MUST be active on the session-volume
-	// filesystem, or startup fails naming the fix. Otherwise the observed
-	// utilization is logged and nothing gates.
+	// Verify session-volume quota; QuotaRequired decides whether an unverifiable quota blocks startup.
 	return m.verifyQuota(ctx, probes)
 }
 
-// verifyQuota runs the D7 volume-quota check against the SESSION-VOLUME
-// filesystem, which is VolumeRoot — the parent dir P2's volume lifecycle mints
-// per-session volumes under. It is deliberately NOT the RunRoot: that is the
-// socket dir, held to a short /tmp path by the AF_UNIX sun_path budget, so a
-// verdict read there is routinely about a different filesystem than the one
-// sessions consume. Verification is read-only and rootless (microvm_quota.go);
-// the Runner never assigns a quota.
-//
-// FAIL CLOSED when QuotaRequired is set and VolumeRoot is unknown: reporting a
-// verdict about a filesystem that was never probed is worse than refusing, since
-// it passes the multi-tenant gate on evidence from an unrelated mount. With
-// QuotaRequired unset (Dogfood, single trusted tenant) an unknown volume root is
-// logged and startup proceeds — an absent quota is the documented posture there.
-//
-// No meter is registered here; the coherent metric set is V7's.
+// verifyQuota checks the session-volume filesystem, not RunRoot, which may be on another mount.
+// Verification is read-only; an unknown VolumeRoot fails closed when quota is required.
 func (m *MicroVMRuntime) verifyQuota(ctx context.Context, probes preflightProbes) error {
 	if m.config.VolumeRoot == "" {
 		if m.config.QuotaRequired {
@@ -323,16 +301,12 @@ func parseManifest(path string) (map[string]string, error) {
 	return out, nil
 }
 
-// canaryDeadline bounds a whole BootCanary call end to end when the caller's ctx
-// carries no deadline of its own: boot (≤60s worst case, bootDeadline) plus
-// headroom for provision, one echo exec, and the severed teardown (record §(f)).
+// canaryDeadline bounds BootCanary when the caller provides no deadline.
+// It allows for boot, provisioning, echo exec, and teardown.
 const canaryDeadline = 90 * time.Second
 
-// canaryTeardownGrace is the fresh short grace the severed teardown ctx carries:
-// the canary's own bounded ctx may already have expired (a mid-boot timeout), so
-// teardown runs under a WithoutCancel copy of it so the VM is torn down cleanly
-// instead of against an already-dead ctx (record §(f)). It caps the daemons'
-// SIGTERM grace in vm.Shutdown; os.RemoveAll still ignores ctx.
+// canaryTeardownGrace gives teardown a fresh bounded context if the canary context expired.
+// It caps VM shutdown grace; os.RemoveAll does not use the context.
 const canaryTeardownGrace = 30 * time.Second
 
 // canaryNamePrefix is the reserved name prefix every canary session carries. It
@@ -343,34 +317,14 @@ const canaryNamePrefix = "compass-canary-"
 // CanaryReport is the measurement a successful BootCanary produces: the boot
 // latency the boot chain took to reach ready, and the guest's memory footprint.
 type CanaryReport struct {
-	// BootLatency is the wall time of the canary's Start call — the full
-	// Launch→Health-OK→Provision "time to ready" window a real session waits
-	// (record §(e); mirrors TestMicroVMQBudget's Start timing).
 	BootLatency time.Duration
-	// GuestRSSBytes is the summed proportional-set-size (PSS) of the VM's
-	// host-side processes (VMM/virtiofsd/passt), converted from the kB
-	// smaps_rollup reports to bytes. PSS, not RSS: guest RAM is one shared
-	// mapping and PSS divides shared pages among mappers, so it is the honest
-	// per-VM share (record §(e)/OQ-10, launch.go PSS). The value undercounts by
-	// the passt share on a healthy host (passt sets PR_SET_DUMPABLE=0, so its
-	// smaps_rollup Pss is unreadable and drops out of the sum), so treat it as a
-	// vmm+virtiofsd-dominated lower bound, not an exact footprint. Zero when PSS
-	// is wholly unreadable — the canary's gate is the boot chain, RSS is
-	// telemetry, so a PSS read error is reported, never fatal.
+	// GuestRSSBytes sums process PSS. It undercounts when passt is not dumpable, so it is a lower bound.
+	// Zero means all PSS reads failed; this is telemetry and does not fail the canary.
 	GuestRSSBytes int64
 }
 
-// BootCanary is the dynamic startup preflight for the microVM backend: it really
-// boots a throwaway canary VM through the backend's OWN lifecycle verbs
-// (Create→Start→Exec→Remove), proving the whole chain — KVM, vsock, image,
-// guest supervisor, exec gate — not just binary presence, and returns the boot
-// latency + guest PSS the observability surface consumes (record §(e)). It owns
-// the VM's entire lifetime inside the call, so it derives a bounded ctx spanning
-// boot→teardown from the caller's ctx (the caller's deadline when present, else
-// canaryDeadline) — the ctx-lifetime footgun guards VMs that OUTLIVE the bound,
-// which this VM structurally cannot (record §(f)). Teardown is severed from that
-// deadline so a mid-boot timeout still tears the VM down; the teardown and the
-// throwaway-workspace cleanup errors are joined into the return, never discarded.
+// BootCanary boots a throwaway VM through Create, Start, Exec, and Remove.
+// It returns boot latency and guest PSS; teardown and workspace cleanup errors are joined.
 func (m *MicroVMRuntime) BootCanary(ctx context.Context) (report CanaryReport, err error) {
 	// Derive the bound only when the caller carries none: under a caller
 	// deadline the whole canary honors it as-is (mirrors bootPollContext).

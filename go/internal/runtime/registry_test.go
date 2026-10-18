@@ -1,11 +1,6 @@
 package runtime
 
-// The Runner's live-container handle cache the session RPCs resolve a launched
-// container by name through. Pins the resolve-only-registered contract (a miss
-// returns (nil,false), a hit returns the exact handle) across the full
-// Register -> Resolve(hit) -> Deregister -> Resolve(miss) round-trip, and that
-// concurrent access stays data-race-free (run under -race).
-
+// These tests pin the AgentRegistry resolve/register/deregister contract and concurrent safety.
 import (
 	"strconv"
 	"sync"

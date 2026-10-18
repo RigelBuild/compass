@@ -45,13 +45,8 @@ type QuotaReading struct {
 	UsedInodes int64
 	// FilesystemBytes is the block total at MountRoot — the unprojected size.
 	FilesystemBytes int64
-	// FilesystemInodes is the inode total at MountRoot — unprojected, and on
-	// XFS an ESTIMATE rather than a fixed filesystem property: xfs_statfs_inodes
-	// computes f_files = min(icount + fakeinos, XFS_MAXINUMBER) where
-	// fakeinos = XFS_FSB_TO_INO(mp, f_bfree) (fs/xfs/xfs_super.c), because XFS
-	// allocates inodes on demand — so it SHRINKS as the filesystem fills and is
-	// read at a different instant than LimitInodes. Active()'s inode arm carries
-	// a margin for exactly this.
+	// FilesystemInodes is the mount-root inode estimate. XFS estimates shrink as space fills,
+	// so Active applies a margin for sampling jitter.
 	FilesystemInodes int64
 }
 
@@ -94,11 +89,8 @@ func (r QuotaReading) Active() bool {
 	return r.LimitInodes < r.FilesystemInodes-r.FilesystemInodes/inodeMarginDivisor
 }
 
-// inodeMarginDivisor sets how much smaller than the mount-root inode estimate a
-// path's inode total must be before it counts as a projected bound: 1/16 (6.25%)
-// of the estimate. It is a jitter floor, not a tuned threshold — adjacent statfs
-// samples of XFS's fakeinos estimate differ by far less, while a provisioned
-// project inode limit is smaller by orders of magnitude.
+// inodeMarginDivisor sets the jitter margin for XFS's shrinking mount-root inode estimate.
+// Project limits are much smaller than adjacent statfs samples.
 const inodeMarginDivisor = 16
 
 // UsedRatio is the observed byte utilization in [0,1] — the value the preflight
@@ -131,22 +123,11 @@ func (r QuotaReading) String() string {
 		r.FilesystemBytes, r.FilesystemInodes)
 }
 
-// quotaReadFn reads the active quota scoping a path. It is the effectful seam
-// verifyVolumeQuota drives, mirroring preflightProbes' openKVM/statImage split,
-// so the decision below is unit-testable against a fabricated reading with no
-// quota'd filesystem (which cannot be provisioned rootless).
+// quotaReadFn is the effectful seam for read-only quota checks.
 type quotaReadFn func(path string) (QuotaReading, error)
 
-// verifyVolumeQuota answers whether an operator-provisioned project quota is
-// active on path and at least as large as want, returning the observed reading
-// (for the caller's utilization log) alongside the verdict. It VERIFIES ONLY —
-// no FS_IOC_FSSETXATTR, no quotactl set, no mount (D7).
-//
-// nil when an enforced quota is active and meets want (a zero want asks
-// presence only). Otherwise a startup error naming the volume, what was
-// observed, and the operator fix — the D3 "name the missing capability and the
-// fix" posture, never a degrade signal. The caller decides whether an absent
-// quota is fatal (QuotaRequired) or merely logged.
+// verifyVolumeQuota checks for an active project quota meeting want without changing it.
+// It returns the reading for utilization logs; the caller decides whether absence is fatal.
 func verifyVolumeQuota(path string, want VolumeQuota, read quotaReadFn) (QuotaReading, error) {
 	if path == "" {
 		return QuotaReading{}, fmt.Errorf(

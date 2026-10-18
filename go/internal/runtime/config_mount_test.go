@@ -22,13 +22,8 @@ import (
 	"testing"
 )
 
-// writeConfigTree lays out a config root exactly as config_materialize.go does:
-//
-//	root/<version>/config.txt   (contents = the version string)
-//	root/current -> <version>   (relative symlink)
-//
-// for each version, then points current at initial. Returns the root, which is
-// the bind-mount source (the PARENT dir, never a version dir).
+// writeConfigTree creates the versioned config root and current symlink.
+// It returns the parent directory used as the bind-mount source.
 func writeConfigTree(t *testing.T, versions []string, initial string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -56,12 +51,8 @@ func writeConfigTree(t *testing.T, versions []string, initial string) string {
 	return root
 }
 
-// flipCurrentSymlink atomically repoints root/current at version, mirroring
-// ConfigMaterializer.flipCurrent: write a temp symlink then rename over current,
-// so a reader inside the container never observes a torn intermediate state
-// (never unlink-then-symlink). The link is relative (the version basename), as
-// the materializer writes it, so it resolves the same way inside the container
-// where root is mounted at agentConfigMountPath.
+// flipCurrentSymlink atomically updates current, so readers never see a torn link.
+// The relative link matches ConfigMaterializer and resolves inside the mounted root.
 func flipCurrentSymlink(t *testing.T, root, version string) {
 	t.Helper()
 	tmp := filepath.Join(root, ".current.tmp")
@@ -74,13 +65,8 @@ func flipCurrentSymlink(t *testing.T, root, version string) {
 	}
 }
 
-// selinuxLabelsMounts reports whether this host runs SELinux in a mode where
-// podman stamps bind mounts with a per-container MCS label. Both the kernel
-// selinuxfs must be present AND podman must report SELinux enabled — a host with
-// selinuxfs but podman's SELinux support off still yields an empty MountLabel.
-// It detects SELinux *enabled* (not specifically enforcing) on purpose: podman
-// labels mounts in permissive mode too, so "enabled" is the right predicate for
-// the MountLabel assertion.
+// selinuxLabelsMounts requires both selinuxfs and podman SELinux support.
+// Podman stamps mounts in permissive mode too, so enforcement mode is not required.
 func selinuxLabelsMounts(ctx context.Context) bool {
 	if _, err := os.Stat("/sys/fs/selinux"); err != nil {
 		return false

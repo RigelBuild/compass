@@ -2,19 +2,8 @@
 
 package runtime
 
-// The hermetic BootCanary suite: it drives BootCanary behind the launchFunc +
-// newGuestClient seams so no real cloud-hypervisor boots and no real vsock is
-// dialed, proving the canary's Create→Start→Exec→Remove sequencing, report
-// assembly, deadline derivation, teardown-on-failure, and reserved naming with
-// no KVM (record §(e)/(f)/(g)). It is //go:build unix because the seams and the
-// guestVM interface it fakes are unix-only.
-//
-// KEY SEAM SUBTLETY: BootCanary calls Create INTERNALLY, minting a fresh boot
-// nonce the test cannot pre-read. So the fake launchFunc parses the hex nonce out
-// of cfg.Cmdline ("compass.boot_nonce="+hex) and hands it to a fake guestVM whose
-// Health echoes THAT nonce — otherwise awaitHealthy's identity binding fails. The
-// fake guestClient's Exec echoes the command's argument back on stdout with exit
-// 0, so BootCanary's echo-nonce round-trip check passes without a real guest.
+// Hermetic BootCanary tests use fake launch and guest-client seams; no VMM or vsock is started.
+// The fake decodes the generated nonce and echoes it through Health and Exec.
 
 import (
 	"context"
@@ -35,11 +24,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
 )
 
-// canaryFakeVM is a guestVM handle for the canary path: Health answers ready and
-// echoes the boot nonce the fake launchFunc decoded from cfg.Cmdline (so
-// awaitHealthy's identity binding passes), PSS returns a configurable non-empty
-// map (so GuestRSSBytes is assertable), and Shutdown is recorded (the teardown
-// assertion).
+// canaryFakeVM echoes the boot nonce from Health, returns configurable PSS,
+// and records Shutdown for teardown assertions.
 type canaryFakeVM struct {
 	nonce                  []byte
 	pss                    map[string]int64
@@ -171,11 +157,8 @@ func parseBootNonce(cmdline string) ([]byte, error) {
 	return hex.DecodeString(strings.TrimPrefix(cmdline, prefix))
 }
 
-// canaryFakeClient is a GuestControlClient for the canary path: Provision
-// succeeds, and Exec echoes the command's argument back on stdout with a
-// configurable exit code (default 0) unless execErr forces a transport failure.
-// stdout, when non-nil, overrides the echoed output verbatim so a test can drive
-// the exit-0-but-wrong-stdout case (the nonce-mismatch branch).
+// canaryFakeClient succeeds Provision and echoes Exec arguments unless configured otherwise.
+// Optional stdout drives the nonce-mismatch case.
 type canaryFakeClient struct {
 	execErr  error
 	stdout   *string
@@ -518,25 +501,10 @@ func TestBootCanaryLeakCheckIgnoresForeignCanaryDirs(t *testing.T) {
 	assertWorkspaceRemoved(t, rec)
 }
 
-// Root bypasses this local 0500 DAC check. This package runs non-root in the
-// moon battery (go/moon.yml, go test -race ./...) and in the microvm job on a
-// bare runner without a privileged container, so this is a local-root or
-// dev-container guard rather than a CI concession. If a root lane is added,
-// the :327 throwaway-workspace cleanup join loses its only defense: root makes
-// that overwrite mutation pass, while the :347 join and LIFO assertion remain
-// defended.
-//
-// breakWorkspaceRemoval arranges a permission failure in the workspace cleanup
-// tests: the launch fake leaves an unwritable non-empty child inside the
-// throwaway workspace, so BootCanary's deferred os.RemoveAll fails for real.
-//
-// The cleanup restores 0700 before removing, because a 0500 directory is not
-// removable. It then reclaims the workspace ROOT, not just the blocked child:
-// BootCanary's own RemoveAll already failed, so nothing else reclaims the
-// parent and it would leak one temp dir per run. Removing a caller-supplied
-// parent is guarded rather than trusted — a widened mount HostPath would
-// otherwise make this recursively delete a production-chosen directory, so a
-// path outside the canary's own temp workspace fails the test instead.
+// Root bypasses this test's 0500 DAC failure, so root runs skip the permission check.
+// breakWorkspaceRemoval creates an unwritable child so BootCanary's RemoveAll fails.
+// Cleanup restores 0700, then removes the canary workspace only if its name carries
+// canaryNamePrefix, refusing cleanup if the mounted HostPath ever widens.
 func breakWorkspaceRemoval(t *testing.T, rec *canaryLaunchRecorder) {
 	t.Helper()
 	if os.Geteuid() == 0 {

@@ -42,19 +42,12 @@ const guestVsockCID uint32 = 3
 // matches the value the V2a boot harness tests boot guestd on (testVsockPort).
 const guestVsockPort uint32 = 1024
 
-// agentGatewayVsockPort is the fixed guest port the host serves the per-session
-// AgentGateway on, mirroring guestVsockPort's identity model: per-session
-// uniqueness rides the suffixed AF_UNIX path under the runtime dir
-// (microvm.GatewaySocketPath), never the port, so every VM boots with the same
-// value (record §(e), OQ-4). Distinct from guestVsockPort (1024, the control
-// plane) so the two guest-initiated channels never share a suffix base.
+// agentGatewayVsockPort is the fixed guest port for the host's AgentGateway.
+// Per-session identity uses unique AF_UNIX paths; this port stays distinct from guestVsockPort.
 const agentGatewayVsockPort uint32 = 1025
 
-// sunPathMax is the longest AF_UNIX path the kernel accepts: sockaddr_un's
-// sun_path holds the path plus a NUL terminator. It mirrors the runner
-// gateway's own budget check (gateway/socket.go); Create uses it to reject an
-// over-long suffixed gateway socket path BEFORE booting a VM, rather than at
-// the post-Launch gateway.Serve bind after a full ~60s boot (record §(e)).
+// sunPathMax is the kernel AF_UNIX path limit excluding its NUL terminator.
+// Create checks suffixed socket paths before boot to avoid a costly late bind failure.
 const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 
 // workspaceFSTag is the virtio-fs tag the single read-write workspace share is
@@ -87,15 +80,8 @@ const healthPollInterval = 200 * time.Millisecond
 // timeout error, never block the calling task forever.
 const execDefaultTimeout = 120 * time.Second
 
-// guestVM is the running-guest handle MicroVMRuntime drives, an interface over
-// *microvm.VM so Start is hermetically testable behind a fake handle. Its method
-// set is NOT merely what Start calls — it retypes the shared microvmSession.vm
-// field, so it must cover EVERY method invoked on that field anywhere in the
-// package across ALL build tags: Health (awaitHealthy's poll in Start),
-// Shutdown (Start's defer, Stop, and Remove), WaitVMMExit (Stop,
-// microvm_lifecycle.go), and PSS (the Q-budget contract test's session.vm.PSS(),
-// contract_microvm_test.go, //go:build microvm && unix). All in launch.go except
-// where noted. *microvm.VM satisfies all four as-is (design §W2 seams).
+// guestVM abstracts a running VM so Start can use a hermetic fake.
+// Its methods cover every session.vm call across build tags: Health, Shutdown, WaitVMMExit, and PSS.
 type guestVM interface {
 	Health(ctx context.Context) (*compassv1.HealthResponse, error)
 	Shutdown(ctx context.Context) error
@@ -150,12 +136,8 @@ type microvmSession struct {
 	// nonce is the per-session boot nonce (raw bytes); its hex encoding rides
 	// the cmdline, and Start verifies guestd echoes it before opening the gate.
 	nonce []byte
-	// nftScript is the egress ruleset delivered to guestd on Start's Provision
-	// RPC (as ProvisionRequest.nft_script). Recorded at Create from
-	// spec.Egress.NftScript(); NEVER empty for a WorkloadSpec-created session,
-	// since the zero-value EgressPolicy still emits the full default-deny base
-	// ruleset (design §(e), egress.go). guestd arms it as guest root before the
-	// exec gate opens.
+	// nftScript is always populated for WorkloadSpec sessions, even with an empty policy.
+	// guestd arms its default-deny ruleset as root before opening the exec gate.
 	nftScript string
 	// runtimeDir is <RunRoot>/microvm/<id>/, holding the session's sockets.
 	runtimeDir string
@@ -266,12 +248,8 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadI
 	return id, nil
 }
 
-// bootConfig assembles the microvm.BootConfig for a session: boot images from
-// the operator config, distinct AF_UNIX socket paths inside the runtime dir,
-// the fixed CID/port, the workspace share as FSSharedDir, the default guest
-// sizing, and the boot nonce carried on the cmdline as lowercase hex under the
-// compass.boot_nonce key guestd parses. Split out so spec→BootConfig assembly
-// is unit-testable without booting.
+// bootConfig assembles guest images, sockets, workspace share, sizing, and boot nonce.
+// The split permits testing spec-to-config mapping without booting a VM.
 func (m *MicroVMRuntime) bootConfig(runtimeDir string, nonce []byte, shared Mount, agentUID uint32) microvm.BootConfig {
 	return microvm.BootConfig{
 		Kernel:      m.config.KernelImage,
@@ -298,13 +276,8 @@ func (m *MicroVMRuntime) bootConfig(runtimeDir string, nonce []byte, shared Moun
 	}
 }
 
-// workspaceShare validates the spec's mount set down to the single read-write
-// workspace share the microVM backend can express, returning that mount. An
-// empty mount set yields a zero Mount (FSSharedDir left empty — a guest boots
-// with an empty workspace tree). More than one mount, a read-only mount, or a
-// single mount targeting a ContainerPath other than /workspace is refused with
-// an UnsupportedMountError naming the offending mount (OQ-C: refuse, don't
-// drop). Split out so mount validation is unit-testable.
+// workspaceShare accepts zero mounts or one read-write /workspace share.
+// Unsupported mount shapes fail rather than being silently dropped.
 func workspaceShare(mounts []Mount) (Mount, error) {
 	switch len(mounts) {
 	case 0:
@@ -417,11 +390,8 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id WorkloadID) error {
 // Deliberately NOT a verb on the WorkloadRuntime interface (podman.go).
 func (m *MicroVMRuntime) EgressArmedInGuest() bool { return true }
 
-// awaitHealthy polls the guest's Health until it reports net_provisioned &&
-// workspace_mounted (the V2a fail-closed readiness proof) within the boot
-// deadline, then verifies the echoed boot_nonce equals the minted nonce before
-// returning — a mismatch is an error (§(e) identity binding). The deadline
-// derives from ctx when it carries one, else bootDeadline.
+// awaitHealthy polls required readiness flags and verifies the guest echoes the boot nonce.
+// Its deadline comes from ctx when present, otherwise bootDeadline.
 func (m *MicroVMRuntime) awaitHealthy(ctx context.Context, vm guestVM, nonce []byte) error {
 	pollCtx, cancel := bootPollContext(ctx)
 	defer cancel()
@@ -491,11 +461,7 @@ func (m *MicroVMRuntime) Exec(ctx context.Context, id WorkloadID, spec ExecSpec)
 	}, nil
 }
 
-// execCall maps an ExecSpec onto a microvm.ExecCall: User (a numeric-string uid
-// on every callsite) parses to a *uint32 UID (a non-numeric User is a host-side
-// error), Stdin *string becomes []byte, and the per-command timeout is set so
-// guestd mirrors the host-side ctx deadline. Split out so spec→ExecCall mapping
-// is unit-testable.
+// execCall maps ExecSpec fields to a guest call and mirrors the host timeout.
 func execCall(spec ExecSpec) (microvm.ExecCall, error) {
 	uid, err := parseUID(spec.User)
 	if err != nil {
@@ -515,11 +481,8 @@ func execCall(spec ExecSpec) (microvm.ExecCall, error) {
 	}, nil
 }
 
-// parseUID parses a --user value (a numeric-string uid on every Runner
-// callsite, e.g. AsUser(strconv.FormatUint(uid))) into a *uint32. A nil User
-// leaves the uid nil (the session default set by Provision); a non-numeric User
-// is a host-side error rather than a guest-side refusal. Split out so numeric-
-// uid parsing is unit-testable.
+// parseUID converts numeric user overrides to uint32; nil keeps the session default.
+// Non-numeric values fail on the host.
 func parseUID(user *string) (*uint32, error) {
 	if user == nil {
 		return nil, nil //nolint:nilnil // a nil *uint32 is the meaningful "no uid override" (the session default set by Provision), not an error condition

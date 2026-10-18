@@ -16,13 +16,8 @@ import (
 	"syscall"
 )
 
-// readVolumeQuota is the production quotaReadFn: it statfs(2)es the volume path
-// and, separately, the mount root the path resolves into, so the pure decision
-// can compare the two. On a project-quota'd subtree the kernel rewrites the
-// path's block/inode totals to the project's limit and usage while the mount
-// root's stay the filesystem's real size — so the divergence IS the proof an
-// enforced quota is active, readable with no capability (see microvm_quota.go's
-// header for why quotactl and FS_IOC_FSGETXATTR are both the wrong read).
+// readVolumeQuota compares statfs totals for a path and its mount root.
+// A project-quota projection rewrites the path totals but not the mount-root totals.
 func readVolumeQuota(path string) (QuotaReading, error) {
 	var at syscall.Statfs_t
 	if err := syscall.Statfs(path, &at); err != nil {
@@ -53,12 +48,7 @@ func readVolumeQuota(path string) (QuotaReading, error) {
 	return QuotaReading{
 		Path:      path,
 		MountRoot: root,
-		// LimitBytes/UsedBytes carry a DUAL MEANING by construction, per
-		// QuotaReading's field docs: under an enforced project quota the kernel
-		// has rewritten these totals to the project's own limit and usage; with
-		// no quota projected they are the whole filesystem's. Active() is what
-		// distinguishes the two, and it is why the preflight logs used_ratio
-		// only when Active() is true.
+		// Active distinguishes projected quota totals from whole-filesystem totals.
 		LimitBytes:       blocksToBytes(at.Blocks, at.Bsize),
 		UsedBytes:        blocksToBytes(at.Blocks-at.Bfree, at.Bsize),
 		LimitInodes:      int64(at.Files), //nolint:gosec // G115: a statfs inode count is a kernel-reported magnitude, never near the int64 ceiling
@@ -80,38 +70,10 @@ func blocksToBytes(blocks uint64, bsize int64) int64 {
 	return int64(blocks) * bsize
 }
 
-// mountRoot walks path's ancestors until the device number changes, returning
-// the deepest ancestor still on the same filesystem — the mount point path
-// belongs to — plus whether the walk actually CROSSED a device boundary to get
-// there. A project quota does NOT change st_dev (it is an accounting scope
-// inside one filesystem, not a separate device), so this reliably reaches the
-// unprojected reference point the comparison needs.
-//
-// Paths are resolved through symlinks first: a symlinked volume dir would
-// otherwise walk the link's lexical parents, which may live on a different
-// filesystem entirely and make the comparison meaningless.
-//
-// distinct=false means the resolved path IS ITS OWN mount point, so there is NO
-// unprojected reference to compare against — statfs'ing it twice yields
-// identical totals and Active() is false BY CONSTRUCTION, not by observation.
-// Verified by instrumented run: mountRoot("/tmp") and mountRoot("/") each return
-// their own argument. That is the most natural production layout (a dedicated
-// XFS mounted at, say, /srv/compass/volumes), so treating it as a negative
-// verdict would refuse startup on a CORRECTLY provisioned host. The caller turns
-// it into a distinct INCONCLUSIVE error instead — the same fail-closed-but-named
-// posture as the unreadable-ancestor case below.
-//
-// An UNREADABLE ancestor is likewise an INCONCLUSIVE probe, not a mount root.
-// The comparison is only sound against an UNPROJECTED reference, and same-device
-// is not the same as unprojected: FS_XFLAG_PROJINHERIT propagates a project id
-// down the tree, so a walk halted by an EACCES may stop at an ancestor inside
-// the SAME project (or inside a larger enclosing one), whose totals are
-// themselves rewritten. Comparing against that yields a bogus verdict —
-// reporting a quota active because the reference happened to be a bigger
-// project, which is the fail-OPEN direction on a security-relevant preflight. So
-// the error propagates through readVolumeQuota, and a QuotaRequired startup
-// fails CLOSED naming the unreadable ancestor (the posture
-// TestReadVolumeQuotaAbsentPath pins for a missing path).
+// mountRoot resolves symlinks, then walks to the containing mount by device number.
+// Project quotas do not change st_dev, so an unprojected mount root is the reference.
+// If the path is its own mount or an ancestor is unreadable, the probe is inconclusive;
+// treating rewritten ancestor totals as a reference could falsely claim enforcement.
 func mountRoot(path string) (root string, distinct bool, err error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -145,11 +107,7 @@ func mountRoot(path string) (root string, distinct bool, err error) {
 	}
 }
 
-// deviceOf returns the st_dev of path, the identity the mount-root walk compares.
-// syscall.Stat (not os.Stat) because st_dev is all this needs: it fills a
-// caller-owned struct with no os.FileInfo allocation and no Sys() type
-// assertion, and it is the same call the readVolumeQuota statfs pair already
-// uses, keeping this file on one syscall surface.
+// deviceOf returns st_dev using syscall.Stat without allocating os.FileInfo.
 func deviceOf(path string) (uint64, error) {
 	var st syscall.Stat_t
 	if err := syscall.Stat(path, &st); err != nil {

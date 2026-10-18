@@ -118,13 +118,8 @@ type WorkloadSpec struct {
 	// $HOME as (the T1/T2 baked-agent-uid invariant; see
 	// RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-arbitrary-uid/design.md).
 	UID uint32
-	// Egress is the default-deny egress policy for this container. The podman
-	// backend IGNORES this field: createArgs is untouched (the podman argv stays
-	// byte-identical) and the podman path arms via AgentRuntime.armEgress's
-	// post-start exec. The microVM backend delivers it to guestd instead —
-	// MicroVMRuntime.Create records spec.Egress.NftScript() and Start's
-	// Provision RPC carries it, so the guest arms in-VM before the exec gate
-	// opens (design §(a)/(c)).
+	// Egress is ignored by podman, which arms the policy after start.
+	// MicroVMRuntime delivers the generated script to guestd before opening exec.
 	Egress EgressPolicy
 }
 
@@ -240,19 +235,8 @@ type ChildHandle struct {
 	waitFunc func() error
 }
 
-// newChildHandleFuncs builds a ChildHandle over a kill/wait function pair
-// rather than a local *exec.Cmd — the adaptation for a remote streaming exec
-// (the microVM GuestExec, design §(c)), whose child lives in the guest and has
-// no host-side *exec.Cmd. The exported Kill/Wait/Terminate surface is
-// unchanged; only the backing differs.
-//
-// kill must not block the caller past a short internal deadline — the microVM
-// Kill issues a Signal RPC and the teardown path cannot stall on a wedged
-// transport (the VMM-kill escalation is the backstop), matching podman's Kill
-// being an instantaneous local cancel. wait blocks until the exec's exit is
-// observed (the demux goroutine sees the exit frame), returning nil on exit 0
-// and otherwise an error carrying the code/signal (a *runtime.ExitStatusError
-// for a signalled exit, so isDeliberateKill recognizes a deliberate kill).
+// newChildHandleFuncs adapts remote streaming execs to ChildHandle's existing API.
+// Kill must not block on transport; Wait returns exit status once the guest reports it.
 func newChildHandleFuncs(kill func() error, wait func() error) *ChildHandle {
 	return &ChildHandle{killFunc: kill, waitFunc: wait}
 }
@@ -364,11 +348,7 @@ type WorkloadRuntime interface {
 	// return 126. Workdir and interpreter faults are backend-specific.
 	Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (ExecOutput, error)
 
-	// ExecStreaming starts a long-lived streaming command in a running workload,
-	// returning its live stdio pipes and kill/wait handle. Missing programs and
-	// non-executable programs return an exited stream with code 127 or 126.
-	// Other runtime faults return errors.
-	// Cancelling ctx terminates the process.
+	// ExecStreaming returns live pipes and a kill/wait handle; canceling ctx terminates the process.
 	ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error)
 	// Stop stops a running workload, allowing timeout for graceful exit before
 	// the backend kills it.
@@ -383,24 +363,12 @@ type WorkloadRuntime interface {
 	// Running reports whether a workload with name exists and is currently running.
 	Running(ctx context.Context, name string) (bool, error)
 
-	// MountLabel reports the workload's SELinux mount label (its private MCS
-	// category); the podman backend reads it from `podman inspect`. The
-	// config-update path relabels a freshly materialized version dir into this
-	// category so a confined agent can read it (agentHost.RefreshConfig ->
-	// ConfigMaterializer relabel). A backend with no SELinux confinement
-	// reports an empty label.
+	// MountLabel returns the SELinux MCS label used to relabel config directories.
+	// Backends without SELinux confinement return an empty label.
 	MountLabel(ctx context.Context, id WorkloadID) (string, error)
 
-	// Resize changes a live workload's cgroup resource limits in place (a
-	// `podman update`-class operation on the container backend) — the
-	// resize-in-place elastic-compute path (C3). The verb is reserved on the
-	// interface at S1 (the same discipline as ExecStreaming) so every backend
-	// and fake carries it from the start and C3 needs no interface change;
-	// the resize BEHAVIOR — actually applying and later restoring the limits
-	// around a heavy op — is C3's to fill in behind this
-	// signature.
-	// PodmanCLI.Resize therefore returns ErrResizeNotImplemented until C3, and
-	// no caller invokes it yet, so the existing session path is unchanged.
+	// Resize reserves the runtime interface for in-place cgroup updates.
+	// PodmanCLI returns ErrResizeNotImplemented until the behavior is implemented.
 	Resize(ctx context.Context, id WorkloadID, limits ResourceLimits) error
 }
 
@@ -518,11 +486,8 @@ func createArgs(spec WorkloadSpec) []string {
 	return args
 }
 
-// minUsernsRemapMajor / minUsernsRemapMinor are the podman version floor for
-// the --userns=keep-id:uid=,gid= remap Create relies on: keep-id:uid= is a
-// podman 4.3+ option
-// (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-arbitrary-uid/design.md §(b)). There is
-// no --uidmap fallback below it — the floor is hard.
+// The keep-id uid/gid remap requires podman 4.3 or later.
+// No --uidmap fallback is supported below that version.
 const (
 	minUsernsRemapMajor = 4
 	minUsernsRemapMinor = 3
@@ -665,11 +630,8 @@ func (p *PodmanCLI) ExecStreaming(ctx context.Context, id WorkloadID, spec Strea
 	return p.spawnStreaming(ctx, execStreamingArgs(id, spec))
 }
 
-// stopGraceSeconds converts a graceful-stop timeout to podman's whole-second
-// --time. It rounds a positive Duration up so any positive grace is at least
-// one second — truncating toward zero would turn a sub-second grace into
-// --time 0, an immediate SIGKILL with no grace — and clamps a negative Duration
-// to 0, since podman reads a negative --time as an infinite (unbounded) wait.
+// stopGraceSeconds rounds positive durations up to at least one second.
+// Negative durations become zero to avoid podman's unbounded-wait behavior.
 func stopGraceSeconds(timeout time.Duration) int64 {
 	return max(int64(math.Ceil(timeout.Seconds())), 0)
 }
@@ -699,13 +661,8 @@ func (p *PodmanCLI) Remove(ctx context.Context, id WorkloadID) error {
 	return err
 }
 
-// removeArgs assembles the `podman rm` argv. --volumes removes any anonymous
-// volumes created with the container along with it: a base image that declares
-// a VOLUME directive would otherwise orphan them, and leaked anonymous volumes
-// exhaust podman's num_locks and wedge the host. Harmless when the container has
-// none. --force also makes rm succeed for a missing container. Sister argv in
-// internal/pgtest (removeContainerArgs); the two are deliberately independent
-// (no prod->test-harness dependency) — keep in sync.
+// removeArgs removes anonymous volumes to avoid orphaning them and exhausting num_locks.
+// --force also makes removal of a missing container succeed.
 func removeArgs(id WorkloadID) []string {
 	return []string{"rm", "--force", "--volumes", id.String()}
 }
@@ -833,11 +790,8 @@ func (p *PodmanCLI) defaultNetworkMode(ctx context.Context, image string) (strin
 	return strings.TrimSpace(string(mode)), nil
 }
 
-// execStreamingArgs assembles the argv for a streaming `podman exec -i`. Split
-// out so the argv assembly is unit-testable without spawning podman.
-// --interactive keeps stdin open for the process's life; there is deliberately
-// no --tty (the agent is a headless process draining diagnostic pipes, not a
-// terminal session).
+// execStreamingArgs builds headless `podman exec -i` argv for streaming commands.
+// It keeps stdin open but omits a tty so the caller can drain diagnostic pipes.
 func execStreamingArgs(id WorkloadID, spec StreamingExecSpec) []string {
 	args := []string{argExec, argInteractive}
 	if spec.User != nil {

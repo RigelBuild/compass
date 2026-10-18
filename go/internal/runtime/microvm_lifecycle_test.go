@@ -2,14 +2,8 @@
 
 package runtime
 
-// The microVM lifecycle suite: hermetic, no KVM, no subprocess. It exercises
-// the pure/mappable logic the lifecycle methods are built from — spec→BootConfig
-// assembly, spec→ExecCall mapping, numeric-uid parsing, mount validation, the
-// session table, duplicate-name refusal, Exists by name, idempotent Remove,
-// MountLabel, and Resize — WITHOUT booting a guest (Create/Start/Exec all need a
-// booted VM, so the full lifecycle is KVM-gated in
-// microvm_lifecycle_microvm_test.go). It is //go:build unix because the
-// lifecycle file it tests is unix-only.
+// Hermetic lifecycle tests cover spec mapping, uid parsing, mount validation, and session bookkeeping.
+// They need no KVM; guest lifecycle behavior is covered by the tagged e2e suite.
 
 import (
 	"context"

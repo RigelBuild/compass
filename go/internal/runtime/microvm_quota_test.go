@@ -2,20 +2,8 @@
 
 package runtime
 
-// Hermetic unit tests for V6's volume-quota VERIFICATION (microvm_quota.go).
-// Mechanism and the rejected alternatives: microvm_quota.go's header.
-//
-// These carry NO microvm build tag on purpose: they are what genuinely proves
-// the verification logic on any box, including one where a prjquota-active
-// filesystem cannot be provisioned (that needs root, D7 / Global Constraint
-// "Rootless is hard"). The decision is split from the syscall behind
-// quotaReadFn precisely so it is covered here rather than left to a leg that
-// skips.
-//
-// The real statfs probe is Linux-only; it is exercised in
-// microvm_quota_linux_test.go. Enforcement itself is proven by the
-// ENOSPC/EDQUOT leg in microvm_isolation_microvm_test.go, which needs the
-// microvm tag and an operator-provided quota'd filesystem.
+// These hermetic tests cover quota verification on any Unix host without provisioning project quota.
+// The Linux statfs probe and live EDQUOT enforcement are covered by separate build-tagged tests.
 
 import (
 	"errors"
@@ -100,11 +88,8 @@ func TestQuotaReadingActive(t *testing.T) {
 			want: false,
 		},
 		{
-			// The XFS fakeinos case (FilesystemInodes' doc): the mount-root
-			// inode total is an estimate that SHRINKS as the filesystem fills,
-			// so on a full-ish XFS it can dip just below a generous project
-			// inode limit. Bare `<` would read that jitter as a projected
-			// bound, which is the fail-OPEN direction; the margin rejects it.
+			// XFS inode estimates shrink as space fills; the margin prevents jitter from
+			// falsely treating a generous project limit as an active bound.
 			name: "inode arm where the mount-root estimate shrank to just above the project limit",
 			reading: QuotaReading{
 				LimitBytes: 1 << 40, UsedBytes: 1 << 39,
@@ -114,9 +99,7 @@ func TestQuotaReadingActive(t *testing.T) {
 			want: false,
 		},
 		{
-			// Just INSIDE the 1/16 margin: 940_000 < 1_010_000 - 63_125. This
-			// pins the boundary, so a change to inodeMarginDivisor is a
-			// deliberate edit rather than a silent widening.
+			// This value is inside the 1/16 margin, pinning the threshold against widening.
 			name: "an inode bound past the margin is active",
 			reading: QuotaReading{
 				LimitBytes: 1 << 40, UsedBytes: 1 << 39,
@@ -126,9 +109,7 @@ func TestQuotaReadingActive(t *testing.T) {
 			want: true,
 		},
 		{
-			// An inode-only bound must NOT be gated behind the byte arm: here
-			// the byte limit equals the filesystem size (so the byte arm is
-			// silent) while a real inode bound is projected.
+			// The byte limit equals filesystem size, but a projected inode limit remains active.
 			name: "an inode-only bound is active even when the byte limit equals the filesystem size",
 			reading: QuotaReading{
 				LimitBytes: 1 << 40, UsedBytes: 1 << 30,

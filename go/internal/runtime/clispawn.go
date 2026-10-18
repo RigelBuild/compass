@@ -22,16 +22,8 @@ type cliEngine struct {
 	timeout time.Duration
 }
 
-// spawnCapture spawns `<program> <args>`, optionally writing stdin, and
-// captures output under the command timeout. A spawn failure, a timeout, and a
-// captured non-zero exit are all mapped here. summary names the operation for
-// error context without leaking the full argv (which may hold env values or a
-// token on stdin).
-//
-// A non-zero exit is returned as (stdout, stderr, code, nil) — the caller
-// decides whether that is an error (run) or an expected result (Exec, Exists).
-// Only a spawn failure, this call's own timeout, or parent-context cancellation
-// is a non-nil error.
+// spawnCapture captures output under the command timeout without exposing argv.
+// Non-zero exits are results; only spawn failure or cancellation is an error.
 func (e cliEngine) spawnCapture(ctx context.Context, summary string, args []string, stdin *string) (stdout, stderr []byte, exitCode int, err error) {
 	return e.spawnCaptureWithCancellation(ctx, summary, args, stdin, false)
 }
@@ -160,12 +152,8 @@ func stopWithClient(command []string) []string {
 	return append([]string{"sh", "-c", stopWithClientScript, "sh"}, command...)
 }
 
-// spawnStreaming starts `<program> <args>` streaming, returning the live pipes
-// plus a kill/wait handle. The process is bound to a cancellable child of ctx:
-// its Cancel SIGKILLs the engine client and WaitDelay bounds the reap. The
-// in-container process dies with the client only because exec argv builders
-// wrap the command in stopWithClient. stdout/stderr are caller-owned os.Pipes,
-// so Wait reaps at exit without closing them under output still in the pipe.
+// spawnStreaming returns live pipes and a kill/wait handle bound to ctx.
+// The caller owns the pipes; Wait reaps the client without closing buffered output.
 func (e cliEngine) spawnStreaming(ctx context.Context, args []string) (*StreamingExec, error) {
 	execCtx, cancel := context.WithCancel(ctx)
 	//nolint:gosec // G204: the container-engine seam — see spawnCapture. The

@@ -1,10 +1,7 @@
 package runtime
 
-// Host validation and shell quoting: the gate that decides which caller-supplied
-// strings may be interpolated into a root in-container shell script (nft rules,
-// the credential helper). A false accept here is a shell-injection hole in a
-// privileged script, so every metacharacter reject and every colon-vs-IP edge is
-// pinned.
+// Host validation tests pin the caller-input boundary for privileged shell scripts.
+// Rejecting metacharacters and malformed IP-like hosts prevents shell injection.
 
 import "testing"
 
@@ -73,11 +70,7 @@ func TestIsValidHostRejectsZoneScopedIPv6(t *testing.T) {
 		host string
 		want bool
 	}{
-		// Zone-scoped IPv6 (<ip>%<zone>): netip.ParseAddr keeps the zone text
-		// verbatim, so every one of these parses today and is wrongly accepted.
-		// The Rust reference parses via std::net::IpAddr, which rejects ALL zones
-		// (host.rs:28), so a zone must always be refused — it is an unescaped
-		// shell-injection channel into the root nft / credential scripts.
+		// ParseAddr accepts zone text verbatim, so scoped addresses are a script-injection path.
 		{"benign zone", "fe80::1%eth0", false},
 		{"command-substitution zone", "fe80::1%$(id)", false},
 		{"semicolon-chain zone", "::1%a;rm -rf /", false},

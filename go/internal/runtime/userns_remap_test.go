@@ -2,23 +2,9 @@
 
 package runtime
 
-// Arbitrary-host-uid remap proof against real rootless podman
-// (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-arbitrary-uid/design.md §P3). The GA
-// contract: a launch whose remap target differs from the invoking host uid
-// still yields an agent that is the baked agent uid in-container and owns
-// /nix-equivalent paths.
-//
-// The dev box runs as uid 1000, so the mapping test inverts the probe — remap
-// to a NON-host uid and assert the mapping — which exercises the identical
-// keep-id:uid= mechanism an arbitrary-host-uid deployment relies on. Against
-// bare --userns=keep-id the in-container uid is the host uid (the defect); the
-// remap flip makes it the spec'd uid.
-//
-// Cases 1-2 are alpine-based (no compass-agent image dependency); case 3 runs
-// against the real compass-agent:latest when present, skipped otherwise.
-// Skipped (not failed) when podman isn't usable, matching lifecycle_test /
-// config_mount_test. Build-tagged (podman) so it is not part of the hermetic
-// gate.
+// This podman proof checks keep-id remapping to a non-host uid and verifies bind-mount
+// ownership round-trips. It covers alpine and the real image when available, and skips
+// when podman or the image is unavailable.
 
 import (
 	"context"

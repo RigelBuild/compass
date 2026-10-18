@@ -1,15 +1,7 @@
 package runtime
 
-// The T5 secret materializer: script-injection safety (a value whose bytes form
-// shell metacharacters is written VERBATIM via base64 transport, never
-// executed), name rejection (a name with a path separator / newline is refused
-// before it becomes a path or a script token), redaction (no secret-bearing type
-// leaks its value under %v/%#v/%s), kind routing (provider→seed, gh→hosts.yml,
-// generic-file→secrets/<NAME>, each 0600), and the DeliveryEnv skip-with-warn.
-//
-// The scripts are executed through a real /bin/sh (scriptRunner below) against a
-// temp $HOME, so "the value landed verbatim in a 0600 file and no command ran"
-// is an observed fact, not an assertion about script text.
+// These hermetic tests pin secret transport safety, name validation, redaction, routing,
+// file modes, and DeliveryEnv behavior by executing scripts through /bin/sh in a temp HOME.
 
 import (
 	"bytes"
@@ -29,11 +21,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
-// scriptRunner is a WorkloadRuntime whose Exec actually runs the setup script
-// through /bin/sh over stdin (as the real container would run `sh -s`), against
-// the host filesystem — so the files a script writes are real and inspectable.
-// AsUser is ignored (a test can't setuid); every other effect is genuine. The
-// specs are recorded so a test can assert what identity each exec carried.
+// scriptRunner executes setup scripts through /bin/sh over stdin against a temp filesystem.
+// It records specs for assertions; AsUser is ignored because tests cannot setuid.
 type scriptRunner struct {
 	mu    sync.Mutex
 	specs []ExecSpec

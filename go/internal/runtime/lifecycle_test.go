@@ -2,26 +2,8 @@
 
 package runtime
 
-// End-to-end per-agent container lifecycle against real rootless podman
-// (design: architecture-lineage), driving the production AgentRuntime.Launch path:
-//
-//  1. the Runner creates + starts a per-agent container,
-//  2. the agent's checkout dir is present inside the container, owned by the
-//     unprivileged agent user (the runner no longer clones — the agent
-//     self-clones into it post-launch),
-//  3. a command execs in-container as the unprivileged agent user (uid 1000),
-//  4. the default-deny egress firewall holds — a non-allowlisted host is
-//     blocked while an allowlisted one is reachable, and the agent user can't
-//     tear the firewall down,
-//  5. teardown removes the container.
-//
-// Skipped (not failed) when podman isn't usable, so the suite still runs in a
-// container-less CI sandbox; the assertions are real wherever podman exists.
-//
-// The image is built once from a tiny Containerfile (a stand-in for a repo's
-// devenv image, which carries the same tools) so Launch runs exactly as it does
-// in production: `sleep infinity`, then provision-by-exec. Build-tagged
-// (`podman`) so it is not part of the hermetic gate.
+// This podman e2e drives AgentRuntime.Launch through container setup, agent exec, egress checks,
+// and teardown. It skips without rootless podman and uses a stand-in image with production shape.
 
 import (
 	"context"

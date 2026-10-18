@@ -2,17 +2,8 @@
 
 package runtime
 
-// The hermetic MicroVMRuntime.Start suite: it drives Start behind the launchFunc
-// + newGuestClient seams so no real cloud-hypervisor boots and no real vsock is
-// dialed. A fake guestVM answers Health (with the minted boot nonce) and records
-// Shutdown; a fake GuestControlClient records the ProvisionRequest. Together they
-// prove the script-delivery contract (§(a)/(e)) and the fail-closed teardown
-// (§(b)/(d)) with no KVM. It is //go:build unix because the seams and the
-// guestVM interface it fakes are unix-only.
-//
-// This is deliberately NOT modelled on serveFakeGuest, which returns a
-// *GuestExec over a plain unix listener that cannot speak the vsock CONNECT
-// preamble and cannot answer Health.
+// Hermetic Start tests replace launch and guest-client seams; no VMM or vsock is started.
+// Fake Health echoes the nonce and Provision records the request to verify startup behavior.
 
 import (
 	"context"
@@ -137,12 +128,8 @@ func seamStart(t *testing.T, spec WorkloadSpec, provErr error) (*MicroVMRuntime,
 	return m, id, vm, client
 }
 
-// shortRunRoot returns a fresh, SHORT runroot outside the test-name-embedding
-// t.TempDir() tree, so the per-session suffixed sockets (widest:
-// <root>/microvm/<32-hex>/vsock.sock_1025) stay under the AF_UNIX sun_path
-// budget Create now guards pre-boot (§(e)). A t.TempDir() root embeds the long
-// test-function name and overflows the 107-byte cap — the very failure the
-// guard reports. Mirrors e2eConfig's short-root rationale.
+// shortRunRoot creates a short path so session socket suffixes stay within the AF_UNIX limit.
+// A normal t.TempDir path can exceed the cap after the session ID is added.
 func shortRunRoot(t *testing.T) string {
 	t.Helper()
 	//nolint:usetesting // t.TempDir embeds the long test name, overflowing the AF_UNIX sun_path budget the pre-boot gateway-path guard enforces — the very failure a short fixed root prevents.

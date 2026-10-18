@@ -1,25 +1,8 @@
 package runtime
 
-// The shared WorkloadRuntime contract suite (record §U5, the V2b acceptance
-// gate): one table-driven body proving MicroVMRuntime and PodmanCLI behave
-// identically through the runtime.WorkloadRuntime interface, run against BOTH
-// backends. It is UNTAGGED (package runtime, no build tag) so it compiles on
-// every platform: it references ONLY untagged production symbols plus the
-// backendCaps descriptor, never a KVM/podman-only symbol (microvmtest,
-// podmanUsable, buildImage, *DuplicateNameError all live in tagged files and are
-// reached only through the caps closures). The two entrypoints
-// (contract_podman_test.go //go:build podman, contract_microvm_test.go
-// //go:build microvm && unix) supply the factory + caps and gate on their
-// backend's availability.
-//
-// The suite drives WorkloadRuntime DIRECTLY — a different, lower layer than
-// TestPerAgentContainerLifecycle (lifecycle_test.go), which drives
-// AgentRuntime.Launch. The two do not overlap.
-//
-// The 7 conceded divergences (record 580-593) are expressed as per-backend
-// capability flags on backendCaps, each asserted by a row, so a divergence that
-// silently WIDENS is a test failure. Each row is its own helper so the shared
-// runner stays a thin dispatcher.
+// The untagged shared suite proves WorkloadRuntime behavior across backend implementations.
+// Entrypoints supply backend factories and capability flags without tagged symbols here.
+// Each divergence flag controls a row assertion, so silently widening behavior fails.
 
 import (
 	"context"
@@ -32,20 +15,14 @@ import (
 	"time"
 )
 
-// backendCaps is the per-backend expectation descriptor the shared runner
-// consumes: a container/session factory plus the flags that encode the 7
-// conceded divergences (record 580-593). Every flag toggles the EXACT assertion
-// of a row, so a backend that silently widens a divergence fails a row rather
-// than passing quietly.
+// backendCaps describes the session factory and backend-specific contract expectations.
+// Each flag controls an assertion that detects a widened divergence.
 type backendCaps struct {
 	// name identifies the backend under test, for subtest / failure messages.
 	name string
 
-	// makeSpec builds a WorkloadSpec for the backend: the podman leg bakes an
-	// Image + a `sleep infinity` keep-alive Command, the microVM leg a
-	// /workspace virtio-fs mount; both bake UID 1000. Backend-specific container
-	// creation is encapsulated HERE, never in the shared body (record 122-123).
-	// t supplies t.TempDir() for a per-session workspace.
+	// makeSpec creates backend-specific workloads; the shared body only consumes the handle.
+	// Each test supplies a fresh temp workspace.
 	makeSpec func(t *testing.T, name string) WorkloadSpec
 
 	// refusesRootExec: a uid-0 exec is refused with a host/guest error (microVM
@@ -77,36 +54,18 @@ type backendCaps struct {
 	// skipped.
 	capsOutput bool
 
-	// gracefulStopPowersOff: a SIGTERM-honoring guest powers off
-	// (reboot(RB_POWER_OFF)) before the kill escalation, so Stop completes well
-	// under its grace (microVM row 9, record 829-831). When false (podman) a
-	// `sleep infinity` PID 1 ignores SIGTERM and Stop burns the full grace, so
-	// the row is skipped — the row would prove nothing there.
+	// This flag means a guest powers off on SIGTERM before kill escalation.
+	// Podman's sleep PID 1 ignores SIGTERM, so that row is skipped there.
 	gracefulStopPowersOff bool
 
-	// portableKillError encodes divergence 6 (record 590-591): the deliberate-
-	// kill error is a portable *ExitStatusError (Signal != 0) on microVM, but
-	// the byte-identical podman path yields an *exec.ExitError from a SIGKILLed
-	// child (ExitCode() == -1). Both prove the SAME behavioral contract — a
-	// deliberate Kill+Wait surfaces as a signalled exit isDeliberateKill accepts
-	// — in the two shapes isDeliberateKill (agent_exec.go:239-258)
-	// matches. Asserting a single type across both is impossible without a
-	// production change to PodmanCLI, which U5 forbids; the gate keeps the podman
-	// byte-path unregressed AND proves the microVM portable-error path.
+	// This flag permits backend-specific signal errors while preserving one kill contract.
+	// MicroVM returns ExitStatusError; podman returns exec.ExitError, and both are recognized.
 	portableKillError bool
 
-	// assertDuplicateName asserts the backend's typed name-collision error for a
-	// duplicate-name Create (row 7): *DuplicateNameError on microVM, the
-	// engine's name-in-use *CommandError on podman. Carried as a closure so the
-	// shared body never names *DuplicateNameError (a unix-tagged symbol).
+	// This closure checks backend-specific duplicate-name errors without unix-only types.
 	assertDuplicateName func(t *testing.T, err error)
 
-	// resizeErr is the sentinel rowResize expects from Resize. Nil means the
-	// shared ErrResizeNotImplemented (the engine legs' "reserved until C3"
-	// sentinel), so the podman/microVM legs need not set it. The host backend
-	// owns no cgroup and its Resize is a PERMANENT unsupported, so it sets
-	// ErrResizeUnsupportedOnHost — a deliberately distinct sentinel that must
-	// never be folded into the C3-reserved one.
+	// resizeErr overrides the shared reserved sentinel; the host uses its permanent unsupported sentinel.
 	resizeErr error
 
 	// euidOnly selects the host uid-enforcement posture in rowUIDEnforcement: a
@@ -137,13 +96,8 @@ type backendCaps struct {
 	armedDefaultDenyAtStart bool
 }
 
-// execUser is the uid the directed exec/stream rows run their commands as. The
-// engine legs leave execUID empty and get "1000" (the baked agent uid their
-// containers map the invoking host uid to). The host leg runs commands as its
-// own euid — the only uid its checkUser accepts — which is NOT 1000 on a stock
-// GitHub-hosted runner (host uid 1001, portability_test.go), so it MUST set
-// execUID to os.Geteuid(); a hardcoded "1000" would fail every host exec row
-// with UnsupportedUserError off the dev box.
+// execUser selects the uid for exec rows: engine legs use baked uid 1000,
+// while the host leg must set its own euid or its user check fails.
 func (c backendCaps) execUser() string {
 	if c.execUID != "" {
 		return c.execUID
@@ -160,12 +114,8 @@ func (c backendCaps) resize() error {
 	return ErrResizeNotImplemented
 }
 
-// wantCapEff is the CapEff the workload must show for spec.CapAdd to have
-// granted nothing. The engine legs start from an empty container capability
-// set, so they expect all-zero. A host child inherits the Runner's own
-// capabilities, so "added nothing" there means "the same set the Runner has" —
-// expecting zero would instead assert the Runner is unprivileged, which is a
-// property of how CI launches the test, not of this backend.
+// wantCapEff returns the expected effective capabilities after CapAdd.
+// Host children inherit the Runner's set; engine workloads start empty.
 func (c backendCaps) wantCapEff(t *testing.T) string {
 	t.Helper()
 	if !c.inheritsRunnerCaps {
@@ -184,12 +134,8 @@ func (c backendCaps) wantCapEff(t *testing.T) string {
 	return ""
 }
 
-// runContractSuite runs the shared rows against one backend, created via
-// newRuntime and described by caps. The stateless exec/stream rows share one
-// running container (booted once, amortized on the KVM-gated microVM leg); the
-// lifecycle rows (duplicate-name, idempotence, exists, stop-grace) each manage
-// their own so an identity/teardown row never perturbs another. A thin
-// dispatcher: each row is its own helper.
+// runContractSuite dispatches shared rows; stateless exec rows reuse one session,
+// while lifecycle rows own separate sessions so they cannot perturb one another.
 func runContractSuite(t *testing.T, newRuntime func(t *testing.T) WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	rt := newRuntime(t)
@@ -378,13 +324,8 @@ func rowStreamingStdio(t *testing.T, rt WorkloadRuntime, caps backendCaps, prima
 	}
 }
 
-// rowKillWait — row 4 (record 570-575, 631-634): Kill a long sleeper mid-stream,
-// drain both pipes in goroutines so the kill/wait never blocks on a full pipe,
-// and assert Wait surfaces a deliberate-kill signal error. The error SHAPE is
-// capability-gated (portableKillError, divergence 6): microVM yields the
-// portable *ExitStatusError, podman the byte-identical *exec.ExitError — both
-// prove a signalled exit isDeliberateKill accepts, so the podman byte-path stays
-// unregressed AND the microVM portable path works.
+// rowKillWait drains both pipes before asserting that Kill+Wait yields a recognized signal error.
+// Backends may expose different error types, but both must preserve the kill contract.
 func rowKillWait(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec("sleep", "300").AsUser(caps.execUser()))
@@ -399,11 +340,8 @@ func rowKillWait(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary Wor
 	assertDeliberateKill(t, stream.Process.Wait(), caps)
 }
 
-// rowCtxCancelReaps — row 5 (record 823-825, the U2 reap-on-broken-stream rule
-// end to end): cancel the ctx passed to ExecStreaming and assert Wait returns —
-// no orphan survives a host-side cancel. Wait returning IS the reap signal (Wait
-// reaps). A bounded select fails loudly rather than hanging the suite if the
-// child is never reaped.
+// rowCtxCancelReaps verifies that canceling a streaming exec reaps its child.
+// The bounded wait fails instead of hanging if reaping does not finish.
 func rowCtxCancelReaps(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	cctx, cancel := context.WithCancel(t.Context())
@@ -424,11 +362,8 @@ func rowCtxCancelReaps(t *testing.T, rt WorkloadRuntime, caps backendCaps, prima
 	}
 }
 
-// rowUIDEnforcement — row 6 (record 576, microvm-runner.md:358-360): a uid-0
-// exec is refused on the microVM backend; the podman row asserts its equivalent
-// posture — a directed unprivileged exec runs as the requested uid, never
-// silently escalated to root. The host leg (euidOnly) proves its distinct rule:
-// a host child runs as the Runner's own euid and no other uid is accepted.
+// rowUIDEnforcement checks each backend's user boundary: guest refusal, podman requested uid,
+// or host euid-only execution.
 func rowUIDEnforcement(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	if caps.euidOnly {
@@ -510,11 +445,8 @@ func rowOutputCap(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	}
 }
 
-// rowCommandCapAddIgnored — divergence 4 (microVM only, record 588-589):
-// spec.Command and spec.CapAdd have NO effect. A session created with a bogus
-// Command and an added capability still boots (Command is not the keep-alive),
-// still execs, and the workload has an EMPTY capability set (CapAdd granted
-// nothing). A backend that started honoring either would widen the divergence.
+// rowCommandCapAddIgnored pins the microVM divergence: Command and CapAdd do not affect
+// startup or the workload's empty capability set.
 func rowCommandCapAddIgnored(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	spec := caps.makeSpec(t, "contract-cmd-capadd")
@@ -644,11 +576,8 @@ func rowRunningLifecycle(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	}
 }
 
-// rowStopGrace — row 9 (microVM only, record 829-831): a SIGTERM-honoring guest
-// powers off (reboot(RB_POWER_OFF), observed as a VMM exit) WELL BEFORE the kill
-// escalation, proving the graceful preamble is not dead weight that always burns
-// the full timeout. Observable through the interface as Stop completing far under
-// its grace.
+// rowStopGrace verifies that a SIGTERM-honoring guest powers off before kill escalation.
+// Stop must complete well before its grace expires.
 func rowStopGrace(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	id := startRunning(t, rt, caps, "contract-stopgrace")
@@ -697,11 +626,8 @@ func startRunning(t *testing.T, rt WorkloadRuntime, caps backendCaps, name strin
 	return id
 }
 
-// registerRemove registers a t.Cleanup Remove backstop for id. The cleanup
-// detaches cancellation with context.WithoutCancel so teardown still runs after
-// the test's own ctx is cancelled (t.Context() is cancelled before cleanups run)
-// — a leaked container would collide with the next run's name (the existing e2e
-// pattern, brief §Go house rules).
+// registerRemove adds a cleanup backstop that detaches test cancellation.
+// Teardown must still run after t.Context() is canceled.
 func registerRemove(t *testing.T, rt WorkloadRuntime, id WorkloadID, label string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -751,13 +677,8 @@ func TestExitCodeOf(t *testing.T) {
 	}
 }
 
-// deliberateKill reports whether err is the deliberate-kill signal error the
-// backend produces after a Kill+Wait (divergence 6): the portable
-// *ExitStatusError with a non-zero Signal on microVM, or the byte-identical
-// *exec.ExitError from a SIGKILLed child (ExitCode() == -1, i.e. death by
-// signal) on podman. ExitCode() is portable across platforms, unlike the
-// unix-only syscall.WaitStatus methods, so this untagged file stays
-// cross-platform-compilable.
+// deliberateKill recognizes the backend's signaled-exit error after Kill+Wait.
+// killedBySIGKILL uses platform-specific checks for podman's *exec.ExitError.
 func deliberateKill(err error, caps backendCaps) bool {
 	if err == nil {
 		return false

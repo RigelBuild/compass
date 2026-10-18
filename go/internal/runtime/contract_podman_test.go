@@ -2,26 +2,16 @@
 
 package runtime
 
-// The podman leg of the shared WorkloadRuntime contract suite (record §U5):
-// runs runContractSuite against a real rootless-podman PodmanCLI, gated on
-// podmanUsable() (skip-not-fail where podman is absent, the existing suite's
-// pattern, lifecycle_test.go:54-60). It supplies the podman caps: the
-// divergences that are microVM-specific (output cap, numeric-uid-only, empty
-// MountLabel, ignored Command/CapAdd, graceful power-off) are OFF here, so those
-// rows self-skip; the deliberate-kill row asserts the byte-identical
-// *exec.ExitError path so this leg proves the podman byte-path stays
-// unregressed (divergence 6, OQ-G/U3b).
+// The podman leg runs the shared contract suite against rootless PodmanCLI when available.
+// MicroVM-only divergences are off; the kill row preserves podman's *exec.ExitError path.
 
 import (
 	"errors"
 	"testing"
 )
 
-// TestContractSuite_Podman drives the shared contract rows against rootless
-// podman through the WorkloadRuntime interface. It builds the agent image once
-// (buildImage) and hands runContractSuite a factory minting a fresh PodmanCLI,
-// with containers created from that image running `sleep infinity` as uid 1000
-// — the production keep-alive-plus-exec shape (lifecycle_test.go).
+// TestContractSuite_Podman builds the agent image once and runs shared rows against podman.
+// Each session uses the production keep-alive command and uid 1000.
 func TestContractSuite_Podman(t *testing.T) {
 	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")

@@ -2,15 +2,8 @@
 
 package runtime
 
-// Tests for the Linux-only statfs/mount-root half of V6's quota verification
-// (microvm_quota_linux.go). Mechanism and the rejected alternatives:
-// microvm_quota.go's header.
-//
-// These are separate from microvm_quota_test.go because mountRoot and deviceOf
-// only exist under //go:build linux — the pure decision they feed is covered
-// there, on every GOOS. The two readVolumeQuota probes at the end are here for
-// the same reason: off Linux they reach the refusal stub, so one fails outright
-// and the other passes for the wrong reason.
+// Linux tests cover statfs and mount-root quota probes, which are unavailable on other platforms.
+// The pure quota decision is tested in microvm_quota_test.go.
 
 import (
 	"math"
