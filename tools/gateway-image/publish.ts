@@ -86,8 +86,13 @@ try {
 
 const tag = buildTag(repo, sha);
 const authFile = process.env.REGISTRY_AUTH_FILE;
-const auth = authFile === undefined ? [] : ["--authfile", authFile];
-const probe = run("skopeo", ["inspect", ...auth, "--raw", `docker://${tag}`]);
+const destinationAuth = authFile === undefined ? [] : ["--authfile", authFile];
+const probe = run("skopeo", [
+	"inspect",
+	...destinationAuth,
+	"--raw",
+	`docker://${tag}`,
+]);
 const disposition = tagDisposition(
 	{
 		exitCode: probe.ok ? 0 : 1,
@@ -108,7 +113,8 @@ if (disposition.action === "skip") {
 const layoutDir = join(out, "oci");
 const pushed = run("skopeo", [
 	"copy",
-	...auth,
+	"--src-no-creds",
+	...(authFile === undefined ? [] : ["--dest-authfile", authFile]),
 	"--preserve-digests",
 	`oci:${layoutDir}`,
 	`docker://${tag}`,
@@ -122,7 +128,7 @@ if (!pushed.ok) {
 
 const resolved = run("skopeo", [
 	"inspect",
-	...auth,
+	"--no-creds",
 	"--raw",
 	`docker://${tag}`,
 ]);

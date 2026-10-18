@@ -89,7 +89,7 @@ exit 9`);
 		expect(stdout).toBe(`${REPO}@${MANIFEST_DIGEST}\n`);
 		const calls = readFileSync(logPath, "utf8");
 		expect(calls).toContain(
-			`copy --preserve-digests oci:${join(outDir, "oci")} docker://${REPO}:git-${SHA}`,
+			`copy --src-no-creds --preserve-digests oci:${join(outDir, "oci")} docker://${REPO}:git-${SHA}`,
 		);
 		expect(calls.match(/inspect/g)).toHaveLength(2);
 	});
@@ -157,7 +157,7 @@ exit 9`);
 		expect(publish().code).toBe(EXIT.pushFailed);
 	});
 
-	test("passes the auth file to probe, copy, and re-read", () => {
+	test("passes destination auth to probe and copy, then re-reads anonymously", () => {
 		stubSkopeo(`if [ "$1" = inspect ]; then
   if [ -f "${join(sandbox, "copied")}" ]; then cat "${join(sandbox, "manifest")}"; exit 0; fi
   echo "manifest unknown" >&2; exit 1
@@ -168,11 +168,10 @@ exit 9`);
 			REGISTRY_AUTH_FILE: "/tmp/registry-auth.json",
 		});
 		expect(code).toBe(0);
-		const calls = readFileSync(logPath, "utf8").trim().split("\n");
-		expect(calls).toEqual([
+		expect(readFileSync(logPath, "utf8").trim().split("\n")).toEqual([
 			`inspect --authfile /tmp/registry-auth.json --raw docker://${REPO}:git-${SHA}`,
-			`copy --authfile /tmp/registry-auth.json --preserve-digests oci:${join(outDir, "oci")} docker://${REPO}:git-${SHA}`,
-			`inspect --authfile /tmp/registry-auth.json --raw docker://${REPO}:git-${SHA}`,
+			`copy --src-no-creds --dest-authfile /tmp/registry-auth.json --preserve-digests oci:${join(outDir, "oci")} docker://${REPO}:git-${SHA}`,
+			`inspect --no-creds --raw docker://${REPO}:git-${SHA}`,
 		]);
 	});
 

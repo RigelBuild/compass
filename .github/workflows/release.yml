@@ -628,6 +628,9 @@ jobs:
           GH_SHA: ${{ github.sha }}
         run: bun tools/agent-image-index/index.ts
 
+      - name: Verify agent package is public
+        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-agent:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+
   release-assets-macos:
     name: release-assets-macos
     runs-on: macos-14
@@ -1257,7 +1260,7 @@ jobs:
             # (the final config-digest verify cannot catch that — it proves the
             # copy landed, not that the right source was chosen). Hard-fail on
             # ambiguity rather than retry (no-retries repo law).
-            if probe="$(skopeo inspect --authfile "$REGISTRY_AUTH_FILE" \
+            if probe="$(skopeo inspect --no-creds \
               "$ref:git-$sha12" 2>&1)"; then
               resolved_sha12="$sha12"
               echo "resolved source image at ancestor $sha12 (walk position $count)"
@@ -1286,12 +1289,13 @@ jobs:
 
           # Registry-side write: copy the resolved index and every member to
           # :vX.Y.Z byte-for-byte, so the release tag names the same list digest.
-          skopeo copy --multi-arch all --preserve-digests --authfile "$REGISTRY_AUTH_FILE" \
+          skopeo copy --multi-arch all --preserve-digests --src-no-creds \
+            --dest-authfile "$REGISTRY_AUTH_FILE" \
             "$ref:git-$resolved_sha12" "$ref:$tag"
 
           # Verify :vX.Y.Z is the same index: equal list digests over the raw bytes.
-          src_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$resolved_sha12" | sha256sum | cut -d' ' -f1)"
-          tag_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:$tag" | sha256sum | cut -d' ' -f1)"
+          src_digest="sha256:$(skopeo inspect --no-creds --raw "$ref:git-$resolved_sha12" | sha256sum | cut -d' ' -f1)"
+          tag_digest="sha256:$(skopeo inspect --no-creds --raw "$ref:$tag" | sha256sum | cut -d' ' -f1)"
           if [ "$src_digest" != "$tag_digest" ]; then
             echo "re-tag incoherent: :git-$resolved_sha12=$src_digest != :$tag=$tag_digest" >&2
             exit 1
@@ -1544,6 +1548,10 @@ jobs:
             --lane runner --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12")"
           echo "published $ref"
           echo "runner image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify runner package is public
+        if: steps.gate.outputs.should_publish == 'true'
+        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-runner:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+
 
   publish-server-image:
     name: publish-server-image
@@ -1713,6 +1721,10 @@ jobs:
             --lane server --repo ghcr.io/rigelbuild/compass-server --sha "$sha12")"
           echo "published $ref"
           echo "server image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify server package is public
+        if: steps.gate.outputs.should_publish == 'true'
+        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-server:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+
 
   release-server-image:
     name: release-server-image
@@ -1863,8 +1875,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
-        # The runner package is private, so even the probes need auth. The
-        # token goes through env and stdin only, never argv.
+        # Destination-tag probes participate in the write; source and
+        # verification reads use the public package anonymously.
         run: |
           skopeo \
             login ghcr.io -u "$ACTOR" --password-stdin \
@@ -2053,6 +2065,9 @@ jobs:
             --repo ghcr.io/rigelbuild/compass-guest-image --sha "$sha12")"
           echo "published $ref"
           echo "guest image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify guest package is public
+        if: steps.gate.outputs.should_publish == 'true'
+        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-guest-image:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
 
   publish-gateway-image:
     name: publish-gateway-image
@@ -2231,3 +2246,6 @@ jobs:
             --out tools/gateway-image/out)"
           echo "published $ref"
           echo "gateway image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify gateway package is public
+        if: steps.gate.outputs.should_publish == 'true'
+        run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-gateway:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"

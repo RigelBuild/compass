@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { publishImageIndex } from "./index.ts";
 
 const SHA = "abcdef0123456789abcdef0123456789abcdef01";
@@ -7,8 +10,9 @@ const SHA12 = SHA.slice(0, 12);
 const AMD64 = `sha256:${"a".repeat(64)}`;
 const ARM64 = `sha256:${"b".repeat(64)}`;
 const AUTH = "/tmp/auth.json";
-const TEMP = "/tmp/agent-image-index";
+const TEMP = mkdtempSync(join(tmpdir(), "agent-image-index-"));
 const REF = "docker://ghcr.io/rigelbuild/compass-agent";
+
 const LOCAL_RAW = JSON.stringify({
 	mediaType: "application/vnd.oci.image.index.v1+json",
 	manifests: [
@@ -272,6 +276,57 @@ describe("publishImageIndex latest ownership", () => {
 			),
 		).rejects.toThrow("ambiguous inspect failure probing newer");
 		expect(fake.latestPushes).toBe(0);
+	});
+});
+
+afterAll(() => rmSync(TEMP, { recursive: true, force: true }));
+
+describe("registry authentication boundaries", () => {
+	test("authenticates only the destination probe and manifest pushes", async () => {
+		const fake = makeRunner();
+		await publishImageIndex(
+			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			fake.run,
+		);
+
+		const inspections = fake.commands.filter(
+			(command) => command[0] === "skopeo" && command.includes("inspect"),
+		);
+		const destinationProbe = inspections.filter(
+			(command) => command.includes("--authfile") && command.includes(AUTH),
+		);
+		expect(destinationProbe).toHaveLength(1);
+		expect(destinationProbe[0]).toEqual([
+			"skopeo",
+			"inspect",
+			"--raw",
+			"--authfile",
+			AUTH,
+			`${REF}:git-${SHA12}`,
+		]);
+		for (const command of inspections.filter(
+			(entry) => entry !== destinationProbe[0],
+		)) {
+			expect(command).toContain("--no-creds");
+			expect(command).not.toContain("--authfile");
+		}
+
+		const adds = fake.commands.filter(
+			(command) => command[0] === "podman" && command[2] === "add",
+		);
+		expect(adds).toHaveLength(2);
+		for (const command of adds) {
+			expect(command).toContain(join(TEMP, "anonymous-auth.json"));
+			expect(readFileSync(join(TEMP, "anonymous-auth.json"), "utf8")).toBe(
+				"{}",
+			);
+			expect(command).not.toContain(AUTH);
+		}
+		for (const command of fake.commands.filter(
+			(entry) => entry[0] === "podman" && entry[2] === "push",
+		)) {
+			expect(command).toContain(AUTH);
+		}
 	});
 });
 

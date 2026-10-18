@@ -264,7 +264,13 @@ if (disposition.action === "skip") {
 
 const pushed = run(
 	"skopeo",
-	["copy", ...auth, `oci:${layoutDir}`, `docker://${tag}`],
+	[
+		"copy",
+		"--src-no-creds",
+		...(authFile === undefined ? [] : ["--dest-authfile", authFile]),
+		`oci:${layoutDir}`,
+		`docker://${tag}`,
+	],
 	workspaceRoot,
 );
 if (!pushed.ok)
@@ -274,7 +280,7 @@ if (!pushed.ok)
 // fail closed rather than have its digest published as ours.
 const resolved = run(
 	"skopeo",
-	["inspect", ...auth, "--raw", `docker://${tag}`],
+	["inspect", "--no-creds", "--raw", `docker://${tag}`],
 	workspaceRoot,
 );
 if (!resolved.ok)

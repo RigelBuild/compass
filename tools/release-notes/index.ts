@@ -295,7 +295,7 @@ export function requireImageAtRelease(
  */
 async function gatherImage(sha: string): Promise<ImageIdentity | null> {
 	const ref = `${IMAGE_REPO}:git-${sha}`;
-	const result = await $`skopeo inspect --raw docker://${ref}`
+	const result = await $`skopeo inspect --no-creds --raw docker://${ref}`
 		.nothrow()
 		.quiet();
 	return classifyImageResult({

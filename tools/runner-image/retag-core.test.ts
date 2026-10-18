@@ -4,7 +4,9 @@ import {
 	assertNoClosureChange,
 	classifyProbe,
 	closureChanges,
+	copyArgv,
 	EXIT,
+	inspectArgv,
 	MAX_WALK,
 	manifestIdentity,
 	type ProbeResult,
@@ -14,6 +16,35 @@ import {
 	sha12,
 	splitNulPaths,
 } from "./retag-core.ts";
+
+describe("registry argv", () => {
+	test("inspect uses anonymous credentials", () => {
+		expect(inspectArgv("ghcr.io/x/y:git-abcdef012345")).toEqual([
+			"inspect",
+			"--no-creds",
+			"--raw",
+			"docker://ghcr.io/x/y:git-abcdef012345",
+		]);
+	});
+
+	test("copy uses anonymous source and destination auth, never a shared authfile", () => {
+		const argv = copyArgv(
+			"ghcr.io/x/y@sha256:abc",
+			"ghcr.io/x/y:v1.2.3",
+			"/auth.json",
+		);
+		expect(argv).toEqual([
+			"copy",
+			"--preserve-digests",
+			"--src-no-creds",
+			"--dest-authfile",
+			"/auth.json",
+			"docker://ghcr.io/x/y@sha256:abc",
+			"docker://ghcr.io/x/y:v1.2.3",
+		]);
+		expect(argv).not.toContain("--authfile");
+	});
+});
 
 const CONFIG_A =
 	"sha256:2125c2a158a8329c40ac7c1daa8909f09fe82a5231ff0df05319d0be4d4c4bb6";
@@ -155,7 +186,7 @@ describe("classifyProbe", () => {
 		).toBe("ambiguous");
 	});
 
-	test("a private package without auth (403 Forbidden) is ambiguous", () => {
+	test("a public package denied anonymously with 403 remains ambiguous", () => {
 		expect(
 			classifyProbe(
 				skopeoFatal(
@@ -170,7 +201,7 @@ describe("classifyProbe", () => {
 
 	test("a generic 'not found' stays ambiguous", () => {
 		// The agent lane's broad `*"not found"*` belt is deliberately not carried
-		// over: on this private package it would read auth and repo faults as absent.
+		// over: treating every not-found response as absent could hide auth and repo faults.
 		expect(
 			classifyProbe(
 				skopeoFatal(

@@ -190,17 +190,23 @@ describe("digestFromMetadata", () => {
 });
 
 describe("tagArgs", () => {
-	test("copies the verified digest to the build tag with explicit auth", () => {
-		expect(
-			tagArgs("ghcr.io/x/y", DIGEST, "c724a9ee03a8", "/run/docker/config.json"),
-		).toEqual([
+	test("copies the verified digest with anonymous source and explicit destination auth", () => {
+		const argv = tagArgs(
+			"ghcr.io/x/y",
+			DIGEST,
+			"c724a9ee03a8",
+			"/run/docker/config.json",
+		);
+		expect(argv).toEqual([
 			"copy",
 			"--preserve-digests",
-			"--authfile",
+			"--src-no-creds",
+			"--dest-authfile",
 			"/run/docker/config.json",
 			`docker://ghcr.io/x/y@${DIGEST}`,
 			"docker://ghcr.io/x/y:git-c724a9ee03a8",
 		]);
+		expect(argv).not.toContain("--authfile");
 	});
 
 	test("refuses a non-digest source, so the tag cannot follow another tag", () => {
