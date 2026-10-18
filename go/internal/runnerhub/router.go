@@ -105,8 +105,9 @@ type pendingCall struct {
 	err    error
 }
 
-// deliverRefusalsMax bounds entries for successful sends that never receive a result.
-// Eviction is safe because old successful deliveries cannot later be refused.
+// deliverRefusalsMax bounds the refusal registry, which successful sends never
+// leave. Size it so every id that can still be refused (one control round-trip)
+// stays resident; eviction is safe only for long-past successful sends.
 const deliverRefusalsMax = 16384
 
 func newCommandRouter() *commandRouter {

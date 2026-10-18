@@ -2,8 +2,8 @@
 
 package runnerhub
 
-// Hub.Provision deduplicates retries by request id and workspace identity.
-// Tests verify same-workspace joins, cross-workspace isolation, and fresh ids for empty requests.
+// Hub.Provision scopes request-id deduplication to the agent account.
+// Tests cover same-account joins, cross-account isolation, and fresh ids for empty requests.
 // A recording Sessions stream and synctest make concurrent joins observable without sleeps.
 
 import (
