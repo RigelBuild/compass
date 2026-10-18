@@ -392,7 +392,7 @@
     "@opentelemetry/semantic-conventions": "^1.33.0",
     "@rigelbuild/biome-config": "1.0.1",
     "@rigelbuild/comment-scan": "1.0.0",
-    "@rigelbuild/length-gate": "1.0.0",
+    "@rigelbuild/length-gate": "1.0.1",
     "@rigelbuild/ref-gate": "1.0.0",
     "@rigelbuild/renovate-preflight": "1.0.0",
     "@rigelbuild/tsconfig": "1.0.0",
@@ -985,7 +985,7 @@
 
     "@rigelbuild/comment-scan": ["@rigelbuild/comment-scan@1.0.0", "", { "dependencies": { "typescript": "6.0.3" } }, "sha512-2fHTTrGbDMBe8F9zsVKL4OUhxIpVnKRN4b3NyTEgNOqnuvfhpavKxS7x6xrk7CBC4Hctln21IgWTf9fIdZce6w=="],
 
-    "@rigelbuild/length-gate": ["@rigelbuild/length-gate@1.0.0", "", { "dependencies": { "@rigelbuild/comment-scan": "1.0.0", "diff": "9.0.0", "mdast-util-from-markdown": "2.1.0", "mdast-util-frontmatter": "2.0.1", "mdast-util-gfm": "3.1.0", "micromark-extension-frontmatter": "2.0.0", "micromark-extension-gfm": "3.0.0" }, "bin": { "length-gate": "index.ts" } }, "sha512-vwuntynMsciEv2cCA79rxFqjH5nztF1pXF+7KJW1enZkFqE1KoTmz3GuRdpE7u6Tm2KW5vfdcsNxktH8AsRkuw=="],
+    "@rigelbuild/length-gate": ["@rigelbuild/length-gate@1.0.1", "", { "dependencies": { "@rigelbuild/comment-scan": "1.0.0", "diff": "9.0.0", "mdast-util-from-markdown": "2.1.0", "mdast-util-frontmatter": "2.0.1", "mdast-util-gfm": "3.1.0", "micromark-extension-frontmatter": "2.0.0", "micromark-extension-gfm": "3.0.0" }, "bin": { "length-gate": "index.ts" } }, "sha512-ocuDkWO39q7SZH2GBMbu/vL9BZxKw3/65hbidL6/0hwGsAtd0n9WHvE0lUg/khwYihjlDAtUT5UUa0jARUrS/Q=="],
 
     "@rigelbuild/ref-gate": ["@rigelbuild/ref-gate@1.0.0", "", { "bin": { "ref-gate": "index.ts" } }, "sha512-ZWq24B8dYrCzC0O/QjLIFL9PhbBSjaDdJ6ZOvYyVk2IzY+icK9jDdwAgne9Ylg7UqgA2ywgUjWuBtbr7kko/tg=="],
 
