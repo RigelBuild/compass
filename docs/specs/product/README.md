@@ -8,11 +8,10 @@ in `RigelBuild/docs`, bucketed by domain and indexed by
 
 Available specs:
 
-- [`compass.md`](compass.md) — how **Compass** currently behaves: the
-  `compass.v1` UI/backend contract (the owned door, generated-client-only
-  access, contract-drift gate), the `compass-server` local transport (UDS
-  dual-protocol, no-TCP posture, single-instance startup, serving lifecycle,
-  dev endpoint), and the event-stream resubscribe semantics.
+- [`compass/`](compass/README.md) — how **Compass** currently behaves, one file
+  per area: the `compass.v1` contract, server transport and lifecycle, the
+  event stream, agent sessions and their relay, the communication layer, the
+  agent tree, the network door, and Runner enrollment.
 
 > These specs describe current behavior. The *why* — including Compass's full
 > ADE design, much of which is designed but not yet built — lives in the design
