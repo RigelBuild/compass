@@ -2,8 +2,8 @@
 
 package store
 
-// Topic-create tests ensure unknown names require explicit creation, while id
-// refs and archived-topic revival keep their existing behavior.
+// Topic-create tests cover the explicit create gate for unknown names and revival
+// of archived name-based topics.
 
 import (
 	"context"

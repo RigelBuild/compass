@@ -876,13 +876,9 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 }
 
 // TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession covers
-// the case the ROW lock cannot cover, and it is why the bind takes a per-account
-// advisory lock as well.
-//
-// First-ever binds have no row for SELECT FOR UPDATE to lock; without the
-// advisory lock, both can read no prior binding before the primary key serializes
-// their writes. The loser then destroys an unreported live session. The test
-// holds the same lock to force that interleaving.
+// first-ever binds, which have no row for SELECT FOR UPDATE to lock. The advisory
+// lock serializes the prior-value read and upsert. The external gate checks binds
+// do not complete while the lock is held.
 func TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
