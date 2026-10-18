@@ -3,6 +3,7 @@ export const RUNNER_UID = 65532;
 
 const RUNNER_NAME = "compass-runner";
 const SESSION_MOUNT_PATH = "/var/lib/compass/sessions";
+const SESSION_VOLUME_ROOT = `${SESSION_MOUNT_PATH}/volumes`;
 const RUNTIME_MOUNT_PATH = "/run/compass";
 const RUNNER_TOKEN_PATH = "/var/run/secrets/compass/runner/token";
 const SERVER_CA_MOUNT_PATH = "/etc/compass/server-ca";
@@ -630,7 +631,7 @@ export function renderRunnerManifests(
 									{ name: "COMPASS_MICROVM_RUNROOT", value: runtimePath },
 									{
 										name: "COMPASS_MICROVM_VOLUME_ROOT",
-										value: SESSION_MOUNT_PATH,
+										value: SESSION_VOLUME_ROOT,
 									},
 									{
 										name: "COMPASS_MICROVM_MEMORY_MB",
