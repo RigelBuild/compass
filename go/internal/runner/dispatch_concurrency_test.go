@@ -2,25 +2,9 @@
 
 package runner
 
-// Concurrent-dispatch tests for the dispatcher's in-flight-sentinel idempotency
-// (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
-// (b) / Plan T2). Under per-command goroutine dispatch the request-id dedup
-// window is open concurrently: a retry of an IN-FLIGHT id must JOIN the running
-// execution rather than double-execute it. Every test is event-gated on the
-// fake host's park channels — no sleeps, no polling.
-//
-// T1 harness split (per the record's T1 note — implementer's choice, documented
-// here): the same-id single-execution case (test 2, below) drives the
-// dispatcher's handle directly against the extended fakeSessionHost
-// (dispatch_test.go), the dedup layer that owns the invariant — no wire needed.
-// The broken-Send loop-classification case (test 6) drives an unexported
-// runSessions seam with a scripted fake stream, in run_classification_test.go
-// (package runner) — it is a loop-error unit test, not integration. The
-// slow-Provision/Stop isolation and leak-free-join cases (tests 1, 4) and the
-// Provision-cap case (T-cap) drive the real RunSessions over the in-memory wire
-// in package runnerhub. The per-container serialization and no-self-deadlock
-// cases (tests 3, 5) drive the real agentHost in host_concurrency_test.go, since
-// the transition lock lives there.
+// Concurrent-dispatch tests cover in-flight request-id dedup and event-gated
+// synchronization without sleeps. Real RunSessions tests cover lifecycle
+// concurrency and provision limits.
 
 import (
 	"context"

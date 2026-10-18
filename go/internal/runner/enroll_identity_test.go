@@ -2,11 +2,8 @@
 
 package runner
 
-// Dial declares the Runner's runtime tier and egress posture ONCE at enrollment,
-// derived from the engine it drives. This drives the real Dial (interceptor-
-// wrapped client) against a recording RunnerService handler and asserts the
-// EnrollRequest carried the right wire enums for a HOST engine (tier HOST, egress
-// UNENFORCED) — the two facts the hub stamps onto every session status.
+// Dial sends the engine's runtime tier and egress posture at enrollment. This
+// test checks that a host engine produces the expected wire enums.
 
 import (
 	"context"

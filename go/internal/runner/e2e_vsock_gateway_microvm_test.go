@@ -2,45 +2,10 @@
 
 package runner
 
-// The V4 W3 KVM-gated end-to-end gateway-over-vsock acceptance suite (RIG-3092):
-// the milestone gate for AgentGateway-over-host-side-vsock, driving a real
-// agentHost over a real MicroVMRuntime engine on live hardware so the whole path
-// W1 (guestd's in-guest unix->vsock forwarder) + W2 (host serves the same
-// generated handler over the per-session suffixed AF_UNIX path, probe-gated in
-// Provision) is proven where it actually runs. Every test opens with
-// microvmtest.Require(t): on a KVM-less box it SKIPS (unless
-// COMPASS_REQUIRE_MICROVM=1 forces a hard fail), so the suite is only real where
-// /dev/kvm is openable and the guest images are exported into the env.
-//
-// It consumes W1+W2 through the public surfaces (agentHost.Provision/Start/
-// Remove/Close over a MicroVMRuntime engine, the white-box h.sockets read via
-// listenerPath) and complements — never duplicates — the hermetic W2 suite
-// (host_vsock_gateway_test.go, a fake probe engine, no VM) and the hermetic W1
-// suite (guestd/gateway_proxy_test.go, an injected dialGateway, no vsock): those
-// prove the wiring in isolation; this proves the two halves meet over a real
-// cloud-hypervisor hybrid-vsock channel.
-//
-// TWO TRANSPORT LEGS, both proven here:
-//   - HOST leg: the host serves gateway.Serve over <runtimeDir>/vsock.sock_1025
-//     (the CH suffixed path, record §(a)/(b)); a host-side Connect client dials
-//     that plain AF_UNIX path directly (runnertest.DialAgentSocket), so the
-//     serve path, identity binding, fail-closed window, and teardown are proven
-//     without needing a guest at all (TestVsockGateway_HostServesSuffixedSocket,
-//     _FailClosedBeforeStart, _TeardownRemovesSuffixedSocket).
-//   - GUEST leg: an agent-uid exec inside the booted guest runs a bun probe that
-//     dials /run/compass/agent.sock (W1's forwarder), which bridges to the host
-//     Gateway over AF_VSOCK, driving a real Comms round-trip end to end
-//     (TestVsockGateway_InGuestRoundTripOverVsock). The vsock-is-not-IP non-goal
-//     (record §(g)) rides the same booted session.
-//
-// DETERMINISM. The suite never launches the real compass-agent: agentCommand is
-// overridden to an inert in-guest keep-alive for the run, so the ONLY traffic
-// the fake Server relay sees is what a test's own probe sends — a call count is
-// then an exact assertion, not a race against a live agent's startup chatter.
-// The KVM ctx-lifetime footgun is honored throughout: Start/Provision take
-// t.Context() (the VM lifetime), NEVER a WithTimeout+defer-cancel ctx, which
-// would kill the guest mid-session; per-exec/per-call deadlines are separate
-// short-lived contexts that never bound a boot.
+// KVM-gated E2E tests prove host and guest gateway legs meet over real vsock.
+// They skip without KVM unless COMPASS_REQUIRE_MICROVM=1. Hermetic suites cover
+// each half; this suite boots a real guest but uses an inert agent so probe call
+// counts remain exact. Provision and Start use t.Context() to preserve VM life.
 
 import (
 	"context"
@@ -64,59 +29,34 @@ import (
 )
 
 const (
-	// w3AccountID is the 32-hex agent account id every W3 Provision uses (the
-	// BuildSpec input shape the real spec builder validates); its exact value is
-	// irrelevant, only that it is the minted fixed-width lowercase-hex shape.
+	// w3AccountID is the valid fixed-width lowercase-hex BuildSpec account shape.
 	w3AccountID = "0123456789abcdef0123456789abcdef"
-	// w3ProbeCallID is the Comms CallId the round-trip probes send; asserting it
-	// flows to the relay verbatim and back proves the call, not merely a connect.
+	// w3ProbeCallID is checked at the fake relay to prove the full round-trip.
 	w3ProbeCallID = "w3-vsock-1"
-	// inGuestProbeTimeout bounds one in-guest bun-probe exec (the host-side ctx).
-	// A real boot is ~2s and the probe is a single unary call, so this is
-	// generous headroom, not a tuned value; it must stay well under the KVM
-	// -timeout so a wedge fails as itself, not as a suite timeout.
+	// inGuestProbeTimeout bounds one probe without bounding VM lifetime.
 	inGuestProbeTimeout = 60 * time.Second
-	// guestConnectTimeoutSecs bounds the in-guest /dev/tcp egress probe. It MUST
-	// stay strictly under inGuestProbeTimeout (the host-side exec ctx) so a
-	// dropped SYN trips the guest's own timeout (exit 124 — the unreachable
-	// verdict inGuestCanReachIP reads), never a host-ctx DeadlineExceeded that
-	// would surface as a harness fault rather than a firewall verdict.
+	// Keep the guest firewall probe shorter than its host exec deadline so a
+	// dropped SYN is reported as unreachable, not as a harness timeout.
 	guestConnectTimeoutSecs = 10
 )
 
-// w3Relay is the fake Server for the W3 suite: recordingRelay (capturing every
-// RelayCommsCall so a round-trip is an exact assertion) with FetchSecrets
-// overridden to the "no secrets surface" posture — CodeFailedPrecondition. That
-// is the legitimate secrets-less deployment Start tolerates by SKIPPING the
-// secret materialize (host.go:384-388), which is load-bearing here: the guest
-// rootfs has NO writable filesystem for the agent uid (erofs root read-only, no
-// /home or /tmp, and the /workspace virtiofs mount rejects mkdir with EINVAL),
-// so the materialize's `mkdir $HOME/.compass` cannot succeed and is not part of
-// the gateway-transport contract W3 proves. Skipping it keeps Start on the
-// bind-session-then-launch path the round-trip needs, without a real secrets
-// surface a hermetic fake cannot host.
+// w3Relay returns the no-secrets signal because the guest rootfs cannot host
+// secret materialization. Start then reaches the bind-and-launch path under test.
 type w3Relay struct {
 	*recordingRelay
 }
 
 func newW3Relay() *w3Relay { return &w3Relay{recordingRelay: &recordingRelay{}} }
 
-// FetchSecrets returns CodeFailedPrecondition — the "no secrets surface" signal
-// (host.go:367-370) — so Start skips the in-guest secret materialize the
-// read-only guest rootfs cannot host.
+// FetchSecrets signals that the read-only guest rootfs cannot host secrets.
 func (r *w3Relay) FetchSecrets(
 	context.Context, *compassv1internal.FetchSecretsRequest,
 ) (*compassv1internal.FetchSecretsResponse, error) {
 	return nil, connect.NewError(connect.CodeFailedPrecondition, "w3: no secrets surface")
 }
 
-// newMicroVMGatewayFixture builds a concrete *agentHost whose engine is a REAL
-// MicroVMRuntime booting real guests, wired to relay as the fake Server. It
-// mirrors newVsockGatewayFixture (the hermetic W2 fixture) with the fake engine
-// swapped for NewMicroVMRuntime(e2eConfig(...)) — so agentHost drives its
-// microVM (vsock-gateway) Provision leg against real hardware. Returns the host
-// and the runtime; the caller drives Provision/Start and (for the guest leg)
-// execs through the runtime by the container's resolved id.
+// newMicroVMGatewayFixture mirrors the hermetic fixture with a real guest. It
+// returns the host and engine for probe execution.
 func newMicroVMGatewayFixture(t *testing.T, relay *w3Relay) (*agentHost, *runtime.MicroVMRuntime) {
 	t.Helper()
 	env := microvmtest.Require(t)
@@ -130,14 +70,8 @@ func newMicroVMGatewayFixture(t *testing.T, relay *w3Relay) (*agentHost, *runtim
 	return host, engine
 }
 
-// w3MicroVMConfig builds a MicroVMConfig from the resolved test env and a fresh,
-// SHORT runroot. The short root is load-bearing, not cosmetic: the widest
-// per-session socket leaf is <RunRoot>/microvm/<32-hex id>/vsock.sock_1025 (a
-// 57-byte tail), and a t.TempDir() root — which embeds the long test-function
-// name — overflows the 107-byte AF_UNIX sun_path cap so the bind fails EINVAL
-// and the boot times out. This mirrors runtime.e2eConfig (the runtime package's
-// own KVM harness helper), duplicated here because that helper is an unexported
-// test symbol in a different package.
+// w3MicroVMConfig keeps the per-session AF_UNIX path within sun_path's 107-byte
+// limit by using a short runroot instead of t.TempDir's long test-name path.
 func w3MicroVMConfig(t *testing.T, env microvmtest.Env) runtime.MicroVMConfig {
 	t.Helper()
 	//nolint:usetesting // t.TempDir embeds the long test-function name, overflowing the 107-byte AF_UNIX sun_path budget for the per-session sockets — the very failure this short root prevents.
@@ -162,12 +96,8 @@ func w3MicroVMConfig(t *testing.T, env microvmtest.Env) runtime.MicroVMConfig {
 	}
 }
 
-// w3LiveSpec is a launchable AgentSpec for a real microVM session: a single
-// /workspace mount (the only mount the microVM backend accepts) backed by a
-// throwaway dir, agent uid 1000, and the zero-value-safe default-deny egress.
-// The image name is ignored by the microVM backend (the rootfs is the image),
-// and Command is ignored too (guestd PID-1 is the keep-alive), so this is the
-// minimal spec that boots.
+// w3LiveSpec is the minimal launchable microVM spec: one /workspace mount,
+// agent uid, and default-deny egress. The backend ignores Image and Command.
 func w3LiveSpec(t *testing.T) runtime.AgentSpec {
 	t.Helper()
 	return runtime.AgentSpec{
@@ -183,12 +113,8 @@ func w3LiveSpec(t *testing.T) runtime.AgentSpec {
 	}
 }
 
-// inertAgentCommand replaces the real compass-agent argv for the duration of a
-// test with an in-guest keep-alive: a sleep that outlives the test. StartAgent
-// execs this instead of the agent, so no real agent traffic reaches the fake
-// relay and a call count is an exact assertion. Restores the original on
-// cleanup. `sleep` is a coreutils binary present in the guest rootfs (proven by
-// the toolchain-closure probe).
+// inertAgentCommand prevents real agent traffic from reaching the fake relay.
+// The guest's sleep process keeps the session alive until cleanup restores argv.
 func inertAgentCommand(t *testing.T) {
 	t.Helper()
 	orig := agentCommand
@@ -402,49 +328,34 @@ func TestVsockGateway_InGuestVsockIsNotIP(t *testing.T) {
 	}
 	id := resolveContainerID(t, h, name)
 
-	// The vsock gateway path works (positive control: without it, "both fail"
-	// below would pass vacuously).
+	// Positive control: without a working vsock round-trip, both-fail would pass.
 	out := runInGuestProbe(t, engine, id, w3ProbeCallID)
 	if out.callID != w3ProbeCallID {
 		t.Fatalf("in-guest vsock round-trip = %q, want %q; the deny leg is only meaningful if the vsock path works", out.callID, w3ProbeCallID)
 	}
 
-	// A raw-IP egress attempt from inside the guest is blocked by the always-armed
-	// default-deny firewall — the gateway is not reachable by any IP route. The
-	// block is attributable to the firewall (not dead IP networking) because (a)
-	// the session only reaches this exec past Start's net_provisioned Health gate,
-	// which guarantees the netns + passt path is live, and (b) the always-armed
-	// default-deny is proven independently by egress_inguest_microvm_test.go. Probe
-	// a globally-routable raw IP (never a name — DNS stalls the harness resolver),
-	// bounded by a guest-side timeout so a dropped SYN reports exit 124.
+	// A raw-IP connection must fail under default-deny even though vsock works.
+	// Use an IP to avoid DNS stalls; the guest timeout distinguishes a dropped
+	// SYN from a harness failure.
 	if inGuestCanReachIP(t, engine, id, "8.8.8.8") {
 		t.Fatal("an IP destination reached the guest egress path; the vsock gateway must be orthogonal to (never a hole in) the default-deny IP seal")
 	}
 }
 
-// probeResult is the one fact the in-guest bun probe reports back: the CallId
-// the host Gateway's relay echoed into the Comms result. An empty callID means
-// the probe ran but the round-trip did not complete (the failure the caller
-// asserts against).
+// probeResult carries the CallId echoed by the host relay; empty means the
+// round-trip did not complete.
 type probeResult struct {
 	callID string
 }
 
-// runInGuestProbe execs a bun script inside the guest (agent uid 1000) that
-// dials /run/compass/agent.sock and issues one AgentGateway.Comms unary over
-// HTTP/1.1 Connect (a JSON POST — the gateway serves SetHTTP1, and Connect-unary
-// over HTTP/1.1 is a plain POST of the request message). The script prints a
-// single line `RESULT <json>` the host parses for the echoed call id. A
-// transport/exec error is a harness fault (t.Fatalf); a completed exec whose
-// body carries the result is the round-trip proof.
+// runInGuestProbe sends one HTTP/1.1 Connect JSON POST to the guest socket and
+// parses the echoed CallId. Transport errors are harness failures.
 func runInGuestProbe(t *testing.T, m *runtime.MicroVMRuntime, id runtime.WorkloadID, callID string) probeResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), inGuestProbeTimeout)
 	defer cancel()
 
-	// The Connect-unary request body for AgentGateway.Comms is the JSON encoding
-	// of CommsCallRequest. A minimal call_id-only body is enough: the fake relay
-	// echoes call_id into the result, so a matching echo proves the full loop.
+	// A call_id-only body is enough because the fake relay echoes it in the result.
 	reqBody, err := json.Marshal(map[string]any{"call_id": callID})
 	if err != nil {
 		t.Fatalf("marshaling probe request: %v", err)
@@ -461,20 +372,13 @@ func runInGuestProbe(t *testing.T, m *runtime.MicroVMRuntime, id runtime.Workloa
 	return parseProbeResult(t, out.Stdout)
 }
 
-// inGuestProbeScript is the bun program the probe execs. It POSTs the Connect
-// unary to the agent socket over a Unix-domain fetch (bun's `unix:` option) and
-// prints `RESULT <json>` with the response body, or `RESULT-ERR <msg>` on a
-// failure — a single parseable line either way so the host never guesses.
+// inGuestProbeScript sends a Connect unary over Bun's Unix-socket fetch and emits
+// one parseable result line.
 func inGuestProbeScript(reqJSON string) string {
-	// The URL host is a placeholder; `unix` routes every byte to the socket. The
-	// Connect-unary content type for JSON is application/json; the RPC path is
-	// the fully-qualified procedure. Bounded by an AbortSignal so a wedged dial
-	// fails as a printed error, not a hang inside the guest.
-	//
-	// INVARIANT: reqJSON is spliced into a JS backtick template literal, so it
-	// MUST stay free of backticks and ${...}. It is today (json.Marshal of a
-	// fixed call_id-only const); a future dynamic payload must JSON.stringify on
-	// the Go side and JSON.parse in-script rather than embed raw JSON here.
+	// The URL host is a placeholder; the unix option routes bytes to the socket.
+	// The RPC is bounded by AbortSignal so a wedged dial reports an error.
+	// reqJSON is embedded in a JS template literal; it must contain no backtick or
+	// ${...}. Dynamic payloads must be encoded before insertion.
 	return `
 const body = ` + "`" + reqJSON + "`" + `;
 try {
@@ -492,10 +396,8 @@ try {
 `
 }
 
-// parseProbeResult extracts the echoed call id from the probe's `RESULT <json>`
-// line. The Comms result JSON is a CommsCallResult encoded by connect-go's JSON
-// codec (protobuf JSON, camelCase field names), so the echoed field is `callId`.
-// A missing/!RESULT line means the probe did not complete the round-trip.
+// parseProbeResult extracts the echoed protobuf-JSON callId. Missing RESULT means
+// the probe did not complete.
 func parseProbeResult(t *testing.T, stdout string) probeResult {
 	t.Helper()
 	for line := range strings.SplitSeq(stdout, "\n") {
@@ -515,12 +417,9 @@ func parseProbeResult(t *testing.T, stdout string) probeResult {
 	return probeResult{}
 }
 
-// inGuestCanReachIP execs an agent-uid bash /dev/tcp connect to ip:443 inside
-// the guest, bounded by a guest-side `timeout`, and reports whether the
-// handshake completed. Mirrors egress_inguest_microvm_test.go's canReachIPv4: a
-// dropped SYN hangs until the guest timeout fires (exit 124, unreachable); an
-// allowed host completes (exit 0, "connected"). Any exec/transport error is a
-// harness fault.
+// inGuestCanReachIP probes TCP egress with a guest-side timeout. A dropped SYN
+// returns unreachable; a completed handshake returns connected. Other errors
+// indicate a harness failure.
 func inGuestCanReachIP(t *testing.T, m *runtime.MicroVMRuntime, id runtime.WorkloadID, ip string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), inGuestProbeTimeout)

@@ -65,11 +65,8 @@ func (g *Gateway) PostConversationFrame(
 	return &compassv1internal.PostConversationFrameResponse{}, nil
 }
 
-// isConversationFrame reports whether frame is the durable transcript frame the
-// CommitConversationFrame unary carries: the RIG-1570 transcript_entry variant.
-// A conversation frame, a session frame, an ack, or an unset oneof is rejected.
-// (The conversation_posted / conversation_updated write-through was removed with
-// the Zulip threading model; only the transcript lane survives.)
+// isConversationFrame accepts only durable transcript-entry frames. Other frame
+// variants are rejected.
 func isConversationFrame(frame *compassv1internal.AgentFrame) bool {
 	if frame == nil {
 		return false
@@ -82,12 +79,8 @@ func isConversationFrame(frame *compassv1internal.AgentFrame) bool {
 	}
 }
 
-// keyCommitted reports whether idempotency key has already been forwarded+accepted
-// in this process (advisory fast-path). The bounded LRU is internally
-// synchronized. Contains does not bump recency (by design: a dedup hit is a
-// retry, not new traffic); recency is set when the key is first committed via
-// markKeyCommitted. A key evicted before its retry lands merely costs one
-// redundant re-forward the store dedups — never a correctness loss.
+// keyCommitted checks the synchronized bounded LRU without changing recency.
+// An evicted retry may be re-forwarded; the store performs durable deduplication.
 func (g *Gateway) keyCommitted(key string) bool {
 	return g.committedKeys.Contains(key)
 }

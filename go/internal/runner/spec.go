@@ -79,11 +79,8 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	return &configSpecBuilder{defaults: defaults}, nil
 }
 
-// workspaceUIDResolver is the backend capability of naming the uid its agent
-// workspaces run as. The host backend implements it (it runs agents as direct
-// children under the Runner's own euid, so the uid is that euid); the container
-// tiers do not, because their userns remap maps the invoking host uid onto the
-// baked fleet constant, so they need no per-Runner uid.
+// workspaceUIDResolver lets the host backend supply the uid its agents run as;
+// container tiers use the baked fleet uid.
 type workspaceUIDResolver interface {
 	WorkspaceUID() (uint32, error)
 }
@@ -208,26 +205,9 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 	}, nil
 }
 
-// validAccountID refuses an agent account id that is not a fixed-width lowercase
-// hex string — exactly agentAccountIDWidth (32) characters, each in [0-9a-f].
-// This is the exact shape the server mints (16 random bytes hex-encoded,
-// store/ids.go newID), so a well-formed request always passes.
-//
-// The id is not merely a label: it is concatenated into the container name
-// (spec.go BuildSpec) and that name becomes a path segment of the agent socket,
-// RuntimeDir/containers/<container>/agent.sock (host.go). A fixed-width hex
-// string cannot carry a "/", a "..", a ".", a control or format character, or
-// invalid UTF-8, so it cannot escape RuntimeDir nor forge a container name an
-// operator reads back from `podman ps` or the Runner's logs. Constraining the
-// id to its minted shape here — the hop before hub.Provision creates the 0700
-// directory and binds the socket — is what keeps that path segment safe.
-//
-// The width is asserted here on purpose: run.go's validateRuntimeDir derives the
-// startup socket-path budget from agentAccountIDWidth, so an id of any other
-// width would break the model the budget check is built on. Nothing upstream
-// makes this check redundant — the foreign key that ties the id to a real
-// account is enforced later by RecordAgentContainer, and the admin-only RPC
-// narrows who calls Provision, not what they may pass.
+// validAccountID enforces the server-minted 32-character lowercase-hex shape.
+// This fixed-width path segment cannot traverse or forge a container name; the
+// width also matches the runtime-dir socket budget.
 func validAccountID(id string) error {
 	if id == "" {
 		return errors.New("provision request requires an agent account id")

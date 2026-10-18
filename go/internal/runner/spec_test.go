@@ -2,11 +2,8 @@
 
 package runner
 
-// NewConfigSpecBuilder + BuildSpec: the constructor rejects incomplete defaults
-// (no image, missing checkout/home dir), and BuildSpec fills the workspace
-// layout from the defaults and derives the container name as
-// prefix+agent_account_id. Every test names the contract a plausible bug would
-// break: a misconfigured Runner must fail at startup, not first provision.
+// BuildSpec rejects incomplete defaults, derives workspace paths and names, and
+// must fail at startup rather than later during the first provision.
 
 import (
 	"strings"
@@ -198,19 +195,14 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 		{"an embedded separator", "abc/def"},
 		{"a leading separator (absolute)", "/etc/passwd"},
 		{"a trailing separator", "abc/"},
-		// Control and format characters clear every check above and, measured,
-		// pass MkdirAll and bind too (a NUL is the exception, failing at
-		// MkdirAll) — so without this guard they reach the container name and
-		// the logs that quote it. The C1 and bidi rows are the ones a predicate
-		// written as `r < 0x20 || r == 0x7f` would silently admit.
+		// Controls and format characters can pass path-shape checks and reach logs;
+		// NUL is the exception because MkdirAll rejects it first.
 		{"an embedded NUL", "abc\x00def"},
 		{"an embedded newline", "abc\ndef"},
 		{"an embedded DEL", "abc\x7fdef"},
 		{"an embedded C1 control", "abc\u0085def"},
 		{"an embedded bidi override", "abc\u202edef"},
-		// The fixed-width lowercase-hex guard adds three dimensions the shape
-		// checks above never covered: wrong width (either side) and a
-		// path-safe, right-width string that is not [0-9a-f].
+		// Fixed-width lowercase hex rejects both wrong lengths and non-hex values.
 		{"over-width (33 hex)", strings.Repeat("a", 33)},
 		{"under-width (short hex)", "abc"},
 		{"right width, non-hex letter", strings.Repeat("g", 32)},

@@ -2,12 +2,8 @@
 
 package runner
 
-// The Runner-side FetchSecrets client: ServerLink.FetchSecrets calls the
-// RunnerService over the wire and maps the wire ResolvedSecret back to the
-// secrets-package resolve-surface type at this edge (mirroring runnerhub's
-// resolvedSecretToProto in reverse). Every case pins a contract a plausible bug
-// would break: a wrong enum mapping would misroute a secret in the materializer;
-// a dropped field would lose the host/provider a routing decision needs.
+// FetchSecrets maps wire ResolvedSecret values to the secrets package's resolve
+// surface. Tests pin enum and field mapping used by materialization.
 
 import (
 	"context"

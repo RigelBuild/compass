@@ -15,23 +15,13 @@ import (
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
-// Runner control producer tests: Control stream, ControlSender, retention +
-// redelivery.
-//
-// The record's Red→green clause names seven behaviors; each has a test below.
-// They exercise the seam only — the Runner-side callers that DECIDE what to
-// send are out of scope.
+// Control producer tests cover stream delivery, retention, and redelivery. They
+// exercise the producer seam, not Runner-side decisions about what to send.
 
 const testSession = "sess-c3"
 
-// newTestProducer is newControlProducer with the fixture session already
-// bound, standing in for the Start that binds it in production. Bind and
-// Retire are the whole lifetime of a session's control state, so a producer
-// that was never told to bind knows no sessions at all and every path
-// correctly refuses — which would make almost every test below a test of the
-// refusal rather than of the behavior it names.
-//
-// A test that is ABOUT the unbound case constructs the producer directly.
+// newTestProducer binds a fixture session because Bind and Retire define the
+// session lifetime; an unbound producer would only test refusal paths.
 func newTestProducer() *controlProducer {
 	p := newControlProducer()
 	p.Bind(testSession)
@@ -115,12 +105,8 @@ func (s *blockingStream) entered(t *testing.T) {
 	}
 }
 
-// sendsBeyond reports how many ops the stream received beyond the first want.
-//
-// The caller must have already witnessed the drainer's RETURN. Once that
-// goroutine is gone nothing can add to the count, so this reads a settled
-// total: a drainer that wrongly finished its batch has necessarily written
-// those ops before exiting, and they are sitting in the buffer here.
+// sendsBeyond reads the settled send count after the drainer returns; no later
+// send can change it.
 func (s *blockingStream) sendsBeyond(t *testing.T, want int) int {
 	t.Helper()
 	extra := 0
@@ -148,11 +134,8 @@ func awaitReturn(t *testing.T, done <-chan struct{}, why string) {
 	}
 }
 
-// eventually polls cond until it holds, failing loudly with the named
-// condition on a real timeout. For the cases with no event to gate on — a
-// bounded, self-describing wait rather than a blind fixed sleep. The timeout
-// is deliberately generous: it exists to turn a hang into a named failure, not
-// to measure how quickly the condition arrives on a loaded runner.
+// eventually polls a condition when no event can gate on it. Its timeout turns a
+// hang into a named failure rather than measuring performance.
 func eventually(t *testing.T, why string, cond func() bool) {
 	t.Helper()
 	tick := time.NewTicker(time.Millisecond)
@@ -498,15 +481,10 @@ func TestControlDisplacedDrainerAbandonsBatch(t *testing.T) {
 	stopSecond := p.subscribe(t, second)
 	defer stopSecond()
 
-	// Release the wedged Send. The drainer is now displaced and must abandon
-	// ops 2 and 3 rather than writing them to the retired stream.
 	close(release)
 
-	// Its return is the completion signal: displaced or not, the drainer exits
-	// (a wrongly-continuing one finishes the batch first, then parks on the
-	// wake channel the takeover closed and retires at the loop top). Once it is
-	// gone the send count can no longer change, so what the stream holds now is
-	// the whole truth about what it wrote.
+	// Releasing the wedged Send lets the displaced drainer return. The return makes
+	// the send count final, proving it abandons the rest of its batch.
 	awaitReturn(t, firstDone, "the displaced drainer to return")
 
 	if n := first.sendsBeyond(t, 1); n != 0 {
@@ -693,13 +671,8 @@ func TestControlSendNoAgent(t *testing.T) {
 	}
 }
 
-// subscribe opens a Control subscription in the background and returns a stop
-// func. Test helper only — mirrors what the connect handler does per stream.
-//
-// It waits for THIS subscription's generation, not merely for "some
-// subscription exists": on a takeover the previous generation is already
-// nonzero, so a bare nonzero check returns before the new drainer has bound
-// and the test races the goroutine it just started.
+// subscribe opens a background Control subscription and waits for its generation.
+// On takeover, waiting for a nonzero generation could observe the old subscriber.
 func (p *controlProducer) subscribe(t *testing.T, s *controlStream) func() {
 	t.Helper()
 	return p.subscribeSink(t, s)
@@ -765,12 +738,8 @@ func TestControlSendClonesCallerMessage(t *testing.T) {
 func TestControlTwoStaleDrainersDoNotStealWake(t *testing.T) {
 	p := newTestProducer()
 
-	// The park ORDER is this test's whole premise, so it must be an observed
-	// event, not an elapsed interval. onCycle fires on the drainer's own
-	// goroutine immediately before it parks, so counting invocations tracks
-	// drainers arriving at the park boundary. Installed before any
-	// subscription binds, and through setOnCycle so the write is under the
-	// same lock the drainer's capture takes.
+	// This test's park order is its premise: onCycle runs just before each drainer
+	// parks, and setOnCycle shares the lock used to capture the callback.
 	var (
 		parkMu   sync.Mutex
 		preParks int
@@ -785,18 +754,15 @@ func TestControlTwoStaleDrainersDoNotStealWake(t *testing.T) {
 		defer parkMu.Unlock()
 		return preParks
 	}
-	// awaitPark waits for one more drainer to reach the boundary than `was`.
-	// Sound only because the test keeps every OTHER drainer either wedged
-	// inside Send or already returned at each call site, so the increment can
-	// only be the one drainer named.
+	// awaitPark waits for one more drainer to reach the boundary. Other drainers are
+	// wedged or returned, so only the named drainer can increment the count.
 	awaitPark := func(was int, who string) {
 		t.Helper()
 		eventually(t, who, func() bool { return parksSoFar() > was })
 	}
 
-	// gen1 wedges inside Send — a stalled peer, the case a takeover exists to
-	// recover from — so it survives the takeover instead of retiring. While
-	// wedged it cannot reach the park boundary, so it adds no counter noise.
+	// gen1 wedges in Send so it survives takeover. While wedged it cannot reach the
+	// park boundary or affect the counter.
 	release1 := make(chan struct{})
 	wedged := newBlockingStream(release1)
 	stop1 := p.subscribeSink(t, wedged)
@@ -806,32 +772,24 @@ func TestControlTwoStaleDrainersDoNotStealWake(t *testing.T) {
 	}
 	wedged.entered(t)
 
-	// gen2 parks, and is retired by gen3's bind-time token — spending the one
-	// token that could otherwise have retired gen1.
+	// gen2 parks, then gen3's bind-time wake retires it, spending the token meant for gen1.
 	parked := newControlStream()
 	gen2Done, stop2 := p.subscribeDone(t, parked)
 	defer stop2()
 
-	// gen3 is the live subscription, on a gated sink so the test can hold it
-	// INSIDE Send at the moment gen1 parks.
+	// gen3's gated sink lets the test hold it inside Send while gen1 parks.
 	live := newGatedStream()
 	stop3 := p.subscribeSink(t, live)
-	// Order matters: release the gate FIRST, so cancelling the subscription can
-	// retire a drainer that would otherwise be parked inside Send.
+	// Release the sink before canceling so teardown cannot strand a drainer in Send.
 	defer func() {
 		live.close()
 		stop3()
 	}()
 
-	// gen2's retirement is the step this test's premise spends the single
-	// bind-time token on, so wait for its drainer to actually return. That both
-	// asserts the step and silences it: a returned drainer can no longer reach
-	// the park boundary, so every later increment belongs to gen1 or gen3.
 	awaitReturn(t, gen2Done, "gen2 to be retired by gen3's bind-time token")
 
-	// gen3 binds at the ack cursor, so it is owed every retained op: "wedge"
-	// (never acked by gen1) and then "hold-live". Let the first through and
-	// hold it inside the second, so it is BUSY at the moment gen1 parks.
+	// gen3 inherits retained ops from gen1. Deliver the first, then hold the second
+	// inside Send so gen3 is busy when gen1 reaches the park boundary.
 	if err := p.Send(testSession, promptOp("hold-live")); err != nil {
 		t.Fatalf("Send to occupy gen3: %v", err)
 	}
@@ -842,11 +800,8 @@ func TestControlTwoStaleDrainersDoNotStealWake(t *testing.T) {
 	}
 	live.entered(t)
 
-	// gen3 is busy inside Send, so releasing gen1 now makes it reach the park
-	// boundary FIRST — at the head of the wake channel's receive queue, ahead
-	// of the live drainer. Waiting for its pre-park signal is what fixes that
-	// order; without it the ordering is a timing guess and the test misses the
-	// lost-wakeup bug it names whenever gen1 happens to be scheduled late.
+	// gen3 is busy, so releasing gen1 should place its park token first. Observing
+	// this event fixes the order instead of relying on scheduling luck.
 	before1 := parksSoFar()
 	close(release1)
 	awaitPark(before1, "the stale drainer to reach its park")
@@ -1241,34 +1196,22 @@ func TestControlAckOnlyRouterRefusesSubscription(t *testing.T) {
 	}
 }
 
-// sessionCount reports how many sessions the producer is holding state for.
-// The map IS the contract under test here: Retire exists because `sessions`
-// was create-only, so a Runner reusing one container across Stop/Start — with
-// a new server-issued session id per cycle — accumulated one controlSession per
-// cycle for the life of the process, each pinning up to maxRetainedOps retained
-// ops. Nothing on the public surface can observe an entry that is merely leaked,
-// so this counts it directly.
+// sessionCount exposes producer state directly: each leaked entry pins retained
+// ops for the life of the Runner, and no public surface reveals that leak.
 func (p *controlProducer) sessionCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.sessions)
 }
 
-// nullSink is a subscription that can never block or fill: it accepts every op
-// and keeps none. Used by the concurrency stress below, where a bounded
-// recording buffer would wedge the drainer rather than exercise the seam.
+// nullSink accepts and discards every op without blocking, for stress tests where
+// a bounded recording buffer would wedge the drainer.
 type nullSink struct{}
 
 func (nullSink) Send(*compassv1internal.AgentControl) error { return nil }
 
-// subscribeDone binds a subscription like subscribeSink but hands back the
-// drainer's done channel alongside the stop func.
-//
-// Retire's contract includes "the live drainer RETURNS", and the stop func
-// cannot witness that: it cancels the context, which unparks the drainer all
-// by itself, so a test built on stop() alone stays green against a Retire that
-// never touched the wake channel. Waiting on done with Retire as the only
-// stimulus is what makes the assertion real.
+// subscribeDone returns the drainer's completion channel. Retire must end the
+// drainer; stop() alone would cancel it and could hide a broken Retire wakeup.
 func (p *controlProducer) subscribeDone(t *testing.T, sink controlSink) (<-chan struct{}, func()) {
 	t.Helper()
 	want := p.subscriptionGeneration(testSession) + 1

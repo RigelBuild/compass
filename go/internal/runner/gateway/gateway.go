@@ -41,16 +41,8 @@ var errNilRelayResult = errors.New("gateway: relay returned no comms result")
 // stream/unary error routed to the agent's reconnect path, not an OOM.
 const maxAgentMessageBytes = agentmsg.MaxBytes
 
-// committedKeysMax bounds the advisory idempotency fast-path cache
-// (Gateway.committedKeys). A durable conversation frame carries a distinct
-// idempotency_key, so an unbounded set would grow one entry per durable message
-// for the socket's whole life — a leak proportional to conversation volume, and
-// a lever an in-container agent could pull to exhaust Runner memory with many
-// small distinct-key frames (the aggregate-memory analogue of the per-message
-// maxAgentMessageBytes bound). Sized generously so a normal session's recent
-// keys all stay resident (the fast-path stays effective for realistic retry
-// windows); an evicted key costs one redundant re-forward the store dedups on
-// its own at-most-once boundary, never a correctness loss.
+// committedKeysMax bounds the advisory cache so memory stays limited across
+// long-lived sockets. Eviction only causes a redundant forward; the store dedups.
 const committedKeysMax = 16384
 
 // errNoSessionForPublish and errNoSessionForConversation mark frames received
@@ -297,18 +289,12 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 		return nil, fmt.Errorf("otel: connect interceptor: %w", err)
 	}
 
-	// The socket-lifetime context: it outlives any one agent request and is
-	// cancelled when the listener closes at container teardown. The shared upstream
-	// PublishEvents stream is opened against it, so a PostConversationFrame unary
-	// that opens the stream does not tie the stream's life to its own request. It
-	// also drops the Provision command's span, which ends long before the socket.
+	// Keep the shared PublishEvents stream alive for the socket, not one request;
+	// drop the Provision span that ends before this listener does.
 	socketCtx, socketCancel := context.WithCancel(otelx.WithoutSpan(ctx))
 	mux := http.NewServeMux()
 	g := NewGateway(socketCtx, containerName, deps)
-	// The real producer in production: without this the Gateway would serve
-	// Control against the ack-only no-op default, so the session lifecycle could
-	// never reach the agent. Set before Serve accepts calls, per
-	// SetControlRouter's concurrency note.
+	// Install the real producer before serving, so lifecycle state reaches agents.
 	control := newControlProducer()
 	g.SetControlRouter(control)
 	server := connect.NewServer(otelx.HandlerInterceptors(ic))

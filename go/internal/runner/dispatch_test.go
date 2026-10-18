@@ -2,13 +2,9 @@
 
 package runner
 
-// The Runner-side dispatcher: OQ6 request-id idempotency (a repeated id executes
-// the SessionHost exactly once, count-verified), the command→result mapping for
-// each variant, the host-sentinel→RunnerErrorCode mapping, and the
-// unknown-variant→INTERNAL error. Every test names the contract a plausible bug
-// would break: a dedup that re-executed would double-provision a container; a
-// wrong sentinel mapping would hand the Server the wrong Connect code; an
-// unhandled variant must surface as an error, never hang the call.
+// Dispatcher tests cover request-id idempotency, command/result mapping, and
+// sentinel/unknown-variant errors. They prevent duplicate provisioning and
+// ensure malformed commands fail instead of hanging.
 
 import (
 	"bytes"
@@ -69,35 +65,21 @@ type fakeSessionHost struct {
 
 	refreshConfigCalls int
 	refreshConfigErr   error
-	// refreshConfigEntered, when non-nil, receives one value at the START of
-	// each RefreshConfig call; refreshConfigRelease, when non-nil, blocks the
-	// call until a value is sent on it. Together they let a test hold a config
-	// pass in flight to exercise coalescing, deterministically — no sleeps.
+	// refreshConfigEntered signals each call's start; refreshConfigRelease blocks
+	// until released. Tests use both channels to hold a pass and verify coalescing.
 	refreshConfigEntered chan struct{}
 	refreshConfigRelease chan struct{}
 
-	// provisionEntered/provisionRelease and stopEntered park a command in the
-	// host so a concurrency test can hold one lifecycle op in flight while it
-	// drives another, deterministically (no sleeps) — the same entered/release
-	// gate shape as refreshConfig above. When non-nil, Provision sends on
-	// provisionEntered at its start (buffered by the test so a parked op never
-	// blocks the send) and then blocks until provisionRelease is closed;
-	// stopEntered, when non-nil, signals that Stop was reached. These back the
-	// concurrent-dispatch tests (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-concurrent-dispatch/design.md).
+	// Provision and Stop channels park lifecycle ops for deterministic concurrency
+	// tests. Entered channels are buffered so reporting cannot block the host.
 	provisionEntered chan struct{}
 	provisionRelease chan struct{}
 	stopEntered      chan struct{}
-	// provisionLive/provisionPeak track concurrent Provision arms (under mu), so
-	// the T-cap seam test can assert the semaphore bounds concurrency: provisionLive
-	// is the current in-flight count, provisionPeak the max ever observed.
+	// provisionLive/provisionPeak track concurrent calls under mu for the cap test.
 	provisionLive int
 	provisionPeak int
-	// provisionExiting/provisionExitGate deterministically pin the shutdown-join
-	// test: when provisionExitGate is non-nil, a Provision that unwinds on
-	// ctx.Done first signals provisionExiting, then blocks on provisionExitGate
-	// before returning — so the join test can prove runSessions has NOT returned
-	// while a command goroutine is still in flight (mirroring the entered+gate
-	// shape of TestCloseJoinsConcurrentTeardowns in host_test.go).
+	// These channels pin shutdown-join: canceled Provision reports exit, then
+	// blocks until released so tests can prove runSessions waits for the goroutine.
 	provisionExiting  chan struct{}
 	provisionExitGate chan struct{}
 	// lastProvisionAccount records the account id the dispatcher handed Provision.
@@ -769,11 +751,8 @@ func TestExecuteDeliverControlRoutesToHostNoResult(t *testing.T) {
 	}
 }
 
-// forgeNotificationControlCommand builds a send-only DeliverControl command
-// wrapping a forge_notification control op for sessionID, carrying a request id.
-// The forge notification rides the GENERIC DispatchControl relay envelope
-// (SessionsResponse.deliver_control wrapping AgentControl.forge_notification),
-// NOT the bare reserved SessionsResponse.forge_notification variant (DL-265).
+// forgeNotificationControlCommand wraps a notification in the generic relay
+// envelope, not the reserved SessionsResponse.forge_notification variant.
 func forgeNotificationControlCommand(id, sessionID, subscriptionID string) *compassv1internal.SessionsResponse {
 	return &compassv1internal.SessionsResponse{
 		RequestId: id,

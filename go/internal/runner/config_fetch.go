@@ -31,11 +31,8 @@ type AgentConfigBundle struct {
 	Tarball []byte
 }
 
-// errConfigStreamNoVersion is the fail-closed cause when the server-stream ends
-// without the leading version frame the contract guarantees — a contract skew,
-// not a valid empty bundle (an empty bundle is a version frame with an empty
-// version and no chunks). Surfaced so the caller fails the fetch rather than
-// materializing an unversioned bundle.
+// errConfigStreamNoVersion marks EOF before the required version frame; even an
+// empty bundle begins with that frame.
 var errConfigStreamNoVersion = errors.New("FetchAgentConfig stream ended before the version frame")
 
 // FetchAgentConfig fetches the fleet config bundle from the Server and

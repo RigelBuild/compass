@@ -418,15 +418,8 @@ func TestRefreshConfigRootPathContainsContainerName(t *testing.T) {
 	}
 }
 
-// RIG-1678 T6 — the fan-out update path carries all FIVE new config categories.
-//
-// At provision a fullBundle (settings/config.yml + top-level AGENTS.md +
-// models.yml + a flat rules/ member + a flat agents/ member, atop the
-// skills/extensions/mcp validBundle carries) must land under the container's own
-// version dir with pinned modes; a version bump carrying a CHANGED member must
-// re-materialize + Reload exactly once, advancing the version-moved gate only on
-// Reload success; and an unchanged version must stay tolerant-empty — never a
-// spurious Reload.
+// Full-bundle refresh tests cover all categories, pinned modes, changed-member
+// reloads after version bumps, and no reload for unchanged versions.
 
 // containerVersionDir is a container's per-container config root for a version —
 // mirrors host.configMaterializerFor's layout (runtimeDir/containers/<name>/config)

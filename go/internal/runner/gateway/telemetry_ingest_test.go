@@ -2,20 +2,9 @@
 
 package gateway
 
-// Hermetic suite for the telemetry-ingest handlers: Publish (client-stream
-// trace/session frames), PostConversationFrame (durable unary), the shared
-// ordered sessionPublisher, and the ack-routing seam to the ControlRouter.
-// White-box (package gateway) so it drives the handlers and their seams
-// directly, sleep-free: the capture server's PublishEvents handler pushes
-// every forwarded frame onto a buffered channel, and recvFrame blocks on that
-// channel with a fail-fast deadline — every assertion reads a fact the in-memory
-// wire already produced, never an elapsed-time guess (rule://no-retries).
-//
-// The upstream (EventRelay) is a real in-memory RunnerService PublishEvents
-// server (capturePublish) whose generated client is handed to NewGateway as
-// events, so each forward terminates a real Connect client-stream. The inbound
-// agent-side (Publish client-stream + the WithReadMaxBytes bound) is driven
-// through a mounted AgentGateway h2c httptest server, mirroring Serve.
+// Hermetic tests cover Publish, durable conversation frames, the shared
+// publisher, and ack routing. In-memory Connect servers and event-gated receives
+// verify forwarded frames without sleeps or polling.
 
 import (
 	"context"
@@ -43,11 +32,8 @@ import (
 
 // --- capture upstream (EventRelay) -------------------------------------------
 
-// capturePublish is a real RunnerService whose PublishEvents handler captures
-// every Runner-forwarded frame on a buffered channel, so a test asserts the
-// exact frames + RunnerSeq the Runner emitted over a real wire. Replicated from
-// internal/runner/helpers_test.go (a different package), extended with `ended`
-// so a test can observe the upstream stream close at clean end.
+// capturePublish records forwarded frames and signals stream closure for clean-
+// end assertions.
 type capturePublish struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 	frames chan *compassv1internal.PublishEventsRequest
@@ -136,11 +122,8 @@ func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerSer
 	return compassv1internalconnect.NewRunnerServiceClient(connect.NewClient(connecthttp.NewTransport(h2cHTTPClient(t), srv.URL, connecthttp.WithReadMaxBytes(0))))
 }
 
-// newClosedRunnerServiceServer mounts a RunnerService handler on an h2c httptest
-// server, then immediately closes the server so its transport is dead: every
-// PublishEvents Send against the returned client fails. It models a genuine
-// upstream forward failure (the Server unreachable), the deterministic lever the
-// delivered-or-erred contract must surface — no request-ctx coincidence.
+// newClosedRunnerServiceServer returns a client whose server has closed, making
+// every PublishEvents Send fail to model an unreachable upstream.
 func newClosedRunnerServiceServer(t *testing.T) compassv1internalconnect.RunnerServiceClient {
 	t.Helper()
 	server := connect.NewServer()
@@ -289,11 +272,8 @@ type staticSessions struct {
 
 func (s staticSessions) Session(string) (string, bool) { return s.sessionID, s.ok }
 
-// toggleSessions is a stateful SessionForContainer whose resolved session id can
-// be flipped between two values — modelling a container rebound to a new session
-// across Stop→Start while the Gateway is retained. set() swaps the id under a
-// mutex so a resolve from any goroutine is race-safe; the existing fakes bind one
-// fixed id and cannot switch. ok is always true (a bound session).
+// toggleSessions can switch the resolved id across Stop/Start while remaining
+// safe for concurrent Gateway calls.
 type toggleSessions struct {
 	mu        sync.Mutex
 	sessionID string
@@ -1163,13 +1143,8 @@ func TestConcurrencyNoFalseGap(t *testing.T) {
 	}
 }
 
-// seqSink is a RunnerService whose PublishEvents records only the RunnerSeq of
-// every frame it receives, into an unbounded slice under a mutex. Deliberately
-// NOT capturePublish: that fixture sends each frame to a bounded channel, so a
-// handler blocks once the buffer fills, and a test opening several streams can
-// park a handler forever — httptest.Server.Close then hangs the whole package in
-// cleanup. An append can never block, so any number of concurrent streams drain
-// to completion with no drainer goroutine at all.
+// seqSink records RunnerSeq values under a mutex. Unlike capturePublish, its
+// unbounded slice cannot block concurrent streams during server cleanup.
 type seqSink struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 
@@ -1287,14 +1262,8 @@ func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 		t.Fatalf("first forward = %v, want success", err)
 	}
 
-	// Point at a dead upstream so the next forward fails, then back at the live
-	// one. The failure must leave no hole behind it.
-	//
-	// Release before the dead swap: repointing g.events does not touch the
-	// publisher already holding an open stream to the previous upstream, and an
-	// abandoned stream leaves its server-side handler receiving forever —
-	// httptest's Server.Close then blocks on it at cleanup and the package times
-	// out.
+	// Release the live publisher before swapping upstreams; otherwise its server
+	// handler stays open and httptest.Server.Close blocks during cleanup.
 	if err := releaseCurrentPublisher(g); err != nil {
 		t.Fatalf("release before the dead swap = %v", err)
 	}
@@ -1384,16 +1353,9 @@ func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 	events := newRunnerServiceServer(t, sink)
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 
-	// This test opens MORE than one upstream stream (the release closes the
-	// first, a later forward opens a fresh one), which the shared capture
-	// fixture is not built for: its send is blocking and its `ended` channel
-	// signals once per handler return, consumed by a single receiver.
-	// So this test owns its own sink — an unbounded recorder that can never
-	// block a handler, which is the only property the assertion needs.
-	//
-	// What is asserted: a DUPLICATE RunnerSeq. Under a genuine race the arrival
-	// count and interleaving are both nondeterministic, but a repeated seq is
-	// possible only if two publishers stamped the same session independently.
+	// Multiple streams are opened here, so use an unbounded sink rather than the
+	// blocking shared fixture. The assertion detects duplicate sequence numbers;
+	// counts and ordering may vary under a genuine race.
 	var (
 		sinkMu sync.Mutex
 		seen   = map[uint64]bool{}
@@ -1837,13 +1799,9 @@ func TestCommittedKeysBounded(t *testing.T) {
 
 // --- Case 14 (RIG-1545 Fork 1) -----------------------------------------------
 
-// blockingClosePublish is a RunnerService whose PublishEvents handler drains the
-// client stream, then BLOCKS before returning its response — so the client's
-// CloseAndReceive hangs awaiting the terminal ack, modelling an
-// unresponsive-but-connected Server at a clean stream-end. `closing` fires once
-// the handler has entered the stall (the close is in flight); `release` unblocks
-// it (closed in cleanup) so the hung close goroutine and the httptest server
-// tear down.
+// blockingClosePublish drains the client stream then stalls before the response,
+// modelling a connected but unresponsive Server. Channels expose and release the
+// stall so cleanup can join both the client and test server.
 type blockingClosePublish struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 	closing chan struct{}

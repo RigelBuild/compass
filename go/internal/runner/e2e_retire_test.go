@@ -2,34 +2,8 @@
 
 package runner
 
-// agentHost.Stop must retire the stopped session's control state on the
-// container's socket. The socket outlives the session (Stop/Start reuses the
-// container and its listener), so nothing but this teardown call would ever
-// release the state — without it the served producer accumulates one session's
-// worth per cycle for the life of the Runner process.
-//
-// WHERE THE HALVES LIVE. The leak itself — the producer's session map going
-// 1 -> 0 — is asserted in gateway/retire_wiring_test.go, because `control` and
-// `sessions` are unexported there and a merely-leaked map entry has no exported
-// surface. This file pins the other half: that agentHost.Stop is what DRIVES it,
-// through the real Provision -> Serve -> Stop path over a real socket.
-//
-// What it observes, and why that is not the trivially-true thing. Retiring a
-// session with a live subscription advances its generation and closes its wake
-// channel, so the drainer unparks, sees it has been displaced, and returns —
-// ending the agent's Control server-stream. Stop's other action, s.stream.Stop(),
-// terminates the container's agent CHILD; it does not touch the Unix socket, the
-// HTTP server, or the producer, so it cannot end a Control stream. Retirement is
-// the only thing in Stop that can, which is what makes the assertion load-bearing
-// rather than incidental.
-//
-// Deterministic and sleep-free. A subscription cannot be observed binding from
-// outside the gateway package (Control blocks the dialing client until the
-// handler first writes), so binding is gated on a TAKEOVER: two subscriptions
-// race, whichever binds second displaces the first, and the first's stream ending
-// is proof the second is registered on the served producer. Whichever survives is
-// then the one Stop must retire. testTimeout bounds every wait as a fail-fast net,
-// never as synchronization.
+// Stop retires a live Control stream. This test exercises Provision -> Serve ->
+// Stop with a takeover, proving both the displaced and current subscriptions end.
 
 import (
 	"context"
@@ -43,12 +17,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runnertest"
 )
 
-// controlSub is one agent Control subscription dialed over a container's real
-// socket. done carries the stream's terminal error exactly once, when the
-// server-stream ends — the observable shadow of the subscription being retired
-// or displaced. The whole call runs in a goroutine because Control blocks the
-// client until the handler first writes, so an unbound subscription would
-// otherwise wedge the test rather than fail it.
+// controlSub tracks a real Control stream over the container socket. It drains
+// in a goroutine because Control blocks until the handler first writes.
 type controlSub struct {
 	name string
 	done chan error
@@ -67,8 +37,7 @@ func subscribeControl(ctx context.Context, client compassv1internalconnect.Agent
 			return
 		}
 		defer func() { _ = stream.Close() }()
-		// Drain to termination: the ops themselves are the gateway package's
-		// contract, so only the stream's END is this test's business.
+		// Only stream termination matters here; gateway tests cover operation details.
 		var streamErr error
 		for {
 			_, err := stream.Receive()

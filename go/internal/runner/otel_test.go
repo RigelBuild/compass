@@ -2,11 +2,8 @@
 
 package runner
 
-// OTel wiring tests for the Runner-side seam: Dial's outbound RunnerService
-// client mounts the otelconnect interceptor, which emits a CLIENT span per RPC
-// when a global tracer provider is installed — and none when disabled, since the
-// empty-endpoint path installs no global provider (the export gate lives in the
-// provider install, not in RunnerConfig).
+// Dial's outbound client emits a CLIENT span when a global tracer is installed;
+// the empty-endpoint path installs no provider and emits none.
 
 import (
 	"context"

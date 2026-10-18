@@ -2,27 +2,9 @@
 
 package gateway
 
-// The retirement seam between the socket and the control producer.
-//
-// control_test.go proves controlProducer.Retire drops a session's state. That is
-// only worth anything if the session lifecycle can REACH it: the producer is
-// created inside Serve and is otherwise unreachable, so the single line
-// `l.control = control` at the end of Serve, plus SocketListener.RetireSession's
-// delegation, are the whole path from "the session stopped" to "its control
-// state is gone". Either one silently dropped in a later refactor restores the
-// leak — a socket outlives every session it hosts (Stop/Start reuses the
-// container), so an unretired session pins a controlSession and up to
-// maxRetainedOps retained ops for the life of the Runner process.
-//
-// This is the package that can see the leak: `sessions` is unexported and a
-// merely-leaked entry has no other observable surface, so the count is asserted
-// directly here while the package-runner half (e2e_retire_test.go) pins that
-// agentHost.Stop is what drives it.
-//
-// Deterministic and sleep-free: the op is retained BEFORE the subscription binds,
-// so the drainer's redelivery is the event that unblocks the client — the
-// server writes no response headers until it has something to send, which is
-// exactly why subscribing first would park the dial.
+// Verify SocketListener.RetireSession reaches the producer created inside Serve,
+// preventing session state from leaking for the socket lifetime. Retain the op
+// before binding so redelivery unblocks the client waiting for response headers.
 
 import (
 	"context"

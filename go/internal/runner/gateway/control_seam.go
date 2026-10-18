@@ -26,11 +26,9 @@ type ControlRouter interface {
 	Epoch(sessionID string) uint64
 }
 
-// noopControlRouter is the default ControlRouter used until the control lane is
-// wired in with the real one. It drops acks (they are still consumed off the
-// Publish stream and never relayed upstream — the telemetry-ingest contract —
-// just not applied to any retention state, because none exists yet). The control
-// lane replaces it with the real sender.
+// noopControlRouter drops acknowledgments until the control lane is wired. The
+// Publish stream still consumes them without relaying them upstream.
+
 type noopControlRouter struct{}
 
 func (noopControlRouter) AckControl(string, uint64, uint64, []uint64, []uint64) {}

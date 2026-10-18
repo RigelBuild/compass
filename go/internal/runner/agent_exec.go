@@ -46,50 +46,33 @@ var agentCommand = []string{"compass-agent"}
 // session) instead of receiving a value it must special-case.
 // COMPASS_AGENT_BATCHING is omitted when empty.
 type AgentEnv struct {
-	// UID is the agent user the exec runs as. Set explicitly because podman
-	// strips the container's ambient capabilities only when --user is passed:
-	// without it the agent's own process inherits the NET_ADMIN the container
-	// carries to arm its firewall (runtime/agent.go:212) and can flush the
-	// ruleset meant to contain it, violating runtime/egress.go:6-10. This
-	// closes that on this exec path. A follow-up removes the capability from the
-	// agent container entirely so no exec path can reach the ruleset.
+	// UID runs the agent without ambient capabilities, protecting egress rules.
 	UID uint32
-	// HomeDir is the agent's scoped $HOME.
+	// HomeDir is the agent's scoped HOME.
 	HomeDir string
-	// Workdir is the in-container checkout the session runs in.
+	// Workdir is the in-container checkout.
 	Workdir string
-	// Model is the model selector, or empty for the agent's default.
+	// Model is the model selector; empty uses the agent default.
 	Model string
-	// Batching is the Runner-wide idle-batching setting, or empty when off.
+	// Batching is the Runner-wide idle-batching setting.
 	Batching string
-	// Persona is the server-authoritative identity overlay, or empty for none.
+	// Persona is the server-authoritative identity overlay.
 	Persona string
-	// Role is the server-authoritative operator-set block-0 selector, delivered
-	// as the container's customSystemPrompt, or empty for none.
+	// Role is the server-authoritative block-0 selector sent as customSystemPrompt.
 	Role string
-	// ResumeSessionFile is the absolute in-container path of the materialized
-	// resume session file, or empty for a fresh start.
+	// ResumeSessionFile is the absolute in-container path to a resumed session.
 	ResumeSessionFile string
-	// ContinueSession tells Reload to resume the session file recorded by the agent.
+	// ContinueSession resumes the agent's current session on Reload.
 	ContinueSession bool
-	// SocketPath, when non-empty, overrides the agent's default gateway-socket
-	// path (agent-side AGENT_SOCKET_PATH). ConfigMountPath likewise overrides the
-	// default config-mount root (AGENT_CONFIG_MOUNT_PATH). Both are empty on the
-	// container tiers, which deliver the socket + config at the default paths by
-	// bind mount; the host-process tier has no mounts, so it serves both inside
-	// the handle's own state dir and threads the paths here. Empty is omitted, so
-	// a container-tier agent receives neither var and resolves the defaults.
+	// SocketPath overrides the default gateway socket path; ConfigMountPath
+	// overrides the default config-mount root when set.
 	SocketPath      string
 	ConfigMountPath string
 }
 
-// execSpec builds the streaming exec that starts the agent: unprivileged, in
-// the checkout, carrying exactly the vars the agent reads. Env-delivery secrets
-// are NOT passed on this exec: the Runner's materializer writes them to the
-// 0600 in-container $HOME/.compass/env (RIG-1327 T5), and the agent sources that
-// file from its own namespace at startup. They are deliberately not `-e
-// KEY=VALUE` here (host-process-list visible) nor `--env-file` (podman resolves
-// that path host-side, where the container-internal file does not exist).
+// execSpec starts the agent unprivileged in its checkout with only its needed
+// environment. Secrets are materialized at 0600 under the agent's HOME; passing
+// them through exec arguments or a host-resolved env file would expose or fail.
 func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	spec := runtime.NewStreamingExecSpec(agentCommand...).
 		AsUser(strconv.FormatUint(uint64(e.UID), 10)).
@@ -350,23 +333,10 @@ func (s *AgentStream) joinDrains() {
 	}
 }
 
-// isDeliberateKill reports whether err is the exit of a process we SIGKILLed on
-// purpose, so the reaper does not log a deliberate kill as an unexpected exit.
-// Two backends produce that outcome in two shapes:
-//
-//   - The microVM GuestExec ChildHandle waitFunc returns a portable
-//     *runtime.ExitStatusError; a remote guest child's exit cannot be reported
-//     as an *exec.ExitError (it embeds an unforgeable *os.ProcessState), so the
-//     portable type is checked FIRST — a deliberate signal counts as a kill.
-//   - The podman backend's Wait returns an *exec.ExitError whose wait status is
-//     "terminated by SIGKILL"; that branch is unchanged, so the podman
-//     byte-path is byte-identical (OQ-G/U3b).
+// isDeliberateKill recognizes deliberate termination across guest and podman waits.
 func isDeliberateKill(err error) bool {
 	if exitStatus, ok := errors.AsType[*runtime.ExitStatusError](err); ok {
-		// Deliberately asymmetric (OQ-G): the portable branch counts ANY signalled
-		// exit as a kill, while the podman branch below pins SIGKILL. Do NOT "align"
-		// them by narrowing this to SIGKILL — the microVM path has no os.ProcessState
-		// to inspect, and Stop's SIGTERM teardown must still classify as a kill.
+		// Guest waits expose any signal; podman waits must specifically be SIGKILL.
 		return exitStatus.Signal != 0
 	}
 	exitErr, ok := errors.AsType[*exec.ExitError](err)
@@ -494,21 +464,9 @@ func (s *stderrLogger) flushDropped(ctx context.Context, log *slog.Logger, sessi
 	s.lastFlush = now
 }
 
-// drainToLog copies one of the agent's pipes to the diagnostic log line by line
-// under msg ("agent stdout" / "agent stderr"). It runs for the life of the exec;
-// an EOF (agent exit) ends it quietly, and a cancelled ctx ends it promptly.
-//
-// Draining is not optional even though neither pipe carries protocol traffic: an
-// unread pipe fills its OS buffer and blocks the agent's next write. That makes
-// "keep reading" the drain's actual contract, so it must survive a line it can't
-// log. A line over maxLoggedLine is logged truncated (flagged `truncated`) and
-// the rest consumed, and a read error is reported rather than swallowed — a
-// silent exit here wedges the agent with no diagnostic anywhere.
-//
-// ctx is checked between lines rather than mid-read: a blocked read ends when
-// closeDrains closes the pipe (it cancels ctx first), and every join is bounded,
-// so a cancel can never hold teardown open.
-// stderr, when set, receives every line (the tail) and rate-limits the Info copy.
+// drainToLog keeps reading each pipe: an unread OS pipe buffer blocks the agent.
+// Oversized lines are truncated but fully consumed, so the next line stays aligned.
+// Closing the pipe unblocks reads during teardown; joins remain bounded.
 func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string, log *slog.Logger, stderr *stderrLogger) {
 	sessionID := s.sessionID
 	r := bufio.NewReaderSize(pipe, drainReaderSize)
@@ -587,13 +545,8 @@ func clipLine(line string, limit int) string {
 // also ended the line it is joined, so a caller can test for either.
 var errLineTruncated = errors.New("line truncated")
 
-// readBoundedLine reads one newline-terminated line, returning at most limit bytes
-// of it. When the line is longer, the prefix is returned with errLineTruncated
-// and the remainder is consumed so the reader stays aligned to the next line.
-//
-// Truncation is tracked as it happens rather than inferred from the returned
-// length: a line of exactly limit bytes is NOT truncated, and one cut short by
-// EOF before its newline still is. Both cases are invisible to a length test.
+// readBoundedLine returns at most limit bytes and consumes any remainder, keeping
+// the reader aligned. It tracks truncation so exact-limit lines remain complete.
 func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 	var (
 		line []byte
@@ -645,15 +598,9 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 	}
 }
 
-// trimEOL drops the line's terminator: a trailing newline and, only because that
-// newline followed it, its CR. `terminated` is threaded in rather than sniffed
-// from `b`, because `b` cannot answer the question. Two cases defeat a suffix
-// test: a line clipped at the cap has already lost its newline, so it looks
-// unterminated; and an unterminated final line — an agent dying mid-write, or a
-// progress-bar write — legitimately ENDS in a payload "\r" that stripping would
-// silently drop from the log. Only readBoundedLine's `tail` witnesses the real
-// terminator, and it is the same witness the truncation arithmetic uses, so the
-// logged bytes and the measured length can never disagree about what counted.
+// trimEOL removes CR only when it preceded a newline. A clipped line may lose its
+// newline, while an unterminated payload may legitimately end in CR; only the
+// reader's terminated flag distinguishes these cases.
 func trimEOL(b []byte, terminated bool) []byte {
 	if !terminated {
 		return b

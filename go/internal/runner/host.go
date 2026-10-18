@@ -362,19 +362,15 @@ func (h *agentHost) Close(ctx context.Context) {
 	h.retireWG.Wait()
 }
 
-// Start resolves the launched container by name and starts the agent relay in
-// it. A container already hosting a live session returns errAlreadyRunning.
-// Fresh starts require a non-empty server-minted freshSessionID; resumes use
-// resume_session_id and ignore freshSessionID. An ERRORED session may be
-// recovered by Reload or by resume Start under the same session id.
+// Start launches the agent in a container. Fresh starts require a server-minted
+// id; resumes reuse their session id. ERRORED sessions can recover via Reload or
+// resume Start.
 
 //nolint:gocognit,gocyclo,cyclop // Preserve Start's inline guards and resume flow.
 func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody, freshSessionID string) (string, error) {
 	name := req.GetContainerName()
-	// Serialize transitions on this container across the whole Start: the
-	// existing-session check releases h.mu before the slow StartAgent, so two
-	// concurrent Starts could both pass it (a TOCTOU minting a duplicate session).
-	// The per-container lock closes it; T9's reattach (RIG-1328) reuses this lock.
+	// Serialize Starts per container: the existing-session check releases h.mu
+	// before StartAgent, so concurrent calls could otherwise mint duplicate sessions.
 	unlock := h.lockContainer(name)
 	defer unlock()
 
@@ -393,14 +389,9 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			return "", errAlreadyRunning
 		}
 	}
-	// Reusing the logical id as the map key means a resume racing a still-live
-	// prior lifetime would clobber its liveSession entry, orphaning its stream.
-	// The single-orchestrator precondition keeps this unreachable; guard so a
-	// violation fails loud rather than leaking the prior stream. An ERRORED entry
-	// has no live stream and can be replaced during explicit recovery.
-	// A resume reuses its authorized logical id. Fresh starts must use the id
-	// minted by the Server; accepting a local fallback would reintroduce reuse
-	// after Runner restarts.
+	// A resume racing a live prior lifetime could replace its map entry and orphan
+	// the stream. Reject that invariant violation; ERRORED entries have no live stream.
+	// Fresh starts must use the Server-minted id, never a local fallback.
 	sessionID := req.GetResumeSessionId()
 	if sessionID == "" {
 		if freshSessionID == "" {
@@ -1117,11 +1108,8 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	if !ok {
 		return errSessionUnknown
 	}
-	// Re-resolve the handle BEFORE stopping, so the relaunch carries the same identity
-	// the original Start did and a session whose container was dropped is rejected
-	// while its agent still runs — a true no-op, never a stopped agent left behind a
-	// session the live set still reports READY. A missing stream is valid for an
-	// ERRORED session and skips only the stop step below.
+	// Resolve before stopping so a dropped container cannot leave a READY session
+	// without an agent. ERRORED sessions may have no stream and skip Stop.
 	handle, ok := h.registry.Resolve(s.containerName)
 	if !ok || handle == nil {
 		return errSessionUnknown

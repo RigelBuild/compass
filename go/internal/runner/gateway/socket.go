@@ -1,19 +1,8 @@
 //go:build unix
 
-// Package gateway is the Runner side of the agent->Runner call transport: a
-// per-container Unix-socket Connect server the in-container first-party agent
-// dials to reach its Runner (design
-// RigelBuild/docs:docs/designs/compass/agent/compass-agent-runner-transport/design.md, RIG-1351 T2).
-//
-// One socket per container, 1:1 with the session the container hosts, so the
-// socket IS that session's identity: no credential travels the local hop, and
-// the Runner maps a connection to its container structurally (Decision #4). The
-// listener is created at Provision (before `podman run`, so the bind-mount
-// source exists) and torn down at container teardown; socket, session, and
-// container share one lifecycle.
-//
-// The egress seal is untouched: a Unix socket is a local hop, not a network
-// address — no new port, no outbound route (design "Why egress stays sealed").
+// Package gateway serves agent-to-Runner calls over one Unix socket per
+// container. The socket binds container identity, so no local-hop credential or
+// network route is needed.
 package gateway
 
 import (
@@ -47,29 +36,9 @@ const socketDirMode os.FileMode = 0o700
 // teardown (design SocketListener.Close).
 const shutdownGrace = 5 * time.Second
 
-// sunPathMax is the longest AF_UNIX path the kernel accepts: sockaddr_un's
-// sun_path holds the path plus a NUL terminator. Exceeded, bind(2) returns a
-// bare EINVAL naming neither the limit nor the length, so the path is checked
-// here instead (see listenAgentSocket).
-//
-// Derived from the platform's own sockaddr_un rather than hard-coded, because
-// the array is not one size across the platforms //go:build unix admits, and
-// the spread is wider than the two sizes anyone reaches for: measured over all
-// nine, it is 108 bytes on linux, solaris and illumos, 104 on darwin and the
-// BSDs including dragonfly, and 1023 on aix. No pair of hand-written numbers is
-// correct here, and an author who enumerates the ones they thought of ships the
-// bug on the rest — an under-sized constant merely refuses a path that would
-// have worked, but an over-sized one passes a path the kernel rejects at bind,
-// which is the exact failure this check exists to prevent.
-//
-// The -1 is the NUL terminator, which is justification enough on its own — no
-// appeal to Go's internals is needed, and citing them by line would pin this
-// comment to a toolchain version nothing here asserts. Worth knowing that the
-// bound is deliberately conservative rather than exact at two edges: AIX's
-// wrapper permits a name of len(Path), and a Linux ABSTRACT name carries no
-// terminator, so both admit one byte more than this constant. Neither reaches
-// the Runner, which only ever binds a filesystem path, and refusing a byte that
-// would have worked is the safe direction.
+// sunPathMax derives the filesystem socket path limit from sockaddr_un, including
+// room for its NUL terminator. Platform sizes vary, so derive it instead of
+// maintaining an incomplete list of constants.
 const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 
 // ErrOperatorConfig marks a failure whose remedy is an operator knob
@@ -105,26 +74,10 @@ type SocketListener struct {
 	gateway *Gateway
 }
 
-// listenAgentSocket opens the per-container agent socket at path and serves h
-// over cleartext HTTP/2, returning once the listener is bound (so a caller that
-// bind-mounts path next sees a live socket). It is called at Provision, before
-// `podman run`.
-//
-// Stale-socket recovery: a Runner crash/restart can leave the socket file on
-// disk, so a fresh net.Listen would fail EADDRINUSE. The path is reclaimed ONLY
-// when an Lstat confirms a socket owned by this Runner's uid; any other object
-// (regular file, dir, symlink, or a socket owned by another uid — a path
-// collision or partial op, never an abandoned Runner socket) is rejected fail-
-// closed and never deleted.
-//
-// Path length is checked FIRST, before any directory is created. Not only for
-// the diagnostic: a bind that fails EINVAL has already run MkdirAll, and the
-// dir survives — measured, 0700 left on disk. Nothing reclaims it on any path,
-// because nothing in this socket's lifecycle removes the directory at all:
-// Close removes the socket file and never filepath.Dir(path), so the
-// Launch-failure teardown Provision does run (host.go:120-125) leaks it too.
-// Refusing before the mkdir is what makes the question moot, rather than a
-// teardown that would have to be added.
+// listenAgentSocket binds the per-container socket before Launch. It reclaims a
+// stale path only when it is a socket owned by this Runner; other filesystem
+// objects fail closed. Path length is checked before directory creation so a
+// rejected bind cannot leave an orphaned directory.
 func listenAgentSocket(ctx context.Context, path string, h http.Handler, cancel context.CancelFunc) (*SocketListener, error) {
 	// The socket path is RuntimeDir + /containers/<container>/agent.sock, and
 	// --runtime-dir is operator-supplied and unbounded. The account id's SHAPE is
@@ -177,11 +130,8 @@ func listenAgentSocket(ctx context.Context, path string, h http.Handler, cancel 
 	return l, nil
 }
 
-// reclaimStaleSocket removes a leftover socket at path IFF it is a socket owned
-// by this process's uid; every other case is left in place. A missing path is
-// the normal first-Provision case (nil, nothing to reclaim). A non-socket or
-// wrong-owner object is a fail-closed error: it is never an abandoned Runner
-// socket, so deleting it would be destroying an unrelated inode.
+// reclaimStaleSocket removes only a socket owned by this process. Other objects
+// fail closed and remain untouched.
 func reclaimStaleSocket(path string) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {

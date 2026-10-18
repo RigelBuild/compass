@@ -237,12 +237,8 @@ func TestCATrustEnrollEndToEnd(t *testing.T) {
 		if err == nil {
 			t.Fatal("Enroll against an untrusted server cert = nil error, want a TLS trust failure")
 		}
-		// Prove the rejection is specifically an unknown-authority failure — the
-		// server leaf does not chain to the runner's trust anchor — not merely
-		// "some TLS error". Connect wraps the transport error, so try to unwrap to
-		// the x509 sentinel; if the wrapping chain preserves it, assert exactly
-		// that. Fall back to the substring check only when the chain has flattened
-		// the error to a string (so the test still means something either way).
+		// Prefer the wrapped x509 sentinel, falling back to a message check only
+		// when Connect has flattened the transport error.
 		if _, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
 			// Exactly the failure we want: the anchor does not vouch for the leaf.
 		} else if _, ok := errors.AsType[x509.HostnameError](err); ok {
