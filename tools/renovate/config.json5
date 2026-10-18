@@ -378,31 +378,6 @@
       depTypeTemplate: "toolchain",
     },
     {
-      // ── golangci-lint analysis pin ──
-      // Renovate owns the version in go-analysis.nix; the coupled refresher derives
-      // its tag and both Nix hashes so the branch builds with a consistent pin.
-      customType: "regex",
-      managerFilePatterns: ["/^tools/toolchain/versions/go-analysis\\.nix$/"],
-      matchStrings: ["golangci-lint = \\{\\s*version = \"(?<currentValue>[^\"]+)\""],
-      depNameTemplate: "golangci/golangci-lint",
-      datasourceTemplate: "github-releases",
-      extractVersionTemplate: "^v(?<version>.+)$",
-      depTypeTemplate: "go-analysis",
-    },
-    {
-      // ── nilaway analysis pin ──
-      // Track the moving main ref; the coupled refresher derives its UTC version
-      // date and both Nix hashes after Renovate updates the digest.
-      customType: "regex",
-      managerFilePatterns: ["/^tools/toolchain/versions/go-analysis\\.nix$/"],
-      matchStrings: ["rev = \"(?<currentDigest>[a-f0-9]{40})\""],
-      depNameTemplate: "uber-go/nilaway",
-      packageNameTemplate: "https://github.com/uber-go/nilaway",
-      currentValueTemplate: "main",
-      datasourceTemplate: "git-refs",
-      depTypeTemplate: "go-analysis",
-    },
-    {
       // ── Renovate self-pin (RIG-2432) ──
       // The workflow runs `bunx renovate@<version>` at an EXACT pin, not bare
       // `bunx renovate` — a bare invocation resolves LATEST from npm on every
@@ -525,13 +500,6 @@
       // depTypeTemplate: "toolchain") so it targets EXACTLY go/bun/node/moon and
       // nothing else; npm/gomod registry deps keep the 5-day window.
       matchDepTypes: ["toolchain"],
-      minimumReleaseAge: null,
-    },
-    {
-      // A git-refs digest has no release timestamp, so the strict repository
-      // cooldown would leave nilaway pending forever. The soak remains for releases.
-      matchManagers: ["custom.regex"],
-      matchDepNames: ["uber-go/nilaway"],
       minimumReleaseAge: null,
     },
     {
@@ -1109,7 +1077,7 @@
   ],
 
   // ── Renovate hash refreshers (top-level branch-mode tasks) ──
-  // Three refreshers ride the single per-branch task slot Renovate builds from the
+  // Two refreshers ride the single per-branch task slot Renovate builds from the
   // collapsed branch config. Each self-gates on its trigger files, so it is a
   // cheap no-op on a branch it does not apply to.
   //
@@ -1119,9 +1087,7 @@
   //     platform legs in each changed pin file in the same branch. Self-gates (no-op
   //     unless a versions/*.nix pin changed); no-ops on go.nix, whose hashes come
   //     from go-overlay.
-  //  2. refresh-go-analysis-hashes.ts — recomputes the source and vendor hashes
-  //     when go-analysis.nix differs from the base branch; otherwise it no-ops.
-  //  3. refresh-fod-hashes.ts, LAST so it reads the bun pin step 1 wrote — a
+  //  2. refresh-fod-hashes.ts, LAST so it reads the bun pin step 1 wrote — a
   //     gomod bump (go/go.mod|go.sum) moves the pinned Go vendorHash in
   //     guest-image/default.nix; a bun.lock or bun-pin bump moves the pinned bun
   //     outputHashes in agent-image/entrypoint.nix and apps/ui/dist.nix. Left stale the
@@ -1136,15 +1102,13 @@
   //
   // `executionMode: branch` runs each once per branch after the update is applied.
   //
-  // Self-hosted bot config MUST allow all three commands:
+  // Self-hosted bot config MUST allow both commands:
   //   allowedCommands: ["^bun tools/renovate/refresh-toolchain-hashes\\.ts$",
-  //                     "^bun tools/renovate/refresh-fod-hashes\\.ts$",
-  //                     "^bun tools/renovate/refresh-go-analysis-hashes\\.ts$"]
+  //                     "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
   // and the runner needs `nix` (nix-command) on PATH for FOD realisation.
   postUpgradeTasks: {
     commands: [
       "bun tools/renovate/refresh-toolchain-hashes.ts",
-      "bun tools/renovate/refresh-go-analysis-hashes.ts",
       "bun tools/renovate/refresh-fod-hashes.ts",
     ],
     fileFilters: [
@@ -1159,7 +1123,6 @@
       "flake.nix",
       "agent-image/entrypoint.nix",
       "apps/ui/dist.nix",
-      "tools/toolchain/versions/go-analysis.nix",
     ],
     executionMode: "branch",
   },
