@@ -2,8 +2,8 @@
 
 // KVM-gated boot tests for cloud-hypervisor, guestd's hybrid-vsock handshake,
 // process PSS, and clean teardown. The suite skips without /dev/kvm unless
-// COMPASS_REQUIRE_MICROVM=1; the net-only smoke runs first to isolate vhost-user
-// negotiation failures from full-stack boot timeouts.
+// COMPASS_REQUIRE_MICROVM=1. The net-only smoke isolates vhost-user negotiation
+// failures from full-stack boot timeouts; it runs first only in unshuffled order.
 
 package microvm
 
