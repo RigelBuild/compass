@@ -32,12 +32,8 @@ import (
 // portable deliberate-kill error.
 const sigKill = syscall.SIGKILL
 
-// killSignalTimeout bounds the Signal RPC a Kill issues so a wedged transport
-// cannot block the teardown path: podman's Kill is an instantaneous local
-// cancel, so the microVM Kill must not stall on the wire. On timeout the error
-// is returned to the caller, which ignores it (the VMM-kill escalation in Stop
-// is the backstop) — Wait still returns via the demux goroutine, so a Kill RPC
-// that never lands does not wedge teardown (design §(c)).
+// killSignalTimeout bounds Kill's Signal RPC so a wedged transport cannot stall
+// teardown. Stop escalates to VMM kill; the demux goroutine still releases Wait.
 const killSignalTimeout = 5 * time.Second
 
 // stdinChunk is the stdin pump's read buffer size; a larger chunk is more

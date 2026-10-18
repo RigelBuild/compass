@@ -2,12 +2,9 @@
 
 package microvm
 
-// Hermetic round-trip for the host exec layer (RIG-2588 U3): a fake
-// GuestControl server on a unix listener speaking h2c Connect, dialed by a real
-// GuestControlClient — no KVM, no vsock muxer. The fake's ExecStream handler is
-// scripted per test so the pump's demux, stdin framing, kill/exit unblocking,
-// ctx-cancel teardown, and one-shot timeout are each exercised against a real
-// bidi stream.
+// Hermetic host-exec round-trip tests use a fake h2c GuestControl server.
+// Scripted ExecStream responses exercise framing, pumps, cancellation, and
+// timeout behavior without KVM or a vsock muxer.
 
 import (
 	"context"
@@ -450,14 +447,9 @@ func TestGuestExec_Stream_CtxCancelBreaksStream(t *testing.T) {
 }
 
 func TestGuestExec_Stream_CleanExitReapsStdinPump(t *testing.T) {
-	// Regression for the stdin-pump leak: on a clean child exit where the caller
-	// never closes Stdin, pumpResponses must still reap pumpStdin (otherwise it
-	// is parked forever in stdinR.Read). reapStdinPump closes the pump's reader
-	// end via a defer that runs BEFORE close(s.done), so by the time Wait()
-	// returns the stdin pipe is closed at its read end — a caller Write then
-	// fails with the pipe-closed error. Before the fix the pump held the pipe
-	// open and the Write would block/succeed, so this is a true regression gate
-	// with no goroutine-count heuristic and no sleep.
+	// Regression for a stdin-pump leak: after clean child exit, pumpResponses must
+	// reap pumpStdin even if the caller never closes Stdin. Wait returns only after
+	// the reader is closed, so a later write fails instead of blocking or succeeding.
 	ge := serveFakeGuest(t, &fakeGuest{
 		execStreamFn: func(_ context.Context, stream compassv1internalconnect.GuestControlExecStreamServerStream) error {
 			if _, err := stream.Receive(); err != nil { // start

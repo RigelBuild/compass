@@ -2,11 +2,9 @@
 
 package microvm
 
-// Hermetic suite for the host-side hybrid-vsock dialer and the GuestControl
-// Connect client (RIG-2588 T3). No KVM, no `microvm` build tag: a fake muxer is
-// a plain unix-socket listener that speaks the CH `CONNECT <port>`/`OK` preamble
-// and then either echoes the byte stream (dialer tests) or hands the transparent
-// connection to an in-process h2c Connect server (the Health round-trip).
+// Hermetic hybrid-vsock and GuestControl round-trip tests: a fake unix-socket
+// muxer speaks the CONNECT preamble and hands off the transparent stream to an
+// in-process h2c server. No KVM or microvm build tag is needed.
 
 import (
 	"bufio"
@@ -240,11 +238,8 @@ func TestDialGuest_HandshakeDeadline(t *testing.T) {
 	}
 }
 
-// healthHandler is a canned GuestControl handler: every Health returns the same
-// response, so the round-trip test asserts the fields survive the wire. It
-// embeds UnimplementedGuestControlHandler so it satisfies the exec surface U1
-// grew onto GuestControl (Exec/ExecStream/Signal/Provision) without this V2a
-// test exercising them.
+// healthHandler returns a canned Health response. It embeds the unimplemented
+// handler so the expanded exec RPC surface does not need test implementations.
 type healthHandler struct {
 	compassv1internalconnect.UnimplementedGuestControlHandler
 	resp *compassv1.HealthResponse
@@ -363,11 +358,9 @@ func guestClientHealthRoundTrip(t *testing.T, interceptors ...connect.ClientInte
 	}
 }
 
-// oneConnListener adapts a single already-accepted net.Conn into a net.Listener
-// so http.Server.Serve can drive its HTTP/2 handshake on it. The first Accept
-// yields the conn; the next returns an error, which ends Serve's Accept loop
-// without disturbing the already-handed-off connection (Serve handles it in its
-// own goroutine).
+// oneConnListener exposes one accepted connection to http.Server.Serve. After
+// the first Accept, it returns an error so Serve exits without disturbing the
+// connection already handed to its own goroutine.
 type oneConnListener struct {
 	conn net.Conn
 	done bool

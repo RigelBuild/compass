@@ -2,17 +2,9 @@
 
 package microvm
 
-// The RIG-3020 (V3 W3) direct-guestd arm-failure proof, run KVM-backed beside
-// the boot spike and the netfilter-autoload proof (boot_microvm_test.go). Where
-// TestInGuestEgressArmAutoloadsNetfilter proves a VALID arm succeeds, this proves
-// the fail-closed half on REAL hardware: an arm script that exits non-zero fails
-// Provision with CodeInternal AND leaves the exec gate closed, so a follow-up
-// Exec is refused. That fail-closed guestd path (supervisor.go: a failed armFunc
-// returns before the ready->provisioned transition) is only fully exercised
-// against the real guestd running as PID 1 in the guest — the hermetic W2 seam
-// test (runtime.TestStartProvisionErrorFailsAndTearsDown) proves the host
-// tears the VM down on a Provision error, but only a real boot proves guestd
-// itself refuses the exec after a real arm failure.
+// KVM-backed proof that a failed guestd egress arm fails Provision and keeps
+// the exec gate closed. The hermetic host test covers teardown, but only a real
+// guestd boot proves the guest refuses Exec after the arm fails.
 
 import (
 	"context"
@@ -63,11 +55,8 @@ func TestInGuestArmFailureKeepsExecGateClosed(t *testing.T) {
 
 	client := GuestClient(vm.vsockSocket, vm.vsockPort)
 
-	// A non-empty script that exits non-zero: the arm runs it as guest root and
-	// must surface the failure. `set -eu` + a bad `nft` command mirrors a real
-	// broken ruleset; a bare `exit 1` would also fail, but a failing nft add
-	// proves the arm actually ran the script through /bin/sh, not merely that a
-	// shell exited.
+	// A failing nft command proves the arm script actually ran through /bin/sh;
+	// a bare exit would test only shell status handling.
 	provCtx, provCancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer provCancel()
 	_, provErr := client.Provision(provCtx, &compassv1.ProvisionRequest{
