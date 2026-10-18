@@ -122,10 +122,9 @@ anything else. This spec covers the host, podman, and microVM tiers.
   "a thin WorkloadRuntime over the podman CLI: the only place a subprocess
   is spawned. Everything above depends on the interface").
 - **Egress:** enforced. The host-side arm execs the nftables script inside
-  the container before the agent runs, as container root (`AgentRuntime.armEgress`
-  in `go/internal/runtime/agent.go`). It also pins each allowlisted name's
-  resolved addresses in `/etc/hosts`. An agent exec runs as the agent uid
-  with no capabilities, so it cannot alter the ruleset or the pins.
+  the container, as root, before the agent runs (`AgentRuntime.armEgress`).
+  It pins resolved allowlist addresses in `/etc/hosts`. An agent exec runs as
+  the agent uid with no capabilities, so it cannot alter the ruleset or pins.
   The ruleset accepts loopback, so a pasta `-T`/`-U` forward (namespace to
   host) would reach host loopback ports. When agents' default network is
   pasta, the Runner refuses to start if `containers.conf` `pasta_options`

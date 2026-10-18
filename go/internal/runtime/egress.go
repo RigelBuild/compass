@@ -102,12 +102,10 @@ func (e EgressPolicy) NftScript() string {
 		fmt.Fprintf(&b, "\n: >> %s", egressHostsFile)
 	}
 	for _, host := range e.hosts {
-		// `getent ahostsv4/v6` is resolver-backed (glibc), one address per line.
-		// Both families resolve before any pin is written: a pinned v4 line would
-		// otherwise answer the v6 lookup with ::ffff: addresses instead of AAAA.
-		// `set +e` keeps a failing `nft add element` (missing family, or a shared
-		// address nft rejects on second insert) from aborting the loop; the
-		// trailing `; true` keeps it from piercing the base ruleset's `set -e`.
+		// Resolve both families before pinning: a pinned v4 line would answer the
+		// v6 lookup with ::ffff: addresses instead of AAAA. `set +e` tolerates a
+		// failing `nft add element` (missing family, shared address); `; true`
+		// keeps that from piercing the base ruleset's `set -e`.
 		pin4, pin6 := "", ""
 		if isDNSName(host) {
 			// Pin the name so the agent dials exactly the addresses allowed here.
