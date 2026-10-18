@@ -2,11 +2,8 @@ package store
 
 import "context"
 
-// tenantContextKey is the private key under which a request's resolved TenantID
-// is carried. The auth layer sets it per request after resolving token →
-// account → tenant; the store reads it per write to stamp tenancy. Unexported
-// so only this package can set or read it — tenant identity can never be
-// spoofed through a request field (mirrors comms.actorContextKey).
+// tenantContextKey privately carries the tenant resolved by authentication, so
+// callers cannot spoof tenant identity through a request field.
 type tenantContextKey struct{}
 
 // WithTenant returns a context carrying t as the resolved tenant. The auth

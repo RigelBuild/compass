@@ -2,12 +2,8 @@
 
 package store
 
-// Peer-DM store contracts (RIG-2963 T2, design.md:691-741, Decisions R3/R4):
-// the reserved per-owner DM group, the deterministic-name upsert (create /
-// idempotent resume / concurrent-open race), the R3 create-guard + squat belt,
-// and the R4 convert-on-add / two-party floor. These are properties only a real
-// Postgres proves (the partial unique index, the in-tx cursor seeds, the
-// delivery predicate, a concurrent race), so the file is pgtest-tagged.
+// Peer-DM tests cover reserved groups, idempotent and concurrent opens, drift
+// repair, conversion-on-add, and the two-party floor against Postgres.
 
 import (
 	"context"
@@ -18,12 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// openDM drives one peer-DM open the way the T3 OpenDM path will: under the
-// per-owner DM advisory lock, ensure the owner's reserved group, then upsert the
-// deterministic-name channel for the two agent parties. It runs the whole open in
-// one WithTx so the lock, group, channel, members, and cursor seeds commit
-// atomically — the same shape the real edge uses. Returns the channel id and
-// whether it was created this call.
+// openDM creates or resumes one owner-locked peer DM, committing its group,
+// channel, members, and cursor seeds in one transaction.
 func openDM(t *testing.T, s *Store, ownerUserID AccountID, name string, members []AccountID) (ChannelID, bool) {
 	t.Helper()
 	var (

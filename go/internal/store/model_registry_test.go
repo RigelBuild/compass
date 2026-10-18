@@ -1,13 +1,7 @@
 package store
 
-// Model-registry DOOR contracts (RIG-3122 P2), default gate — pure functions, no
-// Postgres. ValidateModelRegistry is the fail-closed write validator (design.md
-// §P2 L524-535): it enforces schema shape (every entry has a display_name and
-// >=1 candidate) and candidate shape (provider/model_id non-empty, no
-// whitespace). The profile-reference helpers (configBundleProfileBodies +
-// profileModelSelectors + stableNameOfSelector) are the DB-free half of the
-// orphan cross-check, exercised here over in-test bundles; the DB-backed CAS +
-// orphan-rejection contracts live in the pgtest-tagged sibling.
+// Pure tests cover registry validation and the profile-reference helpers;
+// compare-and-set and orphan rejection are exercised in the pgtest sibling.
 import (
 	"archive/tar"
 	"bytes"

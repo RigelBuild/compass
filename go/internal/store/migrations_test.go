@@ -1,10 +1,7 @@
 package store
 
-// checkContiguous is the build-time half of the refuse-to-serve-on-a-gap
-// contract (store.go): the embedded migration set must be a gapless 1..N
-// sequence, so a missing version can never pass the max-version serve check
-// while silently deploying an incomplete schema. Unit-testable without Postgres
-// because it operates on a plain, version-sorted []migration.
+// checkContiguous verifies the embedded migrations form a gapless 1..N sequence,
+// preventing Open from serving a database with a missing migration.
 
 import (
 	"errors"

@@ -2,13 +2,8 @@
 
 package store
 
-// DL-053 agent-forge-subscription store contracts (RIG-2732 Piece 1): the
-// idempotent per-agent subscribe on the UNIQUE (agent, coordinate), the
-// id+agent-scoped delete, and the load-bearing GC invariant — the
-// forge_artifact_cursors row is collected exactly when the LAST subscription for
-// its coordinate is deleted, and survives while any other agent still
-// subscribes. context.Background is the test root (the pgtest-suite convention,
-// sibling forge_authored_pgtest_test.go).
+// Forge subscription tests cover idempotent writes, scoped deletion, and cursor
+// collection only after the final agent unsubscribes.
 
 import (
 	"context"

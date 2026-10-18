@@ -1,10 +1,7 @@
 package store
 
-// Reserved-prefix predicate contracts — pure functions, no Postgres. The
-// admit/reject matrix over serverSecretPrefixes, including the COMPASS_ addition
-// (the master-key prefix) and its case-variant reject. HasServerSecretPrefix is
-// the byte-exact ADMIT check at the server door; ShadowsServerSecretPrefix is
-// the case-folding REJECT check at the user door.
+// Pure tests pin the case-sensitive admit and case-folded reject checks for
+// reserved server-secret prefixes.
 
 import "testing"
 

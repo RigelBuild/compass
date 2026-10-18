@@ -8,15 +8,8 @@ import (
 	"testing"
 )
 
-// The snapshot-boundary tests need a concrete store-space seq to use as the
-// point-in-time boundary, but Message does not expose Seq (scanMessages,
-// messages.go:462, never selects it). We recover the boundary from the append
-// order instead: messages.seq is BIGSERIAL starting at 1 (migrations/
-// 0001_init.sql:202), and in a FRESH newTestStore store with a single channel
-// and single-threaded sequential AppendMessage calls, the Nth appended message
-// is assigned seq=N. So after appending K messages in order, SnapshotSeq=K is
-// exactly the seq of the Kth message. The tests therefore assert on the stable,
-// exposed message IDs + counts rather than raw seq.
+// Message does not expose seq, so these tests use the sequential BIGSERIAL
+// contract: in a fresh single-channel store, the Nth append has seq N.
 
 // TestListMessagesSnapshotSeqBoundsPage is the RIG-1333 red-first regression:
 // ListMessages must honor Page.SnapshotSeq as a point-in-time read boundary,
@@ -144,15 +137,8 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 	}
 	const snap = uint64(4)
 
-	// Goroutine A pages the catch-up under the boundary (page size 2, two pages),
-	// unioning the ids it collects. Goroutine B appends new messages that get
-	// seq > 4 and must never appear in A's view. Both release off one start
-	// barrier (RIG-1226 style). For a deterministic RED with no sleeps, B closes
-	// `written` once its appends have COMMITTED and A waits on it before paging:
-	// this guarantees the seq>4 rows exist in the store at read time, so a build
-	// that ignores the boundary provably leaks them, while the filtered build
-	// provably excludes them. Without the handshake the leak is a scheduler race
-	// (the reader might win), which would let a broken build pass — a flaky test.
+	// Wait for B's committed appends before A pages, so rows beyond the snapshot
+	// exist during the read and ignoring the boundary cannot pass by scheduler luck.
 	start := make(chan struct{})
 	written := make(chan struct{})
 	var wg sync.WaitGroup

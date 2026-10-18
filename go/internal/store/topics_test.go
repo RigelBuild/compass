@@ -2,14 +2,8 @@
 
 package store
 
-// Topic contracts (compass-zulip-threading-model T2, §Red-first): get-or-create
-// is settled by the unique index (concurrent posts on one name converge on one
-// row, never a surfaced unique-violation); a get-or-create resolving an archived
-// name revives it; ListTopics is channel-membership-gated (the D9 not-found
-// merge for a non-member); UpdateTopic renames, archives, and MERGES on a
-// rename-to-existing (source messages carry the target topic_id, source row
-// gone). These are properties only a real Postgres proves, so the file is
-// pgtest-tagged.
+// Topic tests cover concurrent get-or-create, archived-topic revival,
+// membership-gated reads, and merge-on-rename against Postgres.
 
 import (
 	"context"

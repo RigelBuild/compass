@@ -9,11 +9,8 @@ import (
 	"time"
 )
 
-// Issues store contracts (RIG-1728 part 3a): the forge coordinate is the
-// idempotency key so a re-poll keeps a stable id and never clobbers a human-set
-// lifecycle state, a persisted issue always has a real state (DEFAULT BACKLOG),
-// unknown ids are ErrNotFound, and the issue survives a store restart (DL-019
-// durability). Deterministic, no sleeps.
+// Issue tests cover idempotent coordinates, state preservation, not-found, and
+// restart durability against Postgres.
 
 // forgeFields is a valid IssueForgeFields for a fresh coordinate, with the
 // caller overriding whatever the case exercises.
@@ -492,13 +489,8 @@ func TestSearchIssuesRejectsEmptyQuery(t *testing.T) {
 	}
 }
 
-// The OQ-6(a) recency guard (RIG-2883 T4a): once both the stored row and the
-// incoming write carry a forge_updated_at, the conditional ON CONFLICT keeps
-// the FRESHER timestamp's forge fields, regardless of arrival order — a stale
-// out-of-order re-sink never clobbers a fresher row. The distinct Title per
-// write is the observable proxy for "which write's forge fields won" (GetIssue
-// does not surface forge_updated_at; the write-path threading is what T4a
-// lands, not a new read column).
+// The recency guard keeps forge fields from the newer timestamp, regardless of
+// write order; distinct titles expose which write won.
 //
 //nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestUpsertRecencyGuardFresherWinsBothOrders(t *testing.T) {
@@ -568,10 +560,8 @@ func TestUpsertRecencyGuardFresherWinsBothOrders(t *testing.T) {
 	})
 }
 
-// The guard is ADDITIVE: an equal-timestamp re-sink still applies (>= not >,
-// second-granularity), and a write with NO timestamp on either side always
-// applies — the two NULL arms of the ON CONFLICT predicate keep a not-yet-
-// threaded writer (and any row written before threading) from ever being gated.
+// Equal timestamps and NULL timestamps remain eligible for replacement.
+// Test helpers root contexts, so this test does not receive one.
 //
 //nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestUpsertRecencyGuardEqualAndNullAlwaysApply(t *testing.T) {

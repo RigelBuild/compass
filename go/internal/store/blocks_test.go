@@ -1,11 +1,7 @@
 package store
 
-// T2 (RIG-2257) pure-Go block-model contracts, needing no Postgres: the
-// ask_answer variant round-trips through JSONB unchanged; the exactly-one-of
-// invariant rejects every two-set combination; a stored row whose kind and
-// payload disagree fails loud on read; and textContent folds the answered
-// snapshot's custom-text answers into the searchable string. The real-Postgres
-// AnswerAsk row contracts live in the pgtest siblings.
+// Pure-Go tests cover block JSON, oneof validation, malformed stored rows, and
+// searchable answer text; Postgres AnswerAsk contracts are in pgtest siblings.
 
 import (
 	"encoding/json"

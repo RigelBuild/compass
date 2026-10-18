@@ -11,19 +11,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// seedDeliveryCursor is the shared in-txn seed: it rides the caller's existing
-// transaction (the channel_members insert txn) so a missed seed is a loud
-// constraint failure in that same commit, never a silent skip. Called by the two
-// membership-insert sites (CreateAgent home-channel seed, addOrUpdateMember
-// subscribe upsert) and by the exported SeedDeliveryCursor wrapper. The seed is
-// self-guarding and idempotent in one race-free statement (queries/
-// delivery_cursors.sql SeedDeliveryCursor): the WHERE EXISTS admits the row only
-// for an agent account (a user id yields zero rows, so a non-agent member is a
-// silent no-op rather than an FK violation), it seeds acked_seq to the current
-// channel head — MAX(seq) over the channel's messages, 0 if empty — with NO
-// history replay (design record D2), and ON CONFLICT DO NOTHING means a
-// re-subscribe never resets an existing cursor. Safe to call unconditionally for
-// a member whose agent-ness is not separately known.
+// seedDeliveryCursor runs the self-guarding, idempotent seed in the caller's
+// membership transaction. It seeds agents at the current channel head, without
+// replaying history; users produce no row.
 func seedDeliveryCursor(ctx context.Context, tx pgx.Tx, agent AccountID, channel ChannelID) error {
 	if err := db.New(tx).SeedDeliveryCursor(ctx, db.SeedDeliveryCursorParams{
 		AgentAccountID: string(agent),
@@ -34,17 +24,8 @@ func seedDeliveryCursor(ctx context.Context, tx pgx.Tx, agent AccountID, channel
 	return nil
 }
 
-// seedChannelDeliveryCursors is the set-based counterpart to seedDeliveryCursor:
-// it seeds EVERY agent member of the channel in a single statement (queries/
-// delivery_cursors.sql SeedChannelDeliveryCursors — the set form of the per-row
-// seed, collapsing the per-member seed loop), riding the caller's existing
-// transaction so a missed seed is a loud failure in that same commit. The JOIN
-// agent_accounts is the agent-only guard (a human member has no agent_accounts
-// row and so is a silent no-op rather than an FK violation), each row is seeded
-// to the current channel head with NO history replay (design record D2), and
-// ON CONFLICT DO NOTHING keeps a re-subscribe / re-run idempotent — it never
-// resets an existing cursor. Safe to call for a channel whose member set includes
-// humans.
+// seedChannelDeliveryCursors seeds every agent member at the current head in one
+// statement. It is transaction-scoped, idempotent, and does not replay history.
 func seedChannelDeliveryCursors(ctx context.Context, tx pgx.Tx, channel ChannelID) error {
 	if err := db.New(tx).SeedChannelDeliveryCursors(ctx, string(channel)); err != nil {
 		return fmt.Errorf("store: seed channel delivery cursors: %w", err)

@@ -2,33 +2,9 @@
 
 package store
 
-// The set_updated_at trigger convention (RIG-3495), proven against real
-// Postgres. updated_at is maintained by ONE mechanism — the BEFORE UPDATE
-// trigger each migration installs on every table it creates with the column —
-// and no query file sets it by hand. These tests are the enforcement of that:
-// they fail if the trigger is missing, which is exactly what happens if a
-// migration adds such a table without its trigger, or drops the block.
-//
-// Three properties, each a distinct failure mode:
-//
-//  1. A plain UPDATE advances updated_at and leaves created_at alone. The
-//     created_at half is not padding: it is what catches a BEFORE INSERT OR
-//     UPDATE trigger, which would look correct on every update assertion while
-//     silently making created_at meaningless.
-//  2. The INSERT ... ON CONFLICT DO UPDATE conflict path fires it. This is the
-//     case most likely to be wrong, since the trigger is declared on UPDATE and
-//     an upsert reads as an insert. Driven through the real store method
-//     (RecordAgentPlacement), not raw SQL, so the covered thing is the path
-//     production takes.
-//  3. secrets.updated_at is live — the rot this change fixes.
-//
-// now() is TRANSACTION time in Postgres, so two writes inside one transaction
-// observe the identical value. Every write below is its own statement on the
-// pool (its own implicit transaction), which is what makes a strict > correct.
-// A time.Sleep would only mask a wrong assertion; there is none here.
-//
-// context.Background is the test root (the pgtest-suite convention, sibling
-// forge_cursors_pgtest_test.go).
+// Postgres tests verify the updated_at trigger advances on UPDATE and upsert,
+// leaves created_at unchanged, and remains installed on secret tables.
+// Writes use separate implicit transactions because now() is transaction time.
 
 import (
 	"context"

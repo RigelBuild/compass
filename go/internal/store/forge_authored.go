@@ -206,11 +206,8 @@ func authoredArtifactFromRow(r db.ForgeAuthoredArtifact) AuthoredArtifact {
 	return a
 }
 
-// textOrNull maps an empty string (no value supplied) to an invalid pgtype.Text
-// so it stores as SQL NULL. Used where a generated query parameter is a
-// pgtype.Text: client_request_id (the partial unique memo index constrains only
-// non-NULL keys, so null-key rows never collide) and linear_issue_id (plain
-// nullable provenance, no unique index — NULL is faithful "none" storage).
+// textOrNull maps empty strings to SQL NULL. The memo index excludes NULL keys,
+// while linear issue IDs use NULL to represent absent provenance.
 func textOrNull(s string) pgtype.Text {
 	if s == "" {
 		return pgtype.Text{}

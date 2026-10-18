@@ -2,13 +2,8 @@
 
 package store
 
-// D9 write-authorization refusals, enforced server-side in SQL on every write
-// path (design.md:1101-1102, :1197): a caller may only mutate what it can see.
-// Each test drives the refusal the gate now provides and pairs it with the
-// happy path the gate must still admit — so a regression that drops the gate
-// reddens the refusal, and one that over-refuses reddens the companion. These
-// would all PASS against the pre-gate code on the refusal (the write went
-// through), which is exactly why they are the regression the fix defends.
+// Write-authorization tests pair each refusal with its happy path, catching both
+// a missing SQL gate and an over-restrictive one.
 
 import (
 	"context"

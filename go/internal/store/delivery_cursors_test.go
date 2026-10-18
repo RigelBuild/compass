@@ -2,17 +2,8 @@
 
 package store
 
-// Delivery-cursor contracts (RIG-1569 T2, design record D2): the durable
-// per-(agent, channel) low-water cursor. AckDelivery resolves a message id to a
-// seq (the overshoot clamp), records out-of-order acks in the above-set, and
-// drains the contiguous cursor across acked-or-self-authored seqs; a duplicate,
-// reordered, or fabricated ack is a no-op. SeedDeliveryCursor rides the
-// member-insert txn (asserted through CreateAgent and an addOrUpdateMember
-// subscribe). UndeliveredMessages sweeps the owed-but-unacked tail ascending,
-// excluding the above-set and the agent's own posts, treating an absent cursor as
-// caught-up (no history replay), and sweeping the home channel via the D1
-// disjunct regardless of its subscribed flag. State survives a store restart.
-// These are properties only a real Postgres proves, so the file is pgtest-tagged.
+// Delivery cursor tests cover ack ordering, transactional seeds, unread scans,
+// and restart persistence against Postgres.
 
 import (
 	"context"

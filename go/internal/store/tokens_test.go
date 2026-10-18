@@ -2,11 +2,8 @@
 
 package store
 
-// Token contracts: a hash resolves to its subject WITH kind; an Account-kind and
-// a Runner-kind token that carry the same id string do not collide; an unknown
-// hash is ErrNotFound while a revoked one is the distinct ErrTokenRevoked; revoke
-// is idempotent; revoking an unknown hash is ErrNotFound; and re-putting a stored
-// hash is ErrConflict.
+// Token tests cover subject kinds, unknown and revoked errors, idempotent revoke,
+// and conflict on reusing a stored hash.
 
 import (
 	"context"

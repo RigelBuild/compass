@@ -2,15 +2,8 @@
 
 package store
 
-// Model-registry store contracts (RIG-3122 P2), pgtest gate — the CAS write
-// discipline and the fail-closed orphan cross-check against a real Postgres via
-// the shared harness (newTestStore/mustUser/mkBundle only exist under this tag).
-// The pure payload validation is proven in the default-gate sibling; here we
-// prove what only a real DB can: the compare-and-set on the whole-registry
-// version (a stale/racing expected_version → ErrVersionConflict; the correct
-// version → a bump), the seed-then-replace round trip, ErrNotFound on an
-// unconfigured store, and that a removal/clear stranding a published profile
-// reference fails closed. Behind `pgtest && unix` (SKIP when no runtime).
+// Postgres tests cover registry compare-and-set, persistence, and fail-closed
+// rejection when removing names still used by published profiles.
 
 import (
 	"context"

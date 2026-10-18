@@ -7,12 +7,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// treeAccountText wraps a tree read's non-nullable agent column (owner id,
-// persona, role) into the pgtype.Text the shared accountFromRow expects. The
-// three tree queries INNER-join agent_accounts, so these columns are always
-// present and sqlc types them as plain strings — but accountFromRow keys the
-// agent subtype on ownerUserID.Valid, so each must be marked Valid to reconstruct
-// the Agent subtype (a tree row is always an agent).
+// treeAccountText marks non-null agent fields valid for accountFromRow; tree reads
+// INNER JOIN agent_accounts, so every row reconstructs as an Agent.
 func treeAccountText(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: true}
 }

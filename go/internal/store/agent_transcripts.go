@@ -21,14 +21,8 @@ import (
 // rebased onto the session's stored max at BindLifetime (base_entry_seq), so the
 // persisted entry_seq stays monotonic per session across resumes and the PK holds.
 
-// defaultSafetyValveCapBytes is the default HIGH size cap on the post-checkpoint
-// hot-tail, in bytes of entry_json (octet length). It sits ABOVE the normal
-// compaction window so it never engages in normal operation — pure
-// defense-in-depth: if compaction is disabled/bugged/never-trips, the oldest
-// post-checkpoint chunk is evicted to a safety_valve segment so the hot-tail
-// cannot grow without bound. TUNABLE: the record freezes the mechanism, not the
-// value (design.md T4 "the cap value is a tuning parameter, not freeze-scope").
-// Store.safetyValveCapBytes carries it so it can be tuned (and lowered by tests).
+// defaultSafetyValveCapBytes bounds the post-checkpoint hot tail if normal
+// compaction fails. The cap is defense in depth; the store field allows tuning.
 const defaultSafetyValveCapBytes = 64 << 20 // 64 MiB
 
 // SegmentKind classifies an archive-manifest segment, matching the SQL CHECK
@@ -374,11 +368,8 @@ func (s *Store) sessionBase(ctx context.Context, sessionID string) (uint64, erro
 	return toUint64(base), nil
 }
 
-// maybeSafetyValve is the high-size-cap check, run by each flush pass after the
-// primary step. A cheap scalar sums the post-checkpoint bytes and returns early
-// under the cap (the normal case). Over it, the per-row read picks the cut with
-// valveCut, which stops before any checkpoint committed since the scalar and
-// always retains the newest entry.
+// maybeSafetyValve checks the high-size cap after the primary flush and keeps
+// the newest entry plus entries after any checkpoint committed during the check.
 func (s *Store) maybeSafetyValve(ctx context.Context, sessionID string) error {
 	tailBytes, err := s.q.HotTailBytes(ctx, sessionID)
 	if err != nil {
@@ -426,14 +417,9 @@ func (s *Store) SessionMaxEntrySeq(ctx context.Context, sessionID string) (uint6
 	return toUint64(maxSeq), nil
 }
 
-// flushUpto is the shared flush machinery (PUT-before-prune). It reads the rows
-// in [fromEntrySeq..uptoEntrySeq], writes them as one verbatim-JSONL segment to
-// the object store under a deterministic [min..max] key, and only after the PUT
-// confirms, in ONE transaction, INSERTs the manifest row
-// (ON CONFLICT (session_id, object_key) DO NOTHING), optionally prunes the
-// flushed rows, and optionally re-marks stale safety_valve rows to superseded
-// (remarkBelow > 0, the PRIMARY flush). With no rows in range it is a no-op
-// except for a requested remark, which still applies.
+// flushUpto writes the selected rows to object storage before one transaction
+// records the manifest and optionally prunes rows or supersedes old valve data.
+// An empty range is a no-op unless a supersession was requested.
 func (s *Store) flushUpto(ctx context.Context, sessionID string, fromEntrySeq, uptoEntrySeq uint64, kind SegmentKind, prune bool, remarkBelow uint64) error {
 	seqs, body, err := s.collectSegment(ctx, sessionID, fromEntrySeq, uptoEntrySeq)
 	if err != nil {
@@ -542,11 +528,8 @@ func (s *Store) remarkSafetyValveSuperseded(ctx context.Context, sessionID strin
 	return nil
 }
 
-// segmentKey is the deterministic object key for the segment covering
-// [minSeq..maxSeq] of a session, prefixed sessions/<session_id>/ (bucket and
-// endpoint are server config, not per-key). Deterministic per seq range so a
-// crash between the PUT and the flush commit re-PUTs onto the SAME key (a
-// harmless overwrite), the crash-safety the record relies on.
+// segmentKey is deterministic for a session and sequence range, so a retry after
+// a crash safely overwrites the same object key.
 func segmentKey(sessionID string, minSeq, maxSeq uint64) string {
 	return fmt.Sprintf("sessions/%s/%d-%d.jsonl", sessionID, minSeq, maxSeq)
 }

@@ -1,12 +1,7 @@
 //go:build pgtest && unix
 
-// T2 of the compass-user-secret-store record: the scoped, encrypted user-secret
-// store. These prove the A9 scope model (tenant/user/agent, most-specific-wins)
-// and the A1 value columns against real Postgres — the composite-PK resolution
-// collapse, cross-scope isolation, tenant sharing, the upsert value-rewrite vs
-// second-scope-insert distinction, the door-side scope-shape + reserved-prefix
-// validation (and that the CHECK backs the door if bypassed), scope-addressed
-// delete, and that a stored ciphertext never contains its plaintext.
+// User-secret tests prove tenant/user/agent scope precedence, isolation, value
+// upserts, validation, scoped deletion, and ciphertext-at-rest against Postgres.
 
 package store
 

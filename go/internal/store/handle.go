@@ -5,23 +5,12 @@ import (
 	"regexp"
 )
 
-// handleRE is the positive grammar every account handle must fully match: the
-// server mention grammar (delivery.mentionRE, consumer.go:319) anchored and
-// stripped of the leading `@`. It is deliberately NOT case-insensitive — a
-// handle is stored lowercase, so an uppercase handle like `Compass` is rejected
-// rather than folded, which is what forecloses the uppercase/Unicode-confusable
-// spoof class (e.g. a zero-width-space handle `Compass\u200b` that renders as
-// `Compass`) along with a leading-`@` or whitespace handle.
+// handleRE matches the lowercase ASCII handle grammar and excludes leading @,
+// whitespace, and Unicode-confusable spellings.
 var handleRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-// reservedHandles are handles no account may register. `compass` is the system
-// handle and `linear` the Linear bridge system handle (both seeded as
-// system-subtype accounts, never registrable by a user/agent);
-// `everyone`/`agents`/`users` are the server's reserved broadcast mentions — an
-// account registered as one of those would shadow a live broadcast semantic.
-// The reserved-mention names duplicate delivery's reservedMentions
-// (consumer.go:326, the source of truth) rather than importing the delivery
-// package, to avoid a store->delivery dependency; keep them in sync.
+// reservedHandles blocks system handles and broadcast mentions. The mention
+// names mirror delivery's list to avoid a store-to-delivery dependency.
 var reservedHandles = map[string]bool{
 	"compass":  true,
 	"linear":   true,

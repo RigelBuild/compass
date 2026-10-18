@@ -58,41 +58,17 @@ type ModelRegistry struct {
 	Entries map[string]ModelRegistryEntry `json:"entries"`
 }
 
-// Fail-closed size caps on the registry payload (M1). The registry is small
-// operator config — a fleet names on the order of dozens of stable names, each
-// a short ordered candidate chain — but nothing downstream bounds it: the store
-// marshals whatever it is handed into a single JSONB row (PutModelRegistry) and
-// GetModelRegistry serves the whole payload to every authenticated account
-// (authenticatedOpen), so an unbounded registry is both an unbounded-allocation
-// write and a read-amplification vector. These caps mirror the config-bundle
-// door's posture (agent_config.go maxDecompressedBytes / maxFileCount): generous
-// headroom over any realistic registry while still bounding a single Put's
-// memory and the served row. The write is admin-gated, so this is defense in
-// depth, not an untrusted-input gate — but a fail-closed bound belongs at the
-// door regardless. Each breach is a %w-wrapped ErrInvalidArgument.
+// Model-registry size caps bound both marshaling and the JSONB payload served to
+// every authenticated account; violations return ErrInvalidArgument.
 const (
-	// maxRegistryEntries caps the number of stable-name entries. A fleet's
-	// stable-name set is operator-curated and small; hundreds is already far
-	// beyond any realistic roster.
+	// maxRegistryEntries caps the roster size; hundreds is already generous.
 	maxRegistryEntries = 512
-	// maxCandidatesPerEntry caps one stable name's ordered candidate chain. The
-	// chain is the fallback list the resolver tries in order; a handful is
-	// typical, tens is generous.
+	// maxCandidatesPerEntry caps each ordered fallback chain.
 	maxCandidatesPerEntry = 32
-	// maxRegistryBytes caps the serialized (json.Marshal) payload size — the
-	// bytes actually written to the JSONB row and served on Get. 1 MiB is a low-
-	// MB bound comfortably above the entry/candidate caps' worst case of short
-	// text fields, while keeping the singleton row and every Get response small.
+	// maxRegistryBytes caps the serialized JSONB payload served on Get.
 	maxRegistryBytes = 1 << 20 // 1 MiB
-	// maxRegistryFieldBytes caps a single string field (stable name, display
-	// name, candidate provider/model_id, metadata api). Checked in the per-entry
-	// loop BEFORE the aggregate json.Marshal, so no single field forces an
-	// unbounded transient allocation inside Marshal ahead of the byte cap (L1).
-	// This composes with the entry/candidate caps to bound the pre-marshal
-	// content at maxRegistryEntries * (3 + 2*maxCandidatesPerEntry) *
-	// maxRegistryFieldBytes (~= 35 MB worst case, not near maxRegistryBytes); the
-	// aggregate maxRegistryBytes check on the marshaled payload is the final,
-	// tight gate. Generous over any real name.
+	// maxRegistryFieldBytes bounds each field before Marshal can make a large
+	// transient allocation; entry and aggregate caps bound the complete payload.
 	maxRegistryFieldBytes = 1024
 )
 
@@ -161,17 +137,9 @@ func ValidateModelRegistry(reg ModelRegistry) error {
 	return nil
 }
 
-// validateStableName enforces the stable-name KEY grammar the registry's two
-// downstream discriminators depend on. The bundle-door reverse lint reads a
-// profile selector as an escape-hatch provider/id when it contains "/"
-// (checkBundleProfileRefsAgainstRegistry) and strips a trailing reasoning-tier
-// by splitting on the LAST ":" (stableNameOfSelector), so a key containing "/"
-// is UNREACHABLE (only ever read as an escape hatch) and a key containing ":"
-// is UNREACHABLE (the tier split always truncates it). Either breaks the
-// design's own discriminators (design.md §P2 L530-532, L583-585), so the door
-// that mints the vocabulary rejects both, plus whitespace (matching
-// validateCandidateField's candidate-field strictness one field away) and the
-// per-field byte cap (L1).
+// validateStableName rejects slash and colon because they conflict with the
+// escape-hatch and reasoning-tier selector grammars. It also rejects whitespace
+// and fields over the byte cap.
 func validateStableName(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: model registry has an empty stable name", ErrInvalidArgument)
@@ -191,12 +159,8 @@ func validateStableName(name string) error {
 	return nil
 }
 
-// validateCandidateField enforces the minimal candidate-field shape: non-empty
-// and containing no whitespace (a whitespace-bearing provider/model_id is a
-// malformed selector, never a real upstream name). Whitespace is the full
-// Unicode set (unicode.IsSpace), not just ASCII: a selector bearing exotic
-// whitespace (NBSP, vertical tab, U+2028) is as malformed as one with a space,
-// and enumerating only the four ASCII runes would fail open on the rest.
+// validateCandidateField rejects empty values and all Unicode whitespace; an
+// ASCII-only check would admit malformed selectors with exotic spacing.
 func validateCandidateField(name string, idx int, field, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: model registry entry %q candidate %d has an empty %s", ErrInvalidArgument, name, idx, field)
@@ -376,32 +340,9 @@ func (s *Store) tombstoneModelRegistry(ctx context.Context, version int64) error
 	return fmt.Errorf("%w: model registry changed during delete", ErrVersionConflict)
 }
 
-// checkBundleProfileRefsAgainstRegistry is the REVERSE orphan guard mandated by
-// the design (compass-stable-name-routing/design.md §P2 L530-532): the
-// bundle-door profile lint. PutAgentConfig calls it before the bundle row write,
-// so a config bundle whose profile pins a stable name absent from the current
-// model registry fails closed (ErrInvalidArgument) rather than publishing a
-// stranded reference that would fail only at gateway resolve.
-//
-// Every profile models.* value must be EITHER a known stable name present in the
-// current registry OR an explicit escape-hatch selector (a "provider/id" form,
-// which always contains a "/"). An escape-hatch selector names no registry entry
-// and is accepted unconditionally. A bare selector is stripped to its stable
-// name (split-on-last-colon, stableNameOfSelector) and must be a registry key.
-// Cross-family / model-choice judgment stays ADVISORY (design.md §P2 L533-535,
-// RIG-2936 posture): this lint enforces only known-name presence, never whether
-// a chosen model is appropriate.
-//
-// An unconfigured registry (CurrentModelRegistry ErrNotFound) has NO known
-// names, so any bare stable-name reference fails closed — the operator must
-// declare the registry before publishing a profile that pins a name from it.
-//
-// TOCTOU: this reads the registry then the caller CAS-writes the bundle row,
-// two stores with no shared transaction — symmetric to the removal-side window
-// documented on PutModelRegistry. A concurrent PutModelRegistry removing a name
-// in this window is unseen; the accepted, self-healing degradation is the same
-// (admin-gated low-frequency writers, a stranded ref surfaces at resolve, the
-// operator re-runs). No cross-store lock is taken.
+// checkBundleProfileRefsAgainstRegistry rejects bare selectors absent from the
+// registry; provider/id selectors bypass lookup and suitability stays advisory.
+// Unconfigured registries fail closed; concurrent removals may surface at resolve.
 func (s *Store) checkBundleProfileRefsAgainstRegistry(ctx context.Context, profiles map[string][]byte) error {
 	if len(profiles) == 0 {
 		return nil // no profiles → no stable-name references to check
@@ -451,12 +392,8 @@ func removedNames(prior, next ModelRegistry) map[string]bool {
 	return removed
 }
 
-// checkNoOrphanedProfileRefs fails closed (ErrInvalidArgument) if any name in
-// the given set is still referenced by a published profile's models.* map. The
-// published profiles live in the current config bundle (agent_config_bundle);
-// an unconfigured fleet (no bundle) references nothing. An empty name set is a
-// no-op. This is the fail-closed orphan guard of design.md §P2 L528-532: a
-// registry removal must not strand a profile that pins a stable name.
+// checkNoOrphanedProfileRefs rejects removing stable names still used by
+// published profiles. An unconfigured fleet or empty removal set is a no-op.
 func (s *Store) checkNoOrphanedProfileRefs(ctx context.Context, names map[string]bool) error {
 	if len(names) == 0 {
 		return nil
@@ -473,15 +410,9 @@ func (s *Store) checkNoOrphanedProfileRefs(ctx context.Context, names map[string
 	return nil
 }
 
-// publishedProfileModelRefs reads the current config bundle and returns the set
-// of stable names its profiles reference through models.* selectors, mapped to
-// the profile name that references each (for a precise error). Only STABLE-NAME
-// references count: an explicit provider/id escape-hatch selector always
-// contains a "/" (design.md §P2 L530-532) and names no registry entry, so it is
-// skipped. An unconfigured fleet (no bundle) references nothing.
-//
-// It reuses the same tar-walk + YAML-mapping grammar the config-bundle door
-// enforced at Put, so it reads only already-validated, trusted content.
+// publishedProfileModelRefs maps stable-name selectors to the profiles that use
+// them. Provider/id escape hatches are excluded; the config bundle was validated
+// when published, so this reuses its tar and YAML walk.
 func (s *Store) publishedProfileModelRefs(ctx context.Context) (map[string]string, error) {
 	_, bundle, err := s.CurrentAgentConfig(ctx)
 	if err != nil {
@@ -527,11 +458,8 @@ func (s *Store) publishedProfileModelRefs(ctx context.Context) (map[string]strin
 	return refs, nil
 }
 
-// profileModelSelectors returns every models.* string selector declared in a
-// parsed profile mapping: models.manager (when a string) and every string value
-// under models.agents. It mirrors validateProfileModelSelectors' traversal (the
-// door already proved these are string-shaped), collecting the values rather
-// than shape-checking them. A non-string or absent axis contributes nothing.
+// profileModelSelectors collects string selectors from models.manager and
+// models.agents; the config-bundle door already validated their shape.
 func profileModelSelectors(mapping map[string]any) []string {
 	modelsRaw, present := mapping["models"]
 	if !present || modelsRaw == nil {
@@ -559,18 +487,9 @@ func profileModelSelectors(mapping map[string]any) []string {
 	return out
 }
 
-// stableNameOfSelector returns the stable-name portion of a bare (no "/")
-// profile selector: the SDK's selector grammar splits a trailing reasoning-tier
-// on the LAST colon (e.g. "claude-opus-4-8:high" → name "claude-opus-4-8"), so
-// the registry key is the pre-last-colon segment. A selector with no colon is
-// its own stable name. This is the ONE place the split-on-last-colon grammar is
-// applied on the server, and only to fail CLOSED: matching the stripped name
-// against the registry catches an orphaning removal that a literal-only match
-// would miss. This split is sound only because a registry stable name may
-// contain neither ":" nor "/" (validateStableName enforces that grammar at the
-// registry door; design.md §P2 L530-532, L583-585): a ":"-bearing key would be
-// unreachable through its own selector, a "/"-bearing key indistinguishable
-// from an escape hatch.
+// stableNameOfSelector strips the final reasoning tier from a bare selector.
+// The registry rejects ':' and '/', so the result cannot hide an unreachable key
+// or mistake a provider/id escape hatch for a stable-name reference.
 func stableNameOfSelector(sel string) string {
 	if i := strings.LastIndexByte(sel, ':'); i >= 0 {
 		return sel[:i]

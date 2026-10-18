@@ -2,24 +2,9 @@
 
 package store
 
-// UpdateMessageBlocksAsAuthor: the AUTHORIZING block-update path, the store leg
-// of the relayed-agent-input write-through (RIG-1364 T3). Its whole reason to
-// exist is that updateMessageBlocksExec takes a bare MessageID and
-// performs NO membership or authorship check — safe for AnswerAsk, which has
-// already gated on the actor's visible set, but a privilege hole on a path whose
-// message id arrives from a relayed agent frame. Every test here defends one
-// half of the predicate or one validation:
-//
-//   - membership AND authorship both required, and both collapse to ErrNotFound
-//     (the D9 not-found/forbidden merge — an actor must not learn that a message
-//     it cannot touch exists);
-//   - the updated row comes back via RETURNING, so the caller can fan out the
-//     post-update state without a second read;
-//   - the validations updateMessageBlocksExec already enforces (empty block set,
-//     an ask block with an empty AskID) are enforced here too, plus an empty
-//     message id;
-//   - and, critically, AnswerAsk is untouched — its locked read-modify-write
-//     still runs through the un-authorized shared core.
+// UpdateMessageBlocksAsAuthor tests require both membership and authorship,
+// verify the returned updated row, and cover input validation. The shared core
+// remains unauthorizing for AnswerAsk, which already gates its transaction.
 
 import (
 	"context"
@@ -203,12 +188,8 @@ func TestUpdateMessageBlocksAsAuthorRejectsMalformedInput(t *testing.T) {
 		sentinelIs(t, err, ErrInvalidArgument, "empty block set")
 	})
 	t.Run("ask block with no ask id", func(t *testing.T) {
-		// A truly id-LESS ask is still an error at the store: ask_id is minted
-		// once at append and immutable, so an update carrying no id has nothing
-		// to persist and would orphan any pending RespondToAsk against the
-		// original. This is the store's last-line guard; the comms edge reconciles
-		// an id-less UPDATE ask from the stored row before the write, so a
-		// legitimate ask-bearing update never arrives here id-less.
+		// An id-less ask update cannot preserve RespondToAsk correlation: ask_id is
+		// minted only at append, and the edge reconciles legitimate updates first.
 		_, err := s.UpdateMessageBlocksAsAuthor(ctx, author.ID, msg.ID, []MessageBlock{textBlock("x"), askBlockID("")})
 		sentinelIs(t, err, ErrInvalidArgument, "ask block with an empty ask_id")
 	})

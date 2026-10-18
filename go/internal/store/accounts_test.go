@@ -2,12 +2,8 @@
 
 package store
 
-// Account contracts: the uniqueness and validation errors CreateUser/CreateAgent
-// surface, the RT-2 home-channel minting that CreateAgent performs atomically,
-// GetAccount's not-found mapping, and ListAccounts' D9 visibility scoping — a
-// caller sees every user and its own agents, but never an unrelated owner's
-// agent it shares no channel with.
-
+// Account tests cover creation validation, atomic home-channel creation,
+// not-found mapping, and visibility-scoped listing.
 import (
 	"context"
 	"errors"
@@ -681,11 +677,7 @@ func TestCreateAgentReservedHandleInvalid(t *testing.T) {
 	}
 }
 
-// validHandles are legitimate handles exercising every non-alnum member of the
-// grammar's character class (`.`, `_`, `-`) plus a digit — the accept-side the
-// record requires ("accept every legitimate existing handle"). Without this a
-// silent tightening of the grammar (dropping `._-` from the class) would keep
-// every reject-only test green while breaking a promised accept path.
+// validHandles includes every punctuation character accepted by the grammar.
 var validHandles = []string{
 	"a.b_c-d",
 	"x0",
@@ -818,15 +810,9 @@ func TestEnsureSystemAccountRoundTripsThroughGetAccount(t *testing.T) {
 	}
 }
 
-// TestEnsureSystemAccountWrongShapeSquatterConflicts asserts a pre-existing
-// @compass row of the WRONG shape (a user, then separately an agent) that OWNS
-// the reserved handle in the global resolution index fails with ErrConflict
-// rather than being silently adopted as the system sender. The squatters are
-// inserted directly through the pool because CreateUser/CreateAgent reject the
-// reserved handle (T1); the account_handles global row (owner_user_id NULL) is
-// planted too, since handle ownership now lives there (RIG-2751 handle cutover)
-// and systemByHandle resolves through it — a squatter that owns only the legacy
-// accounts.handle column but not the resolution index would not contend.
+// TestEnsureSystemAccountWrongShapeSquatterConflicts: a user or agent on the
+// reserved handle must conflict, not become the system sender. It plants the
+// global account_handles row because resolution reads it.
 //
 //nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {

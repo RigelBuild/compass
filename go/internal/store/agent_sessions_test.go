@@ -2,13 +2,8 @@
 
 package store
 
-// Read-path authorization: RequireAgentSessionSubscriber resolves
-// the ownership chain (session_id -> agent_account_id -> home_channel_id) and
-// authorizes a caller iff it is a member of that home channel. The load-bearing
-// contract is the not-found/forbidden MERGE: an unknown session and a
-// known-but-foreign session are refused with the SAME ErrNotFound, so a caller
-// holding a foreign session_id cannot probe whether it exists. Pgtest-backed —
-// the authz lives in the JOIN, provable only against a real database.
+// Session access returns ErrNotFound for both unknown and foreign sessions, so
+// callers cannot probe session ids; the authorization join is tested in Postgres.
 
 import (
 	"context"

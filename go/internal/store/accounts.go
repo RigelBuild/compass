@@ -13,16 +13,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// accountFromRow reconstructs a domain Account from the shared ten-column account
-// projection (id, handle, display_name, the user role, the five agent columns,
-// and the system account id) that every account read selects. It replaces the
-// former hand-written scanAccount helper: sqlc emits the same columns as typed
-// nullables, so the subtype discriminator is identical — a non-null user role is
-// a user account, else a non-null owner id is an agent account, else a non-null
-// system id is the system account. The system column is scanned last, matching
-// the projection order every account query shares. Callers whose generated row
-// carries the agent columns as non-nullable strings (the tree reads, INNER-joined
-// to agent_accounts) wrap them into a valid pgtype.Text before calling.
+// accountFromRow reconstructs an Account from the shared projection, using the first
+// valid user-role, owner, or system id as its subtype discriminator. Tree reads
+// wrap their non-null agent columns as valid pgtype.Text values before calling.
 func accountFromRow(
 	id, handle, displayName string,
 	userRole pgtype.Int2,
@@ -53,13 +46,8 @@ func accountFromRow(
 	return acc
 }
 
-// insertAccountHandle records accountID's row in the account_handles resolution
-// index (RIG-2751 handle cutover). ownerUserID is empty for a user/system handle
-// (stored NULL, globally unique) and the owning user's id for an agent handle
-// (unique only within that owner). A duplicate handle in the applicable
-// namespace is ErrConflict, mirroring the former accounts.handle unique. Runs on
-// the caller's tx-scoped queries so the handle row commits atomically with the
-// account insert.
+// insertAccountHandle records the owner-scoped or globally unique handle in the
+// caller's transaction so the index row commits atomically with the account.
 func insertAccountHandle(ctx context.Context, q *db.Queries, accountID, handle string, ownerUserID AccountID) error {
 	if err := q.InsertAccountHandle(ctx, db.InsertAccountHandleParams{
 		AccountID: accountID,
@@ -241,15 +229,9 @@ func (s *Store) EnsureLinearBridgeAccount(ctx context.Context) (Account, error) 
 	return s.ensureSystemSubtypeAccount(ctx, LinearBridgeAccountHandle, linearBridgeDisplayName)
 }
 
-// ensureSystemSubtypeAccount is the shared find-or-create for a reserved
-// system-subtype account (handle + display name). Mirrors BootstrapAdmin's
-// unique-violation-means-fetch shape: on first boot it mints one accounts row
-// with a system_accounts subtype row — NOT a user or agent row; on every later
-// boot the insert hits the unique handle and the existing row is fetched and
-// returned. Its own insert is deliberately NOT routed through validateHandle:
-// this is the one path that mints a reserved handle. A pre-existing row of the
-// wrong shape (a user or agent row from a pre-guard database) is ErrConflict and
-// fails startup — never silent adoption, mirroring adminByHandle's posture.
+// ensureSystemSubtypeAccount creates or fetches a reserved system account. It
+// bypasses handle validation only for this minting path and refuses a wrong-shaped
+// existing row rather than adopting it.
 func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayName string) (Account, error) {
 	id := newID()
 	tx, err := s.beginTenantTx(ctx)
@@ -295,11 +277,8 @@ func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayN
 	}, nil
 }
 
-// systemByHandle fetches an existing account by handle and asserts it is the
-// system subtype, backing EnsureSystemAccount's idempotent restart path. A
-// handle that exists as a non-system account (a user or agent row from a
-// pre-guard database) is a misconfiguration: ErrConflict, never a silent
-// adoption of a foreign row as the privileged system sender.
+// systemByHandle fetches an existing account and rejects a non-system subtype,
+// preventing a squatted reserved handle from becoming the privileged sender.
 func (s *Store) systemByHandle(ctx context.Context, handle string) (Account, error) {
 	row, err := s.q.GetAccountByGlobalHandle(ctx, handle)
 	if err != nil {
@@ -881,12 +860,8 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 	return acc, nil
 }
 
-// validateNewParent runs clauses 1–3 of the re-parent validation against a
-// proposed non-empty parent, inside the caller's transaction (which already
-// holds the per-owner-tree lock). An empty newParentAgentID is a promote-to-root
-// with no parent to check, so it returns nil immediately. agentOwner is the
-// moved agent's already-resolved owner. It reads through the caller's tx-scoped
-// queries so every probe sees the serialized tree.
+// validateNewParent checks a proposed parent under the caller's per-owner tree
+// lock, using its tx-scoped queries so every probe sees the serialized tree.
 func validateNewParent(ctx context.Context, q *db.Queries, agentAccountID, newParentAgentID, agentOwner AccountID) error {
 	if newParentAgentID == "" {
 		return nil

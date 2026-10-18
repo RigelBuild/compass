@@ -84,12 +84,8 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	inserted, err := insertMessageTx(ctx, tx, m, topicID, clientRequestID)
 	switch {
 	case errors.Is(err, errMessageInsertConflict):
-		// ON CONFLICT DO NOTHING suppressed the insert: a row with this
-		// idempotency key exists (a retry). Return the committed row with
-		// inserted=false so the handler suppresses a duplicate MessagePosted.
-		// AnswerAsk carries no key, so it never hits this.
-		// Roll back first: the re-read goes through the pool, which a
-		// one-connection pool could not otherwise serve.
+		// On an idempotency conflict, roll back before the pool re-read; otherwise a
+		// one-connection pool could not serve the read.
 		if err := tx.Rollback(ctx); err != nil {
 			return Message{}, false, fmt.Errorf("store: roll back deduped append: %w", err)
 		}
@@ -111,26 +107,12 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	return inserted, true, nil
 }
 
-// errMessageInsertConflict signals that insertMessageTx's INSERT was suppressed
-// by the ON CONFLICT (author_account_id, client_request_id) idempotency index —
-// a retry with a re-used non-empty client_request_id. It is an internal signal,
-// never returned to a caller: AppendMessage catches it and re-reads the
-// already-committed row (inserted=false). AnswerAsk cannot hit it — its answer
-// insert passes clientRequestID="", so the partial index (WHERE
-// client_request_id <> ”) is unreachable — and treats any insert error as a
-// fatal invariant violation that rolls the whole answer back.
+// errMessageInsertConflict signals a duplicate idempotency key to AppendMessage.
+// AnswerAsk uses an empty key, so this partial unique-index arm is unreachable.
 var errMessageInsertConflict = errors.New("store: message insert conflict")
 
-// insertMessageTx is the tx-scoped insert core shared by AppendMessage and
-// AnswerAsk: it inserts the message row under topicID and maintains the topic's
-// denormalized last_seq (GREATEST) — nothing else. It does NOT port
-// AppendMessage's ON CONFLICT handling (pool re-read + rollback-and-return):
-// that arm cannot run inside AnswerAsk's tx without either losing the Answered
-// flip on rollback or racing the still-uncommitted row on a pool read. So the
-// helper only signals a conflict (errMessageInsertConflict) and leaves the
-// caller to decide: AppendMessage re-reads the committed row; AnswerAsk treats
-// it as an impossible-invariant error. It assigns the row id and timestamp and
-// returns the populated Message; it does NOT commit — the caller owns the tx.
+// insertMessageTx inserts the row and updates topic last_seq but leaves conflict
+// handling and commit to its caller. AnswerAsk cannot pool-re-read before commit.
 func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, clientRequestID string) (Message, error) {
 	blocksJSON, err := marshalBlocks(m.Blocks)
 	if err != nil {
@@ -170,21 +152,9 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 	return m, nil
 }
 
-// resolveTopicForAppend resolves the target topic for an append inside the
-// insert tx, returning the resolved topics.id. An id-ref is validated to live
-// under channelID: a topic in another channel — or an unknown id — is one
-// indistinguishable ErrInvalidArgument, so the existence of a foreign topic
-// never leaks (the same oracle-closing collapse the old same-channel-parent
-// check applied).
-//
-// A name-ref resolves on (channel_id, lower(name)), gated by TopicRef.Create
-// (peer-DM record R5). When Create is set the name is get-or-created via ON
-// CONFLICT DO NOTHING + re-SELECT, so two racing posts converge on one topic row
-// with neither surfacing a unique-violation. When Create is UNSET a name that
-// resolves to no existing topic is ErrNotFound (in-band) rather than a silent
-// mint — the tool-edge guard against topic sprawl. Either way, resolving to an
-// archived topic clears its archived flag in the same tx (archive is a tidiness
-// flag, not a lock — a post at a tidied-away name revives the conversation).
+// resolveTopicForAppend rejects foreign or unknown ids alike. Names are only
+// created when requested; concurrent creates converge on one row, and resolving
+// an archived topic revives it in the same transaction.
 func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, topic TopicRef, author AccountID, atMS int64) (string, error) {
 	q := db.New(tx)
 	if topic.ID != "" {
@@ -264,17 +234,9 @@ func (s *Store) MessagesHeadSeq(ctx context.Context) (uint64, error) {
 	return uint64(head), nil //nolint:gosec // G115: head is COALESCE(MAX(seq), 0), always >= 0
 }
 
-// updateMessageBlocksExec is the shared block-write core, run against
-// AnswerAsk's locked read-modify-write transaction. It
-// re-serializes the full block set and refreshes the extracted text content so
-// search stays consistent with the current blocks. An empty block set or an
-// unknown message is rejected. ask_id is assigned once at append and immutable
-// thereafter, so an ask block here must carry its existing id; an empty AskID is
-// rejected rather than re-minted (a fresh id would orphan any pending
-// RespondToAsk against the original).
-//
-// It performs NO membership or authorship check, so it is deliberately
-// unexported: every exported write path must authorize before reaching it.
+// updateMessageBlocksExec refreshes serialized blocks and searchable text while
+// preserving ask ids. It does no authorization, so exported callers must check
+// membership or authorship first.
 func updateMessageBlocksExec(ctx context.Context, dbtx db.DBTX, id MessageID, blocks []MessageBlock) error {
 	if len(blocks) == 0 {
 		return fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
@@ -631,14 +593,8 @@ func findAsk(blocks []MessageBlock, askID string) *Ask {
 	return nil
 }
 
-// applyAskAnswer finds the ask block carrying askID in msg and records an atomic
-// answer: the answers must cover EXACTLY the ask's question_id set (every
-// question once, no unknown or repeated question_id), and each answer's chosen
-// options must be offered by its question and respect its AllowMultiple arity.
-// An explicitly empty answer entry (no chosen ids AND empty custom_text) is an
-// accepted skip that still satisfies coverage. All rejections are
-// ErrInvalidArgument. ask_id is immutable (preserved by the update write path),
-// so recording an answer never re-mints it.
+// applyAskAnswer requires exact question coverage and valid offered options.
+// Empty answers are allowed skips; the immutable ask id is preserved.
 func applyAskAnswer(msg *Message, askID string, answers []AskAnswer) error {
 	if msg == nil {
 		return errors.New("store: apply ask answer: nil message")
@@ -697,13 +653,8 @@ func applyAskAnswer(msg *Message, askID string, answers []AskAnswer) error {
 	return fmt.Errorf("%w: ask %q", ErrNotFound, askID)
 }
 
-// validateQuestionAnswer checks one answer against its question's offered option
-// set and AllowMultiple arity. An empty entry (no chosen ids, empty custom_text)
-// is an accepted skip and validates trivially. On a single-select question the
-// free-text answer is exclusive with an option pick (comms.proto: custom_text is
-// provided "instead of (or, for allow_multiple, alongside) picking options"), so
-// an option and custom_text together are two answers to a single-select question
-// and rejected.
+// validateQuestionAnswer accepts empty skips, enforces option arity, and rejects
+// combining free text with an option for single-select questions.
 func validateQuestionAnswer(q *AskQuestion, a AskAnswer, askID string) error {
 	if len(a.ChosenOptionIDs) > 1 && !q.AllowMultiple {
 		return fmt.Errorf("%w: question %q in ask %q is single-select but %d options were chosen", ErrInvalidArgument, a.QuestionID, askID, len(a.ChosenOptionIDs))
@@ -775,11 +726,8 @@ func messageFromParts(id, topicID, author, authorHandle string, atMS int64, bloc
 	}, nil
 }
 
-// messagesFromListRows / messagesFromSearchRows map the generated per-query rows
-// (structurally identical, but distinct Go types) through messageFromParts. A
-// decode failure on any row is propagated (fail-loud), matching the former
-// scanMessages: a malformed block set is a store invariant violation, never a
-// silently-dropped row.
+// messagesFromListRows and messagesFromSearchRows fail loudly on malformed blocks
+// instead of silently dropping rows.
 func messagesFromListRows(rows []db.ListMessagesRow) ([]Message, error) {
 	if len(rows) == 0 {
 		return nil, nil

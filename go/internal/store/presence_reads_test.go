@@ -2,13 +2,8 @@
 
 package store
 
-// The presence component's read side (RIG-1569 T8, design record D4):
-// AgentHasOpenAsk (the WAITING overlay input) and SharesVisibleChannel (the
-// AgentPresenceChanged fan-out scoping). Both are properties only a real
-// Postgres proves — the JSONB path-existence probe that must catch an
-// omitted-answered-field ask, and the channel_members self-join — so the file is
-// pgtest-tagged, mirroring delivery_reads_test.go. context.Background() is the
-// test root (rule://go-thread-context exemption for _test.go).
+// Presence read tests cover open-ask detection and shared-visible-channel
+// scoping, properties verified against Postgres JSONB and joins.
 
 import (
 	"context"

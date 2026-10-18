@@ -507,11 +507,8 @@ func (s *Store) ChannelGroupByRefForViewer(ctx context.Context, viewer AccountID
 	return resolveGroupRef(groups, handles, ref)
 }
 
-// resolveGroupRef picks one group from the viewer's visible set. Unknown and
-// invisible both give ErrNotFound; a bare leaf matches at any depth, a path walks
-// from the root and may pass through same-named groups if it ends on exactly one.
-// A leading '/' anchors at the top level, and `/~handle/` keeps only top-level
-// groups in that user's namespace. handles maps namespace owner ids to handles.
+// resolveGroupRef matches visible groups by leaf or path; a leading slash anchors
+// at the top level and /~handle/ scopes top-level matches to that namespace.
 func resolveGroupRef(groups []ChannelGroup, handles map[AccountID]string, ref string) (ChannelGroup, error) {
 	if ref == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
@@ -844,32 +841,10 @@ func updateTreeSubscriptions(ctx context.Context, tx pgx.Tx, channelID ChannelID
 	return nil
 }
 
-// maybeConvertDM applies the R4 DM-to-CHANNEL conversion when a genuine member
-// ADD targets a kind=DM channel, and returns the channel's kind afterward. A
-// genuine add on a DM MUST supply opts.ConvertChannelName (else
-// ErrInvalidArgument); with it, one tx converts the two-party DM into a normal
-// opt-in channel before the caller's add path runs:
-//
-//   - kind=CHANNEL, name=ConvertChannelName, group_id=NULL — leaving the reserved
-//     DM group frees the deterministic dm--a--b name so a future open_dm mints a
-//     FRESH pair DM.
-//   - mandatory_subscription=FALSE — the result is a genuine normal channel
-//     (opt-in), not a force-subscribe surface (Matt's ruling: a converted DM is a
-//     normal channel; a normal channel is opt-in). Without this the converted
-//     channel would keep the DM's born-mandatory flag and NO member could ever
-//     unsubscribe (the unsubscribe guard rejects it on mandatory channels).
-//   - the two original DM parties are flipped subscribed=TRUE. A DM member carries
-//     subscribed=FALSE (it was a delivery target only via the mandatory flag we
-//     just cleared), so without this they would SILENTLY stop receiving the very
-//     conversation they were mid-way through — and nothing notifies an agent it
-//     lost delivery (there is no add/drop notification; delivery is the only
-//     signal). Flipping the incumbents subscribed keeps them in the conversation;
-//     the newly-added third member joins opt-in (subscribed per its own update),
-//     the normal-channel default.
-//
-// When the channel is not a DM, or the batch has no genuine add (a pure
-// subscribe-flip/remove adds no party), the kind is returned unchanged and no
-// name is required.
+// maybeConvertDM converts a DM to an opt-in channel only for a genuine member
+// add. The original parties become subscribed, preserving delivery after the
+// mandatory flag is cleared; the new member follows normal channel defaults.
+// Other updates and non-DM channels do not require a conversion name.
 func maybeConvertDM(ctx context.Context, tx pgx.Tx, channelID ChannelID, kind ChannelKind, updates []MemberUpdate, opts MemberUpdatesOptions) (ChannelKind, bool, error) {
 	if kind != ChannelKindDM {
 		return kind, false, nil
@@ -905,12 +880,8 @@ func maybeConvertDM(ctx context.Context, tx pgx.Tx, channelID ChannelID, kind Ch
 	return ChannelKindChannel, true, nil
 }
 
-// hasGenuineAdd reports whether updates contain at least one genuine member ADD
-// against channelID: an update that is not a remove and not an unsubscribe,
-// naming an account not already a member. A subscribe-flip of an existing member
-// (or a re-add of a current member) is NOT a genuine add — it adds no party — so
-// it does not trigger the R4 DM conversion. The membership probe reads this tx's
-// snapshot, so a member added earlier in the same batch counts as present.
+// hasGenuineAdd detects a new, non-removed, non-unsubscribed member. Existing
+// members do not trigger conversion; the transaction snapshot includes prior adds.
 func hasGenuineAdd(ctx context.Context, tx pgx.Tx, channelID ChannelID, updates []MemberUpdate) (bool, error) {
 	for _, u := range updates {
 		if u.Remove || u.Unsubscribe || u.AccountID == "" {
@@ -930,13 +901,8 @@ func hasGenuineAdd(ctx context.Context, tx pgx.Tx, channelID ChannelID, updates 
 	return false, nil
 }
 
-// requireDMTwoParties enforces the R4 two-party floor after a remove: on a
-// kind=DM channel it counts the AGENT members remaining in this tx's snapshot and
-// rejects the remove (ErrInvalidArgument, rolling it back) if fewer than two
-// remain — a one-party DM is not a thing; teardown, not member surgery, ends a
-// DM. Human owner members are excluded from the count: the DM's parties are its
-// two agents; their pulled-in owners are membership bookkeeping, not parties. A
-// non-DM channel has no such floor and returns nil immediately.
+// requireDMTwoParties rejects a DM removal that leaves fewer than two agent
+// parties. Pulled-in human owners are bookkeeping, not parties.
 func requireDMTwoParties(ctx context.Context, tx pgx.Tx, channelID ChannelID, kind ChannelKind) error {
 	if kind != ChannelKindDM {
 		return nil
@@ -951,12 +917,8 @@ func requireDMTwoParties(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 	return nil
 }
 
-// removeMember deletes one member row, preserving transitive owner-membership
-// (design.md:231-234) symmetrically with creation: a user must stay while any
-// agent it owns remains in the channel, so removing such an owner is rejected as
-// ErrInvalidArgument rather than orphaning the agent's owner from what it can
-// read. Reports whether a row was actually deleted — removing an account that
-// was not a member is a no-op that owes no ChannelChanged to anyone.
+// removeMember preserves owner membership while any owned agent remains, and
+// reports whether it deleted a row so no-op removals need no change event.
 func removeMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, accountID AccountID) (bool, error) {
 	qtx := db.New(tx)
 	ownsPresentAgent, err := qtx.OwnerHasPresentAgent(ctx, db.OwnerHasPresentAgentParams{
@@ -979,19 +941,9 @@ func removeMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, accountID
 	return rowsAffected > 0, nil
 }
 
-// addOrUpdateMember adds (or subscribe-flips) the directly-named member, then
-// pulls in the owning user(s) of an added agent so a join preserves transitive
-// owner-membership. The directly-added member (index 0 of the expansion) carries
-// the requested subscribed flag and may flip an existing row; pulled-in owner
-// rows are additive-only (DO NOTHING) so adding an agent never clobbers an
-// owner's existing subscription.
-//
-// mandatory carries the channel's mandatory_subscription flag: on a mandatory
-// channel EVERY member is a delivery target regardless of its subscribed flag
-// (the D1 read-side disjunct), so a plain (unsubscribed) add there must STILL
-// seed the member's delivery cursor — else the add mints an un-seeded delivery
-// target that the absent-cursor fail-safe treats as permanently caught-up,
-// silently never delivering (the fail-DANGEROUS D2 hazard).
+// addOrUpdateMember updates the named member and adds its owning users without
+// changing their existing subscriptions. Mandatory-channel adds also seed the
+// delivery cursor, because every member is a target even when unsubscribed.
 func addOrUpdateMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, u MemberUpdate, mandatory bool) error {
 	toAdd, err := expandOwnerMembership(ctx, tx, u.AccountID, nil)
 	if err != nil {

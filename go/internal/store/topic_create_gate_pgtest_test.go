@@ -2,13 +2,8 @@
 
 package store
 
-// The create_topic gate (peer-DM record R5, amending the zulip-threading model's
-// unconditional get-or-create): a post to an unknown topic NAME fails with
-// ErrNotFound unless TopicRef.Create is set; with the flag it mints. An id-ref is
-// unaffected (Create is ignored). Archived-topic revival is unchanged when the
-// flag is set — archive is a tidiness flag, not a lock. These pin the store half
-// of the tool-edge sprawl guard; the tool edge threads create_topic into
-// TopicRef.Create.
+// Topic-create tests ensure unknown names require explicit creation, while id
+// refs and archived-topic revival keep their existing behavior.
 
 import (
 	"context"

@@ -2,12 +2,8 @@
 
 package store
 
-// Forge store contracts (RIG-2883): the migration table shape (PKs, provider
-// CHECK domain 1..4, kind CHECKs), the board's repo-subscription CRUD
-// (ensure-insert idempotent, list-enabled ascending, soft-disable,
-// unknown->ErrNotFound), and the T4 watermark round-trip + enabled-repo
-// enumeration. context.Background is the test root (the pgtest-suite convention,
-// sibling issues_pgtest_test.go).
+// Forge tests cover subscription CRUD, schema constraints, watermark storage,
+// and enabled-repository enumeration against Postgres.
 
 import (
 	"context"
@@ -128,11 +124,8 @@ func TestForgeRepoSubscriptionCRUD(t *testing.T) {
 		t.Fatal("ensure-insert re-enabled a soft-disabled row, want it left DISABLED (DO NOTHING)")
 	}
 
-	// ListEnabled returns only enabled rows for the asked (provider, host),
-	// ascending repo, nil for none. Seed two enabled github.com repos INSERTED
-	// out of lexical order (a/c before a/a) plus a foreign host, so the returned
-	// slice being ascending proves the ORDER BY repo ASC clause (a dropped or
-	// DESC order goes RED here, not silently green on a single row).
+	// Seed in reverse lexical order plus a foreign host to prove results are
+	// filtered and ordered by repo, not insertion order.
 	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/c", Enabled: true}); err != nil {
 		t.Fatalf("ensure a/c: %v", err)
 	}

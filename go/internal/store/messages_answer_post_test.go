@@ -2,13 +2,8 @@
 
 package store
 
-// T3 (RIG-2257): AnswerAsk posts the answer as a NEW message in the ask's
-// channel+topic, authored by the answerer, in the SAME transaction as the
-// Answered flip. These pin the answer-as-message contract on the real store: a
-// single answer message carrying the answered snapshot; the answer-once guard
-// still caps answers at one (no second message on a re-answer); and the
-// atomicity — a failed answer leaves neither the flip nor a message. The
-// answer-once corpus itself lives in messages_test.go and stays green.
+// AnswerAsk tests cover answer-message creation, one-answer enforcement, and
+// atomic rollback when an answer fails.
 
 import (
 	"context"

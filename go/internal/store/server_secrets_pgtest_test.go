@@ -55,11 +55,8 @@ func TestT0ServerSecretsShape(t *testing.T) {
 		}
 	}
 
-	// Each table is asserted with its OWN expected privilege set, and
-	// server_key_state's withheld DELETE is asserted ABSENT — that omission is a
-	// deliberate least-privilege choice (the tripwire digest must not be
-	// droppable), so it is pinned, not left to chance. The usage prune horizon and
-	// the compute log withhold writes; only the system role may prune the log.
+	// Assert each table's privilege set, including withheld DELETE on the key
+	// state table and write restrictions on usage and compute tables.
 	for _, tc := range []struct {
 		tbl     string
 		roles   []string

@@ -1,11 +1,7 @@
 package store
 
-// The hermetic default-gate half of the DL-174 pair for the DL-055 ownership
-// index (design RigelBuild/docs:docs/designs/compass/server/compass-forge-write-path/design.md §T7):
-// the pure-Go contract that needs no Postgres — the pre-DB argument guards, the
-// empty-clientRequestID always-miss short-circuit, and the NULL client_request_id
-// mapping. The real-Postgres row contracts live in the pgtest sibling
-// (forge_authored_pgtest_test.go). context.Background is the test root.
+// The pure-Go half of forge authorship tests covers guards, empty request-id
+// misses, and NULL mapping; persisted row contracts use pgtest.
 
 import (
 	"context"

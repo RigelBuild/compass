@@ -67,19 +67,8 @@ func normalizeScope(scope ForgeSubscriptionScope) ForgeSubscriptionScope {
 	return scope
 }
 
-// validSubscriptionCoordinate rejects the zero/empty coordinate fields
-// EnsureAgentForgeSubscription guards on before any DB round trip: the
-// provider/host/repo triple (via validCoordinate) and a zero kind (never
-// UNSPECIFIED(0), the CHECK's job in Go space) fail on EVERY scope arm. The
-// scope discriminator then decides the number/project shape (RIG-2732 T3):
-//   - ARTIFACT: number REQUIRED (> 0) AND project MUST be empty (the W2
-//     silent-misfire class — a zero number under ARTIFACT stays a caller bug).
-//   - CONTAINER: number MUST be 0 (the whole container, no artifact number);
-//     project REQUIRED on LINEAR (which container/project) and FORBIDDEN on any
-//     non-Linear forge (GitHub's container is the whole repo, no project id).
-//
-// A caller bug is ErrInvalidArgument. scope is taken pre-normalized so an
-// explicit CONTAINER is distinguishable from the ARTIFACT default.
+// validSubscriptionCoordinate validates the provider, host, repo, and kind, then
+// checks scope-specific number and project rules before any database call.
 func validSubscriptionCoordinate(provider ForgeProvider, host, repo string, kind ForgeArtifactKind, number uint64, scope ForgeSubscriptionScope, project string) error {
 	if err := validCoordinate(provider, host, repo); err != nil {
 		return err

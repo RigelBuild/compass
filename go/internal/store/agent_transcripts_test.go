@@ -2,15 +2,8 @@
 
 package store
 
-// The durable two-tier transcript store (RIG-1667 T4), proven against real
-// Postgres with the object-store seam FAKED (no live S3). Covers the record's
-// T4 test cycle: FK rejection; idempotent duplicate key; ordering; the
-// session-scoped rebase across lifetimes; the post-supersession read view;
-// not-found; the PRIMARY (checkpoint-arrival) flush; PUT-before-prune;
-// manifest-INSERT+prune atomicity and the ON CONFLICT re-run; PG-only
-// reconstruction; the size-cap safety valve; a later checkpoint re-marking a
-// stale safety_valve segment; and the session_end flush that records without
-// pruning.
+// Transcript tests cover the durable two-tier store, including flush ordering,
+// idempotency, reconstruction, safety-valve trimming, and session-end flushes.
 
 import (
 	"bytes"

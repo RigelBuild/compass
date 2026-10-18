@@ -1,15 +1,8 @@
 //go:build pgtest
 
-// The store package's thin adapter over the shared real-Postgres harness
-// (internal/pgtest). pgtest owns the container orchestration + schema reset and
-// hands back a DSN, skipping (not failing) when no runtime is usable; the
-// wrappers here open a store.Store against that DSN. A store of record is only
-// proven against the database it targets, so there is no mock (design.md:1188).
-//
-// Build-tagged `pgtest` so it is not part of the default `go test` gate; the
-// moon test lane opts in where a runtime is available (T1 test cycle). Set
-// COMPASS_TEST_DATABASE_DSN to point every test at an already-running Postgres
-// instead of starting a container (the CI-service path, design.md:1188).
+// These adapters open Store against the shared real-Postgres harness; tests skip
+// when no runtime is available. The pgtest build tag keeps them out of default
+// tests, while COMPASS_TEST_DATABASE_DSN can point to an existing database.
 
 package store
 
