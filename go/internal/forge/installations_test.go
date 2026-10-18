@@ -36,7 +36,7 @@ func TestInstallationResolverMapsOwnersAndPaginates(t *testing.T) {
 			}
 			return
 		}
-		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"second-owner"}}]`); err != nil {
 			t.Errorf("write page 2: %v", err)
 		}
 	}))
@@ -50,7 +50,7 @@ func TestInstallationResolverMapsOwnersAndPaginates(t *testing.T) {
 		Clock:      func() time.Time { return now },
 	})
 
-	id, err := resolver.InstallationFor(context.Background(), "mAtTwIlKiNsOnN")
+	id, err := resolver.InstallationFor(context.Background(), "SeCoNd-OwNeR")
 	if err != nil || id != 168669446 {
 		t.Fatalf("InstallationFor(mixed case) = (%d, %v), want (168669446, nil)", id, err)
 	}
@@ -103,7 +103,7 @@ func TestInstallationResolverCachedMissRefreshesAfterFloor(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if installed.Load() {
-			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"second-owner"}}]`); err != nil {
 				t.Errorf("write installation response: %v", err)
 			}
 			return
@@ -122,7 +122,7 @@ func TestInstallationResolverCachedMissRefreshesAfterFloor(t *testing.T) {
 		Clock:      clock.Now,
 	})
 	for range 2 {
-		if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+		if _, err := resolver.InstallationFor(context.Background(), "second-owner"); !errors.Is(err, ErrNoInstallation) {
 			t.Fatalf("initial miss = %v, want ErrNoInstallation", err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestInstallationResolverCachedMissRefreshesAfterFloor(t *testing.T) {
 	}
 	installed.Store(true)
 	clock.Add(installationMissRefreshFloor)
-	if id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); err != nil || id != 168669446 {
+	if id, err := resolver.InstallationFor(context.Background(), "second-owner"); err != nil || id != 168669446 {
 		t.Fatalf("InstallationFor after floor = (%d, %v), want installation 168669446", id, err)
 	}
 	if got := requests.Load(); got != 2 {
@@ -164,7 +164,7 @@ func TestInstallationResolverWaiterContextCancellation(t *testing.T) {
 		requests.Add(1)
 		close(started)
 		<-release
-		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"second-owner"}}]`); err != nil {
 			t.Errorf("write installation response: %v", err)
 		}
 	}))
@@ -179,14 +179,14 @@ func TestInstallationResolverWaiterContextCancellation(t *testing.T) {
 
 	leaderDone := make(chan error, 1)
 	go func() {
-		_, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn")
+		_, err := resolver.InstallationFor(context.Background(), "second-owner")
 		leaderDone <- err
 	}()
 	<-started
 	waiterCtx, cancel := context.WithCancel(context.Background())
 	waiterDone := make(chan error, 1)
 	go func() {
-		_, err := resolver.InstallationFor(waiterCtx, "mattwilkinsonn")
+		_, err := resolver.InstallationFor(waiterCtx, "second-owner")
 		waiterDone <- err
 	}()
 	cancel()
@@ -215,7 +215,7 @@ func TestInstallationResolverLeaderContextCancellationDoesNotFailWaiter(t *testi
 		calls.Add(1)
 		close(started)
 		<-release
-		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"second-owner"}}]`); err != nil {
 			t.Errorf("write installation response: %v", err)
 		}
 	}))
@@ -231,13 +231,13 @@ func TestInstallationResolverLeaderContextCancellationDoesNotFailWaiter(t *testi
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderDone := make(chan error, 1)
 	go func() {
-		_, err := resolver.InstallationFor(leaderCtx, "mattwilkinsonn")
+		_, err := resolver.InstallationFor(leaderCtx, "second-owner")
 		leaderDone <- err
 	}()
 	<-started
 	waiterDone := make(chan error, 1)
 	go func() {
-		id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn")
+		id, err := resolver.InstallationFor(context.Background(), "second-owner")
 		if err == nil && id != 168669446 {
 			err = fmt.Errorf("installation id = %d, want 168669446", id)
 		}
@@ -401,7 +401,7 @@ func TestInstallationResolverMissCacheRefreshFloorAndHitTTL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if installed.Load() {
-			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"second-owner"}}]`); err != nil {
 				t.Errorf("write installation response: %v", err)
 			}
 			return
@@ -418,11 +418,11 @@ func TestInstallationResolverMissCacheRefreshFloorAndHitTTL(t *testing.T) {
 		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
 		Clock:      clock.Now,
 	})
-	if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+	if _, err := resolver.InstallationFor(context.Background(), "second-owner"); !errors.Is(err, ErrNoInstallation) {
 		t.Fatalf("initial miss = %v, want ErrNoInstallation", err)
 	}
 	clock.Add(installationMissRefreshFloor - time.Second)
-	if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+	if _, err := resolver.InstallationFor(context.Background(), "second-owner"); !errors.Is(err, ErrNoInstallation) {
 		t.Fatalf("miss inside refresh floor = %v, want ErrNoInstallation", err)
 	}
 	if got := requests.Load(); got != 1 {
@@ -430,11 +430,11 @@ func TestInstallationResolverMissCacheRefreshFloorAndHitTTL(t *testing.T) {
 	}
 	installed.Store(true)
 	clock.Add(time.Second)
-	if id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); err != nil || id != 168669446 {
+	if id, err := resolver.InstallationFor(context.Background(), "second-owner"); err != nil || id != 168669446 {
 		t.Fatalf("InstallationFor after floor = (%d, %v), want 168669446", id, err)
 	}
 	clock.Add(installationCacheTTL - installationMissRefreshFloor)
-	if id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); err != nil || id != 168669446 {
+	if id, err := resolver.InstallationFor(context.Background(), "second-owner"); err != nil || id != 168669446 {
 		t.Fatalf("cached hit before TTL = (%d, %v), want 168669446", id, err)
 	}
 	if got := requests.Load(); got != 2 {
@@ -443,7 +443,7 @@ func TestInstallationResolverMissCacheRefreshFloorAndHitTTL(t *testing.T) {
 	// Past the hit TTL the snapshot refreshes, so an uninstall is seen.
 	installed.Store(false)
 	clock.Add(installationMissRefreshFloor)
-	if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+	if _, err := resolver.InstallationFor(context.Background(), "second-owner"); !errors.Is(err, ErrNoInstallation) {
 		t.Fatalf("lookup after hit TTL = %v, want ErrNoInstallation from a refreshed snapshot", err)
 	}
 	if got := requests.Load(); got != 3 {
@@ -461,13 +461,13 @@ func TestScopedAppMinterMintForUsesResolvedInstallation(t *testing.T) {
 			if r.URL.Path != "/app/installations" {
 				t.Errorf("installation path = %q, want /app/installations", r.URL.Path)
 			}
-			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"second-owner"}}]`); err != nil {
 				t.Errorf("write installation response: %v", err)
 			}
 		case http.MethodPost:
 			mintPath = r.URL.Path
 			w.WriteHeader(http.StatusCreated)
-			if _, err := fmt.Fprint(w, `{"token":"ghs_owner","expires_at":"2026-10-17T13:00:00Z","repositories":[{"full_name":"mattwilkinsonn/zireael"}]}`); err != nil {
+			if _, err := fmt.Fprint(w, `{"token":"ghs_owner","expires_at":"2026-10-17T13:00:00Z","repositories":[{"full_name":"second-owner/workstream"}]}`); err != nil {
 				t.Errorf("write mint response: %v", err)
 			}
 		default:
@@ -490,8 +490,8 @@ func TestScopedAppMinterMintForUsesResolvedInstallation(t *testing.T) {
 	}
 	result, err := minter.MintFor(
 		context.Background(),
-		"mattwilkinsonn",
-		[]string{"zireael"},
+		"second-owner",
+		[]string{"workstream"},
 		map[string]string{"contents": "write"},
 	)
 	if err != nil {

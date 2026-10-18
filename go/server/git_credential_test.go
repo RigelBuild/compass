@@ -259,8 +259,8 @@ func resolveBrokeredSecret(t *testing.T, resolver *brokeredSecretResolver) []sec
 func TestGitCredentialBrokerAgentRepositoryWidensMintedSet(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
-	grants.setRepos("owner-id", []string{"mattwilkinsonn/base"})
-	grants.setRepos("agent-id", []string{"mattwilkinsonn/base", "mattwilkinsonn/workstream"})
+	grants.setRepos("owner-id", []string{"second-owner/base"})
+	grants.setRepos("agent-id", []string{"second-owner/base", "second-owner/workstream"})
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_widened"}, expiresAt: now.Add(time.Hour)}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 
@@ -276,7 +276,7 @@ func TestGitCredentialBrokerAgentRepositoryWidensMintedSet(t *testing.T) {
 func TestGitCredentialBrokerMintsScopedOwnerWithMintFor(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
-	grants.setRepos("agent-id", []string{"mattwilkinsonn/zireael"})
+	grants.setRepos("agent-id", []string{"second-owner/workstream"})
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour)}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 
@@ -284,8 +284,8 @@ func TestGitCredentialBrokerMintsScopedOwnerWithMintFor(t *testing.T) {
 		t.Fatalf("credential = (%q, %v), want owner-specific token", token, ok)
 	}
 	modes, owners := minter.mintModes()
-	if !reflect.DeepEqual(modes, []string{"owner"}) || !reflect.DeepEqual(owners, []string{"mattwilkinsonn"}) {
-		t.Fatalf("mint modes/owners = %v/%v, want [owner]/[mattwilkinsonn]", modes, owners)
+	if !reflect.DeepEqual(modes, []string{"owner"}) || !reflect.DeepEqual(owners, []string{"second-owner"}) {
+		t.Fatalf("mint modes/owners = %v/%v, want [owner]/[second-owner]", modes, owners)
 	}
 }
 
@@ -293,7 +293,7 @@ func TestGitCredentialBrokerCrossOwnerAgentRowFallsBackToOwnerGrants(t *testing.
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
 	grants.setRepos("owner-id", []string{"owner/base"})
-	grants.setRepos("agent-id", []string{"mattwilkinsonn/base", "other/workstream"})
+	grants.setRepos("agent-id", []string{"second-owner/base", "other/workstream"})
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour)}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 
