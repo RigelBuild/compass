@@ -488,7 +488,12 @@ func TestScopedAppMinterMintForUsesResolvedInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScopedAppMinter: %v", err)
 	}
-	result, err := minter.MintFor(context.Background(), "mattwilkinsonn", []string{"zireael"}, map[string]string{"contents": "write"})
+	result, err := minter.MintFor(
+		context.Background(),
+		"mattwilkinsonn",
+		[]string{"zireael"},
+		map[string]string{"contents": "write"},
+	)
 	if err != nil {
 		t.Fatalf("MintFor: %v", err)
 	}

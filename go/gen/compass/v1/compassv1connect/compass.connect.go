@@ -1722,8 +1722,10 @@ var (
 
 // AgentRepositoryServiceClient is a client for the compass.v1.AgentRepositoryService service.
 type AgentRepositoryServiceClient interface {
-	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
-	// or the org differs from the agent's credential org.
+	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured,
+	// the org differs from the agent's other repositories, the App has no
+	// installation for the org, or the agent's wildcard grant meets an org other
+	// than the default installation's.
 	GrantAgentRepository(context.Context, *v1.GrantAgentRepositoryRequest) (*v1.GrantAgentRepositoryResponse, error)
 	// Remove one `org/name`. removed reports whether the row existed.
 	RevokeAgentRepository(context.Context, *v1.RevokeAgentRepositoryRequest) (*v1.RevokeAgentRepositoryResponse, error)
@@ -1741,8 +1743,10 @@ func NewAgentRepositoryServiceClient(client *connect.Client) AgentRepositoryServ
 // AgentRepositoryServiceHandler is an implementation of the compass.v1.AgentRepositoryService
 // service.
 type AgentRepositoryServiceHandler interface {
-	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
-	// or the org differs from the agent's credential org.
+	// Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured,
+	// the org differs from the agent's other repositories, the App has no
+	// installation for the org, or the agent's wildcard grant meets an org other
+	// than the default installation's.
 	GrantAgentRepository(context.Context, *v1.GrantAgentRepositoryRequest) (*v1.GrantAgentRepositoryResponse, error)
 	// Remove one `org/name`. removed reports whether the row existed.
 	RevokeAgentRepository(context.Context, *v1.RevokeAgentRepositoryRequest) (*v1.RevokeAgentRepositoryResponse, error)
