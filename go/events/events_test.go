@@ -1,13 +1,7 @@
 package events
 
-// Tests for the server event bus. The first fifteen subtests pin the bus
-// contract — monotonic seq, replay ordering, eviction, resync. The remaining
-// subtests pin the fan-out contracts: lag/overrun, clean shutdown vs lag,
-// HeadSeq, and the replay->live handoff.
-//
-// White-box (package events) so the eviction and overrun contracts can be
-// stated in terms of RingCapacity / liveBufferCapacity rather than a magic 1024
-// that would silently drift if the constant changed.
+// White-box tests express eviction and overrun in terms of the capacity
+// constants, avoiding a magic 1024 that can drift.
 
 import (
 	"context"

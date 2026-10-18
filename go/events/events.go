@@ -66,22 +66,16 @@ type Subscription[P any] struct {
 	// every response the stream emits carries the current epoch.
 	Epoch uint64
 
-	// HeadSeq is the consistency-point seq: the highest seq on the ring at
-	// subscribe time (nextSeq - 1), captured under the same lock that fills
-	// Replay, so it is the true replay boundary with no post-subscribe re-read
-	// race. A state-snapshot consumer (SubscribeComms at sinceSeq = 0) stamps
-	// its synthesized *Changed events with this seq and discards Replay; a fresh
-	// bus (nothing published) yields 0, the correct "tail from the first live
-	// event" cursor.
+	// HeadSeq is the highest seq on the ring at subscribe time, captured under
+	// the same lock as Replay to provide a race-free snapshot boundary.
+	// State-snapshot consumers use it for synthesized Changed events and discard
+	// Replay; a fresh bus yields 0.
 	HeadSeq uint64
 
 	lagged *lagFlag
 
-	// cancel removes this subscription's slot from the bus and closes its live
-	// channel, idempotently. nil on a terminal subscription handed back after
-	// Close (nothing to cancel). Call it (typically deferred) when the stream
-	// handler returns, so a client disconnect frees the fan-out slot instead of
-	// leaking it until an overrun or bus shutdown.
+	// cancel removes the subscription's slot and closes Live, idempotently. nil
+	// for terminal subscriptions after Close; defer it to free slots on disconnect.
 	cancel func()
 }
 
@@ -198,18 +192,10 @@ func (b *Bus[P]) publish(traceparent string, payload P) uint64 {
 		b.ring = append(b.ring, event)
 	}
 
-	// Fan out to live subscribers. A non-blocking send bounds each subscriber's
-	// buffer: if it is full the subscriber has fallen more than the ring window
-	// behind, so latch it lagged and close its channel (the reader sees the
-	// closed channel + the lag flag and emits a terminal resync). Retain only the
-	// still-live subscribers.
-	//
-	// Fast path: no subscriber lags, so b.subscribers is left untouched and
-	// nothing is allocated — the steady state on every publish. Only when a
-	// subscriber is actually dropped do we rebuild the slice into a fresh,
-	// compacted copy (no nil tail, so the old in-place [:0] compaction's
-	// tail-nil-out — which nilaway reads as storing nil into the field — is gone;
-	// the discarded backing array takes the dropped pointers with it, no leak).
+	// Non-blocking sends bound each live buffer; a full buffer marks that
+	// subscriber lagged and closes it, while the ring preserves replay.
+	// The no-drop fast path leaves the slice untouched; on first drop, rebuild it
+	// so the discarded backing array does not retain dead subscribers.
 	var live []*subscriber[P] // nil until the first drop forces a rebuild
 	for i, sub := range b.subscribers {
 		drop := sub.lagged.get()
@@ -256,13 +242,8 @@ func (b *Bus[P]) Subscribe(sinceSeq, reqEpoch uint64) (Subscription[P], error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// After Close, hand back a terminal stream: an already-closed live channel
-	// (no lag latch) and an empty replay, so a late subscriber observes the
-	// same silent end an open subscriber would on shutdown, and no subscriber
-	// is registered that would otherwise never be closed. This closed check
-	// precedes cursor validation: Close promises every later Subscribe a
-	// terminal stream unconditionally, so a stale cursor handed to a shut-down
-	// bus still gets one clean end, never ErrBufferUnderflow.
+	// After Close, return an unregistered terminal stream. Check closed before
+	// validating the cursor so even stale cursors end silently, as promised.
 	if b.closed {
 		dead := make(chan Stamped[P])
 		close(dead)
@@ -274,12 +255,9 @@ func (b *Bus[P]) Subscribe(sinceSeq, reqEpoch uint64) (Subscription[P], error) {
 		}, nil
 	}
 
-	// A positioned cursor is only meaningful against the instance that issued
-	// it. A mismatched epoch — including 0, an old client that never saw one —
-	// means the cursor came from a prior server instance whose seq space this
-	// one does not share (the bus resets to seq 1 each boot), so force a resync.
-	// sinceSeq = 0 always re-snapshots, so the epoch is only consulted for a
-	// positioned cursor.
+	// A positioned cursor must match this instance's epoch; otherwise its seq
+	// space belongs to a prior boot (or the client never received an epoch).
+	// Snapshots at sinceSeq=0 ignore the epoch.
 	if sinceSeq > 0 && reqEpoch != b.instanceEpoch {
 		return Subscription[P]{}, ErrBufferUnderflow
 	}
@@ -365,14 +343,9 @@ func epochMS() int64 {
 	return time.Now().UnixMilli()
 }
 
-// epochNonce mints a per-boot instance epoch: a random uint64 from the OS,
-// minted once at server start. A reconnecting client echoes it back so the
-// server can tell a live cursor from a prior instance's; the guard only needs
-// the value to differ across restarts, which a random nonce gives with
-// negligible (~2⁻⁶⁴) collision odds — unlike a boot timestamp, which can repeat
-// under a coarse clock, a clock reset, or VM snapshot/restore. Retried to never
-// yield 0, since 0 is the "unset" sentinel on the wire (an old client that never
-// received one).
+// epochNonce mints a random per-boot epoch; unlike a timestamp it cannot repeat
+// after a clock reset or VM snapshot restore. It retries on 0, the wire's
+// "unset" sentinel.
 func epochNonce() uint64 {
 	var buf [8]byte
 	for {
