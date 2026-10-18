@@ -1,10 +1,4 @@
-// Tests for the pure half of the toolchain parity gate.
-//
-// The property under test throughout is the one the gate exists for: it must be
-// CAPABLE OF FAILING, and it must never turn "I could not check this" into a
-// pass. So every parser is tested against the shapes the real files have, every
-// comparator against a genuine skew, and renderReport specifically against the
-// case where the only problem is an unverifiable tool.
+// Pin the pure parity checks against genuine skew and unverifiable tools.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -15,13 +9,7 @@ import {
 } from "./parity-core.ts";
 
 describe("the Postgres image pin", () => {
-	// Two files name the image the real-Postgres suites run against: the CI
-	// service (.github/workflows/ci.yml) and the local harness (pgshare.go — the
-	// shared db-acquisition core pgtest delegates to). Their
-	// comments each assert the two are the same image, and nothing enforced it —
-	// so a digest bump to one would leave CI and a local run silently exercising
-	// different databases, which is precisely the divergence the pin exists to
-	// prevent. An invariant asserted only in prose is not an invariant.
+	// CI and the local real-Postgres harness must use the same image digest.
 	const digestOf = (source: string, label: string): string => {
 		const matches =
 			source.match(/postgres:[0-9]+-alpine@(sha256:[0-9a-f]{64})/g) ?? [];
@@ -96,11 +84,8 @@ describe("parseDevenvPackages", () => {
 		expect(parseDevenvPackages(devenv)).not.toContain("enterShell");
 	});
 
-	// The appended `++ [ … ]` list is covered by the store-path `langs` and
-	// `goAnalysis` verdicts alone; it must NEVER reach this parser. Its dotted references would
-	// each throw (see the throw cases below), so a shape that let them leak in
-	// would fail loudly rather than silently — but the contract is that the
-	// parser stops at the `])` before them.
+	// The parser must stop before the appended toolchain list; its dotted attrs
+	// are handled by separate verdicts.
 	test("never parses the appended language toolchain list", () => {
 		const attrs = parseDevenvPackages(devenv);
 		expect(attrs).not.toContain("toolchainTools");
@@ -115,23 +100,13 @@ describe("parseDevenvPackages", () => {
 		expect(parseDevenvPackages("{ packages = [ ]; }")).toEqual([]);
 	});
 
-	// A skipped entry is absent from BOTH what CI installs and what the gate
-	// expects, so the tool goes uncovered in silence — the false green this gate
-	// exists to prevent. Refusing is the only safe behaviour.
-	//
-	// Every form here is a real thing a devenv.nix can legally contain. The
-	// dotted path is only the one we hit first; each of the others was silently
-	// dropped until the refusal moved to the default branch, so they are listed
-	// individually rather than folded into one representative case.
+	// Reject unsupported package expressions rather than silently omit CI tools.
 	test.each([
 		["a dotted attribute path", "nodePackages.prettier"],
-		// A dotted language reference INSIDE the parsed literal is exactly the
-		// mistake this shape guards against: the toolchains must be appended outside
-		// the `(with pkgs; [ … ])` half, never within it.
+		// Dotted language refs belong outside the parsed `(with pkgs; [ … ])` list.
 		["a dotted language reference", "toolchainTools.bun"],
 		["a parenthesised call", "(python3.withPackages (ps: [ps.requests]))"],
-		// Nix interpolation syntax in a plain string is the fixture — deliberately
-		// NOT a JS template literal, which is what makes it unparseable to the gate.
+		// Keep the Nix interpolation fixture in a plain string, not a JS template.
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: see above
 		["an interpolation", "${myTool}"],
 		["a quoted string", '"weird"'],

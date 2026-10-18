@@ -1,40 +1,6 @@
-// cx-token-gate — enforce the Compass design-token consumption rule (SEA T2).
-//
-// D2's consumption rule and D9's motion consumption rule say the same thing for
-// two property sets: component + base CSS under apps/ui/src/ consumes ONLY the
-// semantic + scale --cx-* tokens. The primitive tier (--rigel-*) and every raw
-// value (hex colours, literal time + easing) live in ONE file, tokens.css; a
-// second appearance anywhere else is a leak the gate fails on.
-//
-// Banned OUTSIDE tokens.css:
-//   * raw hex colour literals            (#rgb / #rrggbb / #rrggbbaa)
-//   * any --rigel-* primitive reference  (must go through a --cx-* alias)
-//   * literal time values                (\d+ms, \d+s — D9 motion durations)
-//   * easing literals                    (cubic-bezier(...), and the named
-//     ease / ease-in / ease-out / ease-in-out / linear timing keywords)
-//
-// One narrow carve-out (D2/D8): the mark component's CSS may name
-// --rigel-purple (and -hi / -lit) directly. Purple is never aliased into a
-// --cx-* token — the one-accent rule reserves it for the brand mark — so the
-// mark is the sole sanctioned direct primitive consumer. The allowlist is
-// path-scoped to the mark file only; any OTHER --rigel-* in the mark file, and
-// --rigel-purple anywhere else, still fails.
-//
-// Adoption posture (D2/T2): the gate is WARN until adoption step 5, then ERROR.
-// In WARN mode it prints every finding but exits 0 (does not red CI); in ERROR
-// mode it exits 1 on any finding. Mode is CX_GATE_MODE=warn|error (default
-// warn), or --error / --warn flags. THE FLIP: at adoption step 5, change the
-// default below from "warn" to "error" (or set CX_GATE_MODE=error in CI) so a
-// leak fails the build.
-//
-// Inputs (env):
-//   GATE_ROOT     - directory to scan (default: git toplevel). Tests point the
-//                   injected reads at fixtures instead.
-//   CX_GATE_MODE  - "warn" (default) or "error".
-// Exit codes:
-//   0 - no findings, OR findings in WARN mode (printed, non-blocking)
-//   1 - one or more findings in ERROR mode
-//   2 - usage / internal error (e.g. cannot read the tree)
+// Only semantic and scale --cx-* tokens may appear outside tokens.css.
+// The mark file alone may use the reserved --rigel-purple accent directly.
+// WARN reports findings without failing; ERROR makes them blocking.
 
 import { $ } from "bun";
 
@@ -119,12 +85,8 @@ export function scanCss(relPath: string, text: string): Finding[] {
 
 	for (let i = 0; i < lines.length; i++) {
 		const raw = lines[i] ?? "";
-		// Strip a trailing line comment's noise? CSS has no // comments; block
-		// comments can span lines, but banned literals inside a comment are
-		// still a leak-in-waiting, so we scan the whole line verbatim. This does
-		// flag a provenance note like `/* was #45505f */`; harmless under the
-		// WARN default, but before the step-5 ERROR flip strip `/* */` bodies
-		// here so a legitimate provenance comment does not force its own removal.
+		// Comments are scanned too, so copied banned literals cannot evade the gate;
+		// provenance comments may therefore be reported.
 		const lineNo = i + 1;
 
 		for (const m of raw.matchAll(HEX_RE)) {

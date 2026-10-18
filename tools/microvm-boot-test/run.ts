@@ -1,21 +1,6 @@
 #!/usr/bin/env bun
-// The LOCAL microVM boot-test lane (RIG-2591). The tagged microVM suite compiles
-// only under `-tags microvm`, and the existing compass-go:test lane is `go test
-// -race ./...` with NO tag, so it never builds these tests. This script is what
-// the `compass-go:test-microvm` moon task runs to drive the tagged suite on a
-// KVM-capable dev box: realise the guest image + the VMM stack from nix, export
-// the same env vars the CI KVM leg does (ci.yml:385-406), and exec `go test
-// -tags microvm`.
-//
-// TypeScript, not bash (rule://scripts-ts-over-bash + the no-bash-gate CI task):
-// this has real logic — two nix builds whose out-paths must be parsed and mapped
-// to distinct env vars, a PATH assembled from three store paths, and a fail-fast
-// on any missing output — so the parsing/mapping core is pure and unit-tested
-// (./run-core.test.ts) while this file is the thin I/O shell.
-//
-// It deliberately mirrors ci.yml's microVM step (the reviewed source of truth
-// for the exact nix invocations); it does NOT replace it — CI runs the microVM
-// leg its own way. This is the dev-box entry point.
+// Drive the tagged local microVM suite using CI's guest-image and VMM contract.
+// Parsing stays in the pure core so this entry point can be tested offline.
 
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";

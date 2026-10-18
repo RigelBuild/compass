@@ -1,20 +1,5 @@
-// Pin the published compass-agent image the guest rootfs derives from
-// (guest-image/agent-oci.lock).
-//
-// Two modes. `--tag git-<sha12>` pins an explicit build. `--relock` is the
-// Renovate postUpgradeTask: it re-derives the whole lock after the regex
-// manager bumps the index digest.
-//
-// WHY --relock EXISTS (do not simplify it to a bare regex bump). Renovate can
-// move the index digest, but cannot derive each platform's ordered layer
-// descriptors. A relock fetches every member and rewrites the complete lock.
-//
-// HOW A NEW PIN IS DISCOVERED. Renovate tracks the moving `:latest` index
-// digest. The relock finds the matching immutable git-<sha12> tag by hashing
-// each raw index body.
-//
-// Needs `skopeo` and network on PATH. Reads are anonymous (`--no-creds`): the
-// package is public, and the Renovate runner's default auth file is unreadable.
+// Relock every platform descriptor: the rootfs requires a complete immutable
+// image provenance record, not only a moved index digest.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

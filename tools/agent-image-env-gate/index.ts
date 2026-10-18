@@ -1,22 +1,6 @@
 #!/usr/bin/env bun
 
-// agent-image-env-gate — assert the built compass-agent image is not a
-// wrong-image build.
-//
-// A green `container build` proves the image REALISES; it does not prove the
-// image is CORRECT. A wrong build can serialize a devenv-internal `DEVENV_*`
-// var naming a `/nix/store` path into the image env, where nix2container drags
-// its whole closure into the content layers (see env-check.ts for the full
-// mechanism). This gate closes that hole: it builds the exact same spec the
-// publish lane ships, inspects its OCI config, and fails on the signals a wrong
-// build leaves behind — a `DEVENV_` var with a `/nix/store` value, a build-host
-// home path baked into any key, or a platform-contract mismatch.
-//
-// Runs the same fork-pinned derivation as `dogfood:agent-image` and
-// `agent-image/publish.sh`, from the `agent-image/` cwd so `devenv container
-// build` resolves this image's devenv.yaml/devenv.lock. In CI the
-// `compass-agent-image:build` task has already
-// realised this closure, so the build here is a nix cache hit.
+// Verify the built OCI image against publish-safety invariants: no store-backed DEVENV_ values, builder-home paths, or platform-contract mismatch.
 
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -42,11 +26,7 @@ function fail(message: string): never {
 	process.exit(1);
 }
 
-// Pick the image spec store path from the build output. devenv tracing goes to
-// stderr; the spec store path is the last stdout line. Pure: returns the raw
-// last non-empty line (which the caller validates as a /nix/store/ path) so an
-// empty or non-store-path input routes through the caller's fail(), not a throw
-// here.
+// Return the raw final line so callers can report invalid output consistently.
 export function extractSpec(buildOut: string): string {
 	return buildOut.trimEnd().split("\n").at(-1)?.trim() ?? "";
 }
@@ -96,11 +76,7 @@ if (import.meta.main) {
 	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 	const agentImageDir = join(repoRoot, "agent-image");
 
-	// Build the image spec exactly as the publish lane does. devenv tracing goes
-	// to stderr; the spec store path is the last stdout line. The devenv fork rev
-	// is resolved from agent-image/devenv.lock at runtime (never hand-pinned), so
-	// this gate builds the exact derivation the lock names — the same source
-	// ci.yml's seed step resolves.
+	// Use the locked devenv revision so the gate builds the same derivation as CI.
 	let ref: string;
 	try {
 		ref = flakeref(
@@ -126,18 +102,8 @@ if (import.meta.main) {
 		);
 	}
 
-	// Resolve the fork's patched skopeo (understands the `nix:` transport — it
-	// reads a nix2container image spec directly) from the shared pinned helper,
-	// tools/toolchain/skopeo-nix2container-env.nix. That helper builds the exact
-	// derivation the root dev shell installs, from the nix2container + nixpkgs
-	// revisions devenv.lock pins (one source of truth for both revs, no raw
-	// nix2container flake ref). It is resolved out-of-band here rather than off
-	// PATH because this gate runs in the moon battery, which provisions the
-	// toolchain from nix and never enters the root dev shell — so `bin/skopeo` is
-	// read straight off the built helper's store path, the same pattern ci.yml
-	// uses for chromium-e2e-env.nix. It is deliberately NOT in
-	// agent-image/devenv.nix: a package there would bake skopeo's closure into
-	// the published image via the container entrypoint.
+	// Resolve the pinned nix2container-aware skopeo directly; adding it to the image
+	// would include its closure in the published container.
 	let skopeoBin: string;
 	try {
 		const out =

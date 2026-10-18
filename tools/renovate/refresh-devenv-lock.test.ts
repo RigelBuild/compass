@@ -107,17 +107,8 @@ const CORRUPT_LOCK = JSON.stringify({
 	version: 7,
 });
 
-// Stub nix: the script relocks via nix run <flakeref> -- update devenv, so the
-// stub records the cwd and full argv (tests assert both the scope directory and
-// WHICH devenv was provisioned), then rewrites ./devenv.lock to the RELOCKED rev.
-
-// Sentinel files in each scope's own directory model failure modes through the
-// script's REAL control flow: .force-noop-relock → exit 0 writing NOTHING (a
-// half-relock); .force-fail-relock → exit 1; .force-corrupt-relock → a short-rev
-// lock (a shape drift the post-relock guard must catch).
-// The write is gated on the post-`--` args being exactly `update devenv`, so a
-// wrong-input regression fails through BEHAVIOUR (the byte-identical guard fires),
-// not merely an argv-log assertion. Offline throughout.
+// Stub nix to record scope and arguments, then update the lock only for the
+// expected `update devenv` command. Sentinel files exercise relock failures.
 const STUB_NIX = `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "run" ]; then

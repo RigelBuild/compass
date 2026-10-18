@@ -1,13 +1,5 @@
-// Unit tests for the release-notes pure core (index.ts).
-//
-// These defend the generator's contract (design record §Plan T2, Fork 2):
-// the image-present body carries the ref + digest; the image-ABSENT case
-// DEGRADES to the recorded-absence line rather than failing; the nix-outputs
-// manifest echoes the sha/version/tag and carries every output verbatim; and
-// the one build version string is echoed into the body.
-//
-// Only the PURE core is exercised — the edge (skopeo / nix / file writes) is
-// import.meta.main-guarded, so importing index.ts never runs it. No network.
+// Pin release-body and manifest output, including the missing-image degradation.
+// The main guard keeps external commands and file writes out of core tests.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";

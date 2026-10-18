@@ -1,27 +1,6 @@
 #!/usr/bin/env bun
-// compass-app-dev: build (and optionally launch) the Compass native shell
-// straight from the checkout, for local dogfooding against a remote
-// compass-server. No .app/.dmg/tarball staging — the binary compiles beside
-// this tool and the resolver serves the UI dist in place via COMPASS_ASSETS_DIR
-// (go/cmd/compass-app resolveAssetsDir).
-//
-// Two modes, driven by moon tasks (see moon.yml):
-//   build   — compile the dev binary (deps: compass-ui:build).
-//   run     — build, then exec it (deps: build); a persistent GUI task.
-//
-// Why a script, not an inline command: the go build is per-OS. On linux the cgo
-// compile links the GTK4/WebKitGTK stack, so it must realize the pinned
-// pkg-config closure + nixpkgs cc-wrapper from tools/toolchain/gtk-e2e-env.nix
-// and point PKG_CONFIG_PATH/CC/CXX at them (the runner's glibc is too old for
-// the nixpkgs WebKitGTK, and cgo defaults CC to a `gcc` the nix shell has no
-// bare copy of) — the SAME realize the gtk4 e2e CI lane and app-bundle/build.sh
-// do. On darwin the shell links the system WebKit framework with the platform
-// clang, so it needs no build tag and realizes nothing.
-//
-// Server config is NOT set here: the shell reads app.toml
-// ($XDG_CONFIG_HOME/compass/app.toml, else ~/.config/compass/app.toml) and the
-// bearer token from the OS keychain (pasted on the connect screen once). See
-// app.toml.example + README.md.
+// Linux needs the pinned GTK/WebKitGTK closure because the host toolchain is too
+// old; macOS uses system WebKit. Server URL and credentials remain user config.
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -1,11 +1,5 @@
-// Tests for the pure half of the version.txt guard-parity gate.
-//
-// The property under test throughout is the one the gate exists for: it must be
-// CAPABLE OF FAILING on a genuine skew, and it must never turn "I could not
-// read a guard" into a pass. So the extractors are tested against the real
-// flake.nix and devenv.nix in the tree and against every way a guard can be
-// unliftable, and the comparator against agreement, each direction of
-// disagreement, a same-verdict-different-stamp split, and a harness error.
+// Pin both version guards against the real files and fail closed on any
+// unliftable guard, disagreement, or harness error.
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -28,18 +22,8 @@ const realFlake = readFileSync(join(repoRoot, "flake.nix"), "utf8");
 const realDevenv = readFileSync(join(repoRoot, "devenv.nix"), "utf8");
 
 describe("extractFlakeGuard", () => {
-	// Against the REAL file, not a fixture: the gate's whole value is that it
-	// runs the shipped expression, so the extractor must track the shipped file.
-	// A rename or restructure that breaks lifting fails here rather than
-	// silently degrading the gate to a no-op.
-	//
-	// Asserted structurally — that the guard trims, applies SOME class, and has
-	// both reject branches — never against the class's literal bytes. Pinning
-	// `[0-9A-Za-z.+-]` here would red this suite on a synchronized widening of
-	// both lanes, which preserves parity and is a correct change; a suite that
-	// fails on correct maintenance gets its assertions relaxed, and then the
-	// extractor's tracking guarantee is gone. Which bytes each lane admits is
-	// the candidate table's business to compare, not this test's to freeze.
+	// Exercise the shipped flake guard and keep its behavior flexible enough for
+	// synchronized changes to both lanes.
 	test("lifts versionBase out of the real flake.nix", () => {
 		const guard = extractFlakeGuard(realFlake);
 		expect(guard).not.toBeNull();
@@ -227,11 +211,7 @@ describe("compareVerdicts", () => {
 		).toBe(true);
 	});
 
-	// Both directions, because a gate that only catches one is half a gate. The
-	// shipped skew was flake-accepts/devenv-rejects (a CRLF version.txt); the
-	// reverse arises whenever devenv's trim set is the wider one, which is
-	// exactly what the leading-vertical-tab and trailing-form-feed candidates
-	// are in CANDIDATES to witness.
+	// Check both disagreement directions so neither guard can pass a real skew.
 	test.each([
 		["flake accepts, devenv rejects", accept("0.1.0"), reject],
 		["devenv accepts, flake rejects", reject, accept("0.1.0")],
@@ -277,24 +257,14 @@ describe("CANDIDATES", () => {
 		["tab-padded", "\t0.1.0\t\n"],
 		["empty", ""],
 		["inner space", "0.1.0 rc1\n"],
-		// The trim-set discriminators: class-legal core, padded with a byte the
-		// trim sets exclude. Padding with two such bytes at once cannot witness a
-		// trim-set change (the untrimmed one keeps the value out of the class), so
-		// each must stay a row of its own.
+		// Separate trim candidates witness each independently editable trim arm.
 		["leading vertical tab only", "\v0.1.0\n"],
 		["trailing form feed only", "0.1.0\f\n"],
-		// devenv's trim loop is two independently editable arms, so CR and LF each
-		// need the position that reaches the arm the other rows miss. LF: `$(cat)`
-		// strips trailing newlines, so a LEADING newline reaches the leading arm,
-		// and reaching the trailing arm needs an LF that is not last. CR: the
-		// CRLF/lone-CR rows are trailing-only, so a leading CR is what witnesses
-		// the leading arm.
+		// Keep trim discriminators separate so each changed trim arm is observable.
 		["leading newline only", "\n0.1.0\n"],
 		["leading carriage return only", "\r0.1.0\n"],
 		["trailing newline before a space", "0.1.0\n \n"],
-		// The class-narrowing discriminator: every other accepting row's surviving
-		// value is lowercase-or-digits, so without an accepting uppercase value
-		// dropping `A-Z` from one lane's class splits the lanes silently.
+		// An uppercase value detects class narrowing that would split the lanes.
 		["uppercase core", "1.2.3-RC.1\n"],
 	])("covers %s", (_label, content) => {
 		expect(CANDIDATES.some((row) => row.content === content)).toBe(true);

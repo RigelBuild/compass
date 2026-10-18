@@ -6,33 +6,10 @@ import { dirname, join } from "node:path";
 import { $ } from "bun";
 import { readVersion, rewriteHash } from "./refresh-toolchain-hashes.ts";
 
-// Regression test for tools/renovate/refresh-toolchain-hashes.ts (RIG-2432).
-//
-// The bug this guards against: the script's path constants are all
-// repo-root-relative (the pin files), but the gate `git diff --quiet "$base_ref"
-// -- <pin>` uses git's cwd-relative pathspec. If the script `cd`s to the wrong
-// depth, the gate tests a nonexistent path → always "unchanged" → the refresher
-// early-exits "nothing to do" on EVERY branch. Stale nix SRI hashes then ship
-// and the pin-bump PR goes red on a fetchurl mismatch.
-//
-// The fix: resolve the repo root via `git rev-parse --show-toplevel` and `cd`
-// there — no hardcoded `..` depth to drift when the script moves. The gate's
-// pathspec then resolves the real root pin files.
-//
-// This drives the ACTUAL shipped script (read relative to this test file, never
-// re-implemented) inside a throwaway git tree, because the failure mode is
-// precisely the cwd × git-cwd-relative-pathspec interaction — only a real run in
-// a real git repo exercises it. The fixture's pin-file paths are DERIVED from
-// the script's own exported BUN_NIX / NODE_NIX / MOON_NIX constants (not
-// hardcoded), so a rebase that moves those files and rewrites the constants
-// keeps this test green without edits.
-//
-// Network-free & deterministic: the script prefetches SRI hashes via
-// `nix store prefetch-file` (see `sriForUrl`), so we put a fake `nix` on PATH
-// that derives a deterministic SRI from the prefetched URL. The run is then
-// fully offline, and asserting the bun darwin hash line got the URL-SPECIFIC
-// stub value proves both that the per-file gate fired AND that the correct
-// (bumped-version) URL was prefetched.
+// Run the shipped refresher in a temporary git tree to verify it resolves the
+// repository root before applying cwd-relative pin pathspecs.
+// Fake nix returns deterministic URL-derived hashes, proving the changed pin
+// is refreshed without network access.
 
 // The shipped script under test, sitting next to this file in tools/renovate/.
 const REAL_SCRIPT = join(import.meta.dir, "refresh-toolchain-hashes.ts");
@@ -105,11 +82,8 @@ const HERMETIC_ENV = {
 	GIT_COMMITTER_EMAIL: "rig2432@example.invalid",
 };
 
-// Each pin file carries a `version` attr + all three platform legs (the CI image
-// + dev shell are multi-arch: x86_64-linux, aarch64-linux, aarch64-darwin), each
-// a url+hash marker pair the script's per-leg refresh keys on. A missing marker
-// makes the script exit 1, so each fixture mirrors the real marker/hash-line
-// structure verbatim. `version` is what the script's readVersion parses.
+// Each fixture mirrors the version and platform URL/hash markers parsed by the
+// refresher; a missing marker must fail.
 const BUN_NIX_FIXTURE = `rec {
   version = "1.3.13";
   url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-x64-baseline.zip";
@@ -226,11 +200,7 @@ describe("tools/renovate/refresh-toolchain-hashes.ts gate (RIG-2432)", () => {
 		if (repo) await rm(repo, { recursive: true, force: true });
 	});
 
-	// THE regression: after a bun.nix bump, the gate must fire from the repo
-	// root and rewriteHash must rewrite the vendored bun darwin SRI. On a wrong
-	// cwd the gate's cwd-relative pathspec misses the root pin file → "nothing to
-	// do" early-exit → placeholder survives → this fails. On the fixed
-	// git-rev-parse root the hash becomes the URL-derived stub value.
+	// A bumped pin must trigger the root-relative gate and rewrite its SRI.
 	test("rewrites the vendored bun SRI after a versions/bun.nix bump", async () => {
 		await Bun.write(
 			join(repo, PIN_PATHS.bun),
@@ -252,11 +222,7 @@ describe("tools/renovate/refresh-toolchain-hashes.ts gate (RIG-2432)", () => {
 		);
 	});
 
-	// The per-language gate: a bun-only bump re-prefetches bun.nix and leaves
-	// node.nix and moon.nix byte-for-byte untouched. This is the granularity the
-	// custom.regex managers + un-grouping rule buy — each language pin lands on
-	// its own branch, and the script must not rewrite a pin file its branch
-	// didn't change.
+	// A per-language bump refreshes only that pin file.
 	test("a versions/bun.nix bump leaves node/moon pin files untouched", async () => {
 		const nodeBefore = await readFile(join(repo, PIN_PATHS.node), "utf8");
 		const moonBefore = await readFile(join(repo, PIN_PATHS.moon), "utf8");
@@ -280,11 +246,7 @@ describe("tools/renovate/refresh-toolchain-hashes.ts gate (RIG-2432)", () => {
 		expect(await readFile(join(repo, PIN_PATHS.moon), "utf8")).toBe(moonBefore);
 	});
 
-	// This is a SILENT-no-op bug class: the script did the wrong thing and
-	// exited 0. rewriteHash's defense is to fail LOUD (exit 1) when a marker line
-	// is missing, so a future refactor that breaks marker detection can't quietly
-	// ship stale pins. Fire the gate, drop a bun marker line, and assert the
-	// script dies non-zero on the marker-not-found path.
+	// A missing marker must fail loudly instead of leaving a stale hash.
 	test("fails loud (exit≠0) when a hash marker is missing", async () => {
 		// Bump so the gate fires and the run REACHES rewriteHash (not the
 		// "nothing to do" early-exit), then remove a bun marker line rewriteHash

@@ -1,13 +1,4 @@
-// Unit tests for forge-linear-token (index.ts) — the per-run Linear app-token
-// mint that feeds the forge live-oracle (RIG-2423).
-//
-// This helper hands a required CI check its Linear credential, so the suite
-// defends the operational contract that makes a missing/broken credential a
-// LOUD failure rather than a silent one: the client_credentials request shape,
-// that a minted token is masked BEFORE it is exported, and that every failure
-// mode (unset creds, a non-ok mint, an unwritable env file) exits non-zero
-// instead of exporting an empty or partial LINEAR_FORGE.
-
+// Pin token request shape, masking-before-export, and failure exits.
 import { describe, expect, test } from "bun:test";
 import {
 	type AppTokenCredentials,

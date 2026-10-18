@@ -1,41 +1,5 @@
-// sql-migration-gate — SQL migration lint and append-only protection for the
-// first-party migrations under go/internal/store/migrations/. Three checks run
-// UNCONDITIONALLY and their exit codes are OR'd, so one push surfaces every
-// finding and the gate fails if ANY check fails:
-//
-//   squawk  migration-SAFETY analysis (unsafe DDL). Config in /.squawk.toml.
-//   sqruff  SQL style/lint (structural + correctness + capitalisation). Config
-//           in /.sqruff.
-//   migration-immutability  base migration byte check (append-only policy).
-//
-// WHY THIS IS A SCRIPT, NOT AN INLINE `bash -c`:
-// The gate was a moon `command: 'bash -c "squawk …; rc=$?; sqruff …; rc2=$?;
-// exit $(( rc | rc2 ))"'`. moon wraps every task command in its OWN
-// `bash -c "<command>"`, and the nested double quotes collide: the OUTER shell
-// expands `$?`, `$rc`, `$rc2`, and `$(( rc | rc2 ))` (all unset → 0) BEFORE the
-// inner shell runs, so the inner shell received a literal `…; rc=0; …; rc2=0;
-// exit 0` and ran fail-OPEN — it printed every finding and always exited 0. The
-// bug went unseen because 0001_init.sql genuinely passes both linters; the
-// first migration to actually trip a finding would have shipped green. A script
-// makes the exit-code combination real code (rule://scripts-ts-over-bash + the
-// no-bash-gate CI task forbid this logic in bash) and unit-testable.
-//
-// Inputs (env):
-//   GATE_ROOT - workspace root to run the linters from. Default: the git
-//               toplevel, falling back to process.cwd() when git reports none
-//               (a jj workspace's .git lives in the colocated clone). moon runs
-//               this with runFromWorkspaceRoot:true, so cwd is the repo root in
-//               CI. The linters discover their repo-root configs (/.squawk.toml,
-//               /.sqruff) and the migration glob resolves repo-relative from
-//               here.
-//   GATE_BASE_REF - optional git ref to compare migrations against.
-//   GITHUB_BASE_REF - PR target branch, used when GATE_BASE_REF is unset.
-//   GITHUB_ACTIONS - when set, a root outside a git worktree fails the check;
-//        otherwise (a local jj workspace) that check is skipped with a note.
-// Exit codes:
-//   0 - all checks passed (no findings).
-//   1 - one or more checks reported findings.
-//   2 - a check could not run / internal error.
+// Run SQL safety, style, and append-only checks unconditionally; fail if any
+// check fails. A script, not a shell chain, keeps the exit-code combination testable.
 
 import { $ } from "bun";
 
@@ -364,11 +328,7 @@ export function makeSpawnLinter(
 			const code = await proc.exited;
 			return { name, code, output: (stdout + stderr).trimEnd() };
 		} catch (e) {
-			// Bun.spawn throws synchronously when the binary is missing
-			// (ENOENT — e.g. a PATH regression or running outside the dev
-			// shell). Map it to the documented code 2 with a clean message
-			// instead of letting it escape as an unhandled rejection with a
-			// raw stack trace. Still fail-closed: 2 dominates the combine.
+			// Convert a missing executable into the documented fail-closed error code.
 			return {
 				name,
 				code: 2,
@@ -379,13 +339,8 @@ export function makeSpawnLinter(
 }
 
 if (import.meta.main) {
-	// Resolve the root the linters run from and the migration glob resolves
-	// against, in priority order: explicit GATE_ROOT, then the git toplevel,
-	// then process.cwd(). The git toplevel is empty in a jj workspace (its .git
-	// lives in the colocated clone, not the workspace) — a legitimate local dev
-	// context, not an error — and moon runs this with runFromWorkspaceRoot:true
-	// so cwd is the repo root in CI. Falling back to cwd (never "") keeps every
-	// valid environment working without the empty-string-as-path fragility.
+	// Resolve the linters' root from GATE_ROOT, git, then cwd; jj workspaces may
+	// lack a local git toplevel, while CI runs at the workspace root.
 	const gitTop = (
 		await $`git rev-parse --show-toplevel`.nothrow().quiet().text()
 	).trim();

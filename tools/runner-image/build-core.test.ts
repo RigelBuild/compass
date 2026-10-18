@@ -121,11 +121,7 @@ describe("outputSpec", () => {
 		);
 	});
 
-	// The digest-stability property the publish lane depends on: without this,
-	// two builds of a bit-identical staged tree still export different layer
-	// digests, because the context's mtimes ride into the layer tar. The PUSH
-	// mode matters most — a push stamped differently than the local build
-	// publishes a digest no rebuild can reproduce.
+	// Layer timestamps must be normalized for a rebuild to reproduce the pushed digest.
 	test("every mode rewrites layer timestamps, so a rebuild is digest-stable", () => {
 		for (const mode of ["oci", "image", "push"] as const) {
 			expect(outputSpec(mode, "t", "/tmp/out")).toContain(

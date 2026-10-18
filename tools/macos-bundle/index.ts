@@ -1,28 +1,8 @@
 #!/usr/bin/env bun
 
-// macos-bundle (compass-distribution T3) — the macOS .app/.dmg bundler.
-//
-// PURE CORE: `renderInfoPlist(opts)` templates the CFBundle Info.plist XML from
-// the app name/executable/identifier/version, and `parseArgs(argv)` parses the
-// CLI flags into a typed BundleArgs. Both are pure: no I/O, no clock, no
-// `process`/`env`/`Bun` access. They throw an Error naming the offending flag on
-// a missing/duplicate input.
-//
-// THE EDGE: `main()` (guarded by `import.meta.main`) stages
-// `Compass.app/Contents/{MacOS,Resources}`, copies the darwin compass-app binary
-// + the UI dist into it, writes Info.plist from the pure renderer, ad-hoc signs
-// the app (`codesign --sign -`, mandatory on Apple Silicon — the interim
-// self-sign per GC6 / DL-261; real Developer-ID signing is T4), and wraps the
-// staging dir in a UDZO .dmg via `hdiutil`. Guarding behind `import.meta.main`
-// lets the test import the pure core without firing the edge.
-//
-// The .app layout mirrors the Linux tarball bundle (GC9 / §A4): the shell, the
-// four embedded sidecars, and the UI dist. The dist lands at
-// Contents/Resources/dist beside the executable at Contents/MacOS/compass-app,
-// satisfying the shell's beside-the-executable dist resolution
-// (go/cmd/compass-app/main.go resolveAssetsDir); each sidecar lands at
-// Contents/MacOS/<name> BESIDE the shell, where resolveStackBin's sibling probe
-// finds it. No compass-postgres — embedded's postgres is a container (DL-260).
+// Pure renderers stay import-safe; main() owns staging, signing, and dmg work.
+// Keep dist beside the executable and sidecars beside the shell for runtime discovery.
+// Postgres remains a container rather than a bundled sidecar.
 
 import { cp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";

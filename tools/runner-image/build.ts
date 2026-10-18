@@ -1,26 +1,7 @@
 #!/usr/bin/env bun
-// Build the compass-runner container image (R1 of the Compass Runner
-// containerization record): realise the nix closure, stage it into a build
-// context, and hand that plain directory to a rootless BuildKit Dockerfile
-// build.
-//
-// THE MECHANISM IS THE RULED ONE, and it is part of the reviewed surface rather
-// than an implementation detail. The fleet's first-party image-builds spec
-// splits mechanisms by what the image's RUNTIME is, not by what built the
-// artifact: an image that IS a Nix environment earns nix2container; a PREBUILT
-// APPLICATION on a minimal base is a Dockerfile built by rootless BuildKit. The
-// Runner is the latter — it runs no toolchain, it exec's four binaries — so nix
-// is the BUILDER here and never the runtime. The prescribed shape is `nix
-// build` then COPY, which is exactly the two halves below.
-//
-// TypeScript, not bash: this has real logic — four nix builds whose out-paths
-// are parsed and mapped to distinct build-args, a transitive closure staged
-// path-by-path, and a fail-fast on every missing output — so the parsing and
-// mapping core is pure and unit-tested (./build-core.test.ts) while this file is
-// the thin I/O shell.
-//
-// Usage:
-//   bun tools/runner-image/build.ts [--tag <ref>] [--output oci|image]
+// Build the prebuilt runner image with rootless BuildKit; Nix provides the
+// closure but is not the runtime image. Pure mapping logic lives in build-core.ts.
+// Usage: bun tools/runner-image/build.ts [--tag <ref>] [--output oci|image]
 
 import { spawnSync } from "node:child_process";
 import {
@@ -162,12 +143,7 @@ if (buildkitHost === undefined || buildkitHost === "") {
 	process.exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// 1. Realise every carried artifact.
-// ---------------------------------------------------------------------------
-// The Runner and the VMM env are flake outputs; the three guest assets come from
-// guest-image/default.nix, which is a bare nix file and NOT a flake, so it takes
-// the `-f` form (no `#attr` flake-ref exists for it) and runs from guest-image/.
+// Realize the flake outputs and guest assets before staging the image closure.
 console.error("runner-image: realising closure…");
 const [runner] = nixBuild([".#compass-runner"], 1, workspaceRoot) as [string];
 const [stack] = nixBuild([".#compass-stack-env"], 1, workspaceRoot) as [string];
@@ -191,13 +167,7 @@ const outputs: RunnerImageOutputs = {
 	initrd,
 };
 
-// ---------------------------------------------------------------------------
-// 2. Stage the transitive closure.
-// ---------------------------------------------------------------------------
-// `nix path-info -r` over all five roots emits the DEDUPED union, so a path
-// shared by several roots (glibc, most obviously) is staged once. The transitive
-// set — not just the five roots — is what makes the image runnable: see
-// closureRoots' note on the measured "missing dynamic library" control.
+// Stage the deduplicated transitive closure; root paths alone omit runtime libraries.
 console.error("runner-image: staging closure…");
 // Nix store paths are read-only, and a recursive copy preserves that — so a
 // previously staged tree cannot be removed until its directories are made
@@ -228,15 +198,7 @@ if (closure.status !== 0) {
 }
 const closurePaths = parseOutPaths(closure.stdout);
 for (const path of closurePaths) {
-	// Each basename is unique by construction (it carries a content hash), and
-	// the store's symlinks are preserved verbatim so the symlinkJoin'd stack env
-	// still resolves inside the image.
-	//
-	// preserveTimestamps is load-bearing for the DIGEST, not just tidiness. Nix
-	// normalises every store mtime to 1; without this, cpSync stamps wall-clock
-	// mtimes into the staged tree, they land in the layer tar, and two builds of
-	// identical inputs produce different digests. The publish lane asserts a
-	// stable digest, so this is part of what makes that assertion meaningful.
+	// Preserve symlinks and Nix mtimes so runtime links resolve and image digests reproduce.
 	cpSync(path, join(stageDir, path.replace(/^\/nix\/store\//, "")), {
 		recursive: true,
 		verbatimSymlinks: true,
@@ -245,17 +207,8 @@ for (const path of closurePaths) {
 }
 console.error(`runner-image: staged ${closurePaths.length} store paths`);
 
-// The Dockerfile's ENTRYPOINT is exec-form and so cannot expand a build ARG,
-// while the Runner's own store path carries a hash that moves on every Go
-// rebuild. A stable relative symlink INSIDE the staged tree resolves both: the
-// entrypoint is always /nix/store/.compass-runner, and what it points at moves
-// with the build.
-//
-// It must live inside store/ and be RELATIVE. An absolute symlink at the
-// context root dangles on the host (nothing is mounted at the target yet), and
-// BuildKit checksums context entries before any COPY runs, so it fails the
-// build with "not found" rather than deferring to runtime. Relative-and-inside
-// keeps the link resolvable in both places.
+// The exec-form entrypoint needs a stable path despite the runner store hash changing.
+// Keep its relative symlink inside store/: BuildKit resolves context links before COPY.
 rmSync(join(stageDir, ".compass-runner"), { force: true });
 symlinkSync(
 	join(runner.replace(/^\/nix\/store\//, ""), "bin", "compass-runner"),

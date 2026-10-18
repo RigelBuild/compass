@@ -1,24 +1,7 @@
-# The build vehicle for the agent image's node_modules FOD hash. It is NOT how the agent image is built; its only consumer is
-# tools/renovate/refresh-fod-hashes.ts, whose FOD_ENTRIES table names this file
-# and the `compass-agent` attribute below as one entry's build vehicle.
-#
-# Why it exists: `agent-image/entrypoint.nix` carries an `outputHash` over the
-# installed `node_modules`, and its only image consumer is agent-image/devenv.nix. This
-# is a plain `nix build`-able expression with the SAME pkgs the image uses.
-#
-# It lives under tools/renovate/ beside its consumer deliberately: a file under
-# agent-image/ would reschedule the image build (moon `inputs: ['**/*']`, the
-# dominant CI cost) and read as part of the image definition. This one is test
-# scaffolding for a Renovate task.
-#
-#   nix build -f tools/renovate/agent-image-fod-vehicle.nix compass-agent
-#
-# The refresher fakes the `outputHash` first, so the build fails AT the FOD with
-# the `got: <real SRI>` line it parses, never reaching the bundle.
+ # The FOD fixture uses the image's locked nixpkgs to reproduce its node_modules hash.
+ # Keep it outside agent-image/ so edits do not trigger an image rebuild.
 let
-  # The AGENT-IMAGE devenv lock's nixpkgs, resolved as the repo's other plain-nix
-  # vehicles resolve theirs (read the lock, fetch that rev, import it). Using the
-  # ROOT lock instead would build with a bun the image never uses.
+  # Use the image lock; the root lock may select a different Bun version.
   lock = builtins.fromJSON (builtins.readFile ../../agent-image/devenv.lock);
   node = lock.nodes.nixpkgs.locked;
   nixpkgsSrc = builtins.fetchTarball {
@@ -29,10 +12,7 @@ let
   lib = pkgs.lib;
 in
 {
-  # The same import agent-image/devenv.nix performs, with the same `pkgs`.
-  # entrypoint.nix returns the wrapper derivation; the FOD is an internal `let`
-  # binding, pulled in as a dependency — so a faked `outputHash` errors there
-  # before any bundle work. Its relative imports resolve against agent-image/,
-  # so importing it from here is transparent.
+  # Import the image entrypoint with the same pkgs; its FOD is pulled in as a
+  # dependency and relative imports still resolve from agent-image/.
   compass-agent = import ../../agent-image/entrypoint.nix { inherit pkgs lib; };
 }

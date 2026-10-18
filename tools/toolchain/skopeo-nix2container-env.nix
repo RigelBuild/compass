@@ -1,26 +1,7 @@
-# The out-of-band skopeo for the agent-image publish lane. The nix2container
-# fork's patched skopeo understands the `nix:` transport (reads a nix2container
-# image spec directly), which stock skopeo does not. The publish workflow and
-# the agent-image env-gate drive it to inspect and copy the built image.
-#
-# Realized here rather than through gate-tools.nix (mirroring chromium-e2e-env):
-# it is a dotted input reference, not a bare nixpkgs attr, so it cannot live in
-# devenv.nix's parsed `packages` literal, and it is a publish-lane tool, not a
-# dev-shell CLI whose PATH drift the parity gate catches.
-#
-# Deliberately NOT in agent-image/devenv.nix `packages`, whose packages get baked
-# into every published image — this would add skopeo's ~168 MB closure the agent
-# never uses. It IS in the root devenv.nix (nothing bakes it); this file is how
-# CI resolves the identical derivation without entering the banner-emitting shell.
-#
-# Pins BOTH the nix2container fork rev AND nixpkgs to the SAME root devenv.lock
-# revs the dev shell resolves, so CI builds byte-for-byte the same skopeo — the
-# single source of truth is the root devenv.lock (OQ2 Decision 2). agent-image's
-# own lock pins nix2container separately by design (a different consumer), so the
-# two are not lockstep. Realized with `nix build`, never `nix eval` (which strips
-# the store context).
-#
-# One output: `skopeo`, the fork's patched skopeo derivation.
+# Provide nix2container's patched skopeo for the image publish lane.
+# This dotted input cannot be a parsed nixpkgs attr; keep it out of the agent
+# image to avoid adding an unused ~168 MB closure. Pin nixpkgs and nix2container
+# from the root devenv.lock and realize with nix build.
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
 

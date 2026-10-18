@@ -1,13 +1,4 @@
-// Unit tests for the ci-matrix pure core (index.ts).
-//
-// These defend the generator's contract (.t5-contract.md § The generator):
-// coverage, disjointness-throws-naming-id, zero-untagged-throws-naming-id, the
-// placeholder anchor for unaffected groups, determinism under shuffled input,
-// all four affected-flag rules, a null-ciTarget member being skipped from
-// targets, and an empty affected closure still yielding a non-empty matrix.
-//
-// Pure-core behavior and the isolated PR changed-path helper are covered here;
-// importing index.ts never runs main() or its moon/$GITHUB_OUTPUT edge.
+// Pin the generator's coverage, disjointness, determinism, and flag contract.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -288,11 +279,7 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 	});
 
 	test("forgeAffected NOT triggered by a ci.yml-only PR (RIG-2909)", () => {
-		// The live oracle is the expensive extra verification on top of the
-		// untagged golden-replay battery; a PR that only touches this workflow
-		// file (or any other CI/docs-only change) must not run it — that
-		// over-trigger flaked unrelated PRs on a Linear API blip. Oracle-wiring
-		// changes are re-verified by the push/schedule full sweep instead.
+		// CI-only path changes must not invoke the expensive live oracle.
 		expect(
 			generate(
 				prInput({
@@ -777,11 +764,8 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 	});
 
 	test("a bundle declaring another project's tree joins the closure", () => {
-		// The app bundle declares `/go/**` as a task input but has no `dependsOn`,
-		// so only the task half selects it on a Go-only diff.
-		// flake-gate and root are the universal floor of every moon closure, so
-		// they must exist as grouped members for the walk half to be
-		// well-formed input to the generator.
+		// The bundle task input selects it without a project dependency edge.
+		// Include the universal closure projects so both selection paths are valid.
 		const projects = [
 			...workspace(),
 			proj("flake-gate", "nix"),
@@ -1004,15 +988,8 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 	});
 
 	test("each path-derived flag renders its own boolean, not a sibling's", () => {
-		// forge/gtk4/darwin are the three flags a full sweep forces true, but
-		// on a pull_request they are purely changedPaths-derived, so each can
-		// be driven independently. Asserting them together on one broad path
-		// would not distinguish a cross-wire (gtk4 rendered from
-		// darwinAffected, say) because compass-app paths set gtk4 and darwin
-		// as a pair. So each case below selects ONE flag and pins the other
-		// two to false. Without this the keys are covered by name only, and a
-		// wrong "false" is worse than a dropped key: an empty value reds the
-		// rollup, whereas "false" reads as a legitimate skip and greens it.
+		// Exercise each path-derived flag alone; broad paths can set flags in pairs
+		// and hide a cross-wired output.
 		const flags = (paths: string[]): string[] =>
 			outputLines(
 				generate({
@@ -1023,12 +1000,8 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 				}),
 			).filter((line) => /^(forge|gtk4|darwin)_affected=/.test(line));
 
-		// forge + darwin, gtk4 false. `go/internal/**` is a darwin sidecar
-		// prefix (the mac lane cross-compiles the pure-Go sidecars), so a
-		// forge path necessarily fires darwin too — asserting darwin=false
-		// here would be asserting against the shipped path sets. gtk4 staying
-		// false is what discriminates: a gtk4 rendered from darwinAffected
-		// flips it.
+		// A forge path also selects darwin through the Go sidecar prefix; gtk4 is the
+		// independent flag that detects a cross-wire.
 		expect(flags(["go/internal/forge/oracle.go"]).sort()).toEqual([
 			"darwin_affected=true",
 			"forge_affected=true",

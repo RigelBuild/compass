@@ -1,28 +1,5 @@
-// The pure core of the agent-image env gate: given the OCI `config.Env` of the
-// built compass-agent image, decide whether any entry is a signal that the
-// image was built wrong.
-//
-// WHY THIS GATE EXISTS. devenv merges its own internal `DEVENV_*` variables
-// into the container's serialized `config.Env` (top-level.nix sets
-// `env.DEVENV_PROFILE/STATE/RUNTIME/DOTFILE/ROOT`, tasks.nix sets
-// `env.DEVENV_TASK_FILE`). The RigelBuild/devenv fork does NOT blanket-strip
-// them — a reusable container module applies the minimal fix, not a namespace
-// wipe (RIG-2404). It forces the dev-shell-only paths off store/phantom values
-// during a container build (`containers.nix`: `devenv.root`/`dotfile`/`runtime`
-// → the container's own home and `/tmp`), so the live risk is narrower than
-// "any DEVENV_ key present". The one class that actually corrupts the image is
-// a `DEVENV_*` whose VALUE names an absolute `/nix/store` path (anywhere in
-// the value): nix2container makes `config.json` a closure root
-// (`deps = [configFile]`), so every store path
-// NAMED in the env drags its whole closure into the image's content layers and
-// the initialized nix DB — non-reproducible bloat and phantom DB entries. Two
-// such vars exist (`DEVENV_PROFILE`, a 266-path dev profile; `DEVENV_TASK_FILE`,
-// the tasks.json), each neutralized consumer-side in agent-image/devenv.nix
-// (mkForce to a non-store placeholder, gated on isBuilding).
-// This gate is the regression backstop for that
-// neutralization, plus a build-host-home leak check that catches a builder path
-// baked into ANY key (a non-reproducible-across-hosts defect). Both invariants
-// are set operations on the built image's env, not an eyeball.
+// Check serialized image env for store-path references and builder-home leaks.
+// Store references add unintended closure contents; host paths break reproducibility.
 
 export interface ForbiddenEnv {
 	/** The offending `KEY=value` entry, verbatim. */

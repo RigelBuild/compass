@@ -1,13 +1,5 @@
-// Unit tests for the sql-migration-gate's pure core + I/O orchestration.
-//
-// This gate is a CI oracle: three checks decide whether the first-party
-// migrations pass squawk (safety), sqruff (style), and append-only byte checks.
-// Its original shell form was double-expanded by moon to a constant `exit 0`.
-// This suite defends the fail-closed contract and proves all three checks run
-// before their exit codes are combined.
-//
-// Conventions (mirroring tools/inline-sql-gate/index.test.ts):
-// - Literal expectations, not values derived from the module.
+// Pin fail-closed behavior and prove all three migration checks run before
+// their exit codes are combined.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

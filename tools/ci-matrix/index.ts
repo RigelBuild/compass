@@ -1,18 +1,6 @@
 #!/usr/bin/env bun
-// ci-matrix (T5) — the CI concern-matrix generator.
-//
-// PURE CORE: `generate(input)` translates moon's affected closure + every
-// project's `ci-group.*` tag into the per-group GitHub Actions matrix and the
-// four special-leg affected flags. It is a pure function: no I/O, no moon
-// invocation, no clock, no `process`/`env`/`Bun` access. On a structural
-// violation (a project with no `ci-group.*` tag, or two) it throws an Error
-// whose message names the offending project id.
-//
-// THE EDGE: `main()` (guarded by `import.meta.main`) runs `moon query
-// projects`, computes changed paths via `git diff`, calls the pure core, and
-// writes `matrix=<json>` + the four `*_affected=` lines to `$GITHUB_OUTPUT`.
-// Guarding behind `import.meta.main` lets the test import the pure core without
-// firing the edge.
+// Pure core: map moon's affected closure and CI tags into the matrix and flags.
+// The guarded CLI edge owns moon, git, and GitHub Actions I/O.
 
 import { $ } from "bun";
 import { loadGoGraph } from "./go-graph.ts";

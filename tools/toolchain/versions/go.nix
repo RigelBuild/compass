@@ -1,10 +1,3 @@
-# tools/toolchain/versions/go.nix — the go toolchain pin.
-#
-# Version only: the derivation comes from the go-overlay flake input
-# (devenv.yaml / devenv.nix), which carries its own per-platform hashes in
-# its manifest. Both the dev shell and the parity gate select go-overlay at
-# this version so they resolve the same derivation.
-#
-# Floor policy: the `go` directive in go/go.mod tracks this pin minus at most
-# one minor, so an upstream Go security patch never blocks on a mod edit.
+# Both dev shell and parity gate use this go-overlay pin. The go.mod floor may
+# lag by one minor so security patches do not wait for a module edit.
 { version = "1.27.2"; }
