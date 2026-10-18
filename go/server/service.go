@@ -31,36 +31,28 @@ import (
 // apiVersion is the compass.v1 contract version reported by GetServerInfo.
 const apiVersion = "compass.v1"
 
-// resyncSeq is the seq on a ResyncRequired: it is a control signal, not a
-// positioned event, and the client discards its cursor to reconnect at
-// sinceSeq = 0, so it carries no meaningful position.
+// resyncSeq marks a control signal, not a positioned event; clients discard
+// their cursor and reconnect at sinceSeq = 0.
 const resyncSeq uint64 = 0
 
-// rollbackStopTimeout bounds the best-effort Stop in abandonStartedSession. The
-// runnerhub dispatch path (internal/runnerhub) has NO deadline of its own — a
-// wedged-but-connected Runner that accepts Stop but never answers its result
-// would otherwise hang StartAgentSession (and stall graceful-shutdown drain)
-// forever. A package var rather than a const only so a test can shorten it; it
-// is never reassigned in production.
+// rollbackStopTimeout bounds cleanup when recording a started session fails;
+// an unresponsive Runner could otherwise stall the RPC and graceful shutdown.
 var rollbackStopTimeout = 30 * time.Second
 
 // errNoRunnerHub is returned by the container-lifecycle RPCs when no Runner door
 // is mounted (the socket-only path) — the RPC is Unavailable, never a panic.
 var errNoRunnerHub = errors.New("no runner hub configured on this server")
 
-// errNoCaller is returned by SubscribeAgentSession when no caller identity is in
-// context — an interceptor-wiring bug (both doors must attach one). Fail closed
-// with Unauthenticated rather than stream an unauthorized session.
+// errNoCaller marks missing interceptor identity on SubscribeAgentSession;
+// fail closed rather than stream an unauthorized session.
 var errNoCaller = errors.New("no caller identity in request context")
 
-// errNoSessionID is the abandon-path cause when a Runner returned success for a
-// Start but no session id: there is nothing to Stop, and nothing the caller
-// could ever address, so the roll-back reduces to logging it loudly.
+// errNoSessionID means the Runner started without returning an addressable
+// session, so cleanup can only log the failure.
 var errNoSessionID = errors.New("runner returned no session id to stop")
 
-// busPayload is the bus's event type. Go's generated oneof interface is
-// unexported, so the bus carries the whole response message with only its
-// Payload oneof set at publish time — the bus stamps Seq/AtUnixMs/InstanceEpoch
+// busPayload is the event type. Since generated oneof interfaces are
+// unexported, the bus carries the response payload and stamps envelope fields
 // onto a copy at the stream edge.
 type busPayload = *compassv1.SubscribeEventsResponse
 
@@ -68,13 +60,8 @@ type accountRenamePublisher interface {
 	PublishAccountRename(ctx context.Context, account store.Account, channelIDs []store.ChannelID)
 }
 
-// service is the server's compass.v1 service. The event bus and the store of
-// record are shared by pointer and the version is a small owned string. The
-// store backs IssueToken: it verifies the target account against the store, then
-// mints a bearer token whose hash the store persists. The runner hub (when set)
-// routes the container-lifecycle RPCs to the owning Runner; hub is nil on the
-// socket-only path that mounts no Runner door, and a lifecycle RPC then returns
-// Unavailable rather than panicking.
+// service implements compass.v1. The store backs IssueToken; the optional
+// runner hub routes container lifecycle calls and is nil on socket-only servers.
 type service struct {
 	compassv1connect.UnimplementedCompassServiceHandler
 	version string
@@ -82,50 +69,32 @@ type service struct {
 	bus     *events.Bus[busPayload]
 	store   *store.Store
 	hub     *runnerhub.Hub
-	// board is the Bridge board projection GetAgentStatus reads its snapshot from.
-	// The same instance is the RunnerHub's lifecycle sink (serve.go wires both),
-	// so the snapshot reflects exactly the transitions fanned onto SubscribeEvents.
+	// board is the Bridge projection used by GetAgentStatus and the lifecycle sink.
 	board *board.Projection
-	// issueBrd is the Server-authoritative board issue projection ListBoardIssues
-	// reads its Snapshot from. The same instance is the ingestion sink (part 3's
-	// issueSink) and the issue=16 live fan-out onto SubscribeEvents, so the board
-	// the handler re-snapshots is exactly the state the tail unions against.
+	// issueBrd is the server-authoritative projection for ListBoardIssues,
+	// shared with ingestion and the live event tail.
 	issueBrd *board.IssueProjection
-	// tail is the per-session SubscribeAgentSession fan-out (sessiontail.go). The
-	// same instance is the RunnerHub's session-tail sink (serve.go wires both),
-	// so a frame the hub relays reaches this service's stream subscribers. nil on
-	// a server built with no Runner door (SubscribeAgentSession then Unavailable,
-	// like the other Runner-backed RPCs).
+	// tail shares the RunnerHub's per-session fan-out; serve.go wires the same
+	// instance to both. nil without a Runner door, making the RPC unavailable.
 	tail           *sessionTail
 	accountRenamer accountRenamePublisher
 	adminID        store.AccountID
 	// refLinkRules provides the configured forge-link rules; nil returns none.
 	refLinkRules *refLinkRuleSource
-	// signaler emits a ConfigVersion signal to every live session after a
-	// successful config write (PutAgentConfig / DeleteAgentConfig), so live
-	// Runners re-fetch the bundle. *runnerhub.Hub satisfies it; the service
-	// depends on the narrow interface (not the concrete hub) so a test drives the
-	// emit path with a recorder, mirroring secretsService's secretsSignaler. nil
-	// on a server built with no Runner door (socket-only) — a write then completes
-	// without a signal, there being no live session to notify.
+	// signaler notifies live sessions after config writes so Runners re-fetch.
+	// It is optional when no Runner door is mounted.
 	signaler configSignaler
-	// spawnMu guards spawns, the SpawnAgent composite-span memo (spawn.go). A
-	// spawn keyed by (agent_account_id, client_request_id) is registered before
-	// its Provision→Start runs and settled after, so a retry (concurrent or
-	// sequential) joins the original rather than re-provisioning — the end-to-end
-	// idempotency the three lower dedup primitives do not compose for a completed
-	// retry. A settled success is evicted after spawnMemoTTL, bounding the map.
+	// spawnMu protects the composite memo; retries join the same Provision→Start.
 	spawnMu sync.Mutex
 	spawns  map[spawnKey]*spawnCall
-	// scheduleAfter schedules the delayed memo eviction; nil uses time.AfterFunc.
-	// A test overrides it to drive eviction deterministically without wall time.
+	// scheduleAfter schedules delayed memo eviction; nil uses time.AfterFunc.
+	// Tests override it to drive eviction without wall time.
 	scheduleAfter func(time.Duration, func()) *time.Timer
 }
 
 func newService(version string, bus *events.Bus[busPayload], st *store.Store, hub *runnerhub.Hub, brd *board.Projection, issueBrd *board.IssueProjection, tail *sessionTail) *service {
-	// A nil *runnerhub.Hub must land in the interface field as a nil interface,
-	// not a non-nil interface wrapping a nil pointer, so the handler's nil check
-	// fires on the socket-only path. Assign through the concrete-nil guard.
+	// Assign through a concrete-nil guard so socket-only servers retain a nil
+	// interface and the handler's nil check works.
 	var sig configSignaler
 	if hub != nil {
 		sig = hub
@@ -133,14 +102,9 @@ func newService(version string, bus *events.Bus[busPayload], st *store.Store, hu
 	return &service{version: version, bus: bus, store: st, hub: hub, board: brd, issueBrd: issueBrd, tail: tail, signaler: sig}
 }
 
-// ProvisionAgentWorkspace creates the isolated per-agent container for a
-// workstream by relaying to the owning Runner (Client -> Server -> RunnerHub ->
-// Runner -> AgentRuntime façade); the Server holds no container-engine code. The
-// agent is named `owner/agent` and resolved here; the Runner receives the
-// resolved account id. The request's client_request_id (when set) is the OQ6
-// idempotency key threaded to the RunnerHub as the correlation id: a
-// timeout-retry with the same id joins the in-flight/completed call and returns
-// the same container_name rather than provisioning a second container.
+// ProvisionAgentWorkspace provisions an isolated per-agent container through
+// the owning Runner. A client_request_id makes retries join the same call and
+// return the original container rather than provisioning another.
 func (s *service) ProvisionAgentWorkspace(
 	ctx context.Context,
 	req *compassv1.ProvisionAgentWorkspaceRequest,
@@ -159,14 +123,9 @@ func (s *service) ProvisionAgentWorkspace(
 	return resp, nil
 }
 
-// StartAgentSession brings the first-party agent in a provisioned container
-// online by relaying to the owning Runner, which starts the agent over its
-// streaming-exec bridge and returns the server-side session id — the cursor for
-// Stop/Reload/GetAgentStatus and the attribution id on every agent payload.
-// StartAgentSessionRequest carries no client_request_id (unlike Provision), so
-// the relay request id is Server-minted per call; client-retry idempotency is
-// not part of Start's established contract. hub is nil only on a server built with no
-// Runner door, where a lifecycle RPC is Unavailable rather than a panic.
+// StartAgentSession relays a fresh start, then records session ownership.
+// The request has no client_request_id, so the relay ID is server-minted.
+// A server without a Runner hub returns Unavailable.
 func (s *service) StartAgentSession(
 	ctx context.Context,
 	req *compassv1.StartAgentSessionRequest,
@@ -174,11 +133,8 @@ func (s *service) StartAgentSession(
 	if s.hub == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub.Error()).WithCause(errNoRunnerHub)
 	}
-	// The resume branch: a non-empty resume_session_id relays through the resume
-	// handoff (authz-gate, bind lifetime, reconstruct body, attach to the INTERNAL
-	// envelope), all BEFORE any Runner call. A resume REUSES the logical id as the
-	// live id, so its ownership row already exists and was already authorized — it
-	// does NOT re-record ownership. A fresh start mints a new id and records below.
+	// Resume authorizes and reconstructs before the Runner call; its existing
+	// session ownership is reused. A fresh start mints and records a new ID.
 	if resumeID := req.GetResumeSessionId(); resumeID != "" {
 		resp, err := s.startResumeSession(ctx, resumeID, req)
 		if err != nil {
@@ -191,10 +147,8 @@ func (s *service) StartAgentSession(
 	if err != nil {
 		return nil, err
 	}
-	// Complete the durable ownership chain now that the Runner started the session:
-	// session_id -> agent_account_id, from the placement recorded at Provision (a
-	// durable read, correct across restart). Either store step can fail AFTER the
-	// Runner started, and unlike Provision this does NOT self-heal, so we tear it down.
+	// Record the durable session-to-agent ownership after Runner start. If either
+	// store step fails, the live session cannot self-heal and must be stopped.
 	agentAccountID, err := s.store.AgentForContainer(ctx, req.GetContainerName())
 	if err != nil {
 		return nil, s.abandonStartedSession(ctx, req.GetContainerName(), resp.GetSessionId(),
@@ -207,10 +161,8 @@ func (s *service) StartAgentSession(
 	return resp, nil
 }
 
-// StopAgentSession deliberately kills the in-container agent and releases the
-// session by relaying to the owning Runner. Idempotent per the established contract
-// (compass.proto): stopping an unknown/already-stopped session succeeds, since
-// the Runner returns success for a session it no longer holds.
+// StopAgentSession relays an idempotent stop to the owning Runner. Unknown or
+// already-stopped sessions succeed under the established contract.
 func (s *service) StopAgentSession(
 	ctx context.Context,
 	req *compassv1.StopAgentSessionRequest,
@@ -222,8 +174,7 @@ func (s *service) StopAgentSession(
 	if err != nil {
 		return nil, err
 	}
-	// BEST-EFFORT: the Stop relay already killed the agent, so a flush failure must
-	// never convert a successful Stop into a failure.
+	// Stop already killed the agent; archive failure must not turn success into failure.
 	archiveSessionEnd(ctx, s.store, req.GetSessionId())
 	return resp, nil
 }
@@ -669,10 +620,8 @@ func (s *service) provisionAgent(
 	if err != nil {
 		return nil, err
 	}
-	// Record the agent's durable PLACEMENT — which Runner and container name — only
-	// now that the Runner created the container. Idempotent upsert. This is what makes
-	// the container->account mapping survive a Server restart, and what reattach
-	// recovery reads to name agents stranded by a Runner restart.
+	// Record durable placement after Provision so the container mapping survives
+	// Server restarts and Runner reattach recovery.
 	if err := s.store.RecordAgentPlacement(ctx, acc.ID, runnerID, resp.GetContainerName()); err != nil {
 		wrappedErr := fmt.Errorf("recording agent placement: %w", err)
 		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
@@ -714,18 +663,8 @@ func handleLookupError(raw string, err error) error {
 	return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 }
 
-// startResumeSession is the resume leg of StartAgentSession (T6, RIG-1667). It
-// runs BEFORE any Runner call for the parts that must: (1) authorize the caller
-// on the resumed session via RequireAgentSessionSubscriber — an unknown or
-// foreign resume_session_id is one indistinguishable NotFound (the
-// not-found/forbidden merge, D9), so a caller holding a foreign id cannot probe
-// existence and NO Start is ever relayed; (2) reconstruct the resume body from
-// the durable transcript (T5); (3) relay the verbatim public start request with
-// the reconstructed body attached to the INTERNAL envelope (hub.StartResume).
-// The Runner binds the new lifetime's rebase base itself once it accepts the
-// Start, so a refused resume never moves a live base. The public request
-// carries only the authz-checked resume_session_id — no locator, no body a
-// client could forge.
+// startResumeSession authorizes before Runner calls, reconstructs the durable
+// transcript, then relays the request with its body in the internal envelope.
 func (s *service) startResumeSession(
 	ctx context.Context,
 	resumeSessionID string,
@@ -733,14 +672,12 @@ func (s *service) startResumeSession(
 ) (*compassv1.StartAgentSessionResponse, error) {
 	caller, ok := auth.CallerFrom(ctx)
 	if !ok {
-		// No caller in context is a door-wiring bug (an interceptor must attach
-		// one on both doors); fail closed rather than resume unauthorized.
+		// Missing door identity is a wiring bug; fail closed before resume.
 		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller.Error()).WithCause(errNoCaller)
 	}
 	if err := s.store.RequireAgentSessionSubscriber(ctx, caller, resumeSessionID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			// Unknown session OR non-member — indistinguishable by contract, so
-			// the caller cannot tell "exists but forbidden" from "does not exist".
+			// Hide unknown sessions and non-members as NotFound.
 			return nil, connect.Errorf(connect.CodeNotFound, "agent session %q", resumeSessionID)
 		}
 		wrappedErr := fmt.Errorf("authorizing resume: %w", err)
@@ -753,20 +690,9 @@ func (s *service) startResumeSession(
 	return s.hub.StartResume(ctx, "", req, body)
 }
 
-// abandonStartedSession tears down a session StartAgentSession already started
-// on the Runner but could not record, and returns the Internal error to fail
-// with. Best-effort: the Stop's own failure must not mask the original cause,
-// which is why the returned error NAMES the session id — a session the store
-// never recorded and Stop could not kill is only reapable by an operator who
-// can see its id.
-//
-// The teardown runs on context.WithoutCancel(ctx): the caller's context may
-// already be cancelled (a client that gave up is one plausible reason the store
-// write failed at all), and the session is live regardless — the same reasoning
-// AgentRuntime.Launch uses to remove a half-provisioned container
-// (internal/runtime/agent.go). The dispatch path has no independent deadline, so
-// the Stop is bounded here by rollbackStopTimeout — StartAgentSession returns
-// within that bound even against a Runner that accepts Stop but never answers.
+// abandonStartedSession best-effort stops a started session whose ownership
+// could not be recorded. Bounded context.WithoutCancel cleanup names the session
+// for an operator if Stop fails; caller cancellation cannot stop it.
 func (s *service) abandonStartedSession(ctx context.Context, containerName, sessionID string, cause error) error {
 	stopErr := errNoSessionID
 	if sessionID != "" {
@@ -785,11 +711,8 @@ func (s *service) abandonStartedSession(ctx context.Context, containerName, sess
 	return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 }
 
-// forward drains the replay snapshot (oldest first), then forwards the live tail
-// until the client disconnects, the server shuts down, or the subscriber lags
-// past the ring. The lag case emits a final ResyncRequired. Both phases select
-// on ctx so a shutdown or client hang-up mid-replay returns promptly rather than
-// stalling graceful drain.
+// forward drains replay then the live tail until disconnect, shutdown, or lag;
+// lag emits ResyncRequired and cancellation interrupts replay.
 func forward(
 	ctx context.Context,
 	sub events.Subscription[busPayload],
@@ -841,8 +764,8 @@ func toResponse(event events.Stamped[busPayload]) *compassv1.SubscribeEventsResp
 	}
 }
 
-// resyncRequired is the typed resync signal: the last event the server sends
-// before it closes a stream whose cursor it can no longer serve gap-free.
+// resyncRequired is the final control frame when the server cannot serve a
+// cursor gap-free.
 func resyncRequired(instanceEpoch uint64) *compassv1.SubscribeEventsResponse {
 	return &compassv1.SubscribeEventsResponse{
 		Seq:           resyncSeq,
@@ -854,17 +777,10 @@ func resyncRequired(instanceEpoch uint64) *compassv1.SubscribeEventsResponse {
 	}
 }
 
-// snapshotBoundary is the leading control frame a since_seq==0 SubscribeEvents
-// subscribe receives before any tail event: the subscribe-first ordering marker
-// a client pairs with a ListBoardIssues read (register -> boundary -> tail,
-// gap-free), mirroring commsSnapshotBoundary. It is a control frame, not a
-// positioned event — Seq=0, no payload — so a client discriminates it from a
-// positioned event by its zero seq and absent payload, and from the terminal
-// resync (also Seq=0) by payload: this frame has none, the resync carries a
-// ResyncRequired. The board is unversioned in v1, so snapshot_seq is 0: the
-// client unions the read with the full tail id-keyed to close the window, not a
-// seq bound. instance_epoch is the bus epoch so a client pairs the boundary
-// with the seq space it belongs to.
+// snapshotBoundary starts a since_seq==0 subscription. Seq=0 and no payload
+// distinguish it from positioned events and ResyncRequired. The unversioned
+// board requires clients to union the snapshot with the full tail; epoch selects
+// the bus sequence space.
 func snapshotBoundary(instanceEpoch uint64) *compassv1.SubscribeEventsResponse {
 	return &compassv1.SubscribeEventsResponse{
 		Seq:           resyncSeq,

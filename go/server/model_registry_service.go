@@ -77,11 +77,8 @@ func (s *service) DeleteModelRegistry(
 	return &compassv1.DeleteModelRegistryResponse{}, nil
 }
 
-// mapModelRegistryErr maps a store error to its connect status code: a malformed
-// payload or an orphaning removal (store.ErrInvalidArgument) is
-// CodeInvalidArgument; a failed CAS (store.ErrVersionConflict) is CodeAborted
-// (the connect/gRPC convention for compare-and-set contention — the caller
-// re-reads and retries); anything else is CodeInternal.
+// mapModelRegistryErr maps invalid input and orphaning removals to
+// InvalidArgument, CAS conflicts to Aborted, and other store errors to Internal.
 func mapModelRegistryErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrInvalidArgument):

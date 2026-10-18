@@ -48,19 +48,10 @@ func parentDir(socketPath string) string {
 	return dir
 }
 
-// listenUnixPrivate binds a Unix domain socket at path with the process umask
-// temporarily tightened to 0177, so the socket is created owner-only (0600)
-// with no window in which a local peer could connect before the mode is
-// tightened. syscall.Umask is process-global and not goroutine-safe; the server
-// calls this once during single-goroutine startup (before any server goroutine
-// spawns), so the set/restore pair cannot race a concurrent file creation. The
-// prior umask is always restored, including on bind failure.
-//
-// Unlink-on-close is disabled on the returned listener. Go's net.UnixListener
-// defaults to unlinking the socket path when Close runs; that is a second,
-// unconditional remover that would defeat the identity-guarded cleanupSocket and
-// delete a successor server's rebound socket when this server drains, so removal
-// is left solely to cleanupSocket here.
+// listenUnixPrivate creates an owner-only socket by tightening the umask.
+// Umask is process-global, so call during single-goroutine startup and restore
+// it even on bind failure. Disable unlink-on-close so cleanupSocket alone
+// controls removal and cannot delete a successor's socket.
 func listenUnixPrivate(ctx context.Context, path string) (net.Listener, error) {
 	prev := syscall.Umask(0o177)
 	defer syscall.Umask(prev)
@@ -79,12 +70,8 @@ func listenUnixPrivate(ctx context.Context, path string) (net.Listener, error) {
 	return ul, nil
 }
 
-// ensurePrivateDir creates dir and any missing ancestors, tightening every
-// directory it actually creates to 0700 so a socket placed inside is never
-// briefly reachable through a world-traversable path. A directory that already
-// exists is left untouched — the server never rewrites the mode of a parent the
-// operator set up (a custom --socket under a shared dir must keep that dir's
-// mode).
+// ensurePrivateDir creates missing ancestors with mode 0700. Existing
+// directories are left unchanged so operator-configured parent modes are kept.
 func ensurePrivateDir(dir string) error {
 	// Walk from the topmost missing ancestor downward, creating each with 0700.
 	// Collect the chain of not-yet-existing dirs first, then create in order.
@@ -121,17 +108,8 @@ func ensurePrivateDir(dir string) error {
 	return nil
 }
 
-// clearStaleSocket refuses to start on top of a live server and clears only a
-// genuinely stale socket.
-//
-// Nothing at the path → nothing to do. A non-socket file there is an operator
-// error the server refuses rather than delete. A successful connect means
-// another compass-server owns the path, so it bails; a refused connect means the
-// socket is stale (its server is gone) and it removes it so the caller can
-// rebind.
-//
-// This serializes correctly against a sequential restart but not against two
-// servers racing to start on the same path at once.
+// clearStaleSocket rejects live servers and non-socket files, and removes only
+// a stale socket. It handles sequential restarts, not concurrent starts.
 func clearStaleSocket(ctx context.Context, socketPath string) error {
 	info, err := os.Lstat(socketPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -144,10 +122,8 @@ func clearStaleSocket(ctx context.Context, socketPath string) error {
 		return fmt.Errorf("refusing to start: %s exists and is not a socket", socketPath)
 	}
 
-	// A live peer answers a connect; a stale socket refuses it. Only a refused or
-	// already-gone connect proves staleness — any other probe error (timeout,
-	// permission, descriptor exhaustion) is propagated, so a transient failure never
-	// unlinks a live server's socket.
+	// Only refused or missing paths prove staleness; propagate other probe errors
+	// so a transient failure never unlinks a live server's socket.
 	conn, err := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "unix", socketPath)
 	if err == nil {
 		conn.Close() //nolint:errcheck,gosec // the probe dial succeeded; closing the probe conn, its result is irrelevant to the liveness check (errcheck + its gosec G104 twin)

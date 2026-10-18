@@ -34,65 +34,44 @@ const (
 	SourceAuto                      // an automatic transition, e.g. auto-archive (PR-C)
 )
 
-// TransitionSource carries WHO/WHAT moved an issue's state, threaded through the
-// executor to record+publish so a later reader can attribute the transition.
-// Actor is the caller/actor account when the source has one (SourceAgent sets
-// it; a tracker/auto producer may leave it empty). Attribution now; the input
-// for the later hierarchical scope check (Resolved decision 2).
+// TransitionSource identifies who or what moved issue state for later
+// attribution. Actor may be empty for tracker and automatic transitions.
 type TransitionSource struct {
 	Kind  SourceKind
 	Actor store.AccountID
 }
 
-// issueStore is the narrow store surface the transition executor needs: read the
-// current row and commit the new lifecycle state. Satisfied by *store.Store; a
-// narrow interface (the CommsCaller/LifecycleCaller pattern) so the
-// compare-and-transition is provable in the default lane against a fake, not only
-// behind the pgtest tag.
+// issueStore is the transition executor's read/commit surface. *store.Store
+// satisfies it; the narrow interface makes ordering testable with a fake.
 type issueStore interface {
 	GetIssue(ctx context.Context, id string) (store.Issue, error)
 	SetIssueState(ctx context.Context, id string, state store.IssueState) error
 }
 
-// trackerMirror is the outbound tracker-write seam (design.md:438): on a real
-// transition the executor mirrors the new state out to the issue's tracker. It
-// is a NIL-SAFE injected seam in THIS PR — no real forge-tracker write seam
-// exists yet, so the field stays nil and a nil mirror is a clean no-op (the
-// pervasive post-construction-setter idiom: hub.SetLifecycleCaller /
-// SetTranscriptStore). PR-C wires a real mirror and owns its echo-suppression +
-// tracker-status mapping (Resolved decision 1).
+// trackerMirror mirrors committed state to the issue's tracker. It is an
+// optional nil-safe seam: a nil mirror is a no-op until a writer is wired.
 type trackerMirror interface {
 	MirrorIssueState(ctx context.Context, committed store.Issue) error
 }
 
-// boardService is the BoardCaller implementation and the home of the shared
-// transition executor. It holds the store (of record for issue state), the issue
-// projection (the durable-cache + issue=16 fan-out the transition records+
-// publishes onto), and the nil-safe outbound tracker mirror.
+// boardService implements BoardCaller and owns the shared transition executor.
+// It commits through the store, publishes to the issue projection, and
+// optionally mirrors committed state to the tracker.
 type boardService struct {
 	store    issueStore
 	issueBrd *board.IssueProjection
 	mirror   trackerMirror
 
-	// transitionMu serializes the compare-and-transition so read→validate→commit
-	// is atomic — a concurrent transition on the SAME issue cannot make the
-	// same-state decision stale (design.md:515-521: validation is part of the
-	// serialized transition, NOT a pre-lock step). The design record's cleanest
-	// form is a per-ISSUE mutex; a single executor mutex is chosen for the MVP
-	// (justified): it serializes ALL transitions, which is strictly stronger than
-	// per-issue atomicity (never wrong), and the agent-initiated write volume is
-	// low, so the throughput a per-issue keyed mutex would buy does not matter —
-	// while a refcounted keyed-mutex map is a real lifecycle-bug surface to get
-	// right. The upgrade to a per-issue lock (or a Postgres row-level
-	// SELECT ... FOR UPDATE in one tx) is a drop-in if write contention ever
-	// warrants it.
+	// transitionMu serializes read→validate→commit, so concurrent transitions
+	// cannot invalidate the same-state check between validation and commit.
+	// One mutex is stronger than per-issue locking and avoids keyed-lock lifecycle
+	// complexity; expected write volume is low.
 	transitionMu sync.Mutex
 }
 
-// newBoardService constructs the board caller over the store and the issue
-// projection. Wired at serve assembly with hub.SetBoardCaller after both exist,
-// breaking the hub<->boardService construction cycle (sinks.go). The mirror is
-// left nil in THIS PR (no real forge-tracker write seam yet).
+// newBoardService constructs the board caller. Serve assembly wires it after
+// hub construction to break their cycle; the optional tracker mirror is nil
+// until an outbound writer is configured.
 func newBoardService(st *store.Store, issueBrd *board.IssueProjection) *boardService {
 	return &boardService{store: st, issueBrd: issueBrd}
 }

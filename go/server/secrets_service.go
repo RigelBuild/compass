@@ -42,27 +42,16 @@ type secretsSignaler interface {
 	SignalSecretsVersion(ctx context.Context) error
 }
 
-// secretsService implements compassv1connect.SecretsServiceHandler over the
-// store's registry and the secret resolvers. The user path (Set/Delete) writes
-// through the DB-backed StoreResolver — declaration and encrypted value are one
-// atomic upsert; the serverResolver is the value-free server-secret READ surface
-// the ListServerSecrets probe uses; the signaler notifies live sessions on a
-// write. signaler may be nil on a server with no Runner door (socket-only), in
-// which case a write completes without a signal — there is no live session to
-// notify.
+// secretsService handles user and server secret stores. User writes atomically
+// pair declarations with encrypted values; the server resolver exposes only
+// value-free status and signals live sessions after writes.
 type secretsService struct {
 	compassv1connect.UnimplementedSecretsServiceHandler
 	store *store.Store
-	// resolver is the DB-backed user-secret write path (StoreResolver.Upsert /
-	// Remove): declaration and encrypted value land in one atomic upsert, so the
-	// old declare-then-Set-then-rollback trio is gone. Concrete, not an interface
-	// (record A4): there is exactly one DB-backed store and nothing to swap in.
+	// resolver atomically writes user-secret declarations and encrypted values.
 	resolver *secrets.StoreResolver
-	// serverResolver reads the separate server_secrets registry — the value-free
-	// Statuses probe ListServerSecrets uses. It is a DISTINCT surface from the
-	// user write path, so a server secret can never land in the container-
-	// delivery table. nil on a server with no server-secret wiring, in which case
-	// the server-secret list RPC fails closed with errNoServerResolver.
+	// serverResolver reads value-free status and cannot write container secrets.
+	// Missing wiring fails closed.
 	serverResolver secrets.Resolver
 	signaler       secretsSignaler
 }
@@ -288,14 +277,9 @@ func (s *secretsService) requireCaller(ctx context.Context) (store.AccountID, er
 	return callerID, nil
 }
 
-// requireUser returns the authenticated caller id AND role only when the caller
-// is a USER account; an agent account is CodePermissionDenied (the user-only
-// write gate — the same fail-closed posture as admin-gated IssueToken). No
-// caller is CodeUnauthenticated (fail closed). The account kind is read from the
-// store (an agent account has the Agent subtype set; a user does not — IsAgent).
-// The role is returned so a handler can gate a tenant-scope write (D8) without a
-// second GetAccount; a caller with no user payload (the reserved system account)
-// is the least-privilege member, so it cannot pass the admin gate.
+// requireUser returns the caller and role for user accounts only; agents are
+// denied and missing callers remain unauthenticated. The role gates tenant
+// writes; a system account without user data retains the least-privilege role.
 func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, store.UserRole, error) {
 	callerID, err := s.requireCaller(ctx)
 	if err != nil {
@@ -304,8 +288,8 @@ func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, stor
 	acct, err := s.store.GetAccount(ctx, callerID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			// A caller the bearer door authenticated but whose account row is gone:
-			// fail closed rather than admit a write under an unresolvable identity.
+			// The bearer door authenticated a caller whose account row is gone;
+			// fail closed instead of writing under an unresolvable identity.
 			return "", 0, connect.Errorf(connect.CodePermissionDenied, "caller account %q not found", callerID)
 		}
 		wrappedErr := fmt.Errorf("resolving caller account: %w", err)
@@ -321,11 +305,8 @@ func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, stor
 	return callerID, role, nil
 }
 
-// bumpSecretsVersion emits the SecretsVersion signal after a successful write.
-// Best-effort: a nil signaler (socket-only server, no Runner door) is a no-op, and
-// a push failure is logged, never surfaced to the caller — the write already
-// committed, and the Runner re-fetches on reconnect regardless (the signal is only
-// a "re-fetch now" prod, not the source of truth).
+// bumpSecretsVersion is best-effort after writes: absent signalers are a no-op,
+// errors are logged, and reconnecting Runners re-fetch the secret bundle.
 func (s *secretsService) bumpSecretsVersion(ctx context.Context) {
 	if s.signaler == nil {
 		return
@@ -335,9 +316,8 @@ func (s *secretsService) bumpSecretsVersion(ctx context.Context) {
 	}
 }
 
-// secretRoutingFromProto maps the public proto delivery/kind enums to the
-// resolve-surface enums StoreResolver.Upsert takes. UNSPECIFIED values and
-// user-declared GitHub credentials are rejected as invalid arguments.
+// secretRoutingFromProto maps wire enums to StoreResolver values; unspecified
+// values and user-declared GitHub credentials are rejected.
 func secretRoutingFromProto(d compassv1.SecretDelivery, k compassv1.SecretKind) (secrets.DeliveryKind, secrets.SecretKind, error) {
 	var delivery secrets.DeliveryKind
 	switch d {
@@ -384,16 +364,8 @@ func kindToProto(k store.SecretKind) compassv1.SecretKind {
 	}
 }
 
-// resolveSecretScope maps a wire SecretScope + caller identity to the store
-// coordinate (scope_kind, scope_id) a user-secret write targets, implementing
-// D9's matrix. UNSPECIFIED and USER both land at the caller's private user
-// coordinate — the unspecified default is USER, so an omitted field never
-// silently writes a tenant-wide value. TENANT lands at the shared coordinate
-// (store 0, "") and requires UserRoleAdmin, else CodePermissionDenied. An
-// unknown/out-of-range wire value is CodeInvalidArgument (fail closed). The wire
-// numbers deliberately differ from the store's (tenant is 2 here, 0 there), so
-// this MAPS explicitly rather than casting — a cast would turn an omitted field
-// into a tenant write, the exact bug the default exists to prevent.
+// resolveSecretScope defaults omission to private USER scope; TENANT requires
+// admin, and unknown wire values fail closed.
 func resolveSecretScope(scope compassv1.SecretScope, callerID store.AccountID, role store.UserRole) (int16, string, error) {
 	switch scope {
 	case compassv1.SecretScope_SECRET_SCOPE_UNSPECIFIED, compassv1.SecretScope_SECRET_SCOPE_USER:

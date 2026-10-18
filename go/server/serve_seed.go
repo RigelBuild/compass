@@ -33,32 +33,21 @@ const (
 // adopts nothing, so it must say so when Linear needs the supervisor as its fallback.
 var errTreeNotEmpty = errors.New("root-supervisor seed: agent tree already has an operator-built root")
 
-// seedClientRequestID is the fixed idempotency key the seed's spawnAccount runs
-// under. Fixed (not per-call) so a re-enroll that re-fires the seed for an
-// already-seeded-and-live supervisor joins the completed spawn or is rejected
-// on-live, never provisioning a second container for it.
+// seedClientRequestID keeps re-enrollment retries on the same supervisor spawn,
+// joining its result or rejecting an already-live agent without reprovisioning.
 const seedClientRequestID = "compass-root-supervisor-seed"
 
-// seedTimeout bounds the whole seed (CreateAgent + Provision + Start) so a wedged
-// Runner cannot hang the enroll-hook goroutine forever.
+// seedTimeout bounds setup so a wedged Runner cannot hang enrollment forever.
 const seedTimeout = 2 * time.Minute
 
-// setupThreadClientRequestIDPrefix + "-" + supervisorAccountID is the effective
-// idempotency key the Setup post runs under. SUPERVISOR-SCOPED, not a single
-// global fixed key (OQ-7): the idempotency index is (author, client_request_id)
-// global per author, and the author is @compass forever — so a global key would
-// silently suppress the Setup post for a RECREATED root supervisor (operator
-// deletes it, the empty-tree gate re-seeds a NEW one), leaving the recreated
-// Manager with no first turn. A supervisor-scoped key is immune and costs nothing.
+// Setup idempotency is supervisor-scoped because the index is global per author;
+// a recreated supervisor must still receive its first-turn message.
 const setupThreadClientRequestIDPrefix = "compass-root-supervisor-setup"
 
-// setupTopicName is the topic the Setup thread is posted into, get-or-created by
-// name in the supervisor's home channel.
+// setupTopicName is the topic in the supervisor's home channel where Setup is posted.
 const setupTopicName = "Setup"
 
-// setupThreadBody is the platform's first-turn Setup message, posted as @compass
-// into the root supervisor's home channel to give the Manager its first turn.
-// OQ-5: the copy is a placeholder pending Matt's product sign-off at the PR.
+// setupThreadBody is the first-turn Setup message posted as @compass to the supervisor.
 //
 //go:embed setup_thread.md
 var setupThreadBody string
@@ -89,51 +78,20 @@ func rootSupervisorSeed(ctx context.Context, d seedDeps) (hook func(), cancel co
 	}, cancel
 }
 
-// seedRootSupervisor brings up the root supervisor on first launch: on
-// an empty agent tree it creates one root agent under the bootstrap admin, then
-// provisions and starts it. It is the runner-ready-hook body (wired via
-// Hub.SetRunnerReadyHook) because Provision/Start need a Runner whose command
-// stream can serve them, which is not up when the server boots — the embedded
-// stack starts the Runner only after the server is already serving, and the
-// Runner's command stream attaches only after it enrolls. It runs on the hook's
-// own goroutine.
-//
-// It is find-or-create-then-start: on a later Runner reconnect it re-fires and
-// re-drives a supervisor whose row exists but was never started (a prior boot
-// created the row but its Start failed), because that supervisor has no success
-// memo to join, so spawnAccount runs reject-on-live then Provision/Start for real.
-// The create half stays gated on an EMPTY tree: if the operator has built any
-// other root, the seed adopts nothing and creates nothing.
-//
-// Re-drive is bounded by the spawn memo, and does NOT cover a Runner-only
-// restart within the memo's success-retention window (spawnMemoTTL). The start
-// is spawnAccount under a fixed client_request_id (seedClientRequestID); once a
-// boot's Start succeeds, that success is memoized, so a re-fire inside the window
-// joins the completed spawn and returns its cached session id WITHOUT consulting
-// the Runner — even if the session actually died with a restarted Runner. Real
-// liveness-checked re-drive (consult the Runner's authoritative live set, spawn
-// under a fresh key when the cached session is gone) is tracked as a follow-up;
-// RIG-1820 covers first-launch seed and the never-started re-drive above.
-//
-// A failure is logged, not fatal: the server stays up and the next Runner
-// reconnect re-fires the seed. A non-empty linearBridgeID also ensures the Linear
-// routing channel once the supervisor exists; empty means Linear is off.
+// The runner-ready hook seeds a root only on an empty tree after enrollment.
+// Incomplete setup retries on reconnect; successful starts stay memoized until expiry.
 func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *comms.Comms, adminID, compassID, linearBridgeID store.AccountID, log *slog.Logger) {
 	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "server.seed.rootSupervisor", trace.WithNewRoot())
 	defer span.End()
 	ctx, cancel := context.WithTimeout(ctx, seedTimeout)
 	defer cancel()
 
-	// Find-or-create the supervisor. AgentByHandle resolves a prior boot's row;
-	// ErrNotFound means it does not exist yet, so fall through to the empty-tree
-	// create gate.
+	// Find-or-create the supervisor; a miss falls through to the empty-tree gate.
 	supervisor, err := st.AgentByHandle(ctx, adminID, rootSupervisorHandle)
 	switch {
 	case err == nil:
-		// Exists already (prior boot). The find half resolves by a globally unique
-		// handle, so assert the found agent is actually THIS admin's root before
-		// re-driving it — else a non-admin-owned agent holding the reserved handle
-		// would be auto-provisioned. Keeps the "adopts nothing it did not seed" contract.
+		// The global handle may belong to another account; verify ownership before
+		// re-driving this seed.
 		if !isAdminRootSupervisor(supervisor, adminID) {
 			log.ErrorContext(ctx, "root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
 				"agent_account_id", supervisor.ID)
@@ -154,7 +112,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		return
 	}
 
-	// Ensured before the spawn: routing needs only the rows, not a live session.
+	// Routing needs only the rows, so establish it before spawning.
 	if linearBridgeID != "" {
 		if _, err := st.EnsureLinearRoutingChannel(ctx, adminID, supervisor.ID, linearBridgeID); err != nil {
 			log.ErrorContext(ctx, "root-supervisor seed: ensuring the linear routing channel failed; will retry on next enroll",
@@ -167,10 +125,8 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	// re-fire never launches a second container.
 	if _, err := svc.spawnAccount(ctx, supervisor, seedClientRequestID); err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {
-			// Already live (reject-on-live) — the supervisor is up. Still post the
-			// Setup thread: on a re-fire for a supervisor that came up on a prior
-			// boot, this arm is the ONLY path that reaches the post, and the
-			// supervisor-scoped idempotency key makes a repeat post a no-op.
+			// Already live: still post Setup, since a prior-boot supervisor needs
+			// the thread and its scoped idempotency key makes repeats no-ops.
 			postSetupThread(ctx, cm, st, compassID, supervisor, log)
 			return
 		}
@@ -179,15 +135,12 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		return
 	}
 
-	// spawnAccount returned without error: either it drove Provision/Start, or it
-	// joined this boot's completed seed spawn. It does NOT re-confirm liveness
-	// against the Runner on a memo join (see the memo caveat above), so this
-	// reports the seed drove to completion, not an independently verified session.
+	// A successful spawn may join a memoized result; this does not independently
+	// confirm Runner liveness.
 	log.InfoContext(ctx, "root-supervisor seed: root supervisor seed completed", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
 
-	// Give the supervisor its first turn: post the Setup thread as @compass into its
-	// home channel. A post failure is logged, not fatal (matching the seed's own
-	// posture); the next ready-hook re-fire retries it.
+	// Post the supervisor's first-turn Setup thread. Failure is logged and
+	// retried on the next ready-hook run.
 	postSetupThread(ctx, cm, st, compassID, supervisor, log)
 }
 
@@ -206,16 +159,10 @@ func warnNoLinearRoutingTarget(ctx context.Context, log *slog.Logger, linearBrid
 	log.WarnContext(ctx, "root-supervisor seed: cold Linear delegations have no routing target", "reason", reason)
 }
 
-// postSetupThread posts the platform's Setup thread as @compass into the
-// supervisor's home channel, giving the seeded root supervisor its first turn. It
-// first makes @compass an (unsubscribed) member of that channel — PostMessage
-// D9-gates the post on membership, so a post before membership collapses to
-// CodeNotFound — then posts under a supervisor-scoped idempotency key, so a
-// re-fire (or the reject-on-live arm) is deduped to the one Setup message.
-//
-// Both steps are non-fatal: an error is logged and the seed continues. The next
-// ready-hook re-fire retries. compassID is the reserved system sender; it never
-// receives (no delivery cursor is seeded), it only authors this post.
+// postSetupThread adds @compass to the home channel before posting because
+// PostMessage requires membership. Its supervisor-scoped key deduplicates retries.
+// Failures are non-fatal and retried on the next ready hook; compassID only
+// authors the post and has no delivery cursor.
 func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, compassID store.AccountID, supervisor store.Account, log *slog.Logger) {
 	homeChannelID := supervisor.Agent.HomeChannelID
 	if err := st.EnsureChannelMember(ctx, homeChannelID, compassID); err != nil {
@@ -236,12 +183,8 @@ func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, comp
 	}
 }
 
-// createRootSupervisor creates the root supervisor agent, but only on an EMPTY
-// tree (no root under the admin). It returns (agent, true, nil) when it created
-// one, (zero, false, errTreeNotEmpty) when the tree already held an operator-built
-// root, and (zero, false, nil) when a concurrent seed won the unique-handle race
-// (that winner drives the start). The caller starts the supervisor only on a
-// true. Any real error is returned with created=false.
+// createRootSupervisor creates only on an empty tree. Existing roots are
+// reported as errTreeNotEmpty; a concurrent winner is a no-op.
 func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.AccountID, log *slog.Logger) (store.Account, bool, error) {
 	roots, err := st.CountRootAgents(ctx, adminID)
 	if err != nil {
@@ -255,7 +198,7 @@ func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.Ac
 		Handle:      rootSupervisorHandle,
 		DisplayName: rootSupervisorDisplayName,
 		Role:        rootSupervisorRole,
-		// ParentAgentID empty => root.
+		// Empty ParentAgentID creates a root.
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
