@@ -18,13 +18,8 @@ type PresenceSnapshot struct {
 	Presence compassv1.AgentPresence
 }
 
-// presenceSource is the in-memory presence projection the hub reads the enum
-// snapshot from and publishes an activity live-event through. The T8 presence
-// component (internal/presence.Publisher) implements it; the hub depends only on
-// this narrow surface (mirroring PresenceSink / CommsCaller). It is DISTINCT from
-// PresenceSink (the write-edge the hub feeds lifecycle/reconciliation into): this
-// is the READ + publish-hook edge the roster leg consumes, wired the same way via
-// SetPresenceSource. Absent-from-map agents are OFFLINE at the caller.
+// presenceSource reads the in-memory presence projection and publishes activity events.
+// It is separate from PresenceSink, which receives lifecycle updates; missing agents are OFFLINE.
 type presenceSource interface {
 	PresenceFor(accountIDs []store.AccountID) map[store.AccountID]compassv1.AgentPresence
 	PublishActivity(ctx context.Context, agentAccountID store.AccountID, activity string)

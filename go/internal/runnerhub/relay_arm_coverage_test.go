@@ -97,24 +97,9 @@ func TestRelayCommsPinToolErrorIsInBandNotStreamError(t *testing.T) {
 	}
 }
 
-// armCase is one relay arm's coverage row: the request to relay, the response to
-// seed on the fake, and the accessors reading back what the hub recorded and
-// returned.
-//
-// seed installs the response the fake returns for this arm, and wantResp is that
-// same instance. gotResp reads the arm the hub actually wrapped. Together they
-// make the seed load-bearing: without the identity assertion an arm could wrap
-// nil and still pass, because WhichOneof reports an arm as set whenever the
-// wrapper struct exists even when the inner message pointer is nil.
-//
-// A row omits seed/gotResp/wantResp ONLY when the production arm returns a FRESH
-// response rather than the caller's, so there is no instance to be identical to
-// — today that is set_status alone, whose CommsCaller method returns a string.
-// That opt-out is EARNED, not taken on trust: the sweep rejects a row that
-// declines the pair while its result type has any field, because IsValid alone
-// cannot tell a fresh empty message from the caller's and such a row could drop
-// a real payload silently. set_status qualifies because SetAgentStatusResponse
-// has zero fields.
+// armCase stores a relay request, fake input, and accessors for checking what the hub recorded and returned.
+// Response identity is required except for set_status, which returns a fresh empty response.
+// The structural check rejects identity opt-outs for response types with fields.
 type armCase struct {
 	name     string
 	request  *compassv1internal.RelayCommsCallRequest
@@ -181,12 +166,7 @@ func commsArmCasesCore() []armCase {
 			wantResp: rosterResp,
 		},
 		{
-			// set_status is the one arm with no canned response to seed: the
-			// production arm returns the server-truncated activity string and
-			// wraps a FRESH empty response, so its identity check is against
-			// that empty value's presence, not the caller's instance. `want`
-			// is a string VALUE here, compared through `any` — which catches a
-			// production bug forwarding "" or the call_id instead.
+			// set_status returns a fresh empty response and a string value, not a seeded message.
 			name:    "set_status",
 			request: relaySetStatus("sess-1", "tc-status", "status"),
 			seed:    func(c *fakeCommsCaller) {},
@@ -276,11 +256,7 @@ func commsArmCasesBoardAndChannels() []armCase {
 	}
 }
 
-// requireEveryArmCovered gates the hand-maintained table against the oneof
-// descriptor in BOTH directions: every declared arm has a case, and no case
-// names an arm the oneof no longer declares. Both are needed — the forward loop
-// alone passes a table that lost an arm to a duplicate name, and the count alone
-// passes a table covering the wrong nine.
+// requireEveryArmCovered checks the table against the oneof in both directions, catching omissions and stale names.
 func requireEveryArmCovered(t *testing.T, cases []armCase) {
 	t.Helper()
 	arms := commsCallOneofArms(t)
@@ -327,23 +303,14 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 			if calls[0].account != testAgentAccount {
 				t.Fatalf("%s attributed to %q, want bound %q", arm.name, calls[0].account, testAgentAccount)
 			}
-			// One verb cannot serve both row shapes: the eight message rows are
-			// pointer-identity, and %#v renders two zero-valued proto pointers
-			// byte-identically (a 446-char wall reading "got = X, want = X");
-			// set_status's row is a string VALUE, for which %p is an error
-			// token. Split on the row's kind so the failure names the mismatch.
+			// Message arms compare pointer identity; set_status compares a string value.
 			if got := arm.field(calls[0]); got != arm.want {
 				if want, ok := arm.want.(string); ok {
 					t.Fatalf("%s recorded activity = %#v, want %#v", arm.name, got, want)
 				}
 				t.Fatalf("%s recorded request %p, want the relayed instance %p", arm.name, got, arm.want)
 			}
-			// The result must be wrapped in the arm MATCHING the request.
-			// Attribution and forwarding both pass under a mis-wrapped
-			// response, so without this a swapped result oneof is invisible.
-			// CommsCallResult reuses CommsCallRequest.call's arm names
-			// (agent_gateway.proto, `message CommsCallResult`), so the check is
-			// generic over the oneof rather than per-arm.
+			// Verify the response uses the request's matching oneof arm.
 			result := resp.GetResult().ProtoReflect()
 			resultOneof := result.Descriptor().Oneofs().ByName("result")
 			if resultOneof == nil {
@@ -356,28 +323,17 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 			if got := string(set.Name()); got != arm.name {
 				t.Fatalf("%s wrapped its response in the %q result arm, want %q", arm.name, got, arm.name)
 			}
-			// The floor EVERY arm pays, including one that declines wantResp:
-			// WhichOneof reports an arm as set whenever the wrapper struct
-			// exists, even wrapping a NIL message, so the name check alone
-			// passes an arm that drops the caller's response. IsValid is what
-			// separates a real empty message from a nil pointer — Has cannot.
+			// An arm must wrap a valid message, not a nil pointer.
 			if !result.Get(set).Message().IsValid() {
 				t.Fatalf("%s wrapped a NIL message in the %q result arm", arm.name, arm.name)
 			}
-			// The opt-out must be EARNED, not asserted in a comment: IsValid
-			// separates non-nil from nil and cannot tell the caller's instance
-			// from a fresh empty one, so a row that declines the identity check
-			// while its result type HAS fields could drop the whole response
-			// silently. Only a zero-field response type has nothing to lose,
-			// which is why set_status alone qualifies — and a future arm that
-			// forgets the pair fails here instead of going uncovered.
+			// IsValid cannot distinguish a seeded response from a fresh empty one.
+			// Only zero-field results may omit the identity check, so set_status is the sole opt-out.
 			if arm.gotResp == nil && set.Message().Fields().Len() != 0 {
 				t.Fatalf("%s declines the identity check but its result type %s has %d field(s) that could be silently dropped; add gotResp/wantResp",
 					arm.name, set.Message().FullName().Name(), set.Message().Fields().Len())
 			}
-			// The ceiling the eight arms with a caller-owned response reach:
-			// the payload is the seeded instance, which is what makes each
-			// seed load-bearing and kills a wrong-instance swap.
+			// Message arms must return the exact seeded response instance.
 			if arm.gotResp != nil {
 				if got := arm.gotResp(resp.GetResult()); got != arm.wantResp {
 					t.Fatalf("%s returned response %p, want the caller's seeded instance %p", arm.name, got, arm.wantResp)
@@ -387,11 +343,7 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 	}
 }
 
-// commsCallOneofArms resolves the CommsCallRequest `call` oneof's fields, and is
-// shared so every structural test over the oneof applies ONE standard for the
-// lookup. A nil descriptor is caught before any method call on it: ranging a nil
-// oneof panics, which reads as a confusing crash rather than "this gate stopped
-// measuring". Both vacuity guards live here for the same reason.
+// commsCallOneofArms resolves the request oneof and rejects a missing or empty descriptor before iteration.
 func commsCallOneofArms(t *testing.T) protoreflect.FieldDescriptors {
 	t.Helper()
 	oneof := (&compassv1internal.CommsCallRequest{}).ProtoReflect().Descriptor().Oneofs().ByName("call")

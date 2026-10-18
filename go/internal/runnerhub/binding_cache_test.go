@@ -2,28 +2,9 @@
 
 package runnerhub
 
-// RIG-3108 / RIG-2861 §T4 — the session-binding read-through cache. The hub's
-// in-RAM sessionAccounts/accountSessions maps are now a cache over the durable
-// session_bindings table (a SessionBindingStore), invalidated across Server
-// instances by a RoutingFabric. These white-box tests drive the unexported
-// binding lifecycle (promoteSession/unbindSession/enroll) and the two resolvers
-// (accountForSession + SessionForAccount) against hand-written fakes — the same
-// fake-double style as deliveryarm_test.go — so each pins one contract a
-// plausible regression would break:
-//
-//   - a Server RESTART reaps the Runner's pre-restart rows on its first enroll;
-//   - a cold cache resolves a post-enroll binding from the durable row, both
-//     directions;
-//   - a stopped / never-seen / post-RECONNECT session fails closed;
-//   - a binding change on one instance evicts a peer instance's cache;
-//   - a displaced session (an account re-pointed onto a new one) resolves
-//     nowhere;
-//   - the ack path's binding read never runs under the BYPASSRLS system role.
-//
-// The durable SQL itself is proven in store/session_bindings_pgtest_test.go; the
-// cross-instance fabric fan-out in fabric/routing_fabric_test.go. These tests own
-// the HUB's cache logic — the read-through gate, the reap, the eviction wiring —
-// which neither of those exercises.
+// Session bindings use durable storage with in-memory read-through caching and cross-instance invalidation.
+// Tests cover restart reaping, cold-cache resolution, fail-closed misses, peer eviction, displacement,
+// and ensure ack reads do not use the system role.
 
 import (
 	"context"
@@ -41,15 +22,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// fakeBindingStore is an in-memory SessionBindingStore double keyed on session
-// id, modelling the durable table's account-keyed UPSERT: RecordSessionBinding
-// displaces any prior binding for the same account and returns that session, and
-// DeleteSessionBindingsForRunner returns the rows it removed (the reconnect
-// sweep's authoritative reap set). It also models session_bindings_session_key:
-// re-binding a session id that belongs to a DIFFERENT account is ErrConflict,
-// never a silent steal. resolveCtxSystemRole records whether the LAST
-// ResolveSessionAccount ran under the system role — the direct probe for the
-// ack-path hazard fix. Concurrency-safe for parity with the real store.
+// fakeBindingStore models account-keyed UPSERT and reconnect reaping, and rejects cross-account session-id reuse.
+// It records whether resolution used the system role and is concurrency-safe like the real store.
 type fakeBindingStore struct {
 	mu       sync.Mutex
 	tenant   store.TenantID
@@ -77,11 +51,8 @@ func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID str
 	if f.recordErr != nil {
 		return "", "", f.recordErr
 	}
-	// session_bindings_session_key: this session id already belongs to a
-	// DIFFERENT account. The real store raises ErrConflict rather than
-	// stealing the id, which is what keeps ResolveSessionAccount
-	// single-valued; a fake that silently overwrote would hide the whole
-	// class (a Runner restart re-mints "sess-1", so id reuse is routine).
+	// A session id already bound to another account is a conflict, not a silent steal.
+	// This preserves single-valued lookup when a Runner re-mints an id after restart.
 	if b, ok := f.bindings[sessionID]; ok && b.AccountID != accountID {
 		return "", "", fmt.Errorf("%w: session %q is already bound to a different agent", store.ErrConflict, sessionID)
 	}
@@ -207,12 +178,8 @@ func (f *fakeBindingStore) seedBinding(sessionID string, accountID store.Account
 	f.putLocked(sessionID, accountID, runnerID)
 }
 
-// fakeRoutingFabric is an in-memory RoutingFabric double: PublishBindingChange
-// fans SYNCHRONOUSLY to every registered receiver, modelling the real fabric's
-// fan-out-to-every-instance contract (fabric/routing_fabric_test.go proves the
-// NATS wire; this proves the HUB's publish->peer-evict wiring without a broker).
-// Synchronous fan-out is what lets a two-instance test assert eviction with no
-// sleep. published records every change for the publish-side assertions.
+// fakeRoutingFabric synchronously fans binding changes to receivers, so tests can assert eviction without a broker.
+// It records publishes for assertions.
 type fakeRoutingFabric struct {
 	mu        sync.Mutex
 	receivers []func(fabric.BindingChange)

@@ -2,14 +2,8 @@
 
 package runnerhub
 
-// The org-management relay arms (RIG-2673 T3): RelayCommsCall dispatches a
-// create_channel call to CreateChannelAsAccount, an update_members call to
-// UpdateChannelMembersAsAccountByName, and a create_channel_group call to
-// CreateChannelGroupAsAccount — each under the bound account, wrapping the
-// matching result oneof, with call_id round-tripped. A tool error on an arm is
-// rendered in-band as a CommsCallError, never a transport teardown. Driven
-// through the fakeCommsCaller, no store. context.Background() is the test root
-// (test-root ctx exemption).
+// RelayCommsCall's channel and channel-group arms use the bound account and wrap matching results.
+// Tool errors stay in-band; tests use a fake caller without a store.
 
 import (
 	"context"

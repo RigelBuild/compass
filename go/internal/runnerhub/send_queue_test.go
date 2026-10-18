@@ -2,18 +2,8 @@
 
 package runnerhub
 
-// The per-router bounded send queue: latency isolation (a wedged Send no longer
-// blocks another router or the calling path), per-class full-queue policy
-// (deliver = synchronous refusal, signal = best-effort drop, command =
-// fail-fast), FIFO order preserved to the wire, and the leak-free
-// attach-spawns / detach-joins lifecycle with its per-class teardown of
-// queued-but-unsent frames. See
-// RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runnerhub-send-queue/design.md.
-//
-// Every case is channel-gated — no sleeps, no retries. A parked Send blocks on
-// an explicit release channel the test controls, so "the caller returned while
-// the stream is wedged" is observed on a done channel, not inferred from
-// elapsed time. All run under -race.
+// Queue tests cover latency isolation, per-class overflow, FIFO order, and detach cleanup.
+// Parked sends and channels make synchronization observable without sleeps or retries.
 
 import (
 	"bytes"
@@ -29,12 +19,8 @@ import (
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
-// parkedSend is a stream send that blocks on release until the test unparks it,
-// then returns retErr for every subsequent (and the released) call. It records
-// the order in which frames reached the wire. The single-sender invariant means
-// exactly one goroutine ever calls send, so no internal lock is needed for the
-// order slice — but a lock keeps it race-detector clean against the test
-// goroutine reading sentOrder.
+// parkedSend blocks until released, then records frame order and returns its configured error.
+// A lock protects the order slice when the test reads it.
 type parkedSend struct {
 	entered chan struct{} // one token per send call that has begun blocking
 	release chan struct{} // closed by the test to unblock every parked send
@@ -498,21 +484,14 @@ func TestQueuedDeliverAtDetachNeverSends(t *testing.T) {
 		}
 	}
 
-	// A stray complete for the queued deliver's id must be a harmless no-op: no
-	// result can arrive for a frame that never left, so at most it is an
-	// observable-refusal miss, never a panic. detach does NOT clean deliverRefusals
-	// entries (per design (e)); the entry is left to LRU eviction, so it may or may
-	// not still be resident — the contract asserted here is only non-panic.
+	// Completion for an unsent deliver is harmless; detach may leave its refusal entry for LRU eviction.
 	r.complete(t.Context(), &compassv1internal.SessionsRequest{
 		RequestId: deliverID,
 		Result:    &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{}},
 	})
 }
 
-// Test 9 — Send-failure per-class teardown. The Send fails on the first frame; a
-// command frame's parked dispatch caller must UNBLOCK with the error (its
-// waitCall returns the Send error, not merely that the id left inflight), a
-// deliver frame's refusal entry must be removed, and the sender must exit.
+// Test send-failure teardown: command waiters unblock, deliver tracking is removed, and the sender exits.
 func TestSendFailurePerClassTeardown(t *testing.T) {
 	t.Run("command frame caller unblocks with the send error", func(t *testing.T) {
 		r := newCommandRouter()

@@ -2,22 +2,8 @@
 
 package runnerhub
 
-// THE anti-orphan live-seam test (compass ruling, load-bearing). It stands up
-// the RunnerService handler on an httptest h2c server, dials it with the REAL
-// generated RunnerServiceClient over a fake resolver that accepts a SubjectRunner
-// token, and exercises the whole seam over the wire:
-//   - Enroll → accepted into the registry (Reattached=false first time).
-//   - Sessions → the Server pushes one command (Hub.Start from a goroutine), a
-//     minimal Runner-side loop returns the correlated result, and Start returns
-//     it — proving the command round-trips the bidi stream, dial-out inversion
-//     and all.
-//   - PublishEvents → one relayed frame reaches Hub.Deliver (the fake sinks see
-//     it) — proving the event path is mounted-and-terminating-the-wire, not
-//     merely a struct call.
-//
-// "Mounted-and-terminating-the-wire": every operation goes through the real
-// connect handler + interceptors, so a regression that broke the mount, the
-// stream inversion, or the Deliver wiring reddens this and only this test.
+// Exercise Enroll, Start, and PublishEvents through the mounted RunnerService handler over h2c.
+// The real generated client and fake Runner loop verify command round trips and frame delivery.
 
 import (
 	"context"
@@ -53,8 +39,7 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 		t.Fatal("first Enroll reattached = true, want false")
 	}
 
-	// --- Sessions: open the bidi stream and run a minimal Runner-side dispatch
-	// loop that answers one Start command with a fixed session id. ---------------
+	// Open the bidi stream and answer a Start command from the Runner-side loop.
 	stream, err := client.Sessions(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -62,11 +47,7 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 	loopErr := make(chan error, 1)
 	go runnerSessionsLoop(stream, loopErr)
 
-	// Event-gate on the server-side Sessions handler having bound the command
-	// router to this live stream. Opening the stream client-side is not enough:
-	// the handler's router.attach runs only once the stream reaches the server,
-	// so dispatching before it is bound would (correctly) find no live stream.
-	// This gates on that observed attach, deterministically.
+	// Wait for the server handler to attach the router; opening the client stream alone is insufficient.
 	waitRouterAttached(t, hub)
 
 	// The Server pushes a Start command via Hub.Start from a goroutine; it blocks
@@ -178,20 +159,8 @@ type startRoundTrip struct {
 	err  error
 }
 
-// runnerSessionsLoop is a minimal Runner-side dispatch loop: it reads each
-// command the Server pushes on the response half and answers a Start with a
-// fixed session-id result on the request half. It ends when the stream closes
-// (clean EOF → nil).
-//
-// It opens the stream with one bootstrap Send BEFORE the Receive loop, because
-// connect-go's CallBidiStream does not initiate the HTTP request (and so the
-// server's Sessions handler + router.attach never run) until the client's first
-// Send (connect client.go: "request headers are not sent automatically ...
-// require an explicit call to Send"). The empty result carries no request id, so
-// the server's router.complete treats it as an unknown-id no-op — it exists only
-// to open the stream. runner.RunSessions opens its real Sessions stream with the
-// same bootstrap Send (dispatch.go), so this loop mirrors the production client's
-// stream-open, not a test shortcut.
+// runnerSessionsLoop bootstraps the bidi stream, answers Start commands, and returns on close.
+// The first Send is required to initiate Connect's HTTP request and mount the server handler.
 func runnerSessionsLoop(stream compassv1internalconnect.RunnerServiceSessionsClientStream, done chan<- error) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		done <- err

@@ -2,11 +2,8 @@
 
 package runnerhub
 
-// The ConfigVersion emit seam (config_signal.go). Every case pins a behavior a
-// plausible bug would break:
-//   - SignalConfigChanged pushes ONE payload-free fleet-wide frame per stream,
-//     regardless of the number of live sessions.
-//   - No live sessions, and no Runner enrolled, are clean no-op successes.
+// SignalConfigChanged sends one payload-free frame per live stream.
+// No live sessions or enrolled Runner is a successful no-op.
 
 import (
 	"context"

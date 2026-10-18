@@ -2,14 +2,8 @@
 
 package runnerhub
 
-// DL-167 attribution: an AgentSessionStatus the hub publishes at deliverSession
-// carries the session's agent_account_id, joined from the hub's own live
-// binding, for as long as that binding stands — including the terminal STOPPED
-// status, which resolves its account before Stop's unbindSession drops it. A
-// status published for a session with no live binding carries no account (the
-// stated residual gap). White-box (package runnerhub) so the test drives the
-// unexported binding lifecycle and the deliverSession arm directly and asserts
-// on the published status through the fake lifecycle sink.
+// Published status carries the account from the live binding, including STOPPED before Stop unbinds it.
+// A session without a live binding publishes no account.
 
 import (
 	"context"

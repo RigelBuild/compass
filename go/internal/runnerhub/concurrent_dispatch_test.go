@@ -2,24 +2,8 @@
 
 package runnerhub
 
-// A concurrent-Send data-race regression for the command router over the REAL
-// connect Sessions stream. dispatch() enqueues each command onto the router's
-// bounded outbound queue, which a single per-router sender goroutine drains as
-// the SOLE caller of the server-side BidiStream.Send — connect-go does NOT make
-// that Send safe for concurrent use. In production, many client-facing session
-// RPCs dispatch onto the ONE shared Sessions stream at once; the single-sender
-// invariant is what keeps two of them from entering Send concurrently and
-// corrupting frames on the stream's write path. This test drives many concurrent
-// dispatches over the real mounted handler under -race, so a regression that
-// broke the single-sender invariant (e.g. a direct Send from a caller goroutine)
-// reddens here (WARNING: DATA RACE) rather than silently shipping corrupted
-// frames. See RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runnerhub-send-queue/design.md.
-//
-// Unlike the router_test.go cases (a fake in-process send), this exercises the
-// real wire: the Runner-side loop drains every command the Server pushes and
-// echoes a correlated result, so each dispatch completes on the observed result
-// — event-gated on that completion (wg.Wait), never a sleep or a retry.
-
+// Concurrent dispatch over a real Sessions stream verifies the single-sender invariant under -race.
+// The Runner echoes request ids so each result can be checked for correlation and payload integrity.
 import (
 	"context"
 	"errors"
@@ -68,11 +52,7 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 		t.Fatalf("routerFor after enroll+attach = %v, want the live router", err)
 	}
 
-	// Fire many concurrent dispatches with DISTINCT request ids: the normal
-	// concurrent case, each id pushing its own command through the one shared
-	// Send. Without sendMu two of these race inside connect's stream write. Each
-	// goroutine writes a distinct slice index, so the slices themselves are not a
-	// shared-write race — only the stream Send is.
+	// Distinct ids exercise concurrent Send through the shared stream; each goroutine owns its result slot.
 	const n = 64
 	var wg sync.WaitGroup
 	results := make([]*compassv1internal.SessionsRequest, n)
@@ -87,11 +67,7 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Every dispatch completed with its own correlated result, uncorrupted: the
-	// echoed session-id payload must match this caller's id. A frame interleave
-	// from concurrent Send corrupts the bytes on the wire, so the client either
-	// fails to decode (the dispatch errors or never completes → ctx timeout) or
-	// delivers a garbled payload — both reddening these assertions.
+	// Each result must preserve its caller's id and payload; interleaving would fail decoding or garble it.
 	for i := range n {
 		id := fmt.Sprintf("req-%d", i)
 		if errs[i] != nil {
@@ -116,11 +92,7 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 	}
 }
 
-// echoSessionsLoop is a Runner-side dispatch loop for the concurrency test: a
-// bootstrap Send opens the stream (see runnerSessionsLoop for why the request is
-// not sent until the client's first Send), then it drains every command the
-// Server pushes and answers each Start with a session id encoding the command's
-// request id, so the dispatcher can prove per-call correlation of the payload.
+// echoSessionsLoop replies to each command with its request id encoded in the session id.
 func echoSessionsLoop(stream compassv1internalconnect.RunnerServiceSessionsClientStream, done chan<- error) {
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		done <- err

@@ -17,41 +17,15 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// errReaderUnavailable is the fail-closed cause when a hub with no
-// TranscriptReader wired serves ReconstructSessionBody (a Deliver-only hub, or a
-// server assembly that never wired the read seam). It maps to CodeUnavailable —
-// the resume read leg is not mounted, never a silent empty body an agent would
-// resume from as if the session were fresh.
+// errReaderUnavailable fails closed when the resume read leg is not wired.
+// Returning an empty body would make the agent resume as if the session were fresh.
 var errReaderUnavailable = errors.New("runnerhub: no transcript reader wired to serve ReconstructSessionBody")
 
-// ReconstructSessionBody rebuilds the resume body for sessionID — the loadable
-// SDK session file the resuming agent's first lifetime starts from (T5, record
-// §1142-1205). It is a PURE read-and-concatenate: the store never parses entry
-// JSON and neither does this, so the result is byte concatenation joined by
-// newlines.
+// ReconstructSessionBody concatenates opaque transcript entries into a loadable SDK session file.
+// It does not parse entries.
 //
-// NORMAL operation reads the PG hot-tail ONLY (the object store is NOT touched):
-// SessionTranscript yields the latest checkpoint (if any) followed by every
-// later delta in entry order. The checkpoint's EntryJSON is a full SDK file body
-// (header-first, the loader-validated header); it is emitted VERBATIM, then each
-// later delta's EntryJSON is appended one line each. The result is a valid
-// loadable session file BY CONSTRUCTION — this never validates or parses it.
-//
-// S3 FALLBACK — ONLY when the safety valve fired: if SafetyValveSegments is
-// non-empty, the checkpoint full body is emitted FIRST, then every later delta —
-// from the fetched S3 segment(s) AND the PG tail alike — is merged by entry_seq
-// BEHIND that checkpoint body, so the file stays header-first and complete. This
-// is the only resume path that touches the object store; it never fires in
-// normal operation.
-//
-// An unknown or empty session is CodeNotFound (propagating the store's
-// ErrNotFound). A hub with no reader wired is CodeUnavailable.
-//
-// Fixture gap (NOTE to the driver): no captured real-tee SDK session-file
-// fixture exists in this tree, so the loadability guarantee is asserted
-// structurally (header-first + newline-joined in seq order), not against a
-// golden file. The store's checkpoint-is-a-full-body invariant is what makes the
-// concatenation loadable; a fixture would pin it end-to-end.
+// Normal reads concatenate the PG tail; safety-valve reads merge archived segments by entry sequence.
+// Checkpoints provide the full header-first body, and unknown sessions return NotFound.
 func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]byte, error) {
 	h.mu.Lock()
 	reader := h.reader
@@ -60,22 +34,14 @@ func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]b
 		return nil, connect.NewError(connect.CodeUnavailable, errReaderUnavailable.Error()).WithCause(errReaderUnavailable)
 	}
 
-	// One atomic snapshot: PG hot-tail and safety_valve manifest are read together
-	// so a background flush pass committing mid-read can't corrupt the body, and
-	// the manifest read drops valve segments at or below the latest checkpoint.
-	// The NotFound-on-empty-tail return relies on the store invariant that the
-	// valve never evicts the last row — a future eviction change MUST preserve it
-	// or resume wrongly NotFounds.
+	// Read the PG tail and valve manifest atomically so concurrent flushes cannot corrupt the body.
+	// The valve must retain the last row or an empty-tail resume would wrongly NotFound.
 	tail, segments, err := reader.SessionResumeSnapshot(ctx, sessionID)
 	if err != nil {
 		return nil, reconstructReadError(err)
 	}
 
-	// The checkpoint (if any) is the first row of the hot-tail and is a full
-	// header-first body: it leads verbatim. Everything after it is a later delta
-	// merged by entry_seq. With no checkpoint, the whole tail is deltas and there
-	// is no distinguished header row — SessionTranscript still returns them in
-	// seq order, so the plain join is header-first by construction.
+	// A checkpoint is a full header-first body; append later entries in sequence order.
 	var (
 		head     string    // the checkpoint full-body line, emitted first when present
 		haveHead bool      // whether the first hot-tail row is a checkpoint (header body)
@@ -92,10 +58,7 @@ func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]b
 		}
 	}
 
-	// S3 fallback: only when the valve fired. Fetch each safety_valve segment and
-	// fold its lines in at their entry_seq. This read runs OUTSIDE the
-	// RepeatableRead snapshot; it is safe only because segment objects are
-	// immutable and never deleted while a manifest references them — preserve that.
+	// Fetch immutable segments outside the snapshot and merge their rows by entry sequence.
 	for _, seg := range segments {
 		body, err := reader.ReadArchiveSegment(ctx, seg.ObjectKey)
 		if err != nil {
@@ -121,22 +84,14 @@ func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]b
 	return []byte(strings.Join(lines, "\n")), nil
 }
 
-// seqLine is one transcript line keyed by its session-scoped entry_seq, so lines
-// from the PG tail and fetched S3 segments merge into a single seq-ordered body.
+// seqLine pairs a transcript line with its session-scoped sequence for merging.
 type seqLine struct {
 	seq  uint64
 	line string
 }
 
-// splitSegmentLines splits a verbatim-JSONL segment body into its lines. A
-// segment is entry_json values joined by '\n' (store.collectSegment), so this is
-// the inverse. An empty body — or one that is only newlines — yields no lines
-// (never a blank line that would inject a spurious row into the reconstructed
-// file). Trailing newlines are stripped first, so a body written with a trailing
-// '\n' does not yield a spurious empty final line that would be stamped a seq and
-// emitted as a blank JSONL row. This relies on collectSegment never emitting an
-// empty entry_json between real lines; internal empties are deliberately not
-// filtered, since dropping them would shift the seq stamping in the caller.
+// splitSegmentLines reverses the store's JSONL join without adding rows for empty or trailing lines.
+// Preserve internal empty entries because filtering them would shift sequence numbers.
 func splitSegmentLines(body []byte) []string {
 	trimmed := strings.TrimRight(string(body), "\n")
 	if trimmed == "" {

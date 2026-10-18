@@ -2,24 +2,9 @@
 
 package runnerhub
 
-// T5 (RIG-1667): Hub.ReconstructSessionBody is the resume-body reconstructor —
-// a PURE read-and-concatenate over the two-tier transcript store. In NORMAL
-// operation it reads the PG hot-tail ONLY (SessionTranscript): the latest
-// checkpoint's EntryJSON is a full SDK file body (header-first), emitted
-// verbatim, then every later delta's EntryJSON is appended one line each,
-// newline-joined — the store never parses entry JSON and neither does the
-// reconstructor. The S3 fallback fires ONLY when the safety valve fired
-// (SafetyValveSegments non-empty): the checkpoint body first, then every later
-// delta — fetched segment(s) AND the PG tail alike — merged by entry_seq behind
-// it, so the file stays header-first and complete. An unknown/empty session is
-// ErrNotFound.
-//
-// White-box (package runnerhub), mirroring commit_frame_test.go's fake-store
-// style: a hand-written TranscriptReader records/serves canned rows so a test
-// drives the concatenation and the object-store-untouched invariant without a
-// real database. The object-store leg is a fake that FAILS THE TEST if
-// GetSegment is called on a normal (non-valve) resume — the record's PG-only
-// invariant made observable.
+// ReconstructSessionBody rebuilds a session file by concatenating opaque transcript entries.
+// Normal reads use the PG tail; safety-valve fallback merges archived segments by entry sequence.
+// Tests use a fake TranscriptReader and ensure normal resumes never touch object storage.
 
 import (
 	"context"
@@ -32,10 +17,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// fakeTranscriptReader is a hand-written TranscriptReader: it serves canned
-// SessionTranscript rows + safety-valve manifest rows + segment bodies, and
-// records whether ReadArchiveSegment was ever called so a test can assert the
-// object store stays untouched on a normal resume.
+// fakeTranscriptReader serves canned transcript rows and segment bodies, and tracks archive reads.
 type fakeTranscriptReader struct {
 	transcript     []store.TranscriptEntryRow
 	transcriptErr  error

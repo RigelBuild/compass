@@ -2,20 +2,8 @@
 
 package runnerhub
 
-// The agent-comms Server leg (comms-tools design T2, OQ-2 ratified — the
-// load-bearing security leg). Every test here defends one invariant of the
-// session->account binding + RelayCommsCall handler: the Runner asserts no
-// account, so the SERVER's binding is the sole authority for whose account a
-// relayed call runs under. A regression that let an unbound, stopped, or
-// reconnect-dropped session resolve to ANY account — or attributed a call to the
-// wrong account, or turned a tool failure into a transport teardown — must
-// redden a test below.
-//
-// White-box (package runnerhub) so the tests drive the unexported binding
-// lifecycle (bindContainer/promoteSession/unbindSession/enroll) and the command
-// path directly, while asserting the account attribution through the fake
-// CommsCaller. Sleep-free: the hub calls the caller inline, so every assertion
-// reads a synchronously-recorded fact.
+// RelayCommsCall tests verify session-binding authorization and agent account attribution.
+// They cover unbound sessions and tool errors through synchronous fake callers.
 
 import (
 	"context"
@@ -61,11 +49,7 @@ func relayListTopics(sessionID, callID string, topics *compassv1.ListTopicsReque
 	}
 }
 
-// bindLiveSession binds the canonical session under test to its account through
-// the real Provision->Start promotion path (bindContainer then promoteSession),
-// the same two-step the command handlers drive. Every case binds the same
-// (container, session, account) triple, so the values are fixed here and the
-// test bodies refer to "sess-1"/"acct-agent" directly.
+// bindLiveSession uses Provision-to-Start promotion with a fixed session and account.
 func bindLiveSession(hub *Hub) {
 	const (
 		containerName = "c1"

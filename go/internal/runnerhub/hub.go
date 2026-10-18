@@ -213,11 +213,8 @@ type DeliveryStore interface {
 // truth (today's behaviour, and every existing hub test) — writes and cache-miss
 // reads simply do not touch a table.
 type SessionBindingStore interface {
-	// RecordSessionBinding upserts the (account -> session, runner) binding and
-	// returns the session id it DISPLACED (empty when the account held none) —
-	// the prior session the hub must evict from both maps. It runs on the
-	// request ctx (tenant-scoped), so the write lands under the acting tenant.
-	// version names the written row; a release conditioned on it cannot remove a re-bind.
+	// RecordSessionBinding returns the displaced session and written-row version.
+	// The request context keeps the upsert tenant-scoped; versioned release protects rebinds.
 	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced, version string, err error)
 	// ResolveSessionBinding resolves the agent account and owning Runner a live
 	// session speaks for — the cache-miss read behind accountForSession.
@@ -1359,12 +1356,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	return reattached, reapErr
 }
 
-// routerFor returns the attached Runner's command router and its id, or an error when
-// no Runner is enrolled. The id travels out with the router so a caller that must
-// attribute the call to a Runner names the one that served it, rather than re-reading
-// the registry and racing a re-enroll onto the wrong id.
-// routerForStream returns the Runner's router and the enrollment generation it
-// belongs to, read as one pair.
+// routerForStream returns the router and its enrollment generation as one pair.
 func (h *Hub) routerForStream(sessionID string) (*commandRouter, uint64, error) {
 	h.enrollMu.RLock()
 	defer h.enrollMu.RUnlock()

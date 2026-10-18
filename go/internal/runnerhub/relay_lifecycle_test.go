@@ -2,19 +2,8 @@
 
 package runnerhub
 
-// The agent-lifecycle Server leg (spawn/despawn record T4, fail-closed authz —
-// the load-bearing security leg, exactly as RelayCommsCall). Every test here
-// defends one invariant of the session->account resolution + RelayLifecycleCall
-// handler: the Runner asserts no account, so the SERVER's binding is the sole
-// authority for whose account a relayed lifecycle call runs under. A regression
-// that let an unbound, stopped, or reconnect-dropped session resolve to ANY
-// account — or delegated under the wrong account, or turned a tool failure into
-// a transport teardown — must redden a test below.
-//
-// White-box (package runnerhub) so the tests drive the unexported binding
-// lifecycle and the resolution edge directly, asserting the account attribution
-// through the fake LifecycleCaller. Sleep-free: the hub calls the caller inline,
-// so every assertion reads a synchronously-recorded fact.
+// RelayLifecycleCall tests verify the server attributes spawn and despawn to the agent resolved from the session binding.
+// They cover fail-closed authorization and tool errors through synchronous fake callers.
 
 import (
 	"context"
@@ -238,13 +227,7 @@ func TestRelayLifecycleCallDispatchesSpawnVsDespawn(t *testing.T) {
 		if len(calls) != 1 || calls[0].despawn == nil || calls[0].spawn != nil {
 			t.Fatalf("despawn call did not reach DespawnAsAccount exclusively: %+v", calls)
 		}
-		// The teardown is attributed to the RESOLVED caller (acct-agent, bound to
-		// sess-1), never the request-named target acct-victim — DespawnPeerRequest
-		// is the one variant with a request-controlled account, so this pins that
-		// the hub never lets a caller name whose authority a despawn runs under.
-		//
-		// Mutation: forwarding c.Despawn.GetAgentAccountId() as the caller (a
-		// confusion attributing the teardown under the victim) reddens this.
+		// Despawn must use the bound caller account, never the request-controlled target account.
 		if calls[0].account != "acct-agent" {
 			t.Fatalf("despawn attributed to %q, want the bound caller acct-agent (never the request target acct-victim)", calls[0].account)
 		}

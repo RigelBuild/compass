@@ -15,20 +15,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// mintSecretsVersion returns the next opaque per-Server monotonic set-change
-// token as a decimal string.
-//
-// SECURITY INVARIANT — the token is an OPAQUE MONOTONIC SET-CHANGE token, NOT
-// value-derived and NOT a content-hash of the secret set. Its ONLY job is to say
-// "re-fetch now"; it carries no entropy about any secret's value. A content-hash
-// token would gratuitously mint a confirmation oracle: an observer of the signal
-// could confirm a guessed secret value by matching the hash. The oracle-sensitive
-// per-value diff already lives downstream on ResolvedSecret.version (a content
-// hash, redacted for exactly that reason — secrets.go String/GoString omit it);
-// duplicating that hash here for zero benefit would reopen it on the un-redacted
-// signal path. So this stays a monotonic counter, deliberately un-redacted.
-// (Pinned by the runner.proto `SecretsVersion` message doc and design record
-// §916-918. Do NOT "optimize" this into a hash.)
+// mintSecretsVersion returns an opaque monotonic set-change token, not a value-derived hash.
+// Hashes can let observers confirm guessed secrets; the per-secret version remains the only content hash.
 func (h *Hub) mintSecretsVersion() string {
 	return strconv.FormatUint(h.secretsVersion.Add(1), 10)
 }

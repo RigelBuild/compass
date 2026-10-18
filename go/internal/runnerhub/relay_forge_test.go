@@ -2,20 +2,10 @@
 
 package runnerhub
 
-// The agent-forge Server leg (Compass forge write path T5, fail-closed authz —
-// the load-bearing security leg, exactly as RelayBoardCall / RelayLifecycleCall /
-// RelayCommsCall). Every test here defends one invariant of the
-// session->account resolution + RelayForgeCall handler: the Runner asserts no
-// account, so the SERVER's binding is the sole authority for whose account a
-// relayed forge call runs under. A regression that let an unbound, stopped, or
-// reconnect-dropped session resolve to ANY account — or delegated under the
-// wrong account, or turned a tool failure into a transport teardown — must
-// redden a test below.
-//
-// White-box (package runnerhub) so the tests drive the unexported binding
-// lifecycle and the resolution edge directly, asserting the account attribution
-// through the fake ForgeCaller. Sleep-free: the hub calls the caller inline, so
-// every assertion reads a synchronously-recorded fact.
+// RelayForgeCall tests verify the server attributes forge writes to the agent resolved from the session binding.
+// They cover fail-closed authorization and in-band tool errors through a synchronous fake caller.
+// forgeCall records the resolved account, session id, and request passed to ForgeCaller.
+// fakeForgeCaller records requests and returns configurable results or errors; it is concurrency-safe.
 
 import (
 	"context"
@@ -40,12 +30,8 @@ type forgeCall struct {
 	tenant    store.TenantID
 }
 
-// fakeForgeCaller is a hand-written ForgeCaller mirroring fakeBoardCaller: it
-// records every call (account + session id + request) so a test asserts the hub
-// attributed to the bound account and forwarded the exact request, and returns a
-// configurable canned result or error so a test drives both the success and the
-// in-band tool-error path without a real service. Concurrency-safe for parity
-// with the real caller, though the hub calls it inline.
+// fakeForgeCaller records relay calls and returns configurable results or errors.
+// It is concurrency-safe, though the hub calls it inline.
 type fakeForgeCaller struct {
 	mu    sync.Mutex
 	calls []forgeCall

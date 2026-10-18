@@ -197,13 +197,9 @@ func (h *Hub) SessionState(ctx context.Context, sessionID string) (compassv1.Age
 	return compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED, false
 }
 
-// relay dispatches one built command through the owning Runner's router and maps
-// the outcome to a Connect status: a RunnerError result becomes the mapped
-// Connect code; a transport failure (no Runner, stream drop) becomes
-// Unavailable. sessionKey selects the owning Runner (single-Runner MVP: any
-// non-empty key resolves the one Runner). The served Runner's id is returned
-// alongside the result for the one caller that must attribute the command to a
-// Runner (Provision, recording a durable placement); the rest discard it.
+// relay sends a command through the owning Runner and maps failures to Connect status.
+// It returns the serving Runner ID so Provision can persist placement without a racy lookup.
+// Other callers discard the ID.
 func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, string, error) {
 	if err := CheckClientRequestID(cmd.GetRequestId()); err != nil {
 		return nil, "", err
@@ -269,13 +265,8 @@ func mintFreshSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// provisionDedupID derives the correlation/dedup id for a provision. An empty
-// client_request_id mints a fresh random id (no dedup, per the contract). A
-// non-empty id is bound to the agent account, so a retry of the SAME provision
-// dedups while the same client_request_id reused for a DIFFERENT agent account
-// derives a distinct id and does not join. The derivation is a domain-separated
-// SHA-256 over length-prefixed fields, so no field's value can be shifted into
-// another to forge a collision.
+// provisionDedupID mints a fresh id for empty requests. Otherwise it hashes the request id and agent account
+// with domain separation and length prefixes, so retries dedupe only within one account.
 func provisionDedupID(clientRequestID string, accountID store.AccountID) string {
 	if clientRequestID == "" {
 		var b [16]byte

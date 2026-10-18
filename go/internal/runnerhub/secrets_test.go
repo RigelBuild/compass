@@ -2,14 +2,8 @@
 
 package runnerhub
 
-// FetchSecrets authz + no-log, and the SecretsVersion emit seam. Every case pins
-// a behavior a plausible bug would break:
-//   - FetchSecrets rejects a session NOT bound in the hub with CodePermissionDenied
-//     (the record's foreign-session rejection), and returns the resolved set for a
-//     bound live session — driven over the real wire through newMountedH2CServer.
-//   - The resolved proto set never stringifies a value (the no-log posture).
-//   - SignalSecretsVersion pushes a SecretsVersion to every live session with a
-//     monotonic token that is neither the value nor its content hash.
+// FetchSecrets tests cover binding authorization and ensure resolved values are never stringified.
+// SignalSecretsVersion tests verify live-session pushes use monotonic, non-secret tokens.
 
 import (
 	"context"
@@ -26,12 +20,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// fakeResolverSecrets is a hand-written secretResolver: ResolveFor returns a
-// fixed set (and records that it was called AND for which agent), letting the
-// FetchSecrets seam test drive the scoped resolve path without a real store or
-// crypto. resolveErr, when set, makes ResolveFor fail. The fixed set ignores the
-// agent arg — these tests exercise the handler's authz+binding→account→resolve
-// wiring, not the A9 precedence (that is the store/StoreResolver pgtest's job).
+// fakeResolverSecrets returns a fixed set and records the account passed by FetchSecrets.
+// Tests cover handler wiring, not secret precedence or decryption.
 type fakeResolverSecrets struct {
 	set          []secrets.ResolvedSecret
 	resolveErr   error

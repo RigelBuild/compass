@@ -2,19 +2,9 @@
 
 package runnerhub
 
-// Hub-level Provision idempotency (OQ6/RIG-1243): Hub.Provision derives the
-// command router's dedup id from the caller's client_request_id, scoped to the
-// workspace identity (agent account + repo + ref). Two Provisions with the SAME
-// id AND the same workspace must JOIN one in-flight command (a timeout-retry
-// returns the one container, never a duplicate); the SAME id reused for a
-// DIFFERENT workspace must NOT join (each provisions its own container — the
-// cross-account boundary); an EMPTY id must mint a fresh id per call (no dedup).
-//
-// These drive Hub.Provision (the real requestID→provisionDedupID→dispatch path),
-// with a recording send standing in for the Runner's Sessions stream. Under
-// testing/synctest, synctest.Wait() blocks until every dispatch goroutine is
-// DURABLY blocked in waitCall — so "the second caller joined before we
-// completed" is observed state, never a sleep and never a retry.
+// Hub.Provision deduplicates retries by request id and workspace identity.
+// Tests verify same-workspace joins, cross-workspace isolation, and fresh ids for empty requests.
+// A recording Sessions stream and synctest make concurrent joins observable without sleeps.
 
 import (
 	"context"

@@ -2,13 +2,8 @@
 
 package runnerhub
 
-// The roster + set_status relay arms (RIG-1721 T2): RelayCommsCall dispatches a
-// roster call to RosterAsAccount and a set_status call to SetStatusAsAccount
-// under the bound account, wraps the matching result oneof, and — for set_status
-// — fires the best-effort PublishActivity carrying the SERVER-TRUNCATED value
-// AFTER the durable write returned. Driven through the fakeCommsCaller + a
-// fakePresenceSourceHub, no store. context.Background() is the test root
-// (test-root ctx exemption).
+// RelayCommsCall's roster and set_status arms use the bound account and publish the truncated status after the write.
+// Tests use fake comms and presence sources without a store.
 
 import (
 	"context"
@@ -33,13 +28,7 @@ func relayRoster(sessionID, callID string, roster *compassv1.GetRosterRequest) *
 	}
 }
 
-// relaySetStatus builds a RelayCommsCallRequest carrying a set_status variant.
-//
-// sessionID is retained though every current call site passes "sess-1": it names
-// WHICH session the call is relayed for, every sibling relay* builder takes it,
-// and dropping it here alone would hide the session→account binding this leg's
-// assertions turn on (relay_comms_test.go passes "never-bound" to relayPost for
-// exactly that reason).
+// relaySetStatus retains sessionID so the binding assertions exercise the same session as sibling builders.
 func relaySetStatus(sessionID, callID, activity string) *compassv1internal.RelayCommsCallRequest { //nolint:unparam // read-clarity signature: see above
 	return &compassv1internal.RelayCommsCallRequest{
 		SessionId: sessionID,

@@ -2,11 +2,8 @@
 
 package runnerhub
 
-// Hub presence surface (RIG-1721 T2): PresenceFor snapshots the in-memory enum
-// (absent → OFFLINE), PublishActivity fires the set_status live event through the
-// wired presence source, and a hub with no source wired is nil-safe (all OFFLINE,
-// publish dropped). Driven through a hand-written fakePresenceSource, no store.
-// context.Background() is the test root (test-root ctx exemption).
+// PresenceFor returns the in-memory enum, defaults missing agents to OFFLINE, and publishes status changes when wired.
+// Tests use a fake presence source.
 
 import (
 	"context"

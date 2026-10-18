@@ -2,14 +2,8 @@
 
 package runnerhub
 
-// Unit coverage for the cross-turn causal link (relay_comms.go linkTrigger).
-// The e2e assertion in the server suite drives the happy path over a real door;
-// what it cannot cheaply drive is the REJECTION half — that an empty or
-// malformed trigger_traceparent yields no link at all. A malformed value is the
-// sharp edge: the shipped parse helper returns its INPUT context unchanged on a
-// parse failure, so parsing against the handler's own context would hand back
-// the LOCAL span context and link the reply span to itself. These cases pin
-// that down.
+// Tests cover the cross-turn trace link, especially rejection of empty or malformed traceparents.
+// Parsing must use a span-free context so the helper's unchanged-context fallback cannot self-link.
 
 import (
 	"context"
@@ -71,11 +65,7 @@ func TestLinkTriggerAddsLinkForValidTraceparent(t *testing.T) {
 	if parent := span.Parent(); parent.IsValid() {
 		t.Errorf("reply span has parent %s, want a fresh root", parent.SpanID())
 	}
-	// The discriminator is the contract a trace consumer selects the cross-turn
-	// edge by: in production this span also carries otelconnect's transport
-	// link, so an unstamped link is indistinguishable from that one. Asserted
-	// against literals, not against linkKindAttr, so a rename of either half
-	// reddens here instead of silently agreeing with itself.
+	// Assert the literal link discriminator because otelconnect also adds a transport link.
 	var stamped bool
 	for _, a := range links[0].Attributes {
 		if string(a.Key) == "compass.link.kind" && a.Value.AsString() == "cross_turn_trigger" {

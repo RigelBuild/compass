@@ -28,11 +28,8 @@ type transcriptAppend struct {
 	idempotencyKey string
 }
 
-// fakeTranscriptStore is a hand-written TranscriptStore: it records every append
-// so a test asserts the hub forwarded the relayed entry verbatim, and returns a
-// configurable canned error so a test drives the store-error mapping without a
-// real database. Concurrency-safe for parity with *store.Store, though the hub
-// calls it inline.
+// fakeTranscriptStore records appends and returns a configured error for store-error mapping tests.
+// It is concurrency-safe, though the hub calls it inline.
 type fakeTranscriptStore struct {
 	mu        sync.Mutex
 	calls     []transcriptAppend
@@ -58,11 +55,8 @@ func (f *fakeTranscriptStore) snapshot() []transcriptAppend {
 	return append([]transcriptAppend(nil), f.calls...)
 }
 
-// newHubWithTranscripts builds a hub whose TranscriptStore is the returned fake
-// (wired post-construction via SetTranscriptStore, the real wiring path), so a
-// CommitConversationFrame test drives the resolve->append path and asserts on the
-// entry the fake was called with. comms is a stub fake (the durable lane no longer
-// touches the CommsCaller).
+// newHubWithTranscripts wires a fake TranscriptStore through the production setter.
+// It lets CommitConversationFrame tests assert the exact entry passed to the store.
 func newHubWithTranscripts() (*Hub, *fakeTranscriptStore) {
 	hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
 	ts := &fakeTranscriptStore{}
