@@ -767,7 +767,7 @@ describe("MarkdownText — link safety", () => {
 });
 
 describe("MarkdownText — content preservation", () => {
-	// Raw HTML nodes are dropped by this renderer, so retype them as text; enabling `rehype-raw` would make them live.
+	// The inert-raw transform retypes raw HTML nodes as text; replacing it with `rehype-raw` would make them live.
 	test("raw HTML in prose renders as literal text, never as live elements", () => {
 		const { container } = render(() => (
 			<MarkdownText
