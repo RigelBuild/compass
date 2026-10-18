@@ -4369,8 +4369,10 @@ export const SecretsService: GenService<{
  */
 export const AgentRepositoryService: GenService<{
   /**
-   * Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
-   * or the org differs from the agent's credential org.
+   * Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured,
+   * the org differs from the agent's other repositories, the App has no
+   * installation for the org, or the agent's wildcard grant meets an org other
+   * than the default installation's.
    *
    * @generated from rpc compass.v1.AgentRepositoryService.GrantAgentRepository
    */

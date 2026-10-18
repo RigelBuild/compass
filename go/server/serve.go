@@ -1097,7 +1097,11 @@ func buildDoors(
 	}
 	// The forge broker supplies the host and the targeted secret signal before
 	// any public door is assembled.
-	gitCredentials, err := buildGitCredentialBroker(cfg, st, serverResolver, hub, slog.Default())
+	repoInstallations, err := buildRepoInstallationResolver(cfg, serverResolver)
+	if err != nil {
+		return serveDoors{}, err
+	}
+	gitCredentials, err := buildGitCredentialBroker(cfg, st, serverResolver, repoInstallations, hub, slog.Default())
 	if err != nil {
 		return serveDoors{}, err
 	}
@@ -1106,7 +1110,7 @@ func buildDoors(
 	if hub != nil {
 		repoSignal = hub
 	}
-	agentRepositorySvc := newAgentRepositoryService(st, gitCredentials, repoSignal)
+	agentRepositorySvc := newAgentRepositoryService(st, gitCredentials, repoSignal, repoInstallations)
 
 	// CommsService rides the socket + dev doors and the network shared chain with
 	// no auth pair of its own here: comms attributes every RPC to the bootstrap admin.

@@ -23,8 +23,8 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// GitHubAppConfig identifies one GitHub App installation this deployment
-// registered (each deployment registers its OWN App — see the T7 runbook).
+// GitHubAppConfig identifies a GitHub App and its default installation (used
+// when callers do not select an owner-specific installation).
 type GitHubAppConfig struct {
 	AppID          int64
 	InstallationID int64
@@ -75,18 +75,18 @@ type appTokenSource struct {
 // client calls it on 401/bad-creds-403, github.go:24-31). Safe for concurrent
 // use; the mint is singleflighted.
 func NewAppTokenSource(cfg GitHubAppConfig) (TokenSource, error) {
-	s, err := newAppTokenSource(cfg)
+	s, err := newAppTokenSource(cfg, true)
 	if err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-func newAppTokenSource(cfg GitHubAppConfig) (*appTokenSource, error) {
+func newAppTokenSource(cfg GitHubAppConfig, requireDefaultInstallation bool) (*appTokenSource, error) {
 	if cfg.AppID == 0 {
 		return nil, errors.New("forge: GitHubAppConfig.AppID is required")
 	}
-	if cfg.InstallationID == 0 {
+	if cfg.InstallationID == 0 && requireDefaultInstallation {
 		return nil, errors.New("forge: GitHubAppConfig.InstallationID is required")
 	}
 	if cfg.PrivateKey == nil {
@@ -109,40 +109,47 @@ func newAppTokenSource(cfg GitHubAppConfig) (*appTokenSource, error) {
 
 // ScopedAppMinter mints and revokes uncached installation tokens.
 type ScopedAppMinter struct {
-	source *appTokenSource
+	source   *appTokenSource
+	resolver *InstallationResolver
 }
 
-// NewScopedAppMinter constructs an uncached installation-token minter.
+// NewScopedAppMinter constructs an uncached installation-token minter using
+// the configured App installation resolver.
 func NewScopedAppMinter(cfg GitHubAppConfig) (*ScopedAppMinter, error) {
-	source, err := newAppTokenSource(cfg)
+	resolver, err := NewInstallationResolver(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &ScopedAppMinter{source: source}, nil
+	return NewScopedAppMinterWithResolver(cfg, resolver)
 }
 
-// Mint requests a fresh token and returns the repositories GitHub granted.
-// Empty repos requests an installation-wide token; scoped names must be leaf names under the installation owner.
-func (m *ScopedAppMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (ScopedToken, error) {
-	body, err := json.Marshal(struct {
-		Repositories []string          `json:"repositories,omitempty"`
-		Permissions  map[string]string `json:"permissions,omitempty"`
-	}{Repositories: repos, Permissions: perms})
-	if err != nil {
-		return ScopedToken{}, fmt.Errorf("forge: build mint request: %w", err)
+// NewScopedAppMinterWithResolver shares an installation resolver with its caller.
+func NewScopedAppMinterWithResolver(cfg GitHubAppConfig, resolver *InstallationResolver) (*ScopedAppMinter, error) {
+	if resolver == nil {
+		return nil, errors.New("forge: installation resolver is required")
 	}
-	out, err := m.source.postInstallationToken(ctx, body)
+	source, err := newAppTokenSource(cfg, true)
+	if err != nil {
+		return nil, err
+	}
+	return &ScopedAppMinter{source: source, resolver: resolver}, nil
+}
+
+// Mint requests a fresh token for the configured default installation and
+// returns the repositories GitHub granted. Empty repos requests an
+// installation-wide token; scoped names must be leaf names under the
+// installation owner.
+func (m *ScopedAppMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (ScopedToken, error) {
+	return m.mintForInstallation(ctx, m.source.cfg.InstallationID, repos, perms)
+}
+
+// MintFor requests a fresh token for the installation belonging to owner.
+func (m *ScopedAppMinter) MintFor(ctx context.Context, owner string, repos []string, perms map[string]string) (ScopedToken, error) {
+	installationID, err := m.resolver.InstallationFor(ctx, owner)
 	if err != nil {
 		return ScopedToken{}, err
 	}
-	repositories := make([]string, 0, len(out.Repositories))
-	for _, repo := range out.Repositories {
-		repositories = append(repositories, repo.FullName)
-	}
-	return ScopedToken{
-		Token: out.Token, ExpiresAt: effectiveTokenExpiry(out.ExpiresAt, m.source.clock()),
-		Repositories: repositories,
-	}, nil
+	return m.mintForInstallation(ctx, installationID, repos, perms)
 }
 
 // Revoke invalidates an installation token with the authenticated installation.
@@ -163,6 +170,28 @@ func (m *ScopedAppMinter) Revoke(ctx context.Context, token string) error {
 		return nil
 	}
 	return fmt.Errorf("forge: revoke installation token: %w", &StatusError{Status: resp.StatusCode})
+}
+
+func (m *ScopedAppMinter) mintForInstallation(ctx context.Context, installationID int64, repos []string, perms map[string]string) (ScopedToken, error) {
+	body, err := json.Marshal(struct {
+		Repositories []string          `json:"repositories,omitempty"`
+		Permissions  map[string]string `json:"permissions,omitempty"`
+	}{Repositories: repos, Permissions: perms})
+	if err != nil {
+		return ScopedToken{}, fmt.Errorf("forge: build mint request: %w", err)
+	}
+	out, err := m.source.postInstallationToken(ctx, installationID, body)
+	if err != nil {
+		return ScopedToken{}, err
+	}
+	repositories := make([]string, 0, len(out.Repositories))
+	for _, repo := range out.Repositories {
+		repositories = append(repositories, repo.FullName)
+	}
+	return ScopedToken{
+		Token: out.Token, ExpiresAt: effectiveTokenExpiry(out.ExpiresAt, m.source.clock()),
+		Repositories: repositories,
+	}, nil
 }
 
 // appAPIBase derives the REST API base URL from the configured host, mirroring
@@ -303,10 +332,10 @@ type ScopedToken struct {
 	Repositories []string
 }
 
-// mint builds an App JWT, POSTs it to the installation access-tokens endpoint,
-// and caches the returned token until tokenRefreshLead before its expiry.
+// mint builds an App JWT, POSTs it to the configured default installation, and
+// caches the returned token until tokenRefreshLead before its expiry.
 func (s *appTokenSource) mint(ctx context.Context) (string, error) {
-	out, err := s.postInstallationToken(ctx, nil)
+	out, err := s.postInstallationToken(ctx, s.cfg.InstallationID, nil)
 	if err != nil {
 		return "", err
 	}
@@ -314,20 +343,28 @@ func (s *appTokenSource) mint(ctx context.Context) (string, error) {
 	return out.Token, nil
 }
 
-func (s *appTokenSource) postInstallationToken(ctx context.Context, requestBody []byte) (installationToken, error) {
+func (s *appTokenSource) appJWT(ctx context.Context) (string, error) {
 	pemBytes, err := s.cfg.PrivateKey(ctx)
 	if err != nil {
-		return installationToken{}, fmt.Errorf("forge: resolve app private key: %w", err)
+		return "", fmt.Errorf("forge: resolve app private key: %w", errors.Join(ErrAppCredentials, err))
 	}
 	key, err := parseRSAPrivateKey(pemBytes)
 	if err != nil {
-		return installationToken{}, fmt.Errorf("forge: parse app private key: %w", err)
+		return "", fmt.Errorf("forge: parse app private key: %w", errors.Join(ErrAppCredentials, err))
 	}
 	jwt, err := s.buildAppJWT(key)
 	if err != nil {
-		return installationToken{}, fmt.Errorf("forge: build app jwt: %w", err)
+		return "", fmt.Errorf("forge: build app jwt: %w", err)
 	}
-	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", s.apiBase, s.cfg.InstallationID)
+	return jwt, nil
+}
+
+func (s *appTokenSource) postInstallationToken(ctx context.Context, installationID int64, requestBody []byte) (installationToken, error) {
+	jwt, err := s.appJWT(ctx)
+	if err != nil {
+		return installationToken{}, err
+	}
+	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", s.apiBase, installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(requestBody))
 	if err != nil {
 		return installationToken{}, fmt.Errorf("forge: build mint request: %w", err)
@@ -347,7 +384,7 @@ func (s *appTokenSource) postInstallationToken(ctx context.Context, requestBody 
 		return installationToken{}, fmt.Errorf("forge: read mint response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden && isRateLimited(resp) {
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden) && isRateLimited(resp) {
 			now := s.clock()
 			var retryAfter time.Duration
 			if reset := rateLimitResetAt(resp, now); !reset.IsZero() {
@@ -357,9 +394,17 @@ func (s *appTokenSource) postInstallationToken(ctx context.Context, requestBody 
 		}
 		var ghErr ghError
 		if jsonErr := json.Unmarshal(body, &ghErr); jsonErr == nil && ghErr.Message != "" {
-			return installationToken{}, fmt.Errorf("forge: mint installation token: %w", &StatusError{Status: resp.StatusCode, Message: ghErr.Message})
+			statusErr := &StatusError{Status: resp.StatusCode, Message: ghErr.Message}
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				return installationToken{}, fmt.Errorf("forge: mint installation token: %w", errors.Join(ErrAppCredentials, statusErr))
+			}
+			return installationToken{}, fmt.Errorf("forge: mint installation token: %w", statusErr)
 		}
-		return installationToken{}, fmt.Errorf("forge: mint installation token: %w", &StatusError{Status: resp.StatusCode})
+		statusErr := &StatusError{Status: resp.StatusCode}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return installationToken{}, fmt.Errorf("forge: mint installation token: %w", errors.Join(ErrAppCredentials, statusErr))
+		}
+		return installationToken{}, fmt.Errorf("forge: mint installation token: %w", statusErr)
 	}
 	var out installationToken
 	if err := json.Unmarshal(body, &out); err != nil {

@@ -93,7 +93,7 @@ func newAgentRepositoryFixture(t *testing.T) agentRepositoryFixture {
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old", "ghs_replacement"}, expiresAt: now.Add(time.Hour)}
 	broker := newGitCredentialTestBroker(st, minter, &now, nil)
 	broker.host = "github.com"
-	svc := newAgentRepositoryService(st, broker, signaler)
+	svc := newAgentRepositoryService(st, broker, signaler, nil)
 	url := newAgentRepositoryH2CServer(t, svc, st, admin.ID)
 	client := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), url, connecthttp.WithReadMaxBytes(0))))
 	return agentRepositoryFixture{
@@ -463,14 +463,14 @@ func TestAgentRepositoryServiceRequiresCallerAndApp(t *testing.T) {
 	f := newAgentRepositoryFixture(t)
 	ctx := context.Background()
 	noAuthURL := newAgentRepositoryH2CServer(t,
-		newAgentRepositoryService(f.store, &gitCredentialBroker{host: "github.com"}, nil), f.store, f.admin)
+		newAgentRepositoryService(f.store, &gitCredentialBroker{host: "github.com"}, nil, nil), f.store, f.admin)
 	noAuthClient := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), noAuthURL, connecthttp.WithReadMaxBytes(0))))
 	_, err := grantAgentRepository(noAuthClient, ctx, "", "missing", "bad")
 	if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
 		t.Fatalf("grant without caller code = %v (%v), want Unauthenticated", got, err)
 	}
 
-	nilURL := newAgentRepositoryH2CServer(t, newAgentRepositoryService(f.store, nil, nil), f.store, f.admin)
+	nilURL := newAgentRepositoryH2CServer(t, newAgentRepositoryService(f.store, nil, nil, nil), f.store, f.admin)
 	nilClient := compassv1connect.NewAgentRepositoryServiceClient(connect.NewClient(connecthttp.NewTransport(newAgentRepositoryH2CClient(t), nilURL, connecthttp.WithReadMaxBytes(0))))
 	_, err = grantAgentRepository(nilClient, ctx, f.ownerToken, "missing", "bad")
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {

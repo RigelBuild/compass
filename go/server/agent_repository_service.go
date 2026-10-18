@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect/v2"
@@ -14,6 +15,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -22,15 +24,35 @@ type agentSecretsSignaler interface {
 	SignalSecretsVersionFor(ctx context.Context, account store.AccountID) error
 }
 
-type agentRepositoryService struct {
-	store  *store.Store
-	host   string
-	broker *gitCredentialBroker
-	signal agentSecretsSignaler
+type agentRepositoryScopeLister interface {
+	ListForgeScopeRepos(ctx context.Context, accountID store.AccountID, provider store.ForgeProvider, host string) ([]string, error)
 }
 
-func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, signal agentSecretsSignaler) *agentRepositoryService {
-	svc := &agentRepositoryService{store: st, broker: broker, signal: signal}
+type agentInstallationResolver interface {
+	InstallationFor(ctx context.Context, owner string) (int64, error)
+	DefaultInstallation() int64
+}
+
+type agentRepositoryService struct {
+	store         *store.Store
+	scopes        agentRepositoryScopeLister
+	host          string
+	broker        *gitCredentialBroker
+	signal        agentSecretsSignaler
+	installations agentInstallationResolver
+}
+
+func newAgentRepositoryService(
+	st *store.Store,
+	broker *gitCredentialBroker,
+	signal agentSecretsSignaler,
+	installations *forge.InstallationResolver,
+) *agentRepositoryService {
+	var installationResolver agentInstallationResolver
+	if installations != nil {
+		installationResolver = installations
+	}
+	svc := &agentRepositoryService{store: st, scopes: st, broker: broker, signal: signal, installations: installationResolver}
 	if broker != nil {
 		svc.host = broker.host
 	}
@@ -258,13 +280,61 @@ func (s *agentRepositoryService) requireHost() error {
 	return nil
 }
 
+// checkOrg requires the requested owner to match the agent's grants and have
+// an App installation. A wildcard grant mints on the default installation, so
+// it admits only that installation's owner.
 func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.AccountID, repo string) error {
-	grants, err := s.store.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, s.host)
+	org, _, _ := strings.Cut(repo, "/")
+	scopes := s.scopes
+	if scopes == nil {
+		scopes = s.store
+	}
+	grants, err := scopes.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, s.host)
 	if err != nil {
 		wrappedErr := fmt.Errorf("checking agent credential org: %w", err)
 		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
-	org, _, _ := strings.Cut(repo, "/")
+	if err := s.checkOrgFromGrants(grants, org); err != nil {
+		return err
+	}
+	if s.installations == nil {
+		return nil
+	}
+	installation, err := s.checkInstallation(ctx, org)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(grants, "*") && installation != s.installations.DefaultInstallation() {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Sprintf("a wildcard grant covers only the default GitHub App installation, not owner %q", org))
+	}
+	return nil
+}
+
+func (s *agentRepositoryService) checkInstallation(ctx context.Context, org string) (int64, error) {
+	installation, err := s.installations.InstallationFor(ctx, org)
+	if err != nil {
+		if errors.Is(err, forge.ErrNoInstallation) {
+			return 0, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("the GitHub App has no installation for owner %q", org)).WithCause(err)
+		}
+		if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
+			if statusErr.Status == 401 || statusErr.Status == 403 {
+				return 0, connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
+			}
+		}
+		if errors.Is(err, forge.ErrAppCredentials) {
+			return 0, connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
+		}
+		if errors.Is(err, forge.ErrBudgetExhausted) {
+			return 0, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+		}
+		wrappedErr := fmt.Errorf("resolving GitHub App installation for owner %q: %w", org, err)
+		return 0, connect.NewError(connect.CodeUnavailable, wrappedErr.Error()).WithCause(wrappedErr)
+	}
+	return installation, nil
+}
+
+func (s *agentRepositoryService) checkOrgFromGrants(grants []string, org string) error {
 	wildcard := false
 	mismatch := false
 	for _, grant := range grants {

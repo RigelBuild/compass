@@ -257,9 +257,9 @@ func TestScopedAppMinterRateLimitError(t *testing.T) {
 			rate:    true,
 		},
 		{
-			name:   "429 without rate-limit headers",
-			status: http.StatusTooManyRequests,
-			rate:   true,
+			name:    "429 without rate-limit headers",
+			status:  http.StatusTooManyRequests,
+			headers: http.Header{},
 		},
 		{name: "403 without signal", status: http.StatusForbidden},
 	}
@@ -276,7 +276,7 @@ func TestScopedAppMinterRateLimitError(t *testing.T) {
 			_, err := minter.Mint(context.Background(), []string{"repo"}, map[string]string{"contents": "write"})
 			if tt.rate {
 				rateErr, ok := errors.AsType[*RateLimitError](err)
-				if !ok || rateErr.RetryAfter != tt.want {
+				if !ok || !errors.Is(err, ErrBudgetExhausted) || rateErr.RetryAfter != tt.want {
 					t.Fatalf("Mint error = %v, want rate-limit error with hint %s", err, tt.want)
 				}
 				return
