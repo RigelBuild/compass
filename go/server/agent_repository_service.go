@@ -26,7 +26,6 @@ type agentSecretsSignaler interface {
 type agentRepositoryScopeLister interface {
 	ListForgeScopeRepos(ctx context.Context, accountID store.AccountID, provider store.ForgeProvider, host string) ([]string, error)
 }
-
 type agentInstallationResolver interface {
 	InstallationFor(ctx context.Context, owner string) (int64, error)
 }
@@ -40,8 +39,12 @@ type agentRepositoryService struct {
 	installations agentInstallationResolver
 }
 
-func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, signal agentSecretsSignaler, installations agentInstallationResolver) *agentRepositoryService {
-	svc := &agentRepositoryService{store: st, scopes: st, broker: broker, signal: signal, installations: installations}
+func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, signal agentSecretsSignaler, installations *forge.InstallationResolver) *agentRepositoryService {
+	var installationResolver agentInstallationResolver
+	if installations != nil {
+		installationResolver = installations
+	}
+	svc := &agentRepositoryService{store: st, scopes: st, broker: broker, signal: signal, installations: installationResolver}
 	if broker != nil {
 		svc.host = broker.host
 	}
@@ -269,13 +272,10 @@ func (s *agentRepositoryService) requireHost() error {
 	return nil
 }
 
-// checkOrg admits any owner the GitHub App is installed on. Without an App
-// resolver it keeps the single-owner rule over the agent's existing grants.
+// checkOrg requires the requested owner to match the agent's grants and have
+// an App installation. Wildcard grants skip the owner-match restriction.
 func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.AccountID, repo string) error {
 	org, _, _ := strings.Cut(repo, "/")
-	if s.installations != nil {
-		return s.checkInstallation(ctx, org)
-	}
 	scopes := s.scopes
 	if scopes == nil {
 		scopes = s.store
@@ -285,13 +285,30 @@ func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.Accou
 		wrappedErr := fmt.Errorf("checking agent credential org: %w", err)
 		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
-	return s.checkOrgFromGrants(grants, org)
+	if err := s.checkOrgFromGrants(grants, org); err != nil {
+		return err
+	}
+	if s.installations != nil {
+		return s.checkInstallation(ctx, org)
+	}
+	return nil
 }
 
 func (s *agentRepositoryService) checkInstallation(ctx context.Context, org string) error {
 	if _, err := s.installations.InstallationFor(ctx, org); err != nil {
 		if errors.Is(err, forge.ErrNoInstallation) {
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("the GitHub App has no installation for owner %q", org)).WithCause(err)
+		}
+		if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
+			if statusErr.Status == 401 || statusErr.Status == 403 {
+				return connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
+			}
+		}
+		if errors.Is(err, forge.ErrAppCredentials) {
+			return connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
+		}
+		if errors.Is(err, forge.ErrBudgetExhausted) {
+			return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
 		wrappedErr := fmt.Errorf("resolving GitHub App installation for owner %q: %w", org, err)
 		return connect.NewError(connect.CodeUnavailable, wrappedErr.Error()).WithCause(wrappedErr)

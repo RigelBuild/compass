@@ -97,10 +97,17 @@ func TestInstallationResolverUnknownOwnerAndCachedHit(t *testing.T) {
 	}
 }
 
-func TestInstallationResolverCachedMissRefreshesAfterTTL(t *testing.T) {
+func TestInstallationResolverCachedMissRefreshesAfterFloor(t *testing.T) {
 	var requests atomic.Int64
+	var installed atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		if installed.Load() {
+			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+				t.Errorf("write installation response: %v", err)
+			}
+			return
+		}
 		if _, err := fmt.Fprint(w, `[]`); err != nil {
 			t.Errorf("write empty installation response: %v", err)
 		}
@@ -108,28 +115,249 @@ func TestInstallationResolverCachedMissRefreshesAfterTTL(t *testing.T) {
 	defer server.Close()
 
 	key := testAppKey(t)
-	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	clock := &installationTestClock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
 	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
-		AppID: 1, InstallationID: 2,
+		AppID:      1,
 		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
-		Clock:      func() time.Time { return now },
+		Clock:      clock.Now,
 	})
-
 	for range 2 {
-		if _, err := resolver.InstallationFor(context.Background(), "unknown"); !errors.Is(err, ErrNoInstallation) {
-			t.Fatalf("InstallationFor(unknown) error = %v, want ErrNoInstallation", err)
+		if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+			t.Fatalf("initial miss = %v, want ErrNoInstallation", err)
 		}
 	}
 	if got := requests.Load(); got != 1 {
-		t.Fatalf("requests for repeated cached miss = %d, want 1", got)
+		t.Fatalf("requests inside refresh floor = %d, want 1", got)
 	}
-
-	now = now.Add(installationCacheTTL)
-	if _, err := resolver.InstallationFor(context.Background(), "unknown"); !errors.Is(err, ErrNoInstallation) {
-		t.Fatalf("InstallationFor(unknown after TTL) error = %v, want ErrNoInstallation", err)
+	installed.Store(true)
+	clock.Add(installationMissRefreshFloor)
+	if id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); err != nil || id != 168669446 {
+		t.Fatalf("InstallationFor after floor = (%d, %v), want installation 168669446", id, err)
 	}
 	if got := requests.Load(); got != 2 {
-		t.Fatalf("requests after TTL = %d, want 2", got)
+		t.Fatalf("requests after refresh floor = %d, want 2", got)
+	}
+}
+
+type installationTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *installationTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *installationTestClock) Add(duration time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(duration)
+	c.mu.Unlock()
+}
+
+func TestInstallationResolverWaiterContextCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		close(started)
+		<-release
+		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+			t.Errorf("write installation response: %v", err)
+		}
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	clock := &installationTestClock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+		AppID:      1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      clock.Now,
+	})
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn")
+		leaderDone <- err
+	}()
+	<-started
+	waiterCtx, cancel := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.InstallationFor(waiterCtx, "mattwilkinsonn")
+		waiterDone <- err
+	}()
+	cancel()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiter error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter did not return after its context was canceled")
+	}
+	close(release)
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader refresh: %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("installation requests = %d, want 1", got)
+	}
+}
+
+func TestInstallationResolverLeaderContextCancellationDoesNotFailWaiter(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		close(started)
+		<-release
+		if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+			t.Errorf("write installation response: %v", err)
+		}
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	clock := &installationTestClock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+		AppID:      1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      clock.Now,
+	})
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.InstallationFor(leaderCtx, "mattwilkinsonn")
+		leaderDone <- err
+	}()
+	<-started
+	waiterDone := make(chan error, 1)
+	go func() {
+		id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn")
+		if err == nil && id != 168669446 {
+			err = fmt.Errorf("installation id = %d, want 168669446", id)
+		}
+		waiterDone <- err
+	}()
+	cancelLeader()
+	select {
+	case err := <-leaderDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("leader error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("leader did not return after its context was canceled")
+	}
+	close(release)
+	select {
+	case err := <-waiterDone:
+		if err != nil {
+			t.Fatalf("waiter refresh: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter did not receive the shared refresh")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("installation requests = %d, want 1", got)
+	}
+}
+
+func TestInstallationResolverInstallationListRateLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "15")
+		w.Header().Set("X-Ratelimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+		AppID:      1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      func() time.Time { return now },
+	})
+	_, err := resolver.InstallationFor(context.Background(), "owner")
+	rateLimit, ok := errors.AsType[*RateLimitError](err)
+	if !ok {
+		t.Fatalf("InstallationFor error = %v, want RateLimitError", err)
+	}
+	if rateLimit.RetryAfter != 15*time.Second {
+		t.Fatalf("RetryAfter = %v, want 15s", rateLimit.RetryAfter)
+	}
+}
+
+func TestInstallationResolverCapsPages(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Link", `<https://api.github.com/app/installations?per_page=100&page=2>; rel="next"`)
+		if _, err := fmt.Fprint(w, `[]`); err != nil {
+			t.Errorf("write empty installation response: %v", err)
+		}
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+		AppID:      1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+	})
+	_, err := resolver.InstallationFor(context.Background(), "missing")
+	if err == nil || !strings.Contains(err.Error(), "exceeds 100 pages") {
+		t.Fatalf("InstallationFor error = %v, want page limit error", err)
+	}
+	if got := requests.Load(); got != installationListPageLimit {
+		t.Fatalf("installation pages requested = %d, want %d", got, installationListPageLimit)
+	}
+}
+
+func TestInstallationResolverMissCacheRefreshFloorAndHitTTL(t *testing.T) {
+	var requests atomic.Int64
+	var installed atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if installed.Load() {
+			if _, err := fmt.Fprint(w, `[{"id":168669446,"account":{"login":"mattwilkinsonn"}}]`); err != nil {
+				t.Errorf("write installation response: %v", err)
+			}
+			return
+		}
+		if _, err := fmt.Fprint(w, `[]`); err != nil {
+			t.Errorf("write empty installation response: %v", err)
+		}
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	clock := &installationTestClock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	resolver := newTestInstallationResolver(t, server, GitHubAppConfig{
+		AppID:      1,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      clock.Now,
+	})
+	if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+		t.Fatalf("initial miss = %v, want ErrNoInstallation", err)
+	}
+	clock.Add(installationMissRefreshFloor - time.Second)
+	if _, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); !errors.Is(err, ErrNoInstallation) {
+		t.Fatalf("miss inside refresh floor = %v, want ErrNoInstallation", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests inside floor = %d, want 1", got)
+	}
+	installed.Store(true)
+	clock.Add(time.Second)
+	if id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); err != nil || id != 168669446 {
+		t.Fatalf("InstallationFor after floor = (%d, %v), want 168669446", id, err)
+	}
+	clock.Add(installationCacheTTL - installationMissRefreshFloor)
+	if id, err := resolver.InstallationFor(context.Background(), "mattwilkinsonn"); err != nil || id != 168669446 {
+		t.Fatalf("cached hit before TTL = (%d, %v), want 168669446", id, err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests before hit TTL = %d, want 2", got)
 	}
 }
 

@@ -17,7 +17,15 @@ import (
 // ErrNoInstallation indicates that the GitHub App is not installed for an owner.
 var ErrNoInstallation = errors.New("forge: no installation")
 
-const installationCacheTTL = 10 * time.Minute
+// ErrAppCredentials indicates that GitHub App credentials cannot authenticate.
+var ErrAppCredentials = errors.New("forge: app credentials rejected or misconfigured")
+
+const (
+	installationCacheTTL         = 10 * time.Minute
+	installationMissRefreshFloor = 30 * time.Second
+	installationRefreshTimeout   = 30 * time.Second
+	installationListPageLimit    = 100
+)
 
 // InstallationResolver maps GitHub owner logins to App installation ids.
 // Refreshes are cached and concurrent refreshes are singleflighted.
@@ -26,7 +34,8 @@ type InstallationResolver struct {
 
 	mu            sync.Mutex
 	installations map[string]int64
-	expiresAt     time.Time
+	snapshotAt    time.Time
+	lastAttemptAt time.Time
 	group         singleflight.Group
 }
 
@@ -41,50 +50,88 @@ func NewInstallationResolver(cfg GitHubAppConfig) (*InstallationResolver, error)
 }
 
 // InstallationFor returns the installation id for owner, matching GitHub logins
-// case-insensitively. The owner map, including misses, is cached for ten minutes.
+// case-insensitively. Hits are cached for ten minutes; misses refresh every 30s.
 func (r *InstallationResolver) InstallationFor(ctx context.Context, owner string) (int64, error) {
-	if installations, ok := r.cachedInstallations(); ok {
-		return installationFor(installations, owner)
+	if installations, snapshotAt, ok := r.snapshot(); ok {
+		id, found := installations[strings.ToLower(owner)]
+		now := r.source.clock()
+		if found && now.Before(snapshotAt.Add(installationCacheTTL)) {
+			return id, nil
+		}
+		if !found && now.Before(snapshotAt.Add(installationMissRefreshFloor)) {
+			return 0, noInstallation(owner)
+		}
 	}
 
-	value, err, _ := r.group.Do("installations", func() (any, error) {
-		if installations, ok := r.cachedInstallations(); ok {
-			return installations, nil
+	resultCh := r.group.DoChan("installations", func() (any, error) {
+		if installations, snapshotAt, ok := r.snapshot(); ok {
+			now := r.source.clock()
+			_, found := installations[strings.ToLower(owner)]
+			if found && now.Before(snapshotAt.Add(installationCacheTTL)) {
+				return installations, nil
+			} else if !found && now.Before(snapshotAt.Add(installationMissRefreshFloor)) {
+				return installations, nil
+			}
 		}
-		installations, err := r.source.listInstallations(ctx)
+		now := r.source.clock()
+		r.mu.Lock()
+		if !r.lastAttemptAt.IsZero() && now.Before(r.lastAttemptAt.Add(installationMissRefreshFloor)) {
+			installations, hasSnapshot := r.installations, r.installations != nil
+			r.mu.Unlock()
+			if hasSnapshot {
+				return installations, nil
+			}
+			return nil, errors.New("forge: installation refresh is rate limited by cache")
+		}
+		r.lastAttemptAt = now
+		r.mu.Unlock()
+
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installationRefreshTimeout)
+		defer cancel()
+		installations, err := r.source.listInstallations(refreshCtx)
+		r.mu.Lock()
+		if err == nil {
+			r.installations = installations
+			r.snapshotAt = r.source.clock()
+		}
+		r.mu.Unlock()
 		if err != nil {
 			return nil, err
 		}
-		r.mu.Lock()
-		r.installations = installations
-		r.expiresAt = r.source.clock().Add(installationCacheTTL)
-		r.mu.Unlock()
 		return installations, nil
 	})
-	if err != nil {
-		return 0, fmt.Errorf("forge: resolve installation for owner %q: %w", owner, err)
+
+	var result singleflight.Result
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case result = <-resultCh:
 	}
-	installations, ok := value.(map[string]int64)
+	if result.Err != nil {
+		return 0, fmt.Errorf("forge: resolve installation for owner %q: %w", owner, result.Err)
+	}
+	installations, ok := result.Val.(map[string]int64)
 	if !ok {
-		return 0, fmt.Errorf("forge: unexpected installation refresh result %T", value)
+		return 0, fmt.Errorf("forge: unexpected installation refresh result %T", result.Val)
 	}
 	return installationFor(installations, owner)
+}
+
+func noInstallation(owner string) error {
+	return fmt.Errorf("forge: owner %q: %w", owner, ErrNoInstallation)
 }
 
 func installationFor(installations map[string]int64, owner string) (int64, error) {
 	if id, ok := installations[strings.ToLower(owner)]; ok {
 		return id, nil
 	}
-	return 0, fmt.Errorf("forge: owner %q: %w", owner, ErrNoInstallation)
+	return 0, noInstallation(owner)
 }
 
-func (r *InstallationResolver) cachedInstallations() (map[string]int64, bool) {
+func (r *InstallationResolver) snapshot() (map[string]int64, time.Time, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.installations == nil || !r.source.clock().Before(r.expiresAt) {
-		return nil, false
-	}
-	return r.installations, true
+	return r.installations, r.snapshotAt, r.installations != nil
 }
 
 func (s *appTokenSource) listInstallations(ctx context.Context) (map[string]int64, error) {
@@ -94,55 +141,90 @@ func (s *appTokenSource) listInstallations(ctx context.Context) (map[string]int6
 	}
 
 	installations := make(map[string]int64)
-	for page := 1; ; page++ {
-		url := fmt.Sprintf("%s/app/installations?per_page=%d&page=%d", s.apiBase, perPage, page)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	for page := 1; page <= installationListPageLimit; page++ {
+		pageInstallations, hasNext, err := s.installationPage(ctx, jwt, page)
 		if err != nil {
-			return nil, fmt.Errorf("forge: build installation list request: %w", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+jwt)
-		req.Header.Set("Accept", "application/vnd.github+json")
-
-		resp, err := s.client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("forge: list app installations: %w", err)
-		}
-		body, readErr := io.ReadAll(resp.Body)
-		closeErr := resp.Body.Close()
-		if readErr != nil || closeErr != nil {
-			var closeWrapped error
-			if closeErr != nil {
-				closeWrapped = fmt.Errorf("forge: close installation list response: %w", closeErr)
-			}
-			if readErr != nil {
-				return nil, errors.Join(fmt.Errorf("forge: read installation list response: %w", readErr), closeWrapped)
-			}
-			return nil, closeWrapped
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			var ghErr ghError
-			if jsonErr := json.Unmarshal(body, &ghErr); jsonErr == nil && ghErr.Message != "" {
-				return nil, fmt.Errorf("forge: list app installations: %w", &StatusError{Status: resp.StatusCode, Message: ghErr.Message})
-			}
-			return nil, fmt.Errorf("forge: list app installations: %w", &StatusError{Status: resp.StatusCode})
-		}
-
-		var pageInstallations []struct {
-			ID      int64 `json:"id"`
-			Account struct {
-				Login string `json:"login"`
-			} `json:"account"`
-		}
-		if err := json.Unmarshal(body, &pageInstallations); err != nil {
-			return nil, fmt.Errorf("forge: decode installation list response: %w", err)
+			return nil, err
 		}
 		for _, installation := range pageInstallations {
 			if installation.ID > 0 && installation.Account.Login != "" {
 				installations[strings.ToLower(installation.Account.Login)] = installation.ID
 			}
 		}
-		if !hasNextLink(resp.Header.Get("Link")) {
+		if !hasNext {
 			return installations, nil
 		}
 	}
+	return nil, fmt.Errorf("forge: app installation list exceeds %d pages", installationListPageLimit)
+}
+
+type appInstallation struct {
+	ID      int64 `json:"id"`
+	Account struct {
+		Login string `json:"login"`
+	} `json:"account"`
+}
+
+func (s *appTokenSource) installationPage(ctx context.Context, jwt string, page int) ([]appInstallation, bool, error) {
+	url := fmt.Sprintf("%s/app/installations?per_page=%d&page=%d", s.apiBase, perPage, page)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("forge: build installation list request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("forge: list app installations: %w", err)
+	}
+	body, err := readInstallationResponseBody(resp)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := installationResponseError(resp, body, s.clock()); err != nil {
+		return nil, false, err
+	}
+	var result []appInstallation
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, false, fmt.Errorf("forge: decode installation list response: %w", err)
+	}
+	return result, hasNextLink(resp.Header.Get("Link")), nil
+}
+
+func readInstallationResponseBody(resp *http.Response) ([]byte, error) {
+	body, readErr := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	if readErr != nil {
+		wrappedReadErr := fmt.Errorf("forge: read installation list response: %w", readErr)
+		if closeErr != nil {
+			return nil, errors.Join(wrappedReadErr, fmt.Errorf("forge: close installation list response: %w", closeErr))
+		}
+		return nil, wrappedReadErr
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("forge: close installation list response: %w", closeErr)
+	}
+	return body, nil
+}
+
+func installationResponseError(resp *http.Response, body []byte, now time.Time) error {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && !isRateLimited(resp) {
+		return fmt.Errorf("forge: list app installations: %w", errors.Join(ErrAppCredentials, &StatusError{Status: resp.StatusCode}))
+	}
+	if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden) && isRateLimited(resp) {
+		var retryAfter time.Duration
+		if reset := rateLimitResetAt(resp, now); !reset.IsZero() {
+			retryAfter = max(reset.Sub(now), 0)
+		}
+		return fmt.Errorf("forge: list app installations: %w", &RateLimitError{RetryAfter: retryAfter})
+	}
+	var ghErr ghError
+	if jsonErr := json.Unmarshal(body, &ghErr); jsonErr == nil && ghErr.Message != "" {
+		return fmt.Errorf("forge: list app installations: %w", &StatusError{Status: resp.StatusCode, Message: ghErr.Message})
+	}
+	return fmt.Errorf("forge: list app installations: %w", &StatusError{Status: resp.StatusCode})
 }

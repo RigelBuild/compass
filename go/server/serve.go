@@ -1097,7 +1097,11 @@ func buildDoors(
 	}
 	// The forge broker supplies the host and the targeted secret signal before
 	// any public door is assembled.
-	gitCredentials, err := buildGitCredentialBroker(cfg, st, serverResolver, hub, slog.Default())
+	repoInstallations, err := buildRepoInstallationResolver(cfg, serverResolver)
+	if err != nil {
+		return serveDoors{}, err
+	}
+	gitCredentials, err := buildGitCredentialBroker(cfg, st, serverResolver, repoInstallations, hub, slog.Default())
 	if err != nil {
 		return serveDoors{}, err
 	}
@@ -1105,10 +1109,6 @@ func buildDoors(
 	var repoSignal agentSecretsSignaler
 	if hub != nil {
 		repoSignal = hub
-	}
-	repoInstallations, err := buildRepoInstallationResolver(cfg, serverResolver)
-	if err != nil {
-		return serveDoors{}, err
 	}
 	agentRepositorySvc := newAgentRepositoryService(st, gitCredentials, repoSignal, repoInstallations)
 

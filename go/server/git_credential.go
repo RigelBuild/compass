@@ -55,6 +55,7 @@ var gitCredentialPermissions = map[string]string{
 
 type gitCredentialMinter interface {
 	Mint(ctx context.Context, repos []string, perms map[string]string) (forge.ScopedToken, error)
+	MintFor(ctx context.Context, owner string, repos []string, perms map[string]string) (forge.ScopedToken, error)
 	Revoke(ctx context.Context, token string) error
 }
 
@@ -65,7 +66,7 @@ type gitCredentialStore interface {
 
 // gitCredentialScopeRejected reports a mint failure that repeats for the same set.
 func gitCredentialScopeRejected(err error) bool {
-	if errors.Is(err, errGitCredentialScopeMismatch) || errors.Is(err, errGitCredentialScopeCached) {
+	if errors.Is(err, errGitCredentialScopeMismatch) || errors.Is(err, errGitCredentialScopeCached) || errors.Is(err, forge.ErrNoInstallation) {
 		return true
 	}
 	if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
@@ -505,7 +506,15 @@ func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []stri
 		b.mu.Unlock()
 		return "", false, fmt.Errorf("GitHub credential mint budget: %w", forge.ErrBudgetExhausted)
 	}
-	token, err := b.minter.Mint(ctx, repos, gitCredentialPermissions)
+	var token forge.ScopedToken
+	var err error
+	if key == "*" {
+		token, err = b.minter.Mint(ctx, repos, gitCredentialPermissions)
+	} else {
+		firstRepo, _, _ := strings.Cut(key, ",")
+		owner, _, _ := strings.Cut(firstRepo, "/")
+		token, err = b.minter.MintFor(ctx, owner, repos, gitCredentialPermissions)
+	}
 	if err != nil {
 		b.mu.Lock()
 		if b.generation != generation {
@@ -806,7 +815,7 @@ func (b *gitCredentialBroker) run(ctx context.Context, tick <-chan time.Time) {
 	}
 }
 
-func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets.Resolver, hub *runnerhub.Hub, log *slog.Logger) (*gitCredentialBroker, error) {
+func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets.Resolver, installations *forge.InstallationResolver, hub *runnerhub.Hub, log *slog.Logger) (*gitCredentialBroker, error) {
 	if !cfg.Forge.boardIngestionEnabled() {
 		return nil, nil //nolint:nilnil // nil broker means App not configured
 	}
@@ -815,13 +824,13 @@ func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets
 	if err != nil {
 		return nil, fmt.Errorf("GitHub credential App HTTP client: %w", err)
 	}
-	minter, err := forge.NewScopedAppMinter(forge.GitHubAppConfig{
+	minter, err := forge.NewScopedAppMinterWithResolver(forge.GitHubAppConfig{
 		AppID:          rc.App.AppID,
 		InstallationID: rc.App.InstallationID,
 		PrivateKey:     newDeclaredSecretResolver(resolver, rc.App.AppPrivateKeySecret),
 		Host:           rc.Host,
 		Client:         client,
-	})
+	}, installations)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub credential App minter: %w", err)
 	}
@@ -835,9 +844,8 @@ func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets
 	}, nil
 }
 
-// buildRepoInstallationResolver maps grant owners to App installations; nil
-// (no GitHub App configured) keeps checkOrg on the single-owner rule.
-func buildRepoInstallationResolver(cfg ServeConfig, resolver secrets.Resolver) (agentInstallationResolver, error) {
+// buildRepoInstallationResolver resolves owners through one shared App installation snapshot.
+func buildRepoInstallationResolver(cfg ServeConfig, resolver secrets.Resolver) (*forge.InstallationResolver, error) {
 	if !cfg.Forge.boardIngestionEnabled() {
 		return nil, nil //nolint:nilnil // nil resolver means App not configured
 	}

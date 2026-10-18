@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -47,13 +48,13 @@ func TestAgentRepositoryServiceCheckOrgInstallations(t *testing.T) {
 	if err := svc.checkOrg(context.Background(), "agent", "owner/workstream"); err != nil {
 		t.Fatalf("first installed owner: %v", err)
 	}
-	if err := svc.checkOrg(context.Background(), "agent", "another/repository"); err != nil {
-		t.Fatalf("second installed owner: %v", err)
+	if err := svc.checkOrg(context.Background(), "agent", "another/repository"); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "repository org differs") {
+		t.Fatalf("second installed owner error = %v, want FailedPrecondition for grant-owner mismatch", err)
 	}
+	svc.scopes = agentRepositoryScopeStore{grants: []string{"*"}}
 	if err := svc.checkOrg(context.Background(), "agent", "missing/repository"); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), `no installation for owner "missing"`) {
-		t.Fatalf("second uninstalled owner error = %v, want FailedPrecondition naming owner", err)
+		t.Fatalf("uninstalled wildcard owner error = %v, want FailedPrecondition naming owner", err)
 	}
-
 	svc.scopes = agentRepositoryScopeStore{grants: []string{"*"}}
 	if err := svc.checkOrg(context.Background(), "agent", "another/wildcard-repository"); err != nil {
 		t.Fatalf("wildcard grant with another installed owner: %v", err)
@@ -62,7 +63,6 @@ func TestAgentRepositoryServiceCheckOrgInstallations(t *testing.T) {
 		t.Fatalf("wildcard grant for uninstalled owner = %v, want FailedPrecondition", err)
 	}
 }
-
 func TestAgentRepositoryServiceCheckOrgFirstGrantRequiresInstallation(t *testing.T) {
 	resolver := installationResolverFunc(func(context.Context, string) (int64, error) {
 		return 0, fmt.Errorf("%w", forge.ErrNoInstallation)
@@ -74,6 +74,19 @@ func TestAgentRepositoryServiceCheckOrgFirstGrantRequiresInstallation(t *testing
 	err := svc.checkOrg(context.Background(), "agent", "uninstalled/repository")
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), `no installation for owner "uninstalled"`) {
 		t.Fatalf("first uninstalled owner error = %v, want FailedPrecondition naming owner", err)
+	}
+}
+
+func TestAgentRepositoryServiceCheckOrgCredentialError(t *testing.T) {
+	svc := &agentRepositoryService{
+		scopes: agentRepositoryScopeStore{}, host: "github.com",
+		installations: installationResolverFunc(func(context.Context, string) (int64, error) {
+			return 0, &forge.StatusError{Status: http.StatusUnauthorized}
+		}),
+	}
+	err := svc.checkOrg(context.Background(), "agent", "owner/repository")
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("credential error code = %v (%v), want Internal", got, err)
 	}
 }
 
