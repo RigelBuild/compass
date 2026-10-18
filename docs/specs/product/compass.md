@@ -1392,10 +1392,14 @@ file SHALL be written atomically (a temp file `0600`, synced, then renamed into
 place; the temp file removed on any error), and the token itself SHALL NOT be
 logged — only its path. A socket-only start (no `--listen`) SHALL write no
 token file. When `--admin-token-file` or `COMPASS_ADMIN_TOKEN_FILE` is set, it
-SHALL name a private regular file containing a whitespace-trimmed base64url
-encoding of exactly 32 bytes. The server SHALL register the supplied token for
-the bootstrap admin and persist it under the state directory; a revoked token or
-one registered to another subject SHALL fail startup.
+SHALL resolve, directly or through symlinks, to a regular file with no setuid,
+setgid, or sticky bit, no group-write bit or group-execute bit, and no other
+permission bits. Group-read SHALL be allowed only when the file's group is the
+Server process's effective or supplementary group. The file SHALL contain a
+whitespace-trimmed base64url encoding of exactly 32 bytes. The server SHALL
+register the supplied token for the bootstrap admin and persist it under the
+state directory; a revoked token or one registered to another subject SHALL
+fail startup.
 
 #### Scenario: Opening the network door writes the admin token 0600
 

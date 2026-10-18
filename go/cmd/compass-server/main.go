@@ -375,7 +375,9 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 			"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
 				"(\"1\"/\"true\"/\"yes\"/\"on\" = on)."),
 		adminTokenFile: fs.String("admin-token-file", "",
-			"Private file containing the supplied bootstrap-admin token. Defaults to $COMPASS_ADMIN_TOKEN_FILE."),
+			"Regular file; group-read only if the process holds its group. No group-write, "+
+				"group-execute, or other permission bits; symlinks allowed. "+
+				"Defaults to $COMPASS_ADMIN_TOKEN_FILE."),
 		stateDir: fs.String("state-dir", "",
 			"Directory the bootstrap-admin token file is written under (0600). "+
 				"Defaults to the socket's parent directory."),
