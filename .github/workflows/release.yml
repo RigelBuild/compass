@@ -1267,12 +1267,11 @@ jobs:
               break
             fi
             # A definitive absent manifest surfaces as "manifest unknown" or an
-            # HTTP "404"; the broad "not found" glob is a deliberate belt — safe
-            # here because this job runs after a successful login against a
-            # PUBLIC image, so a 401/403 auth message is not in play, and
-            # skopeo's transport failures phrase differently ("no such host",
-            # "503", "i/o timeout") and fall to the hard-fail arm. Erring toward
-            # continue-the-walk on this set (vs a stale re-tag) is the safe bias.
+            # HTTP "404"; the broad "not found" glob is a deliberate belt. This
+            # anonymous read of a PUBLIC image answers 403 only for a missing or
+            # private package, which falls to the hard-fail arm with skopeo's
+            # transport failures ("no such host", "503", "i/o timeout"). Erring
+            # toward continue-the-walk on this set (vs a stale re-tag) is the safe bias.
             case "$probe" in
               *"manifest unknown"* | *"not found"* | *"404"*) ;;
               *)
@@ -1505,7 +1504,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
         # BuildKit reads registry creds from a docker config file, and
-        # publish.ts passes the same file to skopeo as --authfile. Writing it
+        # publish.ts passes the same file to skopeo as --dest-authfile. Writing it
         # with a 0600 umask in a private dir keeps the token off argv and out of
         # any process listing.
         run: |

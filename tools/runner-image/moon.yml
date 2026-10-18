@@ -28,7 +28,8 @@ tasks:
     # The pure cores over fixtures: build-core.ts (out-path parsing, the
     # artifact→build-arg mapping, closure-root selection) and retag-core.ts (the
     # release re-tag walk's fail-closed probe classification and coherence).
-    inputs: ['*.ts', '/runner-image/Dockerfile', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    # registry-auth.test.ts asserts about the three non-TS files listed last.
+    inputs: ['*.ts', '/runner-image/Dockerfile', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', '/.github/workflows/release.yml', '/agent-image/publish.sh', '/tools/release-notes/index.ts']
   # The CI matrix runs only `:ci` targets; without this the suites above never ran in CI.
   ci:
     deps: ['typecheck', 'test']

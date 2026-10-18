@@ -48,6 +48,23 @@ describe("registry auth sources", () => {
 		expect(logins[0]).toContain('--authfile "$REGISTRY_AUTH_FILE"');
 	});
 
+	test("every release.yml registry call keeps the auth boundary", () => {
+		const lines = joinContinuations(releaseWorkflow)
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => !line.startsWith("#"));
+		for (const line of lines.filter((l) => /skopeo .*\binspect\b/.test(l))) {
+			if (line.includes("nix:")) continue;
+			expect(line).toContain("--no-creds");
+		}
+		for (const line of lines.filter((l) => /skopeo .*\bcopy\b/.test(l))) {
+			expect(line).toContain("--src-no-creds");
+			expect(line).toContain("--dest-authfile");
+		}
+		for (const line of lines.filter((l) => /--authfile\b/.test(l)))
+			expect(line).toMatch(/\blogin\b/);
+	});
+
 	test("agent publish registry reads and copies use the specified auth boundary", () => {
 		const source = joinContinuations(agentPublisher);
 		const outsideGuard = source.replace(

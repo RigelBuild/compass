@@ -22,6 +22,9 @@ describe("publicVerdict", () => {
 		if (!verdict.ok) {
 			expect(verdict.message).toContain("compass-agent");
 			expect(verdict.message).toContain(detail);
+			expect(verdict.message).toContain(
+				"https://github.com/orgs/rigelbuild/packages/container/compass-agent/settings",
+			);
 		}
 	});
 });
