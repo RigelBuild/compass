@@ -82,12 +82,8 @@ func (g *GroupSignaller) Liveness(pgid int, startTime uint64) stack.GroupLivenes
 	return stack.GroupOwned
 }
 
-// parseGroupLeaderStat extracts field 22 (starttime) from a /proc/<pid>/stat
-// line. Split out from the Linux reader (groupsignal_linux.go) so the
-// parenthesized-comm parse is unit-tested against synthesized lines without a
-// live process — the same split (and the same gotcha) as
-// stack.parseStatStartTime. It stays in the unix-built file so that test
-// compiles on every unix: the parse rule is pure text handling.
+// parseGroupLeaderStat extracts /proc starttime, parsing comm from the last ')' because it may contain spaces and parentheses.
+// Keeping this parser pure lets tests cover the rule without a live process on every Unix build.
 func parseGroupLeaderStat(line string) (uint64, error) {
 	// comm (field 2) is parenthesized and may contain spaces AND parens, so
 	// count fields from the LAST ')'; field[0] after it is state (field 3), so

@@ -26,16 +26,9 @@ type stackLock struct {
 	path string
 }
 
-// acquireLock takes the state-dir lock via O_CREATE|O_EXCL. On contention it
-// distinguishes a live holder (another Up in flight — return errLockHeld) from a
-// stale lockfile whose writer is gone: a stale file is removed and the acquire
-// retried once, so a crashed Up does not wedge the state dir forever. The
-// lockfile records the holder's pid so staleness is decidable.
+// acquireLock serializes acquisition, reclaims a stale lock once, and rejects a live holder.
 func acquireLock(stateDir string) (*stackLock, error) {
-	// Serialize the whole inspect→reclaim→create decision across processes with a
-	// short-lived advisory lock on a separate guard file. The O_EXCL pidfile marks
-	// linger ownership but can't make stale-reclaim atomic alone: two Ups on one
-	// stale pidfile would both remove-recreate and spawn. The guard flock closes it.
+	// The guard flock makes stale-file reclaim atomic; the O_EXCL pidfile alone cannot prevent two concurrent spawns.
 	guard, err := acquireGuard(stateDir)
 	if err != nil {
 		return nil, err
@@ -50,10 +43,7 @@ func acquireLock(stateDir string) (*stackLock, error) {
 	if !errors.Is(err, os.ErrExist) {
 		return nil, fmt.Errorf("acquire stack lock: %w", err)
 	}
-	// The file exists. If its recorded holder is gone, the file is stale — remove
-	// it and recreate. If the holder is live, the lock is genuinely held. We hold
-	// the guard, so no other acquirer can reclaim concurrently: the
-	// remove-then-create is atomic with respect to them.
+	// The guard excludes other reclaimers while we inspect, remove, and recreate the stale file.
 	if live, herr := lockHolderLive(path); herr != nil {
 		return nil, fmt.Errorf("inspect stack lock %q: %w", path, herr)
 	} else if live {
@@ -103,13 +93,8 @@ func (g *guardHandle) release() {
 // in flight.
 var errLockHeld = errors.New("stack lock is held by another live up")
 
-// tryCreateLock publishes the lockfile atomically with the current pid already
-// in it, so a concurrent acquirer never observes a created-but-empty file (which
-// it would misjudge as stale and clobber, defeating the lock). A fully-written
-// temp file in the same directory is hard-linked to path: link(2) fails with
-// EEXIST if path already exists, giving the same exclusive-create guarantee as
-// O_EXCL while guaranteeing the visible file's content is complete. On EEXIST the
-// caller decides live-vs-stale.
+// tryCreateLock links a fully-written pid temp into place so no acquirer sees an empty file.
+// EEXIST preserves exclusive creation; the caller distinguishes live and stale holders.
 func tryCreateLock(path string) (*stackLock, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), lockFileName+".*.tmp")
 	if err != nil {

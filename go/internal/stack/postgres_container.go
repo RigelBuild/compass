@@ -12,57 +12,27 @@ import (
 	"time"
 )
 
-// containerStopTimeout is the graceful-stop budget pinned into the container's
-// run spec as `--stop-timeout` (S4). It is the safe default for any `podman
-// stop` that passes no explicit `-t`: postgres never force-kills itself and its
-// smart-shutdown drain matches the host wrapper's 30s grace
-// (compass-postgres/main.go shutdownGrace), so a shorter default would SIGKILL a
-// still-draining cluster. It is DISTINCT from postgresDrainBudget
-// (downdetached.go): the detached-`down` path passes an explicit
-// `podman stop -t <postgresDrainBudget>` (10s) for behavior parity with the
-// process model's capped drain, while this value governs a stop that names no
-// timeout. The two knobs are deliberately not equal (S4).
+// containerStopTimeout is podman's no-explicit-timeout fallback; it covers the server's 30s shutdown grace.
+// Detached down passes its shorter postgresDrainBudget explicitly.
 const containerStopTimeout = 30 * time.Second
 
-// PostgresContainerSpec is the fully-resolved description of the container-backed
-// postgres child (S4). The core builds it from Config; the adapter translates it
-// into the `podman run` argv — the same core-builds-spec / adapter-runs-it split
-// serverSpec/runnerSpec use for ProcessSpec, so the exact flag/env set is a pure,
-// unit-testable value rather than argv assembled behind the seam.
+// PostgresContainerSpec resolves the container launch inputs as a pure value for the adapter.
 type PostgresContainerSpec struct {
-	// Name is the stable per-state-dir container name (derived from StateDir),
-	// the teardown identity a fresh `down` reconstructs and the v2 pgid record
-	// persists (S4). Unique per state dir so concurrent stacks never collide.
+	// Name is stable per state dir and persisted as the v2 teardown identity.
 	Name string
-	// Image is the postgres image ref to run (Config.PostgresImage; the pinned
-	// stock DefaultPostgresImage on the installed path).
+	// Image is the postgres image ref, normally the pinned DefaultPostgresImage.
 	Image string
-	// DataDir is the host PGDATA directory bind-mounted into the container: the
-	// initdb cluster, fixed under the state dir (<StateDir>/postgres), mirroring
-	// the host wrapper's newPGConfig data dir so a dev-box and installed stack
-	// key off the same layout.
+	// DataDir is the state-dir PGDATA mount, matching the host wrapper's layout.
 	DataDir string
-	// SocketDir is the host unix-socket directory (the DSN `host=`) bind-mounted
-	// into the container at the SAME path, so compass-server on the host opens
-	// the identical `host=<SocketDir>` DSN over the byte-identical socket the
-	// container's postgres binds (S4: the DSN shape is unchanged).
+	// SocketDir is mounted at the same path so the host DSN reaches postgres's socket.
 	SocketDir string
-	// Port is the DSN port. The private cluster is socket-only (no TCP), but the
-	// port still names the socket file (.s.PGSQL.<port>) libpq resolves, so the
-	// server must listen on exactly this port for host=<dir> port=<port> to
-	// find the socket.
+	// Port selects the socket filename even though this private cluster has no TCP listener.
 	Port string
-	// StopTimeout is the `--stop-timeout` pinned into the run (containerStopTimeout).
+	// StopTimeout is the --stop-timeout pinned into the run.
 	StopTimeout time.Duration
 }
 
-// postgresContainerSpec builds the S4 container run spec from the resolved
-// config: it parses the DSN for the socket dir + port (the bind-mount target and
-// the socket-file port), fixes the data dir under the state dir, and derives the
-// stable container name. It is pure (no I/O) so the flag/env set it encodes is
-// unit-tested directly, and it errors on a DSN missing the fields the container
-// bind-mount and socket contract need rather than running podman against a
-// half-formed spec.
+// postgresContainerSpec parses the DSN socket path and port, then resolves state-dir paths and name without I/O.
 func postgresContainerSpec(cfg Config) (PostgresContainerSpec, error) {
 	kv, err := parseKeywordValueDSN(cfg.DatabaseDSN)
 	if err != nil {
@@ -86,26 +56,14 @@ func postgresContainerSpec(cfg Config) (PostgresContainerSpec, error) {
 	}, nil
 }
 
-// containerName derives the stable per-state-dir postgres container name (S4).
-// The name is a deterministic function of the state dir alone so a fresh `down`
-// with no in-memory handle reconstructs the same name from config, and the hash
-// keeps concurrent stacks on different state dirs from colliding in podman's
-// flat container namespace — the same collision-avoidance the lock/pgid files
-// get from living IN the state dir. It is also persisted in the v2 container
-// entry, which is the authoritative teardown copy (derivation is the
-// collision-avoidance scheme, the record is the identity).
+// containerName hashes the cleaned state dir for a deterministic podman name; the v2 record remains teardown authority.
 func containerName(stateDir string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(stateDir)))
 	return "compass-postgres-" + hex.EncodeToString(sum[:6])
 }
 
-// parseKeywordValueDSN parses the supervisor's space-separated pgx keyword/value
-// DSN (host=/x port=5432 dbname=compass sslmode=disable) into a map. It mirrors
-// the compass-postgres wrapper's parser (cmd/compass-postgres/main.go): the
-// supervisor always forms a simple space-separated k/v DSN, so a full pgx parse
-// would be dead weight. A token without an '=' is a malformed DSN and errors.
-// Duplicated here rather than imported because the wrapper is a main package
-// (not importable) and the two parse the identical, deliberately small grammar.
+// parseKeywordValueDSN parses the supervisor's simple space-separated key=value grammar.
+// It is duplicated because compass-postgres is a main package.
 func parseKeywordValueDSN(dsn string) (map[string]string, error) {
 	out := make(map[string]string)
 	for tok := range strings.FieldsSeq(dsn) {

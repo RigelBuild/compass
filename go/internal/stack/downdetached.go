@@ -12,19 +12,8 @@ import (
 	"time"
 )
 
-// Per-component drain budgets: after SIGTERM, how long DownDetached waits for a
-// component's confirmation channel to go quiet before escalating to a group
-// SIGKILL. Reverse start order (runner → server → gateway → nats → collector →
-// postgres); the server's graceful drain is the long pole. On the SIGTERM-succeeds
-// path they sum to 110s; on the escalation path the five non-runner components each
-// add a postKillGrace, so the true worst case is 15 + (30+5) + (25+5) + (20+5) + (10+5) + (10+5) = 135s.
-// That can exceed the app's 60s stackDownTimeout (lifecycle.go:35) — and is
-// bounded by its ctx cancellation, not by this arithmetic: on ctx.Done waitDead
-// returns the current dead() verdict, so an overrun becomes a partial-failure
-// survivor rewrite + loud report (Open Question 2), never an unbounded wait.
-// They are package vars, not consts, so tests can shrink them; the budget is
-// enforced via deps.now(), so a test drives expiry with a controlled clock
-// rather than real waiting.
+// Per-component drain budgets follow reverse start order; context cancellation bounds total teardown time.
+// Tests shrink these vars and advance the injected clock instead of waiting.
 var (
 	runnerDrainBudget   = 15 * time.Second
 	serverDrainBudget   = 30 * time.Second
@@ -158,19 +147,15 @@ func consumeRecord(ctx context.Context, cfg Config, deps Deps) (rec pgidRecord, 
 		return pgidRecord{}, false, err
 	}
 
-	// Consume: remove the record under the guard so a concurrent down cannot also
-	// act on it. A partial teardown re-publishes the survivor set at the end.
+	// Remove the record under the guard so another down cannot act on it; partial teardown writes survivors back.
 	if rerr := removePgidFile(cfg.StateDir); rerr != nil {
 		return pgidRecord{}, false, fmt.Errorf("consume pgid record: %w", rerr)
 	}
 	return rec, true, nil
 }
 
-// dropPriorBootGroups removes every process entry when rec was written in an
-// earlier boot: a reboot frees every pgid, so a match now would be a stranger.
-// An unknown boot on either side (older record, unreadable id) keeps rec as is.
-// Container entries stay, since a name is not recycled by a reboot.
-// A live server socket contradicts the mismatch, so down refuses and keeps rec.
+// dropPriorBootGroups: a changed boot makes every process group stale, but container names survive reboot.
+// Unknown boot IDs keep entries; a live server socket makes a prior-boot record contradictory.
 func dropPriorBootGroups(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) (pgidRecord, error) {
 	if rec.BootID == "" {
 		return rec, nil
@@ -353,12 +338,8 @@ func drainTier(ctx context.Context, deps Deps, tier []target) []Component {
 	return survivors
 }
 
-// drainOne waits for one target to confirm dead within its drain budget; on
-// timeout it escalates to SIGKILL and re-confirms. It returns true when the
-// component is torn down.
-//
-// Only a delivered group SIGKILL lets residual members count as zombies awaiting
-// reap; otherwise the post-kill confirm decides.
+// drainOne waits, escalates to SIGKILL on timeout, then confirms again.
+// Residual members count as zombies only after group SIGKILL was delivered.
 func drainOne(ctx context.Context, deps Deps, t target) bool {
 	if waitDead(ctx, deps.now, t.budget, t.confirm) {
 		return true // SIGTERM sufficed (or the group was already gone)
@@ -424,21 +405,13 @@ func survivorError(survivors []Component) error {
 	return fmt.Errorf("teardown incomplete: %v still live after the drain budget; retry down to finish", names)
 }
 
-// clearLockFile removes the state-dir lockfile idempotently, reusing stackLock's
-// idempotent release. In the cross-process path the up that wrote it is long
-// dead (linger), so the file is stale; leaving it is harmless but a clean state
-// dir after a full teardown is tidier.
+// clearLockFile idempotently releases the stale lock left by the prior process.
 func clearLockFile(stateDir string) error {
 	l := &stackLock{path: filepath.Join(stateDir, lockFileName)}
 	return l.release()
 }
 
-// logSignalMiss records a non-fatal signal-delivery error at debug level.
-// Delivery is never the teardown verdict — the per-component confirm channel is
-// — so a miss (most often ESRCH: the group vanished in the irreducible
-// verify→signal gap) is an expected, benign event, logged at debug for a
-// deep-dive trace rather than surfaced to the operator or returned. Kept as one
-// helper so both the SIGTERM and SIGKILL sites read identically.
+// logSignalMiss: signal delivery errors are benign; per-component confirmation decides teardown and remains operator-visible.
 func logSignalMiss(ctx context.Context, sig string, e pgidEntry, err error) {
 	slog.DebugContext(ctx, "group signal not delivered (group likely already gone)",
 		"signal", sig, "component", e.Component.String(), "pgid", e.Pgid, "error", err)
@@ -471,11 +444,7 @@ func groupReleased(deps Deps, e pgidEntry) bool {
 	return !groupOurs(deps, e)
 }
 
-// signalTerm delivers the graceful-stop tier, dispatched on kind: a group
-// SIGTERM for a process, the container's stop signal for a container. Neither
-// waits for exit, so waitDead in drainTier measures every drain budget. A delivery
-// error is not the teardown verdict — the per-component confirm channel is — so
-// it is logged, never fatal.
+// signalTerm sends graceful process or container stop; errors are logged while confirmation determines completion.
 func signalTerm(ctx context.Context, deps Deps, e pgidEntry) {
 	switch e.Kind {
 	case entryContainer:

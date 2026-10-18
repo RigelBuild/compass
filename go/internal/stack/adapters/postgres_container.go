@@ -17,33 +17,17 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
-// containerCommandTimeout bounds each one-shot podman command (run/stop/rm/
-// exists). A cold `podman run` of the postgres image (pull already done by
-// then, but initdb-on-first-boot still runs) plus stop/rm are all far under
-// this; it exists so a wedged podman surfaces as an error rather than blocking
-// teardown forever, mirroring runtime.defaultCommandTimeout.
+// containerCommandTimeout bounds one-shot podman commands so a wedged CLI cannot block teardown indefinitely.
 const containerCommandTimeout = 120 * time.Second
 
-// defaultSocketDir is the compiled-in unix_socket_directories the stock postgres
-// image's entrypoint bootstrap phase (docker_temp_server_start) connects its
-// setup psql over, with PGHOST unset. It MUST stay in the server's
-// unix_socket_directories alongside our bind-mounted DSN socket dir, or the
-// entrypoint's createdb/initdb bootstrap fails to connect and the container
-// exits before ever binding the DSN socket. The DSN socket dir is the one
-// compass-server opens; this one exists only for the image's own bootstrap.
+// defaultSocketDir is required by the stock image bootstrap while PGHOST is unset.
+// Include it beside the DSN socket in unix_socket_directories; only the DSN socket belongs to compass-server.
 const defaultSocketDir = "/var/run/postgresql"
 
-// PostgresContainer is the real stack.PostgresContainer AND stack.ContainerController:
-// it starts the S4 container-backed postgres via `podman run` and tears it down
-// by name. The two seams share one podman surface and one container-naming
-// contract, so they live in one adapter — the start side records the name the
-// teardown side later signals.
+// PostgresContainer implements both container-start and teardown seams using one stable container name.
 type PostgresContainer struct {
 	cli containerCLI
-	// superuser is the postgres role POSTGRES_USER creates. It MUST equal the role
-	// a user-less DSN connects as: pgx resolves it to the OS user, and under
-	// --userns=keep-id the container runs as that same host user. The stock image
-	// otherwise defaults POSTGRES_USER=postgres, which a user-less DSN fails against.
+	// superuser must match the user-less DSN role; keep-id maps it to the host user.
 	superuser string
 }
 
@@ -53,10 +37,8 @@ var (
 	_ stack.ContainerController = (*PostgresContainer)(nil)
 )
 
-// containerCLI is the narrow podman surface this adapter needs: run a detached
-// container, block on its exit, stop/term/remove/exists it by name. *podmanExec
-// satisfies it; a fake satisfies it in tests, so the argv assembly and the
-// Process lifecycle are unit-testable without a real podman.
+// containerCLI is the podman lifecycle surface used by this adapter and its tests.
+// The focused seam keeps argv assembly and process lifecycle testable without podman.
 type containerCLI interface {
 	run(ctx context.Context, args []string) error
 	wait(ctx context.Context, name string) error
@@ -136,38 +118,10 @@ func (c *PostgresContainer) Remove(ctx context.Context, name string) error {
 	return c.cli.remove(ctx, name)
 }
 
-// runArgs assembles the S4 `podman run` argv (detached). Split out as a pure
-// function so the full flag/env set is unit-tested without spawning podman,
-// mirroring runtime.createArgs. The contract (S4, verified against
-// docker.io/library/postgres:18):
-//
-//   - --rm: the container auto-removes when it exits, so a graceful `podman stop`
-//     (the SIGTERM teardown tier, whether in-process Down or a fresh
-//     cross-process down) both stops AND removes it — the acceptance's
-//     "container gone" is a plain stop, not the SIGKILL escalation. The
-//     ContainerController.Remove (`podman rm -f`) escalation tier stays for the
-//     stop-ignored case and is idempotent on an already-removed container.
-//   - --replace: idempotent name reuse. Should a container of this name survive
-//     (a crash before --rm fired, an escalation race), --replace clears it so a
-//     fresh up never collides on the stable per-state-dir name.
-//   - --userns=keep-id: the S4 rootless uid map. postgres refuses uid 0 and the
-//     bind-mounted data dir is host-user-owned, so the container user must map
-//     to the host user.
-//   - --stop-timeout: the safe default for any `podman stop` that names no -t;
-//     >= the wrapper's 30s smart-shutdown grace so podman never SIGKILLs a still-
-//     draining cluster (the detached-down path passes its own explicit -t).
-//   - env POSTGRES_DB / POSTGRES_HOST_AUTH_METHOD / POSTGRES_USER / PGDATA (see
-//     the superuser field for why POSTGRES_USER is required beyond S4's list).
-//   - -v data dir -> PGDATA and the socket dir -> itself (same path both sides,
-//     so the host DSN host=<dir> resolves the byte-identical socket).
-//   - server args: unix_socket_directories lists BOTH the image's compiled
-//     default (for the entrypoint bootstrap) and our bind-mounted DSN dir;
-//     listen_addresses=” is socket-only (no TCP); -p is the DSN port.
-//
-// The flags every container adapter shares (detach/rm/replace/name/stop-timeout)
-// come from the flagPodman* consts below rather than repeated literals: three
-// adapters now assemble a `podman run`, and a typo in one copy would surface as
-// an opaque podman usage error at start time rather than a compile failure.
+// runArgs builds the detached podman command; tests cover its flags without spawning podman.
+// Graceful stop removes the container; replacement clears stale names; keep-id maps the host data owner.
+// Stop timeout exceeds server drain grace, while the socket mounts and POSTGRES_USER match the user-less DSN.
+// The bootstrap and DSN sockets are listed; the server listens only on sockets.
 func runArgs(spec stack.PostgresContainerSpec, superuser string) []string {
 	pgdata := "/pgdata"
 	return []string{
@@ -190,52 +144,35 @@ func runArgs(spec stack.PostgresContainerSpec, superuser string) []string {
 	}
 }
 
-// The `podman run` subcommand and the flags every container adapter (postgres,
-// collector, nats) emits identically. They live here beside the shared
-// containerCLI/podmanExec surface rather than in any one component's file, since
-// all three argv builders consume them.
+// These podman flags are shared by all container argv builders and live beside their common CLI surface.
 const (
 	// cmdPodmanRun is the podman subcommand every argv builder leads with.
 	cmdPodmanRun = "run"
 	// flagPodmanDetach runs the container in the background, returning at launch.
 	flagPodmanDetach = "--detach"
-	// flagPodmanRM auto-removes the container on exit, so a graceful stop both
-	// stops AND removes it.
+	// flagPodmanRM removes the container after exit, including graceful stop.
 	flagPodmanRM = "--rm"
-	// flagPodmanReplace clears a survivor of the same name, so a fresh up never
-	// collides on the stable per-state-dir name.
+	// flagPodmanReplace clears stale containers with the stable name before a fresh up.
 	flagPodmanReplace = "--replace"
-	// flagPodmanName pins the stable per-state-dir container name that is the
-	// component's durable teardown identity.
+	// flagPodmanName sets the component's persisted teardown identity.
 	flagPodmanName = "--name"
-	// flagPodmanStopTimeout is the safe default grace for any `podman stop` that
-	// passes no explicit -t.
+	// flagPodmanStopTimeout sets the default grace when stop has no explicit timeout.
 	flagPodmanStopTimeout = "--stop-timeout"
 	flagPodmanEnv         = "-e"
 	flagPodmanVolume      = "-v"
 	flagPodmanRestart     = "--restart"
 )
 
-// postgresDB is the single database the private store holds, created by the
-// image entrypoint from POSTGRES_DB. It matches the dbname compass-server's DSN
-// opens; kept here beside the argv builder rather than imported from the core so
-// the adapter's argv contract is self-contained (the core's containerDBName is
-// the same literal — a two-line contract, not worth a cross-package export).
+// postgresDB is created by POSTGRES_DB and opened by compass-server's DSN.
+// Kept local so the adapter's argv contract is self-contained.
 const postgresDB = "compass"
 
-// stopSeconds converts the stop-timeout Duration to podman's whole-second flag,
-// rounding a positive duration up so a sub-second grace never truncates to 0 (an
-// immediate SIGKILL), and clamping negatives to 0. Mirrors
-// runtime.stopGraceSeconds.
+// stopSeconds rounds positive durations up so sub-second grace never becomes an immediate SIGKILL.
 func stopSeconds(timeout time.Duration) int64 {
 	return int64(math.Max(math.Ceil(timeout.Seconds()), 0))
 }
 
-// containerProcess is the in-process Process handle over a running container. It
-// maps the stack.Process contract onto podman: Signal(SignalTerm) -> podman
-// stop, Wait -> podman wait (block until exit), Pid -> a sentinel (a container
-// has no host pid the stack uses; its teardown identity is its name, persisted
-// as a v2 container entry, never a pgid).
+// containerProcess maps Process signals and waits to podman; detached teardown uses the persisted name, not a host pid.
 type containerProcess struct {
 	cli         containerCLI
 	name        string
@@ -245,10 +182,7 @@ type containerProcess struct {
 // Compile-time proof the handle satisfies the core seam.
 var _ stack.Process = (*containerProcess)(nil)
 
-// Signal requests a graceful stop bounded by ctx: `podman stop -t <stopTimeout>`.
-// SignalKill is not a valid in-process disposition (the cross-process teardown
-// escalates via ContainerController.Remove instead), matching the process handle
-// which also rejects anything but SignalTerm.
+// Signal requests a graceful stop; hard removal belongs to detached teardown, not the in-process Process contract.
 func (p *containerProcess) Signal(ctx context.Context, sig stack.ProcessSignal) error {
 	switch sig {
 	case stack.SignalTerm:
@@ -261,27 +195,15 @@ func (p *containerProcess) Signal(ctx context.Context, sig stack.ProcessSignal) 
 	}
 }
 
-// Wait blocks until the container exits or ctx is done, via `podman wait`. A
-// container this process stopped via Signal exits cleanly, so the wait returns;
-// a wait error after our stop is not actionable during drain (the container is
-// gone or going), so it is normalized to nil, mirroring the process handle's
-// stop-then-any-exit-is-clean drain semantics.
+// Wait blocks on podman wait; a removed or stopped container has completed its drain.
 func (p *containerProcess) Wait(ctx context.Context) error {
 	return p.cli.wait(ctx, p.name)
 }
 
-// Pid reports a sentinel: a rootless container runs beneath conmon, outside this
-// process's group, so it has no host pid the stack persists as a pgid. The core
-// never records a container child's Pid (startPostgresContainer records a v2
-// container entry keyed by name instead), so this is never read as an identity.
+// Pid returns a sentinel: containers have no host pid, so teardown persists and uses the container name.
 func (p *containerProcess) Pid() int { return 0 }
 
-// podmanExec is the real containerCLI: a thin shell over the podman binary on
-// PATH. It is deliberately independent of internal/runtime's PodmanCLI (which is
-// the agent-container substrate with a different lifecycle surface): the stack's
-// postgres container needs run-detached + wait + stop/rm/exists, a smaller and
-// differently-shaped set, so a focused seam here beats bending the agent runtime
-// to a second caller.
+// podmanExec implements this stack's narrower container lifecycle, distinct from runtime.PodmanCLI for agent containers.
 type podmanExec struct {
 	program string
 	timeout time.Duration
@@ -292,17 +214,12 @@ func newPodmanExec() *podmanExec {
 	return &podmanExec{program: "podman", timeout: containerCommandTimeout}
 }
 
-// run runs `podman <args>` to completion, requiring a zero exit. Caller
-// cancellation is not delivered: a signal mid netns setup can leave pasta
-// running without resolv.conf, breaking every later podman run.
+// run requires a successful podman exit; cancellation is withheld because interrupted netns setup can leave pasta without resolv.conf.
 func (e *podmanExec) run(ctx context.Context, args []string) error {
 	return e.fireAndCheckWithCancellation(ctx, args, true)
 }
 
-// wait blocks until the named container exits (`podman wait <name>`). A
-// non-existent container is a completed wait, not an error: the caller Waits
-// after a Signal(stop), and a container removed under it (or already gone) is
-// the exit we were waiting for.
+// wait blocks for container exit; an absent container is already complete.
 func (e *podmanExec) wait(ctx context.Context, name string) error {
 	if err := e.fireAndCheck(ctx, []string{"wait", name}); err != nil {
 		if isNoSuchContainer(err) {
@@ -313,8 +230,7 @@ func (e *podmanExec) wait(ctx context.Context, name string) error {
 	return nil
 }
 
-// stop requests a graceful stop bounded by timeout (`podman stop -t <secs>`). A
-// non-existent container is already stopped — not an error.
+// stop requests a graceful stop within timeout; an absent container is already stopped.
 func (e *podmanExec) stop(ctx context.Context, name string, timeout time.Duration) error {
 	if err := e.fireAndCheck(ctx, []string{"stop", "--time", strconv.FormatInt(stopSeconds(timeout), 10), name}); err != nil {
 		if isNoSuchContainer(err) {
@@ -325,10 +241,8 @@ func (e *podmanExec) stop(ctx context.Context, name string, timeout time.Duratio
 	return nil
 }
 
-// term sends the container's configured stop signal and returns without waiting
-// for exit, so the caller's drain wait owns the budget. `podman kill` has no
-// "use the stop signal" mode, so the signal is read first; postgres stops on
-// SIGINT, not SIGTERM. An absent container is already stopped — not an error.
+// term sends the configured stop signal without waiting so the caller owns the drain budget.
+// The signal is inspected because podman kill cannot use the configured signal directly.
 func (e *podmanExec) term(ctx context.Context, name string) error {
 	sig, err := e.output(ctx, []string{"container", "inspect", "--format", "{{.Config.StopSignal}}", name})
 	if err == nil {
@@ -343,9 +257,7 @@ func (e *podmanExec) term(ctx context.Context, name string) error {
 	return nil
 }
 
-// remove force-removes the container without the stop-timeout grace (`podman rm
-// -f -t 0`): it is the hard-kill tier, reached only after the drain budget. An
-// absent container is already removed — not an error.
+// remove force-removes without the stop grace; an absent container is already removed.
 func (e *podmanExec) remove(ctx context.Context, name string) error {
 	if err := e.fireAndCheck(ctx, []string{"rm", "--force", "--time", "0", "--volumes", name}); err != nil {
 		if isNoSuchContainer(err) {
@@ -356,9 +268,7 @@ func (e *podmanExec) remove(ctx context.Context, name string) error {
 	return nil
 }
 
-// removeExited removes the container without --force (`podman rm`), which podman
-// refuses while it runs. That refusal, like an absent container, is not an error:
-// the caller polls absence and escalates to remove once its budget expires.
+// removeExited uses non-forced rm; running and absent containers are left for the caller's next poll.
 func (e *podmanExec) removeExited(ctx context.Context, name string) error {
 	if err := e.fireAndCheck(ctx, []string{"rm", "--volumes", name}); err != nil {
 		if isNoSuchContainer(err) || isContainerRunning(err) {
@@ -369,9 +279,7 @@ func (e *podmanExec) removeExited(ctx context.Context, name string) error {
 	return nil
 }
 
-// exists reports whether a container with name is present in any state. `podman
-// container exists` encodes the answer in its exit code (0 present, 1 absent),
-// so it is read from the exit code, not treated as an error.
+// exists reads podman's exit code: 0 means present and 1 means absent.
 func (e *podmanExec) exists(ctx context.Context, name string) (bool, error) {
 	cctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()

@@ -20,36 +20,22 @@ var ErrVersionMismatch = errors.New("live stack version does not match this buil
 // VersionMismatchExitCode is the compass-stack process status for a live version mismatch.
 const VersionMismatchExitCode = 3
 
-// readyPollInterval and readyPollBudget bound the GetServerInfo readiness poll
-// after compass-server is spawned: the socket binds before migrations complete,
-// so readiness is the first answering probe, not socket existence
-// (devenv.nix:229-235). The budget is the failure surface — a server that never
-// answers within it yields a Failed status.
+// readyPollInterval and readyPollBudget bound readiness after spawn; the socket binds before migrations, so probe the server rather than socket existence.
 const (
 	readyPollInterval = 100 * time.Millisecond
 	readyPollBudget   = 30 * time.Second
-	// dbReadyPollInterval/dbReadyPollBudget bound the postgres-reachability poll
-	// between starting postgres and compass-server. The budget is larger than
-	// readyPollBudget because this waits on cold cluster init (initdb + start +
-	// createdb), ~5.5s idle but heavier on a loaded box, so 60s leaves headroom.
+	// Postgres readiness allows cold cluster initdb, start, and createdb.
 	dbReadyPollInterval = 100 * time.Millisecond
 	dbReadyPollBudget   = 60 * time.Second
-	// collectorReadyPollInterval/collectorReadyPollBudget bound the collector-health
-	// poll between launching the bundled collector and its emitters. The collector
-	// holds no on-disk state and does no cold init, binding in under a second, so
-	// the budget is the smaller readyPollBudget tier.
+	// The collector has no disk state or cold init, so it uses the regular readiness budget.
 	collectorReadyPollInterval = 100 * time.Millisecond
 	collectorReadyPollBudget   = 30 * time.Second
-	// natsReadyPollInterval/natsReadyPollBudget bound the nats-readiness poll
-	// between launching NATS and its consumers. NATS boots fast — no cold init —
-	// and a single-node JetStream store recovers in under a second, so the budget
-	// is the same readyPollBudget tier as the collector.
+	// NATS and JetStream boot quickly, so NATS uses the regular readiness budget.
 	natsReadyPollInterval    = 100 * time.Millisecond
 	natsReadyPollBudget      = 30 * time.Second
 	gatewayReadyPollInterval = 100 * time.Millisecond
 	gatewayReadyPollBudget   = 30 * time.Second
-	// Enrollment is a single local probe after Runner preflight; this short budget
-	// fails a dead or wedged Runner without holding up a healthy cold start.
+	// Enrollment is a single local probe after preflight; the short budget catches a dead or wedged runner.
 	runnerEnrollPollInterval = 100 * time.Millisecond
 	runnerEnrollPollBudget   = 15 * time.Second
 )
@@ -461,20 +447,7 @@ func (s *Stack) resolveGuest(ctx context.Context) error {
 	return nil
 }
 
-// startPostgres brings up the private store-of-record via the path Config
-// selects (S4), or skips it entirely for an external database. All three paths
-// leave readiness to the waitPostgres poll spawnChain runs next — Start returns
-// at launch, not at accept.
-//
-//   - ExternalDatabase: no postgres component starts. The caller points the
-//     stack at their own postgres; spawnChain probes DatabaseDSN as-is. Nothing
-//     is recorded, so a down tears down only server+runner.
-//   - PostgresImage set: the container-backed path (the installed default). The
-//     container is a supervised child (its Process handle drives the in-process
-//     Down), and its durable teardown identity — the stable name — is persisted
-//     as a v2 container entry so a fresh cross-process down tears it down by name.
-//   - PostgresImage empty: the dev/devenv path, today's ProcessSupervisor
-//     LookPath spawn of the compass-postgres wrapper, unchanged.
+// startPostgres selects external, bundled-container, or dev-wrapper startup; readiness is handled by waitPostgres.
 func (s *Stack) startPostgres(ctx context.Context) error {
 	if s.cfg.ExternalDatabase {
 		return nil
@@ -493,11 +466,7 @@ func (s *Stack) startPostgres(ctx context.Context) error {
 	return s.recordChild(ctx, ComponentPostgres, pg)
 }
 
-// startPostgresContainer runs the S4 container-backed postgres and records it as
-// a v2 container entry (torn down by name, never by pgid — a rootless container
-// runs beneath conmon, outside the client's process group). The Process handle
-// is held on the Stack so the in-process Down drains it (Signal → podman stop);
-// the persisted name is what a fresh cross-process down reconstructs and signals.
+// startPostgresContainer persists the container name for detached teardown and keeps its Process handle for in-process Down.
 func (s *Stack) startPostgresContainer(ctx context.Context) error {
 	spec, err := postgresContainerSpec(s.cfg)
 	if err != nil {
@@ -512,16 +481,8 @@ func (s *Stack) startPostgresContainer(ctx context.Context) error {
 	return s.appendEntry(ctx, ComponentPostgres, pgidEntry{Kind: entryContainer, Component: ComponentPostgres, ContainerName: spec.Name})
 }
 
-// startCollector brings up the bundled Plane-B fan-in OTel Collector (T4 / D3)
-// and records it as a v2 container entry (torn down by name, never by pgid — a
-// rootless container runs beneath conmon, outside the client's process group),
-// exactly like startPostgresContainer. The Process handle is held on the Stack
-// so the in-process Down drains it (Signal → podman stop); the persisted name is
-// what a fresh cross-process down reconstructs and signals. On the
-// --otel-external opt-out (ExternalOTLPEndpoint set) it is a no-op: no bundled
-// collector starts, nothing is recorded, and a down tears down only the other
-// children — the collector analogue of startPostgres's ExternalDatabase early
-// return.
+// startCollector records the container name for detached teardown; the Process handle drives in-process Down.
+// ExternalOTLPEndpoint skips the bundled collector.
 func (s *Stack) startCollector(ctx context.Context) error {
 	if s.cfg.ExternalOTLPEndpoint != "" {
 		return nil
@@ -543,15 +504,8 @@ func (s *Stack) startCollector(ctx context.Context) error {
 	return s.appendEntry(ctx, ComponentCollector, pgidEntry{Kind: entryContainer, Component: ComponentCollector, ContainerName: spec.Name})
 }
 
-// startNats brings up the bundled NATS container and records it as a v2
-// container entry (torn down by name, never by pgid — a rootless container runs
-// beneath conmon, outside the client's process group), exactly like
-// startCollector. The Process handle is held on the Stack so the in-process Down
-// drains it (Signal → podman stop); the persisted name is what a fresh
-// cross-process down reconstructs and signals. On the --nats-external opt-out
-// (ExternalNatsURL set) it is a no-op: no bundled nats starts, nothing is
-// recorded, and a down tears down only the other children — the nats analogue of
-// startCollector's ExternalOTLPEndpoint early return.
+// startNats records its container name for detached teardown and keeps the Process handle for in-process Down.
+// ExternalNatsURL skips the bundled NATS container.
 func (s *Stack) startNats(ctx context.Context) error {
 	if s.cfg.ExternalNatsURL != "" {
 		return nil
@@ -620,12 +574,7 @@ func (s *Stack) waitGateway(ctx context.Context) error {
 	}
 }
 
-// recordChild appends a spawned process child's teardown identity (pgid == pid,
-// plus the leader start-time token read at spawn) and rewrites the state-dir
-// pgid record so it reflects every child started so far. Rewriting after each
-// spawn keeps the crash window one child wide: the atomically-renamed file on
-// disk is always a complete earlier prefix of the start sequence, so a fresh
-// down never reads a torn record and drains exactly the prefix that was started.
+// recordChild stores the process-group ID and start-time identity after each spawn, leaving a complete prefix for crash recovery.
 func (s *Stack) recordChild(ctx context.Context, c Component, p Process) error {
 	startTime, err := readStartTime(p.Pid())
 	if err != nil {
@@ -769,13 +718,7 @@ func (s *Stack) stopRunner(ctx context.Context) error {
 	return w.err
 }
 
-// waitPostgres polls DBProber.ProbeDB until postgres accepts connections on the
-// full DSN (dbname=compass) or the budget elapses — a direct mirror of waitReady
-// for the postgres precondition. Probing the full DSN (not just the socket)
-// validates the exact state store.Open needs: postgres accepting AND the compass
-// database created by the postgres wrapper's ensureDatabase. A budget timeout is
-// a legible error the caller renders as Failed. The poll respects ctx
-// cancellation.
+// waitPostgres probes the full DSN until postgres accepts connections or the budget or context ends.
 func (s *Stack) waitPostgres(ctx context.Context) error {
 	deadline := s.deps.now().Add(dbReadyPollBudget)
 	ticker := time.NewTicker(dbReadyPollInterval)
@@ -795,14 +738,7 @@ func (s *Stack) waitPostgres(ctx context.Context) error {
 	}
 }
 
-// waitCollector polls CollectorProber.ProbeCollector until the bundled
-// collector answers healthy on its health_check endpoint or the budget elapses
-// — a direct mirror of waitPostgres for the collector precondition, since
-// CollectorContainer.Start returns at launch. On the --otel-external opt-out no
-// collector was started (deps.CollectorProber is nil), so the gate is skipped
-// entirely — mirroring how startCollector no-ops on that path. A budget timeout
-// is a legible error the caller renders as Failed. The poll respects ctx
-// cancellation.
+// waitCollector polls its health endpoint until ready or timeout; external mode skips the bundled collector gate.
 func (s *Stack) waitCollector(ctx context.Context) error {
 	if s.cfg.ExternalOTLPEndpoint != "" {
 		return nil
@@ -828,13 +764,7 @@ func (s *Stack) waitCollector(ctx context.Context) error {
 	}
 }
 
-// waitNats polls NatsProber.ProbeNats until the bundled NATS answers healthy on
-// its HTTP monitoring endpoint or the budget elapses — a direct mirror of
-// waitCollector for the nats precondition, since NatsContainer.Start returns at
-// launch. On the --nats-external opt-out no nats was started (deps.NatsProber is
-// nil), so the gate is skipped entirely — mirroring how startNats no-ops on that
-// path. A budget timeout is a legible error the caller renders as Failed. The
-// poll respects ctx cancellation.
+// waitNats polls its monitoring endpoint until ready or timeout; external mode skips the bundled NATS gate.
 func (s *Stack) waitNats(ctx context.Context) error {
 	if s.cfg.ExternalNatsURL != "" {
 		return nil

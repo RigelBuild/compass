@@ -42,148 +42,74 @@ type Config struct {
 	S3Region                      string
 	S3UseTLS                      bool
 	TranscriptSafetyValveCapBytes int
-	// PostgresImage selects how the private store-of-record postgres is brought
-	// up (S4 / DL-257). Non-empty is the installed-stack default: a
-	// container-backed postgres run from this image ref (the pinned stock
-	// DefaultPostgresImage) via the Deps.PostgresContainer seam. Empty is the
-	// dev/devenv path: today's ProcessSupervisor LookPath spawn of the
-	// compass-postgres wrapper binary, unchanged. The CLI slice resolves the
-	// default; the core applies none. Ignored when ExternalDatabase is set (no
-	// postgres component starts at all).
+	// PostgresImage selects the bundled image; empty keeps the dev wrapper path. Ignored with ExternalDatabase.
 	PostgresImage string
-	// ExternalDatabase opts the stack out of starting postgres entirely (S4 /
-	// DL-257, the GitLab-omnibus external-DB escape hatch). When true, Up skips
-	// the postgres component — neither the wrapper process nor the container —
-	// and probes DatabaseDSN as-is via DBProber, so the caller points the stack
-	// at their own postgres. When false, the stack provisions its private
-	// postgres per PostgresImage (container or dev-path process).
+	// ExternalDatabase skips bundled postgres and probes DatabaseDSN as provided.
 	ExternalDatabase bool
-	// CollectorImage selects the image the bundled Plane-B fan-in OTel Collector
-	// component runs (T4 / D3), mirroring PostgresImage. Non-empty is the
-	// installed-stack default: a container-backed collector run from this image
-	// ref (the pinned DefaultCollectorImage) via the Deps.CollectorContainer
-	// seam. The CLI slice resolves the default; the core applies none. Ignored
-	// when ExternalOTLPEndpoint is set (no collector component starts at all).
+	// CollectorImage selects the bundled collector image. Ignored when ExternalOTLPEndpoint is set.
 	CollectorImage string
-	// ExternalOTLPEndpoint opts the stack out of starting the bundled collector
-	// entirely (T4 / D3, the --otel-external opt-out, the ExternalDatabase
-	// template). When set, Up skips the collector component and compass surfaces
-	// point their OTLP emission straight at this operator/managed-plane-supplied
-	// endpoint. Empty is the D3 default posture: the bundled collector is
-	// provisioned per CollectorImage (present and receiving, exporting nowhere).
+	// ExternalOTLPEndpoint skips the bundled collector and routes OTLP to the supplied endpoint.
+	// Empty enables the collector's default receive-and-drop posture.
 	ExternalOTLPEndpoint string
-	// CollectorGRPCPort, CollectorHTTPPort and CollectorHealthPort are the host
-	// loopback ports the bundled collector publishes on. The container-internal
-	// ports stay fixed; the CLI defaults these to DefaultCollector*Port.
+	// These are host loopback publish ports; container ports stay fixed and defaults are DefaultCollector*Port.
 	CollectorGRPCPort   int
 	CollectorHTTPPort   int
 	CollectorHealthPort int
-	// NatsImage selects the image the bundled NATS component runs, mirroring
-	// CollectorImage. Non-empty is the installed-stack default: a
-	// container-backed nats-server run from this image ref (the pinned
-	// DefaultNatsImage) via the Deps.NatsContainer seam. The CLI slice resolves
-	// the default; the core applies none. Ignored when ExternalNatsURL is set
-	// (no nats component starts at all).
+	// NatsImage selects the bundled NATS image. Ignored when ExternalNatsURL is set.
 	NatsImage string
-	// ExternalNatsURL opts the stack out of starting the bundled NATS entirely
-	// (the --nats-external opt-out, the ExternalOTLPEndpoint template). When
-	// set, Up skips the nats component and consumers point at this
-	// operator/managed-plane-supplied nats:// URL instead. Empty is the default
-	// posture: NATS is provisioned as a bundled stack service, reachable on the
-	// configured loopback client endpoint (NatsClientPort).
+	// ExternalNatsURL skips bundled NATS and supplies the endpoint consumers use.
 	ExternalNatsURL string
-	// NatsClientPort and NatsMonitorPort are the host loopback ports the bundled
-	// NATS publishes on. The container-internal ports stay fixed; the CLI
-	// defaults these to DefaultNats*Port.
+	// These are the published host loopback ports; container ports stay fixed.
 	NatsClientPort  int
 	NatsMonitorPort int
 	// GatewayImage is the bundled LLM gateway image; required unless ExternalGatewayURL is set.
 	GatewayImage string
 	// ExternalGatewayURL opts out of starting the bundled gateway.
 	ExternalGatewayURL string
-	// AgentImage is the container image ref every agent workstream runs; the
-	// runner refuses to boot without it present in the local store.
+	// AgentImage is the container image ref every agent runs; the runner requires it in the local store.
 	AgentImage string
-	// RuntimeDir is the runner-owned base dir for per-container agent sockets
-	// (RuntimeDir/containers/compass-agent-<32hex>/agent.sock). Its length is
-	// budgeted against the AF_UNIX sun_path cap by Validate.
+	// RuntimeDir is the base for per-container agent sockets; Validate budgets its length against AF_UNIX sun_path.
 	RuntimeDir string
-	// Linger is the caller's Down policy: whether the CLI leaves the stack
-	// running after the driving process exits. The Stack methods themselves
-	// always stop when Down is invoked; this only records the caller's intent.
+	// Linger records whether the CLI leaves the stack running after the driver exits; Down stops when called.
 	Linger bool
-	// AgentModel is the model selector every agent this stack's runner starts
-	// is pinned to (the agent's COMPASS_MODEL). Empty leaves each agent on its
-	// own default — the core applies no default, the caller (CLI slice) resolves
-	// $COMPASS_AGENT_MODEL if it wants one.
+	// AgentModel pins the runner's COMPASS_MODEL; empty leaves model selection to the caller and agent.
 	AgentModel string
-	// EgressAllow is the default-deny egress allowlist (DNS names / IP literals)
-	// handed to every agent container. Empty (nil) is a valid default-deny
-	// policy — no host reachable. The core applies no default.
+	// EgressAllow is the default-deny container allowlist; empty permits no host access.
 	EgressAllow []string
-	// CheckoutDir is the in-container working directory the runner checks the
-	// agent's workspace out into (the agent session's cwd). Empty leaves the
-	// runner on its own default (/workspace) — the core applies no default. The
-	// real agent image ships /workspace non-writable (only $HOME is agent-owned),
-	// so a caller driving Provision against that image must set this to a path
-	// under $HOME (e.g. /home/agent/repo); the embedded supervisor and the
-	// compass-stack CLI leave it unset and keep the runner's default.
+	// CheckoutDir is the workspace cwd; the image requires a writable path under HOME.
+	// Empty keeps the runner's non-writable /workspace default.
 	CheckoutDir string
-	// Mounts is the set of extra read-only/read-write host bind mounts handed to
-	// every agent container, each a raw `host:container[:ro]` spec the runner's
-	// --mount flag parses (cmd/compass-runner/main.go parseMount). Empty (nil)
-	// adds no extra mounts — the core applies no default, mirroring EgressAllow.
-	// The e2e harness uses it to deliver a canned-model models.yml into
-	// the agent's ~/.omp/agent (RIG-1787 H3); the embedded supervisor and the
-	// compass-stack CLI leave it unset.
+	// Mounts passes extra host bind mounts to the runner; nil adds none.
 	Mounts []string
-	// RuntimeBackend selects the runner's session backend (e.g. "microvm").
-	// Empty omits --backend entirely, leaving the runner on its own resolution
-	// — the core applies no default, the CLI slice resolves one if it wants.
+	// RuntimeBackend selects the runner session backend; empty leaves resolution to the runner.
 	RuntimeBackend string
-	// GuestArtifact is the digest-pinned OCI reference the guest image is
-	// fetched from into the state dir. Mutually exclusive with GuestDir; empty
-	// leaves the guest paths unset, which keeps baked Runner assets live.
+	// GuestArtifact is a digest-pinned image reference; it cannot be combined with GuestDir.
 	GuestArtifact string
-	// GuestDir points the stack at an already-materialised guest directory and
-	// skips all fetching — the air-gapped path, where no pull is ever mandatory.
-	// Empty leaves the guest paths unset, which keeps baked Runner assets live.
+	// GuestDir uses an existing local artifact and skips fetching, including in air-gapped setups.
 	GuestDir string
 }
 
-// sunPathMax is the longest NUL-terminated path an AF_UNIX address holds on this
-// platform, derived from the kernel's own sockaddr_un (108 bytes on Linux, 104
-// on the BSDs) minus the terminator — mirroring runner.run.go so the two budgets
-// cannot drift onto different literals.
+// sunPathMax derives the AF_UNIX path budget from sockaddr_un, excluding its NUL terminator.
 const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 
-// agentSocketTailWidth is the fixed suffix the runner appends to RuntimeDir to
-// form the widest per-container agent socket path:
-// /containers/compass-agent-<32-hex account id>/agent.sock. It is 69 bytes
-// (devenv.nix:479-480), so on Linux (sunPathMax 107) a RuntimeDir over 38 bytes
-// overflows the cap. Built with the same filepath.Join the runner uses rather
-// than hand-summed, so it tracks the real path construction.
+// agentSocketTailWidth measures the widest runner socket suffix with the same filepath.Join construction.
 var agentSocketTailWidth = len(filepath.Join(
 	"containers", "compass-agent-"+strings.Repeat("0", 32), "agent.sock",
 )) + 1 // +1 for the separator joining RuntimeDir to the tail
 
-// Validate enforces the config invariants that would otherwise surface as opaque
-// runtime failures far from the misconfiguration: an unbindable network door,
-// an over-budget runner socket path, and coherent guest image settings.
+// Validate rejects settings that cause runtime failures or violate socket and guest-image constraints.
 func (c Config) Validate() error {
 	if c.ListenAddr == "" {
 		return errors.New("stack config: ListenAddr is required (a loopback TLS door, e.g. 127.0.0.1:50052)")
 	}
-	// Both guest knobs name the same thing by different means, so accepting
-	// both would leave which one wins unspecified.
+	// Both guest knobs identify the artifact through different paths; accepting both leaves precedence ambiguous.
 	if c.GuestArtifact != "" && c.GuestDir != "" {
 		return fmt.Errorf("stack config: GuestArtifact %q and GuestDir %q are mutually exclusive", c.GuestArtifact, c.GuestDir)
 	}
 	if !c.microVM() && (c.GuestArtifact != "" || c.GuestDir != "") {
 		return fmt.Errorf("stack config: GuestArtifact/GuestDir require RuntimeBackend %q, got %q", runtimeBackendMicroVM, c.RuntimeBackend)
 	}
-	// Validated by the SAME parser the fetcher uses, so a reference accepted
-	// here can never be refused later, mid-startup, by the fetch path.
+	// Use the fetcher's parser so an accepted reference cannot fail later during startup.
 	if c.GuestArtifact != "" {
 		if _, err := parseGuestRef(c.GuestArtifact); err != nil {
 			return fmt.Errorf("stack config: %w", err)
@@ -201,8 +127,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// splitPort extracts the port from a host:port authority without importing net's
-// resolution machinery. It returns ok=false when there is no ":port" tail.
+// splitPort extracts a host:port tail without importing net's resolution machinery.
 func splitPort(addr string) (host, port string, ok bool) {
 	i := strings.LastIndexByte(addr, ':')
 	if i < 0 {
@@ -211,8 +136,7 @@ func splitPort(addr string) (host, port string, ok bool) {
 	return addr[:i], addr[i+1:], true
 }
 
-// loopbackEndpoint renders a bundled component's host publish endpoint, refusing
-// an unset or out-of-range port so podman never sees a `127.0.0.1:0` publish.
+// loopbackEndpoint refuses unset or out-of-range ports before podman sees a publish to port zero.
 func loopbackEndpoint(field string, port int) (string, error) {
 	if port < 1 || port > 65535 {
 		return "", fmt.Errorf("stack config: %s %d must be a host port in 1-65535", field, port)
@@ -220,8 +144,7 @@ func loopbackEndpoint(field string, port int) (string, error) {
 	return "127.0.0.1:" + strconv.Itoa(port), nil
 }
 
-// checkBundledPortsDistinct refuses two host binds of one spawn sharing a port
-// before any child starts. It is not in Validate: attach and down use no ports.
+// checkBundledPortsDistinct rejects conflicting host binds before any child starts; attach and down use no ports.
 func (c Config) checkBundledPortsDistinct(ctx context.Context) error {
 	type port struct {
 		field string
@@ -236,7 +159,7 @@ func (c Config) checkBundledPortsDistinct(ctx context.Context) error {
 			}
 		}
 	}
-	// Bundled ports publish on 127.0.0.1; ListenAddr clashes only on a host that covers it.
+	// Bundled ports publish on 127.0.0.1; ListenAddr conflicts only if its host covers loopback.
 	if host, _, ok := splitPort(c.ListenAddr); ok && overlapsLoopbackPublish(host) {
 		add("ListenAddr", c.ListenAddr)
 	}
@@ -260,8 +183,7 @@ func (c Config) checkBundledPortsDistinct(ctx context.Context) error {
 	return nil
 }
 
-// overlapsLoopbackPublish reports whether a bind on host may also take
-// 127.0.0.1. A hostname counts, since it may resolve there; only another IP is clear.
+// overlapsLoopbackPublish reports whether a bind may also take 127.0.0.1; a hostname could resolve there.
 func overlapsLoopbackPublish(host string) bool {
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip == nil || ip.IsUnspecified() || ip.Equal(net.IPv4(127, 0, 0, 1))

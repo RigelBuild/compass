@@ -13,27 +13,13 @@ import (
 	"strings"
 )
 
-// pgidFileName is the state-dir record of the child process groups a successful
-// up spawned, beside stack.lock / stack.lock.guard. A fresh down (which holds no
-// in-memory Process handle for a stack a prior up spawned) reads it to learn
-// which groups to signal. It is removed on a fully successful teardown.
+// pgidFileName stores child teardown identities for a fresh down, which has no in-memory process handles.
+// Successful teardown removes the record.
 const pgidFileName = "stack.pgids"
 
-// pgidFileVersion is the format/provenance version written in the record header.
-// It is a format guard only — never a child-liveness signal (see pgidRecord).
-//
-// v2 (this build) grows the entry line into a kind-tagged discriminated union
-// (proc / ctr, see pgidEntry): the container-backed postgres of S4 has no
-// process-group teardown identity, so it is recorded and torn down by container
-// name instead. v2 is a strict superset — a v1 record (untagged 3-field proc
-// lines) still parses, as all-process entries. A shipped v1 binary reading a v2
-// record never half-parses it: not by a header check (v1 never compares the
-// header version) but by the entry grammar — a v2 `proc` line is 4 fields where
-// v1 demands exactly 3, and a `ctr` line's leading token is not a known
-// component — so v1's parser hard-errors under the same
-// signal-off-a-half-understood-record discipline. The forward guard (this
-// reader refusing an unknown/newer version) protects a v2 reader from a future
-// v3; it never gates v1↔v2.
+// pgidFileVersion identifies the record format, not child liveness.
+// V2 tags process and container entries; v1 entries remain readable as processes.
+// Older v1 binaries reject v2 entries by grammar; this reader rejects future versions.
 const pgidFileVersion = "2"
 
 // pgidFileVersionV1 is the prior format this build still reads for back-compat:
@@ -65,21 +51,7 @@ func (k pgidEntryKind) entryKindTag() string {
 	}
 }
 
-// pgidEntry is one supervised child's teardown identity, a kind-tagged
-// discriminated union (Kind):
-//
-//   - entryProc (the v1 shape, unchanged): a process-group child. Component +
-//     the process-group id (== the child's pid, set via Setpgid at spawn) +
-//     the group leader's start time as read at spawn. StartTime is the identity
-//     token — it turns the down-side check from "does a group with this pgid
-//     exist" (which a recycled pid passes falsely) into "does a group with this
-//     pgid AND this leader start time exist", closing the pid-recycling window.
-//     ContainerName is empty.
-//   - entryContainer: a container child (S4's containerized postgres).
-//     Component + ContainerName (the stable per-state-dir podman name, the
-//     authoritative teardown identity). Pgid/StartTime are unused (zero): a
-//     rootless container runs beneath conmon, outside the client's process
-//     group, so it has no group to signal — it is torn down by name.
+// pgidEntry is a kind-tagged teardown identity: process groups use pgid plus start time; containers use their stable name.
 type pgidEntry struct {
 	Kind          pgidEntryKind
 	Component     Component
@@ -88,15 +60,8 @@ type pgidEntry struct {
 	ContainerName string
 }
 
-// pgidRecord is the parsed pgid file: a provenance header plus the per-child
-// entries in start order (postgres, compass-server, compass-runner).
-//
-// WriterPid and Version are format/provenance and version guard ONLY, NEVER a
-// child-liveness signal: up always exits after a successful spawn
-// (main.go:235-238), so the writer pid is dead in every linger teardown and
-// discriminates nothing about whether the children are alive. Child liveness is
-// decided per entry by pgid identity (Pgid + StartTime), not by the header —
-// except that a BootID from an earlier boot means no recorded group survives.
+// pgidRecord holds provenance and child entries in start order.
+// WriterPid and Version never indicate liveness; only entry identity and prior-boot handling do.
 type pgidRecord struct {
 	WriterPid int
 	Version   string
@@ -105,25 +70,9 @@ type pgidRecord struct {
 	Entries []pgidEntry
 }
 
-// writePgidFile publishes rec to <stateDir>/stack.pgids atomically (temp +
-// rename in the same dir), mode 0600, plain text with a trailing newline. The
-// rename is the torn-write guard: a reader either sees the whole previous file
-// or the whole new one, never a partial record — the same publish-complete
-// discipline the lockfile uses (lockfile.go:111-117). Rewritten after each
-// successful child spawn, so the on-disk file is always a complete earlier
-// prefix of the start sequence.
-//
-// Format (v2):
-//
-//	<version> <writerPid> <bootid>
-//	proc <component> <pgid> <starttime>   (a process-group child)
-//	ctr <component> <name>                (a container child)
-//	...          (one line per entry, in start order)
-//
-// The leading kind tag makes the entry line a discriminated union; a v1 record
-// (untagged 3-field proc lines) is read-only back-compat — this build never
-// writes it. <bootid> is always the writer's current boot (rec.BootID is
-// ignored), and is omitted when unreadable, which a reader takes as unknown.
+// writePgidFile atomically publishes a 0600 text record; each rewrite is a complete prefix of the start sequence.
+// Format v2: a version/writer/boot header followed by tagged proc or ctr entries.
+// V1 entries remain readable as untagged process records; unknown boot IDs disable only the reboot shortcut.
 func writePgidFile(ctx context.Context, stateDir string, rec pgidRecord) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %d", pgidFileVersion, rec.WriterPid)
@@ -170,23 +119,8 @@ func writePgidFile(ctx context.Context, stateDir string, rec pgidRecord) error {
 	return nil
 }
 
-// readPgidFile parses <stateDir>/stack.pgids. A missing file is reported as
-// os.ErrNotExist (wrapped) so the caller can distinguish "no teardown record"
-// from a genuine read/parse failure. The rename in writePgidFile guarantees no
-// torn record is ever observed, but parsing is defensive regardless: a malformed
-// header or entry line is a hard error rather than a silent partial parse, since
-// signaling off a half-understood record is exactly the blast radius the design
-// forbids.
-//
-// Version dispatch (the S4/DL-262 cross-version rule):
-//   - "2" — this build's format: kind-tagged entry lines (proc / ctr).
-//   - "1" — back-compat: untagged 3-field proc lines, read as all-process
-//     entries (v2 is a strict superset of v1).
-//   - anything else — refused legibly. This is the FORWARD guard, protecting a
-//     v2 reader from a future v3 it cannot understand, the same
-//     never-signal-off-a-half-understood-record discipline. (The reverse
-//     direction — a v1 binary meeting a v2 record — is guarded by the entry
-//     grammar in v1's own parser, not here.)
+// readPgidFile rejects malformed or incomplete records instead of risking teardown from partial identities.
+// It reads v2 tagged entries and v1 process entries, and refuses unknown versions.
 func readPgidFile(stateDir string) (pgidRecord, error) {
 	path := filepath.Join(stateDir, pgidFileName)
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the stack-owned pgid file in the state dir, not user input
@@ -256,20 +190,8 @@ func isBootUUID(s string) bool {
 	return true
 }
 
-// parsePgidLine parses one entry line, dispatched on the record version.
-//
-//   - v1 ("1"): an untagged "<component> <pgid> <starttime>" line, parsed as a
-//     process entry — the format DL-183 froze, kept for back-compat.
-//   - v2 ("2"): a kind-tagged line, "proc <component> <pgid> <starttime>" or
-//     "ctr <component> <name>", a discriminated union.
-//
-// An unknown component name, an unparseable number, or an unknown/mismatched
-// kind tag is a hard error — the record must be understood exactly or not
-// signaled off at all. This is also the guard a shipped v1 binary relies on when
-// it meets a v2 record: its v1 parser sees a 4-field "proc …" line (where it
-// demands exactly 3) or a "ctr" leading token that is not a known component, and
-// hard-errors — refusing to half-parse, by the entry grammar, not a header
-// check.
+// parsePgidLine dispatches v1 process entries and v2 tagged process or container entries.
+// Unknown kinds or mismatched grammar are hard errors, including for older readers of v2 records.
 func parsePgidLine(version, line string) (pgidEntry, error) {
 	if version == pgidFileVersionV1 {
 		// v1: the whole line is an untagged proc body.
@@ -307,10 +229,7 @@ func parseProcEntry(line string, f []string) (pgidEntry, error) {
 	if err != nil {
 		return pgidEntry{}, fmt.Errorf("unparseable pgid %q in entry line %q: %w", f[1], line, err)
 	}
-	// A real process-group leader pid is always > 1; pid 1 is init. Refuse a
-	// degenerate pgid at parse time so a corrupt or tampered record never reaches
-	// the signal sink, where kill(-1,...) is the signal-everything wildcard and
-	// kill(0,...) hits the down process's own group — the blast radius forbidden.
+	// A process-group leader must have pid > 1; refusing smaller values prevents kill(-1) or kill(0) blast radius.
 	if pgid <= 1 {
 		return pgidEntry{}, fmt.Errorf("invalid pgid %d in entry line %q: a process-group leader pid is always > 1", pgid, line)
 	}
@@ -362,9 +281,7 @@ func componentFromString(s string) (Component, bool) {
 	}
 }
 
-// removePgidFile deletes the pgid file. It is idempotent — an absent file is not
-// an error — so the fully-successful teardown path and a retried down can both
-// call it unconditionally.
+// removePgidFile is idempotent so successful teardown and retries can call it unconditionally.
 func removePgidFile(stateDir string) error {
 	path := filepath.Join(stateDir, pgidFileName)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -373,34 +290,14 @@ func removePgidFile(stateDir string) error {
 	return nil
 }
 
-// readStartTime is the package-internal seam that reads a process's start time
-// — the identity token that closes the pid-recycling window. It is a var, not a
-// func, so tests can stub it without a live process.
-//
-// It is BOTH a test seam and a cross-OS seam. The wired implementation is
-// per-OS (readstarttime_linux.go reads /proc/<pid>/stat, readstarttime_darwin.go
-// reads the KinfoProc start timeval via sysctl), and each OS's encoding is its
-// own: Linux clock-ticks-since-boot and darwin microseconds-since-epoch are
-// never compared against each other, because a token is written and read on one
-// host.
-//
-// The invariant that IS load-bearing: this spawn-side reader and the down-side
-// reader (adapters.readGroupLeaderStartTime) must produce the IDENTICAL encoding
-// on a given OS. GroupSignaller.Liveness compares the two for uint64 equality, so a
-// disagreement would report every live child as recycled and silently skip it
-// at teardown. The two darwin readers therefore share one packing rule
-// (sec*1e6 + usec), pinned by mirrored unit tests in both packages.
+// readStartTime is a replaceable test seam with platform-specific identity encodings.
+// Spawn and teardown readers must pack the same token or live children look recycled.
 var readStartTime = readProcessStartTime
 
 // readBootID is the boot-identity seam: a var so tests can model a reboot.
 var readBootID = readCurrentBootID
 
-// parseStatStartTime extracts field 22 (starttime) from a /proc/<pid>/stat line.
-// Split out from the Linux reader (readstarttime_linux.go) so the
-// parenthesized-comm parse is unit-tested against synthesized lines without a
-// live process. It stays in the unix-built file, not the _linux one, so that
-// test compiles and runs on every unix — the parse rule is pure text handling
-// with no /proc dependency of its own.
+// parseStatStartTime reads field 22 after the final ')' because comm may contain spaces and parentheses.
 func parseStatStartTime(line string) (uint64, error) {
 	rparen := strings.LastIndexByte(line, ')')
 	if rparen < 0 {

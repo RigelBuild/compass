@@ -15,9 +15,7 @@ import (
 	"time"
 )
 
-// The recorded pgids/tokens the harness supervisor persists (fakePid(c) and
-// pid*10 from newHarness's readStartTime stub). A DownDetached test seeds the
-// fake group signaller from these so identity matches the on-disk record.
+// Harness pgids and tokens are deterministic; tests seed matching group identities from them.
 const (
 	pgPgid     = 1001
 	serverPgid = 1002
@@ -26,8 +24,7 @@ const (
 
 func pgToken(pgid int) uint64 { return uint64(pgid) * 10 }
 
-// downTestDeps returns deps with shrunk drain budgets. Existing tests retain
-// group-backed probes; regression tests install independent socket fakes.
+// downTestDeps shrinks drain budgets while preserving group-backed probes unless a test replaces them.
 func downTestDeps(t *testing.T, h *harness) Deps {
 	t.Helper()
 	shrinkBudgets(t)
@@ -64,8 +61,7 @@ func (p *groupBackedDBProber) ProbeDB(context.Context, string) error {
 	return errPostgresNotReady
 }
 
-// shrinkBudgets shrinks the package drain budgets/poll for the duration of a
-// test, restoring them after. Small but nonzero so the deadline math is real.
+// shrinkBudgets makes deadline behavior real without waiting on wall-clock durations.
 func shrinkBudgets(t *testing.T) {
 	t.Helper()
 	pr, ps, pp, pc, pn, pg, pk, pi := runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, natsDrainBudget, gatewayDrainBudget, postKillGrace, downPollInterval
@@ -109,8 +105,7 @@ func darkSocketDownDeps(t *testing.T, h *harness) Deps {
 	return deps
 }
 
-// stepClock advances a fixed step on every read, so drain budgets elapse on
-// poll count rather than wall time.
+// stepClock advances on each read so budgets elapse by poll count, not wall time.
 type stepClock struct {
 	mu   sync.Mutex
 	t    time.Time
@@ -135,7 +130,7 @@ func (c *stepClock) peek() time.Time {
 	return c.t
 }
 
-// assertKillAfterBudget fails unless pgid's SIGKILL came a full budget after its SIGTERM.
+// assertKillAfterBudget requires SIGKILL no earlier than the full SIGTERM drain budget.
 func assertKillAfterBudget(t *testing.T, termAt, killAt time.Time, budget time.Duration) {
 	t.Helper()
 	if termAt.IsZero() || killAt.IsZero() {
@@ -146,8 +141,7 @@ func assertKillAfterBudget(t *testing.T, termAt, killAt time.Time, budget time.D
 	}
 }
 
-// seedFullRecord writes a complete three-child pgid record and marks all three
-// groups live in the fake signaller, matching the identity tokens.
+// seedFullRecord writes all three process identities and marks their groups live.
 func seedFullRecord(t *testing.T, cfg Config, h *harness) {
 	t.Helper()
 	rec := pgidRecord{
@@ -178,10 +172,7 @@ func signalEvents(events []string) []string {
 	return out
 }
 
-// TestDownDetachedReverseOrderSIGTERM proves the happy path: all three groups
-// live, SIGTERM makes each go dead (their group-ESRCH / socket-dark confirm),
-// signaled in reverse start order (runner → server → postgres), no SIGKILL, the
-// pgid file removed and the lockfile clear.
+// TestDownDetachedReverseOrderSIGTERM pins reverse-order graceful teardown with no SIGKILL.
 func TestDownDetachedReverseOrderSIGTERM(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
@@ -209,10 +200,7 @@ func TestDownDetachedReverseOrderSIGTERM(t *testing.T) {
 	assertLockFree(t, cfg.StateDir)
 }
 
-// TestDownDetachedEscalatesToSIGKILL proves the bounded escalation: a group that
-// ignores SIGTERM survives its drain budget, gets a group SIGKILL, and (socket
-// then dark) is confirmed. The escalation is bounded — exactly one SIGKILL per
-// stubborn group — never a first-resort or repeated kill.
+// TestDownDetachedEscalatesToSIGKILL checks one kill after a stubborn group exceeds its drain budget.
 func TestDownDetachedEscalatesToSIGKILL(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
@@ -240,8 +228,7 @@ func TestDownDetachedEscalatesToSIGKILL(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedServerSocketDarkWaitsForGroupExit proves a dark server socket
-// does not confirm a live group: SIGKILL waits out the full drain budget.
+// TestDownDetachedServerSocketDarkWaitsForGroupExit ensures a dark socket does not confirm a live group.
 func TestDownDetachedServerSocketDarkWaitsForGroupExit(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
@@ -271,8 +258,7 @@ func TestDownDetachedServerSocketDarkWaitsForGroupExit(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedPostgresSocketDarkWaitsForGroupExit is the postgres analogue:
-// a dark DSN does not confirm a live group before the drain budget elapses.
+// TestDownDetachedPostgresSocketDarkWaitsForGroupExit applies the same check to postgres.
 func TestDownDetachedPostgresSocketDarkWaitsForGroupExit(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
@@ -302,8 +288,7 @@ func TestDownDetachedPostgresSocketDarkWaitsForGroupExit(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedOrphanedGroupEscalates proves a group whose leader is gone but
-// whose members remain is still ours: it is signalled, killed, and reported.
+// TestDownDetachedOrphanedGroupEscalates keeps a group with surviving members signalable after its leader exits.
 func TestDownDetachedOrphanedGroupEscalates(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
@@ -353,16 +338,14 @@ func TestDownDetachedOrphanedServerGroupIsAwaited(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedRecycledBeforeSIGKILLIsNotSignalled proves identity is re-read
-// right before SIGKILL: a pid recycled as the drain budget expires is never killed.
+// TestDownDetachedRecycledBeforeSIGKILLIsNotSignalled rechecks identity before escalating a recycled pgid.
 func TestDownDetachedRecycledBeforeSIGKILLIsNotSignalled(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
 	deps := darkSocketDownDeps(t, h)
 	clock := newStepClock(time.Millisecond)
 	var termAt time.Time
-	// The recycle lands on the clock read that expires the runner budget, after
-	// its last confirm poll saw the group still owned.
+	// Recycle the runner on the clock read that expires its budget.
 	deps.Now = func() time.Time {
 		now := clock.Now()
 		if !termAt.IsZero() && !now.Before(termAt.Add(runnerDrainBudget)) {
@@ -383,14 +366,13 @@ func TestDownDetachedRecycledBeforeSIGKILLIsNotSignalled(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedRecycledBeforeSIGTERMIsNotSignalled proves identity is re-read
-// right before SIGTERM, after target selection.
+// TestDownDetachedRecycledBeforeSIGTERMIsNotSignalled rechecks identity immediately before signalling.
 func TestDownDetachedRecycledBeforeSIGTERMIsNotSignalled(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
 	deps := darkSocketDownDeps(t, h)
 	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
-	// The runner SIGTERM lands just as the server pgid is recycled.
+	// The runner SIGTERM coincides with server pgid reuse.
 	h.groupSig.onTerm[runnerPgid] = func() {
 		h.groupSig.set(runnerPgid, pgToken(runnerPgid), false)
 		h.groupSig.set(serverPgid, 888, true)
@@ -408,8 +390,7 @@ func TestDownDetachedRecycledBeforeSIGTERMIsNotSignalled(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedFailedSIGKILLDoesNotShortCircuit proves an undelivered group
-// SIGKILL never takes the zombie shortcut: the live group is a survivor.
+// TestDownDetachedFailedSIGKILLDoesNotShortCircuit reports a live group when SIGKILL was not delivered.
 func TestDownDetachedFailedSIGKILLDoesNotShortCircuit(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -443,8 +424,7 @@ func TestDownDetachedFailedSIGKILLDoesNotShortCircuit(t *testing.T) {
 	}
 }
 
-// TestDownDetachedCanceledSIGKILLDoesNotShortCircuit proves a canceled teardown
-// re-checks the group instead of assuming post-kill zombies.
+// TestDownDetachedCanceledSIGKILLDoesNotShortCircuit rechecks liveness after cancellation during kill.
 func TestDownDetachedCanceledSIGKILLDoesNotShortCircuit(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
@@ -453,7 +433,7 @@ func TestDownDetachedCanceledSIGKILLDoesNotShortCircuit(t *testing.T) {
 	defer cancel()
 	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
 	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
-	// The kill is delivered but the caller gave up; the group is still present.
+	// Kill is delivered but cancellation leaves the group present.
 	h.groupSig.onKill[runnerPgid] = cancel
 
 	err := DownDetached(ctx, cfg, deps)
@@ -527,27 +507,23 @@ func TestDownDetachedRunnerZombieWindowIsSuccess(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedPartialFailureRewritesSurvivors proves the partial-failure
-// policy: a socket-confirmed component still answering after SIGKILL (a genuine
-// survivor, not a zombie) is reported, the pgid file is NOT removed, and it is
-// rewritten to exactly the surviving set so a retry can finish.
+// TestDownDetachedPartialFailureRewritesSurvivors retains and reports a socket-confirmed survivor for retry.
 func TestDownDetachedPartialFailureRewritesSurvivors(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
 	deps := downTestDeps(t, h)
 
-	// runner + postgres drain; the server survives even SIGKILL (its socket keeps
-	// answering) — the real-survivor case.
+	// Runner and postgres drain; the server remains alive and answers after SIGKILL.
 	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
 	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
-	// server: no flip → stays alive → socket keeps answering past postKillGrace.
+	// The server stays alive and its socket continues answering.
 
 	err := DownDetached(context.Background(), cfg, deps)
 	if err == nil {
 		t.Fatal("DownDetached = nil, want partial-failure error naming the survivor")
 	}
 
-	// The record survives, rewritten to exactly the server entry.
+	// The record retains only the surviving server entry.
 	rec, rerr := readPgidFile(cfg.StateDir)
 	if rerr != nil {
 		t.Fatalf("survivor record read = %v, want the rewritten survivor set", rerr)
@@ -557,15 +533,13 @@ func TestDownDetachedPartialFailureRewritesSurvivors(t *testing.T) {
 	}
 }
 
-// TestDownDetachedRefusesLiveUp proves step 1: a live lockfile holder (an up in
-// flight) makes DownDetached refuse with ErrStackStarting rather than tear down
-// a half-spawned set — and it signals nothing.
+// TestDownDetachedRefusesLiveUp rejects teardown while a live Up holds the lock.
 func TestDownDetachedRefusesLiveUp(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
 	deps := downTestDeps(t, h)
 
-	// A lockfile whose holder is THIS (live) process → lockHolderLive true.
+	// The current process is the live lockfile holder.
 	writeLockHeldBy(t, cfg.StateDir, os.Getpid())
 
 	err := DownDetached(context.Background(), cfg, deps)
@@ -575,34 +549,29 @@ func TestDownDetachedRefusesLiveUp(t *testing.T) {
 	if got := signalEvents(h.rec.snapshot()); len(got) != 0 {
 		t.Fatalf("refusal must signal nothing, got %v", got)
 	}
-	// The record is untouched (not consumed) so the real down can run later.
+	// Refusal leaves the teardown record available for a later down.
 	if _, rerr := readPgidFile(cfg.StateDir); rerr != nil {
 		t.Fatalf("pgid record should be untouched on refusal: %v", rerr)
 	}
 }
 
-// TestDownDetachedSkipsRecycledAndDeadGroups proves the identity gate: a recorded
-// group that is ESRCH, and one whose leader start-time no longer matches (a
-// recycled pid), are BOTH skipped — never signaled, never an error — while the
-// one genuinely-live identity-matched group is torn down.
+// TestDownDetachedSkipsRecycledAndDeadGroups signals only live identities that still match.
 func TestDownDetachedSkipsRecycledAndDeadGroups(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
 	deps := downTestDeps(t, h)
 
-	// postgres group is gone (ESRCH: absent from alive).
+	// Postgres is gone; the server pgid now belongs to an unrelated process.
 	h.groupSig.set(pgPgid, pgToken(pgPgid), false)
-	// server pgid is reused by an unrelated process: alive, but WRONG start-time
-	// token → identity mismatch → recycled → must be skipped.
 	h.groupSig.set(serverPgid, 999999, true)
-	// runner is genuinely live and drains on SIGTERM.
+	// Runner remains live and drains on SIGTERM.
 	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
 
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatalf("DownDetached = %v, want nil (dead+recycled skipped, live torn down)", err)
 	}
 	events := signalEvents(h.rec.snapshot())
-	// Only the runner was signaled; neither the dead pg nor the recycled server.
+	// Neither the dead postgres group nor recycled server is signalled.
 	for _, forbidden := range []string{
 		"group-term " + strconv.Itoa(pgPgid), "group-kill " + strconv.Itoa(pgPgid),
 		"group-term " + strconv.Itoa(serverPgid), "group-kill " + strconv.Itoa(serverPgid),
@@ -617,9 +586,7 @@ func TestDownDetachedSkipsRecycledAndDeadGroups(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedHalfSpawnedPrefix proves a down against a half-spawned stack
-// (the record holds a prefix — postgres only) drains exactly that prefix and no
-// more, then removes the record.
+// TestDownDetachedHalfSpawnedPrefix drains only the postgres entry in a partial record.
 func TestDownDetachedHalfSpawnedPrefix(t *testing.T) {
 	cfg, h := newHarness(t)
 	rec := pgidRecord{
@@ -644,11 +611,7 @@ func TestDownDetachedHalfSpawnedPrefix(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedNilContainersAllProcessRecord pins the nil-safety contract
-// documented in deps.go: a record with no container entries never dereferences
-// deps.Containers. Production wiring leaves Deps.Containers nil, so an all-process
-// record must tear down cleanly without a nil-pointer panic — the container path
-// is gated on `case entryContainer` and never fires here.
+// TestDownDetachedNilContainersAllProcessRecord verifies process-only records do not need a container controller.
 func TestDownDetachedNilContainersAllProcessRecord(t *testing.T) {
 	cfg, h := newHarness(t)
 	deps := downTestDeps(t, h)
@@ -689,9 +652,7 @@ func TestDownDetachedAbsentFileNoSocketIsNoStack(t *testing.T) {
 	}
 }
 
-// TestDownDetachedAbsentFileAnsweringSocketErrors proves Open Question 1: a live
-// stack (server answering) with no teardown record fails legibly rather than
-// guessing at pids.
+// TestDownDetachedAbsentFileAnsweringSocketErrors refuses to guess teardown identities for a live stack.
 func TestDownDetachedAbsentFileAnsweringSocketErrors(t *testing.T) {
 	cfg, h := newHarness(t)
 	deps := h.deps
@@ -706,20 +667,8 @@ func TestDownDetachedAbsentFileAnsweringSocketErrors(t *testing.T) {
 	}
 }
 
-// TestDownDetachedConcurrentSerializedByGuard proves the load-bearing
-// concurrency invariant: the guard serializes the read+consume decision, so of
-// two concurrent downs over one full record EXACTLY ONE consumes the record and
-// signals — each group is signaled once, never twice (no double-signal). The
-// winner returns nil and the record ends gone.
-//
-// The loser's return value is deliberately NOT asserted: it acquires the guard
-// after the winner has consumed the file but released the guard before
-// signaling, so its absent-file socket probe races the winner's in-flight drain
-// (a still-answering server → ErrNoTeardownRecord; an already-dark one → nil).
-// Both outcomes are safe — the loser never double-signals — and which one occurs
-// is a timing detail, so pinning it would be a flaky assertion. (Flagged to the
-// driver: the loser can surface a misleading no-record error during a genuine
-// concurrent down; the no-double-signal guarantee is what actually matters.)
+// TestDownDetachedConcurrentSerializedByGuard ensures one of two downs consumes and signals the record.
+// The loser may see a no-record error while probing the winner's in-flight drain; that race is safe.
 func TestDownDetachedConcurrentSerializedByGuard(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
@@ -734,9 +683,7 @@ func TestDownDetachedConcurrentSerializedByGuard(t *testing.T) {
 	}
 	e1, e2 := <-errs, <-errs
 
-	// At least one down succeeds (the winner). Any non-nil error may only be the
-	// benign concurrent-loser no-record race — never a double-signal or a
-	// teardown failure.
+	// One down succeeds; any loser error may only be ErrNoTeardownRecord.
 	if e1 != nil && e2 != nil {
 		t.Fatalf("both concurrent downs failed: %v / %v", e1, e2)
 	}
@@ -746,8 +693,7 @@ func TestDownDetachedConcurrentSerializedByGuard(t *testing.T) {
 		}
 	}
 
-	// The guard guarantee: exactly one down consumed the record and signaled each
-	// group once — never twice.
+	// The guard guarantees each group is signalled once across both downs.
 	events := signalEvents(h.rec.snapshot())
 	for _, pgid := range []int{runnerPgid, serverPgid, pgPgid} {
 		if n := countEvent(events, "group-term "+strconv.Itoa(pgid)); n != 1 {
@@ -757,12 +703,10 @@ func TestDownDetachedConcurrentSerializedByGuard(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// The stable container name a v2 postgres entry carries in these tests.
+// The stable name persisted for a v2 postgres container entry.
 const pgContainerName = "compass-postgres-test01"
 
-// seedContainerRecord writes a v2 record whose postgres entry is a container
-// (ctr) and whose server/runner entries are processes, and marks all three live
-// (the container present, the two groups alive + identity-matched).
+// seedContainerRecord writes a live record with a postgres container and server/runner process entries.
 func seedContainerRecord(t *testing.T, cfg Config, h *harness) {
 	t.Helper()
 	rec := pgidRecord{
@@ -782,10 +726,7 @@ func seedContainerRecord(t *testing.T, cfg Config, h *harness) {
 	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
 }
 
-// containerBackedDBProber answers the postgres-reachability probe iff the
-// container is still present — the socket goes dark when the container stops
-// (the socket dir is bind-mounted, so the confirm channel is unchanged; only the
-// signal-delivery side differs from the process path).
+// containerBackedDBProber reports postgres reachable while its container exists.
 type containerBackedDBProber struct {
 	c    *fakeContainerController
 	name string
@@ -798,8 +739,7 @@ func (p *containerBackedDBProber) ProbeDB(ctx context.Context, dsn string) error
 	return errPostgresNotReady // container gone → socket dark → confirmed dead
 }
 
-// containerDownDeps points the server confirm at the group signaller (as the
-// process path) and the postgres confirm at the container's existence.
+// containerDownDeps confirms process groups by liveness and postgres by container presence.
 func containerDownDeps(t *testing.T, h *harness) Deps {
 	t.Helper()
 	shrinkBudgets(t)
@@ -809,7 +749,7 @@ func containerDownDeps(t *testing.T, h *harness) Deps {
 	return deps
 }
 
-// ctrEvents keeps only container stop/rm events in order.
+// ctrEvents keeps container stop and remove events in order.
 func ctrEvents(events []string) []string {
 	var out []string
 	for _, e := range events {
@@ -820,10 +760,7 @@ func ctrEvents(events []string) []string {
 	return out
 }
 
-// TestDownDetachedContainerGracefulStop proves the container teardown path: a
-// container postgres entry is torn down by `podman stop` (graceful), confirmed
-// by socket quiescence, with no `rm -f` escalation — the container analogue of
-// the reverse-order SIGTERM happy path.
+// TestDownDetachedContainerGracefulStop confirms by-name stop with no force-remove escalation.
 func TestDownDetachedContainerGracefulStop(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedContainerRecord(t, cfg, h)
@@ -853,10 +790,7 @@ func TestDownDetachedContainerGracefulStop(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedContainerEscalatesToRemove proves the container SIGKILL tier: a
-// container that survives `podman stop` is force-removed by `podman rm -f`, then
-// (socket dark) confirmed — the container analogue of the group-SIGKILL
-// escalation.
+// TestDownDetachedContainerEscalatesToRemove force-removes postgres that survives graceful stop.
 func TestDownDetachedContainerEscalatesToRemove(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedContainerRecord(t, cfg, h)
@@ -878,11 +812,7 @@ func TestDownDetachedContainerEscalatesToRemove(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedContainerSurvivorRewritesRecord proves the partial-failure
-// policy holds for a container: one still present after `podman rm -f` (its
-// socket keeps answering) is a genuine survivor — reported, the record NOT
-// removed, rewritten to exactly the surviving container entry so a retry can
-// finish by name.
+// TestDownDetachedContainerSurvivorRewritesRecord keeps the present container as the sole retry entry.
 func TestDownDetachedContainerSurvivorRewritesRecord(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedContainerRecord(t, cfg, h)
@@ -905,9 +835,7 @@ func TestDownDetachedContainerSurvivorRewritesRecord(t *testing.T) {
 	}
 }
 
-// TestDownDetachedContainerGoneIsSkipped proves the identity gate for containers:
-// a recorded container that no longer exists is skipped — never stopped, never
-// removed, never an error — while the live process entries are still torn down.
+// TestDownDetachedContainerGoneIsSkipped skips an absent container while still draining live processes.
 func TestDownDetachedContainerGoneIsSkipped(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedContainerRecord(t, cfg, h)
@@ -927,8 +855,7 @@ func TestDownDetachedContainerGoneIsSkipped(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedContainerDarkDBStillExistsIsSurvivor proves a container
-// postgres is confirmed only by its absence: a dark DB never confirms it.
+// TestDownDetachedContainerDarkDBStillExistsIsSurvivor confirms container postgres only by its absence.
 func TestDownDetachedContainerDarkDBStillExistsIsSurvivor(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedContainerRecord(t, cfg, h)
@@ -951,9 +878,7 @@ func TestDownDetachedContainerDarkDBStillExistsIsSurvivor(t *testing.T) {
 	}
 }
 
-// TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors: a SIGTERM
-// to down lands while a slow container stop is in flight. The stop must see the
-// cancelled ctx and return, and down must still rewrite the survivor record.
+// TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors preserves entries when stop is canceled.
 func TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedContainerRecord(t, cfg, h)
@@ -994,8 +919,7 @@ func TestDownDetachedTierSignalDoesNotWaitOnContainerDrain(t *testing.T) {
 		pgid := p
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
-	// The gateway is listed after the runner and server in its tier, so move it
-	// first to prove its stop does not hold up the signals behind it.
+	// Move gateway stop first to prove it does not delay the consumer signals.
 	rec, err := readPgidFile(cfg.StateDir)
 	if err != nil {
 		t.Fatal(err)
@@ -1024,9 +948,7 @@ func TestDownDetachedTierSignalDoesNotWaitOnContainerDrain(t *testing.T) {
 	}
 }
 
-// TestDownDetachedInfraTierWaitsForConsumerTier: nats and postgres are not
-// signalled while a consumer still drains. The server ignores SIGTERM, so its
-// budget runs out and it is killed; only then may the infra tier get its stop.
+// TestDownDetachedInfraTierWaitsForConsumerTier holds NATS and postgres until the server drains or is killed.
 func TestDownDetachedInfraTierWaitsForConsumerTier(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedNatsRecord(t, cfg, h)
@@ -1051,9 +973,7 @@ func TestDownDetachedInfraTierWaitsForConsumerTier(t *testing.T) {
 	}
 }
 
-// TestDownDetachedCancelInConsumerTierStillStopsInfra: a down cancelled while
-// consumers drain must still send the infra tier its stop on a live ctx, and
-// record every infra target as a survivor so a retry can finish them.
+// TestDownDetachedCancelInConsumerTierStillStopsInfra sends infra stops on a live context after cancellation.
 func TestDownDetachedCancelInConsumerTierStillStopsInfra(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedNatsRecord(t, cfg, h)
@@ -1094,13 +1014,8 @@ func TestDownDetachedCancelInConsumerTierStillStopsInfra(t *testing.T) {
 // The stable name a v2 collector container entry carries in these tests.
 const collectorContainerNameTest = "compass-otel-collector-test01"
 
-// seedCollectorRecord writes a v2 record whose collector entry is a container
-// (ctr) sitting between the server and postgres process entries — the exact
-// start-order shape a real up records — and marks all four children live. This
-// is the hermetic guard for the cross-process collector teardown: the invariant
-// that broke once (liveTargets not knowing ComponentCollector, so a detached
-// down silently skipped the container and leaked it) is invisible on the
-// podman-gated integration test but caught here on every default-CI run.
+// seedCollectorRecord writes a live v2 record with a collector container between the server and postgres.
+// This hermetic case ensures detached teardown includes ComponentCollector without requiring podman.
 func seedCollectorRecord(t *testing.T, cfg Config, h *harness) {
 	t.Helper()
 	rec := pgidRecord{
@@ -1143,12 +1058,7 @@ func indexOf(events []string, want string) int {
 	return -1
 }
 
-// TestDownDetachedCollectorContainerTornDownByName proves the cross-process
-// teardown of the bundled collector: a detached down reads the v2 record, stops
-// the collector container BY NAME (graceful, no rm -f) and in reverse start
-// order — after the server is signaled, before postgres. A regression dropping
-// ComponentCollector from liveTargets' order slice fails here (the container is
-// never stopped), on every default-CI run.
+// TestDownDetachedCollectorContainerTornDownByName verifies graceful by-name teardown between server and postgres.
 func TestDownDetachedCollectorContainerTornDownByName(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedCollectorRecord(t, cfg, h)
@@ -1181,10 +1091,7 @@ func TestDownDetachedCollectorContainerTornDownByName(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
-// TestDownDetachedCollectorEscalatesToRemove proves the collector SIGKILL tier:
-// a collector container that ignores `podman stop` is force-removed by
-// `podman rm -f`, then (existence gone) confirmed — the container escalation for
-// the collector entry specifically.
+// TestDownDetachedCollectorEscalatesToRemove force-removes a collector that ignores graceful stop.
 func TestDownDetachedCollectorEscalatesToRemove(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedCollectorRecord(t, cfg, h)
@@ -1212,12 +1119,8 @@ func TestDownDetachedCollectorEscalatesToRemove(t *testing.T) {
 // The stable name a v2 nats container entry carries in these tests.
 const natsContainerNameTest = "compass-nats-test01"
 
-// seedNatsRecord writes a v2 record whose nats entry is a container (ctr)
-// sitting between the server and postgres process entries — the start-order
-// shape a real up records — and marks all four children live. It is the
-// hermetic guard for the cross-process nats teardown: a liveTargets that does
-// not know ComponentNats silently skips the container and leaks it, which no
-// podman-gated integration test would catch on a default-CI run.
+// seedNatsRecord writes a live v2 record with a NATS container between the server and postgres.
+// This hermetic case ensures detached teardown includes ComponentNats without requiring podman.
 func seedNatsRecord(t *testing.T, cfg Config, h *harness) {
 	t.Helper()
 	rec := pgidRecord{
@@ -1239,13 +1142,7 @@ func seedNatsRecord(t *testing.T, cfg Config, h *harness) {
 	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
 }
 
-// TestDownDetachedNatsContainerTornDownByName proves the cross-process teardown
-// of the bundled nats: a detached down reads the v2 record, stops the nats
-// container BY NAME (graceful, no rm -f) and in reverse start order — after the
-// server is signaled (its future consumer, PR3/PR4), before postgres. Graceful
-// matters more here than for the collector: `podman stop` SIGTERMs nats-server
-// so it flushes the JetStream store, while an rm -f would leave the store to
-// recover on next boot.
+// TestDownDetachedNatsContainerTornDownByName verifies graceful reverse-order teardown so JetStream can flush.
 func TestDownDetachedNatsContainerTornDownByName(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedNatsRecord(t, cfg, h)

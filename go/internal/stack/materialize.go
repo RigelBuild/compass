@@ -205,14 +205,8 @@ func materializeGuestImage(ctx context.Context, ref string, stateDir string) (Gu
 	return materializeGuestArtifact(ctx, reg, stateDir)
 }
 
-// parseGuestRef is the ONE strict parser for a guest artifact reference, used
-// both by Config.Validate and by the fetcher, so the two can never disagree on
-// what is acceptable. It accepts exactly `<host>[:port]/<repository>@sha256:<64
-// lowercase hex>` and rejects everything else with a reason.
-//
-// Strict rather than lenient on purpose: the digest names the content-addressed
-// directory and the repository is interpolated into a request path, so an
-// almost-valid reference must fail here rather than fetch something else.
+// parseGuestRef is shared by validation and fetching so accepted references cannot fail later during startup.
+// Strict parsing protects the content-addressed path and request path from malformed references.
 func parseGuestRef(ref string) (guestRegistry, error) {
 	if ref == "" {
 		return guestRegistry{}, errors.New("guest artifact reference is empty")

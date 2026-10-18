@@ -266,12 +266,7 @@ type probeError struct{}
 
 func (*probeError) Error() string { return "server not answering" }
 
-// stubDBProber answers the postgres-reachability probe. By default it is ready
-// immediately (readyAfter == 0). readyAfter > 0 models a cold cluster: the first
-// readyAfter probes report not-ready, then it flips ready — so a test can prove
-// waitPostgres polls until postgres accepts. never makes it report not-ready
-// forever, so a test can drive the budget-timeout failure via a controlled
-// clock.
+// stubDBProber becomes ready after readyAfter failures; never lets tests trigger the budget timeout.
 type stubDBProber struct {
 	rec        *recorder
 	readyAfter int
@@ -472,14 +467,8 @@ func (f *fakeGroupSignaller) failSignal(pgid int, sig ProcessSignal, err error) 
 	f.signalErr[pgid][sig] = err
 }
 
-// fakeContainerController is the container-teardown seam under test: it records
-// each stop/remove in order and models per-container existence as a controllable
-// state machine, the container analogue of fakeGroupSignaller. exists maps
-// name→presence; a name absent from exists is treated as gone. exited marks a
-// present container that has stopped, which RemoveExited may remove. onStop /
-// onRemove hooks flip a container's state at the right escalation step so a test
-// can model a graceful stop, a stop-ignored→rm-f escalation, or a genuine
-// survivor; an onStop hook receives the caller's ctx so it can model a slow stop.
+// fakeContainerController records teardown order and models per-container existence, stop, and removal states.
+// Hooks let tests simulate graceful stop, escalation, survivors, and slow operations.
 type fakeContainerController struct {
 	rec      *recorder
 	mu       sync.Mutex
@@ -558,12 +547,7 @@ func (c *fakeContainerController) setExited(name string) {
 	c.exited[name] = true
 }
 
-// fakePostgresContainer is the container-START seam under test (the analogue of
-// stubSupervisor for the container path): Start records the run and the spec it
-// was handed, so a test can assert the container path was taken and inspect the
-// resolved run spec. It returns a stub Process whose Signal/Wait record into the
-// shared recorder as "signal postgres"/"wait postgres" — the same event labels
-// the process path uses — so the reverse-drain assertion is path-agnostic.
+// fakePostgresContainer records its launch spec and returns a process that uses shared postgres event labels.
 // startErr injects a launch failure.
 type fakePostgresContainer struct {
 	rec      *recorder
@@ -618,12 +602,8 @@ func (p *stubContainerProcess) Wait(_ context.Context) error {
 
 func (p *stubContainerProcess) Pid() int { return 0 }
 
-// fakeCollectorContainer is the collector-START seam under test (the analogue of
-// fakePostgresContainer): Start records the run and the spec it was handed, so a
-// test can assert the collector path was taken and inspect the resolved spec. It
-// returns a stub Process whose Signal/Wait record into the shared recorder as
-// "signal otel-collector"/"wait otel-collector" so the reverse-drain assertion
-// reads the collector like any other child. startErr injects a launch failure.
+// fakeCollectorContainer records its launch spec and uses collector labels for path-independent drain assertions.
+// startErr injects a launch failure.
 type fakeCollectorContainer struct {
 	rec      *recorder
 	mu       sync.Mutex
@@ -655,10 +635,7 @@ func (c *fakeCollectorContainer) spec() CollectorContainerSpec {
 	return c.lastSpec
 }
 
-// stubCollectorProcess is the in-process handle a fakeCollectorContainer.Start
-// hands back. Its Signal/Wait record with the "otel-collector" label so
-// drain-order assertions read it like the process/postgres paths; Pid is the 0
-// sentinel a real container handle also returns.
+// stubCollectorProcess records collector signal and wait events; Pid is the container sentinel.
 type stubCollectorProcess struct {
 	rec     *recorder
 	stopped atomic.Bool
@@ -677,11 +654,7 @@ func (p *stubCollectorProcess) Wait(_ context.Context) error {
 
 func (p *stubCollectorProcess) Pid() int { return 0 }
 
-// stubCollectorProber answers the collector-health probe. By default it is ready
-// immediately (readyAfter == 0). readyAfter > 0 models a cold collector: the
-// first readyAfter probes report not-ready, then it flips ready. never makes it
-// report not-ready forever, so a test can drive the budget-timeout failure via a
-// controlled clock. It records the last health endpoint it probed.
+// stubCollectorProber becomes healthy after readyAfter failures and records its last endpoint.
 type stubCollectorProber struct {
 	rec        *recorder
 	readyAfter int
@@ -718,12 +691,8 @@ type collectorProbeError struct{}
 
 func (*collectorProbeError) Error() string { return "otel-collector not answering" }
 
-// fakeNatsContainer is the nats-START seam under test (the analogue of
-// fakeCollectorContainer): Start records the run and the spec it was handed, so
-// a test can assert the nats path was taken and inspect the resolved spec. It
-// returns a stub Process whose Signal/Wait record into the shared recorder as
-// "signal nats"/"wait nats" so the reverse-drain assertion reads nats like any
-// other child. startErr injects a launch failure.
+// fakeNatsContainer records its launch spec and uses NATS labels for path-independent drain assertions.
+// startErr injects a launch failure.
 type fakeNatsContainer struct {
 	rec      *recorder
 	mu       sync.Mutex

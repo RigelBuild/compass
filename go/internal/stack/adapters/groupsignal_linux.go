@@ -7,13 +7,8 @@ import (
 	"os"
 )
 
-// readGroupLeaderStartTime reads field 22 (starttime, in clock ticks since
-// boot) of /proc/<pgid>/stat — the Linux half of the teardown-side identity
-// read. The parenthesized-comm parse rule lives in parseGroupLeaderStat
-// (groupsignal.go) so it is unit-testable without a live process.
-//
-// A pgid that names no process has no /proc entry, so the read fails rather
-// than returning a token that could match a recorded identity.
+// readGroupLeaderStartTime reads /proc/<pgid>/stat; a missing process yields an error rather than an identity token.
+// The pure parenthesized-comm parser is in parseGroupLeaderStat for cross-Unix tests.
 func readGroupLeaderStartTime(pgid int) (uint64, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pgid))
 	if err != nil {

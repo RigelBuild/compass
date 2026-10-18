@@ -63,24 +63,8 @@ func (e *TokenEnsurer) EnsureToken(ctx context.Context, stateDir, runnerID strin
 	return ensure(ctx, st, stateDir, runnerID)
 }
 
-// ensure makes the runner token file idempotent against the store, not just
-// against file presence — mirroring the mint CLI's --token-out semantics
-// (cmd/compass-mint-runner-token/main.go mintToFile):
-//
-//   - file present, token registered for THIS runner id (or revoked): return it
-//     unchanged (the common restart) — no mint, no rotation.
-//   - file present, token NOT registered (the store was replaced): re-register
-//     that exact token so the runner's on-disk credential keeps working — heal
-//     without rotating, which a blind skip (stale hash) or a blind re-mint
-//     (rotated credential) would both get wrong.
-//   - file present, token registered under ANOTHER subject: it can never enroll
-//     as runnerID, so mint fresh as if the file were absent.
-//   - file absent: mint a fresh token, write the file FIRST at 0600 atomically,
-//     then commit its hash. File-before-store means a failed file write never
-//     orphans a committed hash whose plaintext is gone; if the hash commit then
-//     fails, the just-written file is removed so no dead credential is left.
-//
-// The plaintext is returned but never logged.
+// ensure reuses a registered token, re-registers one missing from the store, and mints when absent or bound elsewhere.
+// It commits the token hash only after atomically writing the 0600 file; the returned plaintext is never logged.
 func ensure(ctx context.Context, st tokenStore, stateDir, runnerID string) (string, error) {
 	path := filepath.Join(stateDir, tokenFileName)
 
@@ -142,12 +126,8 @@ func readTokenFile(path string) (token string, ok bool, err error) {
 	return string(b), true, nil
 }
 
-// writeTokenFile writes token to path at mode 0600, atomically: a temp file in
-// the same directory (born 0600, chmod-pinned against umask) is written, synced,
-// and renamed over path, so a reader never sees a partial credential and a crash
-// mid-write leaves either the old file or the new one — never a truncated token.
-// The token is written raw (no trailing newline), matching the mint CLI and the
-// admin-token file convention the runner reads.
+// writeTokenFile atomically replaces path with a synced 0600 file, so readers never see a partial credential.
+// Store the raw token without a newline to match the runner's file convention.
 func writeTokenFile(path, token string) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*")

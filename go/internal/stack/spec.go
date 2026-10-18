@@ -9,9 +9,7 @@ import (
 	"strings"
 )
 
-// tokenEnvVar is the environment variable the runner reads its enrollment token
-// from. It is passed via env only, never a flag, so it never reaches the process
-// table (cmd/compass-runner/main.go:105-110).
+// tokenEnvVar passes the enrollment token only through the runner environment, never its process arguments.
 const tokenEnvVar = "COMPASS_RUNNER_TOKEN"
 
 const microVMRunRootEnvVar = "COMPASS_MICROVM_RUNROOT"
@@ -27,20 +25,11 @@ const runtimeBackendHost = "host"
 // run on the operator's own desktop, where the OS keyring is available.
 const hostSecretProvider = "keyring://"
 
-// embeddedRunnerID is the fixed identity of the single embedded runner. Embedded
-// mode is single-user/single-runner by design (DL-106), so the id is an internal
-// constant rather than a Config knob; it is cross-checked against the minted
-// token's subject, so mint and spawn must agree on this one value (mirrors
-// devenv's fixed `--runner-id dogfood`, devenv.nix:498 for the spawn and :547
-// for the mint side).
+// embeddedRunnerID fixes the single embedded runner identity shared by token minting and process spawn.
 const embeddedRunnerID = "embedded"
 
-// serverSpec builds the compass-server child spec from the resolved config and
-// cert paths, mirroring the devenv dogfood invocation except that the network
-// door arrives as inherited fd 3 (--listen-fd): the stack holds the bound
-// listener, so no other process can take the port before the server starts.
-// --nats-url is unconditional because the server refuses to boot without it.
-// secretProviderEnv is the stack's inherited COMPASS_SECRET_PROVIDER.
+// serverSpec builds the server invocation with the stack-owned network listener on inherited fd 3.
+// --nats-url is required, and COMPASS_SECRET_PROVIDER is inherited through the environment.
 func serverSpec(cfg Config, cert CertResult, listen *os.File, secretProviderEnv string) ProcessSpec {
 	args := []string{
 		"--socket", cfg.SocketPath,

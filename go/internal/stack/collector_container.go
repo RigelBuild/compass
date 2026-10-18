@@ -10,18 +10,10 @@ import (
 	"time"
 )
 
-// collectorStopTimeout is the graceful-stop budget pinned into the collector
-// container's run spec as `--stop-timeout` (the safe default for any `podman
-// stop` that passes no explicit `-t`). The collector holds no on-disk state to
-// drain (D3: it drops rather than buffering to disk), so it needs no long grace
-// like postgres's cluster shutdown — a short budget is ample for the receivers
-// to close and the process to exit. Distinct from postgres's 30s
-// containerStopTimeout because the two components have different shutdown costs.
+// collectorStopTimeout gives the stateless collector a short graceful-stop budget; postgres needs longer for cluster shutdown.
 const collectorStopTimeout = 10 * time.Second
 
-// The collector's fixed container-internal ports (D3): OTLP grpc and http, and
-// the health_check probe target. The generated config binds them inside the
-// container and the adapter publishes them, so both share these upstream defaults.
+// These fixed container ports are shared by the generated config and adapter publish flags.
 const (
 	CollectorContainerGRPCPort   = "4317"
 	CollectorContainerHTTPPort   = "4318"
@@ -37,49 +29,27 @@ const (
 	DefaultCollectorHealthPort = 13133
 )
 
-// CollectorContainerSpec is the fully-resolved description of the Plane-B fan-in
-// OTel Collector container child (T4, D3). The core builds it from Config; the
-// adapter translates it into the `podman run` argv and writes the generated
-// config file — the same core-builds-spec / adapter-runs-it split
-// PostgresContainerSpec uses, so the flag/env/config set is a pure,
-// unit-testable value rather than argv assembled behind the seam.
+// CollectorContainerSpec resolves the config, endpoints, and mount paths for the bundled collector.
 type CollectorContainerSpec struct {
-	// Name is the stable per-state-dir container name (derived from StateDir),
-	// the teardown identity a fresh `down` reconstructs and the v2 pgid record
-	// persists. Unique per state dir so concurrent stacks never collide in
-	// podman's flat container namespace; the host ports below come from Config.
+	// Name is stable per state dir and persisted for detached teardown.
 	Name string
-	// Image is the collector image ref to run (Config.CollectorImage; the pinned
-	// DefaultCollectorImage on the installed path).
+	// Image is the collector image ref, normally the pinned DefaultCollectorImage.
 	Image string
-	// ConfigDir is the host directory the generated collector config is written
-	// into and bind-mounted (read-only) from, fixed under the state dir
-	// (<StateDir>/collector). The adapter creates it and writes ConfigYAML into
-	// <ConfigDir>/config.yaml before the run.
+	// ConfigDir holds generated config mounted read-only; the adapter creates and writes it before launch.
 	ConfigDir string
-	// ConfigYAML is the fully-rendered collector config realizing the D3 default
-	// posture (otlp receiver, drop sink, health_check extension, no disk
-	// buffering). The core renders it so the posture is a pure, unit-tested
-	// value; the adapter only writes it to disk.
+	// ConfigYAML renders the receive-and-drop posture; the adapter writes this pure, testable value to disk.
 	ConfigYAML string
-	// GRPCEndpoint is the host loopback endpoint the OTLP/grpc receiver is
-	// published on (host:port). It is what OTEL_EXPORTER_OTLP_ENDPOINT points at
-	// for grpc emitters.
+	// GRPCEndpoint is the host loopback receiver published for grpc emitters.
 	GRPCEndpoint string
-	// HTTPEndpoint is the host loopback endpoint the OTLP/http receiver is
-	// published on (host:port).
+	// HTTPEndpoint is the host loopback receiver published for HTTP emitters.
 	HTTPEndpoint string
-	// HealthEndpoint is the host loopback endpoint the health_check extension is
-	// published on (host:port); the readiness probe issues an HTTP GET against
-	// it.
+	// HealthEndpoint is where readiness probes the host-published health_check extension.
 	HealthEndpoint string
 	// StopTimeout is the `--stop-timeout` pinned into the run (collectorStopTimeout).
 	StopTimeout time.Duration
 }
 
-// collectorContainerSpec builds the collector run spec from the resolved config:
-// name and config dir from the state dir, the D3 config, and loopback endpoints
-// from Config's host ports. It does no I/O and refuses an incomplete config.
+// collectorContainerSpec resolves the name, state-dir config, generated posture, and loopback endpoints without I/O.
 func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 	if cfg.StateDir == "" {
 		return CollectorContainerSpec{}, errors.New("stack config: StateDir is required for the collector container (config bind-mount + name derivation)")
@@ -114,35 +84,14 @@ func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 	}, nil
 }
 
-// collectorContainerName derives the stable per-state-dir collector container
-// name. Like containerName (the postgres derivation) it is a deterministic
-// function of the state dir alone so a fresh `down` with no in-memory handle
-// reconstructs the same name, and the hash keeps concurrent stacks on different
-// state dirs from colliding in podman's flat container namespace. A
-// distinct prefix from the postgres name keeps the two components' containers
-// legible apart in `podman ps`.
+// collectorContainerName is stable per state dir for detached teardown; its hash avoids podman name collisions.
 func collectorContainerName(stateDir string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(stateDir)))
 	return "compass-otel-collector-" + hex.EncodeToString(sum[:6])
 }
 
-// collectorConfigYAML renders the collector config realizing the D3 default
-// posture. It is a pure function (the endpoints are container-internal fixed
-// ports) so the posture is unit-tested directly:
-//
-//   - receivers.otlp: grpc + http, the fan-in endpoint, bound 0.0.0.0 inside the
-//     container (the run spec publishes the ports on the host loopback).
-//   - exporters.nop: the drop sink. D3's "exports NOWHERE until an export
-//     endpoint is configured" — there is no live exporter in the default config,
-//     so received telemetry is accepted and dropped, never egressed and never
-//     buffered. Configuring an export backend is a future config addition (out of
-//     scope for the D3 default; --otel-external skips the bundled collector
-//     entirely).
-//   - extensions.health_check: :13133, the readiness probe target.
-//   - service.pipelines: traces + metrics + logs, each otlp -> nop. No
-//     sending_queue and no file_storage anywhere — D3's "drops rather than
-//     buffering to disk". A live self-hoster gets a receiving endpoint with zero
-//     sink-fill risk.
+// collectorConfigYAML exposes OTLP receivers and health checks while sending every signal to the nop exporter.
+// It intentionally has no queue, file storage, or data mount: received telemetry is dropped, not persisted or exported.
 func collectorConfigYAML() string {
 	return `receivers:
   otlp:
