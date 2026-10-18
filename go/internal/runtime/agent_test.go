@@ -242,9 +242,10 @@ func TestEgressIsArmedAsRootNotTheAgentUser(t *testing.T) {
 	if egress == nil {
 		t.Fatal("no egress exec recorded")
 	}
-	// Armed as root (no --user): the agent user could not create nft rules.
-	if egress.User != nil {
-		t.Errorf("egress exec User = %q, want nil (armed as container root)", *egress.User)
+	// Armed as root: the agent user can neither create nft rules nor write the
+	// root-owned /etc/hosts pins.
+	if egress.User == nil || *egress.User != "0" {
+		t.Errorf("egress exec User = %v, want \"0\" (armed as container root)", egress.User)
 	}
 }
 

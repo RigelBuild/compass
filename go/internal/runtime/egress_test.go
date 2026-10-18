@@ -8,7 +8,9 @@ package runtime
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -56,8 +58,10 @@ func TestAllowlistedHostPopulatesBothFamilies(t *testing.T) {
 	// Each family's lookup must feed its own set: allow6 alone also appears in
 	// the base ruleset, so pin the lookup-to-set pairing.
 	for _, want := range []string{
-		"getent ahostsv4 github.com | awk '{print $1}' | sort -u); do nft add element inet compass_egress allow4",
-		"getent ahostsv6 github.com | awk '{print $1}' | sort -u); do nft add element inet compass_egress allow6",
+		"v4=\"$(getent ahostsv4 github.com | awk '{print $1}' | sort -u)\"",
+		"v6=\"$(getent ahostsv6 github.com | awk '{print $1}' | sort -u)\"",
+		"for ip in $v4; do nft add element inet compass_egress allow4",
+		"for ip in $v6; do nft add element inet compass_egress allow6",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("allowlisted-host nft script missing %q\nscript:\n%s", want, script)
@@ -219,6 +223,65 @@ func TestEgressSubshellToleratesFailingAddElement(t *testing.T) {
 		}
 		if !strings.Contains(string(out), "REACHED_END") {
 			t.Fatalf("outer script did not reach its end past the failing subshell\nrewritten:\n%s\noutput:\n%s", forced, out)
+		}
+	}
+}
+
+func TestArmPinsResolvedAddressesInEtcHosts(t *testing.T) {
+	// The agent must dial only addresses the arm put in the allow sets. Arm
+	// resolves once; if the agent re-resolved later it could get a rotated
+	// address the firewall drops. Run the real script against fake getent/nft
+	// and a temp hosts file, then check every resolved address is pinned.
+	script := MustAllowEgress("github.com", "192.0.2.99").NftScript()
+	if !strings.Contains(script, egressHostsFile) {
+		t.Fatalf("NftScript does not write %s\nscript:\n%s", egressHostsFile, script)
+	}
+
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolv := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(resolv, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeExe := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExe("nft", "exit 0\n")
+	writeExe("getent", `case "$1 $2" in
+"ahostsv4 github.com") printf '140.82.112.3    STREAM github.com\n140.82.112.3    DGRAM\n140.82.114.5    STREAM\n' ;;
+"ahostsv6 github.com") printf '::ffff:140.82.112.3 STREAM github.com\n2001:db8::5 STREAM\n' ;;
+*) exit 2 ;;
+esac
+`)
+
+	run := strings.ReplaceAll(script, egressHostsFile, hosts)
+	run = strings.ReplaceAll(run, "/etc/resolv.conf", resolv)
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", run)
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin:" + os.Getenv("PATH")}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("arm script failed: %v\n%s", err, out)
+	}
+
+	got, err := os.ReadFile(hosts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"127.0.0.1 localhost\n", "140.82.112.3 github.com\n", "140.82.114.5 github.com\n", "2001:db8::5 github.com\n"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("hosts file missing %q\nhosts:\n%s", want, got)
+		}
+	}
+	// A v4-mapped v6 answer duplicates its v4 pin, and an IP literal is dialled
+	// as-is; neither gets a hosts entry.
+	for _, unwanted := range []string{"::ffff:", "192.0.2.99"} {
+		if strings.Contains(string(got), unwanted) {
+			t.Errorf("hosts file pins %q\nhosts:\n%s", unwanted, got)
 		}
 	}
 }
