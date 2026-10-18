@@ -100,10 +100,11 @@ beforeEach(() => {
 	define("scrollHeight", {
 		get(this: HTMLElement) {
 			if (!this.classList?.contains("conv-stream")) return 0;
-			// The content height the component sizes .conv-sizer to (getTotalSize()).
+			// The content height the component sizes .conv-sizer to (getTotalSize()),
+			// floored at clientHeight as a browser does: max scroll is never negative.
 			const sizer = this.querySelector<HTMLElement>(".conv-sizer");
 			const h = sizer?.style.height ?? "";
-			return Number.parseInt(h, 10) || 0;
+			return Math.max(Number.parseInt(h, 10) || 0, this.clientHeight);
 		},
 	});
 	define("scrollTop", {
@@ -111,7 +112,9 @@ beforeEach(() => {
 			return scrollTops.get(this) ?? 0;
 		},
 		set(this: HTMLElement, v: number) {
-			scrollTops.set(this, v);
+			// A browser clamps scrollTop to [0, scrollHeight - clientHeight].
+			const max = this.scrollHeight - this.clientHeight;
+			scrollTops.set(this, Math.min(Math.max(v, 0), Math.max(max, 0)));
 		},
 	});
 	saved.set("scrollTo", Object.getOwnPropertyDescriptor(proto, "scrollTo"));
