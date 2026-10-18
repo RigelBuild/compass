@@ -678,7 +678,7 @@ func TestExitCodeOf(t *testing.T) {
 }
 
 // deliberateKill recognizes the backend's signaled-exit error after Kill+Wait.
-// ExitCode is portable here, so this untagged file avoids syscall.WaitStatus.
+// killedBySIGKILL uses platform-specific checks for podman's *exec.ExitError.
 func deliberateKill(err error, caps backendCaps) bool {
 	if err == nil {
 		return false

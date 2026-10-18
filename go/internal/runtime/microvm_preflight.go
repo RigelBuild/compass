@@ -125,7 +125,7 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 			"passes untranslated guest ids through to the host — run the Runner as a non-root user")
 	}
 
-	// Verify session-volume quota under the multi-tenant profile; otherwise log utilization only.
+	// Verify session-volume quota; QuotaRequired decides whether an unverifiable quota blocks startup.
 	return m.verifyQuota(ctx, probes)
 }
 

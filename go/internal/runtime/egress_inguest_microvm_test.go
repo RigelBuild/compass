@@ -3,7 +3,7 @@
 package runtime
 
 // KVM-gated tests exercise guest egress through the real runtime API and agent-uid execs.
-// Hermetic tests separately prove script delivery, netfilter setup, and fail-closed behavior.
+// Live probes cover IPv4; hermetic tests cover dual-stack rules because guests lack IPv6 routing.
 
 import (
 	"context"

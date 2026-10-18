@@ -35,7 +35,7 @@ type MicroVMConfig struct {
 	// switch_root (microvm-v2a §(a)).
 	InitrdImage string
 	// ImageManifest optionally verifies guest images against a sha256sum-format manifest.
-	// Without it, preflight checks presence/readability only; '*' basenames are ambiguous.
+	// Guest-image basenames must not begin with '*'; the binary-mode marker makes them ambiguous.
 	ImageManifest string
 	// RunRoot is the root under which each session's runtime dir is created
 	// (<RunRoot>/microvm/<session>/), holding that session's AF_UNIX sockets —

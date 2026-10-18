@@ -503,7 +503,8 @@ func TestBootCanaryLeakCheckIgnoresForeignCanaryDirs(t *testing.T) {
 
 // Root bypasses this test's 0500 DAC failure, so root runs skip the permission check.
 // breakWorkspaceRemoval creates an unwritable child so BootCanary's RemoveAll fails.
-// Cleanup restores permissions and removes only the canary's own temp workspace.
+// Cleanup restores 0700, then removes the canary workspace only if its name carries
+// canaryNamePrefix, refusing cleanup if the mounted HostPath ever widens.
 func breakWorkspaceRemoval(t *testing.T, rec *canaryLaunchRecorder) {
 	t.Helper()
 	if os.Geteuid() == 0 {
