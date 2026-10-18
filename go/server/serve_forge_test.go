@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,14 +34,10 @@ import (
 )
 
 type scriptedHTTPTransport struct {
-	body     string
-	requests chan string
+	body string
 }
 
 func (rt *scriptedHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if rt.requests != nil {
-		rt.requests <- req.URL.String()
-	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
@@ -199,6 +196,35 @@ func TestS3ConfigWithTracingRecordsClientSpan(t *testing.T) {
 	}
 	if err := response.Body.Close(); err != nil {
 		t.Fatalf("closing S3 transport response: %v", err)
+	}
+	requireOneClientSpan(t, recorder)
+}
+
+func TestOpenObjectStoreRecordsClientSpan(t *testing.T) {
+	recorder := installServerHTTPSpanRecorder(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("ETag", `"fake"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parsing test server URL: %v", err)
+	}
+	objectStore, err := openObjectStore(S3Config{
+		Endpoint: endpoint.Host,
+		Bucket:   "archive",
+		Region:   "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("opening object store: %v", err)
+	}
+	if err := objectStore.PutSegment(t.Context(), "sessions/s1/1-1.jsonl", []byte("{}")); err != nil {
+		t.Fatalf("PutSegment: %v", err)
 	}
 	requireOneClientSpan(t, recorder)
 }

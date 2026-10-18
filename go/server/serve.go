@@ -404,6 +404,11 @@ func s3ConfigWithTracing(cfg S3Config) S3Config {
 	return cfg
 }
 
+// openObjectStore constructs an S3 object store with client tracing.
+func openObjectStore(cfg S3Config) (store.ObjectStore, error) {
+	return store.NewS3ObjectStore(s3ConfigWithTracing(cfg))
+}
+
 // forgeHTTPClient returns the Forge clients' HTTP client. With no CA configured
 // it keeps http.DefaultTransport, so the primary and reviewer clients go on
 // sharing one connection pool exactly as they did before this knob existed; a
@@ -764,7 +769,7 @@ func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
 		return nil, fmt.Errorf("opening store: %w", err)
 	}
 	if cfg.S3.Endpoint != "" && cfg.S3.Bucket != "" {
-		objStore, err := store.NewS3ObjectStore(s3ConfigWithTracing(cfg.S3))
+		objStore, err := openObjectStore(cfg.S3)
 		if err != nil {
 			st.Close()
 			return nil, fmt.Errorf("constructing s3 object store: %w", err)

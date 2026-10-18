@@ -102,6 +102,7 @@ func TestHTTPTransportRecordsRedactedSpan(t *testing.T) {
 
 func TestHTTPTransportWithoutProviderSendsNoTraceparent(t *testing.T) {
 	resetGlobals(t)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 	var traceparent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		traceparent = r.Header.Get("Traceparent")
@@ -109,7 +110,22 @@ func TestHTTPTransportWithoutProviderSendsNoTraceparent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client := &http.Client{Transport: HTTPTransport(nil)}
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatalf("building trace ID: %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	if err != nil {
+		t.Fatalf("building span ID: %v", err)
+	}
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	ctx := trace.ContextWithRemoteSpanContext(t.Context(), spanContext)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
 	if err != nil {
 		t.Fatalf("building request: %v", err)
 	}
