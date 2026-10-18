@@ -2,16 +2,8 @@
 
 package store
 
-// Secret registry door contracts on the UpsertSecret write path (T5 cutover):
-// the round-trip of a written row with its delivery/kind/provider/host/actor
-// intact and name-ordered, the door name-validation that rejects a bad name
-// before any row is written, the declared_by FK on an unknown actor, the
-// kind↔provider/host routing guard, and the delete path (found → gone, unknown →
-// ErrNotFound). UpsertSecret carries CIPHERTEXT; these door checks all run before
-// the store touches Postgres, so a dummy ciphertext/nonce pair is enough to reach
-// them (the encrypt+decrypt round-trip is the StoreResolver's own pgtest). The
-// scope model, value columns, and ciphertext-at-rest are proven in
-// secrets_scope_pgtest_test.go.
+// Secret tests cover persisted fields, pre-write name and routing validation,
+// FK failures, and deletion; encrypted scope behavior is tested in pgtest.
 
 import (
 	"context"

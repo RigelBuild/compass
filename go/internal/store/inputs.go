@@ -27,11 +27,8 @@ type NewAgent struct {
 	// Empty means no persona override; the caller supplies it and the server
 	// stores it verbatim, never synthesizing one.
 	Persona string
-	// Role is the agent's operator-set block-0 selector (RIG-1732 T10). Empty
-	// means no role (default OMP block-0); the caller supplies it and the server
-	// stores it verbatim, never synthesizing one. Unlike Persona (an append
-	// overlay), the label selects config/prompts/<role>/SYSTEM.md, delivered as
-	// the container's customSystemPrompt.
+	// Role selects the operator-provided block-0 prompt; unlike Persona, it is
+	// not synthesized and is delivered as customSystemPrompt.
 	Role string
 	// ParentAgentID is the agent's parent in the agent tree; empty = root. The
 	// server validates it (same resolved owner, must exist) before insert; an

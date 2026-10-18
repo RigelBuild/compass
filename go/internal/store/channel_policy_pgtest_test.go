@@ -454,11 +454,8 @@ func seedCursorNow(t *testing.T, s *Store, agent AccountID, ch ChannelID) error 
 	return tx.Commit(context.Background())
 }
 
-// backendsBlockedBy counts the Postgres backends currently blocked waiting on a
-// lock held by bpid — scoped to bpid so an unrelated concurrent test's lock
-// waiter cannot spuriously satisfy the gate. Used as a deterministic readiness
-// signal (poll-until, no sleep) that a concurrent writer has parked on the
-// channels-row FOR UPDATE lock this test holds.
+// backendsBlockedBy counts lock waiters for bpid, providing a deterministic
+// readiness signal for tests holding the channel row lock.
 func backendsBlockedBy(t *testing.T, s *Store, bpid int) int {
 	t.Helper()
 	var n int

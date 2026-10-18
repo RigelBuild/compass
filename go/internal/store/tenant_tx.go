@@ -10,17 +10,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The two Postgres roles the store's queries run under (0001_init.sql).
-//
-//   - appRole is the NON-owner, non-BYPASSRLS request-path role. Every
-//     request-path statement runs as this role so RLS + FORCE actually apply
-//     (a superuser owner bypasses even FORCE — design.md:703-708), gated by the
-//     per-transaction compass.tenant_id GUC.
-//   - systemRole is the narrowly-scoped BYPASSRLS role the cross-tenant
-//     background loops (N5/OQ-4: delivery-cursor sweep, deliver-ack advance,
-//     reattach recovery, lag-resync, compute-usage orphan sweep), the Runner
-//     session tenant lookup and Runner enroll binding reap run under and ONLY
-//     those. It carries no tenant GUC.
+// appRole applies request-path RLS with a tenant GUC. systemRole is reserved for
+// explicit cross-tenant background work and runs without a tenant GUC.
 const (
 	appRole    = "compass_app"
 	systemRole = "compass_system"
@@ -71,24 +62,9 @@ func IsSystemRole(ctx context.Context) bool {
 	return isSystemRole(ctx)
 }
 
-// scopedDBTX is the db.DBTX the store's *db.Queries is bound to in place of the
-// bare pool. It wraps the pgxpool and, on EVERY statement, prepends the tenant
-// scoping — SET LOCAL ROLE + (on the request path) set_config(tenantGUC, ...) —
-// into ONE pgx batch with the actual query, so scoping rides a single network
-// round-trip rather than doubling every call's latency (design.md:726-734).
-//
-// Because a pooled SendBatch runs as one implicit transaction, the SET LOCAL
-// applies to the batched query and resets when the batch's implicit transaction
-// ends — so a transaction-mode pooler reusing the physical connection for the
-// next checkout inherits no leftover tenant scoping (verified by the
-// pooler-reuse test). Multi-statement store methods that need one explicit tx
-// across several queries use beginTenantTx instead (which arms once at BEGIN);
-// this wrapper is the single-statement (pool-path) arm.
-//
-// The tenant is resolved from ctx exactly as a write's stamp is
-// (resolveTenant): the context tenant if set, else the bootstrap tenant (the
-// OSS single-tenant degenerate path). The system path (isSystemRole) arms only
-// the BYPASSRLS role and issues no GUC.
+// scopedDBTX batches SET LOCAL ROLE and, for requests, the tenant GUC with each
+// pool query. The implicit transaction resets scope before a pooled connection
+// is reused; multi-statement calls use beginTenantTx instead.
 type scopedDBTX struct {
 	store *Store
 }
@@ -187,17 +163,8 @@ func (r *batchRow) Scan(dest ...any) error {
 	return closeErr
 }
 
-// beginTenantTx begins an explicit transaction and arms it with the tenant
-// scoping — SET LOCAL ROLE + (request path) the compass.tenant_id GUC — in one
-// batch at BEGIN, so every subsequent statement on the returned tx is
-// tenant-scoped without re-arming. It is the multi-statement counterpart to
-// scopedDBTX: store methods that run several queries in one transaction (the
-// former s.pool.Begin sites) use it so the whole transaction shares one tenant
-// scope. The tenant resolves via resolveTenant(ctx) (context tenant, else
-// bootstrap); a system-path ctx arms the BYPASSRLS role with no GUC.
-//
-// On any arm failure it rolls back and returns the error, so a caller never gets
-// a half-armed tx. The caller owns Commit/Rollback exactly as before.
+// beginTenantTx arms one explicit transaction with role and tenant scope. It is
+// the multi-statement counterpart to scopedDBTX and rolls back if arming fails.
 func (s *Store) beginTenantTx(ctx context.Context) (pgx.Tx, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

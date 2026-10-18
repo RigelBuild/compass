@@ -168,11 +168,8 @@ func (s *Store) GetOrCreateTopic(ctx context.Context, channelID, name string, au
 	return topicID, nil
 }
 
-// applyTopicRename renames topic topicID (in channelID) to newName, or merges it
-// into a same-channel topic that already holds that name (case-insensitively).
-// It returns the surviving topic id: topicID on an in-place rename, the merge
-// target on a collision. Runs inside the caller's tx (which already locked the
-// source row FOR UPDATE).
+// applyTopicRename renames in place or merges into the same-channel target;
+// the caller holds the source row lock for the transaction.
 func (s *Store) applyTopicRename(ctx context.Context, tx pgx.Tx, channelID, topicID, newName string) (string, error) {
 	// A same-channel topic already holding the target name (excluding the source
 	// itself) is a merge target.

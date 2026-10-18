@@ -2,13 +2,8 @@
 
 package store
 
-// Config-bundle POOL round-trips (RIG-1624 T1), pgtest gate — these exercise
-// PutAgentConfig/CurrentAgentConfig against a real Postgres via the shared
-// harness (newTestStore/mustUser only exist under this tag). The door
-// validation + canonical-hash logic is proven purely in the default-gate
-// sibling; here we prove the singleton persistence contract: a Put→Current
-// round trip, ErrNotFound on an empty store, version-stable idempotent re-put,
-// and current-only retention (a second Put replaces, leaving exactly one row).
+// Config-bundle tests exercise persistence, idempotent re-put, and current-only
+// retention against Postgres; pure validation is covered by the default-gate tests.
 
 import (
 	"archive/tar"

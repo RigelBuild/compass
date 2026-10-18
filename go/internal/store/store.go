@@ -23,19 +23,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// migrationsFS holds the ordered, versioned schema migrations, applied at Open.
-// Embedding them in the binary (design.md:1136 "embedded migration files")
-// means the schema the binary expects and the migrations that produce it can
-// never drift apart across a deploy.
+// migrationsFS embeds the ordered schema migrations applied when Open runs.
 //
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// migrationLockKey is the pg_advisory_lock key Open holds while applying
-// migrations, so two Servers starting against one database serialize their
-// migration runs rather than racing. An arbitrary fixed constant unique to this
-// store; any concurrent Open blocks here until the first finishes, then finds
-// the schema already current.
+// migrationLockKey serializes migration runs when servers open the same database.
 const migrationLockKey int64 = 0x0C0A_5500_0000_0001
 
 const instrumentationScope = "github.com/RigelBuild/compass/go/internal/store"
@@ -45,11 +38,8 @@ const instrumentationScope = "github.com/RigelBuild/compass/go/internal/store"
 // it with Open and release it with Close.
 type Store struct {
 	pool *pgxpool.Pool
-	// q is the sqlc-generated typed query set bound to the pool (db.New(pool)),
-	// the migrated read/write path (sqlc adoption, RIG-3034). Pool-scoped calls
-	// go through s.q directly; a tx-scoped path rebinds it with s.q.WithTx(tx).
-	// Set once in Open, immutable thereafter, so it is safe for concurrent use
-	// exactly like the pool it wraps.
+	// q holds the sqlc-generated pool queries. Transactional calls rebind it with
+	// WithTx; it is initialized once and safe for concurrent use.
 	q *db.Queries
 	// afterBoardMetaRead is a test seam for the snapshot test.
 	afterBoardMetaRead func()
@@ -63,13 +53,8 @@ type Store struct {
 	// that triggers a safety_valve eviction; defaultSafetyValveCapBytes at Open,
 	// tunable (lowered by tests to exercise the valve).
 	safetyValveCapBytes int
-	// coordinationHook is the manager-comms coordination-channel reconcile
-	// (RIG-1722 T5), registered by the comms layer via SetCoordinationHook at
-	// server assembly and invoked by the two parent-edge writers (CreateAgent,
-	// ReparentAgent) on their own tx right after writing parent_agent_id. nil
-	// until wired (a store with no hook — every store-only test — is a no-op).
-	// No lock: set once before serving, so the write happens-before the first
-	// concurrent parent-edge write (mirrors hub.SetSettleSink).
+	// coordinationHook runs inside parent-edge transactions. Set it before serving;
+	// when unset, coordination reconciliation is a no-op.
 	coordinationHook CoordinationHook
 	// bootstrapTenantID is the single OSS tenant seeded at Open, the fallback
 	// tenant every write is stamped with when the request context carries no

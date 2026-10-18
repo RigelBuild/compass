@@ -2,15 +2,8 @@
 
 package store
 
-// DL-055 forge ownership-index store contracts (design
-// RigelBuild/docs:docs/designs/compass/server/compass-forge-write-path/design.md §T7 test cycle, the
-// DL-174 pair: this pgtest suite plus the in-memory reference in
-// forge_authored_test.go): the migration 0002 table shape, the idempotent
-// coordinate upsert, the FK RESTRICT on agent/owner, the by-agent scan order,
-// the F3 memo lookup (hit/miss), and the UNIQUE violation on a duplicate
-// (agent, client_request_id) non-null key with null-key rows never colliding.
-// context.Background is the test root (the pgtest-suite convention, sibling
-// forge_cursors_pgtest_test.go).
+// Forge authorship tests verify idempotent upserts, foreign-key restrictions,
+// scan order, memo lookup, and unique non-null request keys in Postgres.
 
 import (
 	"context"
@@ -96,11 +89,8 @@ func TestRecordAuthoredArtifactIdempotentUpsert(t *testing.T) {
 		t.Fatalf("row not updated in place: %+v", got[0])
 	}
 
-	// Authorship is WRITE-ONCE: re-landing the SAME coordinate under a DIFFERENT
-	// agent must NOT rewrite who authored it (the DO UPDATE SET omits
-	// agent_account_id/owner_user_id). This can't happen on the real path (a
-	// forge never reuses a coordinate), but the store must not silently transfer
-	// ownership if it ever did.
+	// Authorship is write-once: even a repeated coordinate from another agent
+	// must not transfer ownership.
 	other, otherOwner := seedAgent(t, s, "t2-other")
 	steal := base
 	steal.AgentAccountID = other

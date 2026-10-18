@@ -2,21 +2,9 @@
 
 package store
 
-// account_handles resolution index contracts (RIG-2751 handle cutover, T0 + T2).
-//
-// T0 — the storage shape and its two partial-unique indexes: user/system handles
-// are globally unique, agent handles are unique only per owner, an agent handle
-// may overlap a global user handle, and both tiers rename-in-place and reclaim.
-// The uniqueness is enforced by the two partial-unique indexes authored into
-// 0001_init.sql; CreateUser/CreateAgent write the rows and RenameHandle renames
-// them in place.
-//
-// T2 — AccountsByHandles: owner-qualified and bare resolution, disambiguation by
-// owner, bare-agent defaulting to callerOwner, the atomic all-or-nothing miss
-// naming every unresolved handle, system exclusion, and the OQ-6 visibility clip
-// (invisible ≡ unknown).
-//
-// context.Background() is the test root (test-root ctx exemption).
+// Account-handle tests cover global user/system uniqueness, owner-scoped agent
+// handles, rename/reclaim, qualified resolution, misses, system exclusion, and
+// visibility filtering. The indexes and persistence are verified in Postgres.
 
 import (
 	"context"

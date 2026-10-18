@@ -445,15 +445,8 @@ type AskAnswerBlock struct {
 // single-question shape is superseded — one Ask now carries N AskQuestions,
 // answered atomically in one RespondToAsk). AskID is minted once on append.
 type Ask struct {
-	// AskID is the correlation id echoed by RespondToAsk; server-assigned —
-	// minted by the store on append when unset. One id per Ask (per native ask
-	// tool call), NOT per question — questions are keyed by QuestionID. The
-	// comms edge strips any client-supplied ask_id before append (askFromWire),
-	// so every externally-posted ask enters id-less and is minted here, which
-	// is what makes the id globally unique (comms.proto: "server-assigned and
-	// globally unique"). A non-empty AskID is preserved (this is a store
-	// primitive; internal callers may set one), so uniqueness rests on the edge
-	// strip, not on the store rejecting a supplied id.
+	// AskID correlates RespondToAsk and is minted at append when unset. The edge
+	// strips client ids; internal callers may preserve an explicit id.
 	AskID string
 	// Ref is the explicit issue or pull request this ask concerns.
 	Ref string
@@ -462,11 +455,8 @@ type Ask struct {
 	// Questions are the questions the agent asked, in order. At least one; a
 	// zero-question ask is rejected on both marshal and unmarshal.
 	Questions []AskQuestion
-	// Answered is true once a participant has answered this ask; it flips
-	// exactly once, on the first AnswerAsk, and makes a second answer an
-	// ErrConflict. It is the only reliable answered-signal: a fully-skipped ask
-	// leaves every question empty, indistinguishable from pending by inspecting
-	// the per-question answer fields alone.
+	// Answered flips once on the first AnswerAsk. It distinguishes a skipped
+	// answer from a pending ask, which question fields alone cannot show.
 	Answered bool
 }
 
@@ -517,13 +507,8 @@ type Page struct {
 	// BeforeMessageID pages strictly before this message (exclusive); empty
 	// reads the newest page.
 	BeforeMessageID MessageID
-	// SnapshotSeq is the point-in-time read boundary (comms.proto:353-368,
-	// design.md:807-817): the read returns only messages with seq <= SnapshotSeq,
-	// so a client paging a since_seq=0 catch-up sees one consistent view across
-	// pages under concurrent writes. It is a store-space messages.seq value the
-	// server hands the client on the subscribe response and the client passes
-	// back on each read RPC. Zero means "latest" (no boundary) — the pre-catch-up
-	// default and the value every non-resync caller sends.
+	// SnapshotSeq bounds a paged catch-up to one point-in-time view. Zero means
+	// latest; the value is a messages.seq supplied by the server on subscribe.
 	SnapshotSeq uint64
 }
 

@@ -43,23 +43,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/internal/schemaparse"
 )
 
-// schemaRelPath is the settings schema, relative to this generator's own
-// directory (go/internal/store) — resolved from runtime.Caller so `go generate`
-// finds it regardless of the caller's working directory.
-//
-// It deliberately resolves through the CONSUMING workspace package's own
-// node_modules edge rather than bun's `node_modules/.bun/node_modules/` hoist
-// alias. That alias is a flat namespace with one entry per package NAME, so
-// with two dependents on different versions it can resolve to a version the
-// agent does not run — and it would fail silently, since the wrong schema
-// still parses fine. This path expresses the real invariant: the schema
-// belonging to the package that consumes the SDK.
-//
-// The schema lives in gitignored node_modules, so an SDK bump changes this
-// generator's input without touching any tracked file. The
-// `compass-go:credential-keys-drift` CI task is what makes such a bump fail
-// loudly if the denylist was not regenerated; a `bun install` must have run
-// before `go generate`.
+// schemaRelPath locates the consuming package's settings schema relative to
+// this generator, independent of the caller's working directory. Use the
+// consumer's node_modules edge to select its SDK version; the drift gate checks
+// generated keys when that ignored schema changes.
 const schemaRelPath = "../../../packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts"
 
 func main() {

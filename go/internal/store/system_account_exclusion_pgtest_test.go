@@ -2,31 +2,17 @@
 
 package store
 
-// T3 (design record compass-system-sender-first-turn, section T3): the reserved
-// system account @compass (seeded by EnsureSystemAccount, handle
-// SystemAccountHandle) is STRUCTURALLY excluded from every delivery, agent-roster,
-// and agent-by-handle read, and is directory-visible only through the ordinary
-// shared-channel EXISTS clause — never through a system-specific disjunct. These
-// guarantees already hold by construction: a system account has neither an
-// agent_accounts row (so the INNER JOIN agent_accounts in the delivery/roster
-// reads and AgentByHandle's IsAgent gate drop it) nor a user_accounts row (so it
-// falls outside ListAccounts' broad user disjunct). This file pins those
-// structural facts so a FUTURE subtype change that gave @compass an agent or user
-// row would redden CI instead of silently leaking the platform sender into a
-// deliver set, a roster, a handle resolve, or an unrelated viewer's directory.
+// System-account tests pin @compass's structural exclusion from delivery,
+// agent rosters, and handle resolution. Directory visibility comes only through
+// shared-channel membership, so a future subtype change cannot leak it.
 
 import (
 	"context"
 	"testing"
 )
 
-// insertSystemMember makes the seeded system account a direct channel_members
-// row (subscribed=true). The guarded membership APIs won't add a system account
-// cleanly, so the row is inserted directly through the pool, mirroring the
-// pre-guard-database simulation in TestEnsureSystemAccountWrongShapeSquatterConflicts.
-// This is the strongest form of the guard: @compass is a fully-fledged, subscribed
-// member of the channel, so its absence from the reads below can only be the
-// structural INNER JOIN / user-disjunct exclusion, not a missing membership row.
+// insertSystemMember inserts @compass as a subscribed member directly; guarded
+// membership APIs reject it, so the read filters must exclude even this row.
 func insertSystemMember(t *testing.T, s *Store, ch ChannelID, sys AccountID) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
@@ -123,31 +109,22 @@ func TestSystemAccountByHandleIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureSystemAccount: %v", err)
 	}
-	// Positive anchor: the account EXISTS (GetAccount resolves it), so the
-	// AgentByHandle ErrNotFound below is unambiguously the IsAgent gate rejecting
-	// an existing non-agent account — not the noRows path masking a seed that
-	// silently no-op'd. Without this, a hypothetical EnsureSystemAccount
-	// regression would leave the test green for the wrong reason.
+	// Confirm the seeded account exists so AgentByHandle's ErrNotFound proves the
+	// subtype gate, not a failed seed.
 	if _, err := s.GetAccount(ctx, sys.ID); err != nil {
 		t.Fatalf("GetAccount(%s) after seed: %v; the account must exist for the ErrNotFound below to prove the IsAgent gate", sys.ID, err)
 	}
 
-	// A system account carries a global (owner_user_id NULL) handle row, never an
-	// agent-namespace one, so an owner-qualified agent lookup misses regardless of
-	// the owner passed — the IsAgent gate's fail-closed, indistinguishable from
-	// unknown.
+	// System handles are global, not owner-qualified agent handles, so this lookup
+	// returns ErrNotFound even when the owner exists.
 	owner := mustUser(t, s, "owner")
 	_, err = s.AgentByHandle(ctx, owner.ID, SystemAccountHandle)
 	sentinelIs(t, err, ErrNotFound, "AgentByHandle on the reserved system handle")
 }
 
-// TestSystemAccountListAccountsVisibility asserts the directory visibility of
-// @compass is governed purely by the shared-channel EXISTS disjunct in
-// accountVisibleFromWhere, NOT by any system-specific rule. A stranger sharing no
-// channel with @compass does not see it (it has no user_accounts row, so it is
-// outside the broad user disjunct); a co-member sharing a channel with @compass
-// does see it (the EXISTS disjunct). Reddens if @compass gained a user_accounts
-// row: the stranger sub-case would then see it via the user disjunct.
+// TestSystemAccountListAccountsVisibility: ListAccounts exposes @compass only to
+// shared-channel members; it has no user subtype row and must not appear through
+// the broad user visibility disjunct.
 //
 //nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestSystemAccountListAccountsVisibility(t *testing.T) {

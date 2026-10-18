@@ -2,14 +2,8 @@
 
 package store
 
-// Coordination-channel store contracts (RIG-1722 T5, design.md:530-592): the
-// two parent-edge writers (CreateAgent, ReparentAgent) invoke the registered
-// coordination hook on their OWN tx right after writing parent_agent_id, and the
-// tx-level store helpers the comms reconcile drives (per-owner group get-or-
-// create, channel upsert with the same-owner collision/suffix rule, membership
-// resync with in-tx cursor seeds) behave as the record's invariants require.
-// These are properties only a real Postgres proves (the in-tx hook, the partial
-// unique index, the cursor seeds), so the file is pgtest-tagged.
+// Coordination tests verify parent-edge hooks and the tx-scoped group, channel,
+// membership, and cursor-seed helpers against Postgres.
 
 import (
 	"context"
@@ -23,11 +17,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// recordingHook is a coordination hook that records the manager ids it was
-// invoked with, so a test can assert the parent-edge writers fire it (and with
-// which manager). It also runs the tx-level provision so the in-tx behavior is
-// exercised end to end, mirroring what the comms closure does — but with the
-// naming/policy inlined here (the store package cannot import comms).
+// recordingHook records manager ids and runs the tx-scoped provision, matching
+// the reconcile path without importing the comms package.
 type recordingHook struct {
 	s       *Store
 	invoked []AccountID
@@ -583,11 +574,8 @@ func TestUpsertConcurrentUserInsertSuffixesWithoutWedge(t *testing.T) {
 		done <- result{id, err}
 	}()
 
-	// Readiness gate (bounded poll, not a fixed sleep): wait until some backend
-	// is blocked BY txUser — precisely the reconcile's INSERT parked on the
-	// uncommitted unique-index tuple. Scoped to txUser's own pid so a parallel
-	// test's lock wait cannot satisfy it. On timeout, fall through and commit
-	// anyway (the RED case may block identically, so the assertion still fires).
+	// Wait until a backend is blocked by txUser on the unique-index tuple; scope
+	// the poll to its pid. Commit on timeout so the assertion still runs.
 	deadline := time.After(5 * time.Second)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()

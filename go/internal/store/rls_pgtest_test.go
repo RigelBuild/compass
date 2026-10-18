@@ -1,17 +1,7 @@
 //go:build pgtest
 
-// Row-Level-Security tenant-isolation contracts (RIG-3106 / T2 of RIG-2861).
-// These prove the enforcement half of managed multi-tenancy end to end against
-// real Postgres: the request path (compass_app role + per-tx compass.tenant_id
-// GUC) reads and writes ONLY its own tenant's rows; a connection with no GUC
-// fails CLOSED (zero rows, no SQLSTATE escape); a transaction-mode pooler reuse
-// carries no leftover scope; FORCE ROW LEVEL SECURITY is in effect for the
-// table owner; and the forge-board + N7 handle keys carry tenant_id so two
-// tenants never collide on a shared forge coordinate or a shared handle.
-//
-// An in-memory substitute could not prove any of this — RLS is a database
-// property — so these run only under the pgtest build tag against the harness's
-// real Postgres.
+// Postgres tests prove tenant isolation through the request role and tenant GUC,
+// clean pooler reuse, FORCE RLS, and tenant-scoped forge and handle keys.
 
 package store
 
@@ -43,11 +33,7 @@ func seedTenant(t *testing.T, s *Store, slug string) TenantID {
 	return TenantID(id)
 }
 
-// seedChannelWithMessage creates a user, a channel, and one posted message, all
-// under tenant tenantCtx. It returns the channel and the message id — the two
-// handles a cross-tenant read test asserts against. Every store call routes
-// through the tenant-scoping path (compass_app + GUC), so the rows land stamped
-// with the context tenant exactly as a real request would.
+// seedChannelWithMessage creates tenant-scoped rows for cross-tenant read tests.
 func seedChannelWithMessage(t *testing.T, s *Store, tenantCtx context.Context, handle, body string) (ChannelID, MessageID, AccountID) {
 	t.Helper()
 	owner, err := s.CreateUser(tenantCtx, NewUser{Handle: handle, DisplayName: handle})
@@ -575,11 +561,8 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// Bucket A (infrastructure) is exempt from RLS; the loop at the end asserts each
-	// listed table has RLS DISABLED, so an accidental ENABLE is caught.
-	// server_secrets / server_key_state / token_usage_prune_horizon are deployment-
-	// global. tokens and gateway_tokens carry their tenant but must resolve before
-	// any tenant GUC exists.
+	// Infrastructure tables stay outside RLS because auth and bootstrap must work
+	// before a tenant GUC exists; deployment-global data is shared across tenants.
 	bucketA := map[string]bool{
 		"tenants": true, "tokens": true, "gateway_tokens": true, "agent_config_bundle": true,
 		"server_secrets": true, "server_key_state": true,
@@ -658,11 +641,8 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 		}
 	}
 
-	// Bucket A (infrastructure) must stay RLS-exempt: gating tokens breaks auth
-	// (token resolution establishes the tenant before any GUC exists), and gating
-	// tenants / agent_config_bundle breaks bootstrap and the fleet-config
-	// singleton. An accidental ENABLE here is a fail-closed outage, not a leak —
-	// so it is worth catching deterministically too.
+	// Enabling RLS on infrastructure tables breaks token resolution or bootstrap;
+	// assert the exception stays disabled to prevent a fail-closed outage.
 	for tbl := range bucketA {
 		var enabled bool
 		if err := s.pool.QueryRow(ctx,

@@ -2,13 +2,8 @@
 
 package store
 
-// Store lifecycle contracts: durability across a process restart (the headline
-// property of a store of record — a graph committed by one Store is read back
-// identical by a second Store opened on the same database), idempotent migration
-// re-runs (a second Open is a no-op, not a re-application), and the recorded
-// schema version the refuse-to-serve guard reads. These are the properties an
-// in-memory substitute could never prove, so they run against a real Postgres.
-
+// Store lifecycle tests verify restart durability, idempotent migrations, and
+// the recorded schema version against Postgres.
 import (
 	"context"
 	"errors"

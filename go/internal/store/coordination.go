@@ -34,13 +34,8 @@ func (s *Store) SetCoordinationHook(h CoordinationHook) {
 	s.coordinationHook = h
 }
 
-// invokeCoordinationHook runs the registered coordination hook on tx for
-// managerAgentID, a no-op if unregistered. The two parent-edge writers call it
-// right after writing parent_agent_id, INSIDE their tx, so the reconcile commits
-// atomically with the tree edge (design.md:554). managerAgentID is the empty
-// string when the just-written edge has no parent (a root agent has no manager,
-// so there is no coordination channel to reconcile); the caller must skip the
-// call in that case rather than pass empty.
+// invokeCoordinationHook runs the registered reconcile inside the parent-edge
+// transaction. Root agents have no manager, so callers must skip an empty id.
 func (s *Store) invokeCoordinationHook(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) error {
 	if s.coordinationHook == nil {
 		return nil
@@ -87,22 +82,8 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 	if ownerUserID == "" {
 		return "", fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)
 	}
-	// A fixed reserved name scoped to the owner — deterministic, so every
-	// reconcile for this owner resolves the identical group. The get-half is
-	// VISIBILITY-DISCRIMINATED (AND visibility = $3, bound to VisibilityOwner):
-	// a top-level group named __coordination__ may predate the reserved-name
-	// guard or come from a raw insert, at any visibility. A wider
-	// (VisibilityShared) planted group must NEVER be adopted — inserting the
-	// OWNER_ONLY coordination channel into a SHARED group would make an
-	// owner-private channel visible to every account (channelVisiblePredicate),
-	// a cross-tenant leak (decision 1 owner-private, decision 3 never-adopt). The
-	// discriminator excludes it, so the create-half then INSERTs the correct
-	// owner-visible group. Adopting an owner-VISIBILITY, owner-matched,
-	// correctly-named top-level planted group is harmless: it has the exact shape
-	// the reconcile would itself create. The caller holds the per-owner advisory
-	// lock (LockOwnerCoordinationTx), so the get-then-create cannot race a
-	// concurrent reconcile for the same owner into two groups; the sibling-name
-	// index exempts top-level reserved names, and the API guard rejects new user inserts.
+	// A reserved owner-scoped group is selected only at owner visibility; a shared
+	// group would expose the private channel. The owner lock serializes get-or-create.
 
 	qtx := db.New(tx)
 	existing, err := qtx.GetCoordinationGroup(ctx, db.GetCoordinationGroupParams{

@@ -10,11 +10,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// maxChannelPins is the per-channel cap on the pinned board: at most this many
-// pins may be live in a channel at once (OQ-5, design.md T6). It is enforced
-// in-txn under the channels-row FOR UPDATE lock (see PinMessage), not as a DB
-// constraint, because a plain row count is the natural check and the lock
-// already serializes the race that a constraint would guard.
+// maxChannelPins limits a channel's board. PinMessage checks it under the
+// channels-row lock, which also serializes competing pin mutations.
 const maxChannelPins = 5
 
 // PinnedEntry is one pointer on a channel's pinned board: a reference to an
@@ -150,11 +147,8 @@ func (s *Store) PinnedEntries(ctx context.Context, ch ChannelID) ([]PinnedEntry,
 	return pinnedEntriesTx(ctx, s.scopedPool(), ch)
 }
 
-// lockChannelForPins takes the channels-row FOR UPDATE lock that serializes every
-// mutating board op on ch (the cap race, the repoint CAS, and the board-mutation
-// authz all ride it) and, in the same locking round-trip, reads the row's
-// post_policy and owner so the caller can gate the mutator under the lock without
-// a second query. An unknown channel matches zero rows and is ErrNotFound.
+// lockChannelForPins serializes board mutations and reads policy and ownership
+// under the same lock. An unknown channel returns ErrNotFound.
 func lockChannelForPins(ctx context.Context, tx pgx.Tx, ch ChannelID) (db.LockChannelForPinsRow, error) {
 	row, err := db.New(tx).LockChannelForPins(ctx, string(ch))
 	if err != nil {
@@ -179,11 +173,8 @@ func requireBoardMutator(ctx context.Context, tx pgx.Tx, ch ChannelID, by Accoun
 	return nil
 }
 
-// requireMessageInChannel verifies msg is an existing message whose topic lives
-// under ch (messages carry topic_id, not channel_id, post-0010 — DL-098), so a
-// pin points only at a message the channel actually contains. A message in
-// another channel or no message at all is ErrNotFound (the not-found/forbidden
-// merge).
+// requireMessageInChannel ensures a pin targets a message in this channel;
+// absent or foreign messages both return ErrNotFound.
 func requireMessageInChannel(ctx context.Context, tx pgx.Tx, ch ChannelID, msg MessageID) error {
 	_, err := db.New(tx).MessageInChannel(ctx, db.MessageInChannelParams{
 		ID:        string(msg),

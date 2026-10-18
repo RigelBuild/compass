@@ -46,11 +46,7 @@ func (s *Store) tenantIDBySlug(ctx context.Context, slug string) (TenantID, erro
 	return TenantID(id), nil
 }
 
-// resolveTenant returns the tenant to stamp a write with: the tenant set on the
-// context by the auth layer if present, else the bootstrap tenant (the OSS
-// single-tenant degenerate path). Mirrors comms.actorFromContext's
-// set-or-bootstrap-fallback: no `if multiTenant` fork — a single-tenant
-// deployment simply always falls through to the bootstrap tenant.
+// resolveTenant uses the context tenant when set, else the bootstrap tenant.
 func (s *Store) resolveTenant(ctx context.Context) TenantID {
 	if t, ok := TenantFromContext(ctx); ok && t != "" {
 		return t

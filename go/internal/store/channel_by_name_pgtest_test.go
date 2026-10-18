@@ -2,14 +2,8 @@
 
 package store
 
-// ChannelByNameForViewer: the viewer-scoped name->id resolve the agent tool edge
-// runs ahead of the id-typed store calls (peer-DM record R1). Every test here
-// defends one arm of its contract: a visible name resolves to exactly its
-// channel; an unknown OR invisible name collapses to the same ErrNotFound (the
-// D9 not-found/forbidden merge, so a probe cannot enumerate names it lacks
-// visibility for); and two visible channels sharing a name are ErrInvalidArgument
-// (there is no ErrAmbiguous sentinel — invalid_argument naming the collision is
-// the R1 rule).
+// ChannelByNameForViewer resolves visible names, merges unknown and invisible
+// results as ErrNotFound, and rejects ambiguous visible matches.
 
 import (
 	"context"

@@ -41,12 +41,8 @@ const (
 	SecretKindGH SecretKind = 2
 )
 
-// secretNamePattern is SecretSpec's env-var-name grammar. A declared name is
-// validated against it at the store door (UpsertSecret) — before it can reach
-// a row — because it later becomes a path segment under $HOME/.compass/secrets/
-// and a line in a root-adjacent setup script: constrained at the door, not
-// escaped downstream. The identical grammar is re-exported and re-checked by
-// internal/secrets (defense in depth at materialization).
+// secretNamePattern constrains names before they become filesystem path segments
+// or setup-script lines; materialization re-checks the same grammar.
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // SecretDeclaration is the value-free view of a user-secret row: the name, how
@@ -71,13 +67,8 @@ type SecretDeclaration struct {
 	UpdatedAt  time.Time
 }
 
-// validateKindRouting enforces the kind↔provider/host invariant at the store
-// door, mirroring the secrets_kind_routing CHECK: a provider row (kind=1)
-// carries a non-empty provider and no host, a gh row (kind=2) a non-empty host
-// and no provider, a generic row (kind=0) neither. A caller that violates it
-// gets an actionable ErrInvalidArgument here rather than a raw constraint
-// violation from the INSERT — and an out-of-invariant row can never reach the
-// materializer, where an empty provider id would silently misroute.
+// validateKindRouting enforces provider/host shape before INSERT, avoiding a raw
+// CHECK error or a misrouted row at materialization.
 func validateKindRouting(kind SecretKind, provider, host string) error {
 	switch kind {
 	case SecretKindGeneric:

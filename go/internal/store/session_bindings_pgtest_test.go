@@ -2,24 +2,8 @@
 
 package store
 
-// Session bindings: the durable (session -> agent account, Runner) record the
-// RunnerHub has so far held only in RAM (RIG-3108 / RIG-2861 §T4). Four things
-// must hold, and all four are DATABASE invariants rather than Go logic — the
-// account-keyed PK, the unique index on (tenant_id, session_id), the FK to
-// agent_accounts, and the RLS policy — so all four are pgtest-backed; a mock
-// would only re-assert the Go.
-//
-// The table is keyed on the ACCOUNT, so re-pointing an account at a newer
-// session is an UPSERT that returns what it displaced (the hub does exactly this
-// and has nowhere to put a refusal), one session id speaks for at most one
-// account (the unique index), a miss FAILS CLOSED (a comms call resolves its
-// scope through these reads, so an empty AccountID with a nil error would flow
-// onward as a real principal), and the reconnect sweep RETURNS what it removed
-// (the returned rows drive presence DISCONNECTED and the held-deliver reap — a
-// bare DELETE would satisfy the invariant while dropping both).
-//
-// context.Background is the test root (the pgtest-suite convention, sibling
-// updated_at_pgtest_test.go and forge_cursors_pgtest_test.go).
+// Session-binding tests cover account-keyed upsert, unique session ownership,
+// fail-closed misses, and reconnect cleanup against Postgres.
 
 import (
 	"context"
@@ -30,9 +14,7 @@ import (
 	"time"
 )
 
-// mustBind records a binding a test only needs to SUCCEED, returning the session
-// id it displaced. Most cases below care about a later assertion, not this call.
-// ctx is the SECOND parameter, after t, matching mustTopic (messages_test.go).
+// mustBind records a successful binding and returns the displaced session id.
 func mustBind(t *testing.T, ctx context.Context, s *Store, sessionID string, accountID AccountID, runnerID string) string {
 	t.Helper()
 	displaced, _, err := s.RecordSessionBinding(ctx, sessionID, accountID, runnerID)
@@ -42,15 +24,8 @@ func mustBind(t *testing.T, ctx context.Context, s *Store, sessionID string, acc
 	return displaced
 }
 
-// bindingTimes reads a binding row's created_at/updated_at directly, so a test
-// asserts the persisted timestamps rather than trusting a return value — the
-// same posture as tenantOf.
-//
-// It goes through s.pool, which is the OWNER connection: no SET LOCAL ROLE, no
-// GUC, so RLS does not apply and the read is cross-tenant. The tenant_id
-// predicate is therefore explicit and NOT optional — without it a same-session-id
-// row in another tenant would make the scan ambiguous, which is exactly the
-// coexistence the tenant-fold cases below create.
+// bindingTimes reads through the owner pool, where RLS is bypassed; the explicit
+// tenant predicate prevents another tenant's same-session row from matching.
 func bindingTimes(t *testing.T, ctx context.Context, s *Store, sessionID string) (createdAt, updatedAt time.Time) {
 	t.Helper()
 	if err := s.pool.QueryRow(ctx,
@@ -62,11 +37,7 @@ func bindingTimes(t *testing.T, ctx context.Context, s *Store, sessionID string)
 	return createdAt, updatedAt
 }
 
-// countBindings counts binding rows for an account IN ctx's tenant, so a
-// re-point test can prove the row was REPLACED rather than accumulated. Same
-// owner-connection caveat as bindingTimes: the tenant predicate is what keeps
-// "exactly 1" a per-tenant count rather than a cross-tenant one, so a second
-// tenant holding a binding for the SAME account id does not inflate it.
+// countBindings counts rows for ctx's tenant; the owner pool bypasses RLS.
 func countBindings(t *testing.T, ctx context.Context, s *Store, accountID AccountID) int {
 	t.Helper()
 	var n int
@@ -569,11 +540,8 @@ func TestSessionBindingIsTenantIsolated(t *testing.T) {
 	}
 }
 
-// seedTenantAgent creates an owner user and an owned agent UNDER ctx's tenant,
-// so a multi-tenant case can WRITE as a second tenant rather than only read as
-// one. mustUser/mustAgent are hard-wired to context.Background() (the bootstrap
-// tenant), which is precisely why every pre-existing multi-tenant assertion here
-// could only ever write under tenant A.
+// seedTenantAgent writes an owner and agent under ctx's tenant; the default test
+// helpers use only the bootstrap tenant.
 func seedTenantAgent(t *testing.T, ctx context.Context, s *Store, handle string) Account {
 	t.Helper()
 	owner, err := s.CreateUser(ctx, NewUser{Handle: handle + "-owner", DisplayName: handle + "-owner"})
@@ -774,25 +742,10 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 		t.Fatalf("tenant B request-path SessionForAccount = (%q, %q, %v), want (sess-b, runner-b, nil)", v, runner, err)
 	}
 
-	// A system-role WRITE is worse than a refusal: it SUCCEEDS and lands an
-	// ORPHAN. tenant_id DEFAULTs to current_setting('compass.tenant_id', TRUE),
-	// and under this role no GUC is armed — but the pooled connection has served
-	// armed request-path statements before, and a SET LOCAL that has ended leaves
-	// the custom GUC defined-and-EMPTY on that backend rather than undefined. So
-	// the DEFAULT resolves to '' instead of NULL, the NOT NULL is satisfied, and
-	// the row lands stamped with a tenant that does not exist.
-	//
-	// session_bindings.tenant_id has no FK to tenants (only accounts.tenant_id
-	// does), so nothing catches it. The row is then invisible to EVERY tenant —
-	// no RLS policy matches '' — and reachable only by another system-role read
-	// or the owner pool: an unswept binding no request path can see or release.
-	//
-	// It is also NOT deterministic. On a backend that never carried an armed
-	// statement the GUC is genuinely undefined, the DEFAULT is NULL, and the
-	// insert fails not-null instead. Which one a caller gets depends on the
-	// pooled connection it draws, so this asserts the DISJUNCTION rather than
-	// pretending either branch is the contract. Both are defects; PR3 owns the
-	// fix, and this test is what will fail when it lands one.
+	// A leftover, empty tenant GUC can make a system-role write land under tenant
+	// id "" with no FK to catch it, leaving a row invisible to all tenants. On a
+	// backend without a prior GUC, the same write fails NOT NULL instead, so the
+	// assertion accepts either outcome rather than depending on pool history.
 	sysDisplaced, _, sysErr := s.RecordSessionBinding(WithSystemRole(context.Background()), "sess-sys", shared.ID, "runner-sys")
 	switch {
 	case sysErr != nil:
@@ -818,28 +771,9 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 	}
 }
 
-// TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced is the
-// regression test for the round-2 HIGH defect, and it drives the interleaving
-// DETERMINISTICALLY rather than hoping a goroutine race lands on it.
-//
-// The setup: account X is bound to sess-A, then two callers re-point it — one to
-// sess-B, one to sess-C. Exactly two sessions get displaced: sess-A by whichever
-// caller wins, and the WINNER'S session by the loser. Each caller must be told
-// the one IT displaced, because that id is what it reaps from the delivery
-// held-deliver registry, and a session reported to nobody keeps its held
-// deliveries forever.
-//
-// The determinism comes from a THIRD connection holding the SAME per-account
-// advisory lock the bind takes first. Both callers park on it, so both are
-// provably in flight before either can proceed, and releasing it starts the real
-// contention. Without that the two calls would usually just serialize and the
-// test would pass on a schedule that never exercised the bug.
-//
-// The defect this catches: with an unlocked prior-value read (the `prev` CTE this
-// replaced), the second caller's read takes the statement-start snapshot while
-// its write blocks on the first's row lock and then re-reads the latest committed
-// row — so both callers report sess-A and the middle session is destroyed
-// unreported. Removing either lock from the bind fails this test.
+// TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced verifies
+// concurrent re-points report each overwritten session; removing the advisory
+// lock would let both callers report sess-A and lose the middle session.
 func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -848,11 +782,8 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 
 	mustBind(t, ctx, s, "sess-A", agent.ID, "runner-0")
 
-	// A gate transaction holding the bind's per-account advisory lock, armed
-	// exactly as the store's own transactions are (SET LOCAL ROLE + the tenant
-	// GUC). The lock key is character-identical to the one in
-	// queries/session_bindings.sql — if that key changes, this gate stops
-	// blocking and the test fails loudly rather than silently going green.
+	// Hold the same per-account advisory lock and tenant scope as the store; a key
+	// change would stop blocking and make this readiness gate fail.
 	gate, err := s.pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin gate tx: %v", err)
@@ -908,11 +839,8 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 		got[r.session] = r.displaced
 	}
 
-	// Which caller wins the lock is not determined, so the assertion is stated
-	// on the SHAPE, not on a fixed pairing: the winner displaces sess-A (the
-	// seeded binding), and the loser displaces THE WINNER'S session, because
-	// that is what it actually overwrote. So {sess-A, <winner's session>}, one
-	// each. Both callers reporting the SAME id is the unlocked-read defect.
+	// Either caller may win: the winner displaces sess-A and the loser displaces
+	// that winner's session. Both reporting the same id exposes an unlocked read.
 	b, c := got["sess-B"], got["sess-C"]
 	var winner, loser string
 	switch {
@@ -948,27 +876,9 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 }
 
 // TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession covers
-// the case the ROW lock cannot cover, and it is why the bind takes a per-account
-// advisory lock as well.
-//
-// SELECT ... FOR UPDATE on a row that does not yet exist locks NOTHING. So two
-// first-ever binds for one account both read no prior value, and the row lock
-// never brings them into contact. The PRIMARY KEY does serialize their WRITES —
-// the second INSERT waits on the first's uncommitted tuple and resolves as
-// ON CONFLICT DO UPDATE — but by then both have already READ, so with only those
-// two mechanisms both callers report "displaced nothing" while the second has
-// destroyed the first's live binding. That session is reported to NOBODY and its
-// held deliveries are stranded: the same failure as the re-point case, reached
-// by a different route. Measured, not assumed — the PK orders writes, and the
-// displaced value is a read.
-//
-// The advisory lock is taken BEFORE the read, so it covers this: exactly one
-// caller reports "" (it genuinely displaced nothing) and the other reports the
-// first caller's session, which it really did overwrite and must reap.
-//
-// Gated the same way as the re-point case, on the same lock, so the interleaving
-// is driven rather than hoped for. Removing the advisory lock from the bind makes
-// this test fail with both callers reporting "".
+// first-ever binds, which have no row for SELECT FOR UPDATE to lock. The advisory
+// lock serializes the prior-value read and upsert. The external gate checks binds
+// do not complete while the lock is held.
 func TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -1107,14 +1017,8 @@ func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *t
 		old := fmt.Sprintf("sess-old-%d", i)
 		fresh := fmt.Sprintf("sess-new-%d", i)
 
-		// Fresh session ids every iteration, and the seed bind RE-POINTS the
-		// account's one row back onto runner-1. That is what keeps each
-		// iteration independent AND non-vacuous: the previous iteration leaves a
-		// row on runner-2 (which the runner-1 sweep below would not see), so
-		// without this re-point iteration i+1 would race a bind against a sweep
-		// that had nothing to find and "exactly one reporter" would hold
-		// trivially. After this call there is exactly one binding, it names
-		// `old`, and it sits on the Runner the sweep targets.
+		// Re-point the account's single binding to runner-1 each iteration so the
+		// concurrent sweep always has a row to find.
 		mustBind(t, ctx, s, old, agent.ID, "runner-1")
 
 		type bindResult struct {
@@ -1128,11 +1032,8 @@ func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *t
 		binds := make(chan bindResult, 1)
 		sweeps := make(chan sweepResult, 1)
 
-		// Both goroutines park on `start` until each is scheduled and ready, so
-		// they are released together rather than sequentially. This narrows the
-		// window, it does not close it — the interleaving stays up to Postgres
-		// and the scheduler, which is why the loop runs many iterations instead
-		// of trusting one.
+		// Release both ready goroutines together; the loop covers remaining
+		// scheduler interleavings rather than trusting one race.
 		start := make(chan struct{})
 		var ready sync.WaitGroup
 		ready.Add(2)

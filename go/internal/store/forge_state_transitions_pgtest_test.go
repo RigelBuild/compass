@@ -2,13 +2,8 @@
 
 package store
 
-// Real-Postgres contracts for the agent-driven state-transition memo (design
-// RigelBuild/docs:docs/designs/compass/server/compass-forge-state-transition/design.md §Actor
-// attribution): the coordinate-keyed upsert (latest transition wins), the
-// single-statement clear-and-return consume (a memo attributes at most one
-// event, so a second consume finds nothing), the freshness bound, and the miss
-// cases a human/external transition produces. context.Background is the test
-// root (the pgtest-suite convention, sibling forge_authored_pgtest_test.go).
+// Postgres tests cover coordinate-keyed transition upserts, one-shot consume,
+// freshness bounds, and misses for human or external transitions.
 
 import (
 	"context"

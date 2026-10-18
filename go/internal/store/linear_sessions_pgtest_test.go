@@ -2,12 +2,8 @@
 
 package store
 
-// Linear Agent Session association + by-coordinate ownership read store
-// contracts (compass-linear-agent-responder §T3): the linear_agent_sessions
-// table shape, the idempotent upsert (created=true first, false on replay), the
-// PK lookup (hit + ErrNotFound miss), and AuthoredArtifactByCoordinate
-// (seeded-row hit + ErrNotFound miss). context.Background is the test root
-// (the pgtest-suite convention, sibling forge_authored_pgtest_test.go).
+// Linear session tests cover association upsert, lookup, and authored-artifact
+// resolution by coordinate against Postgres.
 
 import (
 	"context"

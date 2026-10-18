@@ -2,11 +2,8 @@
 
 package store
 
-// Schema shape after the T2 collapse (compass-zulip-threading-model §Red-first
-// (e)): messages carries topic_id NOT NULL and NO channel_id / parent_message_id
-// column. Asserted against a real migrated database so a migration that failed
-// to drop the old columns — or to make topic_id NOT NULL — is caught, not just a
-// Go-side struct change.
+// Schema tests verify the migrated messages table requires topic_id and has no
+// channel_id or parent_message_id columns.
 
 import (
 	"context"

@@ -2,14 +2,8 @@
 
 package store
 
-// Channel-pin (pinned board) store contracts. The board is a set of POINTERS to
-// existing messages: PinMessage never writes a message, only an entry pointing at
-// one that already lives in the channel. These tests defend the guard (a message
-// in another channel cannot be pinned), the repoint compare-and-swap (position
-// preserved on success, in-band failure when the replaced id is no longer
-// pinned), the per-channel cap (the 6th pin is refused; the 5 survive), the
-// FOR-UPDATE serialization of two cap-edge pins (exactly one admitted), and the
-// unpin/read round-trip. context.Background() is the sanctioned test root here.
+// Pinned-board tests cover same-channel references, repoint compare-and-swap,
+// the serialized pin cap, and unpin/read behavior against Postgres.
 
 import (
 	"context"

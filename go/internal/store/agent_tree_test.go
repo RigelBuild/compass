@@ -2,12 +2,8 @@
 
 package store
 
-// Agent-tree store contracts (Record C, T2/T3): parent_agent_id round-trips
-// through CreateAgent (set + empty=NULL) and every projection, and ReparentAgent
-// is the serialized validate-and-write — happy path, promote-to-root, and each
-// §Server validation clause mapped to its sentinel (caller authority /
-// same-owner → ErrPermissionDenied; cycle → ErrFailedPrecondition; missing
-// parent → ErrNotFound).
+// Agent-tree tests cover parent round-trips, serialized reparenting, and each
+// validation clause's sentinel error.
 
 import (
 	"context"
@@ -257,13 +253,9 @@ func TestReparentAgentConcurrentCycleSerialized(t *testing.T) {
 		done <- result{acc, err}
 	}()
 
-	// Readiness gate (bounded poll-until, not a fixed sleep): wait until tx2 is
-	// actually parked on THIS owner's advisory lock — an ungranted advisory lock
-	// row in pg_locks whose key matches hashtext(owner.ID). The poll is scoped to
-	// this exact lock key so an unrelated concurrent test's ungranted advisory
-	// lock cannot spuriously satisfy the gate. If it never appears within the
-	// deadline (the RED case where the lock line was removed, so tx2 never waits),
-	// fall through and commit anyway.
+	// Wait for tx2 on this owner's advisory lock; scope the poll to the exact key.
+	// The poll is bounded: on timeout it commits tx1 anyway, so a regression with
+	// no lock fails the assertions below instead of hanging.
 	deadline := time.After(5 * time.Second)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()

@@ -60,14 +60,8 @@ func (s *Store) IsTopicChannelMember(ctx context.Context, actor AccountID, topic
 	return participant.Valid && participant.Bool, nil
 }
 
-// requireGroupCreateAuthz authorizes creating a channel inside groupID. The
-// actor is authorized when it owns the group, when it is an agent whose owning
-// user owns the group (an agent acts within its owner's space — Matt's ruling),
-// or when the group is visible to everyone (VisibilityShared). A group the actor
-// neither owns nor may see — and an unknown group — both return ErrNotFound (the
-// not-found/forbidden merge), so a non-owner cannot probe which group ids exist.
-// This realizes the design record's "CreateChannel — caller-authorized against
-// the parent group" (design.md:362-367).
+// requireGroupCreateAuthz permits owners, their agents, and viewers of shared
+// groups. Unknown and invisible groups both return ErrNotFound to prevent probes.
 func requireGroupCreateAuthz(ctx context.Context, q db.DBTX, actor AccountID, groupID ChannelGroupID) error {
 	authorized, err := db.New(q).GroupCreateAuthorized(ctx, db.GroupCreateAuthorizedParams{
 		ID:          string(groupID),

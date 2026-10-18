@@ -10,12 +10,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// dmGroupName is the fixed reserved name of the per-owner DM group — the
-// namespace every one of an owner's peer-DM channels lives in (design R3). It is
-// distinct from the coordination group's __coordination__ so the two reserved
-// namespaces never collide, and it is the discriminator (paired with
-// VisibilityOwner) both the CreateChannel create-guard and EnsureOwnerDMGroupTx
-// key on.
+// dmGroupName is the reserved per-owner peer-DM namespace, distinct from the
+// coordination group and paired with owner visibility in its guards.
 const dmGroupName = "__dm__"
 
 // coordinationGroupName is the fixed reserved name of the per-owner
@@ -212,22 +208,9 @@ func LockOwnerDMTx(ctx context.Context, tx pgx.Tx, ownerUserID AccountID) error 
 	return nil
 }
 
-// verifyReconcileDMTx is the R3 belt (design.md:355-361, T2:708-710): on a resume
-// it asserts the resolved channel is a real DM and reconciles recoverable drift
-// in-tx, or refuses to adopt a wrong-kind row.
-//
-//   - A wrong kind (a hand-planted squat, or drift) → ErrNotFound. The
-//     CreateChannel create-guard makes this unreachable via the manual path, but
-//     the belt defends any other write into the reserved group rather than
-//     resolving every future open to a hostile row.
-//   - mandatory drift (a DM found non-mandatory) is recoverable: re-assert it,
-//     then seed every current agent member's cursor (the SetChannelPolicy
-//     flip discipline — a FALSE→TRUE re-assert makes every member a delivery
-//     target, so none may be left un-seeded, the fail-DANGEROUS D2 hazard).
-//   - a missing wanted member is recoverable: re-add its row, then seed cursors
-//     again so the re-added member is a seeded delivery target. Both seeds are
-//     self-guarding (agent-only) and idempotent — a present member and an
-//     already-seeded cursor are no-ops.
+// verifyReconcileDMTx rejects wrong-kind rows and repairs recoverable drift.
+// Restoring mandatory delivery or a wanted member also seeds current agent
+// members' cursors; the seed is agent-only and idempotent.
 func verifyReconcileDMTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, kind ChannelKind, wanted []AccountID) error {
 	if kind != ChannelKindDM {
 		return fmt.Errorf("%w: dm channel %q", ErrNotFound, channelID)

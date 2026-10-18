@@ -92,12 +92,8 @@ func IsLiteralTrue(v any) bool {
 	return s == "true"
 }
 
-// jsParser is a minimal structural parser over a JS/TS source string. It reads
-// object literals into map[string]any (nested objects → maps; every other value
-// → its trimmed raw text, so a scalar `true` compares equal to the string
-// "true"), skipping arrays and arbitrary expressions with balanced bracket,
-// string, template, and comment handling. It is not a full JS parser — only
-// enough to walk SETTINGS_SCHEMA's shape.
+// jsParser extracts object literals into maps and keeps other values as trimmed
+// raw text. It handles balanced syntax needed to walk SETTINGS_SCHEMA, not all JS.
 type jsParser struct {
 	s string
 	i int
@@ -265,11 +261,8 @@ func (p *jsParser) parseRawExpr() (string, error) {
 	return strings.TrimSpace(p.s[start:p.i]), nil
 }
 
-// parseStringLiteral consumes a '...' , "..." , or `...` string starting at the
-// current quote, handling escapes and (for templates) ${ } interpolation with
-// balanced braces. Returns the unescaped-raw inner text for a simple string;
-// for templates the raw inner text (interpolation left as-is) — callers only
-// use it for keys, which are never templates.
+// parseStringLiteral consumes a quoted or template string, handling escapes and
+// interpolation; templates remain raw because callers use strings only as keys.
 func (p *jsParser) parseStringLiteral() (string, error) {
 	quote := p.s[p.i]
 	p.i++ // consume opening quote

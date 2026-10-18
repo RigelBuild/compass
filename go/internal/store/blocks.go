@@ -69,16 +69,8 @@ type storedAskOption struct {
 	Preview     string `json:"preview,omitempty"`
 }
 
-// marshalBlocks serializes a message's blocks to JSONB for storage, rejecting a
-// malformed block (not exactly one of text/ask/ask_answer set, an ask with zero
-// questions or a duplicate/empty question_id, or a malformed ask_answer) as
-// ErrInvalidArgument so a bad oneof never reaches a row. It is pure: ask_id is
-// assigned once at append (mintAskIDs), never here, so re-serializing an
-// existing message (the update path) can never re-mint an id and break
-// RespondToAsk correlation. It does NOT reject the server-owned ask_answer
-// variant on caller identity (it has none — it receives only the block slice);
-// server-ownership is enforced at the wire edge (T4). It accepts and
-// structurally validates the variant so AnswerAsk's own answer persist works.
+// marshalBlocks rejects malformed variants and preserves ask_id on updates.
+// It validates server-owned ask_answer structure; the wire edge enforces ownership.
 func marshalBlocks(blocks []MessageBlock) ([]byte, error) {
 	stored := make([]storedBlock, 0, len(blocks))
 	for i, b := range blocks {
@@ -106,13 +98,8 @@ func marshalBlocks(blocks []MessageBlock) ([]byte, error) {
 	return out, nil
 }
 
-// validateAskQuestions enforces the write-path half of the ask totality
-// invariant (the store mirror of the T5 mapper's malformed-id guard): an ask
-// must carry at least one question, every question_id must be non-empty AND
-// unique within the ask (a duplicate or empty key would make an
-// AskQuestionAnswer unaddressable), and every non-nil Recommended must be a
-// valid index into that question's Options. Caller-supplied bad input, so the
-// ErrInvalidArgument family — same as marshalBlocks' exactly-one-of check.
+// validateAskQuestions requires at least one question, unique non-empty ids, and
+// valid Recommended option indexes; caller errors are ErrInvalidArgument.
 func validateAskQuestions(a *Ask) error {
 	if err := askQuestionsWellFormed(a); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidArgument, err)
@@ -129,13 +116,8 @@ func validateAskQuestions(a *Ask) error {
 	return nil
 }
 
-// validateAskAnswer enforces the ask_answer variant invariant on the write
-// path: a non-nil answered Ask snapshot (a non-empty AskID, Answered=true, and
-// well-formed questions — the same structural integrity every stored ask must
-// have), plus a non-empty AskerAccountID. Caller-supplied shape, so the
-// ErrInvalidArgument family — same as marshalBlocks' exactly-one-of check. The
-// server-ownership rule (only AnswerAsk may construct one) is a wire-edge
-// concern (T4), NOT enforced here.
+// validateAskAnswer requires an answered, well-formed snapshot and asker id.
+// The wire edge, not this helper, enforces server ownership.
 func validateAskAnswer(b *AskAnswerBlock) error {
 	if b.Ask.AskID == "" {
 		return fmt.Errorf("%w: ask_answer snapshot has empty ask_id", ErrInvalidArgument)
@@ -152,13 +134,8 @@ func validateAskAnswer(b *AskAnswerBlock) error {
 	return nil
 }
 
-// askQuestionsWellFormed checks the structural integrity of an ask's question
-// set that BOTH the write and read paths require: at least one question, and
-// every question_id non-empty and unique (the correlation key for an
-// AskQuestionAnswer and applyAskAnswer's byID map). It returns a bare error
-// naming the defect; callers wrap it in the class that fits their trust
-// boundary — ErrInvalidArgument for caller input on the write path, a
-// corrupt-row error for a stored row on the read path.
+// askQuestionsWellFormed checks the shared read/write invariant and returns a
+// bare error for callers to wrap according to their trust boundary.
 func askQuestionsWellFormed(a *Ask) error {
 	if len(a.Questions) == 0 {
 		return errors.New("ask has no questions")
@@ -176,12 +153,8 @@ func askQuestionsWellFormed(a *Ask) error {
 	return nil
 }
 
-// mintAskIDs assigns a server-minted ask_id to every ask block that lacks one,
-// in place on the caller's Ask so the returned message carries the same value
-// RespondToAsk will correlate against (comms.proto:278-280: ask_id is
-// server-assigned and globally unique). Called only at append: ask_id is
-// assigned once and immutable thereafter, so the update path preserves it rather
-// than reassigning.
+// mintAskIDs assigns missing ids only at append; updates preserve the id that
+// RespondToAsk uses for correlation.
 func mintAskIDs(blocks []MessageBlock) {
 	for _, b := range blocks {
 		// Guard the full valid-arm predicate (b.Text == nil too), so a
@@ -194,13 +167,8 @@ func mintAskIDs(blocks []MessageBlock) {
 	}
 }
 
-// askIDContainmentFilter builds the JSONB @> probe that finds the message
-// carrying an ask with askID. It is a MINIMAL projection — {"kind":"ask",
-// "ask":{"ask_id":X}} — deliberately NOT json.Marshal(storedBlock{...}): a full
-// storedBlock serializes the ask's questions array (never omitted for a real
-// ask), which @> would then require the stored ask to match those questions
-// element-for-element, so no real ask would ever match. Containment cares
-// only about the discriminating fields, so the probe carries only them.
+// askIDContainmentFilter includes only the discriminating fields; serializing a
+// full ask would make JSONB containment require an exact questions-array match.
 func askIDContainmentFilter(askID string) ([]byte, error) {
 	probe := []map[string]any{{
 		"kind": string(blockKindAsk),
@@ -271,11 +239,8 @@ func unmarshalBlocks(data []byte) ([]MessageBlock, error) {
 	return blocks, nil
 }
 
-// textContent concatenates the text of a message's text blocks (with an ask's
-// question folded in, and an ask_answer's snapshot questions + custom answer
-// text folded in, so both are searchable) into the string the generated
-// tsvector indexes. Newline-joined so distinct blocks don't merge words across
-// a boundary.
+// textContent joins searchable text blocks with newlines so adjacent blocks do
+// not merge words across a boundary.
 func textContent(blocks []MessageBlock) string {
 	var parts []string
 	for _, b := range blocks {
